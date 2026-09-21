@@ -19,15 +19,15 @@
 //! is the highest-risk thing in this backend: a wrong layout is not a compile
 //! error, it is silent memory corruption on the MIDI thread. Every offset below
 //! was read off the real header with `offsetof` on the target
-//! (alsa-lib 1.2.14, x86_64), and the [`layout`] tests re-assert them at compile
+//! (alsa-lib 1.2.14, x86_64), and the `layout` tests re-assert them at compile
 //! time so a drift breaks the build instead of the audio.
 //!
 //! # Version floors
 //!
 //! Two, and they differ — see `build.rs`:
 //! - **1.2.10** — everything here except the two below (`alsa_ump` cfg).
-//! - **1.2.13** — [`snd_seq_create_ump_endpoint`] and
-//!   [`snd_seq_create_ump_block`] (`alsa_ump_create` cfg).
+//! - **1.2.13** — `snd_seq_create_ump_endpoint` and
+//!   `snd_seq_create_ump_block` (`alsa_ump_create` cfg).
 
 #![allow(
     non_camel_case_types,

@@ -139,7 +139,7 @@ pub enum PumpPass {
 /// Owns both endpoints and the scratch buffer, which is what lets
 /// [`finalize`](AudioOut::finalize) — a once-only consuming call — have an
 /// unambiguous home. [`pump_once`](Self::pump_once) moves at most
-/// [`SCRATCH_FRAMES`] frames and allocates nothing.
+/// `SCRATCH_FRAMES` frames and allocates nothing.
 ///
 /// Built by [`Recorder::start`] after it has checked the two widths agree, and
 /// handed to a [`PumpDriver`].
@@ -222,7 +222,7 @@ pub trait RunningPump {
 
 /// The production driver: one dedicated thread per take.
 ///
-/// Parks [`IDLE_PARK`] on a starving source rather than spinning a core, and
+/// Parks `IDLE_PARK` on a starving source rather than spinning a core, and
 /// breaks on [`Ended`](PumpPass::Ended) or on the cleared stop flag. This is
 /// what [`Recorder::start`] uses.
 #[derive(Debug, Default, Clone, Copy)]

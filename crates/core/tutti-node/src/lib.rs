@@ -2,7 +2,7 @@
 //!
 //! This crate owns [`AudioUnit`], the planar block buffers it processes into,
 //! the numeric tower those are generic over, the [`Signal`] vocabulary
-//! [`AudioUnit::route`] speaks, and the [`Setting`](setting::Setting) its `set`
+//! [`AudioUnit::route`] speaks, and the [`setting::Setting`] its `set`
 //! takes. It sits **below** `fundsp-tutti`, so a crate can implement a node
 //! without depending on the fork.
 //!

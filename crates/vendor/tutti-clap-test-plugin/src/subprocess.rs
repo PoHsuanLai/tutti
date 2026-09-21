@@ -17,7 +17,7 @@
 //! and it fails silently in exactly the same way.
 //!
 //! Environment is the only channel that crosses a spawn. The host sets the
-//! variables, `Command::spawn` copies them into the child, and [`configure`]
+//! variables, `Command::spawn` copies them into the child, and `configure`
 //! reads them once from `clap_entry.init` — before any plugin instance exists,
 //! so no `process()` call can observe a half-configured probe.
 //!
@@ -27,12 +27,12 @@
 //! each is about what the host does when the plugin stops cooperating and the
 //! plugin is in another process:
 //!
-//! - [`crash_on_block`](Switches::crash_on_block) aborts the subprocess. In
+//! - `crash_on_block` aborts the subprocess. In
 //!   process that would take the test runner down with it.
-//! - [`block_from`](Switches::block_from) parks `process()` indefinitely. In
+//! - `block_from` parks `process()` indefinitely. In
 //!   process that would deadlock the caller, since the caller *is* the audio
 //!   thread; out of process it is the case the pipelined design exists for.
-//! - [`apply_gain`](Switches::apply_gain) is not about failure — it is here
+//! - `apply_gain` is not about failure — it is here
 //!   because the gain has to be applied by the same `render_output` the other
 //!   modes go through, and reaching that switch from another process needs the
 //!   same channel.
@@ -61,7 +61,7 @@ static BLOCKED: AtomicBool = AtomicBool::new(false);
 /// cannot serve a host in another process.
 static RELEASE_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Whether `render_output` scales its result by [`gain`].
+/// Whether `render_output` scales its result by the probe's fixed gain.
 static APPLY_GAIN: AtomicBool = AtomicBool::new(false);
 
 /// `process()` calls seen since load, incremented once per block.
@@ -84,7 +84,7 @@ pub struct Switches {
     pub crash_on_block: u32,
     /// Park from this `process()` call (1-based); `0` never.
     pub block_from: u32,
-    /// Whether the render path applies [`gain`].
+    /// Whether the render path applies the probe's fixed gain.
     pub apply_gain: bool,
 }
 

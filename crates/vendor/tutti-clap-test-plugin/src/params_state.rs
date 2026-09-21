@@ -126,7 +126,7 @@ static PARAMS: &[ProbeParam] = &[
     },
 ];
 
-/// Parameter id of the applied [`Gain`](PARAMS) control.
+/// Parameter id of the applied `Gain` control (see the private `PARAMS` table).
 ///
 /// Public so a host test names the same id the plugin does rather than a
 /// literal that could drift out of step with the table.

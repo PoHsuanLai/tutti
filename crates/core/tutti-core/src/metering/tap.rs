@@ -189,9 +189,14 @@ impl AudioTap {
         // try_lock: skip this callback if the producer is being swapped.
         if let Some(ref mut guard) = self.producer.try_lock() {
             if let Some(ref mut prod) = **guard {
-                output.chunks_exact(2).take(frames).for_each(|ch| {
-                    let _ = prod.try_push((ch[0], ch[1]));
-                });
+                output
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .take(frames)
+                    .for_each(|ch| {
+                        let _ = prod.try_push((ch[0], ch[1]));
+                    });
             }
         }
     }

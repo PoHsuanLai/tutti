@@ -449,7 +449,7 @@ mod master_record {
 
         // Right channel is a constant -1.0, so a channel swap or an off-by-one in
         // the (f32, f32) -> [f32; 2] conversion shows up here rather than passing.
-        for (i, pair) in samples.chunks_exact(2).enumerate().take(64) {
+        for (i, pair) in samples.as_chunks::<2>().0.iter().enumerate().take(64) {
             assert!(
                 (pair[0] - i as f32 / 256.0).abs() < 1e-6,
                 "frame {i} left: expected ramp, got {}",

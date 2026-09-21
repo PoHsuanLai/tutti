@@ -43,7 +43,7 @@ fn channel_energy(buf: &[f32], c: usize, width: usize) -> f32 {
 fn mono_root_duplicates_into_stereo() {
     // Mono root → stereo device: channel 0 duplicated into both sides.
     let out = render_root_to(1, 2, &[0]);
-    for frame in out.chunks_exact(2) {
+    for frame in out.as_chunks::<2>().0 {
         assert_eq!(frame[0], frame[1], "mono root must duplicate into L/R");
     }
     assert!(out.iter().any(|s| *s != 0.0), "sine should produce signal");

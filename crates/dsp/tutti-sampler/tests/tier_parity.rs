@@ -266,7 +266,7 @@ fn load_wave(path: &Path) -> Arc<Wave> {
     let mut r = hound::WavReader::open(path).expect("open test wav");
     let mut wave = Wave::new(2, SR);
     let samples: Vec<f32> = r.samples::<f32>().map(|s| s.unwrap()).collect();
-    for frame in samples.chunks_exact(2) {
+    for frame in samples.as_chunks::<2>().0 {
         wave.push((frame[0], frame[1]));
     }
     Arc::new(wave)

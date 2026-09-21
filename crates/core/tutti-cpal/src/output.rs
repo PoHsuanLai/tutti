@@ -370,7 +370,7 @@ where
             if layout == ChannelLayout::STEREO {
                 meter.copy_from_slice(mix);
             } else {
-                for (i, out) in meter.chunks_exact_mut(2).enumerate() {
+                for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     let f = &mix[i * channels..i * channels + channels];
                     tutti_core::fold_frame(f, out);
                 }

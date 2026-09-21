@@ -53,7 +53,7 @@ use crate::SpatialTarget;
 /// away, a stereo pair lost energy from 45° outward and was *completely silent*
 /// from 150° through 210° — a caller automating a pan through 180° heard the
 /// source disappear. Details and the full before/after table:
-/// [`VbapPanner::solve_gains`](super::panner) and
+/// `VbapPanner::solve_gains` and
 /// `tests/vbap_energy_sweep.rs`.
 ///
 /// Note that LFE is not one of the gains: the panner never feeds it
@@ -287,7 +287,7 @@ impl AudioUnit for VbapPannerNode {
     /// The commanded position lives in **two** places: this node's
     /// [`SpatialTarget`], which [`set_position`](Self::set_position) writes, and
     /// the inner panner's own atomics, which the smoother is seeded from. The
-    /// two are joined only by [`sync_position`](Self::sync_position) — and that
+    /// two are joined only by `sync_position` — and that
     /// used to run exclusively inside `tick`/`process`.
     ///
     /// So `set_position` → `reset` seeded the ramp at the panner's *stale*

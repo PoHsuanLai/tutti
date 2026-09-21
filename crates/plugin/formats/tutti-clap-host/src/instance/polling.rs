@@ -832,7 +832,7 @@ impl ClapLoaded {
     /// # Why the clock is a parameter
     ///
     /// Every timer test drove `period_ms = 0`, and
-    /// [`take_due_timers`] treats a zero period as always-due — so the
+    /// `take_due_timers` treats a zero period as always-due — so the
     /// comparison that decides whether a timer has expired was never actually
     /// evaluated against anything. Inverting it, or replacing it with `true`,
     /// left the whole suite green: `0 >= 0` and `0 <= 0` are both true, and so

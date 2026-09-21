@@ -301,7 +301,7 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     assert_eq!(spec.channels, 4);
 
     let tol = lsb(BitDepth::Int24);
-    for (i, frame) in samples.chunks_exact(4).enumerate() {
+    for (i, frame) in samples.as_chunks::<4>().0.iter().enumerate() {
         assert!(
             (frame[0] - 0.5).abs() <= tol,
             "frame {i}: channel 0 should carry 0.5, got {}",

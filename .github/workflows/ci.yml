@@ -62,12 +62,15 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          # libasound2-dev: tutti-cpal (ALSA).
+          # libasound2-dev:    tutti-cpal (ALSA).
+          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+          #                    RT-priority request on Linux.
           # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
-          #   Any target set that includes the benches needs it to link.
+          #                    `html_reports`, which pulls plotters -> font-kit
+          #                    -> fontconfig. Any target set including the
+          #                    benches has to link it.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -91,12 +94,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          # libasound2-dev: tutti-cpal (ALSA).
+          # libasound2-dev:    tutti-cpal (ALSA).
+          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+          #                    RT-priority request on Linux.
           # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
-          #   Any target set that includes the benches needs it to link.
+          #                    `html_reports`, which pulls plotters -> font-kit
+          #                    -> fontconfig. Any target set including the
+          #                    benches has to link it.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -149,12 +155,15 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          # libasound2-dev: tutti-cpal (ALSA).
+          # libasound2-dev:    tutti-cpal (ALSA).
+          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+          #                    RT-priority request on Linux.
           # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
-          #   Any target set that includes the benches needs it to link.
+          #                    `html_reports`, which pulls plotters -> font-kit
+          #                    -> fontconfig. Any target set including the
+          #                    benches has to link it.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The engine must stay usable without Bevy. `--no-default-features` does
@@ -176,12 +185,15 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          # libasound2-dev: tutti-cpal (ALSA).
+          # libasound2-dev:    tutti-cpal (ALSA).
+          # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
+          #                    RT-priority request on Linux.
           # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
-          #   Any target set that includes the benches needs it to link.
+          #                    `html_reports`, which pulls plotters -> font-kit
+          #                    -> fontconfig. Any target set including the
+          #                    benches has to link it.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to

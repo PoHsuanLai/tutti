@@ -95,7 +95,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     assert_eq!(rd.spec().channels, 4);
     let s: Vec<f32> = rd.into_samples::<f32>().map(|x| x.unwrap()).collect();
     let mut ch = [0.0f32; 4];
-    for f in s.chunks_exact(4) {
+    for f in s.as_chunks::<4>().0 {
         for (a, &v) in ch.iter_mut().zip(f) {
             *a = a.max(v.abs());
         }

@@ -96,7 +96,7 @@ pub enum HostMessage {
     /// Clear the plugin's internal state — tails, delay lines, voices.
     Reset,
     /// Ask the plugin to serialize its state, answered by
-    /// [`BridgeMessage::StateData`].
+    /// `BridgeMessage::StateData`.
     SaveState,
     /// One slice of a plugin state being restored, in order.
     ///
@@ -379,7 +379,7 @@ pub enum BridgeMessage {
         /// The parsed value, normalized.
         value: Option<Normalized>,
     },
-    /// Acknowledges a [`HostMessage::LoadState`], carrying the plugin's refusal
+    /// Acknowledges a `HostMessage::LoadState`, carrying the plugin's refusal
     /// if it had one.
     ///
     /// A caller awaits this frame, so the answer reports that the state was

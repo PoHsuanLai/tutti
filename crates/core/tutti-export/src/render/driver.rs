@@ -470,13 +470,13 @@ mod tests {
         let mut src = PlaneSource::new(&planes);
         let mut out = vec![9.9f32; 4 * 4];
         assert_eq!(src.fill(&mut out, 4), 4);
-        for f in out.chunks_exact(4) {
+        for f in out.as_chunks::<4>().0 {
             assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
         }
         // Second pull into the same dirty buffer.
         out.fill(9.9);
         assert_eq!(src.fill(&mut out, 4), 4);
-        for f in out.chunks_exact(4) {
+        for f in out.as_chunks::<4>().0 {
             assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
         }
     }

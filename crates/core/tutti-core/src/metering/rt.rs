@@ -36,7 +36,9 @@ impl MeteringContext {
         let left = self.left.active(frames);
         let right = self.right.active(frames);
         output
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .take(frames)
             .zip(left.iter_mut().zip(right.iter_mut()))
             .for_each(|(ch, (l, r))| {

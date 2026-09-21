@@ -65,28 +65,11 @@ fn sample_plugin_dir() -> String {
 
 /// Resolve a `.vst3` bundle to the loadable binary inside it.
 fn resolve_bundle(path: &Path) -> PathBuf {
-    if path.is_file() {
-        return path.to_path_buf();
-    }
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for sub in [
-        "Contents/x86_64-linux",
-        "Contents/MacOS",
-        "Contents/x86_64-win",
-    ] {
-        let dir = path.join(sub);
-        for ext in ["so", "", "vst3", "dylib"] {
-            let cand = if ext.is_empty() {
-                dir.join(stem)
-            } else {
-                dir.join(format!("{stem}.{ext}"))
-            };
-            if cand.is_file() {
-                return cand;
-            }
-        }
-    }
-    path.to_path_buf()
+    tutti_plugin_types::bundle::any_module_in_bundle(
+        path,
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    )
+    .unwrap_or_else(|| path.to_path_buf())
 }
 
 fn sample_plugin_path(bundle: &str) -> Option<PathBuf> {

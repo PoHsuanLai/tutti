@@ -2,6 +2,7 @@
 
 mod automation;
 mod automation_mode;
+pub mod bundle;
 mod channels;
 mod classification;
 mod descriptor;

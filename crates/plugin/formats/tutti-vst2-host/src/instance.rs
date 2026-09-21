@@ -590,44 +590,11 @@ impl Vst2Instance {
 /// macOS `Contents/MacOS/<stem>`, Linux `Contents/x86_64-linux/<stem>.so`,
 /// Windows `Contents/x86_64-win/<stem>.dll`.
 pub fn resolve_bundle(path: &Path) -> PathBuf {
-    if path.is_file() || !path.is_dir() {
-        return path.to_path_buf();
-    }
-
-    #[cfg(target_os = "macos")]
-    let resolved = probe_subdir(path, "MacOS", None);
-
-    #[cfg(target_os = "linux")]
-    let resolved = probe_subdir(path, "x86_64-linux", Some("so"));
-
-    #[cfg(target_os = "windows")]
-    let resolved = probe_subdir(path, "x86_64-win", Some("dll"));
-
-    resolved.unwrap_or_else(|| path.to_path_buf())
-}
-
-fn probe_subdir(bundle: &Path, arch_dir: &str, ext: Option<&str>) -> Option<PathBuf> {
-    let dir = bundle.join("Contents").join(arch_dir);
-    let stem = bundle.file_stem()?;
-
-    let candidate = dir.join(stem);
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-
-    if let Some(ext) = ext {
-        let with_ext = dir.join(format!("{}.{}", stem.to_str()?, ext));
-        if with_ext.is_file() {
-            return Some(with_ext);
-        }
-    }
-
-    if let Some(name) = bundle.file_name() {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    // `native_*`: a VST2 module for another CPU cannot be loaded here, and the
+    // caller's own diagnostic on the unchanged path says more than a wrong hit.
+    tutti_plugin_types::bundle::native_module_in_bundle(
+        path,
+        tutti_plugin_types::bundle::ModuleKind::Vst2,
+    )
+    .unwrap_or_else(|| path.to_path_buf())
 }

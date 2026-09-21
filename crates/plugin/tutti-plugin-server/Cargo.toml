@@ -34,6 +34,10 @@ all = ["vst2", "vst3", "clap", "au"]
 [dependencies]
 # Shared protocol types
 tutti-plugin = { path = "../tutti-plugin" }
+# The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
+# than reached through `tutti-plugin`, because this is a dependency in its own
+# right and a re-export would hide that.
+tutti-plugin-types = { path = "../tutti-plugin-types" }
 
 # Core types
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }

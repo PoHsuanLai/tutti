@@ -6,6 +6,7 @@
 
 use crate::error::{BridgeError, Result};
 use std::path::{Path, PathBuf};
+use tutti_plugin_types::bundle::ModuleKind;
 
 /// Architecture subdirectories under `Contents/` to probe, in preference
 /// order, for the *build target* this binary was compiled for.
@@ -20,101 +21,7 @@ use std::path::{Path, PathBuf};
 /// site so the tests can consume the *same* list — a test helper that
 /// hardcodes its own copy passes on ARM while production fails.
 pub(crate) fn arch_subdirs() -> &'static [&'static str] {
-    #[cfg(target_os = "macos")]
-    {
-        // A macOS bundle binary is fat/universal; there is no per-arch dir.
-        &["MacOS"]
-    }
-
-    // Linux: `<machine>-linux`, where `<machine>` is the `uname -m` string.
-    // Rust's `target_arch` maps onto those names.
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        &["x86_64-linux"]
-    }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        &["aarch64-linux"]
-    }
-    #[cfg(all(target_os = "linux", target_arch = "arm"))]
-    {
-        // `uname -m` reports the specific ARM variant; probe the common ones.
-        &["armv7l-linux", "armv8l-linux", "arm-linux"]
-    }
-    #[cfg(all(target_os = "linux", target_arch = "x86"))]
-    {
-        &["i686-linux", "i386-linux"]
-    }
-    #[cfg(all(
-        target_os = "linux",
-        not(any(
-            target_arch = "x86_64",
-            target_arch = "aarch64",
-            target_arch = "arm",
-            target_arch = "x86"
-        ))
-    ))]
-    {
-        &["x86_64-linux"]
-    }
-
-    // Windows: the SDK's six variants, narrowed to what this target can load.
-    // On ARM64 Windows an arm64ec/arm64x binary is also loadable, and x64 runs
-    // under emulation, so probe those as fallbacks in the SDK's order.
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        &["x86_64-win"]
-    }
-    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-    {
-        &["arm64-win", "arm64ec-win", "arm64x-win", "x86_64-win"]
-    }
-    #[cfg(all(target_os = "windows", target_arch = "arm"))]
-    {
-        &["arm-win", "x86-win"]
-    }
-    #[cfg(all(target_os = "windows", target_arch = "x86"))]
-    {
-        &["x86-win"]
-    }
-    #[cfg(all(
-        target_os = "windows",
-        not(any(
-            target_arch = "x86_64",
-            target_arch = "aarch64",
-            target_arch = "arm",
-            target_arch = "x86"
-        ))
-    ))]
-    {
-        &["x86_64-win"]
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        &["MacOS"]
-    }
-}
-
-/// Explicit inner-binary extension used on this platform, if any. macOS
-/// bundle binaries are extensionless; Linux uses `.so` and Windows `.vst3`.
-fn arch_binary_ext() -> Option<&'static str> {
-    #[cfg(target_os = "macos")]
-    {
-        None
-    }
-    #[cfg(target_os = "linux")]
-    {
-        Some("so")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        Some("vst3")
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        None
-    }
+    tutti_plugin_types::bundle::native_arch_subdirs()
 }
 
 /// Resolve a plugin bundle directory to its inner library binary.
@@ -129,47 +36,18 @@ pub fn resolve_bundle(path: &Path) -> Result<PathBuf> {
     }
 
     let subdirs = arch_subdirs();
-    let ext = arch_binary_ext();
 
-    subdirs
-        .iter()
-        .find_map(|arch| probe_subdir(path, arch, ext))
-        .ok_or_else(|| BridgeError::BundleResolutionFailed {
+    // `native_*`, not `any_*`: a module built for another CPU is not a
+    // fallback, it is a `dlopen` failure with extra steps, and "no module for
+    // this architecture" is the more useful thing to tell the user.
+    tutti_plugin_types::bundle::native_module_in_bundle(path, ModuleKind::Vst3).ok_or_else(|| {
+        BridgeError::BundleResolutionFailed {
             path: path.to_path_buf(),
             // Self-diagnosing: says *where* we looked, so a missing-arch
             // bundle reads as "wrong architecture" and not "corrupt".
             arch_subdirs: subdirs.join(", "),
-        })
-}
-
-fn probe_subdir(bundle: &Path, arch_dir: &str, ext: Option<&str>) -> Option<PathBuf> {
-    let dir = bundle.join("Contents").join(arch_dir);
-    let stem = bundle.file_stem()?;
-
-    // Standard macOS/VST3/AU/CLAP layout: Contents/MacOS/<BundleStem>
-    let candidate = dir.join(stem);
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-
-    // Linux/Windows convention: stem with explicit extension
-    if let Some(ext) = ext {
-        let with_ext = dir.join(format!("{}.{}", stem.to_str()?, ext));
-        if with_ext.is_file() {
-            return Some(with_ext);
         }
-    }
-
-    // Some bundles keep the outer extension on the inner binary
-    // (e.g. SpectraLayers.vst3/Contents/MacOS/SpectraLayers.vst3)
-    if let Some(name) = bundle.file_name() {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    })
 }
 
 #[cfg(test)]

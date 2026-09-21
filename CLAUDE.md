@@ -426,47 +426,99 @@ names them directly:
 
 Both are declared in this repo's `[workspace.dependencies]`.
 
-## Known failures
+## Platform status, and what it cost to get there
 
-**Windows has never worked, and CI is the first thing that ever looked.** The
-first Windows build of this workspace happened after the extraction; before that
-it had never been compiled there, let alone run. Treat what it reports as
-accumulated reality, not regression. Currently **3172 of 3241 pass**, and the
-failures are three unrelated problems:
+**All three platforms pass, and Windows is the one to know about.** Linux,
+macOS and Windows are green in CI along with every static gate. Windows had
+*never been compiled* before the extraction — the app repo's CI ran from a root
+that excluded this workspace — so its first run reported 69 failures that were
+accumulated reality, not regression. Getting to zero turned up six causes, and
+**not one of them announced itself**; each returned a plausible wrong answer
+rather than an error, which is why they survived so long. They are worth
+knowing because the same shapes recur:
 
-- ~~**The IPC transport names its endpoint as a filesystem path.**~~ **Fixed.**
-  Both ends now go through `transport::control::socket_name`, which keeps the
-  whole path on Unix and names a pipe from the path's final component on
-  Windows. See that function for why `GenericNamespaced` on both platforms is a
-  trap rather than the portable answer.
-- **VST3 loading** — `tutti-vst3-host`'s integration / misbehaving / conformance
-  suites and `tutti-plugin-server::loaders::vst3`. Two causes found and fixed so
-  far: the test corpus read `$HOME`, which Windows does not set (it is
-  `USERPROFILE`), so every test that built a corpus panicked before it began;
-  and `binary_in_bundle` took the *first file* in the bundle's arch directory,
-  which on Windows can be the import library the linker drops beside the module.
-  The import library now goes to `OUT_DIR` where it belongs — a `.vst3` bundle
-  is a directory a host scans, so anything in it is a candidate module. Whether
-  more remains is for CI to say.
-- ~~**`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`**~~ —
-  **understood.** The digest pins this crate's DSP against a refactor; it cannot
-  pin it across C runtimes. Every operation in `generate_click` is one IEEE-754
-  requires to be correctly rounded *except* `sin`, which is libm
-  quality-of-implementation and differs in the last ulp between MSVC's CRT and
-  glibc. The assertion now runs where it means something; the portable
-  properties are asserted everywhere.
+- **`interprocess` refuses a receive timeout on a named pipe** —
+  `no_timeouts()`, unconditionally, in its source. Tolerating that left every
+  control read blocking inside the syscall while the deadline was only checked
+  *between* syscalls, so a budget of any size was unenforceable. The fix is
+  `PeekNamedPipe`: ask how many bytes are buffered, and only read when the
+  answer is "some". See `util::transport::control`.
+- **`set_nonblocking` is not the way out, and was tried.** It took Windows from
+  37 failures to 47. `PIPE_NOWAIT` makes `ReadFile` report *success with zero
+  bytes*, which this transport reads as EOF, so a quiet peer was reported as a
+  crashed one. The reasoning is kept at `Wakeup::arm` so nobody spends the round
+  trip again. `PeekNamedPipe` is safe where that is not because it answers "is
+  there data" rather than "give me data now", and so cannot confuse silence with
+  death.
+- **`std::getenv` does not see `SetEnvironmentVariableW`.** The MSVC CRT keeps
+  its own copy of the environment, built at CRT startup and changed only by
+  `_putenv`. A Rust test calling `std::env::set_var` therefore sets a variable
+  that a C++ plugin in the same process cannot read. This made twelve
+  misbehaviour tests each fail on their own subject rather than on the cause.
+  `GetEnvironmentVariableA` reads what Rust wrote.
+- **A VST3 UID has two byte layouts.** Windows builds the SDK with
+  `COM_COMPATIBLE 1`, laying the first two words out like a COM `GUID`. A
+  hardcoded `[u8; 16]` is therefore one platform's spelling of a
+  platform-independent id, and passing the wrong one returns `None` — exactly
+  what an unmapped id returns. Build UIDs with `inline_uid(l1, l2, l3, l4)`.
+- **`$HOME` is a Unix convention**; Windows sets `USERPROFILE`.
+- **A `.vst3` bundle on Windows contains more than the module.** MSVC drops
+  `.lib`, `.exp`, `.pdb` and `.ilk` beside it, and `read_dir` order is
+  arbitrary, so "take the first file" hands the loader an import library and
+  reports a healthy plugin as corrupt. See the bundle rule below.
 
-**Five transport tests fail on Windows and the reason is structural.** Named
-pipes have no receive timeout, so a read cannot be made to return for the
-deadline to be re-checked, and every one of those five exists to prove that it
-can. `set_nonblocking` is the obvious next idea and is a trap — it was tried and
-took Windows from 37 failures to 47, because `PIPE_NOWAIT` reports success with
-zero bytes when nothing is available and this transport reads `Ok(0)` as EOF, so
-a quiet peer was reported as a crashed one. The reasoning is kept at
-`Wakeup::arm` so nobody spends the round trip again. The real fix is overlapped
-I/O or `PeekNamedPipe`, below the abstraction interprocess gives us.
+**One live platform difference remains, and it is not a bug.**
+`tutti-core`'s `render_is_bit_identical_to_the_audionode_era` is gated off MSVC.
+The digest pins this crate's DSP against a refactor; it cannot pin it across C
+runtimes. Every operation in `generate_click` is one IEEE-754 requires to be
+correctly rounded *except* `sin`, which is libm quality-of-implementation and
+differs in the last ulp between MSVC's CRT and glibc. The portable properties
+are asserted everywhere.
 
-None of this blocks a Unix consumer. macOS and Linux are green.
+## Check Windows before you push, not after
+
+**You do not need a Windows machine, and both halves work on a stock Linux
+box.** This is the single highest-leverage thing in this file: every Windows fix
+that was checked this way landed first try, and the one that was not cost a
+regression.
+
+```bash
+# Rust — typecheck and lint the real Windows cfg paths.
+rustup target add x86_64-pc-windows-msvc          # once
+cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+# C++ — zig ships a complete windows.h, so the probe and any SDK header
+# compile for Windows with no MSVC and no mingw.
+zig c++ -target x86_64-windows-gnu -std=c++17 -c -o /tmp/o.obj tu.cpp -I <sdk>
+```
+
+Neither runs the code, so they catch *compile*-shaped mistakes only — a
+semantic claim about the MSVC CRT still needs CI. Check that the branch you
+meant was taken: `nm` the object and look for the symbol (`GetEnvironmentVariableA`
+rather than `getenv`), because a `#[cfg]` or `#ifdef` that silently excluded your
+code also compiles clean.
+
+## One bundle walk, not nine
+
+**`tutti_plugin_types::bundle` is the only place that knows the
+`Contents/<arch>/` layout.** Nine near-copies of that walk had drifted apart:
+four omitted `aarch64-linux`, all of them omitted the three `arm64*-win`
+spellings the production resolver handled, and one omitted Windows entirely.
+`subprocess::bundle`'s own doc comment had predicted exactly this — "a test
+helper that hardcodes its own copy passes on ARM while production fails" — and
+was ignored nine times.
+
+Two entry points, and the difference is deliberate:
+
+- **`native_module_in_bundle`** probes only what *this* target can load. Hosts
+  want this: a foreign-arch module fails at `dlopen` anyway, so "no module for
+  this architecture" is the more useful answer.
+- **`any_module_in_bundle`** probes every arch directory and falls back to
+  enumerating, skipping linker by-products. Corpus scans want this, so a
+  cross-built fixture "lands in the slower branch instead of a wrong answer".
+
+Do not add a tenth copy. If a bundle layout surprises you, fix it there and
+every caller gets it.
 
 ## Extraction residue
 

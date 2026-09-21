@@ -47,26 +47,11 @@ static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 /// Resolve a VST3 bundle directory to its inner binary, across platforms.
 /// A path that is already a file (or not a bundle) is returned unchanged.
 fn resolve_bundle(path: &Path) -> PathBuf {
-    if path.is_file() || !path.is_dir() {
-        return path.to_path_buf();
-    }
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for (sub, ext) in [
-        ("Contents/MacOS", ""),
-        ("Contents/x86_64-linux", "so"),
-        ("Contents/x86_64-win", "vst3"),
-    ] {
-        let dir = path.join(sub);
-        let candidate = if ext.is_empty() {
-            dir.join(stem)
-        } else {
-            dir.join(format!("{stem}.{ext}"))
-        };
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    path.to_path_buf()
+    tutti_plugin_types::bundle::any_module_in_bundle(
+        path,
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    )
+    .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Find a plugin to drive: any `.vst3` under `VST3_SAMPLE_PLUGIN_DIR` (the

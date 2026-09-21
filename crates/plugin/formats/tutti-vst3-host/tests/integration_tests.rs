@@ -130,37 +130,10 @@ fn built_binaries() -> Vec<PathBuf> {
 
 /// The single binary inside a `.vst3` bundle, whichever arch dir holds it.
 fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
-    for sub in [
-        "Contents/x86_64-linux",
-        "Contents/aarch64-linux",
-        "Contents/MacOS",
-        "Contents/x86_64-win",
-    ] {
-        if let Ok(entries) = std::fs::read_dir(bundle.join(sub)) {
-            // Take the loadable module, not merely the first file. On Windows
-            // the linker drops an import library and an export file beside it
-            // (`audio-probe.lib`, `audio-probe.exp`), and `read_dir` order is
-            // arbitrary — so "first file" could hand a `.lib` to the loader and
-            // report it as a broken plugin.
-            let mut found: Option<PathBuf> = None;
-            for e in entries.flatten() {
-                let path = e.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if matches!(ext, "lib" | "exp" | "pdb" | "ilk") {
-                    continue;
-                }
-                found = Some(path);
-                break;
-            }
-            if found.is_some() {
-                return found;
-            }
-        }
-    }
-    None
+    tutti_plugin_types::bundle::any_module_in_bundle(
+        bundle,
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    )
 }
 
 /// The user's home directory, or `None` where the platform does not say.

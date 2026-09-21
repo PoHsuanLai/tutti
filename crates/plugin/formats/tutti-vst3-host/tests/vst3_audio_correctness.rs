@@ -144,26 +144,10 @@ fn probe_in(dir: &str) -> Option<PathBuf> {
     if dir.is_empty() {
         return None;
     }
-    let bundle = Path::new(dir).join("audio-probe.vst3");
-    for sub in [
-        "Contents/x86_64-linux",
-        "Contents/aarch64-linux",
-        "Contents/MacOS",
-        "Contents/x86_64-win",
-    ] {
-        for name in [
-            "audio-probe.so",
-            "audio-probe",
-            "audio-probe.vst3",
-            "audio-probe.dylib",
-        ] {
-            let p = bundle.join(sub).join(name);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
+    tutti_plugin_types::bundle::any_module_in_bundle(
+        &Path::new(dir).join("audio-probe.vst3"),
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    )
 }
 
 /// Path to the reference probe.
@@ -1202,15 +1186,10 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 
     let dir = sample_plugin_dir();
     let bundle = Path::new(&dir).join("legacy-midicc-out.vst3");
-    let mut path = None;
-    for sub in ["Contents/x86_64-linux", "Contents/MacOS"] {
-        for name in ["legacy-midicc-out.so", "legacy-midicc-out"] {
-            let p = bundle.join(sub).join(name);
-            if p.is_file() {
-                path = Some(p);
-            }
-        }
-    }
+    let path = tutti_plugin_types::bundle::any_module_in_bundle(
+        &bundle,
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    );
     let Some(path) = path else {
         eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
         return;

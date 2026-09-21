@@ -169,7 +169,6 @@ fn bytes_available(stream: &ControlStream) -> std::io::Result<u32> {
 /// Capping each nap at `remaining` is what makes the deadline *exact* on this
 /// path rather than exact-plus-one-sleep: the loop cannot oversleep past the
 /// instant it is meant to give up.
-#[cfg(windows)]
 fn back_off(empty_polls: &mut u32, remaining: Duration) {
     /// Polls served by `yield_now` before any sleeping starts.
     const SPIN_POLLS: u32 = 64;
@@ -226,7 +225,6 @@ fn read_exact_by(
     // Consecutive polls that found the stream empty, for `back_off`. Reset the
     // moment bytes land, so a peer that is merely slow between frames never
     // drags a responsive stream into the coarse end of the backoff.
-    #[cfg(windows)]
     let mut empty_polls: u32 = 0;
 
     while *filled < buf.len() {
@@ -244,7 +242,6 @@ fn read_exact_by(
         // an empty pipe parks until the peer speaks, and the check above only
         // runs between syscalls — so without this the deadline is unenforceable
         // on Windows however short it is.
-        #[cfg(windows)]
         if wakeup.would_park(stream) {
             back_off(&mut empty_polls, deadline - now);
             continue;
@@ -261,10 +258,7 @@ fn read_exact_by(
             }
             Ok(n) => {
                 *filled += n;
-                #[cfg(windows)]
-                {
-                    empty_polls = 0;
-                }
+                empty_polls = 0;
             }
             Err(e)
                 if matches!(
@@ -274,14 +268,13 @@ fn read_exact_by(
                         | std::io::ErrorKind::Interrupted
                 ) =>
             {
-                // Who waits depends on how the wakeup was armed. With a receive
-                // timeout the kernel already blocked for the poll interval, so
-                // looping straight back is right. In non-blocking mode the read
-                // returned instantly and looping straight back is a hot spin on
-                // a core — so this end does the waiting.
-                if let Some(nap) = wakeup.idle() {
-                    thread::sleep(nap);
-                }
+                // Nothing to sleep on under either wakeup, and that is a
+                // property rather than an oversight. `Timeout` means the kernel
+                // already blocked for the poll interval. `Peek` means the read
+                // only ran because bytes were waiting, so a would-block here is
+                // the peek and the read disagreeing — a race, not a state — and
+                // the next pass re-peeks and backs off there. Sleeping in
+                // either case stacks a delay on one already taken.
             }
             // Anything else is a real failure, and *where* it happened is most
             // of the diagnosis: a bare `EINVAL` from a socket read says nothing
@@ -619,27 +612,6 @@ impl Wakeup {
         }
     }
 
-    /// How long the read loop should sleep on a would-block, if at all.
-    ///
-    /// `None` under [`Wakeup::Timeout`] because the kernel already blocked for
-    /// the poll interval, and `None` under [`Wakeup::None`] because there is
-    /// nothing to pace — the read blocks until the peer speaks. Kept as a
-    /// returned value rather than folded away so that a future wakeup which
-    /// *does* need this end to wait has somewhere to say so.
-    fn idle(&self) -> Option<Duration> {
-        match self {
-            // Under `Peek` a would-block means the peek and the read disagreed,
-            // which is a race rather than a state. Re-looping is right: the
-            // check at the top of `read_exact_by` peeks again and backs off
-            // there, so this arm does not need a nap of its own.
-            #[cfg(windows)]
-            Self::Peek => None,
-            #[cfg(not(windows))]
-            Self::None => None,
-            Self::Timeout => None,
-        }
-    }
-
     /// Whether a blocking `read` on this stream would park the thread now.
     ///
     /// Only [`Wakeup::Peek`] can answer, and it answers conservatively: any
@@ -647,10 +619,19 @@ impl Wakeup {
     /// A peek must never be able to *invent* a reason not to read — that is how
     /// "the peer is quiet" turns into "the peer died", which is precisely the
     /// bug the `PIPE_NOWAIT` attempt shipped.
-    #[cfg(windows)]
     fn would_park(&self, stream: &ControlStream) -> bool {
+        let _ = stream;
         match self {
+            #[cfg(windows)]
             Self::Peek => matches!(bytes_available(stream), Ok(0)),
+            // Constant `false` off Windows, and defined there anyway so the
+            // read loop carries no `cfg` of its own. Under `Timeout` the kernel
+            // bounds the read; under `None` nothing can be asked. The compiler
+            // folds this away — the alternative was a `cfg` around the call,
+            // which leaves the `wakeup` argument unused on Unix and the loop
+            // reading differently on each platform.
+            #[cfg(not(windows))]
+            Self::None => false,
             Self::Timeout => false,
         }
     }

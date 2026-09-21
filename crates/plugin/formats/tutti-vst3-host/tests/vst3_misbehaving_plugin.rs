@@ -133,32 +133,15 @@ impl Drop for Misbehaviour {
 
 fn probe_path() -> PathBuf {
     let bundle = Path::new(PROBE_DIR_BUILT).join("audio-probe.vst3");
-    for sub in [
-        "Contents/x86_64-linux",
-        "Contents/aarch64-linux",
-        "Contents/MacOS",
-        "Contents/x86_64-win",
-    ] {
-        // `audio-probe.vst3` is the Windows spelling — `dylib_ext()` in build.rs
-        // returns "vst3" there, the way the format wants. Omitting it is why 13
-        // tests in this file reported "audio-probe not found" while the bundle
-        // sat right where they were looking.
-        for name in [
-            "audio-probe.so",
-            "audio-probe",
-            "audio-probe.vst3",
-            "audio-probe.dylib",
-        ] {
-            let p = bundle.join(sub).join(name);
-            if p.is_file() {
-                return p;
-            }
-        }
-    }
-    panic!(
-        "audio-probe not found under {PROBE_DIR_BUILT:?}; build.rs builds it \
-         whenever the `conformance` feature is on, so this is a build failure"
-    );
+    // The inner module's name is the platform's, not ours: `dylib_ext()` in
+    // build.rs spells it `.vst3` on Windows, `.so` on Linux, bare on macOS.
+    // Omitting one spelling is why 13 tests here once reported "audio-probe not
+    // found" while the bundle sat exactly where they were looking.
+    tutti_plugin_types::bundle::any_module_in_bundle(
+        &bundle,
+        tutti_plugin_types::bundle::ModuleKind::Vst3,
+    )
+    .unwrap_or(bundle)
 }
 
 const SAMPLE_RATE: f64 = 48_000.0;

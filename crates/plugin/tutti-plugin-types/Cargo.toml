@@ -35,3 +35,6 @@ thiserror.workspace = true
 bincode = "1"
 # The plugin catalog is JSON, so its backward-compat test needs it too.
 serde_json = "1"
+# `bundle`'s tests assemble real bundle directories on disk — the layout is the
+# thing under test, so faking the filesystem would test the fake.
+tempfile = "3"

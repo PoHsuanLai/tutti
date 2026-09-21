@@ -99,6 +99,19 @@ lint:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
 
+# Typecheck and lint the Windows cfg paths, from Linux or macOS.
+#
+# Windows-only code is invisible to every other recipe here: a `#[cfg(windows)]`
+# block is not compiled, so it is not typechecked and not linted. That is how a
+# change shipped that took Windows from 37 failures to 47. This needs no Windows
+# machine — only `rustup target add x86_64-pc-windows-msvc`, once.
+#
+# `cargo check`, not `test`: the tests cannot RUN here. This catches the
+# compile-shaped half, which is the half that was being missed.
+check-windows:
+    cargo clippy -p tutti-plugin -p tutti-plugin-types --all-targets \
+        --target x86_64-pc-windows-msvc -- -D warnings
+
 # The rustdoc gate. The workspace sets broken_intra_doc_links and
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this
 # is where that is actually enforced.

@@ -115,6 +115,79 @@ pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> Result<()> {
 /// and finite because nothing else would ever end the wait.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Bytes the named pipe can hand over right now, without blocking or consuming.
+///
+/// This is the whole Windows deadline mechanism. `interprocess` refuses
+/// `set_recv_timeout` on a named pipe unconditionally (`no_timeouts()` in its
+/// source), so a blocked `read` there returns only when the peer speaks or hangs
+/// up — and [`read_exact_by`] can consult its deadline only *between* syscalls.
+/// Asking first turns the blocking read into one that is known not to block.
+///
+/// **`Ok(0)` means "nothing yet", never end of stream.** That distinction is the
+/// entire reason this is `PeekNamedPipe` and not `set_nonblocking`, which
+/// reports a quiet pipe and a dead one identically — see [`Wakeup::arm`].
+///
+/// A closed peer makes this *fail* (`ERROR_BROKEN_PIPE`), and callers must treat
+/// any failure as "go read and find out" rather than as a verdict: the real
+/// `read` is the authority on EOF, and this must never be able to manufacture
+/// one. That is what keeps a peek that goes wrong from becoming a false crash
+/// report, which is the exact bug the `PIPE_NOWAIT` attempt shipped.
+#[cfg(windows)]
+fn bytes_available(stream: &ControlStream) -> std::io::Result<u32> {
+    use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Pipes::PeekNamedPipe;
+
+    // On Windows `local_socket::Stream` has exactly one variant, so this
+    // destructure is irrefutable. Written as a `let` rather than a `match` for
+    // that reason: a wildcard arm would be unreachable code.
+    let Stream::NamedPipe(pipe) = stream;
+    let borrowed = pipe.as_handle();
+    let handle = HANDLE(borrowed.as_raw_handle() as isize);
+
+    let mut available: u32 = 0;
+    // SAFETY: `handle` is borrowed from `stream` and cannot outlive this call.
+    // The only out-pointer is `available`, a live local; every other buffer
+    // argument is `None`, which is what makes this a pure size query — nothing
+    // is copied out of the pipe and the stream position does not move.
+    unsafe { PeekNamedPipe(handle, None, 0, None, Some(&mut available), None) }
+        .map_err(|_| std::io::Error::last_os_error())?;
+    Ok(available)
+}
+
+/// Wait longer each time a peeked stream comes back empty, never past `remaining`.
+///
+/// **The first polls yield instead of sleeping, and that is not an optimisation.**
+/// This stream carries per-block process replies, which arrive within one block
+/// period — a few milliseconds at most. Any fixed sleep coarse enough to be
+/// cheap is coarse enough to blow the deadline it exists to enforce, so the
+/// early polls have to be nearly free. Once a stream has been quiet long enough
+/// that no reply is plausibly in flight, asking often buys nothing, and the wait
+/// grows to [`POLL_INTERVAL`] — the same cadence the `SO_RCVTIMEO` arm uses, for
+/// the same reason.
+///
+/// Capping each nap at `remaining` is what makes the deadline *exact* on this
+/// path rather than exact-plus-one-sleep: the loop cannot oversleep past the
+/// instant it is meant to give up.
+#[cfg(windows)]
+fn back_off(empty_polls: &mut u32, remaining: Duration) {
+    /// Polls served by `yield_now` before any sleeping starts.
+    const SPIN_POLLS: u32 = 64;
+    /// First sleep once spinning stops, doubled per poll up to [`POLL_INTERVAL`].
+    const FIRST_NAP: Duration = Duration::from_micros(100);
+    /// 100µs << 11 is 204.8ms, the last step below `POLL_INTERVAL`.
+    const MAX_SHIFT: u32 = 11;
+
+    let nap = empty_polls
+        .checked_sub(SPIN_POLLS)
+        .map(|over| (FIRST_NAP * (1u32 << over.min(MAX_SHIFT))).min(POLL_INTERVAL));
+    *empty_polls = empty_polls.saturating_add(1);
+    match nap {
+        Some(d) => thread::sleep(d.min(remaining)),
+        None => thread::yield_now(),
+    }
+}
+
 /// Longest a single blocked `read` may sit before the loop re-checks its
 /// deadline. Not a bound on anything by itself — purely how often
 /// [`read_exact_by`] gets to look at the clock.
@@ -148,10 +221,17 @@ fn read_exact_by(
     buf: &mut [u8],
     deadline: Instant,
     filled: &mut usize,
-    idle: Option<Duration>,
+    wakeup: &Wakeup,
 ) -> std::io::Result<()> {
+    // Consecutive polls that found the stream empty, for `back_off`. Reset the
+    // moment bytes land, so a peer that is merely slow between frames never
+    // drags a responsive stream into the coarse end of the backoff.
+    #[cfg(windows)]
+    let mut empty_polls: u32 = 0;
+
     while *filled < buf.len() {
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
@@ -159,6 +239,15 @@ fn read_exact_by(
                     buf.len()
                 ),
             ));
+        }
+        // Where the wakeup is a peek, ask before reading. A blocking `read` on
+        // an empty pipe parks until the peer speaks, and the check above only
+        // runs between syscalls — so without this the deadline is unenforceable
+        // on Windows however short it is.
+        #[cfg(windows)]
+        if wakeup.would_park(stream) {
+            back_off(&mut empty_polls, deadline - now);
+            continue;
         }
         match stream.read(&mut buf[*filled..]) {
             // Zero bytes on a blocking stream means the peer closed.
@@ -170,7 +259,13 @@ fn read_exact_by(
                     "peer closed mid-frame",
                 ))
             }
-            Ok(n) => *filled += n,
+            Ok(n) => {
+                *filled += n;
+                #[cfg(windows)]
+                {
+                    empty_polls = 0;
+                }
+            }
             Err(e)
                 if matches!(
                     e.kind(),
@@ -184,7 +279,7 @@ fn read_exact_by(
                 // looping straight back is right. In non-blocking mode the read
                 // returned instantly and looping straight back is a hot spin on
                 // a core — so this end does the waiting.
-                if let Some(nap) = idle {
+                if let Some(nap) = wakeup.idle() {
                     thread::sleep(nap);
                 }
             }
@@ -272,7 +367,7 @@ fn recv_by(
     stream: &mut ControlStream,
     deadline: Instant,
     partial: &mut PartialFrame,
-    idle: Option<Duration>,
+    wakeup: &Wakeup,
 ) -> Result<BridgeMessage> {
     if !partial.have_len {
         let mut prefix = partial.prefix;
@@ -281,7 +376,7 @@ fn recv_by(
             &mut prefix,
             deadline,
             &mut partial.prefix_filled,
-            idle,
+            wakeup,
         );
         // Record what landed before propagating: the bytes are off the socket
         // either way, and losing them is exactly the desync this exists to stop.
@@ -312,7 +407,13 @@ fn recv_by(
     // `body` is moved out and back so the borrow checker sees one mutable
     // borrow of `partial` at a time; the swap is two pointer writes.
     let mut body = core::mem::take(&mut partial.body);
-    let r = read_exact_by(stream, &mut body, deadline, &mut partial.body_filled, idle);
+    let r = read_exact_by(
+        stream,
+        &mut body,
+        deadline,
+        &mut partial.body_filled,
+        wakeup,
+    );
     partial.body = body;
     r.map_err(|e| annotate(e, "frame body"))
         .map_err(crashed_on_eof)?;
@@ -335,8 +436,8 @@ pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
     // The handshake has no resume path — a failure here ends the connection —
     // so the cursor is local and dropped with the frame it describes.
     let mut partial = PartialFrame::default();
-    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s, idle| {
-        recv_by(s, deadline, &mut partial, idle)
+    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s, wakeup| {
+        recv_by(s, deadline, &mut partial, wakeup)
     })
 }
 
@@ -373,8 +474,8 @@ pub fn recv_resumable(
     partial: &mut PartialFrame,
 ) -> Result<BridgeMessage> {
     let deadline = Instant::now() + timeout;
-    with_poll_timeout(stream, timeout, |s, idle| {
-        recv_by(s, deadline, partial, idle)
+    with_poll_timeout(stream, timeout, |s, wakeup| {
+        recv_by(s, deadline, partial, wakeup)
     })
     .map_err(|e| match e {
         BridgeError::Io(io)
@@ -419,10 +520,15 @@ pub fn recv_resumable(
 /// speaks again — measured, not assumed: with the fallback removed, two of the
 /// nineteen hostile-peer tests fail, both the stalled-peer bounds.
 ///
-/// So the bound is real where a timeout can be armed and absent where it cannot,
-/// and on Windows it cannot. `set_nonblocking` looks like the way out and is
-/// not — see [`Wakeup::arm`] for what happened when it was tried. The genuine
-/// fix there is overlapped I/O or `PeekNamedPipe`, below this abstraction.
+/// So each platform gets the mechanism it actually has. Unix arms `SO_RCVTIMEO`
+/// and lets the kernel end the wait; Windows never starts one, asking
+/// [`bytes_available`] whether a read would block and doing the waiting on this
+/// side. `set_nonblocking` looks like the Windows answer and is not — see
+/// [`Wakeup::arm`] for what happened when it was tried.
+///
+/// The two are not equally precise, and the difference favours the peek: a
+/// receive timeout can overshoot a deadline by up to one poll interval, while
+/// `back_off` caps each nap at the time actually remaining.
 ///
 /// The dribble attack in the module header is unaffected by any of this: a peer
 /// that keeps *sending* makes the read return on its own, so the deadline is
@@ -431,11 +537,11 @@ pub fn recv_resumable(
 fn with_poll_timeout<T>(
     stream: &mut ControlStream,
     budget: Duration,
-    f: impl FnOnce(&mut ControlStream, Option<Duration>) -> Result<T>,
+    f: impl FnOnce(&mut ControlStream, &Wakeup) -> Result<T>,
 ) -> Result<T> {
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
     let wakeup = Wakeup::arm(stream, poll);
-    let result = f(stream, wakeup.idle());
+    let result = f(stream, &wakeup);
     wakeup.disarm(stream);
     result
 }
@@ -448,8 +554,18 @@ enum Wakeup {
     /// `SO_RCVTIMEO`. The kernel blocks for the poll interval before returning
     /// `WouldBlock`, so the read loop must not sleep on top of that.
     Timeout,
-    /// Neither could be armed. The deadline still holds between syscalls, but a
-    /// single blocked read can overshoot it.
+    /// `PeekNamedPipe`. Nothing wakes a blocked read on a Windows named pipe, so
+    /// this end never blocks in the first place: it asks how many bytes are
+    /// buffered and only reads when the answer is "some". The waiting happens
+    /// here, in `back_off`.
+    #[cfg(windows)]
+    Peek,
+    /// No wakeup could be armed. The deadline still holds between syscalls, but
+    /// a single blocked read can overshoot it.
+    ///
+    /// Not reachable on Windows, where [`Wakeup::Peek`] always applies — hence
+    /// the `cfg`, which keeps the dead arm from having to be tolerated there.
+    #[cfg(not(windows))]
     None,
 }
 
@@ -459,9 +575,17 @@ impl Wakeup {
         if stream.set_recv_timeout(Some(poll)).is_ok() {
             return Self::Timeout;
         }
+        // No receive timeout on a named pipe — `interprocess` refuses one
+        // unconditionally. Peek instead of blocking; see [`bytes_available`].
+        //
+        // Returned unconditionally rather than after a trial peek, because
+        // `would_park` already defers to the real read on any peek failure. A
+        // pipe that cannot be peeked therefore behaves exactly like `None`, and
+        // probing here would only move that decision earlier for no gain.
+        //
         // **Do not reach for `set_nonblocking` here.** It is the obvious next
-        // idea on Windows, where there is no receive timeout, and it was tried:
-        // it made things worse, 37 failures to 47.
+        // idea on Windows and it was tried: it made things worse, 37 failures
+        // to 47.
         //
         // interprocess implements it as `PIPE_NOWAIT`, and in that mode
         // `ReadFile` reports *success with zero bytes* when nothing is
@@ -469,21 +593,30 @@ impl Wakeup {
         // `crashed_on_eof` turns into `ProcessCrashed` — so a peer that is
         // merely quiet is reported as a peer that died. The suite said so
         // plainly: "expected a timeout, got ProcessCrashed", plus a scattering
-        // of BrokenPipe and UnexpectedEof where there had been neither.
-        //
-        // A mechanism that manufactures false crash reports is worse than no
+        // of BrokenPipe and UnexpectedEof where there had been neither. A
+        // mechanism that manufactures false crash reports is worse than no
         // mechanism, and this is a production path, not only a test one.
-        // Microsoft says the same thing about the flag itself: PIPE_NOWAIT
-        // exists for LAN Manager 2.0 compatibility and "should not be used to
-        // achieve asynchronous input and output". The real answer on Windows is
-        // overlapped I/O or `PeekNamedPipe`, neither of which this transport's
-        // abstraction exposes.
-        tracing::debug!(
-            "no wakeup available on the control stream: neither a {poll:?} receive \
-             timeout nor non-blocking mode could be set. The total deadline still \
-             applies between reads, but a single blocked read may overshoot it"
-        );
-        Self::None
+        // Microsoft says the same of the flag itself: PIPE_NOWAIT exists for
+        // LAN Manager 2.0 compatibility and "should not be used to achieve
+        // asynchronous input and output".
+        //
+        // `PeekNamedPipe` is the mechanism that *does* work, because it answers
+        // a different question — "is there data" rather than "give me data now"
+        // — and so cannot confuse silence with death.
+        #[cfg(windows)]
+        {
+            let _ = poll;
+            Self::Peek
+        }
+        #[cfg(not(windows))]
+        {
+            tracing::debug!(
+                "no wakeup available on the control stream: a {poll:?} receive \
+                 timeout could not be set. The total deadline still applies \
+                 between reads, but a single blocked read may overshoot it"
+            );
+            Self::None
+        }
     }
 
     /// How long the read loop should sleep on a would-block, if at all.
@@ -495,7 +628,30 @@ impl Wakeup {
     /// *does* need this end to wait has somewhere to say so.
     fn idle(&self) -> Option<Duration> {
         match self {
-            Self::Timeout | Self::None => None,
+            // Under `Peek` a would-block means the peek and the read disagreed,
+            // which is a race rather than a state. Re-looping is right: the
+            // check at the top of `read_exact_by` peeks again and backs off
+            // there, so this arm does not need a nap of its own.
+            #[cfg(windows)]
+            Self::Peek => None,
+            #[cfg(not(windows))]
+            Self::None => None,
+            Self::Timeout => None,
+        }
+    }
+
+    /// Whether a blocking `read` on this stream would park the thread now.
+    ///
+    /// Only [`Wakeup::Peek`] can answer, and it answers conservatively: any
+    /// failure to peek reports `false`, handing the decision to the real read.
+    /// A peek must never be able to *invent* a reason not to read — that is how
+    /// "the peer is quiet" turns into "the peer died", which is precisely the
+    /// bug the `PIPE_NOWAIT` attempt shipped.
+    #[cfg(windows)]
+    fn would_park(&self, stream: &ControlStream) -> bool {
+        match self {
+            Self::Peek => matches!(bytes_available(stream), Ok(0)),
+            Self::Timeout => false,
         }
     }
 
@@ -508,6 +664,11 @@ impl Wakeup {
             Self::Timeout => {
                 let _ = stream.set_recv_timeout(None);
             }
+            // Nothing was set: peeking leaves no state on the handle, which is
+            // most of why it is preferable to a mode change.
+            #[cfg(windows)]
+            Self::Peek => {}
+            #[cfg(not(windows))]
             Self::None => {}
         }
     }

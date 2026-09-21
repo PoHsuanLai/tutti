@@ -104,6 +104,10 @@ windows = { version = "0.52", features = [
     "Win32_System_Memory",
     "Win32_System_Threading",
     "Win32_Foundation",
+    # `PeekNamedPipe`, which is how a control read gets a deadline on Windows.
+    # `interprocess` refuses `set_recv_timeout` on a named pipe, so without this
+    # every read blocks until the peer speaks. See `util::transport::control`.
+    "Win32_System_Pipes",
 ] }
 
 [dependencies.serde_json]

@@ -197,9 +197,18 @@ pub(crate) mod test_utils {
             };
             for e in entries.flatten() {
                 let path = e.path();
-                if path.is_file() {
-                    return Some(path.to_string_lossy().into_owned());
+                if !path.is_file() {
+                    continue;
                 }
+                // Not merely the first file: on Windows the linker leaves an
+                // import library and an export file beside the module, and
+                // `read_dir` order is arbitrary, so "first file" can hand a
+                // `.lib` to the loader and report a broken plugin.
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if matches!(ext, "lib" | "exp" | "pdb" | "ilk") {
+                    continue;
+                }
+                return Some(path.to_string_lossy().into_owned());
             }
         }
         None

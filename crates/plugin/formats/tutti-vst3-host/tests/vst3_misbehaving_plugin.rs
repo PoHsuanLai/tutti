@@ -139,7 +139,16 @@ fn probe_path() -> PathBuf {
         "Contents/MacOS",
         "Contents/x86_64-win",
     ] {
-        for name in ["audio-probe.so", "audio-probe", "audio-probe.dylib"] {
+        // `audio-probe.vst3` is the Windows spelling — `dylib_ext()` in build.rs
+        // returns "vst3" there, the way the format wants. Omitting it is why 13
+        // tests in this file reported "audio-probe not found" while the bundle
+        // sat right where they were looking.
+        for name in [
+            "audio-probe.so",
+            "audio-probe",
+            "audio-probe.vst3",
+            "audio-probe.dylib",
+        ] {
             let p = bundle.join(sub).join(name);
             if p.is_file() {
                 return p;

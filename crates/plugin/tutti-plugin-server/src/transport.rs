@@ -9,9 +9,7 @@
 //! [`parent_is_alive`] exist to bound that wait by whether there is still
 //! anyone to serve.
 
-use interprocess::local_socket::{
-    traits::Listener as _, GenericFilePath, ListenerOptions, ToFsName as _,
-};
+use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 use std::io::{Read, Write};
 use tutti_plugin::server::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
 use tutti_plugin::{BridgeError, Result};
@@ -123,9 +121,12 @@ impl TransportListener {
     /// socket cannot be created — a directory that does not exist, or one this
     /// process may not write to.
     pub(crate) fn bind(socket_path: &std::path::Path) -> Result<Self> {
+        // A no-op on Windows, where the endpoint is a pipe rather than a file.
         let _ = std::fs::remove_file(socket_path);
-        let name = socket_path
-            .to_fs_name::<GenericFilePath>()
+        // Must agree with the host's `connect`, which is why both go through the
+        // one helper: a listener bound to a filesystem path and a client dialling
+        // a pipe name would simply never meet.
+        let name = tutti_plugin::server::socket_name(socket_path)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         let listener = ListenerOptions::new().name(name).create_sync_as()?;
         Ok(Self { listener })

@@ -35,9 +35,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{
-    traits::Listener as _, GenericFilePath, ListenerOptions, Stream, ToFsName as _,
-};
+use interprocess::local_socket::{traits::Listener as _, ListenerOptions, Stream};
 
 /// Upper bound on how long any single "the host must notice" wait may take.
 ///
@@ -215,10 +213,7 @@ impl MockServer {
     ) -> Self {
         let path = unique_socket_path(label);
         let _ = std::fs::remove_file(&path);
-        let name = path
-            .clone()
-            .to_fs_name::<GenericFilePath>()
-            .expect("socket name");
+        let name = crate::util::transport::control::socket_name(&path).expect("socket name");
         let listener = ListenerOptions::new()
             .name(name)
             .create_sync()

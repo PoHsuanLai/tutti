@@ -20,7 +20,11 @@ use crate::error::{BridgeError, Result};
 use crate::protocol::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
 
 use interprocess::local_socket::traits::Stream as _;
-use interprocess::local_socket::{GenericFilePath, Stream, ToFsName as _};
+#[cfg(not(windows))]
+use interprocess::local_socket::{GenericFilePath, ToFsName as _};
+#[cfg(windows)]
+use interprocess::local_socket::{GenericNamespaced, ToNsName as _};
+use interprocess::local_socket::{Name, Stream};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -28,9 +32,51 @@ use std::time::{Duration, Instant};
 /// Duplex byte stream to the plugin-server.
 pub type ControlStream = Stream;
 
+/// Turn a host-chosen socket path into the local-socket name for this platform.
+///
+/// **The two platforms disagree about what a local socket *is*, and the host
+/// config speaks only one of the two dialects.** `BridgeConfig::socket_path` is
+/// a filesystem path — a file under the temp dir, unlinked on bind and deleted
+/// by `ProcessGuard::drop`. On Unix that is literally the object. On Windows
+/// there is no such object: a named pipe lives in the `\\.\pipe\` namespace,
+/// which is not the filesystem, and handing a temp-file path to
+/// `GenericFilePath` fails with `Unsupported, "not a named pipe path"` before a
+/// stream ever exists. That is why every IPC test on Windows failed the first
+/// time this workspace was built there.
+///
+/// So Windows takes the path's **final component** — `tutti-bridge-<pid>-<n>`,
+/// already unique for exactly the reason a pipe name must be, since
+/// `unique_socket_path` builds it from the pid and a counter — and names a pipe
+/// with it. Unix keeps the whole path, unchanged.
+///
+/// # Why not `GenericNamespaced` on both
+///
+/// It looks like the portable answer and it is a trap. On Linux it maps to the
+/// abstract namespace, but on every other Unix it maps to `SpecialDirUdSocket`,
+/// which interprocess itself **deprecates** — "inconsistent and suboptimal
+/// selection of temporary directory" — and which would move macOS off the path
+/// it is green on today. Fixing a broken platform is not worth risking a working
+/// one, and the asymmetry here is real rather than incidental: a Unix socket is
+/// a file and a named pipe is not.
+pub fn socket_name(socket: &Path) -> std::io::Result<Name<'static>> {
+    #[cfg(not(windows))]
+    {
+        socket.to_owned().to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        let leaf = socket.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("socket path {socket:?} has no final component to name a pipe with"),
+            )
+        })?;
+        leaf.to_owned().to_ns_name::<GenericNamespaced>()
+    }
+}
+
 pub fn connect(socket: &Path) -> Result<ControlStream> {
-    let name = socket
-        .to_fs_name::<GenericFilePath>()
+    let name = socket_name(socket)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     Ok(Stream::connect(name)?)
 }
@@ -490,7 +536,7 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_file(&path);
-        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let name = crate::util::transport::control::socket_name(&path).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
         let connect_path = path.clone();
         let joiner =

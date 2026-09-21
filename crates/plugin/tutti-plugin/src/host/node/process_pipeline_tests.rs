@@ -114,14 +114,11 @@ fn bridge_with_doubling_server() -> (Arc<PluginBridge>, BridgeThread, std::threa
 fn bridge_with_server_stall(
     stall: std::time::Duration,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
     let path = unique_socket_path("process-sync");
     let _ = std::fs::remove_file(&path);
-    let name = path
-        .clone()
-        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-        .unwrap();
+    let name = crate::util::transport::control::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let layout = stereo_layout();
@@ -1160,14 +1157,11 @@ fn stamped_server(
     stall: std::time::Duration,
     first_only: bool,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
     let path = unique_socket_path("stamped");
     let _ = std::fs::remove_file(&path);
-    let name = path
-        .clone()
-        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-        .unwrap();
+    let name = crate::util::transport::control::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let layout = stereo_layout();

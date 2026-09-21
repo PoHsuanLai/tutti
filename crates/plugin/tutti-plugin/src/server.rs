@@ -23,6 +23,9 @@
 /// host would produce sequences the host refuses. One implementation, shared,
 /// is the only way that stays true.
 pub use crate::util::transport::state_chunk;
+// The host and the server must name the endpoint the same way or they never
+// meet, so the server binds with the very function the host dials with.
+pub use crate::util::transport::control::socket_name;
 
 pub use crate::host::subprocess::resolve_bundle;
 pub use crate::protocol::audio::{

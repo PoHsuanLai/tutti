@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn a_stale_v3_server_is_refused_with_a_named_version_error() {
         use crate::protocol::PROTOCOL_VERSION;
-        use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+        use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
         const STALE_VERSION: u32 = 3;
         assert_ne!(
@@ -689,10 +689,7 @@ mod tests {
             N.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_file(&path);
-        let name = path
-            .clone()
-            .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-            .unwrap();
+        let name = crate::util::transport::control::socket_name(&path).unwrap();
         let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
         let server = std::thread::spawn(move || {
@@ -756,7 +753,7 @@ mod tests {
     /// find nothing bound.
     #[test]
     fn the_connect_waits_for_a_socket_that_is_not_bound_yet() {
-        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+        use interprocess::local_socket::{prelude::*, ListenerOptions};
 
         let path = std::env::temp_dir().join(format!("tutti_late_bind_{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
@@ -765,10 +762,8 @@ mod tests {
         let server = std::thread::spawn(move || {
             // Long enough that the first few connect attempts must fail.
             std::thread::sleep(Duration::from_millis(60));
-            let name = listen_path
-                .clone()
-                .to_fs_name::<GenericFilePath>()
-                .expect("socket name");
+            let name =
+                crate::util::transport::control::socket_name(&listen_path).expect("socket name");
             let listener = ListenerOptions::new()
                 .name(name)
                 .create_sync()

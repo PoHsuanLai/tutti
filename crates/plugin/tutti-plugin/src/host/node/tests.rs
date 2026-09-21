@@ -67,14 +67,11 @@ fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMess
 fn handle_with_mock_server(
     respond: impl Fn(HostMessage) -> Option<BridgeMessage> + Send + 'static,
 ) -> (PluginHandle, BridgeThread, std::thread::JoinHandle<()>) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
     let path = unique_socket_path("handle");
     let _ = std::fs::remove_file(&path);
-    let name = path
-        .clone()
-        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-        .unwrap();
+    let name = crate::util::transport::control::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let buffer = Arc::new(
@@ -173,14 +170,11 @@ fn handle_with_multi_reply_server(
     BridgeThread,
     std::thread::JoinHandle<()>,
 ) {
-    use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
     let path = unique_socket_path("handle-multi");
     let _ = std::fs::remove_file(&path);
-    let name = path
-        .clone()
-        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-        .unwrap();
+    let name = crate::util::transport::control::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
     let buffer = Arc::new(

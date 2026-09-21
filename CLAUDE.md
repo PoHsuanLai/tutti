@@ -434,16 +434,11 @@ it had never been compiled there, let alone run. Treat what it reports as
 accumulated reality, not regression. Currently **3172 of 3241 pass**, and the
 failures are three unrelated problems:
 
-- **The IPC transport names its endpoint as a filesystem path.** `connect` in
-  `util/transport/control.rs` calls `to_fs_name::<GenericFilePath>()`, and so do
-  the test harnesses that stand up a fake server. Windows named pipes will not
-  take a filesystem path — the error is `Unsupported, "not a named pipe path"` —
-  so every IPC test dies before a stream exists. That is ~23 of the failures and
-  it is a **production** gap, not a test one: the same call is on the real
-  connect path. Fixing it means naming the endpoint portably
-  (`GenericNamespaced`, or a `\\.\pipe\...` name under `cfg(windows)`), which
-  is a change to a security-sensitive layer and should be made with Windows CI
-  watching.
+- ~~**The IPC transport names its endpoint as a filesystem path.**~~ **Fixed.**
+  Both ends now go through `transport::control::socket_name`, which keeps the
+  whole path on Unix and names a pipe from the path's final component on
+  Windows. See that function for why `GenericNamespaced` on both platforms is a
+  trap rather than the portable answer.
 - **VST3 loading** — `tutti-vst3-host`'s integration / misbehaving / conformance
   suites and `tutti-plugin-server::loaders::vst3`, ~32 between them. The
   `audio-probe` bundle now *links* on Windows, so these have moved past the

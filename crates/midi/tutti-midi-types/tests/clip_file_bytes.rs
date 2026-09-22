@@ -27,6 +27,16 @@
 //! |---|---|
 //! | `abs_tick += delta` → `abs_tick = delta` in `timed()` | `delta_clockstamps_accumulate_to_the_reported_beats` (+ 4 inline tests) |
 //! | drop the `bytes.len() < 8` guard before the magic compare | `no_prefix_of_a_valid_clip_is_accepted`, `the_magic_is_required` |
+//! | delete the `leading_header_len` strip from `write_clip` | `re_encoding_with_a_header_replaces_it_rather_than_duplicating_it` |
+//! | `leading_header_len`'s `take_while` → `filter` | `a_mid_clip_tempo_change_survives_a_header_rewrite` |
+//!
+//! That last one **passed against the first draft** of its test, and the
+//! reason is worth keeping: the draft put the mid-clip tempo change at a
+//! non-zero delta, but `leading_header_len`'s predicate already requires
+//! `delta_ticks == 0`, so `filter` and `take_while` agreed on that fixture.
+//! Only a zero-delta tempo event that is not in the opening run — one
+//! simultaneous with a preceding event — separates a positional rule from a
+//! content rule.
 
 use tutti_midi_types::{
     read_clip_file, write_clip_file_with_header, Beat, Bpm, ClipEvent, ClipHeader, MidiChannel,
@@ -208,8 +218,8 @@ fn delta_clockstamps_accumulate_to_the_reported_beats() {
 /// time-signature events, because in this format metadata is events. So
 /// re-emitting parsed events goes through [`write_clip_file`], not
 /// `write_clip_file_with_header` — see
-/// `re_encoding_with_a_header_duplicates_metadata_that_is_already_in_the_events`
-/// for what the other choice does.
+/// `re_encoding_with_a_header_replaces_it_rather_than_duplicating_it` for the
+/// other writer, which strips the parsed pair before re-emitting it.
 #[test]
 fn parse_write_parse_is_byte_stable() {
     let first = sample_clip();
@@ -232,43 +242,126 @@ fn parse_write_parse_is_byte_stable() {
     );
 }
 
-/// **A trap worth pinning: `write_clip_file_with_header` on already-parsed
-/// events duplicates the metadata.**
+/// **A header handed to the writer replaces one the events already carry.**
 ///
 /// In this format tempo and time signature are Flex Data *events*, so a parse
 /// puts them in `ParsedClipFile::events`. Handing those events back to the
-/// with-header writer emits them a second time, and the file grows a duplicate
-/// tempo declaration on every open-and-save cycle. Nothing errors, and a
-/// reader takes the *first* declaration, so the file keeps playing correctly
-/// while accumulating junk — the quiet kind of wrong.
+/// with-header writer used to emit them a second time, and the file grew a
+/// duplicate tempo declaration on every open-and-save cycle. Nothing errored,
+/// and a reader takes the *first* declaration, so the file kept playing
+/// correctly while accumulating junk — the quiet kind of wrong. This test was
+/// originally written to pin that behaviour, and said in as many words that it
+/// "should become an equality" once it was fixed. It is now that equality.
 ///
-/// This is not asserting that the behaviour is right. It is recording what it
-/// is, so a change is a deliberate one, and so the neighbouring test's choice
-/// of writer is not mistaken for an arbitrary style preference.
+/// *Mutation:* delete the `leading_header_len` strip from `write_clip`
+/// (make `let events = events;` unconditional) — `with_header` grows by two
+/// UMP/DCS pairs and the equality fails.
 #[test]
-fn re_encoding_with_a_header_duplicates_metadata_that_is_already_in_the_events() {
+fn re_encoding_with_a_header_replaces_it_rather_than_duplicating_it() {
     let first = sample_clip();
     let clip = read_clip_file(&first).expect("parses");
 
     let with_header = write_clip_file_with_header(
         clip.ticks_per_quarter,
-        ClipHeader {
-            tempo_bpm: clip.tempo_bpm().expect("the fixture declares a tempo"),
-            time_signature: clip.time_signature().expect("and a time signature"),
-        },
+        clip.header().expect("the fixture declares both halves"),
         &clip.events,
     );
 
-    assert!(
-        with_header.len() > first.len(),
-        "re-adding a header to events that already carry one must grow the \
-         file; if this ever stops being true the duplication was fixed and \
-         this test should become an equality"
+    assert_eq!(
+        first, with_header,
+        "re-encoding a parsed clip through the with-header writer must \
+         reproduce its bytes; growth means the header was prepended to a \
+         header the events already carried"
     );
-    // The tempo still reads back correctly — which is exactly why the
-    // duplication is easy to miss.
-    let reparsed = read_clip_file(&with_header).expect("the duplicated file still parses");
-    assert_eq!(reparsed.tempo_bpm(), clip.tempo_bpm());
+
+    // A second cycle, because a duplication that is idempotent after the
+    // first pass would still pass the check above.
+    let twice = read_clip_file(&with_header).expect("parses");
+    assert_eq!(
+        with_header,
+        write_clip_file_with_header(
+            twice.ticks_per_quarter,
+            twice.header().expect("still both halves"),
+            &twice.events,
+        ),
+        "the round trip must reach a fixed point, not grow by a constant"
+    );
+}
+
+/// **Only the *leading* tempo is the header; a mid-clip tempo change is
+/// musical content and must survive the rewrite.**
+///
+/// The fix for the duplication above strips tempo and time-signature events
+/// before writing the supplied header. Stripping the wrong set is the obvious
+/// way to get that wrong, and it would be inaudible in every other test here:
+/// a clip that changes tempo halfway is the only shape that can tell a
+/// leading-run strip from a global filter.
+///
+/// **The mid-clip tempo change here is deliberately at delta 0.** The first
+/// draft of this test put it a bar in, at a non-zero delta — and the
+/// `take_while` -> `filter` mutation *passed*, because `leading_header_len`'s
+/// predicate already requires `delta_ticks == 0`, so a non-zero-delta event is
+/// excluded either way. The two differ only on a zero-delta tempo event that
+/// is **not** in the opening run, i.e. one simultaneous with a preceding
+/// event. That is the shape below, and it is the only shape that can tell a
+/// positional rule from a content rule.
+///
+/// *Mutation:* change `leading_header_len`'s `take_while` to `filter` —
+/// the count reaches past the first note, so the note is stripped with the
+/// header and the event count drops.
+#[test]
+fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
+    let original = write_clip_file_with_header(
+        TPQ,
+        ClipHeader {
+            tempo_bpm: Bpm(100.0),
+            time_signature: (4, 4),
+        },
+        &[
+            ClipEvent::new(0, note_on(60, 0x4000)),
+            ClipEvent::new(u32::from(TPQ) * 4, note_off(60)),
+            // Simultaneous with the note-off: zero-delta, but NOT leading.
+            ClipEvent::new(0, MidiEvent::flex_set_tempo(MidiGroup::FIRST, 140.0)),
+        ],
+    );
+
+    let clip = read_clip_file(&original).expect("parses");
+    let tempo_events = |c: &tutti_midi_types::ParsedClipFile| {
+        c.events
+            .iter()
+            .filter(|ce| tutti_midi_types::ump::flex_tempo_bpm(&ce.event).is_some())
+            .count()
+    };
+    assert_eq!(
+        tempo_events(&clip),
+        2,
+        "the fixture must hold both the header tempo and the mid-clip change, \
+         or this test proves nothing"
+    );
+
+    let rewritten = write_clip_file_with_header(
+        clip.ticks_per_quarter,
+        clip.header().expect("both halves"),
+        &clip.events,
+    );
+    let after = read_clip_file(&rewritten).expect("parses");
+
+    // The sharpest of the three: a strip that reaches past the opening run
+    // takes real events with it, and the count is what says so.
+    assert_eq!(
+        after.events.len(),
+        clip.events.len(),
+        "the rewrite lost events: stripping reached past the header run"
+    );
+    assert_eq!(
+        tempo_events(&after),
+        2,
+        "the mid-clip tempo change was stripped along with the header"
+    );
+    assert_eq!(
+        original, rewritten,
+        "and the bytes are unchanged end to end"
+    );
 }
 
 /// **A clip written without a header reports no tempo and no time signature.**

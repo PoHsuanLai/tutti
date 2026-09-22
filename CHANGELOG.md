@@ -84,6 +84,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Clip-file round trips duplicated their metadata.** Tempo and time
+  signature are Flex Data *events* in M2-116, so `read_clip_file` hands them
+  back inside `ParsedClipFile::events` — and `write_clip_file_with_header`
+  then emitted them a second time from the `ClipHeader`. Parse, write, parse
+  grew a duplicate pair every cycle. Nothing errored and a reader takes the
+  *first* declaration, so the file kept playing correctly while accumulating
+  junk; an open-and-save loop was quietly corrupting user data.
+  `write_clip_file_with_header` now **replaces** a header the events already
+  carry rather than prepending to it, stripping only the leading zero-delta
+  run so a mid-clip tempo change is untouched. New `ParsedClipFile::header()`
+  returns the pair to hand back, and is `Some` only when the file declares
+  both halves — substituting `ClipHeader::default`'s 120/4-4 for a missing
+  one would write a tempo the file never claimed.
+
 - **`reset_owners` has been a no-op, and three doc comments said otherwise.**
   Found by mutation-testing: deleting the `reset_owners()` call from a stream
   restart changes nothing. Every call in the chain bottoms out in

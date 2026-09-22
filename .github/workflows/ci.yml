@@ -44,11 +44,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # For the submodule-pin gate below, which reads `git submodule
+          # status`. A checkout without them still prints the recorded SHAs,
+          # but prefixed `-` for uninitialised, so the gate would report the
+          # checkout rather than the pin on every run.
+          submodules: recursive
       # Engine types are imported from a crate's root or prelude, never through
       # its modules. Neither rustc nor clippy has a lint for a redundant path,
       # and doc comments in ```text / ```ignore blocks are never compiled — so
       # this grep is the only enforcement there is.
       - run: scripts/check-canonical-paths.sh
+      # The vendored VST3 SDK is three Steinberg submodules, documented as
+      # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
+      # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
+      # the tree out from under it, and a silently changed SDK surfaces as an
+      # unexplained C++ compile error in `audio-probe` rather than as a version
+      # complaint — so this compares those three statements against the commits
+      # the superproject actually records. It belongs in this job because it is
+      # the other static gate: no toolchain, no build, just a claim checked.
+      - run: scripts/check-submodule-pins.sh
 
   clippy:
     name: clippy

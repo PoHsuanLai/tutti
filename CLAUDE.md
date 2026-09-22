@@ -91,6 +91,27 @@ comments in ` ```text ` / ` ```ignore ` blocks are never compiled — so this gr
 is the only enforcement there is. It searches `*.md` as well as `*.rs` for that
 reason.
 
+### The submodule-pin gate
+
+```bash
+scripts/check-submodule-pins.sh
+```
+
+The three VST3 SDK submodules are documented as pinned at `v3.8.0_build_66` in
+`.gitmodules`, in this file, and in `tutti-vst3-host/build.rs`. Prose cannot
+notice a bump moving the tree out from under it, and a silently changed SDK
+surfaces as an unexplained C++ compile error in `audio-probe` rather than as a
+version complaint — so this compares those statements against the commits the
+superproject actually records. Runs in the `canonical paths` CI job.
+
+**It asserts SHAs, not `git describe`.** The 3.8.0 tag was never fetched into
+this clone (a submodule fetch brings the recorded commit, not nearby tags), so
+`git describe` falls back to the nearest ancestor and reports
+`v3.7.3_build_20-NN-g…`. The content is 3.8.0 — the MIT `LICENSE.txt` is
+Copyright (c) 2025, and `docs/reference/vst3-3.8.0-interface-surface.md`
+agrees. A describe-based gate would fail on a correct tree, and a gate that
+cries wolf gets deleted.
+
 ### Submodules
 
 **`git clone` without `--recursive` leaves the VST3 SDK empty.** It is three

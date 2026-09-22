@@ -2,7 +2,7 @@
 
 A real-time audio engine for DAW applications in Rust: an audio graph runtime,
 MIDI 2.0 processing, sample playback, spatial audio, offline rendering, and
-plugin hosting for VST2, VST3, CLAP and Audio Units.
+plugin hosting for VST3, CLAP, Audio Units and VST2.
 
 The engine is a set of focused crates rather than one package. Depend on the
 ones you need, or take an umbrella:
@@ -64,11 +64,11 @@ real time.
 | [`tutti-midi-hardware`](crates/midi/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
 | [`tutti-plugin`](crates/plugin/tutti-plugin) | Plugin hosting, **out of process** — a crashing plugin does not take the host with it |
 
-The four format hosts ([VST2](crates/plugin/formats/tutti-vst2-host),
-[VST3](crates/plugin/formats/tutti-vst3-host),
+The four format hosts ([VST3](crates/plugin/formats/tutti-vst3-host),
 [CLAP](crates/plugin/formats/tutti-clap-host),
-[AU](crates/plugin/formats/tutti-au-host)) sit under `tutti-plugin`, which is
-what you use; each speaks one plugin ABI.
+[AU](crates/plugin/formats/tutti-au-host),
+[VST2](crates/plugin/formats/tutti-vst2-host)) sit under `tutti-plugin`, which
+is what you use; each speaks one plugin ABI.
 
 ## Quick start
 

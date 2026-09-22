@@ -155,6 +155,26 @@ jobs:
       - name: Lint JACK
         run: cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings
 
+      # The out-of-process plugin bridge, driven at real callback pacing. This
+      # belongs in *this* job because it was dark in exactly the same way: the
+      # whole suite was `#[ignore]`d for needing third-party plugins installed,
+      # and `EFFECTS` names macOS system paths, so the only harness measuring
+      # the bridge ran on no machine anywhere. It now falls back to the
+      # reference CLAP probe, which cargo builds as a dev-dependency.
+      #
+      # `plugin-server` first: the suite spawns it, and it cannot be a
+      # dev-dependency because `tutti-plugin-server` depends on `tutti-plugin`
+      # and the edge would be a cycle. Nothing else in a test run builds it.
+      #
+      # These pace themselves to a 1.333 ms block and spawn up to 8
+      # subprocesses. If that proves too much for a shared runner, the honest
+      # fix is to reduce the instance count here with the failure recorded —
+      # not `continue-on-error`, which is how the pre-extraction workflow died.
+      - name: Build plugin-server
+        run: cargo build -p tutti-plugin-server
+      - name: Out-of-process plugin bridge under pressure
+        run: cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure
+
   # Benchmarks: proved to RUN, never compared.
   #
   # GitHub's runners are shared and swing 30-50% on this workload, and the

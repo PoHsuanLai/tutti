@@ -95,6 +95,16 @@ test-features:
 check-jack:
     cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings
 
+# The out-of-process plugin bridge at real callback pacing: mean/p50/p99/worst,
+# over-deadline and non-silent counts, scaled over 1/2/4/8 instances.
+#
+# Uses installed third-party plugins when present and the reference CLAP probe
+# otherwise, so it runs on a bare checkout; the run prints which. `plugin-server`
+# is built first because the suite spawns it and nothing else in a test run does.
+pressure:
+    cargo build -p tutti-plugin-server
+    cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure --no-capture
+
 # Benchmarks.
 #
 # Targets are named one per line rather than swept with `--workspace`. A bare

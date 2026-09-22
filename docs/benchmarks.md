@@ -200,28 +200,63 @@ criterion**:
 
 - **`tutti-plugin/tests/real_plugin_pressure.rs`** — out-of-process plugin
   hosting, driven at true callback pacing, reporting **mean / p50 / p99 /
-  worst / over-deadline / non-silent** per run. It asserts on **cost** and on
-  a **throughput floor** (>90% of blocks carrying audio), and the history of
-  that second assertion is the useful part: before `plugin-server`'s
-  `raise_to_realtime`, three runs of the same code on the same machine gave
-  29, 78 and 492 non-silent blocks out of 500 and the check had to be a
-  printed note. With realtime priority on the subprocess it is 495-498/500,
-  so the assertion now doubles as the regression guard for that priority
-  going missing. The cost figure was always safe to assert either way: a
-  starved block copies no audio, so starvation can only push cost down.
+  worst / over-deadline / non-silent** per run. `just pressure`.
 
-  Reference scaling from that harness (12-core, debug build, TAL-Reverb-4):
-  1 plugin 23 µs median, 2 → 60 µs, 4 → 135 µs, 8 → 303 µs — **~23-38 µs per
-  plugin against the 667 µs per plugin the synchronous design paid.** This is
-  the engine's existing answer to expensive DSP, and it is not graph
-  threading: the node pipelines, declares one block of latency, and PDC
-  compensates.
+  It used to be `#[ignore]`d for needing third-party plugins *installed*, and
+  `EFFECTS` names macOS system paths — so the only harness measuring the
+  bridge **ran on no machine anywhere**, including CI. It now falls back to
+  the reference CLAP probe, which cargo builds as a dev-dependency, and runs
+  in the `dark features` CI job.
 
-  The real gap is not the measurement but its reach: every test there is
-  `#[ignore]`d because it needs third-party plugins **installed on the
-  machine**, so a bare checkout cannot run it even though the reference CLAP
-  probe is built as a dev-dependency. Teaching it to fall back to the probe
-  would make it runnable everywhere; a second harness would not.
+  **Read the probe numbers as a measurement of the bridge, not of a plugin.**
+  The probe is a trivial fixture, so what is measured is the host-side
+  submit/collect pipeline, the socket and the shm slab, with essentially no
+  DSP under it. That is the right quantity for "what does hosting
+  out-of-process cost the audio thread" and the wrong one for "how many real
+  plugins fit". Each run prints which of the two it drove.
+
+  Host-side cost per block, reference CLAP probe, 200 blocks each:
+
+  | instances | mean | p50 | p99 | worst | over deadline |
+  |---|---|---|---|---|---|
+  | 1 | 16.1 µs | 16.0 µs | 20.0 µs | 25.5 µs | 0/200 |
+  | 2 | 34.3 µs | 31.7 µs | 145 µs | 166 µs | 0/200 |
+  | 4 | 54.0 µs | 54.0 µs | 58.2 µs | 58.6 µs | 0/200 |
+  | 8 | 160 µs | 112 µs | 348 µs | 379 µs | 0/200 |
+
+  At 500 blocks, 8 instances: mean 179 µs, p99 568 µs, worst 1.25 ms,
+  **0/500 over deadline, 500/500 carrying audio.**
+
+  **That table is one run, and the run-to-run spread is wide** — three
+  consecutive runs on an idle machine gave means of 160 µs, 179 µs and
+  249 µs at 8 instances, with p99 ranging 348 µs to 568 µs. This is a
+  scheduler measurement, not a CPU one, so treat the order of magnitude as
+  the result and never the digits. What was stable across every run is the
+  part that matters: **0 blocks over deadline and every block carrying
+  audio**, at every instance count.
+
+  So **~15–20 µs of audio-thread time per out-of-process instance**, roughly
+  linear, against a 1.333 ms budget — call it **~70 instances** before the
+  bridge alone fills a block. The plugin's own DSP is not in that number: it
+  runs in another process, on another core. This is the figure that says the
+  engine does not currently need a multi-threaded graph — the expensive work
+  is already off-thread, and the serial part left on the audio thread is the
+  cheap part.
+
+  Two things this run settled that the file previously got wrong:
+
+  - **The 29 / 78 / 492 non-silent spread is history, not current.** It was
+    measured before `plugin-server`'s `raise_to_realtime`, and quoting it as
+    the present state was an error in an earlier draft of this document.
+  - **Realtime priority buys the guarantee, not the throughput.** On a
+    32-thread machine with `RLIMIT_RTPRIO` capped at 0 — no realtime priority
+    available at all — 8 instances still land 498–500 of 500 blocks. An
+    earlier attempt here gated the throughput assertion on realtime
+    availability to explain an observed 0/500; the real cause was that the
+    probe defaults to `RenderMode::Inert` and writes nothing. The gate was
+    scaffolding for a wrong diagnosis and was removed. A fixture that renders
+    silence and a bridge that delivers nothing look identical from the
+    outside, which is worth remembering before trusting a throughput figure.
 
 This is also why there is no criterion bench for the out-of-process path.
 The bridge is asynchronous — `Batcher::collectable` substitutes silence for

@@ -83,11 +83,10 @@ and it should not be the last.
 - **`tutti-shm-model`** is a loom model of the shm header protocol — a
   separate crate because `--cfg loom` is global. That covers the concurrency
   argument the shm `unsafe` rests on.
-- **miri**, on the non-FFI crates, via `just miri`. **Wired but not yet run
-  here** — installing a nightly toolchain on this machine failed repeatedly
-  and left a partial install, so the recipe is unverified locally in the same
-  way `just check-jack` was before CI compiled it. Run it, or wire it into CI,
-  before treating this row as a check that exists. It cannot go everywhere:
+- **miri**, on the non-FFI crates, via `just miri` and the `miri` CI job.
+  Installing a nightly toolchain on the machine that wrote this failed
+  repeatedly, so — exactly as with `just check-jack` — CI is the first thing
+  to run it. It cannot go everywhere:
   it does not execute FFI at all, and it cannot run x86 intrinsics, so
   `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
   is the pointer arithmetic in `tutti-node`'s buffers and the aliasing in

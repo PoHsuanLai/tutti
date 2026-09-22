@@ -408,3 +408,36 @@ jobs:
       - run: cargo doc --workspace --no-deps --exclude fundsp-tutti --exclude rustysynth-tutti
         env:
           RUSTDOCFLAGS: -D warnings
+
+  # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
+  # why these two crates and not the rest: ~95% of this repo's `unsafe` is a C
+  # ABI, which miri does not execute at all, and out-of-process hosting is the
+  # structural answer there instead. What is left is six sites, and the two
+  # that matter are the pointer arithmetic in `tutti-node`'s planar buffers
+  # (`slice::from_raw_parts` over a fixed stride, in the crate every graph node
+  # processes through) and the aliasing in `tutti-types`' `AudioThreadCell`.
+  #
+  # Its own job because it needs nightly and is slow — minutes, not seconds —
+  # and because a failure here should read as "a memory-safety claim broke",
+  # not as part of a general test failure.
+  #
+  # This is the JACK situation again: the recipe could not be verified on the
+  # machine that wrote it (installing nightly there failed repeatedly), so CI
+  # is the first thing to run it. A check nobody has run is not a check.
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ALSA headers: `tutti-node` and `tutti-types` do not need them, but
+      # cargo resolves the whole workspace before building a member.
+      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
+      # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
+      # rather than vanishing, so the run says what it did not cover.
+      - run: cargo miri test -p tutti-types --lib
+      - run: cargo miri test -p tutti-node

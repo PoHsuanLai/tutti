@@ -11,15 +11,28 @@
 //! below compare against a figure the test itself adds up rather than against a
 //! second call into the same code.
 //!
-//! Four of the tests here pin behaviour that is, as far as this file can tell,
-//! **wrong**. They say so in their own doc comments and are named so the
-//! characterization is visible from a test list: `Routing::Arbitrary` reports a
-//! different latency depending on which channel a signal arrives on,
-//! `Routing::Generator` answers `Unknown` for the zero-input generator that is
-//! its whole reason to exist, and `Routing::Join` panics rather than route both
-//! when there are more outputs than inputs and when there are no outputs at
-//! all. Deleting those tests when the code is fixed is the intended outcome;
-//! leaving the code and the tests both unexamined is not.
+//! **These tests found four defects, and all four are now fixed.** They were
+//! landed first as characterizations — named and documented as wrong, marked
+//! delete-or-rewrite rather than update-in-place — and the fixes followed in
+//! the same branch, so no version of `main` ever carried a test blessing the
+//! old behaviour. What they were:
+//!
+//! - `Routing::Arbitrary` added the node's own latency **once per input**, so
+//!   the reported latency depended on the order the input channels were wired.
+//! - `Routing::Generator` answered `Unknown` for the zero-input generator that
+//!   is its whole reason to exist: the empty-input guard ran before the match.
+//! - The same guard swallowed `Routing::Reverse`'s `assert_eq!`. That one is
+//!   *not* treated as a defect — see
+//!   `an_empty_input_frame_short_circuits_every_variant_but_the_generator` for
+//!   why an empty frame is legitimately "no information" there.
+//! - `Routing::Join` panicked on more outputs than inputs and on zero outputs,
+//!   both reachable from signal analysis rather than from audio processing.
+//!
+//! Every one of them was inert in the tree as it stood, because each in-tree
+//! caller happened to pass the arguments that make the wrong answer and the
+//! right one coincide. That is why they survived, and why the tests use
+//! non-zero latencies and uneven widths where the old code's coincidences
+//! would otherwise hide a regression.
 //!
 //! `Signal` derives neither `Debug` nor `PartialEq`, so every assertion goes
 //! through the small destructuring helpers at the top of the file. They panic
@@ -757,39 +770,33 @@ fn arbitrary_folds_every_input_into_every_output() {
     assert_unknown(routed.at(1), "constants folded nonlinearly");
 }
 
-/// **A finding, pinned as observed rather than endorsed.** `Routing::Arbitrary`
-/// reports a different latency for the same set of input signals depending on
-/// which channel each one arrives on.
+/// **A node's reported latency does not depend on the order its input channels
+/// were wired.**
 ///
-/// The fold is `input.at(0).distort(latency)` followed by
-/// `combine_nonlinear(input.at(i), latency)` for each remaining channel, and
-/// *both* of those add the node's own `latency`. So the extra is added once per
-/// input, and the `min` inside `combine_nonlinear` then compares an
+/// It used to. The fold was `input.at(0).distort(latency)` followed by
+/// `combine_nonlinear(input.at(i), latency)` per remaining channel, and *both*
+/// of those add the node's own `latency` — so the extra went in once per
+/// input, and the `min` inside `combine_nonlinear` then compared an
 /// already-inflated running total against a raw input latency. With sources at
-/// 0 and 10 and a node latency of 5, `[0, 10]` folds to `min(0 + 5, 10) + 5 =
-/// 10` while `[10, 0]` folds to `min(10 + 5, 0) + 5 = 5`. The conservative
-/// answer both should give is `min(0, 10) + 5 = 5`.
+/// 0 and 10 and a node latency of 5, `[0, 10]` gave `min(0 + 5, 10) + 5 = 10`
+/// and `[10, 0]` gave `min(10 + 5, 0) + 5 = 5`.
 ///
-/// Consequences: the reported latency of a node depends on the order its input
-/// channels were wired, and a node with equal input latencies is only correct by
-/// accident (`min(l + extra, l) == l` collapses the surplus). Every in-tree
-/// caller passes `Routing::Arbitrary(0.0)`, for which the bug is inert — `0` is
-/// an identity for the repeated addition — with one exception:
-/// `fundsp-tutti`'s `resynth.rs` routes `Routing::Arbitrary(self.window_length
-/// as f64)`, so a multi-input resynthesizer is the live case.
+/// `route` now folds with zero extra latency and adds the node's own once at
+/// the end, so both orders give `min(0, 10) + 5 = 5`. That this test was
+/// originally written as a characterization of the inequality — and had to be
+/// rewritten rather than updated — is why its old form asserted `a != b`.
 ///
-/// A fix would fold the inputs first and add the node's latency once at the end.
-/// This test should be deleted, not updated, when that lands.
+/// The live case is `fundsp-tutti`'s `resynth.rs`, which routes
+/// `Routing::Arbitrary(self.window_length as f64)`; every other in-tree caller
+/// passes `0.0`, for which the old bug was inert because `0` is an identity
+/// for the repeated addition.
 ///
-/// Mutation run: `combo.combine_nonlinear(input.at(i), *latency)` →
-/// `combo.combine_nonlinear(input.at(i), 0.0)` — the node's latency added once
-/// instead of once per input, which is the shape a fix would take. Failed, as
-/// expected: the `[0, 10]` order then reported 5 rather than 10. That this test
-/// fails against the corrected arithmetic is the intended property of a
-/// characterization test, and the reason it says to delete rather than update
-/// it.
+/// *Mutation:* restore the old arithmetic — `input.at(0).distort(*latency)`
+/// and `combine_nonlinear(input.at(i), *latency)`, dropping the trailing
+/// `.distort(*latency)`. The two orders diverge again (10 vs 5) and the
+/// equality below fails.
 #[test]
-fn arbitrary_reports_a_different_latency_when_the_channels_are_reordered() {
+fn arbitrary_latency_does_not_depend_on_channel_order() {
     const EXTRA: f64 = 5.0;
     let early_first = frame(&[Signal::Latency(0.0), Signal::Latency(10.0)]);
     let late_first = frame(&[Signal::Latency(10.0), Signal::Latency(0.0)]);
@@ -797,16 +804,24 @@ fn arbitrary_reports_a_different_latency_when_the_channels_are_reordered() {
     let a = latency_of(Routing::Arbitrary(EXTRA).route(&early_first, 1).at(0));
     let b = latency_of(Routing::Arbitrary(EXTRA).route(&late_first, 1).at(0));
 
-    assert_eq!(a, 10.0, "[0, 10] folds to min(0 + 5, 10) + 5");
-    assert_eq!(b, 5.0, "[10, 0] folds to min(10 + 5, 0) + 5");
-    assert_ne!(
-        a, b,
-        "channel order must not change a node's latency — this inequality is the defect"
-    );
+    assert_eq!(a, b, "channel order must not change a node's latency");
     assert_eq!(
-        b,
+        a,
         0.0f64.min(10.0) + EXTRA,
-        "the order-independent answer is 5"
+        "the answer is the earliest input latency plus the node's own, added once"
+    );
+
+    // Three inputs, to show the node's latency is not accumulating per channel.
+    let three = frame(&[
+        Signal::Latency(4.0),
+        Signal::Latency(9.0),
+        Signal::Latency(2.0),
+    ]);
+    assert_eq!(
+        latency_of(Routing::Arbitrary(EXTRA).route(&three, 1).at(0)),
+        2.0 + EXTRA,
+        "adding EXTRA once per input would give {} here",
+        2.0 + EXTRA * 3.0
     );
 }
 
@@ -842,50 +857,47 @@ fn generator_ignores_its_inputs_and_fills_every_output_with_its_latency() {
     assert!(Routing::Generator(9.0).route(&noise, 0).is_empty());
 }
 
-/// **A finding, pinned as observed rather than endorsed.** An empty input frame
-/// short-circuits `Routing::route` to an all-`Unknown` output for *every*
-/// variant — including `Generator`, whose defining case is a node with no
-/// inputs.
+/// **An empty input frame answers `Unknown` for the four variants that read
+/// their input — and `Generator`, which does not, answers its latency.**
 ///
-/// `route` returns early when `input.is_empty()`, before it looks at `self`. For
-/// `Split`, `Join`, `Reverse` and `Arbitrary` that is defensible: there is
-/// nothing to route. For `Generator` it is not. A generator *has* no inputs —
-/// `noise`, `envelope`, `wave`, `sequencer` and `shared` in `fundsp-tutti` all
-/// route `Routing::Generator(0.0)` with `inputs() == 0` — so the frame
-/// `AudioUnit::latency` builds for them is empty and the answer is `Unknown` on
-/// every output. `latency()` skips `Unknown` when taking its minimum, so it
-/// returns `None`, and the only in-tree consumer (`tutti-export`) does
-/// `unwrap_or(0.0)`. Every one of those call sites passes `0.0`, so today the
-/// wrong answer and the right one are the same number — which is precisely why
-/// this has survived: the first generator to declare a non-zero latency will
-/// have it silently dropped, and the session will drift by exactly that
-/// generator's fill.
+/// `route` used to return early on `input.is_empty()` *before* looking at
+/// `self`, which made the `Generator` arm unreachable for exactly the nodes it
+/// exists for: a generator has no inputs, so the frame `AudioUnit::latency`
+/// builds for it is empty. `noise`, `envelope`, `wave`, `sequencer`, `shared`
+/// and `ring` all declare `Routing::Generator(0.0)` with `inputs() == 0`, and
+/// every one of them was getting `Unknown` on every output.
 ///
-/// The early return also swallows `Reverse`'s `assert_eq!(input.len(),
-/// outputs)`, so a zero-input `Reverse` with four outputs returns four channels
-/// instead of firing — asserted below so the hole is visible next to the guard
-/// it bypasses.
+/// It survived because all of them pass `0.0`: `latency()` skips `Unknown`
+/// when taking its minimum and returns `None`, and the only in-tree consumer
+/// (`tutti-export`) does `unwrap_or(0.0)` — so the wrong answer and the right
+/// one were the same number. The first generator to declare a non-zero latency
+/// would have had it silently dropped. `Generator` is now handled ahead of the
+/// guard, and this test uses a **non-zero** latency precisely so that
+/// coincidence cannot hide a regression.
 ///
-/// A fix would move the `Generator` arm ahead of the emptiness check, or drop
-/// the check and let each arm handle an empty frame. This test should be
-/// rewritten, not updated, when that lands.
+/// `Reverse` keeps the guard, and that is a decision rather than an oversight:
+/// an empty frame means "no signal information available", which is what a
+/// frame of `Unknown` says. Making its `assert_eq!(input.len(), outputs)` fire
+/// there would put a new panic on the graph-commit path to report something
+/// that is not a miswiring. The assert still guards the case it can speak to —
+/// see `reverse_rejects_a_mismatched_output_count`.
 ///
-/// Mutation run: the `if input.is_empty() { return output; }` block deleted.
-/// Failed, as expected — and failed on the *first* variant it reaches, because
-/// `Arbitrary` then indexes `input.at(0)` on an empty frame and panics. That the
-/// short circuit is load-bearing for four of the five variants is not in
-/// dispute; that it is wrong for the fifth is.
+/// *Mutation:* move the `Generator` arm back below the `input.is_empty()`
+/// guard. The `Generator` row then reports `Unknown` and the last assertion
+/// fails.
 #[test]
-fn an_empty_input_frame_short_circuits_every_variant() {
+fn an_empty_input_frame_short_circuits_every_variant_but_the_generator() {
+    const LATENCY: f64 = 9.0;
     let empty = SignalFrame::new(0);
     assert!(empty.is_empty());
 
+    // The four that read their input. `Reverse` is here deliberately: see the
+    // note above on why its assert does not fire for an empty frame.
     for (label, routing) in [
-        ("Arbitrary", Routing::Arbitrary(9.0)),
+        ("Arbitrary", Routing::Arbitrary(LATENCY)),
         ("Split", Routing::Split),
         ("Join", Routing::Join),
         ("Reverse", Routing::Reverse),
-        ("Generator", Routing::Generator(9.0)),
     ] {
         let routed = routing.route(&empty, 4);
         assert_eq!(
@@ -900,48 +912,92 @@ fn an_empty_input_frame_short_circuits_every_variant() {
             );
         }
     }
+
+    // `Generator` ignores its input by definition, so an empty frame is its
+    // normal case rather than a degenerate one.
+    let routed = Routing::Generator(LATENCY).route(&empty, 4);
+    assert_eq!(routed.len(), 4);
+    for i in 0..4 {
+        assert_eq!(
+            latency_of(routed.at(i)),
+            LATENCY,
+            "a generator must report its own latency on channel {i}, not Unknown"
+        );
+    }
 }
 
-/// **A finding, pinned as observed rather than endorsed.** `Routing::Join`
-/// panics when there are more outputs than inputs.
+/// **`Routing::Join` answers a degenerate shape instead of panicking.**
 ///
-/// `bundle = input.len() / output.len()` is integer division, so it is `0` here,
-/// the inner `for j in 1..bundle` never runs, and the outer loop reaches
-/// `input.at(i)` for an `i` past the end of the input frame. A mono input joined
-/// to two outputs indexes channel 1 of a one-channel frame.
+/// Two shapes used to panic, and both were reachable from signal analysis
+/// rather than from audio processing — `route` is called by
+/// `AudioUnit::latency` and `AudioUnit::response`, which a host may call on an
+/// arbitrary graph:
 ///
-/// Whether `Join` *should* accept that shape is a real question — `Split` is its
-/// inverse and handles every width by wrapping — but panicking inside `route` is
-/// not an answer either way: `route` is called from `AudioUnit::latency` and
-/// `AudioUnit::response`, which a host may call on an arbitrary graph, so this
-/// is a panic reachable from signal analysis rather than from audio processing.
-/// Both in-tree callers (`audionode.rs`'s two join nodes) have type-level arities
-/// that make the shape unconstructible, which is why it has never fired.
+/// - **More outputs than inputs.** `bundle = input.len() / outputs` is integer
+///   division, so it was `0`, the inner loop never ran, and the outer loop
+///   reached `input.at(i)` past the end of the frame. A mono input joined to
+///   two outputs indexed channel 1 of a one-channel frame.
+/// - **Zero outputs from a non-empty input.** The same expression divided by
+///   zero. Every other variant returns an empty frame for that shape, so
+///   `Join` was alone in turning "sum these channels into nothing" into a
+///   crash.
 ///
-/// Mutation run: `if i >= input.len() { continue; }` inserted at the top of the
-/// outer loop body. The test failed — nothing panicked — as expected.
+/// Neither had fired, because both in-tree callers (`audionode.rs`'s two join
+/// nodes) have type-level arities that make the shapes unconstructible.
+///
+/// The answers now: zero outputs gives an empty frame, matching every other
+/// variant; outputs with no input to sum keep the `Unknown` they were built
+/// with, which is the honest answer rather than a wrapped duplicate of some
+/// other channel's signal. `Split` wraps because it is *distributing* one
+/// input across many outputs; `Join` is summing, and there is nothing to sum.
+///
+/// *Mutations, both run:* remove the `if outputs == 0 { return output; }`
+/// guard (divide by zero), and remove the `if i >= input.len() { break; }`
+/// guard (index out of bounds). Each fails its half below.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn join_panics_when_there_are_more_outputs_than_inputs() {
+fn join_answers_degenerate_shapes_rather_than_panicking() {
+    // More outputs than inputs: channel 0 gets the input, channel 1 has
+    // nothing to sum.
     let mono = frame(&[Signal::Value(1.0)]);
-    let _ = Routing::Join.route(&mono, 2);
-}
+    let widened = Routing::Join.route(&mono, 2);
+    assert_eq!(widened.len(), 2);
+    assert!(
+        matches!(widened.at(0), Signal::Value(_)),
+        "channel 0 has an input to carry, got {}",
+        describe(widened.at(0))
+    );
+    assert_unknown(
+        widened.at(1),
+        "channel 1 of a mono-to-stereo join has no input to sum",
+    );
 
-/// **A finding, pinned as observed rather than endorsed.** `Routing::Join`
-/// divides by zero when asked for zero outputs from a non-empty input.
-///
-/// `bundle = input.len() / output.len()` with `output.len() == 0`. Every other
-/// variant returns an empty frame for this shape — `Split`, `Arbitrary` and
-/// `Generator` are asserted to do so in their own tests — so `Join` is alone in
-/// turning "sum these channels into nothing" into a panic. A node that discards
-/// its input is an ordinary thing for a graph to contain.
-///
-/// Mutation run: `let bundle = input.len() / output.len();` → `let bundle = if
-/// output.len() == 0 { 0 } else { input.len() / output.len() };`. The test
-/// failed — nothing panicked — as expected.
-#[test]
-#[should_panic(expected = "divide by zero")]
-fn join_divides_by_zero_when_asked_for_no_outputs() {
+    // Zero outputs from a non-empty input: an empty frame, like every other
+    // variant gives.
     let stereo = frame(&[Signal::Value(1.0), Signal::Value(2.0)]);
-    let _ = Routing::Join.route(&stereo, 0);
+    let nothing = Routing::Join.route(&stereo, 0);
+    assert_eq!(
+        nothing.len(),
+        0,
+        "joining into no outputs is an empty frame, not a panic"
+    );
+
+    // And the ordinary shape still works, so the guards did not eat it.
+    let quad = frame(&[
+        Signal::Latency(1.0),
+        Signal::Latency(2.0),
+        Signal::Latency(3.0),
+        Signal::Latency(4.0),
+    ]);
+    let joined = Routing::Join.route(&quad, 2);
+    assert_eq!(joined.len(), 2);
+    assert_eq!(
+        latency_of(joined.at(0)),
+        1.0,
+        "bundle {{0, 2}} takes the earlier latency"
+    );
+    assert_eq!(
+        latency_of(joined.at(1)),
+        2.0,
+        "bundle {{1, 3}} takes the earlier latency"
+    );
 }

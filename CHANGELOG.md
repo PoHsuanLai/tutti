@@ -84,6 +84,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Four defects in `Routing::route`, the arithmetic plugin delay
+  compensation is computed from.** Each was inert in the tree as it stood,
+  because every in-tree caller happened to pass the argument that makes the
+  wrong answer and the right one coincide — which is exactly why they
+  survived, and why a fix now costs nothing and later costs a version.
+
+  - **`Routing::Arbitrary` added the node's own latency once per input**, so
+    a node's reported latency depended on the *order its input channels were
+    wired*: sources at 0 and 10 with a node latency of 5 gave 10 one way
+    round and 5 the other. `route` now folds the inputs with no extra
+    latency and adds the node's own once at the end. Live case:
+    `fundsp-tutti`'s `resynth.rs`, the only caller passing a non-zero value.
+  - **`Routing::Generator` was unreachable for zero-input generators**, i.e.
+    all of them — the empty-input guard ran before the match, so `noise`,
+    `envelope`, `wave`, `sequencer`, `shared` and `ring` all reported
+    `Unknown`. Handled ahead of the guard now. Every caller passes `0.0`
+    today and `tutti-export` does `unwrap_or(0.0)`, so nothing observable
+    changes; the first generator to declare a non-zero latency would have
+    had it silently dropped.
+  - **`Routing::Join` panicked on two shapes**, both reachable from
+    `AudioUnit::latency`/`response` rather than from audio processing: more
+    outputs than inputs indexed past the end, and zero outputs divided by
+    zero. It now answers an empty frame for zero outputs (as every other
+    variant does) and leaves un-fed outputs `Unknown`.
+  - The same guard also swallows `Routing::Reverse`'s `assert_eq!`. **Left
+    as is, deliberately**: an empty frame means "no signal information", not
+    a width mismatch, and making the assert fire there would put a new panic
+    on the graph-commit path. Documented at the guard and at the test.
+
 - **`PolySynth` was capped at 16 voices for a removable reason.**
   `PolySynth::new` rejected any `max_voices` above 16 because
   `finished_indices` was a `SmallVec<[usize; 16]>` and a spill would have put

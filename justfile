@@ -92,6 +92,19 @@ test-features:
 # in cpal's Linux/BSD target table. Enabling it on macOS or Windows compiles
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
+# Miri over the non-FFI unsafe: the pointer arithmetic in `tutti-node`'s planar
+# buffers and the aliasing in `tutti-types`' `AudioThreadCell`. See
+# `docs/design/012-unsafe-policy.md` for why these two and not the rest — miri
+# does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
+# is out of its reach by construction, and out-of-process hosting is the
+# structural answer there instead.
+#
+# `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d: they read MXCSR,
+# and miri has no x86 SSE intrinsics.
+miri:
+    cargo +nightly miri test -p tutti-types --lib
+    cargo +nightly miri test -p tutti-node
+
 check-jack:
     cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings
 

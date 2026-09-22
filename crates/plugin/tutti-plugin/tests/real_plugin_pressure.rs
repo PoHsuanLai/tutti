@@ -68,28 +68,45 @@
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
 
+#[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tutti_core::{AudioUnit, BufferVec, F32};
 
-/// These tests must not run concurrently, and the reason is the thing they
-/// measure.
+/// Take the machine, **across processes**.
 ///
-/// `cargo test` runs test functions on parallel threads. Each test here spawns
-/// up to 8 plugin subprocesses and then deliberately paces itself to the audio
-/// callback rate — so two tests running at once means ~16 subprocesses
-/// competing for the wall-clock time each one is counting on. Observed
-/// concretely: the 2-plugin case reported `non-silent 0/200`, i.e. every block
-/// starved, purely because a neighbouring test held the machine.
+/// This was a `static Mutex`, and under `cargo nextest` a `static Mutex`
+/// serializes nothing: nextest gives every test its own *process*, so a
+/// process-local lock is uncontended in each one and the tests run fully
+/// parallel anyway. `clap_probe.rs` had already learned this and answered it
+/// with a lock directory — `create_dir` is atomic and fails with
+/// `AlreadyExists` on every OS this builds for — while this file kept the
+/// `Mutex` and a doc describing `cargo test`'s threading model, which is not
+/// the model this repo runs under.
 ///
-/// A lock rather than a `--test-threads=1` note in the docs: a note is
-/// something a future runner has to know, and its absence shows up as a
-/// mystifying failure in the *other* test.
-static EXCLUSIVE: Mutex<()> = Mutex::new(());
+/// It went unnoticed because every test here was `#[ignore]`d. The first CI
+/// run after they were enabled failed exactly there:
+/// `repeated_load_and_drop_leaves_no_subprocesses` counts `plugin-server`
+/// processes **system-wide**, and its "before" count came back 5 rather than
+/// 0 — the three neighbouring tests' subprocesses, live in their own
+/// processes. It reported a leak that was a race.
+///
+/// Two things need serializing here and both are process-global: wall clock
+/// (each test paces itself to a real block period, so neighbours halve the
+/// time each subprocess gets) and the `plugin-server` process count.
+#[cfg(feature = "clap")]
+fn exclusive() -> clap_probe::cross_process_lock::Guard {
+    clap_probe::exclusive()
+}
 
-/// Take the machine. Poisoning is irrelevant here — the guard protects wall
-/// clock, not data — so a panicking test must not wedge every later one.
+/// Without `clap` there is no probe to fall back to, so every test here skips
+/// unless third-party plugins are installed — which happens only when someone
+/// runs this deliberately, on one machine, usually alone. The `Mutex` is kept
+/// for that build rather than duplicating the lock directory into a second
+/// place for a case that does not race in practice.
+#[cfg(not(feature = "clap"))]
 fn exclusive() -> MutexGuard<'static, ()> {
+    static EXCLUSIVE: Mutex<()> = Mutex::new(());
     EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 

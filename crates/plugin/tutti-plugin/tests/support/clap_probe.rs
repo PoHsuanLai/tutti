@@ -76,7 +76,7 @@ pub const BUILD_COMMAND: &str =
 /// works across processes without a new dependency. A directory rather than a
 /// file because `File::create` truncates an existing file and succeeds, which
 /// would hand the lock to everyone.
-mod cross_process_lock {
+pub mod cross_process_lock {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -92,9 +92,16 @@ mod cross_process_lock {
     /// A crashed test process leaves the directory behind — there is no OS
     /// cleanup for this the way there is for a real `flock` — so the wait has to
     /// end in a *steal* rather than a hang. Generous enough that a slow but
-    /// live test is never robbed: the suites here run in well under a second
-    /// each, so ten seconds is two orders of magnitude of headroom.
-    const STALE_AFTER: Duration = Duration::from_secs(10);
+    /// live test is never robbed. The suites that first used this run in well
+    /// under a second each; the later consumer, `real_plugin_pressure.rs`,
+    /// spawns up to eight subprocesses and paces itself to a 1.333 ms block,
+    /// which is seconds rather than milliseconds and slower again on a shared
+    /// CI runner. Sized for that.
+    ///
+    /// Being generous costs only how long a genuinely wedged holder delays
+    /// the next test. Being tight costs stealing the lock from a live one,
+    /// which reintroduces exactly the contention this exists to prevent.
+    const STALE_AFTER: Duration = Duration::from_secs(120);
 
     /// Held for the duration of one test; released on drop, including on the
     /// unwind of a failing assertion.

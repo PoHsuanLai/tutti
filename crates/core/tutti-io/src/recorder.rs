@@ -974,6 +974,64 @@ mod tests {
         );
     }
 
+    /// **The other half of the `Drop` guarantee: a finalize that *fails* there
+    /// still reaches the caller.**
+    ///
+    /// The sibling test above proves the drop path runs finalize and records
+    /// success. Nothing proved it records a *failure* — `error()` returning
+    /// `Some` had no coverage at all, so the entire reason
+    /// [`FinalizeStatus`] carries an error rather than just a done flag was
+    /// untested. `Drop` cannot return a `Result` and this workspace does not
+    /// panic in `Drop`, so this handle is the only path a disk-full on the last
+    /// block has to the caller; if it silently dropped the error, a truncated
+    /// take would look like a clean one.
+    ///
+    /// The failure is provoked, not simulated: `narrow_header_for_test` opens
+    /// an 8-bit header that the sink then quantizes into at `Int16`, so
+    /// `AlwaysLive`'s ±0.5 (±16383 at `Int16`) is rejected by `hound` with
+    /// `TooWide` on the write. See that constructor for why this shape rather
+    /// than a permission or disk trick.
+    ///
+    /// Mutation-checked: deleting the `self.status.set(result)` line from
+    /// `Drop` — or narrowing it to store only successes — fails this test while
+    /// leaving every other test in the file green.
+    #[test]
+    fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doomed.wav");
+        let wav = WavOut::narrow_header_for_test(&path);
+
+        let (driver, pump) = ManualDriver::new();
+        let status = {
+            let rec = Recorder::start_with(AlwaysLive, wav, driver)
+                .expect("the fixture sink is stereo, as AlwaysLive is");
+            let status = rec.finalize_status();
+            // One pass is enough: the first sample is already too wide, and
+            // `WavOut` latches `first_error` and stops writing from there.
+            assert!(
+                matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if n > 0),
+                "the pump reports frames moved; the sink's failure is latched, not returned"
+            );
+            status
+        };
+
+        assert!(
+            status.is_done(),
+            "the drop path must run finalize even when it is going to fail"
+        );
+        let err = status
+            .error()
+            .expect("a failed finalize on the drop path must be recorded, not swallowed");
+        // The specific cause survives — a caller can tell a too-wide sample
+        // from a full disk. Flattening to "finalize failed" would make the two
+        // indistinguishable, which is the information loss `WavOut::finalize`
+        // already refuses to accept.
+        assert!(
+            err.contains("more bits than the destination type"),
+            "the underlying hound error should be carried, got: {err}"
+        );
+    }
+
     /// `stop` and `Drop` cannot both join: `stop` consumes the recorder, so the
     /// `Drop` that immediately follows finds the handle already taken.
     ///

@@ -283,8 +283,12 @@ impl MotionFsm {
         }
     }
 
-    /// Reset the audio-thread ownership assertion. Needed when the device
-    /// switches and a different thread takes over the callback.
+    /// Reset the audio-thread ownership assertion, ahead of a device switch.
+    ///
+    /// Currently a no-op: it delegates to `AudioThreadCell::reset_owner`,
+    /// which pins no owner thread (the cell's debug check detects a
+    /// *concurrent borrow*, not a foreign thread). Kept for source
+    /// compatibility — see `tutti_cpal::AudioCallbackState::reset_owners`.
     pub fn reset_owner(&self) {
         self.fsm.reset_owner();
     }

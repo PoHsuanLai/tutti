@@ -43,6 +43,30 @@ else
   echo "ok"
 fi
 
+# The facade's own rule: every whole-crate re-export in `crates/tutti` must be
+# aliased.
+#
+# A bare `pub use tutti_core;` there would let a consumer write
+# `tutti::tutti_core::Engine` — exactly the redundant path the chained gate
+# above exists to prevent, in a shape its regex CANNOT see: it matches
+# `tutti_x::tutti_y::`, and `tutti::` has no underscore segment. Aliasing
+# removes the spelling from the language rather than asking anyone to avoid
+# it.
+#
+# `crates/tutti/tests/no_logic.rs` asserts the same thing from inside the
+# crate; this is here so the rule is visible to someone reading the gates
+# rather than only to someone running the tests.
+if [ -f crates/tutti/src/lib.rs ]; then
+  echo "==> unaliased crate re-exports in the facade"
+  if bare=$(grep -nE "^\s*pub use tutti_[a-z0-9_]+\s*;" crates/tutti/src/lib.rs 2>/dev/null); then
+    echo "$bare"
+    echo "FAIL: alias it (\`as core\`, \`as sampler\`, ...) so tutti::tutti_x:: is unspellable."
+    status=1
+  else
+    echo "ok"
+  fi
+fi
+
 # Per-module gate. Called as: <crate_path_prefix> <mod> [<mod> ...]
 # e.g. `tutti_types value rt` checks for tutti_types::value:: and tutti_types::rt::
 if [ "$#" -ge 2 ]; then

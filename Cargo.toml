@@ -13,6 +13,13 @@
 [workspace]
 resolver = "2"
 members = [
+    # The Bevy-free umbrella. A pure re-export crate, and it must stay one:
+    # the package of this name that existed before `4b5bd2fd` was the
+    # workspace ROOT package and held `TuttiEngine`, a builder and the CPAL
+    # callback, and it was dissolved because `bevy-tutti` needed that logic.
+    # Re-exporting was never the problem; owning logic was. See
+    # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
+    "crates/tutti",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",

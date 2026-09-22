@@ -5,8 +5,14 @@ MIDI 2.0 processing, sample playback, spatial audio, offline rendering, and
 plugin hosting for VST2, VST3, CLAP and Audio Units.
 
 The engine is a set of focused crates rather than one package. Depend on the
-ones you need, or take [`bevy-tutti`](crates/bevy-tutti), the Bevy adapter, which
-re-exports the whole engine behind one dependency.
+ones you need, or take an umbrella:
+
+- [`tutti`](crates/tutti) — the whole engine behind one dependency, **no
+  Bevy**. For a CLI, a renderer, a server, a test.
+- [`bevy-tutti`](crates/bevy-tutti) — the same engine plus the Bevy adapter
+  (ECS, assets, systems).
+
+Both are re-export crates; `tutti` is enforced to contain no code at all.
 
 > **Status: pre-release.** Nothing here is published to crates.io yet, so every
 > dependency is a path dependency. Names and signatures still move between
@@ -17,7 +23,8 @@ re-exports the whole engine behind one dependency.
 Every crate sits in one of four tiers, and the arrows only ever point down.
 
 ```
-                       bevy-tutti          the Bevy adapter (ECS, assets, systems)
+         tutti  ·  bevy-tutti          the two umbrellas: Bevy-free, and the
+                                           Bevy adapter (ECS, assets, systems)
                             │
    ┌──────────┬─────────────┼──────────────┬─────────────┐
   dsp/       midi/        plugin/         io            export

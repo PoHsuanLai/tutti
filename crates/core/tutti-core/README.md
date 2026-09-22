@@ -26,7 +26,9 @@ already depends on.
 - `Engine` — the graph render the RT callback runs.
 
 A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
-the umbrella. A consumer that wants audio without Bevy depends on these crates
+the umbrella. A consumer that wants audio without Bevy takes the `tutti` facade crate,
+which re-exports all of them behind one dependency; it can also depend on
+these crates
 directly.
 
 ## What this crate does not own

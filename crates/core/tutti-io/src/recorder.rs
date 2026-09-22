@@ -578,6 +578,37 @@ impl Recorder {
         Ok(self.shutdown()?)
     }
 
+    /// Wait for a **finite** take to reach its own end, then finalize.
+    ///
+    /// [`stop`](Self::stop) clears the run flag *before* joining. That is
+    /// exactly right for a live source and exactly wrong for a finite one: a
+    /// source that has not reached its end yet is cut off wherever the pump
+    /// happened to be, and the take is silently truncated — a short file, no
+    /// error anywhere. Until this existed there was no way to record a finite
+    /// source to completion without racing the pump thread and guessing.
+    ///
+    /// This joins without touching the flag, so the loop breaks where it was
+    /// always going to: on the source's own
+    /// [`OnEmpty::EndOfStream`](tutti_core::io::OnEmpty::EndOfStream). The
+    /// finalize result rides the join home exactly as it does for `stop`.
+    ///
+    /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
+    /// forever**, and every microphone capture is one — the pump parks and
+    /// re-polls rather than ending, so nothing but `stop` will ever break the
+    /// loop. That is not a wart to guard against with a timeout: the two
+    /// verdicts mean different things, and a recorder that gave up after some
+    /// interval would be reporting a complete take when it had no idea.
+    /// Choose the method that matches your source's `ON_EMPTY`.
+    ///
+    /// # Errors
+    ///
+    /// The sink's finalize error, if back-patching the WAV header failed.
+    pub fn wait(mut self) -> Result<()> {
+        // Deliberately not `shutdown()`: the one line that differs is the one
+        // that would truncate the take.
+        Ok(self.join_pump()?)
+    }
+
     /// Where a [`Drop`]-path finalize leaves its outcome.
     ///
     /// Take this handle *before* dropping the recorder; it outlives the
@@ -601,6 +632,16 @@ impl Recorder {
     /// `finalize` below it.
     fn shutdown(&mut self) -> std::io::Result<()> {
         self.running.store(false, Ordering::Release);
+        self.join_pump()
+    }
+
+    /// Join the pump and surface its finalize result, leaving `running`
+    /// alone.
+    ///
+    /// The half [`shutdown`](Self::shutdown) and [`wait`](Self::wait) share,
+    /// and the whole difference between them is the line above this call.
+    /// Taking `handle` is what makes either once-only.
+    fn join_pump(&mut self) -> std::io::Result<()> {
         match self.handle.take() {
             // The driver finalizes the sink and returns that io::Result.
             Some(handle) => handle.join(),

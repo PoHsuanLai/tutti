@@ -84,6 +84,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Recorder` could not await a finite take's natural end.** `stop()` clears
+  the run flag *before* joining, which is right for a live source and wrong
+  for a finite one: a source that has not reached its end is cut off wherever
+  the pump happened to be, and the take is silently truncated — a short file,
+  no error anywhere. `FinalizeStatus::is_done` is set only by the
+  `Drop`/`stop` shutdown, not by the thread breaking on
+  `OnEmpty::EndOfStream`, so it could not be polled for this either. New
+  `Recorder::wait()` joins without touching the flag, so the loop breaks
+  where it was always going to. It shares `shutdown`'s join half rather than
+  copying it; the one line that differs is the one that truncates. On a
+  `Starved` source it blocks forever — deliberately, since a timeout would
+  report a complete take with no idea whether it was one.
+
 - **Clip-file round trips duplicated their metadata.** Tempo and time
   signature are Flex Data *events* in M2-116, so `read_clip_file` hands them
   back inside `ParsedClipFile::events` — and `write_clip_file_with_header`

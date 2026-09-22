@@ -14,9 +14,11 @@
 //! reached by exactly one test, and only to check a width mismatch it rejects
 //! before spawning anything.
 //!
-//! These three cover that surface without reintroducing the tuned sleep. Each
-//! sequences on a fact the pump thread *publishes about itself* — drained,
-//! polled N times — via [`wait_until`], so no assertion depends on a duration.
+//! These four cover that surface without reintroducing the tuned sleep. The
+//! first three sequence on a fact the pump thread *publishes about itself* —
+//! drained, polled N times — via [`wait_until`], so no assertion depends on a
+//! duration. The fourth needs none of that, and that is its point:
+//! [`Recorder::wait`] was added because of what the first one had to do.
 //! The one property that genuinely cannot be asserted is "a live take never
 //! ends on its own": its counter-example is a hang, and its only bound is
 //! nextest's per-test timeout. That is said plainly at the test rather than
@@ -31,6 +33,7 @@
 //! | `while false && running.load(…)` | all three (nothing is ever pumped) |
 //! | `PumpPass::Starved => break` | `a_starving_source_…` (times out in `wait_until`) |
 //! | `.unwrap_or_else(…)` → `.unwrap()` | `a_panicking_source_…` |
+//! | `Recorder::wait` calls `shutdown()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //!
 //! The first row is worth keeping: an earlier draft of `a_finite_source_…`
 //! **passed** under `PumpPass::Ended => {}`. Waiting for the source to run dry
@@ -53,9 +56,10 @@ use tutti_io::{AudioIn, BitDepth, OnEmpty, Recorder, WavOut};
 /// the test can sequence on. The deadline exists only so a broken driver fails
 /// with a message instead of hanging until nextest's timeout.
 ///
-/// This is needed because [`Recorder`] offers a consumer **no way to await a
-/// finite take's natural end** — see the note on
-/// `a_finite_source_ends_its_own_take_and_the_file_is_readable`.
+/// Only the live-source tests need this now. [`Recorder::wait`] awaits a
+/// *finite* take's natural end directly — see
+/// `wait_returns_a_complete_finite_take_without_sequencing_on_the_pump`, which
+/// is what this helper's absence looks like.
 fn wait_until(what: &str, cond: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !cond() {
@@ -88,6 +92,17 @@ struct Ramp {
     /// the only externally visible consequence of the break, so it is what the
     /// test asserts.
     polls: Arc<AtomicUsize>,
+    /// Wall time burned per poll, to give a take a measurable *duration*.
+    ///
+    /// [`std::time::Duration::ZERO`] everywhere except
+    /// `wait_returns_a_complete_finite_take_…`, whose mutation is "clear the
+    /// run flag before joining" — and at `SCRATCH_FRAMES` = 1024 per poll an
+    /// instant source can drain in so few passes that a truncating `wait`
+    /// might still catch the whole take by luck. No assertion reads this or
+    /// any clock; it only widens the window the mutation has to land in, so
+    /// the difference between a complete take and a truncated one is not a
+    /// coin flip.
+    delay: std::time::Duration,
 }
 
 impl AudioIn for Ramp {
@@ -99,6 +114,9 @@ impl AudioIn for Ramp {
 
     fn poll_into(&mut self, out: &mut [f32]) -> usize {
         self.polls.fetch_add(1, Ordering::Release);
+        if !self.delay.is_zero() {
+            std::thread::sleep(self.delay);
+        }
         let n = (self.frames - self.pos).min(out.len() / 2);
         if n == 0 {
             self.drained.store(true, Ordering::Release);
@@ -176,17 +194,15 @@ fn sink(path: &std::path::Path) -> WavOut {
 /// The frame count is exact, and the values are checked too — a count alone
 /// would pass on duplicated or channel-rotated frames.
 ///
-/// **An API gap this test had to work around.** `Recorder` exposes no way to
-/// await a finite take's natural end: `stop()` sets the flag and joins, so
-/// calling it promptly after `start()` races the spawned thread and truncates
-/// the take at however many passes happened to run — on the first draft of
-/// this test, zero. `FinalizeStatus::is_done` is set only by the `Drop`/`stop`
-/// shutdown, not by the thread breaking on [`OnEmpty::EndOfStream`], so it
-/// cannot be polled for this either. A consumer recording a finite source
-/// today has the same problem and no better answer. The fixture therefore
-/// publishes its own exhaustion and the test waits on that; a
-/// `Recorder::finished()` (or a `FinalizeStatus` the thread sets on its own
-/// exit) would make the workaround unnecessary.
+/// **This test keeps its workaround on purpose.** It asserts the poll count
+/// freezes *after* the drain and *before* the join, so it has to observe the
+/// thread mid-flight — [`Recorder::wait`] would join it and destroy the
+/// window. The gap that workaround originally exposed is closed:
+/// `stop()` still clears the flag before joining and still truncates a finite
+/// take called promptly (on this test's first draft, to zero frames), but
+/// `wait()` now exists for exactly that case and
+/// `wait_returns_a_complete_finite_take_without_sequencing_on_the_pump`
+/// covers it with no fixture flag at all.
 #[test]
 fn a_finite_source_ends_its_own_take_and_the_file_is_readable() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,6 +217,7 @@ fn a_finite_source_ends_its_own_take_and_the_file_is_readable() {
             pos: 0,
             drained: Arc::clone(&drained),
             polls: Arc::clone(&polls),
+            delay: std::time::Duration::ZERO,
         },
         sink(&path),
     )
@@ -339,4 +356,66 @@ fn a_panicking_source_surfaces_as_a_recording_thread_panic() {
         "the panic must have come from the source being polled on the pump \
          thread — if it was never polled, this test is proving something else"
     );
+}
+
+/// **`wait()` returns a complete finite take, with nothing to sequence on.**
+///
+/// The counterpart to `a_finite_source_ends_its_own_take_…` above, and the
+/// reason [`Recorder::wait`] exists. That test has to publish the source's
+/// own exhaustion through an `AtomicBool` and spin on it, because `stop()`
+/// clears the run flag *before* joining and calling it promptly truncates the
+/// take — on the first draft, to zero frames. A consumer recording a finite
+/// source had the same problem and no better answer.
+///
+/// So the body here is the assertion: `start`, `wait`, read the file. No
+/// `wait_until`, no published flag, no sleep in the test. If `wait` did not
+/// hold the loop open to the source's own [`OnEmpty::EndOfStream`], the frame
+/// count would come up short — which is exactly the mutation.
+///
+/// *Mutation:* make `Recorder::wait` call `shutdown()` instead of
+/// `join_pump()` — i.e. give it `stop`'s flag clear. The file comes back at
+/// one or two 1024-frame polls instead of all 20, and the count assertion
+/// fails. (`Ramp::delay` is what stops that from being a coin flip; see the
+/// field's own comment.)
+#[test]
+fn wait_returns_a_complete_finite_take_without_sequencing_on_the_pump() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("awaited.wav");
+
+    // 20 full scratch buffers, paced so a truncating `wait` cannot finish the
+    // take by accident.
+    const FRAMES: usize = 1024 * 20;
+    let rec = Recorder::start(
+        Ramp {
+            frames: FRAMES,
+            pos: 0,
+            drained: Arc::new(AtomicBool::new(false)),
+            polls: Arc::new(AtomicUsize::new(0)),
+            delay: std::time::Duration::from_millis(1),
+        },
+        sink(&path),
+    )
+    .expect("stereo source into a stereo sink");
+
+    rec.wait().expect("a finite take finalizes cleanly");
+
+    let mut reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
+    assert_eq!(
+        reader.len() as usize,
+        FRAMES * 2,
+        "wait() must hold the loop open to the source's own end; a short file \
+         means it cut the take off the way stop() does"
+    );
+
+    // The values, not just the count: a take that is the right length but
+    // assembled from repeated or rotated frames is still wrong.
+    let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
+    for (i, pair) in samples.as_chunks::<2>().0.iter().enumerate() {
+        let expect = i as f32 / 100_000.0;
+        assert!(
+            (pair[0] - expect).abs() < 1e-6 && (pair[1] + expect).abs() < 1e-6,
+            "frame {i} came back as {pair:?}, expected [{expect}, {}]",
+            -expect
+        );
+    }
 }

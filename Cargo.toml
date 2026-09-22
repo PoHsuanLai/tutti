@@ -89,6 +89,16 @@ bevy_reflect = { version = "0.19", default-features = false }
 bevy_tasks = "0.19"
 thiserror = "2"
 
+# Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
+# dead, never with a `[[bench]]` — while the vendored fundsp fork was already
+# on 0.8, so the tree resolved two criterions and two criterion-plots.
+#
+# No `html_reports`: in criterion 0.8 the HTML report is compiled
+# unconditionally and the feature is referenced only by criterion's own tests.
+# It is a leftover from 0.3, and the CI comment that blamed it for pulling
+# fontconfig was wrong — see the note in `.github/workflows/ci.yml`.
+criterion = "0.8"
+
 # Automation curves. We track an unreleased commit (0.4.1, which adds the
 # `bevy_reflect` feature), so this is a direct git dep rather than crates.io
 # `0.4` plus a `[patch]`. Members inherit it with `workspace = true`; keep the

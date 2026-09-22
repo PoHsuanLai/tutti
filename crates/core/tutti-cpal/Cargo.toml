@@ -53,3 +53,8 @@ ringbuf = { version = "0.4", optional = true }
 # The RT gates render a real graph under a disabled allocator.
 assert_no_alloc = { version = "1", default-features = false }
 parking_lot = "0.12"
+criterion.workspace = true
+
+[[bench]]
+name = "audio_callback"
+harness = false

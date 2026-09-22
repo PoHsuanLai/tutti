@@ -76,6 +76,7 @@ futures-lite = "2"
 
 
 [dev-dependencies]
+criterion.workspace = true
 # The crate's own `test-support` surface, for the integration tests.
 #
 # A dev-dependency on self is how a feature reaches `tests/` unconditionally.
@@ -101,3 +102,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # a dependency. Moving it back up would re-add a codec to a DSP crate that
 # decodes through `symphonia`.
 hound = "3.5"
+
+[[bench]]
+name = "voice_pool"
+harness = false

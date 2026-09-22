@@ -18,6 +18,23 @@ capture = ["dep:tutti-io", "dep:ringbuf"]
 # graph and nothing else.
 midi = ["dep:tutti-midi-runtime"]
 
+# JACK, through cpal's implicitly-featured optional `jack` dependency.
+#
+# Linux/BSD only in effect: cpal declares no `jack` feature of its own — the
+# name is the implicit feature of an optional dependency that appears ONLY in
+# cpal's Linux/BSD target table, and `#[cfg(feature = "jack")]` appears only
+# inside its Linux `platform_impl`. So enabling this on macOS or Windows
+# compiles cleanly and reaches nothing.
+#
+# Left enableable on every target deliberately: `AudioHost::Jack` exists on
+# every platform and answers `Error::HostUnavailable` where it cannot be
+# served, so a host's config type does not change shape per OS.
+#
+# Needs libjack at BUILD time on Linux (`libjack-jackd2-dev` /
+# `jack-audio-connection-kit-devel`), which is why `just check-jack` is a
+# separate recipe from `just check-features`.
+jack = ["cpal/jack"]
+
 [dependencies]
 cpal = "0.15"
 thiserror.workspace = true

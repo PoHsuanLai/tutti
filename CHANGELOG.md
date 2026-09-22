@@ -84,6 +84,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`PolySynth` was capped at 16 voices for a removable reason.**
+  `PolySynth::new` rejected any `max_voices` above 16 because
+  `finished_indices` was a `SmallVec<[usize; 16]>` and a spill would have put
+  a `malloc` in the audio callback. The reasoning was sound and the tool was
+  wrong: a `Vec` sized to `max_voices` at construction and only `clear()`ed
+  never reallocates, which is the same guarantee with no ceiling. 16 voices
+  is low for a sustain-pedal part, and the cap is gone; `smallvec` is no
+  longer a dependency of this crate.
+
+  The steady-state no-alloc test now runs at **64 voices**, which makes it
+  strictly stronger — at 16-of-16 the collection was always inline, so it
+  passed whether or not the drain touched the heap.
+
+  A second test covers what that one structurally cannot: it warms the
+  *thread* and gates a *fresh instance*, including a `Clone` (the shape
+  `Net::commit` hands a running callback). Both construction sites are
+  mutation-covered; an earlier draft covered only `new` and the `Clone`
+  mutation passed against it.
+
+- **Found while doing the above, not fixed: the first block on a cold thread
+  allocates.** A `PolySynth` that has never been processed, with no MIDI and
+  no active voices, allocates 128 bytes on its first `process` — and it is
+  **per thread, not per instance** (a fresh synth on an already-used thread
+  allocates nothing). The path is `poll_midi_events_sorted` ->
+  `MidiInPort::poll` -> `self.source.load()` on an `ArcSwapOption`;
+  `arc-swap` initialises its per-thread fast slots lazily. It lands on the
+  **first callback of any new audio thread**, and `CpalDriver::restart`
+  makes a new one on every device switch. The whole `rt_no_alloc` suite was
+  blind to it because every test warmed the instance, and therefore the
+  thread, before opening the gate. Recorded as an `#[ignore]`d test at
+  `tutti-polysynth/tests/rt_no_alloc.rs`; the fix belongs in `MidiInPort`.
+
 - **`Recorder` could not await a finite take's natural end.** `stop()` clears
   the run flag *before* joining, which is right for a live source and wrong
   for a finite one: a source that has not reached its end is cut off wherever
@@ -211,8 +243,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **The phase vocoder costs 16×** the bypass path (10.2 µs → 165 µs at 8
     voices). It is by far the most expensive thing in the sampler.
   - **A FLAC export is ~98% encoder, ~2% engine.**
-  - `PolySynth` is **hard-capped at 16 voices** (`FINISHED_NOTES_CAPACITY`);
-    more polyphony needs more instances, not a bigger config.
+  - `PolySynth` was **hard-capped at 16 voices** (`FINISHED_NOTES_CAPACITY`).
+    The cap is now removed — see Fixed.
 
   Three drafts produced *wrong* numbers before these, and the reasons are
   recorded in the bench headers because each is a trap the next person will

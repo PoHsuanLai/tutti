@@ -277,12 +277,16 @@ pub struct SynthConfig {
     /// different rate does not need this to be right — only the LFO and
     /// portamento step sizes are computed from it.
     pub sample_rate: tutti_core::SampleRate,
-    /// How many notes may sound at once. Must be 1..=16; the upper bound is the
-    /// inline capacity of the per-block finished-voice list, and exceeding it
-    /// would put a heap allocation in the audio callback, so
-    /// [`PolySynth::new`](crate::PolySynth::new) rejects it rather than
-    /// absorbing it. Every voice is fully constructed up front, so this is a
-    /// memory and CPU budget, not just a ceiling.
+    /// How many notes may sound at once. Must be at least 1; there is no
+    /// upper bound. Every voice is fully constructed up front, so this is a
+    /// memory and CPU budget rather than just a ceiling — 64 voices of saw
+    /// through a ladder filter is real work every block.
+    ///
+    /// It was capped at 16 until the per-block finished-voice list stopped
+    /// being a `SmallVec<[usize; 16]>`; that type's inline capacity had to
+    /// bound this, because a spill would have allocated in the audio
+    /// callback. A `Vec` sized here at construction gives the same guarantee
+    /// with no bound.
     pub max_voices: usize,
     /// Poly, mono or legato. Under mono and legato only slot 0 is ever used,
     /// whatever `max_voices` says.

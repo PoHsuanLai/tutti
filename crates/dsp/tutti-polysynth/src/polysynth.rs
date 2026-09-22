@@ -14,7 +14,6 @@
 use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
-use smallvec::SmallVec;
 use tutti_core::{
     Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, Tail,
     MAX_BUFFER_SIZE,
@@ -25,15 +24,6 @@ use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
 use tutti_midi_types::{CCNumber, MidiChannel};
 
 use std::sync::Arc;
-
-/// Inline capacity of [`PolySynth::finished_indices`], and therefore the hard
-/// ceiling on `max_voices` (enforced in [`PolySynth::new`]).
-///
-/// One entry is collected per voice that finishes in a block, so the worst
-/// case is every voice releasing at once. Keeping `max_voices` at or under
-/// this bound is what keeps the collection inline: a spill would put a
-/// `malloc` in the audio callback.
-const FINISHED_NOTES_CAPACITY: usize = 16;
 
 /// Convert a Q7.25 fixed-point pitch (Registered Per-Note Controller #3, M2-104
 /// §7.4.15.2) to a fractional MIDI note number: 7 integer bits = the 12-TET note,
@@ -74,7 +64,14 @@ pub struct PolySynth {
     midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
-    finished_indices: SmallVec<[usize; FINISHED_NOTES_CAPACITY]>,
+    /// Voices that finished this block, collected during the render loop and
+    /// drained after it.
+    ///
+    /// Sized to `max_voices` at construction and only ever `clear()`ed, so it
+    /// never reallocates: the worst case is every voice releasing at once,
+    /// which is exactly its capacity. Growing it would be a `malloc` on the
+    /// audio thread, which is what the `debug_assert` in `tick` watches for.
+    finished_indices: Vec<usize>,
 }
 
 impl PolySynth {
@@ -89,21 +86,25 @@ impl PolySynth {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`](crate::Error::InvalidConfig) if
-    /// `max_voices` is 0, or exceeds 16. The upper bound is the inline capacity
-    /// of the per-block finished-voice list: rejecting the config here is what
-    /// keeps that list from spilling to the heap inside the audio callback.
+    /// `max_voices` is 0. There is **no upper bound**: the per-block
+    /// finished-voice list is sized to `max_voices` here and only ever
+    /// `clear()`ed, so it never reallocates however large that is.
+    ///
+    /// It used to reject anything above 16, which was the inline capacity of
+    /// a `SmallVec` — a real constraint, since a spill would have put a
+    /// `malloc` in the audio callback, but one the `Vec` removes rather than
+    /// enforces. Every voice is fully constructed up front, so `max_voices`
+    /// is a memory and CPU budget.
     pub fn new(config: SynthConfig) -> crate::Result<Self> {
         if config.max_voices == 0 {
             return Err(crate::Error::InvalidConfig(
                 "max_voices must be at least 1".into(),
             ));
         }
-        if config.max_voices > FINISHED_NOTES_CAPACITY {
-            return Err(crate::Error::InvalidConfig(
-                "max_voices must not exceed FINISHED_NOTES_CAPACITY".into(),
-            ));
-        }
-
+        // Read before `config` is moved into the struct below; this is the
+        // one-time sizing that keeps `finished_indices` off the allocator for
+        // the rest of its life.
+        let max_voices = config.max_voices;
         let allocator_config = VoiceAllocatorConfig {
             max_voices: config.max_voices,
             mode: config.voice_mode,
@@ -142,7 +143,7 @@ impl PolySynth {
             midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
-            finished_indices: SmallVec::new(),
+            finished_indices: Vec::with_capacity(max_voices),
         })
     }
 
@@ -1115,7 +1116,7 @@ impl Clone for PolySynth {
             midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
-            finished_indices: SmallVec::new(),
+            finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }
 }

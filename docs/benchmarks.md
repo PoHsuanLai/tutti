@@ -78,16 +78,19 @@ The master tap is opt-in and the cost matches: 2.81 µs closed, 3.43 µs open
 
 ## Synth voices — `tutti-polysynth/benches/polysynth.rs`
 
-**`PolySynth` is hard-capped at 16 voices** — `PolySynth::new` rejects a
-`max_voices` above `FINISHED_NOTES_CAPACITY` (16, at `polysynth.rs:36`). More
-polyphony means more instances, not a bigger config.
+**The 16-voice cap is gone.** `PolySynth::new` used to reject a `max_voices`
+above the inline capacity of a `SmallVec<[usize; 16]>`; that list is now a
+`Vec` sized at construction, so there is no ceiling. The table below still
+stops at 16 because that is where these numbers were measured — scaling is
+linear at ~1.9 µs per voice, so extend the axis rather than extrapolating if
+you need a figure past it.
 
 | held voices | per 64-frame block | % of budget |
 |---|---|---|
 | 1 | 2.04 µs | 0.15% |
 | 4 | 7.53 µs | 0.56% |
 | 8 | 14.8 µs | 1.1% |
-| 16 (the ceiling) | 31.0 µs | 2.3% |
+| 16 | 31.0 µs | 2.3% |
 
 - **Oscillator**, 16 voices: sine 9.0 µs, square 9.7 µs, saw 14.8 µs,
   triangle 15.3 µs.

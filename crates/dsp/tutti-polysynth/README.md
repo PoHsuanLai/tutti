@@ -98,9 +98,12 @@ them, and swapping one means building a `PolySynth` and replacing the node.
 What does have a live setter: unison detune, stereo spread and sub-voice count,
 master volume, MPE enablement, and the MIDI source.
 
-`max_voices` is validated at construction to `1..=16` and refused outside it. The
-ceiling is not arbitrary — it is the inline capacity of the per-block
-finished-voice list, which is what keeps the audio callback from allocating.
+`max_voices` must be at least 1 and has no upper bound. It was capped at 16
+until the per-block finished-voice list stopped being a `SmallVec<[usize; 16]>`
+— that type's inline capacity had to bound it, because a spill would have
+allocated in the audio callback. The list is now a `Vec` sized once at
+construction and only `clear()`ed, which keeps the callback allocation-free
+without a ceiling.
 
 ## Examples
 

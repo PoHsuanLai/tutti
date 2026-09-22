@@ -13,11 +13,11 @@
 //! looked flat and the flatness was the benchmark's fault, not the synth's.
 //! Each case here sets `max_voices` to its own note count.
 //!
-//! The ceiling is real and worth knowing: `PolySynth::new` rejects a
-//! `max_voices` above `FINISHED_NOTES_CAPACITY`, which is **16**
-//! (`polysynth.rs:36`). So **one `PolySynth` cannot sound more than 16 notes
-//! at once**, and the axis here stops there rather than pretending otherwise.
-//! A host wanting more polyphony needs more instances, not a bigger config.
+//! The 16-voice ceiling these axes were originally written against is gone:
+//! `finished_indices` became a `Vec` sized at construction, so `max_voices`
+//! has no upper bound. The axis still stops at 16 because that is where the
+//! numbers in `docs/benchmarks.md` were taken and the scaling is linear —
+//! extend it if you need a figure past there, rather than extrapolating.
 //!
 //! **The block size is fixed at 64 frames.** `BufferArray<U2>` is
 //! `MAX_BUFFER_SIZE` frames wide and `MAX_BUFFER_SIZE` is 64, so there is no

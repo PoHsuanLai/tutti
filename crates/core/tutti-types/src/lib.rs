@@ -1,4 +1,9 @@
 #![doc = include_str!("../README.md")]
+// Turned on after it found a real one: `RtEventBuf`'s entire struct-level doc
+// comment was attached to the `Debug` impl below it, so the type itself was
+// undocumented in rustdoc while looking thoroughly documented in the source.
+// That is the failure mode this lint exists for, and nothing else catches it.
+#![deny(missing_docs)]
 
 // `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
 // it defines are in scope for the modules below — `macro_rules!` are textually

@@ -39,6 +39,13 @@
 //! That is deliberate rather than unfinished. A `TuttiEngine::builder()` here
 //! would be precisely the artifact `4b5bd2fd` deleted.
 
+// Every item here is a re-export, so this costs nothing to satisfy and is the
+// cheapest place in the workspace to start enforcing it: a `pub use` inherits
+// the source item's docs, so the only way to trip this is to add something
+// that is not a re-export — which `tests/no_logic.rs` forbids anyway. Two
+// gates on the same rule, from different directions.
+#![deny(missing_docs)]
+
 // --- runtime and vocabulary -------------------------------------------------
 //
 // Whole-crate re-exports, ALIASED. Flattening would collide at once —

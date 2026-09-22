@@ -129,6 +129,39 @@ impl WavOut {
         })
     }
 
+    /// A sink whose next loud write is guaranteed to fail, for tests that need
+    /// a *real* mid-stream write failure rather than a simulated one.
+    ///
+    /// The header declares 8-bit integer samples while the sink quantizes at
+    /// [`BitDepth::Int16`]: creation succeeds, and `hound` then rejects the
+    /// first `i16` too wide for the stream with `TooWide` on the **write**.
+    /// That is the shape a disk-full has, and it is deterministic — no timing,
+    /// no filesystem trickery, no permission games that behave differently
+    /// under a CI runner or as root.
+    ///
+    /// Crate-internal because the fields it sets are module-private:
+    /// `wav_out.rs`'s own `a_failed_write_surfaces_from_finalize` builds this
+    /// literal inline, and `recorder.rs` needs the same fixture to reach the
+    /// Drop-path finalize failure. Two copies of a struct literal over private
+    /// fields is exactly the duplication that drifts, so it lives here once.
+    #[cfg(test)]
+    pub(crate) fn narrow_header_for_test(file_path: impl AsRef<Path>) -> Self {
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 8,
+            sample_format: SampleFormat::Int,
+        };
+        let file = File::create(file_path).expect("create");
+        Self {
+            writer: WavWriter::new(BufWriter::new(file), spec).expect("header"),
+            layout: ChannelLayout::STEREO,
+            depth: BitDepth::Int16,
+            sample_rate: SampleRate::SR_48K,
+            first_error: None,
+        }
+    }
+
     /// Declared channel layout — what the WAV header says, and therefore
     /// exactly how many samples per frame
     /// [`write_interleaved`](Self::write_interleaved) must emit.

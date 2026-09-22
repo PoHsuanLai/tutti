@@ -85,6 +85,54 @@ impl TuttiDriver {
         Ok(())
     }
 
+    /// Select a device by name or index. Takes effect on the next
+    /// [`restart`](Self::restart).
+    ///
+    /// Prefer a name: `DeviceInfo::index` is positional within one
+    /// enumeration, so any hot-plug renumbers it, and cpal 0.15 offers no
+    /// device-change notification to re-enumerate on.
+    pub fn select_device(&mut self, sel: crate::DeviceSelector) -> &mut Self {
+        self.audio_engine.select_device(sel);
+        self
+    }
+
+    /// The backend fault sink, which survives stop and restart.
+    ///
+    /// Take it once at startup. CPAL's error callback returns nothing, so a
+    /// device unplugged mid-session has nowhere else to surface — before this
+    /// existed it surfaced *nowhere*, and [`is_running`](Self::is_running)
+    /// went on reporting a healthy stream.
+    pub fn faults(&self) -> std::sync::Arc<crate::StreamFaults> {
+        self.audio_engine.faults()
+    }
+
+    /// The most recent backend fault, clearing it. For a host that shows each
+    /// one once.
+    pub fn take_fault(&self) -> Option<crate::StreamFault> {
+        self.audio_engine.faults().take_last()
+    }
+
+    /// Start on a driver of the caller's choosing.
+    ///
+    /// The production path is [`restart`](Self::restart), which builds a real
+    /// CPAL stream. This exists so a host — or a test — can run the same
+    /// lifecycle over a
+    /// [`ManualStreamDriver`](crate::ManualStreamDriver) with no device open.
+    pub fn start_with<D: crate::StreamDriver>(&mut self, driver: D) -> Result<()>
+    where
+        D::Running: 'static,
+    {
+        self.audio_engine.stop();
+        self.callback_state.reset_owners();
+        self.audio_engine
+            .start_with(self.callback_state.clone(), driver)
+    }
+
+    /// Stop the stream. Idempotent.
+    pub fn stop(&mut self) {
+        self.audio_engine.stop();
+    }
+
     /// Enumerate output devices as [`DeviceInfo`] records.
     pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>> {
         Ok(AudioEngine::output_devices()?.map(|(index, name)| DeviceInfo { index, name }))

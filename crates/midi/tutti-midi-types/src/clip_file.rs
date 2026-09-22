@@ -101,6 +101,29 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 /// Serialize a MIDI Clip File that opens with its tempo and time signature, per
 /// M2-116 §7.1.1 / §7.1.2 — the shape an importer needs to place the clip in
 /// real time.
+///
+/// **`header` replaces a header the events already carry.** Tempo and time
+/// signature are ordinary events in this format, so a clip that came from
+/// [`read_clip_file`] already has its pair sitting at the front of
+/// `events`; any such leading zero-delta pair is dropped in favour of
+/// `header`. Without that, re-encoding a parsed clip grew a duplicate pair
+/// on every cycle. A Set Tempo later in the stream is a mid-clip tempo
+/// change and is left alone.
+///
+/// Re-encode a parsed clip with [`ParsedClipFile::header`]:
+///
+/// ```
+/// # use tutti_midi_types::{read_clip_file, write_clip_file_with_header, ClipHeader};
+/// # use tutti_midi_types::{write_clip_file_from_beats, Beat, MidiEvent, MidiChannel, MidiGroup};
+/// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
+/// let clip = read_clip_file(&first).unwrap();
+/// let again = write_clip_file_with_header(
+///     clip.ticks_per_quarter,
+///     clip.header().unwrap(),
+///     &clip.events,
+/// );
+/// assert_eq!(first, again, "a round trip is byte-stable");
+/// ```
 pub fn write_clip_file_with_header(
     ticks_per_quarter: u16,
     header: ClipHeader,
@@ -109,7 +132,36 @@ pub fn write_clip_file_with_header(
     write_clip(ticks_per_quarter, Some(header), events)
 }
 
+/// How many events at the head of `events` sit in the **header position** — the
+/// run of zero-delta Set Tempo / Set Time Signature messages that M2-116
+/// §7.1.1 / §7.1.2 place immediately after Start of Clip.
+///
+/// Only the *leading* run counts, and that is the whole point: a Set Tempo
+/// further along the stream is a mid-clip tempo change, which is musical
+/// content and must survive a round trip untouched.
+fn leading_header_len(events: &[ClipEvent]) -> usize {
+    events
+        .iter()
+        .take_while(|ce| {
+            ce.delta_ticks == 0
+                && (crate::ump::flex_tempo_bpm(&ce.event).is_some()
+                    || crate::ump::flex_time_signature(&ce.event).is_some())
+        })
+        .count()
+}
+
 fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[ClipEvent]) -> Vec<u8> {
+    // A supplied header REPLACES one the events already carry rather than being
+    // prepended to it. Tempo and time signature are ordinary events in this
+    // format, so `read_clip_file` hands them back inside `events` — and writing
+    // the header on top of them is how a parse -> write -> parse cycle used to
+    // grow a duplicate pair every time round. Stripping is confined to the
+    // leading zero-delta run, so a mid-clip tempo change is not touched.
+    let events = if header.is_some() {
+        &events[leading_header_len(events)..]
+    } else {
+        events
+    };
     let mut out = Vec::with_capacity(8 + (events.len() + 3) * 8);
     out.extend_from_slice(&CLIP_FILE_MAGIC);
 
@@ -236,6 +288,22 @@ impl ParsedClipFile {
             .iter()
             .find_map(|ce| crate::ump::flex_tempo_bpm(&ce.event))
             .map(Bpm)
+    }
+
+    /// The clip's musical context as a [`ClipHeader`] — the value to hand back
+    /// to [`write_clip_file_with_header`] when re-encoding this clip.
+    ///
+    /// `Some` only when the file declares **both** a tempo and a time
+    /// signature. A clip carrying one and not the other has no complete
+    /// header, and substituting [`ClipHeader::default`]'s 120/4-4 for the
+    /// missing half is a decision for the caller — doing it here would write a
+    /// tempo the file never claimed and make it indistinguishable from one it
+    /// did.
+    pub fn header(&self) -> Option<ClipHeader> {
+        Some(ClipHeader {
+            tempo_bpm: self.tempo_bpm()?,
+            time_signature: self.time_signature()?,
+        })
     }
 
     /// The clip's first Flex Data **Set Time Signature** as

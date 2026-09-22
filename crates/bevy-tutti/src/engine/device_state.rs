@@ -33,6 +33,15 @@ pub struct AudioDeviceState {
     /// root folds into, not the root's own width.
     #[reflect(ignore)]
     pub channels: ChannelLayout,
+    /// Backend faults reported since the stream last started.
+    ///
+    /// Non-zero means the audio backend reported an error. CPAL's error
+    /// callback returns nothing, so before this existed a fault surfaced
+    /// *nowhere*: the callback was `|_err| {}`, `is_running` stayed true, and
+    /// a host went on telling the user a disconnected device was healthy.
+    pub stream_faults: u64,
+    /// The most recent fault's message, for a status line. Empty if none.
+    pub last_fault: String,
 }
 
 impl Default for AudioDeviceState {
@@ -42,6 +51,8 @@ impl Default for AudioDeviceState {
             current_device: String::new(),
             is_running: false,
             channels: ChannelLayout::STEREO,
+            stream_faults: 0,
+            last_fault: String::new(),
         }
     }
 }
@@ -63,6 +74,17 @@ pub fn device_state_sync_system(
     state.is_running = driver.is_running();
     if let Some(cfg) = config {
         state.channels = cfg.channels;
+    }
+
+    // Faults: compare the count first and only reach for the message when it
+    // moved. This system runs every frame, so the steady-state cost is one
+    // atomic load; the mutex behind `last()` is touched only on the frame a
+    // fault actually arrives.
+    let faults = driver.faults();
+    let count = faults.count();
+    if count != state.stream_faults {
+        state.stream_faults = count;
+        state.last_fault = faults.last().map(|f| f.message).unwrap_or_default();
     }
 }
 

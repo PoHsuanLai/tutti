@@ -81,9 +81,13 @@ bevy_asset = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion.workspace = true
 proptest = "1.9.0"
 insta = { version = "1.41", features = ["yaml"] }
 approx = "0.5"
 tempfile = "3.8"
 rand = "0.8"
+
+[[bench]]
+name = "engine_render"
+harness = false

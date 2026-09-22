@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use crate::node_id::MIC_MONITOR_ID;
 use ringbuf::{traits::Consumer, HeapCons};
-use tutti_core::{Amplitude, AudioThreadCell, AudioUnit, BufferMut, BufferRef};
+use tutti_core::{Amplitude, AudioThreadCell, AudioUnit, BufferMut, BufferRef, SampleRate};
 
 /// A stereo capture-ring consumer, shared across fundsp's graph-commit clones.
 ///
@@ -101,6 +101,16 @@ pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
 pub struct MicMonitorNode {
     ring: MicRing,
     gain: Amplitude,
+    /// The rate the device layer opened the mic at, when it said so.
+    ///
+    /// `None` for a node built by hand, which cannot know. When it is known,
+    /// `set_sample_rate` debug-asserts the graph agrees — the unchecked half
+    /// of the guarantee whose checked half is `tutti_cpal`'s
+    /// `Error::SampleRateMismatch`. Same two-check shape as `pump`'s layout
+    /// `debug_assert` beside `Recorder::start`'s returned error, and for the
+    /// same reason: this node does not resample, so a disagreement is a drift
+    /// nobody reports.
+    device_rate: Option<SampleRate>,
 }
 
 impl MicMonitorNode {
@@ -109,12 +119,30 @@ impl MicMonitorNode {
         Self {
             ring,
             gain: Amplitude::new(1.0),
+            device_rate: None,
+        }
+    }
+
+    /// Build a monitor node over a ring the device layer opened at
+    /// `device_rate`, which the graph is then held to.
+    ///
+    /// This is what `tutti_cpal::MicIn::open_with_monitor` uses; a caller
+    /// wiring a ring by hand wants [`new`](Self::new).
+    pub fn new_at(ring: MicRing, device_rate: SampleRate) -> Self {
+        Self {
+            ring,
+            gain: Amplitude::new(1.0),
+            device_rate: Some(device_rate),
         }
     }
 
     /// Build a monitor node over a shared capture ring at `gain`.
     pub fn with_gain(ring: MicRing, gain: Amplitude) -> Self {
-        Self { ring, gain }
+        Self {
+            ring,
+            gain,
+            device_rate: None,
+        }
     }
 
     /// Pop the next captured frame, or `(0.0, 0.0)` on underrun. Audio-thread
@@ -162,17 +190,36 @@ impl AudioUnit for MicMonitorNode {
         // there's no stale backlog worth draining anyway.
     }
 
-    fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
-        // No-op: the device layer opens the mic at the graph's sample rate, so
-        // there's no resampling to reconfigure here.
+    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+        // Nothing to reconfigure — this node does not resample. But the claim
+        // that it does not *need* to was, until now, only a comment: the
+        // device layer opens the mic at the graph's rate, and nothing checked
+        // it. `MicIn::open` is the checked half (it returns
+        // `Error::SampleRateMismatch`); this is the unchecked half, in the
+        // same shape as `pump`'s layout `debug_assert` beside
+        // `Recorder::start`'s returned error.
+        debug_assert!(
+            self.device_rate.is_none_or(|r| r == sample_rate),
+            "mic opened at {:?} but the graph runs at {sample_rate:?} — \
+             MicMonitorNode does not resample, so this drifts silently",
+            self.device_rate
+        );
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let (l, r) = self.next_frame();
-        if output.len() >= 2 {
-            output[0] = l;
-            output[1] = r;
+        // Width check BEFORE the pop, not after. `next_frame` consumes from the
+        // ring, so popping first and then declining to write threw the frame
+        // away: a caller that handed over a short buffer lost captured audio
+        // with nothing to show for it. Unreachable through fundsp — a 2-out
+        // node is always given a 2-wide buffer — but a discard is never the
+        // branch you want on a path whose whole job is not losing frames, and
+        // ordering the check first costs nothing.
+        if output.len() < 2 {
+            return;
         }
+        let (l, r) = self.next_frame();
+        output[0] = l;
+        output[1] = r;
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
@@ -285,5 +332,100 @@ mod tests {
         let mut out = [0.0f32; 2];
         node.tick(&[], &mut out);
         assert_eq!(out, [9.0, 9.0], "reset left the ring untouched");
+    }
+
+    /// **The module's central claim, which had no test.**
+    ///
+    /// `reset`'s comment is an argument about clones: `Net::commit` swaps
+    /// vertices to the backend and keeps clones on the frontend, so a
+    /// `MicMonitorNode` clone lives on the main thread sharing this same
+    /// `Arc`'d consumer, and the frontend's `reset`/`set_sample_rate` can run
+    /// concurrently with the backend's `tick`. That is the entire reason
+    /// `reset` is empty. Nothing simulated the scenario — `reset_does_not_
+    /// consume_the_ring` resets and ticks *the same node*, which is not the
+    /// shape the comment is about.
+    ///
+    /// Here the clone is made explicitly, the frontend half is driven, and the
+    /// backend half must still find every frame.
+    ///
+    /// Mutation-checked: making `reset` drain the ring, or
+    /// `set_sample_rate` call `next_frame`, fails this while leaving
+    /// `reset_does_not_consume_the_ring` green.
+    #[test]
+    fn a_frontend_clone_driven_alongside_the_backend_consumes_nothing() {
+        let (ring, _prod) = ring_with(&[[1.0, 2.0], [3.0, 4.0]]);
+        let backend = MicMonitorNode::new(ring);
+        // What `Net::commit` leaves on the frontend: a clone over the same ring.
+        let mut frontend = backend.clone();
+        let mut backend = backend;
+
+        // Everything the graph drives on a frontend vertex.
+        frontend.reset();
+        frontend.set_sample_rate(tutti_core::SampleRate::SR_48K);
+
+        let mut out = [0.0f32; 2];
+        backend.tick(&[], &mut out);
+        assert_eq!(out, [1.0, 2.0], "the frontend clone must not have popped");
+        backend.tick(&[], &mut out);
+        assert_eq!(out, [3.0, 4.0], "nor on the second frame");
+    }
+
+    /// **A short output buffer must not eat a captured frame.**
+    ///
+    /// `tick` used to call `next_frame` — which pops — and only then check the
+    /// width, so a caller handing over a 1-wide buffer lost the frame with
+    /// nothing written. Unreachable through fundsp, which always gives a 2-out
+    /// node a 2-wide buffer, so this was latent rather than live; it is fixed
+    /// because a discard is never the branch you want on a path whose job is
+    /// not losing frames.
+    ///
+    /// Mutation-checked: restoring the pop-then-check order fails this.
+    #[test]
+    fn a_short_output_buffer_leaves_the_frame_in_the_ring() {
+        let (ring, _prod) = ring_with(&[[7.0, 8.0]]);
+        let mut node = MicMonitorNode::new(ring);
+
+        let mut narrow = [0.0f32; 1];
+        node.tick(&[], &mut narrow);
+        assert_eq!(
+            narrow,
+            [0.0],
+            "nothing may be written to a too-narrow buffer"
+        );
+
+        let mut out = [0.0f32; 2];
+        node.tick(&[], &mut out);
+        assert_eq!(
+            out,
+            [7.0, 8.0],
+            "the frame the narrow tick could not write must still be there"
+        );
+    }
+
+    /// The `AudioUnit` tail methods, which nothing named.
+    ///
+    /// Cheap, and not ceremony: `get_id` is how the graph's node-type dispatch
+    /// recognises this unit, so a wrong constant misroutes silently, and
+    /// `route`'s width is what tells fundsp the node is stereo.
+    #[test]
+    fn the_declared_shape_matches_what_the_graph_is_told() {
+        let (ring, _prod) = ring_with(&[]);
+        let mut node = MicMonitorNode::new(ring);
+
+        assert_eq!(node.inputs(), 0, "a capture source takes no graph input");
+        assert_eq!(node.outputs(), 2);
+        assert_eq!(node.get_id(), crate::node_id::MIC_MONITOR_ID);
+        assert_eq!(
+            node.route(&tutti_core::SignalFrame::new(0), 48_000.0).len(),
+            2,
+            "the routing frame must match `outputs()`, or fundsp plans the \
+             wrong width"
+        );
+        assert!(node.footprint() >= std::mem::size_of::<MicMonitorNode>());
+        assert!(
+            node.as_any().downcast_ref::<MicMonitorNode>().is_some(),
+            "downcasting is how a host reaches back to the concrete node"
+        );
+        assert!(node.as_any_mut().downcast_mut::<MicMonitorNode>().is_some());
     }
 }

@@ -27,7 +27,7 @@
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
 //! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::{
     traits::{Consumer, Producer, Split},
     HeapCons, HeapProd, HeapRb,
@@ -41,6 +41,7 @@ use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};
+use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
 
 /// Capture-ring capacity in stereo frames — ~1s at 48kHz. Large enough that a
 /// briefly descheduled pump thread doesn't overrun, small enough to bound
@@ -80,10 +81,28 @@ pub struct MicIn {
 }
 
 impl MicIn {
-    /// Open the default input device (or the `index`-th input device) and start
-    /// capturing into the ring. Returns once the stream is live.
-    pub fn open(device_index: Option<usize>) -> Result<Self> {
-        let (source, _) = Self::open_inner(device_index, false)?;
+    /// Open an input device at the graph's sample rate and start capturing.
+    /// Returns once the stream is live.
+    ///
+    /// **The rate is a parameter, not something read off the device**, and
+    /// that is the point. [`MicMonitorNode`](tutti_io::MicMonitorNode) renders
+    /// the mic into the graph with no resampling — its `set_sample_rate` is a
+    /// documented no-op resting on the assumption that the device layer opened
+    /// the mic at the graph's rate. Nothing enforced that: this function used
+    /// to take whatever `default_input_config` reported while
+    /// `AudioEngine::start` independently took whatever the *output* device
+    /// reported, and nothing compared them. A 44.1 kHz mic feeding a 48 kHz
+    /// graph drifted, silently, for as long as the take lasted.
+    ///
+    /// A device whose supported range covers `graph_rate` is opened **at**
+    /// `graph_rate`. One that cannot is [`Error::SampleRateMismatch`] rather
+    /// than a stream that sounds nearly right.
+    ///
+    /// Be aware of what this does *not* prove: asking for a rate does not make
+    /// a device produce it. ALSA plug devices advertise wide ranges and
+    /// resample internally. The error is honest about what was checked.
+    pub fn open(sel: impl Into<DeviceSelector>, graph_rate: SampleRate) -> Result<Self> {
+        let (source, _) = Self::open_inner(sel.into(), graph_rate, false)?;
         Ok(source)
     }
 
@@ -97,18 +116,31 @@ impl MicIn {
     /// One device, one callback, two independent rings: recording tolerates
     /// jitter with a deep buffer; monitoring stays low-latency with a shallow
     /// one. Neither can stall the other or the capture thread.
-    pub fn open_with_monitor(device_index: Option<usize>) -> Result<(Self, MicMonitorNode)> {
-        let (source, monitor) = Self::open_inner(device_index, true)?;
+    pub fn open_with_monitor(
+        sel: impl Into<DeviceSelector>,
+        graph_rate: SampleRate,
+    ) -> Result<(Self, MicMonitorNode)> {
+        let (source, monitor) = Self::open_inner(sel.into(), graph_rate, true)?;
         // `open_inner(_, true)` always returns the monitor.
         Ok((source, monitor.expect("monitor requested")))
     }
 
     fn open_inner(
-        device_index: Option<usize>,
+        sel: DeviceSelector,
+        graph_rate: SampleRate,
         with_monitor: bool,
     ) -> Result<(Self, Option<MicMonitorNode>)> {
-        let device = input_device(device_index)?;
-        let config = device.default_input_config()?;
+        let host = DeviceHost::open(AudioHost::Default)?;
+        let device = host.device(Direction::Input, &sel)?;
+        let name = device.name().unwrap_or_default();
+        let config = choose_input_config(
+            device.supported_input_configs().map_err(|e| {
+                Error::InvalidDevice(format!("cannot query {name:?} input configs: {e}"))
+            })?,
+            device.default_input_config()?,
+            graph_rate,
+            &name,
+        )?;
         let sample_rate = SampleRate::from(config.sample_rate().0);
         let channels = ChannelLayout::from(usize::from(config.channels()));
 
@@ -120,7 +152,16 @@ impl MicIn {
             let mon_rb = HeapRb::<[f32; 2]>::new(MONITOR_RING_FRAMES);
             let (mon_prod, mon_cons) = mon_rb.split();
             let ring: MicRing = share_mic_ring(mon_cons);
-            (Some(mon_prod), Some(MicMonitorNode::new(ring)))
+            // `new_at`, not `new`: the node then carries the rate it was
+            // opened at, and its `set_sample_rate` debug-asserts the graph
+            // agrees. That assertion is the unchecked half of the same
+            // guarantee `Error::SampleRateMismatch` is the checked half of —
+            // the two-check shape `pump`'s layout `debug_assert` and
+            // `Recorder::start`'s returned error already use.
+            (
+                Some(mon_prod),
+                Some(MicMonitorNode::new_at(ring, sample_rate)),
+            )
         } else {
             (None, None)
         };
@@ -216,10 +257,10 @@ impl MicIn {
     /// Input devices as `(index, name)` — the index is what [`open`](Self::open)
     /// takes. Mirrors `AudioEngine::output_devices`.
     pub fn input_devices() -> Result<impl Iterator<Item = (usize, String)>> {
-        Ok(cpal::default_host()
+        Ok(DeviceHost::open(AudioHost::Default)?
             .input_devices()?
-            .enumerate()
-            .map(|(i, d)| (i, d.name().unwrap_or_default())))
+            .into_iter()
+            .map(|d| (d.index, d.name)))
     }
 }
 
@@ -260,24 +301,6 @@ impl AudioIn for MicIn {
             }
         }
         n
-    }
-}
-
-fn input_device(index: Option<usize>) -> Result<cpal::Device> {
-    let host = cpal::default_host();
-    match index {
-        Some(i) => {
-            let devices: Vec<_> = host.input_devices()?.collect();
-            let count = devices.len();
-            devices.into_iter().nth(i).ok_or_else(|| {
-                Error::InvalidDevice(format!(
-                    "Input device index {i} out of range ({count} available)"
-                ))
-            })
-        }
-        None => host
-            .default_input_device()
-            .ok_or_else(|| Error::InvalidDevice("No input device available".into())),
     }
 }
 
@@ -352,4 +375,176 @@ where
         None,
     )?;
     Ok(stream)
+}
+
+/// Choose an input configuration that runs at `graph_rate`, or say why none
+/// can.
+///
+/// Free and pure so it is testable with **no device**: cpal's
+/// `SupportedStreamConfigRange::new` is public, so a fixture can state a
+/// device's capabilities directly. Before this existed, every branch of the
+/// rate decision lived inside `MicIn::open_inner` behind a real sound card.
+///
+/// The rules, in order:
+/// 1. a supported range whose `[min, max]` contains `graph_rate` — preferring
+///    `F32`, the format the callback converts from most cheaply;
+/// 2. otherwise the device's own default, if it happens to match;
+/// 3. otherwise [`Error::SampleRateMismatch`], naming both rates.
+pub(crate) fn choose_input_config(
+    supported: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
+    fallback: cpal::SupportedStreamConfig,
+    graph_rate: SampleRate,
+    device_name: &str,
+) -> Result<cpal::SupportedStreamConfig> {
+    let wanted = cpal::SampleRate(graph_rate.get().round() as u32);
+
+    let mut best: Option<cpal::SupportedStreamConfig> = None;
+    for range in supported {
+        if range.min_sample_rate() > wanted || range.max_sample_rate() < wanted {
+            continue;
+        }
+        let candidate = range.with_sample_rate(wanted);
+        // Prefer F32: `build_input` converts every other format per sample,
+        // and this is the one that is already the graph's type.
+        if candidate.sample_format() == cpal::SampleFormat::F32 {
+            return Ok(candidate);
+        }
+        if best.is_none() {
+            best = Some(candidate);
+        }
+    }
+    if let Some(c) = best {
+        return Ok(c);
+    }
+
+    if fallback.sample_rate() == wanted {
+        return Ok(fallback);
+    }
+
+    Err(Error::SampleRateMismatch {
+        device_name: device_name.to_string(),
+        device: SampleRate::from(fallback.sample_rate().0),
+        graph: graph_rate,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device that supports `[min, max]` at `format`.
+    fn range(min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(
+            2,
+            cpal::SampleRate(min),
+            cpal::SampleRate(max),
+            cpal::SupportedBufferSize::Unknown,
+            format,
+        )
+    }
+
+    fn fallback(rate: u32) -> cpal::SupportedStreamConfig {
+        range(rate, rate, cpal::SampleFormat::F32).with_sample_rate(cpal::SampleRate(rate))
+    }
+
+    /// **A device that can run at the graph's rate is opened at it**, not at
+    /// whatever its default happens to be.
+    ///
+    /// Before this, `open_inner` took `default_input_config()` unconditionally.
+    /// A mic defaulting to 44.1 kHz on a 48 kHz graph opened at 44.1 and
+    /// drifted, because `MicMonitorNode` does not resample and nothing
+    /// compared the two rates.
+    ///
+    /// Mutation-checked: returning `fallback` unconditionally fails this.
+    #[test]
+    fn a_device_covering_the_graph_rate_is_opened_at_it() {
+        let chosen = choose_input_config(
+            [range(8_000, 96_000, cpal::SampleFormat::F32)].into_iter(),
+            fallback(44_100),
+            SampleRate(48_000.0),
+            "Wide Range Mic",
+        )
+        .expect("48k is inside [8k, 96k]");
+        assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    }
+
+    /// **F32 wins when several supported ranges cover the rate.**
+    ///
+    /// Not cosmetic: `build_input` converts every other format per sample, and
+    /// F32 is already the graph's type.
+    #[test]
+    fn f32_is_preferred_over_an_integer_format_at_the_same_rate() {
+        let chosen = choose_input_config(
+            [
+                range(44_100, 48_000, cpal::SampleFormat::I16),
+                range(44_100, 48_000, cpal::SampleFormat::F32),
+            ]
+            .into_iter(),
+            fallback(44_100),
+            SampleRate(48_000.0),
+            "Dual Format Mic",
+        )
+        .expect("both ranges cover 48k");
+        assert_eq!(chosen.sample_format(), cpal::SampleFormat::F32);
+        assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    }
+
+    /// An integer-only device is still accepted — preference is not a
+    /// requirement.
+    #[test]
+    fn an_integer_only_device_is_accepted_at_the_graph_rate() {
+        let chosen = choose_input_config(
+            [range(44_100, 48_000, cpal::SampleFormat::I16)].into_iter(),
+            fallback(44_100),
+            SampleRate(48_000.0),
+            "I16 Mic",
+        )
+        .expect("the range covers 48k");
+        assert_eq!(chosen.sample_format(), cpal::SampleFormat::I16);
+        assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    }
+
+    /// **A device that cannot reach the graph's rate is an error, naming both
+    /// rates.**
+    ///
+    /// The whole point: silent drift becomes a refusal a host can show.
+    ///
+    /// Mutation-checked: returning `Ok(fallback)` here fails this.
+    #[test]
+    fn a_device_that_cannot_reach_the_graph_rate_is_refused() {
+        let err = choose_input_config(
+            [range(44_100, 44_100, cpal::SampleFormat::F32)].into_iter(),
+            fallback(44_100),
+            SampleRate(48_000.0),
+            "Fixed 44k1 Mic",
+        )
+        .expect_err("44.1k-only cannot serve a 48k graph");
+
+        match err {
+            Error::SampleRateMismatch {
+                device_name,
+                device,
+                graph,
+            } => {
+                assert_eq!(device_name, "Fixed 44k1 Mic");
+                assert_eq!(device.get(), 44_100.0);
+                assert_eq!(graph.get(), 48_000.0);
+            }
+            other => panic!("expected SampleRateMismatch, got {other:?}"),
+        }
+    }
+
+    /// A device that advertises nothing but whose default already matches is
+    /// accepted — some backends report an empty supported-config list.
+    #[test]
+    fn a_default_that_already_matches_is_accepted_with_no_ranges() {
+        let chosen = choose_input_config(
+            std::iter::empty(),
+            fallback(48_000),
+            SampleRate(48_000.0),
+            "Silent About Its Configs",
+        )
+        .expect("the default already runs at the graph rate");
+        assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    }
 }

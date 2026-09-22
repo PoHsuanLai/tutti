@@ -95,7 +95,12 @@ mod tests {
         val
     }
 
+    // Miri cannot execute x86 SSE intrinsics, and these two tests are about
+    // nothing else: they read and write MXCSR directly. Ignored under miri
+    // rather than cfg'd out, so `cargo miri test` reports them as skipped
+    // instead of silently covering a smaller surface than it appears to.
     #[test]
+    #[cfg_attr(miri, ignore = "reads MXCSR; miri has no x86 SSE intrinsics")]
     fn test_restores_state() {
         #[cfg(target_arch = "x86_64")]
         {
@@ -127,6 +132,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "reads MXCSR; miri has no x86 SSE intrinsics")]
     fn test_nested() {
         #[cfg(target_arch = "x86_64")]
         {

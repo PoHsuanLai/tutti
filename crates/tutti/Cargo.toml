@@ -1,0 +1,134 @@
+# The Bevy-free umbrella. See src/lib.rs for the one rule this crate has.
+[package]
+name = "tutti"
+version = "0.0.1"
+edition = "2021"
+description = "The tutti audio engine behind one dependency. Bevy-free."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Always present: the vocabulary, the runtime, the node contract, the DSP.
+# Everything else is a feature, because a headless consumer that only bounces
+# a file should not link ALSA, and one that only reads a .mid should not link
+# CoreMIDI.
+tutti-core = { path = "../core/tutti-core", default-features = false }
+tutti-types = { path = "../core/tutti-types", default-features = false }
+tutti-node = { path = "../core/tutti-node" }
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
+
+tutti-cpal = { path = "../core/tutti-cpal", default-features = false, optional = true }
+tutti-io = { path = "../core/tutti-io", optional = true }
+tutti-export = { path = "../core/tutti-export", optional = true }
+tutti-mod = { path = "../core/tutti-mod", default-features = false, optional = true }
+tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, optional = true }
+tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
+tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
+tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
+tutti-analysis = { path = "../dsp/tutti-analysis", default-features = false, optional = true }
+tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false, optional = true }
+tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", default-features = false, optional = true }
+tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
+tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
+tutti-plugin = { path = "../plugin/tutti-plugin", optional = true }
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[features]
+# `default = []`, as on every other member. A consumer names what it wants,
+# or takes `full`.
+default = []
+
+# Everything a headless host can have. Plugin FORMATS stay opt-in — each
+# links an SDK — exactly as in bevy-tutti's own `full`.
+full = [
+    "device",
+    "wav",
+    "flac",
+    "mp3",
+    "ogg",
+    "midi",
+    "midi-hardware",
+    "synth",
+    "soundfont",
+    "sampler",
+    "audio-io",
+    "export",
+    "spatial",
+    "analysis",
+    "modulation",
+    "convolution",
+]
+
+# The sound card. NOT default, unlike in `bevy-tutti` where it is mandatory:
+# an offline render, a CI job and a server build all want this crate without
+# ALSA or CoreAudio headers on the box.
+device = ["dep:tutti-cpal"]
+
+# JACK, through `tutti-cpal`. Linux/BSD only in effect, and it hard-links
+# libjack at build time — see that crate's own `jack` feature.
+jack = ["device", "tutti-cpal/jack"]
+
+# --- codecs (identical to bevy-tutti) ---------------------------------------
+wav = ["tutti-core/wav", "tutti-sampler?/wav"]
+flac = ["tutti-core/flac", "tutti-sampler?/flac"]
+mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3"]
+ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
+
+# --- MIDI, two axes (identical to bevy-tutti) -------------------------------
+midi = [
+    "dep:tutti-midi-types",
+    "dep:tutti-midi-file",
+    "dep:tutti-midi-runtime",
+    "tutti-core/midi",
+    "tutti-cpal?/midi",
+]
+midi-hardware = ["midi", "dep:tutti-midi-hardware"]
+
+# --- subsystems -------------------------------------------------------------
+#
+# Every one of these is bevy-tutti's feature MINUS its `/bevy` forwards. That
+# is the only systematic difference between the two tables, and it is the
+# whole point of this crate: `bevy-tutti`'s `modulation` pulls
+# `tutti-mod/bevy` + `tutti-types/bevy`, and its `sampler` pulls
+# `tutti-sampler/bevy`. None of that belongs here.
+synth = ["dep:tutti-polysynth"]
+soundfont = ["midi", "dep:tutti-soundfont"]
+sampler = ["wav", "dep:tutti-sampler"]
+audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
+export = ["dep:tutti-export"]
+spatial = ["dep:tutti-spatial"]
+modulation = ["dep:tutti-mod"]
+convolution = ["tutti-nodes/convolution"]
+
+# Axes bevy-tutti does not have. `tutti-analysis` in particular: bevy-tutti
+# does not depend on it at all, which is why `tutti-export`'s own
+# `examples/export.rs` could not have been written through that umbrella.
+analysis = ["dep:tutti-analysis"]
+
+# --- plugin hosting ---------------------------------------------------------
+#
+# No `tutti-plugin-server`: that is a BINARY the host spawns, and depending on
+# it here would put a `tutti-plugin -> tutti-plugin-server -> tutti-plugin`
+# cycle one edit away — the cycle `tutti-plugin`'s build script and the CI
+# workflow both warn about. Build it with
+# `cargo build -p tutti-plugin-server`.
+plugin = ["dep:tutti-plugin", "midi"]
+vst2 = ["plugin", "tutti-plugin/vst2"]
+vst3 = ["plugin", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin/au"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[[example]]
+name = "headless_export"
+required-features = ["export", "analysis", "wav"]
+
+# Cannot RUN in CI — it opens a sound card — but `cargo clippy --all-targets`
+# compiles it, which is the gate that matters for an example whose job is to
+# be read.
+[[example]]
+name = "headless_engine"
+required-features = ["device"]

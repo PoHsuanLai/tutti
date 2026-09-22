@@ -43,8 +43,16 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
 //!
-//! fn monitor_mic(mut graph: ResMut<AudioGraphRes>, mut commands: Commands) {
-//!     let (_mic, monitor) = MicIn::open_with_monitor(None).expect("a capture device");
+//! fn monitor_mic(
+//!     mut graph: ResMut<AudioGraphRes>,
+//!     config: Res<bevy_tutti::graph::AudioConfig>,
+//!     mut commands: Commands,
+//! ) {
+//!     // The GRAPH's rate, not the device's. `MicMonitorNode` does not
+//!     // resample, so a mic that cannot run at this rate is an error rather
+//!     // than a drift nobody reports.
+//!     let (_mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)
+//!         .expect("a capture device at the graph rate");
 //!     let id = graph.0.add(monitor);
 //!     let node = commands.spawn(AudioNode(id)).id();
 //!     // Without this the ring fills and every later frame is discarded, with
@@ -55,8 +63,9 @@
 //!
 //! That this composes at all — the monitor reconciling like any other node,
 //! reaching an effect chain, and carrying audio once declared — is pinned by
-//! `tests/io_graph_composition.rs`, including the undeclared-monitor silence
-//! described above.
+//! `tests/audio_io_pump.rs`'s `io_graph_composition` module, including the
+//! undeclared-monitor silence described above. (It was its own file once; the
+//! move is recorded at that module's declaration.)
 //!
 //! **A source and sink that disagree produce a wrong-speed file.**
 //! [`Recorder`] and [`AudioPump`](crate::graph::AudioPump) both take an already
@@ -73,8 +82,8 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
 //!
-//! fn record_mic(path: std::path::PathBuf, mut commands: Commands) {
-//!     let mic = MicIn::open(None).expect("a capture device");
+//! fn record_mic(path: std::path::PathBuf, rate: SampleRate, mut commands: Commands) {
+//!     let mic = MicIn::open(None, rate).expect("a capture device at the graph rate");
 //!     // Paired at the one place both halves are in scope, so the sink cannot
 //!     // declare a rate the source does not produce.
 //!     let wav = mic.matching_sink(path, BitDepth::Float32).expect("sink opens");

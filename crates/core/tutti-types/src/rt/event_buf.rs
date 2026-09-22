@@ -14,6 +14,11 @@ use super::cell::AudioThreadCell;
 /// past the inline capacity (returning `false`) rather than spilling to the
 /// heap — overflow on the audio thread is dropped, never allocated. Size the
 /// `N` to the worst case at construction.
+pub struct RtEventBuf<T, const N: usize> {
+    cell: AudioThreadCell<Capped<T, N>>,
+}
+
+/// Capacity only — the contents are deliberately not shown.
 impl<T, const N: usize> core::fmt::Debug for RtEventBuf<T, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Capacity only: the contents sit behind an `AudioThreadCell`, and
@@ -23,10 +28,6 @@ impl<T, const N: usize> core::fmt::Debug for RtEventBuf<T, N> {
             .field("capacity", &N)
             .finish_non_exhaustive()
     }
-}
-
-pub struct RtEventBuf<T, const N: usize> {
-    cell: AudioThreadCell<Capped<T, N>>,
 }
 
 impl<T, const N: usize> RtEventBuf<T, N> {

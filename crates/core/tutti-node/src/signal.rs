@@ -176,16 +176,47 @@ impl Routing {
     /// Routes signals from input to output.
     pub fn route(&self, input: &SignalFrame, outputs: usize) -> SignalFrame {
         let mut output = SignalFrame::new(outputs);
+
+        // `Generator` is handled before the empty-input guard, and that
+        // ordering is the whole point: a generator has no inputs, so the guard
+        // below made this arm unreachable for exactly the nodes it exists for.
+        // `noise`, `envelope`, `wave`, `sequencer`, `shared` and `ring` all
+        // declare `Generator` with `inputs() == 0`, and every one of them was
+        // getting `Unknown`. It went unnoticed because they all pass `0.0`, so
+        // the wrong answer and the right one were the same number — the first
+        // generator to declare a non-zero latency would have had it silently
+        // dropped.
+        if let Routing::Generator(latency) = self {
+            for i in 0..outputs {
+                output.set(i, Signal::Latency(*latency));
+            }
+            return output;
+        }
+
+        // Every remaining variant reads `input`, and all of them index or
+        // divide by its length.
         if input.is_empty() {
             return output;
         }
+
         match self {
             Routing::Arbitrary(latency) => {
-                let mut combo = input.at(0).distort(*latency);
+                // Fold the inputs first, then add this node's latency **once**.
+                //
+                // Adding `*latency` inside the fold — as `distort(*latency)`
+                // plus a `combine_nonlinear(.., *latency)` per remaining input
+                // — added it once per input, and made the result depend on the
+                // *order* of the input channels: `combine_nonlinear` takes a
+                // `min`, so an already-inflated running total was being
+                // compared against a raw input latency. With sources at 0 and
+                // 10 and a node latency of 5, `[0, 10]` gave 10 and `[10, 0]`
+                // gave 5. A node's reported latency cannot depend on the order
+                // its edges were wired.
+                let mut combo = input.at(0).distort(0.0);
                 for i in 1..input.len() {
-                    combo = combo.combine_nonlinear(input.at(i), *latency);
+                    combo = combo.combine_nonlinear(input.at(i), 0.0);
                 }
-                output.fill(combo);
+                output.fill(combo.distort(*latency));
             }
             Routing::Split => {
                 for i in 0..outputs {
@@ -193,9 +224,26 @@ impl Routing {
                 }
             }
             Routing::Join => {
+                // Two shapes used to panic here, both reachable through
+                // `AudioUnit::latency` / `AudioUnit::response`: zero outputs
+                // divided by zero, and more outputs than inputs made the
+                // integer division 0 and then indexed past the end. Every
+                // other variant answers an empty frame for a degenerate
+                // shape, so `Join` was alone in turning "sum these channels
+                // into nothing" into a crash.
+                if outputs == 0 {
+                    return output;
+                }
                 // How many inputs for each output.
-                let bundle = input.len() / output.len();
+                let bundle = input.len() / outputs;
                 for i in 0..outputs {
+                    // Fewer inputs than outputs: the outputs past the end have
+                    // nothing to sum and keep the `Unknown` they were built
+                    // with, which is the honest answer rather than a wrapped
+                    // duplicate. `i` only grows, so nothing later qualifies.
+                    if i >= input.len() {
+                        break;
+                    }
                     let mut combo = input.at(i);
                     for j in 1..bundle {
                         combo = combo.combine_linear(
@@ -206,20 +254,23 @@ impl Routing {
                         );
                     }
                     // Normalize. This is done to make join an inverse of split.
-                    output.set(i, combo.scale(output.len() as f64 / input.len() as f64));
+                    output.set(i, combo.scale(outputs as f64 / input.len() as f64));
                 }
             }
             Routing::Reverse => {
+                // Reached only for a non-empty input, deliberately. An empty
+                // frame means "no signal information available", which is what
+                // the guard above answers with a frame of `Unknown` — not a
+                // width mismatch. Widening this to fire on the empty case
+                // would put a new panic on the graph-commit path to report
+                // something that is not a miswiring.
                 assert_eq!(input.len(), outputs);
                 for i in 0..outputs {
                     output.set(i, input.at(input.len() - 1 - i));
                 }
             }
-            Routing::Generator(latency) => {
-                for i in 0..outputs {
-                    output.set(i, Signal::Latency(*latency));
-                }
-            }
+            // Handled above, before the empty-input guard.
+            Routing::Generator(_) => unreachable!(),
         }
         output
     }

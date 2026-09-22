@@ -120,6 +120,7 @@ optional = true
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 
 [dev-dependencies]
+criterion.workspace = true
 # The shared resolver; see its docs for the newest-wins rule.
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 tempfile = "3"
@@ -156,3 +157,8 @@ dyn-clone = "1"
 # feature-gated half of the public API missing.
 [package.metadata.docs.rs]
 all-features = true
+
+[[bench]]
+name = "vst2_in_process"
+harness = false
+required-features = ["vst2"]

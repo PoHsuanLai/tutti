@@ -11,15 +11,21 @@
 //! which the mock cannot model: real scheduling, real dlopen'd DSP, real
 //! shared-memory traffic, real socket round-trips.
 //!
-//! Requires plugins installed on the machine, so every test here is
-//! `#[ignore]`d — mirroring `probe_real_plugin` in `host::discovery::scanner`.
-//! Run explicitly:
+//! **These used to be `#[ignore]`d for needing plugins installed, and were
+//! therefore run nowhere** — not locally on Linux, not in CI. `EFFECTS` names
+//! macOS system paths, so on a bare checkout the only harness measuring the
+//! out-of-process bridge executed zero assertions. `load_n` now falls back to
+//! the **reference CLAP probe**, which cargo builds as a dev-dependency, so
+//! they run anywhere the `clap` feature is on:
 //!
 //! ```text
-//! cargo test --manifest-path crates/bevy-tutti/Cargo.toml \
-//!     -p tutti-plugin --features clap,vst3 --test real_plugin_pressure \
-//!     -- --ignored --nocapture
+//! cargo build -p tutti-plugin-server
+//! cargo nextest run -p tutti-plugin --features clap --test real_plugin_pressure
 //! ```
+//!
+//! `just pressure` wraps both. Installed third-party plugins are still
+//! preferred when present; each run prints which of the two it drove, and the
+//! numbers mean different things — see `load_n_from_probe`.
 //!
 //! No `--test-threads=1` needed: these serialize on an internal lock, because
 //! two of them running at once starve each other's subprocesses (see
@@ -54,28 +60,53 @@
 // build them, and `--ignored` to run them.
 #![cfg(any(feature = "clap", feature = "vst3", feature = "au"))]
 
+// The reference CLAP probe, so this harness has something to drive on a bare
+// checkout. `clap_probe` is the same module the out-of-process CLAP suites
+// use; it resolves the cdylib and the `plugin-server` binary that `build.rs`
+// located, both of which cargo builds as dev-dependencies.
+#[cfg(feature = "clap")]
+#[path = "support/clap_probe.rs"]
+mod clap_probe;
+
+#[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tutti_core::{AudioUnit, BufferVec, F32};
 
-/// These tests must not run concurrently, and the reason is the thing they
-/// measure.
+/// Take the machine, **across processes**.
 ///
-/// `cargo test` runs test functions on parallel threads. Each test here spawns
-/// up to 8 plugin subprocesses and then deliberately paces itself to the audio
-/// callback rate — so two tests running at once means ~16 subprocesses
-/// competing for the wall-clock time each one is counting on. Observed
-/// concretely: the 2-plugin case reported `non-silent 0/200`, i.e. every block
-/// starved, purely because a neighbouring test held the machine.
+/// This was a `static Mutex`, and under `cargo nextest` a `static Mutex`
+/// serializes nothing: nextest gives every test its own *process*, so a
+/// process-local lock is uncontended in each one and the tests run fully
+/// parallel anyway. `clap_probe.rs` had already learned this and answered it
+/// with a lock directory — `create_dir` is atomic and fails with
+/// `AlreadyExists` on every OS this builds for — while this file kept the
+/// `Mutex` and a doc describing `cargo test`'s threading model, which is not
+/// the model this repo runs under.
 ///
-/// A lock rather than a `--test-threads=1` note in the docs: a note is
-/// something a future runner has to know, and its absence shows up as a
-/// mystifying failure in the *other* test.
-static EXCLUSIVE: Mutex<()> = Mutex::new(());
+/// It went unnoticed because every test here was `#[ignore]`d. The first CI
+/// run after they were enabled failed exactly there:
+/// `repeated_load_and_drop_leaves_no_subprocesses` counts `plugin-server`
+/// processes **system-wide**, and its "before" count came back 5 rather than
+/// 0 — the three neighbouring tests' subprocesses, live in their own
+/// processes. It reported a leak that was a race.
+///
+/// Two things need serializing here and both are process-global: wall clock
+/// (each test paces itself to a real block period, so neighbours halve the
+/// time each subprocess gets) and the `plugin-server` process count.
+#[cfg(feature = "clap")]
+fn exclusive() -> clap_probe::cross_process_lock::Guard {
+    clap_probe::exclusive()
+}
 
-/// Take the machine. Poisoning is irrelevant here — the guard protects wall
-/// clock, not data — so a panicking test must not wedge every later one.
+/// Without `clap` there is no probe to fall back to, so every test here skips
+/// unless third-party plugins are installed — which happens only when someone
+/// runs this deliberately, on one machine, usually alone. The `Mutex` is kept
+/// for that build rather than duplicating the lock directory into a second
+/// place for a case that does not race in practice.
+#[cfg(not(feature = "clap"))]
 fn exclusive() -> MutexGuard<'static, ()> {
+    static EXCLUSIVE: Mutex<()> = Mutex::new(());
     EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -112,6 +143,73 @@ fn available_effects() -> Vec<&'static str> {
         .collect()
 }
 
+/// The fallback when no third-party plugin is installed: `count` instances of
+/// the **reference CLAP probe**, through the same real `plugin-server`
+/// subprocess and shared-memory bridge.
+///
+/// Why this exists. Every test in this file was `#[ignore]`d for needing
+/// plugins *installed on the machine*, and `EFFECTS` names macOS system paths
+/// — so on Linux, and on any bare checkout, the only harness that measures the
+/// out-of-process bridge ran **nowhere**, including CI. That is the same
+/// dark-code shape `just check-features` exists to close, on the subsystem
+/// with the largest blast radius.
+///
+/// **Read the resulting numbers as a bridge measurement, not a plugin
+/// one.** The probe is a trivial fixture, so the per-block cost here is the
+/// cost of the submit/collect pipeline, the socket and the shm slab, with
+/// almost no DSP under it. That is the right quantity for "does hosting
+/// out-of-process cost anything" and the wrong one for "how many real plugins
+/// fit" — `available_effects()` covers the latter when the plugins are there,
+/// and the run prints which of the two it did.
+#[cfg(feature = "clap")]
+fn load_n_from_probe(
+    count: usize,
+) -> Option<(
+    Vec<Box<dyn AudioUnit>>,
+    Vec<tutti_plugin::handles::PluginHandle>,
+)> {
+    eprintln!(
+        "no third-party effect plugins installed — driving {count} instance(s) \
+         of the reference CLAP probe instead"
+    );
+    // **The probe defaults to `RenderMode::Inert`, which writes nothing.**
+    // Left at the default it reports `non-silent 0/N` on a perfectly healthy
+    // bridge, and every throughput figure in this file becomes a measurement
+    // of the fixture. `TAG_PASSTHROUGH` writes `in + tag`, so the output is
+    // both non-silent and *provably derived from the input* — which is the
+    // same reason `EFFECTS` names effects rather than synths.
+    //
+    // Set before the first spawn: the probe reads these on load, in the
+    // subprocess, having inherited them. Held across the whole loop so every
+    // instance gets it, and dropped after — by then each subprocess has its
+    // own copy.
+    let _env = clap_probe::ProbeEnv::new().render_mode(clap_probe::render::TAG_PASSTHROUGH);
+
+    let mut units: Vec<Box<dyn AudioUnit>> = Vec::with_capacity(count);
+    let mut handles = Vec::with_capacity(count);
+    for _ in 0..count {
+        let probe = clap_probe::load_probe(SAMPLE_RATE);
+        units.push(Box::new(probe.client));
+        handles.push(probe.handle);
+    }
+    Some((units, handles))
+}
+
+/// Without `clap` there is no probe to fall back to, so absence is still a
+/// skip. A `vst3`-only build has no in-tree reference *effect*: the VST3
+/// probe is `audio-probe`, which the delay-compensation tests drive directly
+/// through [`load_passthrough`].
+#[cfg(all(not(feature = "clap"), feature = "vst3"))]
+fn load_n_from_probe(
+    _count: usize,
+) -> Option<(
+    Vec<Box<dyn AudioUnit>>,
+    Vec<tutti_plugin::handles::PluginHandle>,
+)> {
+    eprintln!("no effect plugins installed and no `clap` feature to fall back on — skipping");
+    None
+}
+
 /// Load `count` plugin instances, cycling through whatever is installed.
 ///
 /// Returns the units and their handles; the handles must outlive the units
@@ -130,9 +228,9 @@ fn load_n(
 )> {
     let paths = available_effects();
     if paths.is_empty() {
-        eprintln!("no effect plugins installed — skipping");
-        return None;
+        return load_n_from_probe(count);
     }
+    eprintln!("driving {count} instance(s) of installed third-party plugins: {paths:?}");
 
     let mut units = Vec::with_capacity(count);
     let mut handles = Vec::with_capacity(count);
@@ -312,7 +410,6 @@ fn report(label: &str, costs: &[Duration], non_silent: usize) -> Duration {
 /// [`starving_the_subprocesses_yields_silence_not_input_echo`].
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
-#[ignore = "requires plugins installed on the machine"]
 fn eight_real_plugins_stay_under_the_callback_deadline() {
     let _machine = exclusive();
     let Some((mut units, _handles)) = load_n(8) else {
@@ -324,16 +421,24 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
     report("8 plugins", &costs, non_silent);
 
     // Now assertable, and only because the subprocess runs at realtime
-    // priority. Before that change this same check swung between 29 and 492
-    // out of 500 on identical code and had to be downgraded to a printed note;
-    // with it, three consecutive runs gave 498/495/495. So this doubles as the
-    // regression guard for `raise_to_realtime` going missing.
+    // priority *where the OS grants it*. Before `raise_to_realtime` this check
+    // swung between 29 and 492 out of 500 on identical code and had to be a
+    // printed note; with it, three consecutive runs gave 498/495/495. So it
+    // doubles as the regression guard for that call going missing.
+    //
+    // It holds without realtime priority too, on a machine with cores to
+    // spare: a 32-thread box with `RLIMIT_RTPRIO` capped at 0 gives 498/500
+    // across 8 probe instances. Realtime priority buys the *guarantee*, not
+    // the throughput, so this is not gated on it — a floor that silently
+    // stopped being checked wherever the OS says no would stop being checked
+    // in most containers, CI included.
     assert!(
         non_silent > costs.len() * 9 / 10,
         "only {non_silent}/{} blocks carried audio across 8 plugins. Either the \
          subprocesses are not getting realtime priority (see \
-         `plugin-server`'s `raise_to_realtime`), or this machine cannot \
-         schedule 8 of them within a {PERIOD:?} block.",
+         `plugin-server`'s `raise_to_realtime`), this machine cannot schedule \
+         8 of them within a {PERIOD:?} block, or — if running on the reference \
+         probe — it is rendering `Inert`, which writes nothing.",
         costs.len()
     );
 
@@ -386,7 +491,6 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
 /// bound below sits between the two regimes with wide margin on both sides.
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
-#[ignore = "requires plugins installed on the machine"]
 fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
     let _machine = exclusive();
     /// A synchronous design's per-plugin wait at 64 frames / 48 kHz: half a
@@ -461,7 +565,6 @@ fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
 /// against real subprocesses rather than a mock.
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
-#[ignore = "requires plugins installed on the machine"]
 fn starving_the_subprocesses_yields_silence_not_input_echo() {
     let _machine = exclusive();
     let Some((mut units, _handles)) = load_n(4) else {
@@ -510,14 +613,13 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 /// session; leaking one host process per load would be fatal over hours.
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
-#[ignore = "requires plugins installed on the machine"]
 fn repeated_load_and_drop_leaves_no_subprocesses() {
     let _machine = exclusive();
-    if available_effects().is_empty() {
-        eprintln!("no effect plugins installed — skipping");
-        return;
-    }
-
+    // No `available_effects()` guard: subprocess teardown is the same code
+    // whatever is loaded into it, so the reference probe exercises this
+    // exactly as a third-party plugin does — and `load_n` falls back to it.
+    // The guard used to skip this test on every machine without plugins
+    // installed, which is every bare checkout.
     let before = count_plugin_servers();
     for round in 0..8 {
         let Some((mut units, handles)) = load_n(2) else {

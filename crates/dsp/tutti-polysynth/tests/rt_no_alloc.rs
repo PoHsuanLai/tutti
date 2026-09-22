@@ -205,19 +205,30 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 /// fills it exactly to its inline capacity. The other tests in this file all
 /// run at `max_voices: 8`, half of it.
 ///
-/// Note what this test can and cannot prove. Because the constructor caps
-/// `max_voices` at the inline capacity, the collection cannot spill, so this
-/// passes whether the drain indexes or uses `mem::take` — at 16-of-16 a take
-/// swaps two inline buffers and never touches the heap. It guards the
-/// *steady state* at full occupancy. The allocation hazard `mem::take`
-/// carries is only reachable if the cap is raised without also making the
-/// buffer bigger, which
-/// `polysynth_rejects_max_voices_past_inline_capacity` is what forecloses.
-/// (Verified by construction: removing the cap and running this at 24 voices
-/// against a `mem::take` drain aborts inside the no-alloc gate.)
+/// **Run at 64 voices, which is the point.** This test used to run at 16,
+/// because 16 was the ceiling `PolySynth::new` enforced: `finished_indices`
+/// was a `SmallVec<[usize; 16]>` and a larger `max_voices` could have spilled
+/// it onto the heap inside the callback. At 16-of-16 the collection was
+/// always inline, so the test passed whether the drain indexed or used
+/// `mem::take`, and it proved nothing about the heap.
+///
+/// `finished_indices` is now a `Vec` sized to `max_voices` at construction,
+/// so there is no ceiling and this runs well past the old one — every voice
+/// releasing in the same block, on a heap buffer, inside the no-alloc gate.
+/// That is a strictly stronger statement than the version with the cap: it
+/// pins the "sized once, `clear()`ed thereafter" property that replaced the
+/// ceiling, rather than a bound that made the property untestable.
+///
+/// Constructing at all is half the assertion — the `.unwrap()` below is what
+/// used to be `polysynth_rejects_max_voices_past_inline_capacity`.
+///
+/// *Mutation:* `Vec::with_capacity(config.max_voices)` -> `Vec::new()` in
+/// `PolySynth::new` aborts inside the gate on the first block that finishes
+/// a voice.
 #[test]
 fn polysynth_all_voices_finishing_together_is_allocation_free() {
-    const MAX_VOICES: usize = 16;
+    // Four times the old inline ceiling, so the buffer under test is on the heap.
+    const MAX_VOICES: usize = 64;
 
     let mut synth = PolySynth::new(SynthConfig {
         sample_rate: tutti_core::SampleRate::from(48_000.0),
@@ -264,8 +275,9 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
                 let mut output = output_vec.buffer_mut();
                 synth.process(64, &input, &mut output);
             }
-            // All 16 releases land together, so a single block collects
-            // `MAX_VOICES` finished indices.
+            // All releases land together, so a single block collects the full
+            // `MAX_VOICES` finished indices — the worst case the capacity is
+            // sized for.
             sender.queue(&all_off);
             for _ in 0..256 {
                 let input = input_vec.buffer_ref();
@@ -276,17 +288,139 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     });
 }
 
-/// `max_voices` above the inline capacity is refused at construction rather
-/// than silently spilling `finished_indices` onto the heap per block.
+/// **A freshly constructed synth allocates nothing, on a thread that is
+/// already warm.**
+///
+/// This is the test that pins `Vec::with_capacity(max_voices)` in
+/// `PolySynth::new`. The neighbouring steady-state test cannot: it warms the
+/// *instance* before opening the gate, so a bare `Vec::new()` simply grows to
+/// capacity during the warm-up and the mutation passes. Verified, not
+/// assumed.
+///
+/// Warming the **thread** and gating a **fresh instance** separates the two
+/// costs. It matters beyond the mutation: `Net::commit` clones graph nodes,
+/// so a never-processed `PolySynth` goes straight into a callback that is
+/// already running, which is exactly this shape.
+///
+/// *Mutations, both run:* `Vec::with_capacity(..)` -> `Vec::new()` in
+/// `PolySynth::new` aborts on the `new` half; the same substitution in the
+/// `Clone` impl aborts on the `clone` half. They are separate construction
+/// sites and an earlier draft of this test covered only the first — the
+/// `Clone` mutation passed against it.
 #[test]
-fn polysynth_rejects_max_voices_past_inline_capacity() {
-    let result = PolySynth::new(SynthConfig {
+fn polysynth_allocates_nothing_on_a_fresh_instance() {
+    const MAX_VOICES: usize = 64;
+
+    let build = || {
+        let mut synth = PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: MAX_VOICES,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap();
+        synth.set_sample_rate(SampleRate(48_000.0));
+        synth
+    };
+
+    let notes: Vec<MidiEvent> = (0..MAX_VOICES)
+        .map(|i| note_on(0, 36 + i as u8, 100))
+        .collect();
+    let offs: Vec<MidiEvent> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    // Warm the THREAD only — see `a_first_block_on_a_cold_thread_allocates`
+    // for what this is paying for and why it is not this test's subject.
+    {
+        let mut throwaway = build();
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        throwaway.process(64, &input, &mut output);
+    }
+
+    // Two never-processed synths: one straight from `new`, one from `Clone`.
+    // The clone is the case that actually reaches a running callback, since
+    // `Net::commit` clones nodes — and it has its own construction site for
+    // `finished_indices`, which the `new` half does not cover.
+    let pristine = build();
+    let cloned = pristine.clone();
+
+    for (which, mut synth) in [("new", pristine), ("clone", cloned)] {
+        let sender = synth.midi_sender();
+        // Queued outside the gate: `queue` is a control-thread call.
+        sender.queue(&notes);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..32 {
+                let input = input_vec.buffer_ref();
+                let mut output = output_vec.buffer_mut();
+                synth.process(64, &input, &mut output);
+            }
+        });
+
+        sender.queue(&offs);
+        assert_no_alloc::assert_no_alloc(|| {
+            // Long enough for every release to land, so the block that
+            // collects all 64 finished indices is inside the gate.
+            for _ in 0..256 {
+                let input = input_vec.buffer_ref();
+                let mut output = output_vec.buffer_mut();
+                synth.process(64, &input, &mut output);
+            }
+        });
+        // Named so a failure says which construction site leaked.
+        let _ = which;
+    }
+}
+
+/// **A pre-existing defect, recorded rather than fixed here: the first block
+/// on a *cold thread* allocates.**
+///
+/// `#[ignore]`d because it fails, and it fails on code this change did not
+/// touch — it reproduces identically at the default 8 voices on the commit
+/// before `finished_indices` became a `Vec`. It is filed here because this is
+/// where it was found and this file is where someone will look.
+///
+/// What was established, by bisection:
+///
+/// - A synth that has never been processed, given no MIDI and holding no
+///   active voices, allocates 128 bytes on its first `process`.
+/// - It is **per thread, not per instance**: a brand-new synth on a thread
+///   that has already processed one allocates nothing (that is the
+///   neighbouring test, which passes).
+/// - The first thing `process` calls is `poll_midi_events_sorted` ->
+///   `MidiInPort::poll`, whose first statement after the mailbox drain is
+///   `self.source.load()` on an `ArcSwapOption`. `arc-swap` initialises its
+///   per-thread fast slots lazily, on first use from each thread.
+///
+/// Why it matters rather than being a curiosity: the cost lands on the
+/// **first callback of any new audio thread**, and `CpalDriver::restart`
+/// makes a new one on every device switch. The whole `rt_no_alloc` suite is
+/// blind to it because every other test warms the instance — and therefore
+/// the thread — before opening the gate.
+///
+/// Fixing it belongs in `MidiInPort`, not here: something has to touch the
+/// `ArcSwap` once from the audio thread before the first real block, or the
+/// port has to stop using one on this path.
+#[test]
+#[ignore = "pre-existing: arc-swap's per-thread slots allocate on first load; see the doc"]
+fn a_first_block_on_a_cold_thread_allocates() {
+    let mut synth = PolySynth::new(SynthConfig {
         sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 17,
+        max_voices: 8,
+        oscillator: OscillatorType::Saw,
         ..Default::default()
+    })
+    .unwrap();
+    synth.set_sample_rate(SampleRate(48_000.0));
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        synth.process(64, &input, &mut output);
     });
-    assert!(
-        result.is_err(),
-        "max_voices past FINISHED_NOTES_CAPACITY must be rejected, not spilled"
-    );
 }

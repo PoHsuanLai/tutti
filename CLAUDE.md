@@ -91,6 +91,27 @@ comments in ` ```text ` / ` ```ignore ` blocks are never compiled — so this gr
 is the only enforcement there is. It searches `*.md` as well as `*.rs` for that
 reason.
 
+### The submodule-pin gate
+
+```bash
+scripts/check-submodule-pins.sh
+```
+
+The three VST3 SDK submodules are documented as pinned at `v3.8.0_build_66` in
+`.gitmodules`, in this file, and in `tutti-vst3-host/build.rs`. Prose cannot
+notice a bump moving the tree out from under it, and a silently changed SDK
+surfaces as an unexplained C++ compile error in `audio-probe` rather than as a
+version complaint — so this compares those statements against the commits the
+superproject actually records. Runs in the `canonical paths` CI job.
+
+**It asserts SHAs, not `git describe`.** The 3.8.0 tag was never fetched into
+this clone (a submodule fetch brings the recorded commit, not nearby tags), so
+`git describe` falls back to the nearest ancestor and reports
+`v3.7.3_build_20-NN-g…`. The content is 3.8.0 — the MIT `LICENSE.txt` is
+Copyright (c) 2025, and `docs/reference/vst3-3.8.0-interface-surface.md`
+agrees. A describe-based gate would fail on a correct tree, and a gate that
+cries wolf gets deleted.
+
 ### Submodules
 
 **`git clone` without `--recursive` leaves the VST3 SDK empty.** It is three
@@ -114,13 +135,13 @@ sudo dnf install -y alsa-lib-devel pkgconf-pkg-config  # Fedora
 
 ## Workspace Structure
 
-One workspace, rooted at the repo root. 32 members, grouped by subsystem.
+One workspace, rooted at the repo root. 33 members, grouped by subsystem.
 
 ```
 crates/
-  bevy-tutti          # THE UMBRELLA. Bevy adapter + engine re-exports; the only
-                      #   Bevy-mandatory member. Consumers depend on this, not on
-                      #   a dissolved `tutti` façade package (there isn't one).
+  tutti               # THE BEVY-FREE UMBRELLA. Re-exports only — see below.
+  bevy-tutti          # THE BEVY UMBRELLA. Adapter + engine re-exports; the only
+                      #   Bevy-mandatory member.
   core/
     tutti-core        # Audio graph runtime (Net, Transport, Metering, PDC)
     tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
@@ -544,6 +565,32 @@ comments and docs, and treat it as a bug when you find it:
   `tutti-synth` was split into `tutti-polysynth` + `tutti-soundfont`
   (`6bc0e77b`), `tutti-midi` was split into the four `midi/` crates
   (`786a4c24`).
-- The `tutti` façade package is **dissolved**; `bevy-tutti` is the umbrella.
-  There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host` is a
-  *module*.
+- **There are two umbrellas, and `tutti` holds no code.** A Bevy app depends
+  on `bevy-tutti`; a headless consumer depends on `tutti`.
+
+  The history matters, because a `tutti` package was deleted once and the
+  reason is easy to misread. The one at `9c75ec54` was the **workspace root
+  package** — the root `Cargo.toml` carried both `[workspace]` and
+  `[package] name = "tutti"` — and it held real logic: `TuttiEngine` ("a flat
+  bundle of owned subsystems returned from the builder"), `TuttiGraph`,
+  `TuttiEngineBuilder`, `TuttiDriver`, `audio_io`, `midi_export`, an error
+  type and a `no_std` lattice. `0a4adf68` moved that logic into
+  `bevy-tutti/src/engine/` and `4b5bd2fd` deleted the package. **The problem
+  was two stacked umbrellas where the lower one owned logic the upper one
+  needed — not a crate that re-exports other crates.**
+
+  So `crates/tutti` exists again, with one rule: **every item in it is a
+  `pub use`.** No builder, no engine bundle, no error aggregation. If
+  something wants to live there it belongs in the crate that owns the thing
+  it wires — device bootstrap in `tutti-cpal`, graph logic in `tutti-core`.
+  `crates/tutti/tests/no_logic.rs` enforces this by reading `lib.rs`, and
+  `scripts/check-canonical-paths.sh` additionally requires every whole-crate
+  re-export there to be aliased (`pub use tutti_core as core`), so
+  `tutti::tutti_core::…` is unspellable.
+
+  `bevy-tutti` does **not** depend on `tutti`, deliberately: it would keep
+  its direct edges anyway for their `bevy` features, ending with two edges to
+  each crate.
+
+  There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host`
+  is a *module*.

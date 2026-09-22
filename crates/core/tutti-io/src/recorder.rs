@@ -578,6 +578,37 @@ impl Recorder {
         Ok(self.shutdown()?)
     }
 
+    /// Wait for a **finite** take to reach its own end, then finalize.
+    ///
+    /// [`stop`](Self::stop) clears the run flag *before* joining. That is
+    /// exactly right for a live source and exactly wrong for a finite one: a
+    /// source that has not reached its end yet is cut off wherever the pump
+    /// happened to be, and the take is silently truncated — a short file, no
+    /// error anywhere. Until this existed there was no way to record a finite
+    /// source to completion without racing the pump thread and guessing.
+    ///
+    /// This joins without touching the flag, so the loop breaks where it was
+    /// always going to: on the source's own
+    /// [`OnEmpty::EndOfStream`](tutti_core::io::OnEmpty::EndOfStream). The
+    /// finalize result rides the join home exactly as it does for `stop`.
+    ///
+    /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
+    /// forever**, and every microphone capture is one — the pump parks and
+    /// re-polls rather than ending, so nothing but `stop` will ever break the
+    /// loop. That is not a wart to guard against with a timeout: the two
+    /// verdicts mean different things, and a recorder that gave up after some
+    /// interval would be reporting a complete take when it had no idea.
+    /// Choose the method that matches your source's `ON_EMPTY`.
+    ///
+    /// # Errors
+    ///
+    /// The sink's finalize error, if back-patching the WAV header failed.
+    pub fn wait(mut self) -> Result<()> {
+        // Deliberately not `shutdown()`: the one line that differs is the one
+        // that would truncate the take.
+        Ok(self.join_pump()?)
+    }
+
     /// Where a [`Drop`]-path finalize leaves its outcome.
     ///
     /// Take this handle *before* dropping the recorder; it outlives the
@@ -601,6 +632,16 @@ impl Recorder {
     /// `finalize` below it.
     fn shutdown(&mut self) -> std::io::Result<()> {
         self.running.store(false, Ordering::Release);
+        self.join_pump()
+    }
+
+    /// Join the pump and surface its finalize result, leaving `running`
+    /// alone.
+    ///
+    /// The half [`shutdown`](Self::shutdown) and [`wait`](Self::wait) share,
+    /// and the whole difference between them is the line above this call.
+    /// Taking `handle` is what makes either once-only.
+    fn join_pump(&mut self) -> std::io::Result<()> {
         match self.handle.take() {
             // The driver finalizes the sink and returns that io::Result.
             Some(handle) => handle.join(),
@@ -971,6 +1012,64 @@ mod tests {
             reader.len() as usize,
             3 * SCRATCH_FRAMES * 2,
             "the header must report exactly the frames the three counted passes wrote"
+        );
+    }
+
+    /// **The other half of the `Drop` guarantee: a finalize that *fails* there
+    /// still reaches the caller.**
+    ///
+    /// The sibling test above proves the drop path runs finalize and records
+    /// success. Nothing proved it records a *failure* — `error()` returning
+    /// `Some` had no coverage at all, so the entire reason
+    /// [`FinalizeStatus`] carries an error rather than just a done flag was
+    /// untested. `Drop` cannot return a `Result` and this workspace does not
+    /// panic in `Drop`, so this handle is the only path a disk-full on the last
+    /// block has to the caller; if it silently dropped the error, a truncated
+    /// take would look like a clean one.
+    ///
+    /// The failure is provoked, not simulated: `narrow_header_for_test` opens
+    /// an 8-bit header that the sink then quantizes into at `Int16`, so
+    /// `AlwaysLive`'s ±0.5 (±16383 at `Int16`) is rejected by `hound` with
+    /// `TooWide` on the write. See that constructor for why this shape rather
+    /// than a permission or disk trick.
+    ///
+    /// Mutation-checked: deleting the `self.status.set(result)` line from
+    /// `Drop` — or narrowing it to store only successes — fails this test while
+    /// leaving every other test in the file green.
+    #[test]
+    fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doomed.wav");
+        let wav = WavOut::narrow_header_for_test(&path);
+
+        let (driver, pump) = ManualDriver::new();
+        let status = {
+            let rec = Recorder::start_with(AlwaysLive, wav, driver)
+                .expect("the fixture sink is stereo, as AlwaysLive is");
+            let status = rec.finalize_status();
+            // One pass is enough: the first sample is already too wide, and
+            // `WavOut` latches `first_error` and stops writing from there.
+            assert!(
+                matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if n > 0),
+                "the pump reports frames moved; the sink's failure is latched, not returned"
+            );
+            status
+        };
+
+        assert!(
+            status.is_done(),
+            "the drop path must run finalize even when it is going to fail"
+        );
+        let err = status
+            .error()
+            .expect("a failed finalize on the drop path must be recorded, not swallowed");
+        // The specific cause survives — a caller can tell a too-wide sample
+        // from a full disk. Flattening to "finalize failed" would make the two
+        // indistinguishable, which is the information loss `WavOut::finalize`
+        // already refuses to accept.
+        assert!(
+            err.contains("more bits than the destination type"),
+            "the underlying hound error should be carried, got: {err}"
         );
     }
 

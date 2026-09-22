@@ -38,6 +38,32 @@ pub enum Error {
     #[error("Invalid device: {0}")]
     InvalidDevice(String),
 
+    /// The requested audio host is not reachable in this build or on this
+    /// machine — the feature is off, the platform has no such host, or the
+    /// server is not running.
+    ///
+    /// A runtime error rather than a compile error on purpose: `AudioHost`
+    /// carries every variant on every platform so a host's configuration
+    /// struct does not change shape per OS. See [`AudioHost`](crate::AudioHost).
+    #[error("audio host {host} unavailable: {reason}")]
+    HostUnavailable {
+        host: crate::host::AudioHost,
+        reason: String,
+    },
+
+    /// A capture device cannot run at the graph's sample rate.
+    ///
+    /// `MicMonitorNode` renders the mic into the graph with no resampling —
+    /// its `set_sample_rate` is a documented no-op that assumes the device
+    /// layer opened the mic at the graph's rate. This is the error that makes
+    /// that an enforced guarantee rather than an assumption.
+    #[error("input device {device_name:?} runs at {device} Hz; the graph runs at {graph} Hz")]
+    SampleRateMismatch {
+        device_name: String,
+        device: tutti_core::SampleRate,
+        graph: tutti_core::SampleRate,
+    },
+
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -13,6 +13,13 @@
 [workspace]
 resolver = "2"
 members = [
+    # The Bevy-free umbrella. A pure re-export crate, and it must stay one:
+    # the package of this name that existed before `4b5bd2fd` was the
+    # workspace ROOT package and held `TuttiEngine`, a builder and the CPAL
+    # callback, and it was dissolved because `bevy-tutti` needed that logic.
+    # Re-exporting was never the problem; owning logic was. See
+    # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
+    "crates/tutti",
     "crates/core/tutti-core",
     "crates/core/tutti-cpal",
     "crates/core/tutti-types",
@@ -88,6 +95,16 @@ bevy_asset = { version = "0.19", default-features = false }
 bevy_reflect = { version = "0.19", default-features = false }
 bevy_tasks = "0.19"
 thiserror = "2"
+
+# Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
+# dead, never with a `[[bench]]` — while the vendored fundsp fork was already
+# on 0.8, so the tree resolved two criterions and two criterion-plots.
+#
+# No `html_reports`: in criterion 0.8 the HTML report is compiled
+# unconditionally and the feature is referenced only by criterion's own tests.
+# It is a leftover from 0.3, and the CI comment that blamed it for pulling
+# fontconfig was wrong — see the note in `.github/workflows/ci.yml`.
+criterion = "0.8"
 
 # Automation curves. We track an unreleased commit (0.4.1, which adds the
 # `bevy_reflect` feature), so this is a direct git dep rather than crates.io

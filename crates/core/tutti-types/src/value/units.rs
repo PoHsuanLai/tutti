@@ -2443,6 +2443,15 @@ mod tests {
         assert!((round.get() - -12.0).abs() < 1e-4);
     }
 
+    // Same as `a_pitch_ratio_round_trips_through_cents`: under miri's libm
+    // perturbation even two calls to the *same* conversion can differ in the
+    // last bits, so `Db::from(x) == Db::from_amplitude(x)` fails there
+    // (-6.020598 vs -6.020602) while being exactly the property this test
+    // exists to pin everywhere else. No `unsafe` on this path.
+    #[cfg_attr(
+        miri,
+        ignore = "miri perturbs libm; this asserts two spellings agree bit for bit"
+    )]
     #[test]
     fn from_is_the_spelling_for_single_answer_conversions() {
         // Each of these delegates to its inherent method, so the two spellings
@@ -2623,6 +2632,18 @@ mod tests {
     /// It exists because `tuning.rs` was hand-rolling `1200.0 * ratio.log2()`
     /// while the forward direction was already a converter — the asymmetry the
     /// omission rule is meant to catch.
+    // Miri deliberately perturbs the results of libm functions like `log2`
+    // between calls, to catch code that assumes they are reproducible. The
+    // landmark assertions below are exact (`Cents::from_pitch_ratio(2.0)` must
+    // be precisely 1200), which holds on every real target and does not hold
+    // under that perturbation — 1199.9998 there. Ignored rather than relaxed
+    // to an epsilon: the exactness is the point on the platforms that run this
+    // code, and this function contains no `unsafe`, so miri has nothing to
+    // check here that it would otherwise catch.
+    #[cfg_attr(
+        miri,
+        ignore = "miri perturbs libm; these assertions are exact by design"
+    )]
     #[test]
     fn a_pitch_ratio_round_trips_through_cents() {
         for ratio in [0.5_f32, 1.0, 1.5, 2.0, 3.0] {

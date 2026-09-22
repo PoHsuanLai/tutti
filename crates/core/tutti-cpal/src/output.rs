@@ -4,16 +4,20 @@
 //! producer ([`MidiPreBlock`]) that delivers events into node inboxes, then the
 //! graph render ([`Engine`]). Metering runs over the result.
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::DeviceTrait;
 use std::sync::Arc;
 use tutti_core::Engine;
-use tutti_core::{meter_output, AudioTap, MasterMeter, MeteringContext};
+use tutti_core::{AudioTap, MasterMeter};
 use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::{MidiPostBlock, MidiPreBlock};
 
+use crate::block::OutputBlock;
+use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
+use crate::faults::StreamFaults;
+use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
 
 /// Maximum frames per CPAL callback buffer.
 ///
@@ -74,11 +78,23 @@ impl AudioCallbackState {
         self
     }
 
-    /// Clear the RT processors' recorded owner thread-IDs.
+    /// Clear the RT processors' owner assertions, ahead of a device switch.
     ///
-    /// Control-thread only, and only while no stream is running: a restart
-    /// moves the callback to a new CPAL thread, and the owner checks would
-    /// otherwise flag the new thread as an intruder.
+    /// **Currently a no-op all the way down**, and the docs here used to claim
+    /// otherwise. Every call in this chain bottoms out in
+    /// `AudioThreadCell::reset_owner`, whose own doc reads "No-op, kept for
+    /// source compatibility. The cell pins no owner thread, so a device switch
+    /// needs no reset." The cell's debug check is a *concurrent-borrow*
+    /// detector (`in_use.swap`), not an owner-thread one, so moving the
+    /// callback to a new CPAL thread has needed no reset since that change;
+    /// `tutti_types::RtEventBuf::reset_owner` already said so and this did not.
+    ///
+    /// Kept rather than deleted because it is public API and because the
+    /// property it guards is one a future cell might reinstate. Called from
+    /// `TuttiDriver::restart` for the same reason. Do not write new code that
+    /// depends on it doing something.
+    ///
+    /// Control-thread only, and only while no stream is running.
     pub fn reset_owners(&self) {
         self.engine.reset_owners();
         #[cfg(feature = "midi")]
@@ -127,292 +143,226 @@ pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>
     }
 }
 
-/// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
-/// on a background thread for as long as this value exists; dropping it stops
-/// the stream. The inner field is never read — ownership *is* the API.
-struct StreamHandle(
-    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
-);
-
-unsafe impl Send for StreamHandle {}
-
-/// Owns the CPAL stream and the device configuration it was built from.
+/// Owns the running stream and the device configuration it was built from.
 ///
 /// The lifecycle half of the device layer: [`TuttiDriver`](crate::TuttiDriver)
 /// wraps one and is what a host normally holds. Every method here runs on the
 /// control thread — none is callable from the RT callback.
+///
+/// The running stream is a `Box<dyn RunningStream>` rather than a type
+/// parameter, for the reason `tutti_io::Recorder`'s field doc gives about its
+/// own driver: this is a type a caller stores in a field, and making it
+/// `AudioEngine<D>` would push the choice of driver into `TuttiDriver`, into
+/// `bevy-tutti`'s `NonSend`, and into every host signature that holds one.
 pub struct AudioEngine {
-    sample_rate: SampleRate,
-    channels: ChannelLayout,
-    is_running: bool,
-    device_index: Option<usize>,
-    _stream: Option<StreamHandle>,
+    spec: OutputSpec,
+    /// `None` for an engine built from a bare spec — no host, no device, so
+    /// nothing to re-resolve on start. That is what makes a device-free
+    /// lifecycle test possible.
+    target: Option<(DeviceHost, DeviceSelector)>,
+    faults: Arc<StreamFaults>,
+    running: Option<Box<dyn RunningStream>>,
 }
 
-// Hand-rolled: `StreamHandle` wraps a CPAL stream, which is not `Debug`.
-// Reports the configuration a host would want in a log line; whether a stream
-// object exists is covered by `is_running`.
+// Hand-rolled: the running stream is not `Debug`. Reports the configuration a
+// host would want in a log line; whether a stream exists is `is_running`.
 impl std::fmt::Debug for AudioEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioEngine")
-            .field("sample_rate", &self.sample_rate)
-            .field("channels", &self.channels)
-            .field("is_running", &self.is_running)
-            .field("device_index", &self.device_index)
+            .field("spec", &self.spec)
+            .field("is_running", &self.is_running())
+            .field("faults", &self.faults.count())
             .finish_non_exhaustive()
     }
 }
 
 impl AudioEngine {
-    /// Open a device and read its default output config, without starting a
-    /// stream. `None` selects the host's default device.
+    /// Open a device on the default host and read its config, without starting
+    /// a stream. `None` selects the host's default device.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDevice`] if `device_index` is out of range, or
+    /// [`Error::InvalidDevice`] if `device_index` is out of range, or
     /// [`Error::DeviceNotAvailable`] if the device has no default output config.
     pub fn new(device_index: Option<usize>) -> Result<Self> {
-        let device = get_device(device_index)?;
-        let config = device.default_output_config()?;
+        Self::open(DeviceHost::open(AudioHost::Default)?, device_index.into())
+    }
 
+    /// Open a device on a named host.
+    ///
+    /// # Errors
+    /// As [`new`](Self::new), plus whatever resolving `sel` on `host` reports.
+    pub fn open(host: DeviceHost, sel: DeviceSelector) -> Result<Self> {
+        let device = host.device(Direction::Output, &sel)?;
+        let config = device.default_output_config()?;
         Ok(Self {
-            sample_rate: SampleRate::from(config.sample_rate().0),
-            channels: ChannelLayout::from(usize::from(config.channels())),
-            is_running: false,
-            device_index,
-            _stream: None,
+            spec: OutputSpec::from_supported(&config),
+            target: Some((host, sel)),
+            faults: Arc::new(StreamFaults::new()),
+            running: None,
         })
+    }
+
+    /// An engine with no host and no device: the spec is the caller's.
+    ///
+    /// Pairs with [`ManualStreamDriver`](crate::ManualStreamDriver) to give a
+    /// complete engine lifecycle — start, render, fault, stop, restart — with
+    /// no sound card anywhere. That combination is what makes the device layer
+    /// testable at all; before it, every method here was unreachable from a
+    /// test.
+    pub fn from_spec(spec: OutputSpec) -> Self {
+        Self {
+            spec,
+            target: None,
+            faults: Arc::new(StreamFaults::new()),
+            running: None,
+        }
+    }
+
+    /// The configuration of the stream that is playing, or that would be.
+    pub fn spec(&self) -> &OutputSpec {
+        &self.spec
+    }
+
+    /// The fault sink, which survives stop and restart.
+    ///
+    /// Take this once at startup and read it whenever; a fault has nowhere
+    /// else to go, because CPAL's error callback returns nothing.
+    pub fn faults(&self) -> Arc<StreamFaults> {
+        Arc::clone(&self.faults)
     }
 
     /// Build a stream on the selected device and start it. A no-op if one is
     /// already running.
     ///
-    /// Re-reads the device's config, so [`sample_rate`](Self::sample_rate) and
-    /// [`channels`](Self::channels) describe the stream that is actually
-    /// playing rather than whatever [`new`](Self::new) saw.
+    /// Re-reads the device's config, so [`spec`](Self::spec) describes the
+    /// stream that is actually playing rather than whatever
+    /// [`new`](Self::new) saw. `set_device` + `start` (what
+    /// [`TuttiDriver::restart`](crate::TuttiDriver::restart) does) reaches
+    /// here with a different device than `new` read, and leaving the spec at
+    /// its construction values would make `channels()` describe a device that
+    /// is no longer playing while the audio itself is correct — so a reader
+    /// sizing a buffer from it gets the old width with nothing to warn it.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDevice`] for a bad index,
+    /// [`Error::InvalidDevice`] for an unresolvable selector,
     /// [`Error::DeviceNotAvailable`] if the config cannot be read,
     /// [`Error::InvalidConfig`] for a sample format the engine does not build,
     /// or [`Error::BuildStream`] / [`Error::PlayStream`] from CPAL.
     pub fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
-        if self.is_running {
+        if self.is_running() {
             return Ok(());
         }
-
-        let device = get_device(self.device_index)?;
-        let config = device.default_output_config()?;
-
-        // The reported layout is the layout of the stream about to be built,
-        // not the one the constructor happened to see. `set_device` + `start`
-        // (what `TuttiDriver::restart` does) reaches here with a different
-        // device than `new` read, and `build_stream` derives its real layout
-        // from this same `config`. Leaving these fields at their construction
-        // values makes `channels()` / `sample_rate()` describe a device that is
-        // no longer playing while the audio itself is correct — so a reader
-        // sizing a buffer from `channels()` gets the old width with nothing to
-        // warn it.
-        self.sample_rate = SampleRate::from(config.sample_rate().0);
-        self.channels = ChannelLayout::from(usize::from(config.channels()));
-
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::I8 => build_stream::<i8>(&device, &config.into(), state)?,
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config.into(), state)?,
-            cpal::SampleFormat::I32 => build_stream::<i32>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U8 => build_stream::<u8>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U32 => build_stream::<u32>(&device, &config.into(), state)?,
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), state)?,
-            cpal::SampleFormat::F64 => build_stream::<f64>(&device, &config.into(), state)?,
-            format => {
-                return Err(Error::InvalidConfig(format!(
-                    "Unsupported sample format: {format:?}"
-                )));
-            }
+        let Some((host, sel)) = &self.target else {
+            return Err(Error::InvalidDevice(
+                "this engine was built from a bare spec and has no device to open; \
+                 use `start_with` and supply a driver"
+                    .into(),
+            ));
         };
+        let device = host.device(Direction::Output, sel)?;
+        let config = device.default_output_config()?;
+        self.spec = OutputSpec::from_supported(&config);
+        let driver = CpalDriver::from_device(device);
+        self.start_with(state, driver)
+    }
 
-        stream.play()?;
-        self._stream = Some(StreamHandle(stream));
-        self.is_running = true;
-
+    /// [`start`](Self::start), with the caller choosing how the callback runs.
+    ///
+    /// The spec, the fault sink and the stop are identical; a driver decides
+    /// only *where* the callback runs. So an engine over a
+    /// [`ManualStreamDriver`](crate::ManualStreamDriver) is the same engine,
+    /// and a test over one exercises the shipped lifecycle rather than a
+    /// stand-in for it.
+    pub fn start_with<D: StreamDriver>(
+        &mut self,
+        state: Arc<AudioCallbackState>,
+        driver: D,
+    ) -> Result<()>
+    where
+        D::Running: 'static,
+    {
+        if self.is_running() {
+            return Ok(());
+        }
+        // A restart after a disconnect must report healthy again.
+        self.faults.clear();
+        let block = OutputBlock::new(state, self.spec.channels);
+        let running = driver.open(&self.spec, block, Arc::clone(&self.faults))?;
+        self.running = Some(Box::new(running));
         Ok(())
     }
 
     /// Drop the stream, which stops the callback. Idempotent.
     ///
-    /// Dropping is the stop: CPAL runs the callback for exactly as long as the
-    /// stream value lives.
+    /// Dropping is the stop: a stream runs for exactly as long as its handle
+    /// lives.
     pub fn stop(&mut self) {
-        self._stream = None;
-        self.is_running = false;
+        if let Some(running) = self.running.take() {
+            running.stop();
+        }
     }
 
     /// Rate of the running stream, or of the config read at construction if
     /// none has started.
     pub fn sample_rate(&self) -> SampleRate {
-        self.sample_rate
+        self.spec.sample_rate
     }
 
     /// Channel layout of the running stream, or of the config read at
-    /// construction if none has started. This is the width
-    /// [`process_audio`] is handed.
+    /// construction if none has started. This is the width [`process_audio`]
+    /// is handed.
     pub fn channels(&self) -> ChannelLayout {
-        self.channels
+        self.spec.channels
     }
 
-    /// Whether a stream is currently open and playing.
+    /// Whether a stream is open **and** the backend has not reported the
+    /// device gone.
+    ///
+    /// The disconnect half is new, and is a behaviour change rather than a
+    /// signature one: this used to return `true` for a stream whose device had
+    /// been unplugged, because nothing read the error callback. That was the
+    /// defect, not the contract.
     pub fn is_running(&self) -> bool {
-        self.is_running
+        self.running.is_some() && !self.faults.is_disconnected()
     }
 
     /// Select the device the next [`start`](Self::start) opens. `None` means
     /// the host default. Does not disturb a running stream.
     pub fn set_device(&mut self, index: Option<usize>) {
-        self.device_index = index;
+        self.select_device(index.into());
+    }
+
+    /// Select the device by name or index. Does not disturb a running stream.
+    pub fn select_device(&mut self, sel: DeviceSelector) {
+        if let Some((_, current)) = &mut self.target {
+            *current = sel;
+        }
     }
 
     /// The selected device's name, queried fresh from the host.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDevice`] if the index no longer resolves, or
+    /// [`Error::InvalidDevice`] if the selector no longer resolves, or
     /// [`Error::DeviceNameError`] if the host cannot name it.
     pub fn device_name(&self) -> Result<String> {
-        Ok(get_device(self.device_index)?.name()?)
+        let Some((host, sel)) = &self.target else {
+            return Err(Error::InvalidDevice(
+                "this engine was built from a bare spec and has no device".into(),
+            ));
+        };
+        Ok(host.device(Direction::Output, sel)?.name()?)
     }
 
-    /// Enumerate output devices as `(index, name)` pairs. The index is
-    /// positional in this enumeration — see [`DeviceInfo::index`](crate::DeviceInfo::index).
+    /// Enumerate the default host's output devices as `(index, name)` pairs.
+    /// The index is positional — see [`DeviceSelector::Index`].
     ///
     /// # Errors
-    /// Returns [`Error::DevicesError`] if the host cannot enumerate.
+    /// [`Error::DevicesError`] if the host cannot enumerate.
     pub fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
-        Ok(cpal::default_host()
+        Ok(DeviceHost::open(AudioHost::Default)?
             .output_devices()?
-            .enumerate()
-            .map(|(i, d)| (i, d.name().unwrap_or_default())))
-    }
-}
-
-fn get_device(index: Option<usize>) -> Result<cpal::Device> {
-    let host = cpal::default_host();
-
-    match index {
-        Some(i) => {
-            let devices: Vec<_> = host.output_devices()?.collect();
-            let count = devices.len();
-            devices.into_iter().nth(i).ok_or_else(|| {
-                Error::InvalidDevice(format!("Device index {i} out of range ({count} available)"))
-            })
-        }
-        None => host
-            .default_output_device()
-            .ok_or_else(|| Error::InvalidDevice("No output device available".into())),
-    }
-}
-
-fn build_stream<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    state: Arc<AudioCallbackState>,
-) -> Result<cpal::Stream>
-where
-    T: cpal::SizedSample + cpal::FromSample<f32>,
-{
-    // The device's true channel layout. The engine folds the graph root to this
-    // width; a device wider than MAX_ROOT_CHANNELS (rare) simply gets silent
-    // extra channels (the root renders ≤ 8 and `fold_frame` zero-fills the rest).
-    let layout = ChannelLayout::from(usize::from(config.channels).max(1));
-    // The interleave stride for both the mix buffer and the device buffer,
-    // derived ONCE here — never inside the callback's per-frame loops.
-    let channels = layout.count() as usize;
-
-    // Pre-allocate the internal mix buffer to MAX_FRAMES at the device width,
-    // plus a stereo scratch for metering. Sized once from the real device config;
-    // never resized at runtime — an over-sized CPAL callback is clamped below and
-    // the tail of `data` gets silence. This keeps the callback alloc-free.
-    let mut buffer = vec![0.0f32; MAX_FRAMES * channels];
-    let mut meter_buf = vec![0.0f32; MAX_FRAMES * 2];
-    let mut metering_ctx = MeteringContext::new();
-
-    let stream = device.build_output_stream(
-        config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            let raw_frames = data.len() / channels;
-            // Clamp to MAX_FRAMES so we never allocate. If CPAL ever hands us a
-            // larger buffer we process the head and write silence to the tail.
-            let frames = raw_frames.min(MAX_FRAMES);
-            debug_assert!(
-                raw_frames <= MAX_FRAMES,
-                "CPAL callback frames {raw_frames} exceeds MAX_FRAMES {MAX_FRAMES}"
-            );
-
-            let mix = &mut buffer[..frames * channels];
-            // Zero before rendering — the previous callback's contents are not
-            // meaningful input for the graph.
-            mix.fill(0.0);
-            let mut mix = InterleavedMut::new(mix, layout);
-            process_audio(&state, &mut mix);
-            // Back to a flat slice for the metering fold and the device write.
-            // `samples()` is the escape hatch the type documents: both loops
-            // below are per-frame and must index raw.
-            let mix = mix.as_ref().samples();
-
-            // Meter a STEREO fold of the device buffer — `meter_output` / the UI
-            // waveform assume stereo, and a stereo monitor is meaningful at any
-            // device width.
-            //
-            // The `Stereo` arm is a deliberate optimization, not divergent
-            // logic: `fold_frame`'s 2-wide arm already passes a stereo frame
-            // through unchanged, so this only replaces a per-frame call with one
-            // bulk memcpy. Keep them in step — if the fold's stereo arm ever
-            // stops being a passthrough, this branch has to go, not be patched.
-            let meter = &mut meter_buf[..frames * 2];
-            if layout == ChannelLayout::STEREO {
-                meter.copy_from_slice(mix);
-            } else {
-                for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                    let f = &mix[i * channels..i * channels + channels];
-                    tutti_core::fold_frame(f, out);
-                }
-            }
-            meter_output(meter, frames, &state.meter, &state.tap, &mut metering_ctx);
-
-            write_output(data, channels, mix, frames);
-        },
-        |_err| {},
-        None,
-    )?;
-
-    Ok(stream)
-}
-
-/// Convert the rendered f32 mix into the device's sample format.
-///
-/// `data` stays a bare `&mut [T]` and `channels` a bare `usize`: `T` is
-/// `cpal::SizedSample` (i16, u32, f64, …), so `InterleavedMut` — which is
-/// f32-only by construction — cannot describe the destination. Widening the
-/// newtype over `T` would buy nothing here, because the only arithmetic in this
-/// function is `i / channels`, and the width it needs is the *source's*, which
-/// the caller already reads off the `InterleavedMut` it built. The vocabulary
-/// stops at the format boundary, as it does at the C ABI and WIT boundaries.
-#[inline]
-fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
-    data: &mut [T],
-    channels: usize,
-    output: &[f32],
-    rendered_frames: usize,
-) {
-    // `output` is already `channels`-wide interleaved (the engine folded the
-    // graph root to the device width). Copy every channel through; frames past
-    // what we rendered (an over-sized CPAL callback) get silence.
-    let silence = T::from_sample(0.0);
-    for (i, sample) in data.iter_mut().enumerate() {
-        let frame = i / channels;
-        *sample = if frame < rendered_frames {
-            T::from_sample(output[i])
-        } else {
-            silence
-        };
+            .into_iter()
+            .map(|d| (d.index, d.name)))
     }
 }
 

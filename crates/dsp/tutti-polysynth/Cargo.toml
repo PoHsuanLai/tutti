@@ -37,14 +37,17 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
 
-# RT-safe small vectors
-smallvec = "1.13"
 
 # Error handling
 thiserror = "2"
 
 [dev-dependencies]
+criterion.workspace = true
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
+
+[[bench]]
+name = "polysynth"
+harness = false

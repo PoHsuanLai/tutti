@@ -134,16 +134,16 @@ fn _surface_compiles() {
     // would not open, and a host writing this signature should be able to pass
     // that on. The path goes in bare — it is `impl AsRef<Path>`.
     #[cfg(feature = "audio-io")]
-    fn _record_mic(path: std::path::PathBuf) -> std::io::Result<AudioPump> {
-        let mic = MicIn::open(None).map_err(std::io::Error::other)?;
+    fn _record_mic(path: std::path::PathBuf, rate: SampleRate) -> std::io::Result<AudioPump> {
+        let mic = MicIn::open(None, rate).map_err(std::io::Error::other)?;
         let wav = mic.matching_sink(path, BitDepth::Float32)?;
         Ok(AudioPump::start(mic, wav, 1024))
     }
 
     // Live monitoring: `io/mod.rs`'s graph-wiring example.
     #[cfg(feature = "audio-io")]
-    fn _wire_monitor(graph: &mut AudioGraphRes) -> Option<()> {
-        let (_mic, monitor) = MicIn::open_with_monitor(None).ok()?;
+    fn _wire_monitor(graph: &mut AudioGraphRes, rate: SampleRate) -> Option<()> {
+        let (_mic, monitor) = MicIn::open_with_monitor(None, rate).ok()?;
         let _id = graph.0.add(monitor);
         Some(())
     }

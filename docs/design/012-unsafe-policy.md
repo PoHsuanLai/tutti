@@ -91,6 +91,16 @@ and it should not be the last.
   `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
   is the pointer arithmetic in `tutti-node`'s buffers and the aliasing in
   `AudioThreadCell`, which is where a mistake would be silent.
+
+  **First run: 243 of 245 `tutti-types` tests passed under miri with no
+  memory-safety finding at all.** The two failures were float precision, not
+  unsafety — miri deliberately perturbs libm results between calls to catch
+  code that assumes they reproduce, so `Cents::from_pitch_ratio(2.0)` came
+  back 1199.9998 and two calls to the same dB conversion disagreed in the
+  last bits. Both tests are exact by design, contain no `unsafe`, and are now
+  `#[cfg_attr(miri, ignore)]`d with that reasoning at the test. Worth knowing
+  before reading a green miri run as broader than it is: it covers the
+  aliasing and the pointer arithmetic, and it is not a numerical check.
 - **`assert_no_alloc`** gates, which are about RT-safety rather than memory
   safety but fail on the same kinds of mistake.
 

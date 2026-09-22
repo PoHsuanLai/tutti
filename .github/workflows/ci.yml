@@ -65,10 +65,16 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #                    `html_reports`, which pulls plotters -> font-kit
-          #                    -> fontconfig. Any target set including the
-          #                    benches has to link it.
+          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
+          #                    criterion, which declares plotters with
+          #                    `default-features = false` (verified in 0.5.1
+          #                    and 0.8.2) and so never enables the `ttf`
+          #                    feature font-kit sits behind. The edge is
+          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
+          #                    dev-dep, which feature-unifies across every
+          #                    plotters consumer. `cargo tree -i font-kit`
+          #                    prints criterion first, which is what made the
+          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
@@ -78,6 +84,103 @@ jobs:
       # The two vendored forks are excluded: they are third-party code we do not
       # restyle, and they carry pre-existing lint debt that is not ours to pay.
       - run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+
+  features:
+    name: dark features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      # Feature-gated code that no other job compiles.
+      #
+      # `cargo tree --workspace -e features -i tutti-cpal` reports only
+      # "default": nothing in this workspace turns `capture`, `midi` or
+      # `audio-io` on, so the clippy and test jobs above typecheck none of them.
+      # That is the same hole the Windows cross-check exists to close, and for
+      # the same reason — a cfg block nothing compiles is a cfg block nothing
+      # lints, and it rots in silence.
+      #
+      # What was dark until this job existed:
+      #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
+      #   tutti-cpal/midi     — the pre_block/post_block arms of process_audio
+      #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had
+      #                         never once run in this repo
+      #
+      # Not `--all-features`: that pulls every plugin-format SDK. Name the
+      # combinations, and add one here whenever a new feature is added.
+      - name: Lint
+        run: |
+          cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
+          cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
+          cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
+          cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
+
+      - name: Test
+        run: |
+          cargo nextest run -p tutti-cpal --features capture,midi
+          cargo nextest run -p bevy-tutti --features audio-io
+
+      # JACK hard-links libjack at build time, so it gets its own step (and its
+      # own apt package) rather than joining the list above. `AudioHost::Jack`
+      # exists on every platform and answers `Error::HostUnavailable` where it
+      # cannot be served, so only the Linux build reaches the real code — which
+      # is precisely why it needs compiling somewhere.
+      - name: Install JACK headers
+        run: sudo apt-get install -y --no-install-recommends libjack-jackd2-dev
+      - name: Lint JACK
+        run: cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings
+
+  # Benchmarks: proved to RUN, never compared.
+  #
+  # GitHub's runners are shared and swing 30-50% on this workload, and the
+  # engine's own profile_stretch_clone documents an 81x spread on a QUIET
+  # machine. A timing threshold here would flap, and a flapping gate gets
+  # `continue-on-error: true` within a month and then tests nothing — the same
+  # death the pre-extraction workflow died. So this job runs every benchmark
+  # exactly once (`--test`) to prove the harnesses still work against the
+  # current API, and compares nothing.
+  #
+  # The real perf gate is `tutti-core/tests/alloc_budget.rs`, which runs in the
+  # ordinary test job: allocation counts are machine-independent, so a budget
+  # on them survives a noisy vCPU.
+  #
+  # Not on `pull_request`: this is a full release build of the workspace.
+  bench-smoke:
+    name: bench smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
+      # also runs the test targets in the release profile, where
+      # `debug_assert!` is gone and a `#[should_panic]` over one fails.
+      # Mirrors `just bench`; adding a bench means adding a line in both.
+      - run: |
+          cargo bench -p tutti-core      --bench engine_render  -- --test
+          cargo bench -p tutti-cpal      --bench audio_callback -- --test
+          cargo bench -p tutti-export    --bench offline_render -- --test
+          cargo bench -p tutti-polysynth --bench polysynth      -- --test
+          cargo bench -p tutti-sampler   --bench voice_pool     -- --test
+          cargo bench -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
 
   test:
     name: test (${{ matrix.os }})
@@ -97,10 +200,16 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #                    `html_reports`, which pulls plotters -> font-kit
-          #                    -> fontconfig. Any target set including the
-          #                    benches has to link it.
+          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
+          #                    criterion, which declares plotters with
+          #                    `default-features = false` (verified in 0.5.1
+          #                    and 0.8.2) and so never enables the `ttf`
+          #                    feature font-kit sits behind. The edge is
+          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
+          #                    dev-dep, which feature-unifies across every
+          #                    plotters consumer. `cargo tree -i font-kit`
+          #                    prints criterion first, which is what made the
+          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
@@ -191,10 +300,16 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #                    `html_reports`, which pulls plotters -> font-kit
-          #                    -> fontconfig. Any target set including the
-          #                    benches has to link it.
+          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
+          #                    criterion, which declares plotters with
+          #                    `default-features = false` (verified in 0.5.1
+          #                    and 0.8.2) and so never enables the `ttf`
+          #                    feature font-kit sits behind. The edge is
+          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
+          #                    dev-dep, which feature-unifies across every
+          #                    plotters consumer. `cargo tree -i font-kit`
+          #                    prints criterion first, which is what made the
+          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
@@ -207,6 +322,23 @@ jobs:
       - run: cargo check -p tutti-core --features bevy
       - run: cargo check -p tutti-types
       - run: cargo check -p tutti-types --features bevy
+
+      # The Bevy-free facade, and the assertion a compile cannot make.
+      # `cargo check` proves the crate builds; it says nothing about what came
+      # in with it. This is a NEGATIVE dependency check: no bevy crate may
+      # appear anywhere under `tutti`, at any depth, with everything on. The
+      # repo has no other guarantee of that shape.
+      #
+      # `-e normal`, not `-e all`: `bevy-tutti` is a workspace member, so a
+      # dev-dependency walk would false-positive.
+      - run: cargo check -p tutti
+      - run: cargo check -p tutti --features full
+      - name: No bevy under the facade
+        run: |
+          if cargo tree -p tutti --features full -e normal | grep -nE '\bbevy(_[a-z]+)?\b'; then
+            echo "FAIL: a bevy crate reached the Bevy-free facade."
+            exit 1
+          fi
 
   doc:
     name: rustdoc
@@ -221,10 +353,16 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
-          #                    `html_reports`, which pulls plotters -> font-kit
-          #                    -> fontconfig. Any target set including the
-          #                    benches has to link it.
+          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
+          #                    criterion, which declares plotters with
+          #                    `default-features = false` (verified in 0.5.1
+          #                    and 0.8.2) and so never enables the `ttf`
+          #                    feature font-kit sits behind. The edge is
+          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
+          #                    dev-dep, which feature-unifies across every
+          #                    plotters consumer. `cargo tree -i font-kit`
+          #                    prints criterion first, which is what made the
+          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
             libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable

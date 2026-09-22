@@ -84,6 +84,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`reset_owners` has been a no-op, and three doc comments said otherwise.**
+  Found by mutation-testing: deleting the `reset_owners()` call from a stream
+  restart changes nothing. Every call in the chain bottoms out in
+  `AudioThreadCell::reset_owner`, whose own doc reads "the cell pins no owner
+  thread, so a device switch needs no reset" — the cell's debug check detects
+  a *concurrent borrow*, not a foreign thread. `RtEventBuf::reset_owner`
+  already admitted this; `AudioCallbackState::reset_owners` and
+  `MotionFsm::reset_owner` still claimed "the owner checks would otherwise
+  flag the new thread as an intruder". The comments are corrected. The calls
+  stay — they are public API, and the property is one a future cell might
+  reinstate — but nothing should be written that depends on them acting.
+
 - **Plugin MIDI-out reached nothing.** `tutti-cpal` held an
   `Option<MidiPostBlock>` and called `run()` in the audio callback, but nothing
   anywhere *constructed* one — so the whole outbound path was assembled, tested,
@@ -102,6 +114,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs an adapter type to compile, the adapter has stopped being a wrapper.
 
 ### Added
+
+- **`just check-features` / `just test-features`, and a `dark features` CI job
+  — the feature-gated code nothing was compiling.**
+  `cargo tree --workspace -e features -i tutti-cpal` reported only `default`:
+  nothing in this workspace turned `tutti-cpal/capture`, `tutti-cpal/midi` or
+  `bevy-tutti/audio-io` on, so `just test`, `just lint` and every CI job
+  typechecked none of them. All of `tutti-cpal/src/mic.rs` was uncompiled, so
+  were the `pre_block`/`post_block` arms of `process_audio` — the ordering that
+  module's header calls "the design" — and `bevy-tutti/tests/audio_io_pump.rs`,
+  twelve tests, **had never once run in this repo.** (They pass. That is luck
+  rather than evidence, which is the point.) This is the same hole
+  `just check-windows` exists to close and has the same failure mode: a cfg
+  block nothing compiles is a cfg block nothing lints, and it rots in silence.
+  Both recipes are in `just ci`. Adding a feature means adding a line there.
+
+- **`tutti` — the Bevy-free umbrella, and it contains no code.**
+  `bevy-tutti` was the only one-dependency entry point, so a headless
+  consumer hand-wired a dozen path deps. `tutti-export`'s own showcase
+  example names five crates; through the façade it names one, and
+  `crates/tutti/examples/headless_export.rs` is that rewrite (the original
+  stays put — it proves `tutti-export` is usable standalone).
+
+  The façade also reaches strictly more than `bevy-tutti` does: that umbrella
+  depends on neither `tutti-analysis` nor `tutti-node`, which is why
+  `export.rs` could not have been written through it either.
+
+  **The history is easy to misread and the docs now say so.** A `tutti`
+  package was deleted once — but it was the *workspace root package*
+  (`9c75ec54`: root `Cargo.toml` with both `[workspace]` and `[package]`),
+  and it held `TuttiEngine`, a builder, `TuttiDriver` and the CPAL callback.
+  `0a4adf68`/`4b5bd2fd` dissolved it because `bevy-tutti` needed that logic
+  and two stacked umbrellas, where the lower owns what the upper needs, is
+  one too many. **Re-exporting was never the problem; owning logic was.**
+
+  So the rule is enforced, not merely written: `crates/tutti/tests/no_logic.rs`
+  reads `lib.rs` and rejects any statement that is not a `pub use` or
+  `pub mod` (by shape, not by keyword blacklist — a blacklist misses a type
+  alias or a const), and `scripts/check-canonical-paths.sh` gains a check that
+  every whole-crate re-export there is aliased, so `tutti::tutti_core::…` is
+  unspellable. Both were verified by making the violation and watching them
+  fail.
+
+  `just check-bevy-free` and the CI job gain a **negative dependency
+  assertion** — `cargo tree -p tutti --features full -e normal` must contain
+  no bevy crate at any depth. A compile proves the crate builds; it says
+  nothing about what came in with it, and the repo had no guarantee of that
+  shape before. Also verified by making it fail.
+
+  `bevy-tutti` deliberately does not depend on it: it would keep its direct
+  edges anyway for their `bevy` features, ending with two edges to each crate.
+  Its own `full` is otherwise transcribed unchanged, minus every `/bevy`
+  forward — that difference *is* the crate.
+
+- **Benchmarks, and the first numbers this engine has ever had.**
+  Five criterion suites (`engine_render`, `audio_callback`, `polysynth`,
+  `voice_pool`, `offline_render`), a `docs/benchmarks.md` baseline naming the
+  machine it was taken on, and `just bench` / `bench-save` / `bench-cmp` /
+  `bench-smoke`. `criterion` is unified on 0.8 in `[workspace.dependencies]`;
+  `tutti-core` carried a dead 0.5 that never had a `[[bench]]` while the
+  vendored fork was already on 0.8, so the tree resolved two of each.
+
+  What the numbers say, on a Ryzen 9 9950X:
+  - **~5,500 simple filter nodes** fill a 64-frame block's 1.333 ms budget,
+    single-threaded, and scaling is linear.
+  - **The real callback costs ~34% more than the graph render** — metering
+    and the stereo fold, not the format conversion (i16 adds only 4% over
+    f32). A graph-only benchmark understates the audio thread by a quarter.
+  - **The phase vocoder costs 16×** the bypass path (10.2 µs → 165 µs at 8
+    voices). It is by far the most expensive thing in the sampler.
+  - **A FLAC export is ~98% encoder, ~2% engine.**
+  - `PolySynth` is **hard-capped at 16 voices** (`FINISHED_NOTES_CAPACITY`);
+    more polyphony needs more instances, not a bigger config.
+
+  Three drafts produced *wrong* numbers before these, and the reasons are
+  recorded in the bench headers because each is a trap the next person will
+  hit: `max_voices` defaults to 8 so every polysynth case above 8 measured
+  identically; `BufferArray<U2>` is 64 frames wide so a "512-frame" axis was
+  reporting the 64-frame cost; and detuning each sampler voice by a cent put
+  all but the first through the pitch shifter, making plain playback look
+  105× superlinear.
+
+  **CI gates none of it.** Runners swing 30–50% and `profile_stretch_clone`
+  documents an 81× spread on a quiet machine; a flapping perf gate earns
+  `continue-on-error: true` within a month and then tests nothing. The
+  `bench-smoke` job proves the harnesses still *run*, and the real gate is
+  the new `tutti-core/tests/alloc_budget.rs` — allocation counts are
+  machine-independent, so a budget on them survives a shared vCPU.
+
+- **The device layer has a seam, a host selector and a fault sink.**
+  `tutti-cpal` had four `cpal::default_host()` calls, no device abstraction of
+  any kind, and 6 tests. JACK was unreachable even with cpal's `jack`
+  dependency compiled in, because `default_host()` returns ALSA regardless —
+  the host has to be *named*. It now has 29 tests, none of which opens a sound
+  card.
+
+  - **`StreamDriver` / `RunningStream`, with `CpalDriver` and
+    `ManualStreamDriver`** — the direct analogue of `tutti_io`'s
+    `PumpDriver`/`ThreadDriver`/`ManualDriver`, and it earns the same claim:
+    `CpalDriver`'s closure body is `move |data, _| block.render(data)`, so it
+    is not a second implementation of the callback. `AudioEngine::from_spec`
+    plus a manual driver gives a complete lifecycle — start, render, fault,
+    stop, restart — with no device. `AudioEngine` holds a
+    `Box<dyn RunningStream>` rather than a type parameter, for the reason
+    `Recorder`'s field doc gives: a generic would push the driver choice into
+    `TuttiDriver`, into `bevy-tutti`'s `NonSend`, and into every host field.
+
+  - **`AudioHost` / `DeviceHost` / `DeviceSelector`**, and the `jack` feature.
+    Every `AudioHost` variant exists on every platform on purpose — cpal's own
+    `HostId` is cfg-generated, so mirroring it would make a host's config
+    struct a different type per OS; an unreachable host is
+    `Error::HostUnavailable` at runtime instead. `DeviceSelector::Name`
+    survives the re-enumeration that invalidates an index, which is the best
+    available answer while cpal 0.15 exposes no hot-plug notification.
+    `just check-jack` ships with the feature rather than after it: cpal
+    declares no `jack` feature of its own (it is the implicit feature of an
+    optional dep in cpal's Linux/BSD target table), so the code is invisible
+    to every other recipe — the same shape as the `#[cfg(windows)]` gap that
+    once took Windows from 37 failures to 47.
+
+  - **`StreamFaults`** — both error callbacks were literally `|_err| {}`, so a
+    device unplugged mid-session surfaced *nowhere*: `is_running()` stayed
+    true and the host went on reporting a healthy stream to a user hearing
+    silence. Faults are now accumulated behind a handle taken before anything
+    goes wrong (the `FinalizeStatus` shape, publication order and all), and
+    `bevy-tutti`'s `AudioDeviceState` mirrors them per frame.
+
+    **`AudioEngine::is_running()` is a behaviour change without a signature
+    change**: it can now return `false` while a stream object exists, because
+    it consults the disconnect flag. That was the defect, not the contract.
+
+  - **`MicIn::open` takes the graph's sample rate.** A breaking change, and
+    deliberately not offered as an opt-in overload, because an opt-in safe
+    path reproduces the bug it fixes. `MicMonitorNode` does not resample — its
+    `set_sample_rate` is a documented no-op resting on "the device layer opens
+    the mic at the graph's rate" — and *nothing enforced that*: `MicIn` took
+    whatever the input device reported while `AudioEngine` took whatever the
+    output device reported, and the two were never compared. A 44.1 kHz mic on
+    a 48 kHz graph drifted silently for the length of the take. Now
+    `Error::SampleRateMismatch`, decided by a free `choose_input_config` that
+    needs no device to test, with a paired `debug_assert` in
+    `MicMonitorNode::set_sample_rate` — the two-check shape `pump`'s layout
+    assert and `Recorder::start`'s error already use.
+
+- **Coverage where a silent wrong answer reaches a user's recording.**
+  The plugin subsystem carried ~1,731 tests; `tutti-io` had 27 and
+  `tutti-midi-file` 13, with no integration tests and no input files of any
+  kind. Those are the crates every consumer hits on day one. Now 36 and 27.
+
+  `tutti-io` gains `tests/recorder_thread_driver.rs` — the **production**
+  driver's first tests ever; every existing `Recorder` test drives a
+  `ManualDriver`, so `thread::spawn`, the Acquire/Release stop handshake, the
+  `PumpPass::Ended` break, `IDLE_PARK`, and `impl RunningPump for JoinHandle`'s
+  "recording thread panicked" arm had never run. Plus
+  `tests/tap_to_wav_roundtrip.rs`, the `AudioTap → TapIn → Recorder → WavOut`
+  end-to-end that existed only as a README doctest nextest does not run, and
+  the first coverage of `FinalizeStatus::error()` returning `Some` — the whole
+  reason that handle carries an error rather than just a done flag.
+
+  `tutti-midi-file` and `tutti-midi-types` gain an independent SMF
+  encoder/decoder in `tests/support/`, written from the spec. `midly` is the
+  wrapped dependency so it cannot be its own second opinion, and the
+  alternatives do not qualify (`nodi` wraps midly, `rimd` is unmaintained);
+  for MIDI 2.0 Clip Files there is no second implementation anywhere. The
+  builder doubles as the fixture generator, including the malformed cases a
+  committed corpus could not carry. Highest-value additions: a delta on a
+  sysex must still advance the beat grid, LIFO pairing of overlapping notes,
+  per-channel pairing, and — for the 1,154 hand-rolled lines of clip codec —
+  "no prefix of a valid file is valid, and none panics", which sweeps every
+  length bound at once.
+
+  Every test was mutation-checked by actually running the mutation. Two drafts
+  **passed** under the mutation they were written to catch and were rewritten:
+  waiting for a source to drain proves nothing about the `Ended` break (a
+  spinning driver still finalizes correctly), and two notes opened
+  simultaneously pair identically whether or not the channel is in the key.
+  Both cases are recorded in the test headers, because the next person will
+  reach for the same first draft.
+
+- **`MicMonitorNode::tick` no longer discards a frame on a short buffer.**
+  It called `next_frame()` — which pops the ring — and *then* checked
+  `output.len() >= 2`, so a narrow buffer consumed a captured frame and wrote
+  nothing. Unreachable through fundsp, which always hands a 2-out node a 2-wide
+  buffer, so this was latent rather than live; fixed because a discard is never
+  the branch you want on a path whose job is not losing frames, and ordering
+  the check first costs nothing.
+
+- **`tutti_cpal::OutputBlock`** — the output callback, liftable out of CPAL.
+  `process_audio` was only ever the *inner* seam. Everything around it lived
+  inside the closure handed to `build_output_stream`: the `MAX_FRAMES` clamp,
+  the zero-fill, the stereo metering fold, `meter_output`, and the eight-way
+  sample-format conversion. Nothing but CPAL with a real sound card open could
+  run any of it, which is why none of it has a test. `OutputBlock::render` is
+  that body, and CPAL's closure is now `move |data, _| block.render(data)` —
+  not a second implementation of the callback, the same claim
+  `tutti_io::ManualDriver` makes about `PumpLoop::pump_once`.
+
+  The `debug_assert!` on the callback size deliberately stays at the CPAL
+  boundary rather than moving into `render`: it is a claim about *CPAL's*
+  contract, and keeping it out is what will let a debug-build test observe the
+  clamp instead of panicking before it.
 
 - **`tutti-midi-file`** — the SMF and MIDI 2.0 Clip File codecs, split out of
   `tutti-midi-io`. Reading a `.mid` needs no OS MIDI port, and pairing the two

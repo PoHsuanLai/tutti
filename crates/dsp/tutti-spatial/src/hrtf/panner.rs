@@ -15,9 +15,11 @@
 //! drained sample-by-sample. All buffers are allocated up front and only
 //! indexed on the audio path, so processing stays allocation-free.
 //!
-//! The tradeoff is **latency**: output lags input by one HRTF frame
-//! (`interpolation_steps * block_len` samples). The frame is kept small so the
-//! delay is a few ms at typical rates.
+//! The tradeoff is **latency**: output lags input by [`LATENCY`] samples —
+//! one HRTF frame (`interpolation_steps * block_len`) *less one*, because the
+//! frame is rendered on the push that completes it and its first sample drains
+//! on that same call. The frame is kept small so the delay is a few ms at
+//! typical rates.
 //!
 //! ## Composition
 //!
@@ -33,12 +35,26 @@ use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
 use crate::AngleSmoother;
 
 /// Samples per `hrtf` convolution block. Small: latency is
-/// `INTERPOLATION_STEPS * BLOCK_LEN` samples (~10ms at 48kHz).
+/// [`LATENCY`] ≈ `INTERPOLATION_STEPS * BLOCK_LEN` samples (~10ms at 48kHz).
 const BLOCK_LEN: usize = 128;
 /// Cross-fade sub-steps the processor uses to de-click fast source motion.
 const INTERPOLATION_STEPS: usize = 4;
 /// Full mono frame the processor requires per `process_samples` call.
 pub(crate) const FRAME_LEN: usize = INTERPOLATION_STEPS * BLOCK_LEN;
+
+/// How many samples output lags input — what the node reports to PDC.
+///
+/// `FRAME_LEN - 1`, not `FRAME_LEN`: [`HrtfBinaural::process_sample`] pushes
+/// before it drains, so the push that fills the frame renders it and returns
+/// its sample 0 in the same call. Input sample `k` of a frame therefore leaves
+/// at `frame_start + FRAME_LEN - 1 + k`. Measured, not derived from the doc: the
+/// node's `reported_latency_is_the_measured_impulse_delay` test pins it against
+/// an impulse at several in-frame offsets.
+///
+/// This is the bridge's delay only. The HRIR's own onset (the ear-to-ear delay
+/// that *is* the spatial cue) is signal, like a convolution reverb's pre-delay,
+/// and is not latency.
+pub(crate) const LATENCY: usize = FRAME_LEN - 1;
 
 /// Errors constructing an HRTF renderer (bad or wrong-rate HRIR data).
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +119,11 @@ struct FrameBridge {
     in_fill: usize,
     /// Stereo output of the last processed frame, drained per sample.
     output: Vec<(f32, f32)>,
+    /// The mono input the frame in `output` was rendered from, drained beside
+    /// it. This is the node's dry path: blending against *this* rather than the
+    /// sample just pushed is what keeps dry and wet aligned, so [`LATENCY`] is
+    /// true of the whole output and not only of its wet half.
+    dry: Vec<f32>,
     out_cursor: usize,
 }
 
@@ -114,6 +135,7 @@ impl FrameBridge {
             // Pre-fill one frame of silent output so early reads return 0.0
             // rather than starving; keeps the node causal from sample 0.
             output: vec![(0.0, 0.0); FRAME_LEN],
+            dry: vec![0.0; FRAME_LEN],
             out_cursor: 0,
         }
     }
@@ -122,6 +144,7 @@ impl FrameBridge {
         self.input.iter_mut().for_each(|s| *s = 0.0);
         self.in_fill = 0;
         self.output.iter_mut().for_each(|s| *s = (0.0, 0.0));
+        self.dry.iter_mut().for_each(|s| *s = 0.0);
         self.out_cursor = 0;
     }
 
@@ -134,9 +157,13 @@ impl FrameBridge {
         self.in_fill >= FRAME_LEN
     }
 
-    /// Reset the fill/drain cursors after a frame has been rendered.
+    /// Reset the fill/drain cursors after a frame has been rendered, and make
+    /// the frame just rendered the dry frame. A swap, not a copy: the old dry
+    /// frame is fully drained by now and the input side is about to be
+    /// overwritten from index 0 anyway.
     #[inline]
     fn rewind(&mut self) {
+        core::mem::swap(&mut self.input, &mut self.dry);
         self.in_fill = 0;
         self.out_cursor = 0;
     }
@@ -150,19 +177,35 @@ impl FrameBridge {
         (&self.input, &mut self.output)
     }
 
-    /// Drain the next stereo output sample, or silence once the frame is spent.
+    /// Drain the next output sample — the dry mono and the wet stereo pair it
+    /// was rendered into — or silence once the frame is spent.
     #[inline]
-    fn drain(&mut self) -> (f32, f32) {
-        let out = self
-            .output
-            .get(self.out_cursor)
-            .copied()
-            .unwrap_or((0.0, 0.0));
+    fn drain(&mut self) -> BridgeSample {
+        let i = self.out_cursor;
+        let out = match (self.dry.get(i), self.output.get(i)) {
+            (Some(&dry), Some(&wet)) => BridgeSample { dry, wet },
+            _ => BridgeSample::SILENT,
+        };
         if self.out_cursor < self.output.len() {
             self.out_cursor += 1;
         }
         out
     }
+}
+
+/// One sample out of the [`FrameBridge`]: the wet binaural pair and the dry
+/// mono input it came from, both [`LATENCY`] samples old.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BridgeSample {
+    pub(crate) dry: f32,
+    pub(crate) wet: (f32, f32),
+}
+
+impl BridgeSample {
+    const SILENT: Self = Self {
+        dry: 0.0,
+        wet: (0.0, 0.0),
+    };
 }
 
 /// The overlap-add carry-over `hrtf` threads between consecutive frames: the
@@ -321,9 +364,10 @@ impl HrtfBinaural {
         self.aim.reset_state();
     }
 
-    /// Push one mono input sample, return the current delayed stereo output.
+    /// Push one mono input sample, return the output [`LATENCY`] samples behind
+    /// it: the wet stereo pair and the dry mono it was rendered from.
     #[inline]
-    pub(crate) fn process_sample(&mut self, mono: f32) -> (f32, f32) {
+    pub(crate) fn process_sample(&mut self, mono: f32) -> BridgeSample {
         if self.bridge.push(mono) {
             self.render_frame();
             self.bridge.rewind();

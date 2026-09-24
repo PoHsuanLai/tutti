@@ -50,11 +50,15 @@ use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::NodeKey;
 
+use tutti_types::At;
+
+use crate::command::{command_channel, CommandTx, ScheduleError};
 use crate::compile::{compile, CompileError, Shapes};
+use crate::event::EventKind;
 use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 use crate::node::{IntoNode, Node, Prepare};
 use crate::plan::{Delta, Plan};
-use crate::spec::{EventEdge, GraphInvalid, GraphSpec};
+use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,8 +95,11 @@ impl std::error::Error for CommitError {}
 /// plans sent. See the `editor` module's docs (`src/editor.rs`).
 pub struct Editor {
     channels: Channels,
+    commands: CommandTx,
     /// Commits sent and not yet drained back.
     out: usize,
+    /// Commits sent, ever: the sequence number of the last one.
+    sent: u64,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
@@ -114,9 +121,12 @@ impl Editor {
     /// (the declared event rate the delay FIFOs are sized from).
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, queue, back) = channels();
+        let (commands, command_rx) = command_channel();
         let editor = Self {
             channels,
+            commands,
             out: 0,
+            sent: 0,
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
@@ -124,7 +134,7 @@ impl Editor {
             next_gen: BTreeMap::new(),
             plan: None,
         };
-        (editor, Executor::new(prepare, cap, queue, back))
+        (editor, Executor::new(prepare, cap, queue, back, command_rx))
     }
 
     /// The graph value.
@@ -285,14 +295,45 @@ impl Editor {
         Ok(())
     }
 
+    /// Deliver `kind` into event input `to` at time `at` — a note, or a
+    /// [`ParamRamp`](crate::ParamRamp) as `EventKind::Ramp` — on its exact
+    /// frame. See the `command` module docs (`src/command.rs`) for the whole
+    /// path; in short:
+    ///
+    /// - **`at` is required.** [`At::NextBlock`] is the untimed case, and it
+    ///   has to be spelled.
+    /// - The port is checked against the plan sent last, and the command is
+    ///   delivered to whichever unit holds that key when it falls due.
+    /// - A time already past when the executor sees it lands at offset 0 of
+    ///   that block and is counted
+    ///   ([`Executor::late_commands`](crate::Executor::late_commands)) —
+    ///   never dropped.
+    /// - At most [`COMMAND_CAPACITY`](crate::COMMAND_CAPACITY) commands are
+    ///   outstanding; past that this returns
+    ///   [`ScheduleError::Backpressure`] and sends nothing.
+    pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) -> Result<(), ScheduleError> {
+        let plan = self.plan.as_ref().ok_or(ScheduleError::NoPlan)?;
+        let ports = plan.unit(to.node).map_or(0, |u| u.shape.event_in);
+        if to.port >= ports {
+            return Err(ScheduleError::NoSuchPort { to });
+        }
+        self.commands.send(self.sent, at, to, kind)
+    }
+
+    /// Scheduled commands sent and not yet delivered.
+    pub fn commands_outstanding(&self) -> usize {
+        self.commands.outstanding() as usize
+    }
+
     /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
     /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
     fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
         let plan = Arc::new(plan);
-        let commit = Commit::build(Arc::clone(&plan), delta, units);
+        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units);
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
         }
+        self.sent += 1;
         self.out += 1;
         self.plan = Some(plan);
     }

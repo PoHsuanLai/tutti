@@ -10,6 +10,9 @@
 //!   a merge tree and deliver in `(offset, source order)`.
 //! - **Feedback delays by its declared delay** at any `MaxBlock`, audio and events, under
 //!   block sizes that change and are ragged.
+//! - **Scheduled commands are conserved too**: each lands exactly once, on
+//!   its frame (or, when already past, at the start of the next block),
+//!   through the same recompiles.
 
 mod common;
 
@@ -24,7 +27,7 @@ use tutti_graph::{
     Node, Prepare, Reference, Shape, Shapes, Status, Transport, Ump,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail, Topology};
+use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail, Topology};
 
 type Ledger = Arc<Mutex<Vec<(u32, u64)>>>;
 type Inbox = Arc<Mutex<Vec<(u16, u32, u64, u64)>>>;
@@ -125,7 +128,13 @@ struct Phase {
     /// Per recorder port: (emitter index, feedback?).
     edges: Vec<Vec<(usize, bool)>>,
     blocks: Vec<usize>,
+    /// Commands scheduled as the phase starts: (recorder port, frame
+    /// relative to the phase's first frame — negative is already late).
+    commands: Vec<(u16, i64)>,
 }
+
+/// Recorder tags at or above this are scheduled commands, not emissions.
+const SCHEDULED: u32 = 10_000;
 
 fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
     let mut t = Topology::default();
@@ -217,11 +226,32 @@ fn units_of(
 
 /// Run the phases through the executor (`true`) or the reference, then drain.
 /// Returns (emissions tagged with phase, deliveries).
+/// A scheduled command's tag and the frame it must land on.
+type Landing = (u16, u32, u64);
+
 fn run(
     phases: &[Phase],
     emitters: &[(u32, u64)],
     executor: bool,
 ) -> (Vec<(usize, u32, u64)>, Vec<(u16, u32, u64, u64)>) {
+    let (emitted, got, _) = run_scheduled(phases, emitters, executor);
+    (emitted, got)
+}
+
+/// `run`, also returning where every scheduled command must land:
+/// `(port, tag, frame)`, the frame being its target or — when that was
+/// already past as it was scheduled — the first frame of the next block.
+fn run_scheduled(
+    phases: &[Phase],
+    emitters: &[(u32, u64)],
+    executor: bool,
+) -> (
+    Vec<(usize, u32, u64)>,
+    Vec<(u16, u32, u64, u64)>,
+    Vec<Landing>,
+) {
+    let mut landings: Vec<Landing> = Vec::new();
+    let mut now = 0u64;
     let ledger: Ledger = Arc::default();
     let inbox: Inbox = Arc::default();
     let stop = Arc::new(AtomicBool::new(false));
@@ -255,8 +285,23 @@ fn run(
         } else {
             reference.set_graph(&valid, units_of(ph, emitters, &ledger, &inbox, &stop));
         }
+        for &(port, rel) in &ph.commands {
+            let tag = SCHEDULED + landings.len() as u32;
+            let target = now.saturating_add_signed(rel);
+            let kind = EventKind::Midi(Ump([tag, target as u32, (target >> 32) as u32, 0]));
+            let at = EventIn { node: REC, port };
+            let when = At::Frame(Frame(target));
+            if executor {
+                ed.schedule(when, at, kind)
+                    .expect("room for the test's commands");
+            } else {
+                reference.schedule(when, at, kind);
+            }
+            landings.push((port, tag, target.max(now)));
+        }
         let before = ledger.lock().unwrap().len();
         for &n in &ph.blocks {
+            now += n as u64;
             if executor {
                 exec.process(n, &transport, &[], &mut []);
             } else {
@@ -269,9 +314,11 @@ fn run(
     }
     if executor {
         assert_eq!(exec.dropped_events(), 0, "nothing was dropped");
+        assert_eq!(exec.unrouted_commands(), 0, "the recorder never went away");
+        assert_eq!(ed.commands_outstanding(), 0, "every command landed");
     }
     let got = inbox.lock().unwrap().clone();
-    (phase_of, got)
+    (phase_of, got, landings)
 }
 
 /// The drain phase: the last phase's wiring (so nothing is recompiled away),
@@ -280,6 +327,7 @@ fn ph_drain(phases: &[Phase]) -> Phase {
     let last = phases.last().expect("at least one phase").clone();
     Phase {
         blocks: vec![MAX; 8],
+        commands: Vec::new(),
         ..last
     }
 }
@@ -310,7 +358,7 @@ fn expected(
 
 fn delivered(got: &[(u16, u32, u64, u64)]) -> BTreeMap<u16, Vec<(u32, u64)>> {
     let mut m: BTreeMap<u16, Vec<(u32, u64)>> = BTreeMap::new();
-    for &(p, id, f, _) in got {
+    for &(p, id, f, _) in got.iter().filter(|e| e.1 < SCHEDULED) {
         m.entry(p).or_default().push((id, f));
     }
     for v in m.values_mut() {
@@ -329,14 +377,18 @@ fn arb_phase(emitters: usize) -> impl Strategy<Value = Phase> {
             REC_PORTS as usize,
         ),
         proptest::collection::vec(1usize..=MAX, 1..12),
+        proptest::collection::vec((0..REC_PORTS, -40i64..200), 0..8),
     )
-        .prop_map(|(lag, lag_gen, emitter_gen, edges, blocks)| Phase {
-            lag,
-            lag_gen,
-            emitter_gen,
-            edges: edges.into_iter().map(|m| m.into_iter().collect()).collect(),
-            blocks,
-        })
+        .prop_map(
+            |(lag, lag_gen, emitter_gen, edges, blocks, commands)| Phase {
+                lag,
+                lag_gen,
+                emitter_gen,
+                edges: edges.into_iter().map(|m| m.into_iter().collect()).collect(),
+                blocks,
+                commands,
+            },
+        )
 }
 
 proptest! {
@@ -354,13 +406,22 @@ proptest! {
     /// Mutation: drop the `inject` prepend in the reference's event gather →
     /// fails. Mutation: in `EventFifo::pop_due`, drop events when `out` is
     /// full instead of leaving them queued (with a small CAP) → fails.
+    ///
+    /// And for scheduled commands — each lands exactly once, on its port, on
+    /// its frame or (already past) at the next block's start. Mutation: in
+    /// `CommandRx::gather`, keep a delivered command pending → it lands
+    /// again every block → fails. Mutation: in `CommandRx::overlay`, merge
+    /// only the scheduled events, dropping the port's own → the emitters'
+    /// events vanish → fails. Mutation: drop the reference's scheduled
+    /// events from its gather → fails on the reference. Mutation: land a
+    /// late command at offset 1 instead of 0 in the reference → fails.
     #[test]
     fn every_event_is_delivered_exactly_once(
         phases in proptest::collection::vec(arb_phase(4), 1..4),
     ) {
         let emitters: Vec<(u32, u64)> = vec![(1, 3), (2, 5), (3, 7), (4, 4)];
         for executor in [true, false] {
-            let (emitted, got) = run(&phases, &emitters, executor);
+            let (emitted, got, landings) = run_scheduled(&phases, &emitters, executor);
             let want = expected(&phases, &emitted, &emitters);
             let have = delivered(&got);
             let side = if executor { "executor" } else { "reference" };
@@ -371,6 +432,14 @@ proptest! {
                     "{} port {}", side, p
                 );
             }
+            // Every scheduled command, exactly once, on its port and frame.
+            let mut landed: Vec<Landing> = got
+                .iter()
+                .filter(|e| e.1 >= SCHEDULED)
+                .map(|&(p, tag, _, at)| (p, tag, at))
+                .collect();
+            landed.sort_by_key(|l| l.1);
+            prop_assert_eq!(&landed, &landings, "{} scheduled commands", side);
         }
     }
 }
@@ -390,6 +459,7 @@ fn a_vanishing_event_delay_flushes_instead_of_dropping() {
         emitter_gen: vec![0],
         edges: vec![vec![(0, false)], vec![], vec![]],
         blocks: vec![32; 3],
+        commands: Vec::new(),
     };
     let zero = Phase {
         lag: 0,
@@ -795,6 +865,7 @@ fn a_flush_keeps_the_events_spacing() {
         emitter_gen: vec![0],
         edges: vec![vec![(0, false)], vec![], vec![]],
         blocks: vec![32; 3],
+        commands: Vec::new(),
     };
     let zero = Phase {
         lag: 0,
@@ -843,6 +914,7 @@ fn two_flushes_into_one_sink_interleave_identically() {
         emitter_gen: vec![0, 0],
         edges: vec![vec![(0, true), (1, true)], vec![], vec![]],
         blocks: vec![32; 6],
+        commands: Vec::new(),
     };
     let cut = Phase {
         edges: vec![vec![], vec![], vec![]],

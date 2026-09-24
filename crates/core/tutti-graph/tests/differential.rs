@@ -399,6 +399,49 @@ proptest! {
         run(&mut pair, &schedule(which, seed, 700), &mut frame);
     }
 
+    /// With scheduled commands landing on every event input — on emitters'
+    /// frames (ties), on each other's frames, already late, and at the next
+    /// block — the two still agree bit for bit: the order-sensitive
+    /// `Consumer` sees scheduled events after the port's own on a tie, in
+    /// scheduling order, in both.
+    ///
+    /// Mutation: in `CommandRx::overlay`, merge the scheduled events
+    /// *before* the port's own (`[due, base]`) → ties flip in the executor
+    /// only → diverges. Mutation: sort `due` by *reversed* scheduling order
+    /// on a tie → equal-offset commands reorder → diverges.
+    #[test]
+    fn scheduled_commands_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
+        let desc = random_graph(seed);
+        let valid = desc.spec.validate().expect("generated graphs are valid");
+        let mut pair = Pair::new(MAX_BLOCK);
+        pair.switch(&valid, &desc.kinds);
+        let ports: Vec<EventIn> = desc
+            .kinds
+            .keys()
+            .flat_map(|&k| (0..shape(&desc.kinds[&k]).event_in).map(move |port| EventIn { node: k, port }))
+            .collect();
+        let mut rng = Rng::new(seed ^ 0xC0DE);
+        let mut frame = 0;
+        let blocks = schedule(which, seed, 700);
+        let (first, rest) = blocks.split_at(blocks.len() / 2);
+        run(&mut pair, first, &mut frame);
+        for _ in 0..rng.below(40) {
+            let Some(to) = rng.pick(&ports) else { break };
+            // Few distinct frames, so commands tie with each other and with
+            // emitters; some already past.
+            let at = match rng.below(8) {
+                0 => tutti_types::At::NextBlock,
+                1 => tutti_types::At::Frame(tutti_types::Frame(rng.below(frame + 1))),
+                _ => tutti_types::At::Frame(tutti_types::Frame(frame + 3 * rng.below(100))),
+            };
+            let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
+            pair.editor.schedule(at, to, kind).expect("room");
+            pair.reference.schedule(at, to, kind);
+        }
+        run(&mut pair, rest, &mut frame);
+        prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
+    }
+
     /// The same across a recompile: nodes, rings and feedback slots that
     /// survive by key carry their state, in both interpreters, identically.
     #[test]

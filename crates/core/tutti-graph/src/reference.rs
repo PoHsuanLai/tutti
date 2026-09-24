@@ -49,16 +49,16 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Frame, Latency, NodeKey, Samples, ScopedNoDenormals};
+use tutti_types::{At, Frame, Latency, NodeKey, Samples, ScopedNoDenormals};
 
-use crate::event::{Event, EventWriter, SortedEvents};
+use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
 };
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
-use crate::time::Offset;
+use crate::time::{Due, Offset};
 
 struct RefFifo {
     pending: Vec<(u64, Event)>,
@@ -78,6 +78,12 @@ pub struct Reference {
     fb_audio: BTreeMap<(OutPort, u32, Samples), VecDeque<f32>>,
     fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
+    /// Scheduled commands not yet due, in scheduling order.
+    scheduled: Vec<(At, EventIn, EventKind)>,
+    /// This block's scheduled deliveries, per port, in scheduling order.
+    landing: BTreeMap<EventIn, Vec<Event>>,
+    late: u64,
+    unrouted: u64,
     frame: Frame,
 }
 
@@ -95,8 +101,30 @@ impl Reference {
             fb_audio: BTreeMap::new(),
             fb_event: BTreeMap::new(),
             inject: BTreeMap::new(),
+            scheduled: Vec::new(),
+            landing: BTreeMap::new(),
+            late: 0,
+            unrouted: 0,
             frame: Frame::ZERO,
         }
+    }
+
+    /// Deliver `kind` into `to` at `at` — the same contract as
+    /// `Editor::schedule`, without the queue: a time already past lands at
+    /// offset 0 of the next block and is counted late; one whose port is gone
+    /// when it falls due is counted unrouted.
+    pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) {
+        self.scheduled.push((at, to, kind));
+    }
+
+    /// Scheduled commands that landed late (see `Executor::late_commands`).
+    pub fn late_commands(&self) -> u64 {
+        self.late
+    }
+
+    /// Scheduled commands with nowhere to land.
+    pub fn unrouted_commands(&self) -> u64 {
+        self.unrouted
     }
 
     /// The PDC delay the interpreter derived for `key`, or zero — so a test
@@ -345,6 +373,38 @@ impl Reference {
             transport: *transport,
         };
 
+        // Scheduled commands: which land this block, and where. Kept in
+        // scheduling order per port; the gather below appends them after the
+        // port's own events.
+        self.landing.clear();
+        let mut waiting = Vec::new();
+        for (at, to, kind) in std::mem::take(&mut self.scheduled) {
+            let offset = match env.due(at) {
+                Due::NotYet => {
+                    waiting.push((at, to, kind));
+                    continue;
+                }
+                Due::In(o) => o,
+                Due::Late => {
+                    self.late += 1;
+                    Offset::ZERO
+                }
+            };
+            let has_port = self
+                .units
+                .get(&to.node)
+                .is_some_and(|(_, u)| to.port < u.shape().event_in);
+            if has_port {
+                self.landing
+                    .entry(to)
+                    .or_default()
+                    .push(Event { offset, kind });
+            } else {
+                self.unrouted += 1;
+            }
+        }
+        self.scheduled = waiting;
+
         let mut audio: BTreeMap<OutPort, Vec<f32>> = BTreeMap::new();
         let mut events: BTreeMap<EventOut, Vec<Event>> = BTreeMap::new();
         let mut done: BTreeSet<NodeKey> = BTreeSet::new();
@@ -481,6 +541,8 @@ impl Reference {
                 }
             }
             // Stable: equal offsets keep source order.
+            // Scheduled commands: one more source, after the edges.
+            all.extend(self.landing.remove(&at).unwrap_or_default());
             all.sort_by_key(|e| e.offset);
             ev_ins.push(all);
         }

@@ -38,6 +38,10 @@
 //!   block by construction.
 //! - **[`Io::sub_blocks`]** — the block split at event offsets, so a node
 //!   written against it is sample-accurate by construction (item 4).
+//! - **[`At`](tutti_types::At)** — every scheduled command
+//!   ([`Editor::schedule`]) says when: a frame, a beat, or an explicit
+//!   `NextBlock`. Late commands land at the next block and are counted, never
+//!   dropped (item 3).
 //! - **[`Resolution`]** — each node declares how finely it honours event
 //!   offsets ([`Shape::event_resolution`]), and an event edge marked with
 //!   [`GraphSpec::require_resolution`] into a node that cannot honour it is
@@ -101,8 +105,8 @@
 //! - [`Node`] and [`Io`] — the contract, and what it drops from `AudioUnit`.
 //! - [`compile`] — the pass pipeline, including the buffer colouring that is
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
-//! - [`Editor`] and [`Executor`] — the runtime pair, the queue between them,
-//!   and its back-pressure.
+//! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
+//!   (commits, and timestamped commands), and their back-pressure.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //!
 //! # Import paths
@@ -117,6 +121,7 @@
 #![forbid(unsafe_code)]
 
 mod arena;
+mod command;
 mod compile;
 mod editor;
 mod event;
@@ -130,6 +135,7 @@ mod reference;
 mod spec;
 mod time;
 
+pub use command::{ScheduleError, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
 pub use editor::{CommitError, Editor};
 pub use event::{

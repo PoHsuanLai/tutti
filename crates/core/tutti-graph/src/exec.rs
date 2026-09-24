@@ -89,6 +89,17 @@
 //!   every channel), and its declared tail has elapsed since its inputs went
 //!   quiet. A node never called yet is not quiet.
 //!
+//! # Scheduled commands
+//!
+//! A third ring carries [`Editor::schedule`](crate::Editor::schedule)'s
+//! timestamped commands (see the `command` module, `src/command.rs`). At the
+//! start of each block, after applying commits and before the first op, the
+//! executor pulls them into a preallocated pending list and resolves each
+//! against the block's [`Env`] — so a beat is resolved against the transport
+//! of the block it falls in. What lands this block is merged into its sink's
+//! event input as one more source after the port's own events, in a buffer
+//! sized when applying; a sink with a landing command is never skipped.
+//!
 //! # Flushed events
 //!
 //! When an event delay or event feedback disappears in a recompile and its
@@ -111,6 +122,7 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
+use crate::command::{overlay_capacity, CommandRx};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
@@ -166,6 +178,9 @@ impl Drop for NodeBox {
 /// everything the executor replaced. Dropping it on the audio thread panics
 /// in a debug build.
 pub(crate) struct Commit {
+    /// The editor's count of commits sent, this one included: a scheduled
+    /// command checked against this commit waits until it is applied.
+    seq: u64,
     plan: Option<Arc<Plan>>,
     delta: Delta,
     incoming: Vec<(UnitIdx, u32, NodeBox)>,
@@ -181,6 +196,7 @@ impl Drop for Commit {
 
 impl Commit {
     pub(crate) fn build(
+        seq: u64,
         plan: Arc<Plan>,
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
@@ -206,6 +222,7 @@ impl Commit {
         // Reserved here so applying moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
         Box::new(Self {
+            seq,
             plan: Some(plan),
             delta,
             incoming,
@@ -284,6 +301,11 @@ struct State {
     event_fb: Vec<Option<EventFifo>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
+    /// Plan units with a scheduled command landing this block.
+    has_due: Vec<bool>,
+    /// Where a node's scheduled events are merged into its inputs; sized
+    /// when applying so the merge never grows (`command::overlay_capacity`).
+    overlay: Vec<Event>,
 }
 
 impl State {
@@ -297,6 +319,8 @@ impl State {
             event_fb: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
+            has_due: Vec::new(),
+            overlay: Vec::new(),
         }
     }
 }
@@ -315,6 +339,9 @@ pub struct Executor {
     state: State,
     frame: Frame,
     dropped: u64,
+    commands: CommandRx,
+    /// `seq` of the last commit applied.
+    applied: u64,
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -331,6 +358,7 @@ impl Executor {
         cap: usize,
         queue: HeapCons<Box<Commit>>,
         back: HeapProd<Box<Commit>>,
+        commands: CommandRx,
     ) -> Self {
         Self {
             prepare,
@@ -342,6 +370,8 @@ impl Executor {
             state: State::empty(prepare.max_block().get()),
             frame: Frame::ZERO,
             dropped: 0,
+            commands,
+            applied: 0,
         }
     }
 
@@ -365,6 +395,19 @@ impl Executor {
     /// A merge never drops: its slot holds all its inputs.
     pub fn dropped_events(&self) -> u64 {
         self.dropped
+    }
+
+    /// Scheduled commands that were already past due when the executor
+    /// first saw them, and so landed at offset 0 of that block instead of on
+    /// their frame. Never dropped — see [`Editor::schedule`](crate::Editor::schedule).
+    pub fn late_commands(&self) -> u64 {
+        self.commands.late()
+    }
+
+    /// Scheduled commands whose node or event port was gone by the time they
+    /// fell due, so there was nowhere to deliver them.
+    pub fn unrouted_commands(&self) -> u64 {
+        self.commands.unrouted()
     }
 
     /// Apply every queued commit, in the order the editor sent them, and send
@@ -434,6 +477,7 @@ impl Executor {
             });
         }
 
+        self.applied = c.seq;
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
         let old_state = std::mem::replace(&mut self.state, new_state);
@@ -558,6 +602,7 @@ impl Executor {
             }
         }
         let mut has_inject = vec![false; plan.units.len()];
+        let flushed_total: usize = flushed.values().map(Vec::len).sum();
         let widest = plan.event_slot_weight.iter().copied().max().unwrap_or(1) as usize;
         let inject = flushed
             .into_iter()
@@ -594,6 +639,8 @@ impl Executor {
             event_fb,
             inject,
             has_inject,
+            has_due: vec![false; plan.units.len()],
+            overlay: Vec::with_capacity(overlay_capacity(plan, cap, flushed_total)),
         }
     }
 
@@ -634,6 +681,8 @@ impl Executor {
             state,
             frame,
             dropped,
+            commands,
+            applied,
         } = self;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
@@ -651,15 +700,18 @@ impl Executor {
             event_fb,
             inject,
             has_inject,
+            has_due,
+            overlay,
         } = state;
         // Slices, not `&mut Vec`s: a slice's pointer and length are locals
         // the op loop can keep in registers across the opaque node calls,
         // where a `Vec` behind a reference is reloaded after every one.
-        let (flags, events, inject, has_inject) = (
+        let (flags, events, inject, has_inject, has_due) = (
             &mut flags[..],
             &mut events[..],
             &mut inject[..],
             &mut has_inject[..],
+            &mut has_due[..],
         );
         let plan: &Plan = plan;
         let cap = *event_cap;
@@ -669,6 +721,7 @@ impl Executor {
             block_len: Samples(frames),
             transport: *transport,
         };
+        commands.gather(&env, plan, *applied, has_due);
 
         // Feedback reads happen before any op: the delay is a whole
         // `MaxBlock`, so nothing this block's captures queue is due yet.
@@ -758,6 +811,9 @@ impl Executor {
                         events,
                         inject,
                         has_inject,
+                        has_due,
+                        overlay,
+                        commands,
                         dropped,
                     };
                     let borrows = &plan.nodes.borrows[..];
@@ -830,17 +886,18 @@ impl Executor {
                             node_op(u, &head, &mut st, ports, |call, node, st| {
                                 let a = rec.ain.max(rec.aout);
                                 let e = rec.ein.max(rec.eout);
-                                let inject = &*st.inject;
+                                let (inject, overlay) = (&*st.inject, &st.overlay[..]);
+                                let extra = Extra { inject, overlay };
                                 let (arena, events) = (&mut *st.arena, &mut *st.events);
                                 match (a, e) {
                                     (0..=4, 0..=4) => {
-                                        call.run::<4, 4>(node, arena, events, borrows, inject)
+                                        call.run::<4, 4>(node, arena, events, borrows, extra)
                                     }
                                     (0..=16, 0..=4) => {
-                                        call.run::<16, 4>(node, arena, events, borrows, inject)
+                                        call.run::<16, 4>(node, arena, events, borrows, extra)
                                     }
                                     _ => call.run::<MAX_PORTS, MAX_PORTS>(
-                                        node, arena, events, borrows, inject,
+                                        node, arena, events, borrows, extra,
                                     ),
                                 }
                             });
@@ -926,6 +983,11 @@ struct OpState<'s> {
     events: &'s mut [Vec<Event>],
     inject: &'s mut [Inject],
     has_inject: &'s mut [bool],
+    /// Plan units with a scheduled command landing this block.
+    has_due: &'s mut [bool],
+    /// Where a node's scheduled events are merged into its inputs.
+    overlay: &'s mut Vec<Event>,
+    commands: &'s CommandRx,
     dropped: &'s mut u64,
 }
 
@@ -947,11 +1009,13 @@ fn node_op(
 ) {
     let (rec, frames) = (h.rec, h.frames);
     let unit = rec.unit;
-    // Flushed events only ever go to an event input.
+    // Flushed events and scheduled commands only ever go to an event input.
     let injected = !ein.is_empty() && st.has_inject[unit as usize];
+    let scheduled = !ein.is_empty() && st.has_due[unit as usize];
 
     let (in_silent, in_constant) = in_masks(ain, st.flags);
     let quiet_inputs = !injected
+        && !scheduled
         && in_silent.covers(ain.len())
         && ein.iter().all(|&s| st.events[s as usize].is_empty());
 
@@ -999,6 +1063,23 @@ fn node_op(
         }
     }
 
+    // Scheduled commands landing on this node this block: one more source
+    // per port, after everything else, merged into the overlay buffer.
+    let mut views = [(0u16, 0u32, 0u32); MAX_PORTS];
+    let mut n_views = 0;
+    if scheduled {
+        let (inject, events) = (&*st.inject, &*st.events);
+        let base = |port: u16| -> &[Event] {
+            inject
+                .iter()
+                .find(|i| i.live && i.unit == unit && i.port == port)
+                .map_or(&events[ein[port as usize] as usize][..], |i| &i.merged)
+        };
+        let (n, lost) = st.commands.overlay(unit, base, st.overlay, &mut views);
+        n_views = n;
+        *st.dropped += u64::from(lost);
+    }
+
     let call = Call {
         env: h.env,
         max: h.max,
@@ -1008,9 +1089,13 @@ fn node_op(
         constant: in_constant,
         cap: h.cap,
         injected,
+        scheduled: &views[..n_views],
     };
     let (status, drops) = call_node(&call, &mut *u.node, st);
     *st.dropped += drops as u64;
+    if scheduled {
+        st.has_due[unit as usize] = false;
+    }
     if injected {
         for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
             inj.events.clear();
@@ -1048,6 +1133,14 @@ fn direct_op<const I: usize, const O: usize>(
     });
 }
 
+/// Event sources a general node call reads besides its slots: flushed
+/// events (`inject`) and scheduled commands merged in (`overlay`).
+#[derive(Clone, Copy)]
+struct Extra<'s> {
+    inject: &'s [Inject],
+    overlay: &'s [Event],
+}
+
 /// One node call's constants, shared by every borrow form.
 struct Call<'p, 'e> {
     env: &'e Env,
@@ -1059,6 +1152,9 @@ struct Call<'p, 'e> {
     cap: usize,
     /// Whether flushed events wait for this call (see the module docs).
     injected: bool,
+    /// `(port, start, end)` into the overlay buffer: ports whose events this
+    /// block include scheduled commands.
+    scheduled: &'p [(u16, u32, u32)],
 }
 
 impl Call<'_, '_> {
@@ -1125,8 +1221,9 @@ impl Call<'_, '_> {
         arena: &mut Arena,
         events: &mut [Vec<Event>],
         borrows: &[(u32, Role)],
-        inject: &[Inject],
+        extra: Extra<'_>,
     ) -> (Status, u32) {
+        let Extra { inject, overlay } = extra;
         let rec = self.rec;
         let frames = self.frames;
         let (n_in, n_out) = (rec.ain as usize, rec.aout as usize);
@@ -1150,6 +1247,9 @@ impl Call<'_, '_> {
             for inj in inject.iter().filter(|i| i.live && i.unit == rec.unit) {
                 evin[inj.port as usize] = SortedEvents::trusted(&inj.merged, frames);
             }
+        }
+        for &(port, a, b) in self.scheduled {
+            evin[port as usize] = SortedEvents::trusted(&overlay[a as usize..b as usize], frames);
         }
         let drops = Cell::new(0u32);
         let mut evout: [EventWriter<'_>; E] = std::array::from_fn(|_| EventWriter::detached());

@@ -336,10 +336,9 @@ impl AudioUnit for Integrator {
         2
     }
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        for c in 0..2 {
-            self.0[c] += input[c];
-            output[c] = self.0[c];
-        }
+        self.0[0] += input[0];
+        self.0[1] += input[1];
+        output[..2].copy_from_slice(&self.0);
     }
     fn process(
         &mut self,

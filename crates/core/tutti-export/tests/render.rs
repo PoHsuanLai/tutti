@@ -12,7 +12,6 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::dsp::reverb_stereo;
 use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
@@ -315,23 +314,89 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
     assert_eq!(reported.samples(), Some(tutti_types::Samples(0)));
 }
 
+/// A stereo integrator: `y[n] = y[n-1] + x[n]`, per channel.
+///
+/// The smallest node that genuinely never decays — a feedback loop with a gain
+/// of exactly one, the limit of the FDN reverb (fundsp's `reverb_stereo`) this
+/// test used to reach for. The engine ships no node that reports
+/// [`Tail::Unbounded`]: `ConvolverNode`, its reverb, is an FIR and reports a
+/// finite ring-out (the cases above). So the property under test — that
+/// `resolve` spends exactly the caller's cap on a graph that never decays —
+/// needs a node that says so, and this one is honest about it.
+///
+/// [`Tail::Unbounded`]: tutti_types::Tail::Unbounded
+#[derive(Clone, Default)]
+struct Integrator([f32; 2]);
+
+impl AudioUnit for Integrator {
+    fn inputs(&self) -> usize {
+        2
+    }
+    fn outputs(&self) -> usize {
+        2
+    }
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        for c in 0..2 {
+            self.0[c] += input[c];
+            output[c] = self.0[c];
+        }
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        input: &tutti_core::BufferRef,
+        output: &mut tutti_core::BufferMut,
+    ) {
+        for i in 0..size {
+            for c in 0..2 {
+                self.0[c] += input.at_f32(c, i);
+                output.set_f32(c, i, self.0[c]);
+            }
+        }
+    }
+    fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
+        input.clone()
+    }
+    fn get_id(&self) -> u64 {
+        tutti_core::mnemonic(b"TSTINTEG")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn tail(&mut self) -> tutti_types::Tail {
+        tutti_types::Tail::Unbounded
+    }
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 /// A graph that never decays resolves to exactly the caller's bound.
 ///
-/// A feedback reverb re-enters its own output, so it has no frame count of its
+/// A feedback loop re-enters its own output, so it has no frame count of its
 /// own — the cap is the whole answer, and it is the caller's choice rather than
 /// a figure the engine invented.
+///
+/// Mutation: `Integrator` reporting `Tail::None` fails the `is_unbounded`
+/// assertion — the graph is then spendable and `resolve` ignores the cap.
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut n = tutti_core::dsp::Net::new(0, 2);
     let src = n.push(Box::new(Const::frame(&[0.5, 0.5])));
-    let rev = n.push(Box::new(reverb_stereo(10.0, 2.0, 0.5)));
+    let rev = n.push(Box::new(Integrator::default()));
     n.connect(src, 0, rev, 0);
     n.connect(src, 1, rev, 1);
     n.pipe_output(rev);
 
     let reported = tutti_export::reported_tail(&n);
     let cap = tutti_types::Samples(384_000);
-    assert!(reported.is_unbounded(), "an FDN never decays on its own");
+    assert!(
+        reported.is_unbounded(),
+        "a unity-gain feedback loop never decays on its own"
+    );
     assert_eq!(reported.samples(), None, "so there is no count to spend");
     assert_eq!(reported.resolve(cap), cap);
 }

@@ -21,11 +21,11 @@ use bevy_tutti::graph::{
     AudioGraphRes, GraphDirty, GraphReconcilePlugin, MasterSources, PortSource, PortSources,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::{limiter, Net, Source as NetSource};
+use tutti_core::dsp::{Net, Source as NetSource};
 use tutti_core::AudioNode;
-use tutti_core::{ChannelLayout, Hz};
+use tutti_core::{ChannelLayout, Db, Hz};
 use tutti_nodes::testing::{Const, Osc};
-use tutti_nodes::ChannelSumNode;
+use tutti_nodes::{ChannelSumNode, LimiterNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
@@ -366,7 +366,10 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
     // dry channel must pre-roll to match, which is the whole figure.
     let dry = spawn_node(&mut app, Const::mono(1.0));
     let src = spawn_node(&mut app, Const::mono(1.0));
-    let lim = spawn_node(&mut app, limiter(0.01, 0.01));
+    let lim = spawn_node(
+        &mut app,
+        LimiterNode::with_channels(ChannelLayout::MONO, Db(-1.0), Db(-0.3)),
+    );
     app.world_mut()
         .entity_mut(lim)
         .insert(PortSources::from(src));

@@ -176,10 +176,11 @@ pub fn compensate_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::dsp::limiter;
     use tutti_core::dsp::Net;
     use tutti_core::Source;
+    use tutti_core::{ChannelLayout, Db};
     use tutti_nodes::testing::Const;
+    use tutti_nodes::LimiterNode;
 
     /// App with the graph resource + dirty flag, but no reconcile pipeline —
     /// enough to drive the compensation system directly.
@@ -197,10 +198,18 @@ mod tests {
     }
 
     /// ch0 through a limiter, ch1 dry — ch1's source must pre-roll to match.
+    ///
+    /// The limiter is the engine's own `LimiterNode`, whose lookahead is what
+    /// it reports as latency — so the plan is exercised on the latency-bearing
+    /// node the engine ships, not on fundsp's.
     fn skewed_graph() -> (Net, Samples) {
         let mut graph = Net::with_backend(2);
         let a = graph.add(Const::mono(1.0));
-        let eff = graph.add(limiter(0.01, 0.01));
+        let eff = graph.add(LimiterNode::with_channels(
+            ChannelLayout::MONO,
+            Db(-1.0),
+            Db(-0.3),
+        ));
         let b = graph.add(Const::mono(1.0));
         graph.connect(a, 0, eff, 0);
         graph.set_output_source(0, Source::Local(eff, 0));

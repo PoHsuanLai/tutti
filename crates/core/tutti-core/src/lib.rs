@@ -227,9 +227,8 @@ pub mod dsp {
     // it never has to be named. Re-adding it would re-open the door to writing a
     // node against the typenum-arity trait; write `impl AudioUnit` instead.
     pub use fundsp::prelude::{
-        adsr_live, bandpass_q, bell_hz, dc, delay, highpass_q, limiter, limiter_stereo, lowpass_hz,
-        lowpass_q, moog, notch_q, pan, pass, pink, poly_pulse, reverb_stereo, saw, sine, sum,
-        triangle, var,
+        adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse,
+        saw, sine, triangle, var,
     };
     // The waveshaping curves. `tutti-nodes`' distortion node holds one per
     // `ShapeKind` and calls [`Shape::shape`] on it per sample — it does *not*

@@ -153,6 +153,45 @@ impl Convolver {
         out
     }
 
+    /// Convolve a block: `output[i]` is what `process_sample(input[i])` would
+    /// have returned, for every `i`. `input` and `output` must be the same
+    /// length.
+    ///
+    /// The same FFT runs on the same data at the same frame as the per-sample
+    /// path, so the two are bit-identical; this one moves whole runs with
+    /// `copy_from_slice` instead of paying a branch and two index bumps per
+    /// sample. A run ends at the partition boundary, which is where the FFT has
+    /// to fire before the next sample's output exists.
+    ///
+    /// The run arithmetic leans on one invariant of [`FftPartitionState`]: once
+    /// the first partition has drained, the output cursor and the input fill
+    /// advance in lockstep, so a run that fits in the input block also fits in
+    /// the output block. Before that first drain the cursor sits at
+    /// `block_size` (the fill-up latency) and the run reads silence.
+    #[inline]
+    pub fn process_block(&mut self, input: &[f32], output: &mut [f32]) {
+        debug_assert_eq!(input.len(), output.len());
+        let p = &mut self.partition;
+        let mut done = 0;
+        while done < input.len() {
+            let run = (p.block_size - p.input_fill).min(input.len() - done);
+            let out = &mut output[done..done + run];
+            if p.output_cursor < p.block_size {
+                debug_assert!(p.output_cursor + run <= p.block_size);
+                out.copy_from_slice(&p.output[p.output_cursor..p.output_cursor + run]);
+                p.output_cursor += run;
+            } else {
+                out.fill(0.0);
+            }
+            p.input[p.input_fill..p.input_fill + run].copy_from_slice(&input[done..done + run]);
+            p.input_fill += run;
+            if p.input_fill >= p.block_size {
+                p.drain_through(&mut self.fft);
+            }
+            done += run;
+        }
+    }
+
     /// Zero the working buffers without discarding the IR. Safe to
     /// call on a stream discontinuity.
     ///
@@ -304,6 +343,50 @@ mod tests {
                 at, lat,
                 "block {block}: latency() reports {lat} but the impulse emerged at {at}"
             );
+        }
+    }
+
+    /// The block path is the per-sample path, bit for bit, whatever the block
+    /// size and however the calls straddle the partition boundary.
+    ///
+    /// Ragged call lengths (1, 7, 64, 3, …) against a small partition are what
+    /// put a run boundary mid-call, before the first drain, and exactly on the
+    /// drain — the three places the lockstep argument in `process_block` could
+    /// be wrong.
+    ///
+    /// Mutation: dropping `p.output_cursor += run` (or reading
+    /// `p.output[..run]` instead of from the cursor) makes the block path
+    /// repeat the head of each output partition and fails this on the first
+    /// call after the first drain.
+    #[test]
+    fn block_path_is_bit_identical_to_the_per_sample_path() {
+        let ir: Vec<f32> = vec![0.7, -0.35, 0.2, 0.9, -0.1, 0.05, 0.42, -0.6, 0.3];
+        let x: Vec<f32> = (0..700)
+            .map(|i| ((i as f32) * 0.173).sin() * 0.8 + if i % 97 == 0 { 0.5 } else { 0.0 })
+            .collect();
+        for block in [2usize, 8, 64] {
+            let mut per_sample = Convolver::new(&ir, block);
+            let want: Vec<f32> = x.iter().map(|&s| per_sample.process_sample(s)).collect();
+
+            let mut blocked = Convolver::new(&ir, block);
+            let mut got = vec![0.0f32; x.len()];
+            let lens = [1usize, 7, 64, 3, 16, 33, 5, 64, 9];
+            let (mut at, mut k) = (0, 0);
+            while at < x.len() {
+                let n = lens[k % lens.len()].min(x.len() - at);
+                blocked.process_block(&x[at..at + n], &mut got[at..at + n]);
+                at += n;
+                k += 1;
+            }
+            for i in 0..x.len() {
+                assert_eq!(
+                    got[i].to_bits(),
+                    want[i].to_bits(),
+                    "partition {block}: sample {i} differs ({} vs {})",
+                    got[i],
+                    want[i]
+                );
+            }
         }
     }
 

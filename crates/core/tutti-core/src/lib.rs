@@ -172,7 +172,9 @@ pub mod dsp {
     //! do implement `AudioUnit<F64>`), so it cannot be specialized away; and a
     //! separate trait with a blanket impl breaks `Net`, which stores
     //! `Box<dyn AudioUnit>`, *is* an `AudioUnit`, and downcasts through
-    //! `node_as::<T>` at 27 sites that would see a wrapper rather than `T`.
+    //! `node_as::<T>` — plugin binding and latency, the MIDI endpoint target
+    //! and the modulation target and driver in `bevy-tutti`, plus the tests —
+    //! and every one of those would see a wrapper rather than `T`.
     //! Putting the contract *below* the fork is the one direction that is none
     //! of those, which is what `tutti-node` does.
     //!
@@ -283,8 +285,9 @@ pub use node::AudioNode;
 /// What a host driving the engine names, in one import.
 ///
 /// Not here, and spelled in full instead: `Result`, `Sample` and `Unit` (each
-/// would shadow a name a consumer already has), and `dsp` — fundsp's prelude,
-/// which stays a module you name, so `Net` is `tutti_core::dsp::Net`.
+/// would shadow a name a consumer already has), and `Net` — the fork's graph
+/// runtime stays in the module you name, so it is `tutti_core::dsp::Net`.
+/// (`dsp::NodeId` is here: a wiring call names endpoints by it.)
 pub mod prelude {
     pub use tutti_types::prelude::*;
 

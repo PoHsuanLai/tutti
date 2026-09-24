@@ -39,7 +39,7 @@ use tutti_plugin::in_process_vst2;
 mod probe_path;
 
 const SR: f64 = 48_000.0;
-/// `BufferArray<U2>` is `MAX_BUFFER_SIZE` frames wide, and that is 64.
+/// A `BufferVec` channel is `MAX_BUFFER_SIZE` frames long, and that is 64.
 const BLOCK: usize = 64;
 
 fn unit() -> Box<dyn AudioUnit> {

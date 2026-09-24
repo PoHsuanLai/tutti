@@ -31,7 +31,7 @@ use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
 const SR: f64 = 48_000.0;
-/// `BufferArray<U2>` is `MAX_BUFFER_SIZE` frames wide, and that is 64, so a
+/// A `BufferVec` channel is `MAX_BUFFER_SIZE` frames long, and that is 64, so a
 /// pool block cannot be longer. Block size is `tutti-core`'s axis, not this
 /// crate's.
 const BLOCK: usize = 64;

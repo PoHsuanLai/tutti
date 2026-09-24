@@ -21,8 +21,9 @@ already depends on.
 - `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
   `tutti_types::graph::Topology` (the graph as a *value*) into a `Net`. The value
   is the graph; `Net` is the interpreter, and nothing reads a topology back out
-  of one. Additive today — every existing caller still builds a `Net`
-  imperatively.
+  of one. Only tests call it today: `bevy-tutti` builds the same value each
+  rebuild but applies it incrementally to its running `Net`, which owns state
+  no value can rebuild.
 - `Engine` — the graph render the RT callback runs.
 
 A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,

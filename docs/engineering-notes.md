@@ -158,7 +158,7 @@ The roster: `Hz` · `Seconds` · `Db` · `Amplitude` · `Mix` · `Feedback` · `
 `Semitones` / `Cents` · `Azimuth` / `Elevation` / `ArcDegrees` · `Phase` /
 `PhaseIncrement` / `Radians` · `SamplePosition` / `Samples` · `SrcRatio` /
 `PlaybackRate` / `StretchFactor` · `CompressionRatio` / `Q` / `Resonance` ·
-`Confidence` / `Correlation` / `Pan` · `SampleRate` (in `fundsp-tutti`).
+`Confidence` / `Correlation` / `Pan` · `SampleRate`.
 
 The last three are **measurements** — values the engine reports back — as opposed
 to the controls above them. That is why `Correlation` and `Pan` are not `Depth`

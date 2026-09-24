@@ -19,12 +19,18 @@
 //!
 //! # What this does not do
 //!
-//! It does not replace anything. `Net` is still built imperatively everywhere it
-//! is built today; `bevy_tutti::graph::wire` is untouched. [`compile`] is an
-//! additional route to the same runtime, and it exists so the equality the value
-//! layer rests on —
-//! `latency::plan(&topology) == latency::plan(&compile(&topology))` — is
-//! checkable before any caller moves.
+//! It is not how the live graph is built. `bevy_tutti::graph::wire` does build
+//! a [`Topology`](tutti_types::graph::Topology) every rebuild, but it applies
+//! that value *incrementally* to the running `Net` (`bevy_tutti`'s
+//! `topology::apply` rewrites only the ports that differ) rather than compiling
+//! a fresh one, because the live `Net` owns state no value can rebuild — its
+//! backend handoff, hosted plugins mutated in place, queued crossfades. The
+//! `bevy_tutti::graph::topology` module docs give the two constraints.
+//!
+//! [`compile`] is the from-scratch route, for a caller with no live backend to
+//! preserve. Only tests call it today (`tests/topology_compile.rs`), and that is
+//! its job for now: it keeps the equality the value layer rests on —
+//! `latency::plan(&topology) == latency::plan(&compile(&topology))` — checkable.
 
 use std::collections::BTreeMap;
 

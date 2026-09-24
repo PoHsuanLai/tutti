@@ -5,7 +5,10 @@
 //! This is Phase 1 of `docs/design/013-native-graph.md` (PR #2): the road off
 //! fundsp's `Net` runtime. Nothing in the engine uses it yet — Phase 2 puts it
 //! behind `Engine`, Phase 3 flips the Bevy adapter — so it can be read, tested
-//! and benchmarked on its own.
+//! and benchmarked on its own. Of Phase 2 it already has the sample-accuracy
+//! contract's type-level half (doc 013 §6: [`Offset`] vs `Frame`,
+//! timestamped commands, [`Io::sub_blocks`], [`Resolution`]) and live
+//! re-preparation ([`Editor::reprepare`]).
 //!
 //! # The four layers (doc 013 §"The design")
 //!

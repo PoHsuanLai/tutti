@@ -23,7 +23,7 @@
 //!
 //! # Algebra
 //!
-//! - `Frame + Samples → Frame` ([`Add`](core::ops::Add)): advance a position.
+//! - `Frame + Samples → Frame` ([`Add`]): advance a position.
 //!   Saturating — the counter cannot overflow in practice, and wrapping a
 //!   timeline position to zero would replay the session from the top.
 //! - The distance between two frames is [`since`](Frame::since), a *checked*

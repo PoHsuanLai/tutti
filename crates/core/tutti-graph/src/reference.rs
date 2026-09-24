@@ -425,8 +425,10 @@ impl Reference {
         // port's own events.
         self.landing.clear();
         let mut waiting = Vec::new();
-        for (at, to, kind) in std::mem::take(&mut self.scheduled) {
-            let offset = match env.due(at) {
+        for (mut at, to, kind) in std::mem::take(&mut self.scheduled) {
+            // PDC: timeline frame F reaches this sink at F + its arrival.
+            let arrival = self.arrival.get(&to.node).copied().unwrap_or_default();
+            let offset = match env.due_at_arrival(&mut at, arrival) {
                 Due::NotYet => {
                     waiting.push((at, to, kind));
                     continue;

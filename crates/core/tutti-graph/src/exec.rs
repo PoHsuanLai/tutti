@@ -1460,3 +1460,78 @@ fn finish(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tutti_types::{At, ChannelLayout, SampleRate};
+
+    use super::*;
+    use crate::event::{EventKind, Ump};
+
+    /// Counts the events it receives.
+    struct Count(Arc<AtomicUsize>);
+
+    impl Node for Count {
+        fn shape(&self) -> crate::node::Shape {
+            crate::node::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
+            self.0.fetch_add(io.events(0).len(), Ordering::Relaxed);
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// The hold, staged deterministically: the race it guards (the executor
+    /// pulls a command before the commit it was checked against, which only
+    /// a concurrent editor can cause — see `tests/commands.rs` for the
+    /// threaded version) is reproduced by running the executor's command
+    /// pass before it applies the queued commit. The command must wait, not
+    /// be judged against the old plan (where its node does not exist), and
+    /// land once the commit does.
+    ///
+    /// Mutation: drop the `plan_seq > applied` hold in `CommandRx::gather`
+    /// → the command is counted unrouted in the staged pass → fails.
+    #[test]
+    fn a_command_seen_before_its_commit_waits_for_it() {
+        let prepare = Prepare::new(SampleRate(48_000.0), Samples(64));
+        let (mut ed, mut exec) = crate::Editor::new(prepare);
+        let seen = Arc::new(AtomicUsize::new(0));
+        ed.insert(NodeKey(1), "a", Count(Arc::clone(&seen)));
+        ed.commit().expect("commits");
+        exec.apply_pending();
+        ed.collect();
+
+        ed.insert(NodeKey(2), "b", Count(Arc::clone(&seen)));
+        ed.commit().expect("queued, not applied");
+        let to = crate::EventIn {
+            node: NodeKey(2),
+            port: 0,
+        };
+        ed.schedule(At::NextBlock, to, EventKind::Midi(Ump([1, 0, 0, 0])))
+            .expect("checked against the queued commit");
+
+        // The command is pulled first, against the plan still running.
+        let plan = Arc::clone(exec.plan.as_ref().expect("a plan"));
+        let env = Env {
+            frame: exec.frame,
+            sample_rate: prepare.sample_rate(),
+            block_len: Samples(64),
+            transport: Transport::default(),
+        };
+        let mut has_due = vec![false; plan.units.len()];
+        exec.commands
+            .gather(&env, &plan, exec.applied, &mut has_due);
+        assert_eq!(exec.unrouted_commands(), 0, "judged against a stale plan");
+        assert_eq!(ed.commands_outstanding(), 1, "it waits");
+
+        // Then the commit lands, and the command with it.
+        exec.process(64, &Transport::default(), &[], &mut []);
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
+        assert_eq!(ed.commands_outstanding(), 0);
+        assert_eq!(exec.unrouted_commands(), 0);
+    }
+}

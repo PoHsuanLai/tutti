@@ -189,7 +189,10 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
     for (i, &gen) in ph.emitter_gen.iter().enumerate() {
         g.generations.insert(NodeKey(i as u64), gen);
     }
-    g.generations.insert(LAG, ph.lag_gen);
+    // A latency change is a shape change, which needs a new unit: without
+    // the lag in the generation the reference would keep the old `Lag` (and
+    // its old latency) while the executor compiled the new one.
+    g.generations.insert(LAG, ph.lag as u32 * 2 + ph.lag_gen);
     (g, shapes)
 }
 
@@ -224,23 +227,26 @@ fn units_of(
     u
 }
 
-/// Run the phases through the executor (`true`) or the reference, then drain.
-/// Returns (emissions tagged with phase, deliveries).
-/// A scheduled command's tag and the frame it must land on.
+/// A scheduled command: `(port, tag, timeline target frame)`.
 type Landing = (u16, u32, u64);
 
+/// Per phase (the drain included): its first frame, and the recorder's
+/// compiled arrival latency during it — which is the lag's latency.
+type Spans = Vec<(u64, u64)>;
+
+/// Run the phases through the executor (`true`) or the reference, then drain.
+/// Returns (emissions tagged with phase, deliveries).
 fn run(
     phases: &[Phase],
     emitters: &[(u32, u64)],
     executor: bool,
 ) -> (Vec<(usize, u32, u64)>, Vec<(u16, u32, u64, u64)>) {
-    let (emitted, got, _) = run_scheduled(phases, emitters, executor);
+    let (emitted, got, _, _) = run_scheduled(phases, emitters, executor);
     (emitted, got)
 }
 
-/// `run`, also returning where every scheduled command must land:
-/// `(port, tag, frame)`, the frame being its target or — when that was
-/// already past as it was scheduled — the first frame of the next block.
+/// `run`, also returning every scheduled command and the phases' spans, so
+/// the caller can check where each landed.
 fn run_scheduled(
     phases: &[Phase],
     emitters: &[(u32, u64)],
@@ -249,8 +255,10 @@ fn run_scheduled(
     Vec<(usize, u32, u64)>,
     Vec<(u16, u32, u64, u64)>,
     Vec<Landing>,
+    Spans,
 ) {
     let mut landings: Vec<Landing> = Vec::new();
+    let mut spans: Spans = Vec::new();
     let mut now = 0u64;
     let ledger: Ledger = Arc::default();
     let inbox: Inbox = Arc::default();
@@ -285,6 +293,7 @@ fn run_scheduled(
         } else {
             reference.set_graph(&valid, units_of(ph, emitters, &ledger, &inbox, &stop));
         }
+        spans.push((now, ph.lag as u64));
         for &(port, rel) in &ph.commands {
             let tag = SCHEDULED + landings.len() as u32;
             let target = now.saturating_add_signed(rel);
@@ -297,7 +306,7 @@ fn run_scheduled(
             } else {
                 reference.schedule(when, at, kind);
             }
-            landings.push((port, tag, target.max(now)));
+            landings.push((port, tag, target));
         }
         let before = ledger.lock().unwrap().len();
         for &n in &ph.blocks {
@@ -318,7 +327,7 @@ fn run_scheduled(
         assert_eq!(ed.commands_outstanding(), 0, "every command landed");
     }
     let got = inbox.lock().unwrap().clone();
-    (phase_of, got, landings)
+    (phase_of, got, landings, spans)
 }
 
 /// The drain phase: the last phase's wiring (so nothing is recompiled away),
@@ -415,13 +424,15 @@ proptest! {
     /// events vanish → fails. Mutation: drop the reference's scheduled
     /// events from its gather → fails on the reference. Mutation: land a
     /// late command at offset 1 instead of 0 in the reference → fails.
+    /// Mutation: drop the arrival from `CommandRx::gather`'s landing (no
+    /// PDC) → a command lands `lag` frames early → fails.
     #[test]
     fn every_event_is_delivered_exactly_once(
         phases in proptest::collection::vec(arb_phase(4), 1..4),
     ) {
         let emitters: Vec<(u32, u64)> = vec![(1, 3), (2, 5), (3, 7), (4, 4)];
         for executor in [true, false] {
-            let (emitted, got, landings) = run_scheduled(&phases, &emitters, executor);
+            let (emitted, got, landings, spans) = run_scheduled(&phases, &emitters, executor);
             let want = expected(&phases, &emitted, &emitters);
             let have = delivered(&got);
             let side = if executor { "executor" } else { "reference" };
@@ -432,14 +443,26 @@ proptest! {
                     "{} port {}", side, p
                 );
             }
-            // Every scheduled command, exactly once, on its port and frame.
-            let mut landed: Vec<Landing> = got
+            // Every scheduled command, exactly once, on its port — and on
+            // its frame: timeline target + the recorder's arrival latency in
+            // the phase it landed in (PDC), or, when that was already past,
+            // the first frame of a phase (where it was first seen late).
+            let mut landed: Vec<(u16, u32, u64, u64)> = got
                 .iter()
                 .filter(|e| e.1 >= SCHEDULED)
-                .map(|&(p, tag, _, at)| (p, tag, at))
+                .map(|&(p, tag, target, at)| (p, tag, target, at))
                 .collect();
             landed.sort_by_key(|l| l.1);
-            prop_assert_eq!(&landed, &landings, "{} scheduled commands", side);
+            let who: Vec<Landing> = landed.iter().map(|&(p, t, target, _)| (p, t, target)).collect();
+            prop_assert_eq!(&who, &landings, "{} scheduled commands", side);
+            for &(_, tag, target, at) in &landed {
+                let &(_, lag) = spans.iter().rev().find(|(s, _)| *s <= at).expect("a phase");
+                let on_time = target + lag;
+                prop_assert!(
+                    at == on_time || (on_time < at && spans.iter().any(|(s, _)| *s == at)),
+                    "{} command {} for {} (+{} arrival) landed at {}", side, tag, target, lag, at
+                );
+            }
         }
     }
 }

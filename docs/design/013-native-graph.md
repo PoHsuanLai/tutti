@@ -326,7 +326,10 @@ place that loses precision to be written out explicitly:
    outstanding); the executor resolves it against each block's `Env` — a
    beat against the transport snapshot of the block it falls in — and
    merges it into the sink's event input as one more source after the
-   port's own. A command already past lands at offset 0 of the next block
+   port's own. A time is a timeline time, PDC-compensated like an upstream
+   event: a sink with arrival latency `a` gets `At::Frame(F)` at its own
+   frame `F + a` (a beat is resolved to its frame first; `NextBlock` is not
+   shifted). A command already past lands at offset 0 of the next block
    and is counted (`late_commands`), never dropped. Play/stop/seek move to
    `At` with the engine (Phase 2b).
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`

@@ -38,10 +38,14 @@
 //! delay): on a tie at one offset, the graph's events come first, then
 //! scheduled ones in the order they were scheduled.
 //!
-//! **Timing and PDC.** The frame is the sink's own call frame
-//! ([`Env::frame`](crate::Env::frame) of the block it runs in). A scheduled
-//! event is addressed to the sink port, so it takes no PDC delay: it is the
-//! sink's time, not a source's.
+//! **Timing and PDC.** A time is a **timeline** time, compensated like any
+//! upstream event: a sink with compiled arrival latency `a` hears timeline
+//! frame `F` at its own frame `F + a`, so an `At::Frame(F)` command lands
+//! there — on the same sample of the node's audio it would have met had it
+//! come down the latent path. An `At::Beat` is resolved to its timeline
+//! frame first, then shifted the same way. `At::NextBlock` has no timeline
+//! position and lands at offset 0, uncompensated. Late means late after
+//! compensation.
 //!
 //! # Back-pressure
 //!
@@ -58,7 +62,7 @@ use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_types::At;
+use tutti_types::{At, Latency};
 
 use crate::event::{merge_into, Event, EventKind};
 use crate::node::Env;
@@ -225,16 +229,23 @@ impl CommandRx {
         let (due, late, unrouted) = (&mut self.due, &mut self.late, &mut self.unrouted);
         let mut finished = 0u64;
         // `retain` keeps arrival order and shifts in place: no allocation.
-        self.pending.retain(|cmd| {
-            // Its commit is still on the way. Not covered by a test, and
-            // cannot be single-threaded: `process` applies every visible
-            // commit before it pulls commands, and a commit is pushed before
-            // any command checked against it — only a concurrent editor can
-            // make the command visible first.
+        self.pending.retain_mut(|cmd| {
+            // Its commit is still on the way. Only a concurrent editor can
+            // make that happen (`process` applies every visible commit before
+            // it pulls commands); `exec::tests` stages it deterministically.
             if cmd.plan_seq > applied {
                 return true;
             }
-            let offset = match env.due(cmd.at) {
+            let target = plan
+                .units
+                .binary_search_by_key(&cmd.to.node, |u| u.key)
+                .ok()
+                .filter(|&u| cmd.to.port < plan.units[u].shape.event_in);
+            // PDC: the sink hears timeline frame F at its own F + arrival
+            // (see `Env::due_at_arrival`). A target that is gone has no
+            // arrival; it is counted unrouted when its time comes.
+            let arrival = target.map_or(Latency::ZERO, |u| plan.units[u].arrival);
+            let offset = match env.due_at_arrival(&mut cmd.at, arrival) {
                 Due::NotYet => return true,
                 Due::In(o) => o,
                 Due::Late => {
@@ -243,12 +254,7 @@ impl CommandRx {
                 }
             };
             finished += 1;
-            match plan
-                .units
-                .binary_search_by_key(&cmd.to.node, |u| u.key)
-                .ok()
-                .filter(|&u| cmd.to.port < plan.units[u].shape.event_in)
-            {
+            match target {
                 Some(u) => {
                     has_due[u] = true;
                     due.push(DueItem {

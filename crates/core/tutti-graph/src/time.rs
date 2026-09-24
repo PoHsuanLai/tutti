@@ -29,7 +29,7 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{At, Frame, Samples};
+use tutti_types::{At, Frame, Latency, Samples};
 
 use crate::node::Env;
 
@@ -181,6 +181,32 @@ impl Env {
         }
     }
 
+    /// Where a scheduled command lands in the block of a sink whose inputs
+    /// arrive `arrival` late — the PDC rule for commands.
+    ///
+    /// An `At::Frame(F)` means **timeline** frame `F`. A sink with compiled
+    /// arrival latency `a` receives the audio of timeline frame `F` at its own
+    /// frame `F + a`, so the command lands there too; landing at `F` would be
+    /// early against the node's own audio by exactly `a`. An `At::Beat` is
+    /// resolved against the transport to its timeline frame first (and
+    /// rewritten in place to that `At::Frame`, since the landing may fall in
+    /// a later block), then shifted the same way. `At::NextBlock` names no
+    /// timeline position to align with: it lands at the start of the block,
+    /// uncompensated.
+    pub(crate) fn due_at_arrival(&self, at: &mut At, arrival: Latency) -> Due {
+        match *at {
+            At::NextBlock => Due::In(Offset::ZERO),
+            At::Frame(f) => self.due(At::Frame(f + arrival.samples())),
+            At::Beat(_) => match self.due(*at) {
+                Due::In(k) => {
+                    *at = At::Frame(self.frame_at(k));
+                    self.due_at_arrival(at, arrival)
+                }
+                other => other,
+            },
+        }
+    }
+
     fn beat_due(&self, beat: f64) -> Due {
         let t = &self.transport;
         let tempo = t.tempo.get();
@@ -321,6 +347,47 @@ mod tests {
             },
         );
         assert_eq!(stopped.due(At::Beat(Beat(1.5))), Due::NotYet);
+    }
+
+    /// PDC for commands: a frame lands `arrival` later; a beat is resolved to
+    /// its timeline frame in the block it falls in, rewritten to that frame,
+    /// and lands `arrival` later — here in the next block. `NextBlock` is not
+    /// shifted.
+    ///
+    /// Mutation: in `due_at_arrival`, return the beat's own offset without
+    /// the shift → lands in this block at 10 → fails.
+    #[test]
+    fn a_command_lands_its_arrival_after_its_timeline_time() {
+        use tutti_types::Latency;
+        let a = Latency::new(Samples(60));
+        let e = env(1000, 64, Transport::default());
+        let mut at = At::Frame(Frame(1000));
+        assert_eq!(e.due_at_arrival(&mut at, a), Due::In(Offset::raw(60)));
+        let mut next = At::NextBlock;
+        assert_eq!(e.due_at_arrival(&mut next, a), Due::In(Offset::ZERO));
+        let t = Transport {
+            playing: true,
+            tempo: Bpm(120.0),
+            beat: Beat(1000.0 / 24_000.0),
+            looping: None,
+        };
+        let e = env(1000, 64, t);
+        let mut beat = At::Beat(Beat(1010.0 / 24_000.0));
+        assert_eq!(
+            e.due_at_arrival(&mut beat, a),
+            Due::NotYet,
+            "1070 is next block"
+        );
+        assert_eq!(
+            beat,
+            At::Frame(Frame(1010)),
+            "resolved while it fell in this block"
+        );
+        let next_block = env(1064, 64, t);
+        assert_eq!(
+            next_block.due_at_arrival(&mut beat, a),
+            Due::In(Offset::raw(6))
+        );
     }
 
     /// Looping: a passed beat inside the loop comes round again after the

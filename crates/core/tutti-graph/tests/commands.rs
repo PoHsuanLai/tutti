@@ -379,3 +379,223 @@ fn scheduling_needs_a_plan() {
         Err(ScheduleError::NoPlan)
     );
 }
+
+/// Passes its audio through and adds 1.0 on the frame of every event, which
+/// it also logs as `(absolute frame, tag)`.
+struct Impulse(Arc<Mutex<Vec<(u64, u32)>>>);
+
+impl Node for Impulse {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_events(1, 0)
+            .with_tail(Tail::Unknown)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.channel(0).map(|x| x);
+        for e in io.events(0) {
+            if let EventKind::Midi(Ump(w)) = e.kind {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((cx.env.frame_at(e.offset).get(), w[0]));
+            }
+            io.output(0)[e.offset.index()] += 1.0;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// PDC applies to scheduled commands as to upstream events: `At::Frame(F)`
+/// is timeline frame `F`, which a sink behind a 20-frame latent path hears at
+/// its own frame `F + 20`. So the note lands 20 frames later there than at a
+/// sibling with arrival 0 — and both impulses come out of the graph on the
+/// same output frame, the sibling's channel delayed by the output alignment.
+///
+/// Mutation: drop the arrival in `CommandRx::gather` (`Latency::ZERO`) →
+/// the latent sink's note lands at 100, 20 frames early against its own
+/// audio, and its impulse leaves 20 frames before the sibling's → fails.
+/// Mutation: the same in the reference only → fails on the reference.
+#[test]
+fn a_scheduled_command_is_compensated_like_an_upstream_event() {
+    const LAT: NodeKey = NodeKey(1);
+    const A: NodeKey = NodeKey(2);
+    const B: NodeKey = NodeKey(3);
+    let units = |log: &Arc<Mutex<Vec<(u64, u32)>>>| -> Vec<(NodeKey, Box<dyn Node>)> {
+        vec![
+            (
+                LAT,
+                Box::new(common::TestNode::new(common::Kind::Lag { latency: 20 })),
+            ),
+            (A, Box::new(Impulse(Arc::clone(log)))),
+            (B, Box::new(Impulse(Arc::clone(log)))),
+        ]
+    };
+    let (exec_log, ref_log) = (Arc::default(), Arc::default());
+    let (mut ed, mut exec) = Editor::new(prepare(MAX));
+    for (k, u) in units(&exec_log) {
+        ed.insert(k, "n", u);
+    }
+    let t = &mut ed.spec_mut().topology;
+    t.inputs = ChannelLayout::MONO;
+    t.edges.insert(
+        tutti_types::graph::InPort { node: LAT, port: 0 },
+        tutti_types::graph::Edge::Direct(Source::Global(0)),
+    );
+    t.edges.insert(
+        tutti_types::graph::InPort { node: A, port: 0 },
+        tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: LAT, port: 0 })),
+    );
+    t.edges.insert(
+        tutti_types::graph::InPort { node: B, port: 0 },
+        tutti_types::graph::Edge::Direct(Source::Global(0)),
+    );
+    t.outputs = vec![
+        Source::Node(OutPort { node: A, port: 0 }),
+        Source::Node(OutPort { node: B, port: 0 }),
+    ];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert_eq!(
+        exec.plan().unwrap().unit(A).unwrap().arrival.samples(),
+        Samples(20)
+    );
+    let mut reference = Reference::new(prepare(MAX));
+    reference.set_graph(
+        &ed.spec().validate().unwrap(),
+        units(&ref_log).into_iter().collect(),
+    );
+    for (k, t) in [(A, 1), (B, 2)] {
+        let to = EventIn { node: k, port: 0 };
+        ed.schedule(At::Frame(Frame(100)), to, tag(t))
+            .expect("room");
+        reference.schedule(At::Frame(Frame(100)), to, tag(t));
+    }
+    let silence = [0.0f32; 64];
+    let (mut outs, mut routs) = (vec![Vec::new(); 2], vec![Vec::new(); 2]);
+    for n in [64usize, 7, 64, 33] {
+        let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
+        exec.process(
+            n,
+            &Transport::default(),
+            &[&silence[..n]],
+            &mut [&mut a[..], &mut b[..]],
+        );
+        outs[0].extend(a);
+        outs[1].extend(b);
+        let (mut a, mut b) = (vec![0.0; n], vec![0.0; n]);
+        reference.process(
+            n,
+            &Transport::default(),
+            &[&silence[..n]],
+            &mut [&mut a[..], &mut b[..]],
+        );
+        routs[0].extend(a);
+        routs[1].extend(b);
+    }
+    for (log, out) in [(&exec_log, &outs), (&ref_log, &routs)] {
+        let mut got = log.lock().unwrap().clone();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![(100, 2), (120, 1)],
+            "the latent sink hears it 20 later"
+        );
+        for ch in out.iter() {
+            let hits: Vec<usize> = ch
+                .iter()
+                .enumerate()
+                .filter(|(_, &x)| x != 0.0)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(hits, vec![120], "both impulses leave on the same frame");
+        }
+    }
+    assert_eq!(exec.late_commands(), 0);
+}
+
+/// The hold, end to end with the editor on its own thread: every round
+/// inserts a fresh node, commits it and at once schedules a `NextBlock` note
+/// to it, while the audio thread spins one-frame blocks. The invariant, over
+/// every round: every note is delivered exactly once, none unrouted.
+///
+/// Honest about its reach: the race the hold guards (the executor pulling
+/// the command before the commit) needs the editor's two pushes to fall in
+/// the few instructions between the executor's commit pass and its command
+/// pass, and with the hold removed this test did not catch it in 15 000
+/// rounds here. The deterministic staged version is the unit test
+/// `exec::tests::a_command_seen_before_its_commit_waits_for_it`, which does.
+/// What this one does catch: anything that loses, repeats or strands a
+/// command across threads. Mutation: skip the `done.fetch_add` in
+/// `CommandRx::gather` → the editor never sees its credit back and the
+/// round waits out its deadline → fails.
+#[test]
+fn a_command_waits_for_the_commit_it_was_checked_against() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const ROUNDS: u32 = 3_000;
+    let log: Log = Arc::default();
+    let (mut ed, mut exec) = Editor::new(prepare(MAX));
+    ed.insert(
+        NodeKey(0),
+        "probe",
+        Probe {
+            log: Arc::clone(&log),
+            level: 0.0,
+        },
+    );
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let done = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&done);
+    let audio = std::thread::spawn(move || {
+        let t = Transport::default();
+        while !stop.load(Ordering::Acquire) {
+            exec.process(1, &t, &[], &mut []);
+        }
+        exec
+    });
+    for round in 1..=ROUNDS {
+        let key = NodeKey(u64::from(round));
+        ed.insert(
+            key,
+            "probe",
+            Probe {
+                log: Arc::clone(&log),
+                level: 0.0,
+            },
+        );
+        ed.remove(NodeKey(u64::from(round - 1)));
+        loop {
+            match ed.commit() {
+                Ok(()) => break,
+                Err(tutti_graph::CommitError::Backpressure) => std::thread::yield_now(),
+                Err(e) => panic!("{e}"),
+            }
+        }
+        ed.schedule(At::NextBlock, EventIn { node: key, port: 0 }, tag(round))
+            .expect("one outstanding at a time");
+        // Wait for it to land before the next round removes its node.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ed.commands_outstanding() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: the command never landed"
+            );
+            std::thread::yield_now();
+        }
+    }
+    done.store(true, Ordering::Release);
+    let exec = audio.join().expect("the audio thread");
+    ed.collect();
+    assert_eq!(
+        exec.unrouted_commands(),
+        0,
+        "a command was judged against a stale plan"
+    );
+    let mut tags: Vec<u32> = log.lock().unwrap().iter().map(|e| e.3).collect();
+    tags.sort_unstable();
+    assert_eq!(tags, (1..=ROUNDS).collect::<Vec<_>>());
+}

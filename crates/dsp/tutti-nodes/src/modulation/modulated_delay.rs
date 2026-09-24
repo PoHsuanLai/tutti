@@ -99,10 +99,6 @@ impl ModulatedDelay {
         self.delays.r = DelayLine::from_seconds(self.config.max_delay, sample_rate);
     }
 
-    pub fn base_delay(&self) -> Seconds {
-        self.config.base_delay
-    }
-
     #[inline]
     pub fn process_sample(&mut self, in_l: f32, in_r: f32, out: &mut [f32]) {
         let (depth, fb, mix) = self.mix.load();

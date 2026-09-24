@@ -201,7 +201,7 @@ pub mod prelude {
 
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;
-    pub use tutti_core::Fade;
+    pub use tutti_core::CrossfadeCurve;
 
     pub use tutti_core::transport::{
         beat_from_ports, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,

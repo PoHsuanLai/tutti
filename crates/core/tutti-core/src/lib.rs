@@ -20,6 +20,12 @@ pub use tutti_types::value::{
 };
 
 mod engine;
+
+// The shape of a node swap (`Net::crossfade`). The engine's own enum rather
+// than the fork's `sequencer::Fade`, which a caller now reaches only through
+// `CrossfadeCurve`'s `From` impl — so no crate outside this one names it.
+mod crossfade;
+pub use crossfade::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it — seven callsites did, all through the module path.
@@ -305,10 +311,6 @@ pub use fundsp::read::WaveMetadata;
 pub use fundsp::realnet::NetBackend;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::stream::FileIn;
-// `Fade` is the graph crossfade path's shape (`Net::crossfade`, and the
-// reverb/distortion node rebuilds). It is the only part of fundsp's `sequencer`
-// this fork carries — see docs/fundsp-fork-audit.md.
-pub use fundsp::sequencer::Fade;
 pub use fundsp::wave::Wave;
 
 /// Which audio formats this build can decode.

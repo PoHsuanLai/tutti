@@ -165,7 +165,7 @@ pub mod prelude {
         beat_from_ports, ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent,
         MotionState, Then, BEAT_PORTS,
     };
-    pub use tutti_core::Fade;
+    pub use tutti_core::CrossfadeCurve;
 
     /// The device handle and its enumeration record. `bevy-tutti` surfaces
     /// both at *its* root; a headless host needs them at least as much.

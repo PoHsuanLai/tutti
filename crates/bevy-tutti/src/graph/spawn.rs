@@ -201,9 +201,12 @@ pub fn crossfade_audio_node(
             );
             return;
         };
-        graph
-            .0
-            .crossfade(node.0, tutti_core::Fade::Smooth, 0.005, new_unit);
+        graph.0.crossfade(
+            node.0,
+            tutti_core::CrossfadeCurve::EqualAmplitude.into(),
+            0.005,
+            new_unit,
+        );
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }

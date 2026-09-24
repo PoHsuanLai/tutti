@@ -368,12 +368,22 @@ impl AudioUnit for DelayLineNode {
         self
     }
 
+    /// Zero latency, whatever the delay time: the echo is the *effect*, not
+    /// processing latency.
+    ///
+    /// `AudioUnit::latency` is derived from `route`, and PDC compensates
+    /// whatever it reports by delaying every other path. This used to report
+    /// `input.delay(delay_time)`, so a 500 ms echo insert pushed the whole rest
+    /// of the mix 500 ms late to "line up" with an echo that is supposed to be
+    /// late (design doc 013, D1). The dry half of the blend is undelayed, so the
+    /// output's earliest energy leaves with the input.
+    ///
+    /// `distort` rather than a pass-through: a recirculating, modulatable delay
+    /// has no fixed frequency response to report, and the blend with `mix` means
+    /// a constant input does not come out unchanged either.
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(1);
-        // `route` wants f64, so this never narrows: going f32 → f64 would throw
-        // away precision on the way through.
-        let delay_samples = self.delay_time.load().get() as f64 * self.sample_rate.get();
-        out.set(0, input.at(0).delay(delay_samples));
+        out.set(0, input.at(0).distort(0.0));
         out
     }
 
@@ -925,10 +935,10 @@ impl AudioUnit for StereoDelayLineNode {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(self.width());
+        // Zero latency per channel — see `DelayLineNode::route` for why a
+        // musical delay must not report its delay time to PDC.
         for c in 0..self.width() {
-            // f64 throughout, as in `DelayLineNode::route` above.
-            let d = self.delay_time[c].load().get() as f64 * self.sample_rate.get();
-            out.set(c, input.at(c).delay(d));
+            out.set(c, input.at(c).distort(0.0));
         }
         out
     }

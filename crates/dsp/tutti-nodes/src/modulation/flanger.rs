@@ -177,13 +177,15 @@ impl AudioUnit for FlangerNode {
         self
     }
 
+    /// Zero latency: the modulated delay is the flanger's sound, not processing
+    /// latency, and PDC would otherwise delay every other path by the base
+    /// delay (design doc 013, D1; the full argument is on
+    /// [`DelayLineNode`](crate::DelayLineNode)'s `route`). `distort`, because a
+    /// swept delay has no fixed frequency response.
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(2);
-        // f64 throughout: `route` wants f64, so the old f32 round-trip was
-        // pure loss.
-        let delay_samples = self.core.base_delay().get() as f64 * self.core.sample_rate.get();
-        out.set(0, input.at(0).delay(delay_samples));
-        out.set(1, input.at(1).delay(delay_samples));
+        out.set(0, input.at(0).distort(0.0));
+        out.set(1, input.at(1).distort(0.0));
         out
     }
 

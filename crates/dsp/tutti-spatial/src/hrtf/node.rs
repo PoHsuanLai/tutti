@@ -9,13 +9,14 @@ use tutti_core::{
     SampleRate, Samples, SignalFrame, Tail,
 };
 
-use super::panner::{HrtfBinaural, HrtfBinauralError};
+use super::panner::{BridgeSample, HrtfBinaural, HrtfBinauralError, LATENCY};
 use crate::SpatialTarget;
 
 /// FFT-convolution binaural panner for headphone 3D audio.
 ///
 /// Position is controlled via lock-free atomics ([`SpatialTarget`]); the audio
-/// path reads them once per block. Rendering lags input by one HRTF frame.
+/// path reads them once per block. Output — wet *and* dry — lags input by one
+/// HRTF frame less one sample, which `route` reports so PDC can compensate it.
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
     target: SpatialTarget,
@@ -98,9 +99,15 @@ impl HrtfBinauralNode {
         // HRTF rendering genuinely needs a single mono sample, so the coefficient
         // belongs to `downmix.rs` rather than to this node.
         let mono = fold_frame_to_mono(&[left, right]);
-        let (wet_l, wet_r) = self.panner.process_sample(mono);
+        // The dry mono comes back out of the frame bridge beside the wet pair,
+        // equally late. Blending against `mono` itself led the wet signal by
+        // the whole frame, so at any `blend < 1` the dry half arrived early.
+        let BridgeSample {
+            dry,
+            wet: (wet_l, wet_r),
+        } = self.panner.process_sample(mono);
         // width blends the HRTF-rendered signal against the dry mono center.
-        (width.blend(mono, wet_l), width.blend(mono, wet_r))
+        (width.blend(dry, wet_l), width.blend(dry, wet_r))
     }
 }
 
@@ -180,10 +187,18 @@ impl AudioUnit for HrtfBinauralNode {
         self
     }
 
+    /// The frame bridge's [`LATENCY`] on both outputs.
+    ///
+    /// This used to pass input 0 straight through — zero latency — while every
+    /// output sample left a frame late, so PDC never compensated a binaural
+    /// track and it arrived late against the rest of the mix (design doc 013,
+    /// D2). Both outputs are a fold of *both* inputs, hence the combine; and a
+    /// moving HRIR has no fixed frequency response, hence nonlinear.
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut output = SignalFrame::new(2);
-        output.set(0, input.at(0));
-        output.set(1, input.at(0));
+        let rendered = input.at(0).combine_nonlinear(input.at(1), LATENCY as f64);
+        output.set(0, rendered);
+        output.set(1, rendered);
         output
     }
 
@@ -282,6 +297,146 @@ mod tests {
             produced_nonzero,
             "HRTF node should emit audio after warm-up"
         );
+    }
+
+    /// Run `node` over `frames` frames with a unit impulse on both inputs at
+    /// frame `at`, through `process` in 64-frame blocks (the hot path, not
+    /// `tick`). Returns the (left, right) outputs.
+    fn impulse_response(
+        node: &mut HrtfBinauralNode,
+        at: usize,
+        frames: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
+        use tutti_core::BufferVec;
+        const BLOCK: usize = 64;
+        let mut input = BufferVec::new(2);
+        let mut output = BufferVec::new(2);
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        let mut done = 0;
+        while done < frames {
+            let n = BLOCK.min(frames - done);
+            {
+                let mut b = input.buffer_mut();
+                for c in 0..2 {
+                    for i in 0..BLOCK {
+                        b.set_f32(c, i, if done + i == at { 1.0 } else { 0.0 });
+                    }
+                }
+            }
+            node.process(n, &input.buffer_ref(), &mut output.buffer_mut());
+            let o = output.buffer_ref();
+            l.extend((0..n).map(|i| o.at_f32(0, i)));
+            r.extend((0..n).map(|i| o.at_f32(1, i)));
+            done += n;
+        }
+        (l, r)
+    }
+
+    fn onsets(ch: &[f32]) -> Vec<usize> {
+        ch.iter()
+            .enumerate()
+            .filter(|(_, s)| s.abs() > 1e-4)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// `route` must report the delay the output really has, on both outputs —
+    /// design doc 013, D2. It used to pass the input straight through (zero),
+    /// so PDC never compensated a binaural track.
+    ///
+    /// The figure is **measured**, not read off the doc comment: the module doc
+    /// said "one HRTF frame" (512), and an impulse says 511 — the bridge renders
+    /// on the push that completes a frame and drains that frame's first sample
+    /// in the same call. The synthetic sphere's HRIRs are deltas at t = 0, so
+    /// every frame of delay seen here is the bridge's.
+    ///
+    /// Impulses land at several offsets within a frame (first, second, last,
+    /// and across a frame boundary), because a bridge whose delay depended on
+    /// the in-frame phase would have no single latency to report.
+    ///
+    /// Mutation: restoring the pass-through `route` fails the `latency()`
+    /// assertion (reports 0). Mutation: `LATENCY = FRAME_LEN` fails every
+    /// impulse (the doc's figure is one frame too late).
+    #[test]
+    fn reported_latency_is_the_measured_impulse_delay() {
+        use crate::hrtf::panner::{FRAME_LEN, LATENCY};
+        let mut node = make_node();
+        assert_eq!(node.latency(), Some((FRAME_LEN - 1) as f64));
+        let mut input = SignalFrame::new(2);
+        input.set(0, tutti_core::Signal::Latency(0.0));
+        input.set(1, tutti_core::Signal::Latency(0.0));
+        let routed = node.route(&input, 1.0);
+        for o in 0..2 {
+            assert!(
+                matches!(routed.at(o), tutti_core::Signal::Latency(l) if l == LATENCY as f64),
+                "output {o} does not report Latency({LATENCY})"
+            );
+        }
+
+        for at in [0, 1, FRAME_LEN - 1, FRAME_LEN, 2 * FRAME_LEN + 37] {
+            let mut node = make_node();
+            node.set_position(Azimuth(90.0), Elevation::LEVEL);
+            node.reset();
+            let (l, r) = impulse_response(&mut node, at, at + 3 * FRAME_LEN);
+            assert_eq!(onsets(&l), vec![at + LATENCY], "left, impulse at {at}");
+            assert_eq!(onsets(&r), vec![at + LATENCY], "right, impulse at {at}");
+        }
+    }
+
+    /// Through PDC: a binaural track on outputs 0/1 beside a dry path on 2. The
+    /// dry path must now pre-roll by the bridge's latency; with the old
+    /// pass-through `route` the plan was empty and the binaural track simply
+    /// arrived late.
+    ///
+    /// Mutation: restoring the pass-through `route` fails (an empty plan).
+    #[test]
+    fn pdc_compensates_the_other_path_by_the_binaural_latency() {
+        use crate::hrtf::panner::LATENCY;
+        use tutti_core::dsp::{pass, Net, Source};
+        use tutti_core::latency;
+
+        let mut net = Net::new(1, 3);
+        let hrtf = net.add(make_node());
+        let dry = net.add(pass());
+        net.set_source(hrtf, 0, Source::Global(0));
+        net.set_source(hrtf, 1, Source::Global(0));
+        net.set_source(dry, 0, Source::Global(0));
+        net.set_output_source(0, Source::Local(hrtf, 0));
+        net.set_output_source(1, Source::Local(hrtf, 1));
+        net.set_output_source(2, Source::Local(dry, 0));
+
+        let plan = latency::plan(&net);
+        assert_eq!(plan.total(), Samples(LATENCY));
+        assert_eq!(plan.channels(), &[Samples(0), Samples(0), Samples(LATENCY)]);
+    }
+
+    /// The dry half of the blend leaves with the wet half, so the reported
+    /// latency is true of the whole output at any blend — the D3 shape, which
+    /// this node had too: it blended the undelayed `mono` against a wet signal
+    /// a frame late.
+    ///
+    /// Mutation: blending against `mono` instead of the bridge's `dry` fails
+    /// blend 0.0 and 0.5 (an onset at the impulse itself). Mutation: dropping
+    /// the swap in `FrameBridge::rewind` fails them too (the dry frame is
+    /// never refreshed, so the dry half never arrives).
+    #[test]
+    fn dry_and_wet_leave_together_at_every_blend() {
+        use crate::hrtf::panner::{FRAME_LEN, LATENCY};
+        for blend in [0.0_f32, 0.5, 1.0] {
+            let mut node = make_node();
+            node.set_position(Azimuth(90.0), Elevation::LEVEL);
+            node.set_blend(Mix(blend));
+            node.reset();
+            let at = 100;
+            let (l, r) = impulse_response(&mut node, at, at + 2 * FRAME_LEN);
+            assert_eq!(onsets(&l), vec![at + LATENCY], "left, blend {blend}");
+            assert_eq!(onsets(&r), vec![at + LATENCY], "right, blend {blend}");
+            if blend == 0.0 {
+                // Fully dry is the mono fold, delayed and otherwise untouched.
+                assert!((l[at + LATENCY] - 1.0).abs() < 1e-6);
+                assert!((r[at + LATENCY] - 1.0).abs() < 1e-6);
+            }
+        }
     }
 
     /// Same contract as the VBAP panner's: `reset` clears the streaming

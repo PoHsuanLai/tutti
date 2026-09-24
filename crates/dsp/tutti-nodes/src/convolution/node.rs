@@ -19,7 +19,54 @@ use tutti_core::Tail;
 
 use super::convolver::Convolver;
 use super::params::WetDry;
+use crate::buffer::CircularBuffer;
 use crate::StereoPair;
+
+/// The dry path's alignment delay: holds the input for exactly the convolver's
+/// latency, so the blend adds the dry sample that arrived *with* the wet one.
+///
+/// Without it the node blended the undelayed input against a wet signal one FFT
+/// block late, while `route` reported the block for the whole output — so after
+/// PDC the dry half of any `mix < 1` led the mix by `latency` samples, and the
+/// blend itself comb-filtered. The latency is the convolver's block size, fixed
+/// at construction and independent of the sample rate, so the ring is sized once
+/// there and `set_sample_rate` has nothing to resize.
+#[derive(Clone)]
+struct DryAlign {
+    ring: CircularBuffer<f32>,
+}
+
+impl DryAlign {
+    /// Allocates — construction only. `latency` is at least 2 (the convolver
+    /// rounds its block up to a power of two no smaller than that), so the
+    /// one-slot clamp in [`CircularBuffer::new`] never shortens the delay.
+    fn new(latency: usize) -> Self {
+        debug_assert!(latency >= 1, "a zero-latency convolver needs no dry align");
+        Self {
+            ring: CircularBuffer::new(latency),
+        }
+    }
+
+    /// Push `input`, return the sample pushed `latency` calls ago.
+    ///
+    /// The ring holds exactly `latency` samples, so the oldest one — read
+    /// before the push overwrites its slot — is `latency` pushes old.
+    #[inline]
+    fn step(&mut self, input: f32) -> f32 {
+        let delayed = self.ring.read_back(self.ring.len() - 1);
+        self.ring.push(input);
+        delayed
+    }
+
+    fn clear(&mut self) {
+        self.ring.clear();
+    }
+
+    #[inline]
+    fn footprint(&self) -> usize {
+        self.ring.len() * core::mem::size_of::<f32>()
+    }
+}
 
 /// The tail of an FIR whose impulse response is `ir_length` samples long.
 ///
@@ -55,10 +102,13 @@ pub enum IrChannelConfig {
 
 /// Mono convolution reverb as an [`AudioUnit`].
 ///
-/// Latency is one FFT block, reported through [`AudioUnit::route`].
+/// Latency is one FFT block, reported through [`AudioUnit::route`] — for the
+/// whole output: the dry half of the blend is delayed by the same block, so wet
+/// and dry leave aligned.
 #[derive(Clone)]
 pub struct ConvolverNode {
     convolver: Convolver,
+    dry: DryAlign,
     params: WetDry,
     /// The rate the host last announced. Seeded at [`DEFAULT_SAMPLE_RATE`] and
     /// updated by `set_sample_rate`, but **never read** — no coefficient here
@@ -89,6 +139,7 @@ impl ConvolverNode {
         let convolver = Convolver::new(ir, block_size);
         let latency_samples = convolver.latency();
         Self {
+            dry: DryAlign::new(latency_samples),
             convolver,
             params: WetDry::default(),
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -105,6 +156,7 @@ impl ConvolverNode {
         let convolver = Convolver::with_ir(ir);
         let latency_samples = convolver.latency();
         Self {
+            dry: DryAlign::new(latency_samples),
             convolver,
             params: WetDry::default(),
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -151,7 +203,8 @@ impl ConvolverNode {
     /// one bare control in the signature, and `params.load()` returns it typed.
     fn process_sample(&mut self, input: f32, mix: Mix, gain: Amplitude) -> f32 {
         let wet = self.convolver.process_sample(input) * gain.get();
-        mix.blend(input, wet)
+        let dry = self.dry.step(input);
+        mix.blend(dry, wet)
     }
 }
 
@@ -166,6 +219,7 @@ impl AudioUnit for ConvolverNode {
 
     fn reset(&mut self) {
         self.convolver.reset();
+        self.dry.clear();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -223,7 +277,7 @@ impl AudioUnit for ConvolverNode {
     }
 
     fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>() + self.convolver.scratch_footprint()
+        core::mem::size_of::<Self>() + self.convolver.scratch_footprint() + self.dry.footprint()
     }
 }
 
@@ -231,6 +285,10 @@ impl AudioUnit for ConvolverNode {
 #[derive(Clone)]
 pub struct StereoConvolverNode {
     channels: StereoPair<Convolver>,
+    /// Per-channel dry alignment, as on [`ConvolverNode`]. Each channel's *own*
+    /// input is what gets delayed — the dry half of a `MonoToStereo` blend is
+    /// still `in_l`/`in_r`, not the folded mono the IRs see.
+    dry: StereoPair<DryAlign>,
     config: IrChannelConfig,
     params: WetDry,
     /// As [`ConvolverNode::sample_rate`]: stored, never read.
@@ -249,7 +307,14 @@ impl StereoConvolverNode {
     /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
     fn build(l: Convolver, r: Convolver, config: IrChannelConfig) -> Self {
         let latency_samples = l.latency();
+        // Both convolvers are built with the same block size by every
+        // constructor, so one figure is true of both channels.
+        debug_assert_eq!(latency_samples, r.latency());
         Self {
+            dry: StereoPair::new(
+                DryAlign::new(latency_samples),
+                DryAlign::new(latency_samples),
+            ),
             channels: StereoPair::new(l, r),
             config,
             params: WetDry::default(),
@@ -348,7 +413,9 @@ impl StereoConvolverNode {
         };
         let wet_l = wet_l * gain.get();
         let wet_r = wet_r * gain.get();
-        (mix.blend(in_l, wet_l), mix.blend(in_r, wet_r))
+        let dry_l = self.dry.l.step(in_l);
+        let dry_r = self.dry.r.step(in_r);
+        (mix.blend(dry_l, wet_l), mix.blend(dry_r, wet_r))
     }
 }
 
@@ -364,6 +431,8 @@ impl AudioUnit for StereoConvolverNode {
     fn reset(&mut self) {
         self.channels.l.reset();
         self.channels.r.reset();
+        self.dry.l.clear();
+        self.dry.r.clear();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -430,6 +499,8 @@ impl AudioUnit for StereoConvolverNode {
         core::mem::size_of::<Self>()
             + self.channels.l.scratch_footprint()
             + self.channels.r.scratch_footprint()
+            + self.dry.l.footprint()
+            + self.dry.r.footprint()
     }
 }
 
@@ -448,16 +519,33 @@ mod tests {
         assert_eq!(node.mix().load(core::sync::atomic::Ordering::Acquire), 0.0);
     }
 
+    /// Fully dry is the input unchanged — but, since design doc 013's D3 fix,
+    /// unchanged *and* `latency_samples` late, because the node reports that
+    /// latency for its whole output and PDC compensates the whole output by it.
+    /// (This test used to assert the value on the very first tick, which pinned
+    /// the defect: a dry half that led the reported latency.)
     #[test]
     fn dry_mix_is_passthrough() {
         let ir = vec![1.0; 64];
         let mut node = ConvolverNode::new(&ir, 64);
         node.set_sample_rate(tutti_core::SampleRate(48_000.0));
         node.set_mix(0.0);
+        let latency = node.latency_samples().0;
 
         let mut out = [0.0f32; 1];
-        node.tick(&[0.5], &mut out);
-        assert!((out[0] - 0.5).abs() < 1e-6);
+        let mut got = Vec::new();
+        for i in 0..latency * 2 {
+            node.tick(&[0.5 + i as f32 * 1e-3], &mut out);
+            got.push(out[0]);
+        }
+        for (i, &s) in got.iter().enumerate() {
+            let want = if i < latency {
+                0.0
+            } else {
+                0.5 + (i - latency) as f32 * 1e-3
+            };
+            assert!((s - want).abs() < 1e-6, "frame {i}: {s}, expected {want}");
+        }
     }
 
     #[test]

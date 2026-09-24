@@ -58,8 +58,8 @@
 //! **A node op is one record.** The compiler lowers each `Op::Node` into a
 //! `NodeRec` (`plan.rs`): store index, generation, arrival, tail, the port
 //! slots, the buffer borrow requests **already sorted**, and a `Form` that
-//! picks the borrow. The verifier checks the record is exactly the lowering
-//! of the op, so a call does one indexed load where it used to do six, and
+//! picks the borrow. The verifier checks each record against its op, so a
+//! call does one indexed load where it used to do six, and
 //! never sorts. The commonest shape — at most one audio input, one audio
 //! output, no event ports — borrows its one or two slots directly, and its
 //! whole call path is specialised so the per-port loops fold away. An

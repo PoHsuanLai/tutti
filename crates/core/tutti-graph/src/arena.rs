@@ -21,10 +21,9 @@
 //!
 //! **Node calls pay no sort.** A node op's requests are sorted once, when the
 //! plan is compiled (`NodeTables::lower` in `plan.rs`), and the verifier
-//! checks the plan carries exactly that lowering. The walk still *checks*
-//! the order it relies on: an unsorted list makes `split_at_mut` panic on a
-//! slot behind the cursor instead of reaching it, so a bad table is a panic
-//! too, never a wrong buffer. Ops whose requests are built per call (event
+//! checks each record's requests against its op. The walk still *checks*
+//! the order it relies on: a slot behind the cursor is a panic, in every
+//! build, never a wrong buffer. Ops whose requests are built per call (event
 //! merges) go through [`borrow_disjoint`], which sorts first. The port tables
 //! are stack arrays sized by a small set of const buckets (see `exec.rs`), so
 //! a two-port node does not initialise 128 entries, and the commonest shapes
@@ -76,9 +75,9 @@ pub(crate) fn borrow_disjoint<'a, T>(
 /// # Panics
 ///
 /// As [`borrow_disjoint`], and also if `reqs` is not sorted by slot: a slot
-/// behind the cursor makes the slot arithmetic underflow (a debug panic) or
-/// `split_at_mut` run past the end (a panic in any build). Never a wrong or
-/// aliased buffer.
+/// behind the cursor fails the `checked_sub` and panics, in every build
+/// (a debug build names the order earlier, in a `debug_assert!`). Never a
+/// wrong or aliased buffer.
 #[inline]
 pub(crate) fn borrow_sorted<'a, T>(
     items: &'a mut [T],

@@ -302,9 +302,10 @@ pub(crate) enum Form {
 /// plus the [`PlanUnit`] lookup it replaces.
 ///
 /// Derived from `ops`, `audio_list`, `event_list` and `units` alone
-/// ([`NodeTables::lower`]), and `verify` checks that the plan's copy is
-/// exactly that derivation — so the executor, which reads only this, runs
-/// what the verifier checked.
+/// ([`NodeTables::lower`]). `verify` checks every record against its op
+/// directly, without re-running the lowering (rule 7), so the executor,
+/// which reads only this, runs what the verifier checked — even if the
+/// lowering has a bug.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NodeRec {
     /// Index into [`Plan::units`].
@@ -573,7 +574,7 @@ pub struct Plan {
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
     /// The node ops, lowered for the executor. Derived from the fields
-    /// above; `verify` checks it is exactly that derivation.
+    /// above; `verify` checks each record against its op.
     pub(crate) nodes: NodeTables,
 }
 

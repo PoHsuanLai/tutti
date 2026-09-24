@@ -57,8 +57,8 @@ use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, Prepare, Shape, MAX_PORTS};
 use crate::plan::{
-    Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,
-    Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, NodeTables, Op, Placement, Plan,
+    PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 
@@ -1005,6 +1005,7 @@ pub fn compile(
         })
         .collect();
 
+    let nodes = NodeTables::lower(&ops, &audio_list, &event_list, &units);
     let plan = Plan {
         prepare: *prepare,
         ops,
@@ -1044,6 +1045,7 @@ pub fn compile(
         audio_values,
         event_values,
         value_readers,
+        nodes,
     };
 
     // ---- 8. verify --------------------------------------------------------

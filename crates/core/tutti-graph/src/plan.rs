@@ -43,8 +43,9 @@
 //!   disappearing key flushes like a PDC event delay.
 
 use tutti_types::graph::{InPort, OutPort, Source};
-use tutti_types::{Latency, NodeKey, Samples};
+use tutti_types::{Latency, NodeKey, Samples, Tail};
 
+use crate::arena::Role;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
 use crate::spec::{EventIn, EventOut};
@@ -262,6 +263,240 @@ pub enum Op {
     },
 }
 
+/// How the executor borrows one node op's buffers — decided at compile time,
+/// so a call does not re-derive it from the port counts.
+///
+/// The three direct forms cover the shape most nodes have (zero or one audio
+/// input, one audio output, no event ports): one or two slots, borrowed with
+/// no request table at all. Everything else walks the op's presorted borrow
+/// requests ([`NodeRec::borrows`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// No audio input, one audio output, no event ports.
+    Source {
+        /// Audio slot written.
+        out: u32,
+    },
+    /// One audio input and one output in different slots, no event ports.
+    /// The verifier proves the slots differ: an op that reads and writes one
+    /// slot must declare it in place.
+    Split {
+        /// Audio slot read.
+        input: u32,
+        /// Audio slot written.
+        out: u32,
+    },
+    /// One audio channel aliased in place, no event ports.
+    InPlace {
+        /// The slot that holds the input and receives the output.
+        slot: u32,
+    },
+    /// Any audio width, no event ports: the audio borrow walk only.
+    Audio,
+    /// Event ports too.
+    General,
+}
+
+/// One [`Op::Node`], lowered into a single record: everything a node call
+/// reads from the plan, found by one index instead of the four list spans
+/// plus the [`PlanUnit`] lookup it replaces.
+///
+/// Derived from `ops`, `audio_list`, `event_list` and `units` alone
+/// ([`NodeTables::lower`]), and `verify` checks that the plan's copy is
+/// exactly that derivation — so the executor, which reads only this, runs
+/// what the verifier checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NodeRec {
+    /// Index into [`Plan::units`].
+    pub(crate) unit: u32,
+    /// Where the unit lives in the store.
+    pub(crate) store: u32,
+    /// The unit generation the plan expects there.
+    pub(crate) gen: u32,
+    /// Compiled arrival latency.
+    pub(crate) arrival: Latency,
+    /// Declared tail, for the silence skip.
+    pub(crate) tail: Tail,
+    /// Channels aliased in place.
+    pub(crate) in_place: InPlaceMask,
+    /// Start of this op's slots in [`NodeTables::slots`]: audio inputs,
+    /// audio outputs, event inputs, event outputs, back to back.
+    pub(crate) ports: u32,
+    /// Audio input channels.
+    pub(crate) ain: u16,
+    /// Audio output channels.
+    pub(crate) aout: u16,
+    /// Event input ports.
+    pub(crate) ein: u16,
+    /// Event output ports.
+    pub(crate) eout: u16,
+    /// The audio borrow requests, sorted (into [`NodeTables::borrows`]):
+    /// every input not aliased in place, and every output.
+    pub(crate) borrows: Span,
+    /// The event borrow requests, sorted: every input and every output.
+    pub(crate) event_borrows: Span,
+    /// How the call borrows its buffers.
+    pub(crate) form: Form,
+}
+
+/// The executor's lowered view of the node ops: one [`NodeRec`] per unit, in
+/// [`Plan::units`] order, and the flat lists they index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NodeTables {
+    /// Indexed by plan unit — every unit is run by exactly one node op, which
+    /// `verify` checks.
+    pub(crate) recs: Vec<NodeRec>,
+    /// Port slots, per record: audio in, audio out, event in, event out.
+    pub(crate) slots: Vec<u32>,
+    /// Borrow requests, each record's audio run sorted and then its event run
+    /// sorted — the order `arena::borrow_sorted` walks without sorting.
+    pub(crate) borrows: Vec<(u32, Role)>,
+}
+
+impl NodeRec {
+    /// This op's audio in, audio out, event in and event out slots.
+    #[inline]
+    pub(crate) fn ports<'t>(&self, slots: &'t [u32]) -> [&'t [u32]; 4] {
+        let start = self.ports as usize;
+        let (ain, aout, ein, eout) = (
+            self.ain as usize,
+            self.aout as usize,
+            self.ein as usize,
+            self.eout as usize,
+        );
+        let all = &slots[start..start + ain + aout + ein + eout];
+        let (a_in, rest) = all.split_at(ain);
+        let (a_out, rest) = rest.split_at(aout);
+        let (e_in, e_out) = rest.split_at(ein);
+        [a_in, a_out, e_in, e_out]
+    }
+}
+
+impl NodeTables {
+    /// Lower every [`Op::Node`] of `ops`. Records a unit no op runs as a
+    /// zero-port `Audio` record, which the verifier then reports through the
+    /// unit-use count rather than here.
+    pub(crate) fn lower(
+        ops: &[Op],
+        audio_list: &[u32],
+        event_list: &[u32],
+        units: &[PlanUnit],
+    ) -> Self {
+        let mut recs: Vec<Option<NodeRec>> = vec![None; units.len()];
+        let mut slots = Vec::new();
+        let mut borrows = Vec::new();
+        for op in ops {
+            let Op::Node {
+                unit,
+                audio_in,
+                audio_out,
+                event_in,
+                event_out,
+                in_place,
+            } = *op
+            else {
+                continue;
+            };
+            let Some(pu) = units.get(unit as usize) else {
+                continue;
+            };
+            let ain = &audio_list[audio_in.range()];
+            let aout = &audio_list[audio_out.range()];
+            let ein = &event_list[event_in.range()];
+            let eout = &event_list[event_out.range()];
+
+            let ports = slots.len() as u32;
+            slots.extend_from_slice(ain);
+            slots.extend_from_slice(aout);
+            slots.extend_from_slice(ein);
+            slots.extend_from_slice(eout);
+
+            // The same requests, in the same order, that the executor used to
+            // build and `sort_unstable` on every call.
+            let start = borrows.len() as u32;
+            for (c, &s) in ain.iter().enumerate() {
+                if !in_place.get(c) {
+                    borrows.push((s, Role::Read(c as u8)));
+                }
+            }
+            for (c, &s) in aout.iter().enumerate() {
+                borrows.push((s, Role::Write(c as u8)));
+            }
+            borrows[start as usize..].sort_unstable();
+            let audio = Span {
+                start,
+                len: borrows.len() as u32 - start,
+            };
+            let start = borrows.len() as u32;
+            for (c, &s) in ein.iter().enumerate() {
+                borrows.push((s, Role::Read(c as u8)));
+            }
+            for (c, &s) in eout.iter().enumerate() {
+                borrows.push((s, Role::Write(c as u8)));
+            }
+            borrows[start as usize..].sort_unstable();
+            let event = Span {
+                start,
+                len: borrows.len() as u32 - start,
+            };
+
+            let form = match (ain, aout, ein.is_empty() && eout.is_empty()) {
+                (_, _, false) => Form::General,
+                (&[], &[out], true) => Form::Source { out },
+                (&[slot], &[_], true) if in_place.get(0) => Form::InPlace { slot },
+                (&[input], &[out], true) => Form::Split { input, out },
+                _ => Form::Audio,
+            };
+            let rec = NodeRec {
+                unit,
+                store: pu.idx.0,
+                gen: pu.gen,
+                arrival: pu.arrival,
+                tail: pu.shape.tail,
+                in_place,
+                ports,
+                ain: ain.len() as u16,
+                aout: aout.len() as u16,
+                ein: ein.len() as u16,
+                eout: eout.len() as u16,
+                borrows: audio,
+                event_borrows: event,
+                form,
+            };
+            // A unit run twice keeps its first record; `verify` rejects the
+            // plan through its unit-use count either way.
+            recs[unit as usize].get_or_insert(rec);
+        }
+        let recs = recs
+            .into_iter()
+            .enumerate()
+            .map(|(u, r)| {
+                r.unwrap_or(NodeRec {
+                    unit: u as u32,
+                    store: units[u].idx.0,
+                    gen: units[u].gen,
+                    arrival: units[u].arrival,
+                    tail: units[u].shape.tail,
+                    in_place: InPlaceMask::NONE,
+                    ports: 0,
+                    ain: 0,
+                    aout: 0,
+                    ein: 0,
+                    eout: 0,
+                    borrows: Span::default(),
+                    event_borrows: Span::default(),
+                    form: Form::Audio,
+                })
+            })
+            .collect();
+        Self {
+            recs,
+            slots,
+            borrows,
+        }
+    }
+}
+
 /// Compressed sparse rows: row `i` is `targets[offsets[i]..offsets[i + 1]]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Csr {
@@ -337,6 +572,9 @@ pub struct Plan {
     pub(crate) audio_values: Vec<Value>,
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
+    /// The node ops, lowered for the executor. Derived from the fields
+    /// above; `verify` checks it is exactly that derivation.
+    pub(crate) nodes: NodeTables,
 }
 
 // Phase 2 publishes a `Plan` to the audio thread. Asserted here rather than

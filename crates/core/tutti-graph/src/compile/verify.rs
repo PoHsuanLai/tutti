@@ -21,12 +21,14 @@
 //!    distinct predecessor tasks; the task graph is acyclic.
 //! 6. **Tables**: every delay index is used by exactly one op, every unit by
 //!    exactly one `Node` op, and no two units share a store index.
+//! 7. **The lowered node tables** the executor actually reads are exactly
+//!    the lowering of the ops, so rules 1–6 are about what runs.
 //!
 //! Run by `compile` in every debug build, and callable directly — the tests
 //! run it on every proptest graph.
 
 use crate::io::PortKind;
-use crate::plan::{Op, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{NodeTables, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -101,7 +103,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
     }
 }
 
-/// Check `plan` (see the [module docs](self) for the four rules).
+/// Check `plan` (see the [module docs](self) for the rules).
 pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     let n = plan.ops.len();
     let rows: Vec<Vec<u32>> = (0..n).map(|i| plan.op_succ.row(i).to_vec()).collect();
@@ -291,6 +293,30 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     verify_in_place(plan)?;
     verify_tasks(plan, &reach)?;
     verify_tables(plan)?;
+    verify_lowered(plan)?;
+    Ok(())
+}
+
+/// Rule 7: the executor runs node ops from [`NodeTables`], not from `ops`
+/// directly, so everything above is only a proof about what runs if the
+/// tables say the same thing. They must be exactly the lowering of the ops —
+/// which also re-establishes what the tables' fast paths rely on: each
+/// record's borrow requests sorted and naming the op's own slots, and a
+/// `Split` form only where the two slots differ (rule 1 above).
+fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
+    let want = NodeTables::lower(&plan.ops, &plan.audio_list, &plan.event_list, &plan.units);
+    if plan.nodes != want {
+        let first = plan
+            .nodes
+            .recs
+            .iter()
+            .zip(&want.recs)
+            .position(|(a, b)| a != b);
+        return Err(VerifyError(match first {
+            Some(u) => format!("the executor's node record for unit {u} disagrees with its op"),
+            None => "the executor's node tables disagree with the ops".into(),
+        }));
+    }
     Ok(())
 }
 
@@ -751,6 +777,37 @@ mod tests {
         let idx = bad.units[0].idx;
         bad.units[1].idx = idx;
         assert!(verify(&bad).unwrap_err().0.contains("store index"));
+    }
+
+    /// The executor reads node ops from the lowered tables, so a table that
+    /// says something the ops do not is refused — the rest of the verifier
+    /// would otherwise be a proof about code that does not run.
+    ///
+    /// Mutation: delete the `verify_lowered(plan)?` call → both corrupted
+    /// plans pass → fails.
+    #[test]
+    fn the_verifier_rejects_node_tables_that_disagree_with_the_ops() {
+        use crate::plan::Form;
+        let good = independent_pair();
+        verify(&good).expect("sound");
+        let slot_of = |p: &Plan, u: usize| match p.nodes.recs[u].form {
+            Form::Source { out } => out,
+            f => panic!("a generator lowers to a source, not {f:?}"),
+        };
+        let other = slot_of(&good, 1);
+        assert_ne!(slot_of(&good, 0), other);
+
+        // A record that runs unit 0 into unit 1's slot.
+        let mut bad = good.clone();
+        bad.nodes.recs[0].form = Form::Source { out: other };
+        let err = verify(&bad).unwrap_err();
+        assert!(err.0.contains("node record for unit 0"), "{err}");
+
+        // A borrow request naming a slot the op does not write.
+        let mut bad = good.clone();
+        bad.nodes.borrows[0].0 = other;
+        let err = verify(&bad).unwrap_err();
+        assert!(err.0.contains("node tables disagree"), "{err}");
     }
 
     /// A merge whose slot is smaller than its inputs together is refused —

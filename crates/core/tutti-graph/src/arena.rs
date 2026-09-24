@@ -12,16 +12,23 @@
 //! arena at once**. The obvious spelling is raw pointers plus a proof that the
 //! colouring kept them disjoint — new non-FFI `unsafe`, which
 //! `docs/design/012-unsafe-policy.md` asks to be avoided when a safe construct
-//! will do. One will: [`borrow_disjoint`] sorts the requested slots and peels
-//! them off with `split_at_mut`, so the borrow checker, not a comment, proves
-//! disjointness. If the colouring were ever wrong and asked for a written slot
-//! twice, the result is a panic naming the slot — never aliasing. The
-//! reinterpretation of `[Line]` as `[f32]` is `bytemuck`'s checked `Pod` cast.
+//! will do. One will: [`borrow_sorted`] walks the requested slots in order
+//! and peels them off with `split_at_mut`, so the borrow checker, not a
+//! comment, proves disjointness. If the colouring were ever wrong and asked
+//! for a written slot twice, the result is a panic naming the slot — never
+//! aliasing. The reinterpretation of `[Line]` as `[f32]` is `bytemuck`'s
+//! checked `Pod` cast.
 //!
-//! The cost is a sort of the node's own port count on the stack per call;
-//! nodes have a handful of ports, so it is a few dozen comparisons. The port
-//! tables themselves are stack arrays sized by a small set of const buckets
-//! (see `exec.rs`), so a two-port node does not initialise 128 entries.
+//! **Node calls pay no sort.** A node op's requests are sorted once, when the
+//! plan is compiled (`NodeTables::lower` in `plan.rs`), and the verifier
+//! checks the plan carries exactly that lowering. The walk still *checks*
+//! the order it relies on: an unsorted list makes `split_at_mut` panic on a
+//! slot behind the cursor instead of reaching it, so a bad table is a panic
+//! too, never a wrong buffer. Ops whose requests are built per call (event
+//! merges) go through [`borrow_disjoint`], which sorts first. The port tables
+//! are stack arrays sized by a small set of const buckets (see `exec.rs`), so
+//! a two-port node does not initialise 128 entries, and the commonest shapes
+//! skip the walk entirely (`plan::Form`).
 
 use bytemuck::{Pod, Zeroable};
 
@@ -46,7 +53,7 @@ pub(crate) enum Role {
 /// each write to `write` along with its port index.
 ///
 /// Several reads of one slot share it; a written slot may appear only once.
-/// `reqs` is sorted in place.
+/// `reqs` is sorted in place, then walked by [`borrow_sorted`].
 ///
 /// # Panics
 ///
@@ -56,10 +63,34 @@ pub(crate) fn borrow_disjoint<'a, T>(
     items: &'a mut [T],
     stride: usize,
     reqs: &mut [(u32, Role)],
+    read: impl FnMut(u8, &'a [T]),
+    write: impl FnMut(u8, &'a mut [T]),
+) {
+    reqs.sort_unstable();
+    borrow_sorted(items, stride, reqs, read, write);
+}
+
+/// [`borrow_disjoint`] for requests that are **already sorted** — by the
+/// compiler, for node ops.
+///
+/// # Panics
+///
+/// As [`borrow_disjoint`], and also if `reqs` is not sorted by slot: a slot
+/// behind the cursor makes the slot arithmetic underflow (a debug panic) or
+/// `split_at_mut` run past the end (a panic in any build). Never a wrong or
+/// aliased buffer.
+#[inline]
+pub(crate) fn borrow_sorted<'a, T>(
+    items: &'a mut [T],
+    stride: usize,
+    reqs: &[(u32, Role)],
     mut read: impl FnMut(u8, &'a [T]),
     mut write: impl FnMut(u8, &'a mut [T]),
 ) {
-    reqs.sort_unstable();
+    debug_assert!(
+        reqs.windows(2).all(|w| w[0] <= w[1]),
+        "unsorted borrow requests"
+    );
     let mut rest: &'a mut [T] = items;
     let mut base = 0usize;
     let mut i = 0;
@@ -70,7 +101,10 @@ pub(crate) fn borrow_disjoint<'a, T>(
             j += 1;
         }
         let tail = std::mem::take(&mut rest);
-        let (_, tail) = tail.split_at_mut((slot - base) * stride);
+        // `checked_sub`: an unsorted list must panic here, not wrap to a
+        // huge offset that happens to land on a real slot in release.
+        let skip = slot.checked_sub(base).expect("borrow requests are sorted");
+        let (_, tail) = tail.split_at_mut(skip * stride);
         let (cur, after) = tail.split_at_mut(stride);
         rest = after;
         base = slot + 1;
@@ -113,24 +147,29 @@ impl Arena {
     }
 
     /// Slot `s`'s first `frames` samples.
+    #[inline]
     pub(crate) fn slot(&self, s: u32, frames: usize) -> &[f32] {
-        let lines = &self.lines[s as usize * self.stride..(s as usize + 1) * self.stride];
+        // `[start..][..stride]` rather than `[start..end]`: two length checks
+        // and no `start <= end` one, on the hottest indexing in the executor.
+        let lines = &self.lines[s as usize * self.stride..][..self.stride];
         &bytemuck::cast_slice::<Line, f32>(lines)[..frames]
     }
 
     /// Slot `s`'s first `frames` samples, mutably.
+    #[inline]
     pub(crate) fn slot_mut(&mut self, s: u32, frames: usize) -> &mut [f32] {
-        let lines = &mut self.lines[s as usize * self.stride..(s as usize + 1) * self.stride];
+        let lines = &mut self.lines[s as usize * self.stride..][..self.stride];
         &mut bytemuck::cast_slice_mut::<Line, f32>(lines)[..frames]
     }
 
     /// `src` for reading and `dst` for writing, at once. They must differ.
+    #[inline]
     pub(crate) fn pair(&mut self, src: u32, dst: u32, frames: usize) -> (&[f32], &mut [f32]) {
         assert_ne!(src, dst, "pair() of one slot");
         let st = self.stride;
         let (lo, hi) = (src.min(dst) as usize, src.max(dst) as usize);
         let (a, b) = self.lines.split_at_mut(hi * st);
-        let low = &mut a[lo * st..(lo + 1) * st];
+        let low = &mut a[lo * st..][..st];
         let high = &mut b[..st];
         let (s, d) = if src < dst { (low, high) } else { (high, low) };
         (
@@ -148,16 +187,18 @@ impl Arena {
         );
     }
 
-    /// Hand `reqs` to [`borrow_disjoint`], as `f32` slices of `frames`.
+    /// Hand the sorted `reqs` to [`borrow_sorted`], as `f32` slices of
+    /// `frames`.
+    #[inline]
     pub(crate) fn borrow<'a>(
         &'a mut self,
         frames: usize,
-        reqs: &mut [(u32, Role)],
+        reqs: &[(u32, Role)],
         ins: &mut [&'a [f32]],
         outs: &mut [&'a mut [f32]],
     ) {
         let stride = self.stride;
-        borrow_disjoint(
+        borrow_sorted(
             &mut self.lines,
             stride,
             reqs,
@@ -203,7 +244,7 @@ mod tests {
     /// Reads share, writes are exclusive, and the right port gets the right
     /// slot.
     ///
-    /// Mutation: in `borrow_disjoint`, drop the `base = slot + 1` update → the
+    /// Mutation: in `borrow_sorted`, drop the `base = slot + 1` update → the
     /// second slot's offset is computed from 0 again → wrong slot → fails.
     #[test]
     fn borrow_hands_each_port_its_slot() {
@@ -220,7 +261,9 @@ mod tests {
         ];
         let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
         let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| &mut [][..]);
-        a.borrow(16, &mut reqs, &mut ins, &mut outs);
+        // As the compiler hands them over (`NodeTables::lower`).
+        reqs.sort_unstable();
+        a.borrow(16, &reqs, &mut ins, &mut outs);
         assert_eq!(ins[0][0], 4.0);
         assert_eq!(ins[1][0], 1.0);
         assert_eq!(ins[2][0], 4.0);
@@ -233,15 +276,32 @@ mod tests {
     /// A slot requested for writing and reading in one op is refused, never
     /// aliased.
     ///
-    /// Mutation: delete the `assert!` in `borrow_disjoint` → the read is
+    /// Mutation: delete the `assert!` in `borrow_sorted` → the read is
     /// silently dropped and no panic happens → fails.
     #[test]
     #[should_panic(expected = "written and also borrowed")]
     fn borrow_refuses_a_write_that_aliases() {
         let mut a = Arena::new(3, 16);
-        let mut reqs = [(2, Role::Read(0)), (2, Role::Write(0))];
+        let reqs = [(2, Role::Read(0)), (2, Role::Write(0))];
         let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
         let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| &mut [][..]);
-        a.borrow(16, &mut reqs, &mut ins, &mut outs);
+        a.borrow(16, &reqs, &mut ins, &mut outs);
+    }
+
+    /// Requests the compiler failed to sort are a panic, never a slot behind
+    /// the cursor handed out as the wrong buffer.
+    ///
+    /// Mutation: in `borrow_sorted`, drop the `debug_assert!` and replace the
+    /// `checked_sub(..).expect(..)` with a plain `slot - base` → the walk
+    /// dies on an arithmetic overflow whose message does not name the order
+    /// → fails.
+    #[test]
+    #[should_panic(expected = "sorted")]
+    fn borrow_refuses_unsorted_requests() {
+        let mut a = Arena::new(4, 16);
+        let reqs = [(3, Role::Write(0)), (1, Role::Read(0))];
+        let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
+        let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| &mut [][..]);
+        a.borrow(16, &reqs, &mut ins, &mut outs);
     }
 }

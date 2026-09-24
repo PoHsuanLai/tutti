@@ -765,3 +765,178 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
         assert_eq!(bits(&x), bits(&y), "block {block}");
     }
 }
+
+/// Every way the executor borrows a node's buffers renders what the
+/// reference renders: the three direct forms (a source, a one-in/one-out
+/// node in two slots, one in place), the audio-only walk in its wider
+/// stack-table buckets (up to 16, and a 64-input sum — 65 audio ports and
+/// no events), and the general walk with event ports.
+///
+/// The random generator keeps nodes narrow, so the wide buckets are covered
+/// here and nowhere else.
+///
+/// Mutation: in `NodeTables::lower`, map the `(&[input], &[out], true)` shape
+/// to `Form::InPlace { slot: out }` → the one-input `Sum` is handed no input
+/// buffer → fails (on `Io`'s length check in a debug build). Mutation: in the
+/// `Form::Audio` arm, send every width above 16 to `run_audio::<16>` → the
+/// 20- and 64-wide nodes overrun the table → panics.
+#[test]
+fn every_borrow_form_matches_the_reference() {
+    let key = NodeKey;
+    let mut kinds = BTreeMap::new();
+    let (src, split, inplace, six, twenty, sum, emit, consume) = (
+        key(1),
+        key(2),
+        key(3),
+        key(4),
+        key(5),
+        key(6),
+        key(7),
+        key(8),
+    );
+    kinds.insert(
+        src,
+        Kind::Const {
+            value: 0.375,
+            width: 1,
+        },
+    );
+    kinds.insert(split, Kind::Sum { inputs: 1 });
+    kinds.insert(
+        inplace,
+        Kind::Gain {
+            gain: 0.5,
+            width: 1,
+        },
+    );
+    kinds.insert(
+        six,
+        Kind::Gain {
+            gain: 0.75,
+            width: 6,
+        },
+    );
+    kinds.insert(
+        twenty,
+        Kind::Gain {
+            gain: 1.25,
+            width: 20,
+        },
+    );
+    kinds.insert(sum, Kind::Sum { inputs: 64 });
+    kinds.insert(
+        emit,
+        Kind::Emitter {
+            period: 5,
+            phase: 2,
+        },
+    );
+    kinds.insert(consume, Kind::Consumer { inputs: 1 });
+
+    let mut t = Topology {
+        inputs: ChannelLayout::STEREO,
+        ..Topology::default()
+    };
+    for (&k, kind) in &kinds {
+        t.nodes.insert(k, spec_for(kind));
+    }
+    let out = |node, port| Source::Node(OutPort { node, port });
+    let mut wire = |node, port, from| {
+        t.edges.insert(InPort { node, port }, Edge::Direct(from));
+    };
+    wire(split, 0, Source::Global(0));
+    wire(inplace, 0, out(split, 0));
+    for c in 0..6 {
+        wire(
+            six,
+            c,
+            if c % 2 == 0 {
+                Source::Global(1)
+            } else {
+                out(src, 0)
+            },
+        );
+    }
+    for c in 0..20 {
+        wire(
+            twenty,
+            c,
+            if c < 6 {
+                out(six, c)
+            } else {
+                Source::Global(0)
+            },
+        );
+    }
+    // Every other port of the sum reads something different; the rest read
+    // nothing, so the zero slot is borrowed many times over.
+    let feeds: Vec<Source> = (0..20)
+        .map(|c| out(twenty, c))
+        .chain([out(inplace, 0), out(emit, 0), out(consume, 0)])
+        .collect();
+    for c in (0..64u16).step_by(2) {
+        wire(sum, c, feeds[c as usize / 2 % feeds.len()]);
+    }
+    t.outputs = vec![out(sum, 0), out(inplace, 0), out(twenty, 19)];
+    let mut g = GraphSpec::new(t);
+    g.connect_events(
+        EventIn {
+            node: consume,
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: emit,
+            port: 0,
+        }),
+    );
+    let valid = g.validate().expect("valid");
+
+    let mut pair = Pair::new(MAX_BLOCK);
+    pair.switch(&valid, &kinds);
+
+    // The graph really has every form (derived from the public op the same
+    // way `NodeTables::lower` does).
+    let plan = pair.plan.clone().expect("switched");
+    let mut forms = BTreeSet::new();
+    for op in plan.ops() {
+        if let tutti_graph::Op::Node {
+            audio_in,
+            audio_out,
+            event_in,
+            event_out,
+            in_place,
+            ..
+        } = *op
+        {
+            let events = event_in.len + event_out.len > 0;
+            let wide = audio_in.len.max(audio_out.len);
+            forms.insert(match (audio_in.len, audio_out.len, events) {
+                (_, _, true) => "general",
+                (0, 1, false) => "source",
+                (1, 1, false) if in_place.get(0) => "in place",
+                (1, 1, false) => "split",
+                _ if wide <= 4 => "audio up to 4",
+                _ if wide <= 16 => "audio up to 16",
+                _ => "audio up to 64",
+            });
+        }
+    }
+    assert_eq!(
+        forms,
+        BTreeSet::from([
+            "general",
+            "source",
+            "in place",
+            "split",
+            "audio up to 16",
+            "audio up to 64"
+        ]),
+        "the graph must reach every borrow form but the smallest audio bucket, \
+         which the random suite covers"
+    );
+
+    let mut frame = 0;
+    for which in 0..5 {
+        run(&mut pair, &schedule(which, 7, 300), &mut frame);
+    }
+}

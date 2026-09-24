@@ -21,7 +21,7 @@ const TEMPO_EPSILON: f64 = 0.001;
 /// The inverse of [`beat_from_ports`](super::state::beat_from_ports); see
 /// [`BEAT_PORTS`](super::state::BEAT_PORTS) for why the split exists at all.
 #[inline]
-fn split_beat(beat: Beat) -> (f32, f32) {
+pub(super) fn split_beat(beat: Beat) -> (f32, f32) {
     (beat.floor().get() as f32, beat.fract().get() as f32)
 }
 

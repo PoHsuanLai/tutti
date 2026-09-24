@@ -6,6 +6,8 @@
 //!   node's own value. What a live node's scalars do.
 //! - `audio_tap` — the tap the audio callback pushes into, reachable from the
 //!   ECS. What a live node's output is observed through.
+//! - `engine_nodes` — the clock and click `build_into` makes, and the beat edge
+//!   it declares between them.
 //!
 //! Grouped because params and taps are both per-node state whose reconcilers
 //! run in the same phase ordering as spawn and despawn, and a lifecycle change
@@ -595,5 +597,49 @@ mod audio_tap {
             app.world().get_resource::<AudioTapRes>().is_some(),
             "build_into must publish the tap it hands the callback"
         );
+    }
+}
+
+/// The nodes the engine builds for itself, and the one edge between them.
+mod engine_nodes {
+    use bevy_app::App;
+    use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
+    use tutti_core::dsp::Source;
+    use tutti_core::transport::BEAT_PORTS;
+    use tutti_core::AudioNode;
+
+    /// The metronome takes its beat from the clock's two ports, per sample.
+    ///
+    /// That edge is what makes a click start on the frame its beat lands on
+    /// (D8, design doc 013). Without it the click reads beat 0 forever and
+    /// sounds once — and nothing else would notice, because its *outputs* are
+    /// the host's to declare, so a default app renders no click either way.
+    ///
+    /// Ignored for the reason `the_engine_publishes_its_tap` is: `build_into`
+    /// opens a real CPAL device. It passes on a machine with ALSA's default
+    /// device, which is how it was run.
+    ///
+    /// Mutation: spawning the click with `PortSources::silent()` instead of
+    /// `stereo_from(clock_entity)` in `build_into` leaves both ports on
+    /// `Source::Zero` and fails.
+    #[test]
+    #[ignore = "requires an audio device"]
+    fn the_click_reads_the_beat_from_the_clock() {
+        let mut app = App::new();
+        app.add_plugins(bevy_tutti::TuttiPlugin::default());
+        app.update();
+
+        let nodes = *app.world().resource::<EngineNodes>();
+        let id_of = |entity| app.world().get::<AudioNode>(entity).unwrap().0;
+        let (clock, click) = (id_of(nodes.clock), id_of(nodes.click));
+
+        let graph = app.world().resource::<AudioGraphRes>();
+        for port in 0..BEAT_PORTS {
+            assert_eq!(
+                graph.0.source(click, port),
+                Source::Local(clock, port),
+                "click beat port {port} must come from the clock's port {port}"
+            );
+        }
     }
 }

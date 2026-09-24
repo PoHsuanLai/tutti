@@ -58,7 +58,7 @@ use crate::node::{
 };
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
-use crate::time::{Due, Offset};
+use crate::time::{Due, Offset, Playhead};
 
 struct RefFifo {
     pending: Vec<(u64, Event)>,
@@ -79,7 +79,13 @@ pub struct Reference {
     fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
     /// Scheduled commands not yet due, in scheduling order.
-    scheduled: Vec<(At, EventIn, EventKind)>,
+    scheduled: Vec<(u64, At, EventIn, EventKind)>,
+    next_id: u64,
+    cancelled: u64,
+    /// What continuous playback has crossed (see `Playhead`).
+    playhead: Playhead,
+    /// Between `suspend` and `resume`: the `Prepare` to adopt.
+    suspended: Option<Prepare>,
     /// This block's scheduled deliveries, per port, in scheduling order.
     landing: BTreeMap<EventIn, Vec<Event>>,
     late: u64,
@@ -105,6 +111,10 @@ impl Reference {
             fb_event: BTreeMap::new(),
             inject: BTreeMap::new(),
             scheduled: Vec::new(),
+            next_id: 0,
+            cancelled: 0,
+            playhead: Playhead::new(),
+            suspended: None,
             landing: BTreeMap::new(),
             late: 0,
             unrouted: 0,
@@ -117,24 +127,66 @@ impl Reference {
     /// `Editor::schedule`, without the queue: a time already past lands at
     /// offset 0 of the next block and is counted late; one whose port is gone
     /// when it falls due is counted unrouted.
-    pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) {
-        self.scheduled.push((at, to, kind));
+    ///
+    /// Returns the command's id, for [`cancel`](Self::cancel).
+    pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.scheduled.push((id, at, to, kind));
+        id
     }
 
-    /// Switch to `prepare`, as `Editor::reprepare` does, in one step: every
-    /// unit is re-prepared, the delays are re-derived from the new shapes,
-    /// and — the rule written out a second time, independently — a
-    /// sample-rate change starts every audio delay and audio feedback line
-    /// silent and flushes every event delay and event feedback FIFO to its
-    /// sink, while a `MaxBlock`-only change keeps them all (retuned by key,
-    /// like any recompile).
+    /// Take back command `id` if it has not landed.
+    pub fn cancel(&mut self, id: u64) {
+        let before = self.scheduled.len();
+        self.scheduled.retain(|c| c.0 != id);
+        self.cancelled += (before - self.scheduled.len()) as u64;
+    }
+
+    /// Take back every command that has not landed.
+    pub fn cancel_all(&mut self) {
+        self.cancelled += self.scheduled.len() as u64;
+        self.scheduled.clear();
+    }
+
+    /// Commands cancelled before they landed.
+    pub fn cancelled_commands(&self) -> u64 {
+        self.cancelled
+    }
+
+    /// The first half of [`reprepare`](Self::reprepare), as the executor
+    /// sees it when the editor's first commit lands: from here the
+    /// interpreter renders silence and its clock keeps counting, and on a
+    /// rate change the clock and every pending `At::Frame` are rescaled to
+    /// the same wall-clock time at the new rate (nearest frame). Units are
+    /// not touched until [`resume`](Self::resume).
+    pub fn suspend(&mut self, prepare: Prepare) {
+        let (old, new) = (
+            self.prepare.sample_rate().get(),
+            prepare.sample_rate().get(),
+        );
+        if old != new {
+            let ratio = new / old;
+            let scale = |f: Frame| Frame((f.get() as f64 * ratio).round() as u64);
+            self.frame = scale(self.frame);
+            for c in &mut self.scheduled {
+                if let At::Frame(f) = c.1 {
+                    c.1 = At::Frame(scale(f));
+                }
+            }
+        }
+        self.suspended = Some(prepare);
+    }
+
+    /// The second half: adopt the `Prepare`, re-prepare every unit, and
+    /// re-derive the delays (see [`reprepare`](Self::reprepare) for the
+    /// state rule).
     ///
     /// # Panics
     ///
-    /// If the graph has a feedback edge shorter than the new `MaxBlock` —
-    /// `Editor::reprepare` refuses that before it starts, and the reference
-    /// is only ever driven alongside it.
-    pub fn reprepare(&mut self, prepare: Prepare) {
+    /// If not suspended.
+    pub fn resume(&mut self) {
+        let prepare = self.suspended.take().expect("resume after suspend");
         if prepare.sample_rate() != self.prepare.sample_rate() {
             self.reset_time = true;
         }
@@ -153,6 +205,27 @@ impl Reference {
             }
             self.set_graph(&graph, BTreeMap::new());
         }
+    }
+
+    /// Switch to `prepare`, as `Editor::reprepare` does, in one step: every
+    /// unit is re-prepared, the delays are re-derived from the new shapes,
+    /// and — the rule written out a second time, independently — a
+    /// sample-rate change starts every audio delay and audio feedback line
+    /// silent and flushes every event delay and event feedback FIFO to its
+    /// sink, while a `MaxBlock`-only change keeps them all (retuned by key,
+    /// like any recompile).
+    ///
+    /// # Panics
+    ///
+    /// If the graph has a feedback edge shorter than the new `MaxBlock` —
+    /// `Editor::reprepare` refuses that before it starts, and the reference
+    /// is only ever driven alongside it.
+    ///
+    /// Equivalent to [`suspend`](Self::suspend) then [`resume`](Self::resume)
+    /// with no block between.
+    pub fn reprepare(&mut self, prepare: Prepare) {
+        self.suspend(prepare);
+        self.resume();
     }
 
     /// Scheduled commands that landed late (see `Executor::late_commands`).
@@ -404,6 +477,20 @@ impl Reference {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        if let Some(next) = self.suspended {
+            // Suspended: silence, the clock counts, the transport moves.
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            self.playhead.observe(&Env {
+                frame: self.frame,
+                sample_rate: next.sample_rate(),
+                block_len: Samples(frames),
+                transport: *transport,
+            });
+            self.frame += Samples(frames);
+            return;
+        }
         let Some(graph) = self.graph.clone() else {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
@@ -424,13 +511,14 @@ impl Reference {
         // scheduling order per port; the gather below appends them after the
         // port's own events.
         self.landing.clear();
+        self.playhead.observe(&env);
         let mut waiting = Vec::new();
-        for (mut at, to, kind) in std::mem::take(&mut self.scheduled) {
+        for (id, mut at, to, kind) in std::mem::take(&mut self.scheduled) {
             // PDC: timeline frame F reaches this sink at F + its arrival.
             let arrival = self.arrival.get(&to.node).copied().unwrap_or_default();
-            let offset = match env.due_at_arrival(&mut at, arrival) {
+            let offset = match env.due_at_arrival(&mut at, arrival, &self.playhead) {
                 Due::NotYet => {
-                    waiting.push((at, to, kind));
+                    waiting.push((id, at, to, kind));
                     continue;
                 }
                 Due::In(o) => o,

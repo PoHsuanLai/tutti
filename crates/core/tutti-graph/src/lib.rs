@@ -138,7 +138,7 @@ mod reference;
 mod spec;
 mod time;
 
-pub use command::{ScheduleError, COMMAND_CAPACITY};
+pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
 pub use editor::{CommitError, Editor};
 pub use event::{
@@ -158,7 +158,7 @@ pub use plan::{
 };
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
-pub use time::{Due, Offset};
+pub use time::{Due, Offset, Playhead};
 
 /// Check `plan` against its op DAG: no slot shared by ops that may run
 /// concurrently, every read of the value it was meant to read, feedback read

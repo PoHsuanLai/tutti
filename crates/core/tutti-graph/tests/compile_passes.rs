@@ -1046,3 +1046,57 @@ fn removing_a_node_removes_its_resolution_marks() {
     assert_eq!(ed.commit(), Ok(()));
     assert!(ed.spec().required_resolution.is_empty());
 }
+
+/// Disconnecting a marked edge drops its mark with it, so the disconnect
+/// cannot wedge every later commit with `RequirementWithoutEdge`; a mark can
+/// also be dropped alone.
+///
+/// Mutation: in `GraphSpec::disconnect_events`, keep the mark → the next
+/// commit is `Invalid(RequirementWithoutEdge)` → fails. Mutation: make
+/// `unrequire_resolution` a no-op → the block-rate sink still refuses the
+/// edge → fails.
+#[test]
+fn disconnecting_an_edge_drops_its_resolution_mark() {
+    let (mut ed, _exec) = tutti_graph::Editor::new(common::prepare(PREP));
+    ed.insert(
+        A,
+        "emit",
+        common::TestNode::new(Kind::Emitter {
+            period: 4,
+            phase: 0,
+        }),
+    );
+    ed.insert(
+        B,
+        "consume",
+        common::TestNode::new(Kind::Consumer { inputs: 1 }),
+    );
+    let (from, at) = (EventOut { node: A, port: 0 }, EventIn { node: B, port: 0 });
+    ed.spec_mut().connect_events(at, EventEdge::Direct(from));
+    ed.spec_mut()
+        .require_resolution(at, from, tutti_graph::Resolution::Sample);
+    ed.commit().expect("commits");
+    assert!(ed.spec_mut().disconnect_events(at, from));
+    assert!(!ed.spec_mut().disconnect_events(at, from), "already gone");
+    assert_eq!(ed.commit(), Ok(()));
+    assert!(ed.spec().required_resolution.is_empty());
+
+    // `unrequire_resolution`: the edge stays, the requirement goes.
+    let mut g = two_node_spec();
+    g.connect_events(at, EventEdge::Direct(from));
+    g.require_resolution(at, from, tutti_graph::Resolution::Sample);
+    g.unrequire_resolution(at, from);
+    let mono = || Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO);
+    let shapes: Shapes = [
+        (A, mono().with_events(0, 1)),
+        (
+            B,
+            mono()
+                .with_events(1, 0)
+                .with_event_resolution(tutti_graph::Resolution::Block),
+        ),
+    ]
+    .into();
+    let valid = g.validate().expect("valid");
+    assert!(compile(&valid, &shapes, &common::prepare(PREP), None).is_ok());
+}

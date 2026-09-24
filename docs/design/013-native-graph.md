@@ -329,9 +329,21 @@ place that loses precision to be written out explicitly:
    port's own. A time is a timeline time, PDC-compensated like an upstream
    event: a sink with arrival latency `a` gets `At::Frame(F)` at its own
    frame `F + a` (a beat is resolved to its frame first; `NextBlock` is not
-   shifted). A command already past lands at offset 0 of the next block
-   and is counted (`late_commands`), never dropped. Play/stop/seek move to
-   `At` with the engine (Phase 2b).
+   shifted). **Frames and beats fall due differently.** A frame already past
+   lands at offset 0 of the next block and is counted (`late_commands`),
+   never dropped. A beat fires when the playhead reaches or crosses it by
+   *continuous playback* (a loop wrap landing at or after it counts); a seek
+   or loop that jumps over it leaves it pending until reached or cancelled,
+   and it is late only if continuous playback crossed it before the command
+   was processed. Pairing (every note-on's note-off) is the caller's job:
+   `schedule` returns a `CommandId`, and `Editor::cancel` / `cancel_all`
+   (on their own ring, needing no credit) take commands back and free their
+   credit, since a beat-timed command holds it while pending. A ramp into a
+   node coarser than `Sample` is refused at `schedule`. `Frame` always means
+   samples at the current rate since start: the executor's clock tracks
+   device time, and a rate change rescales it and every pending `At::Frame`
+   to the same wall-clock time (nearest frame). Play/stop/seek move to `At`
+   with the engine (Phase 2b).
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.
@@ -350,7 +362,13 @@ their new shapes). A sample-rate change resets time-based state (PDC and
 feedback rings start silent; pending events in event delays are flushed to
 their sinks, not dropped); a `MaxBlock` change keeps ring contents where the
 new lengths allow. A feedback edge shorter than the new `MaxBlock` is a
-`CompileError` naming the edge, before anything is sent.
+`CompileError` naming the edge, before anything is sent. Between the two
+commits the executor renders silence for any block size and adopts the new
+`Prepare` only with the second. **Poisoned editor:** if the second half
+fails with the units out (a node panics in `prepare`, or the re-prepared
+shapes no longer compile), the editor is poisoned: the executor stays
+suspended and renders silence forever without panicking, every later call
+returns `CommitError::Poisoned`, and recovery is a new editor/executor pair.
 
 **Proof.** A contract suite in Phase 3: for every node type and every path
 (direct, behind PDC, through a fan-in, across a recompile, across ragged block

@@ -185,8 +185,9 @@ impl Rig {
 }
 
 /// Every direct emission (hop 0) delivered exactly once, and none missing
-/// among those emitted early enough to have landed by `end`.
-fn assert_direct_events_conserved(inbox: &Inbox, end: u64) {
+/// among those the emitter made in `spans` (its clock's frames — the emitter
+/// fires on every seventh one; a rate change jumps the clock between spans).
+fn assert_direct_events_conserved(inbox: &Inbox, spans: &[std::ops::Range<u64>]) {
     let got: Vec<u32> = inbox
         .lock()
         .unwrap()
@@ -196,7 +197,7 @@ fn assert_direct_events_conserved(inbox: &Inbox, end: u64) {
         .collect();
     let unique: BTreeSet<u32> = got.iter().copied().collect();
     assert_eq!(unique.len(), got.len(), "no event delivered twice");
-    for f in (0..end.saturating_sub(64)).step_by(7) {
+    for f in spans.iter().cloned().flatten().filter(|f| f % 7 == 0) {
         assert!(
             unique.contains(&(f as u32)),
             "the event emitted at {f} was lost"
@@ -224,7 +225,8 @@ fn a_max_block_change_keeps_every_ring() {
     let mut straight = rig_reference(prep(48_000.0, 128));
     let want = straight.render(&[64, 17, 64, 5, 64, 128, 3, 128, 100, 128]);
     assert_eq!(common::bits(&[got.clone()]), common::bits(&[want]));
-    assert_direct_events_conserved(&rig.exec_inbox, got.len() as u64);
+    let span = 0..got.len() as u64 - 64;
+    assert_direct_events_conserved(&rig.exec_inbox, std::slice::from_ref(&span));
     assert_eq!(
         *rig.exec_inbox.lock().unwrap(),
         *straight.inbox.lock().unwrap(),
@@ -295,7 +297,10 @@ fn a_rate_change_resets_rings_and_flushes_pending_events() {
         &after[..24]
     );
     assert!(after[20..].iter().all(|&x| x == 2.0));
-    assert_direct_events_conserved(&rig.exec_inbox, 192 + 256);
+    // The clock doubles at the change (192 → 384): the same wall-clock time
+    // at twice the rate.
+    assert_eq!(rig.exec.frame().get(), 384 + 256);
+    assert_direct_events_conserved(&rig.exec_inbox, &[0..192, 384..384 + 256 - 64]);
     assert_eq!(
         *rig.exec_inbox.lock().unwrap(),
         *rig.ref_inbox.lock().unwrap(),
@@ -430,12 +435,13 @@ fn every_unit_is_re_prepared_and_its_new_latency_compiled() {
     assert_eq!(ed.commit(), Ok(()), "and commits flow again");
 }
 
-/// Between the two commits the executor has adopted the new `Prepare` —
-/// a block as long as the new maximum is accepted — and renders silence,
+/// Between the two commits the executor renders silence for whatever block
+/// the device hands it — here one as long as the new, larger maximum —
 /// because its units are on the control thread.
 ///
-/// Mutation: in `Executor::apply`, do not adopt the suspend's `Prepare`
-/// → the 128-frame block panics against the old 64 → fails.
+/// Mutation: in `Executor::process`, check the block bound before the
+/// suspended branch → the 128-frame block panics against the old 64 →
+/// fails.
 #[test]
 fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     let mut rig = rig(prep(48_000.0, 64));
@@ -450,7 +456,11 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
         &mut [&mut out[..]],
     );
     assert!(out.iter().all(|&x| x == 0.0));
-    assert_eq!(rig.exec.frame().get(), 128, "paused: the clock stood still");
+    assert_eq!(
+        rig.exec.frame().get(),
+        256,
+        "the clock tracks device time, silent blocks included"
+    );
     assert_eq!(rig.ed.commit(), Ok(()), "collects, resumes, then commits");
     rig.exec.process(
         128,
@@ -459,4 +469,227 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
         &mut [&mut out[..]],
     );
     assert!(out.iter().any(|&x| x != 0.0), "running again");
+}
+
+/// Shrinking `MaxBlock`: while suspended, the device may still hand blocks
+/// sized for the old maximum. They render as silence rather than panic, and
+/// the new maximum is adopted only when the resume commit lands.
+///
+/// Mutation: adopt the new `Prepare` when the suspend lands (the old rule:
+/// `self.prepare = prepare` in `Executor::apply`'s suspend branch) → the
+/// "not yet adopted" check fails, and with the bound checked before the
+/// suspended branch the 256-frame block panics against 64.
+#[test]
+fn shrinking_max_block_never_fails_the_callback() {
+    let mut rig = rig(prep(48_000.0, 256));
+    rig.render(&[256, 256]);
+    rig.ed.reprepare(prep(48_000.0, 64)).expect("reprepares");
+    let input = vec![1.0f32; 256];
+    let mut out = vec![9.0f32; 256];
+    let t = Transport::default();
+    rig.exec
+        .process(256, &t, &[&input[..]], &mut [&mut out[..]]);
+    assert!(out.iter().all(|&x| x == 0.0), "silence at the old size");
+    assert_eq!(rig.exec.prepare().max_block().get(), 256, "not yet adopted");
+    rig.ed.collect(); // sends the resume
+    let mut out = vec![0.0f32; 64];
+    rig.exec
+        .process(64, &t, &[&input[..64]], &mut [&mut out[..]]);
+    assert_eq!(rig.exec.prepare().max_block().get(), 64);
+    assert!(
+        out.iter().any(|&x| x != 0.0),
+        "running again at the new size"
+    );
+}
+
+/// A node that panics in `prepare` at 96 kHz.
+struct FragileAt96k;
+
+impl Node for FragileAt96k {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, p: &Prepare) {
+        assert!(p.sample_rate().get() < 90_000.0, "cannot run this fast");
+    }
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(1.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A node that honours event offsets sample-accurately only below 96 kHz.
+struct CoarseAt96k(tutti_graph::Resolution);
+
+impl Node for CoarseAt96k {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(1, 0)
+            .with_event_resolution(self.0)
+    }
+    fn prepare(&mut self, p: &Prepare) {
+        self.0 = if p.sample_rate().get() < 90_000.0 {
+            tutti_graph::Resolution::Sample
+        } else {
+            tutti_graph::Resolution::Block
+        };
+    }
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Drive `ed`/`exec` through a failing re-prepare and check the poisoned
+/// state: every call refuses, naming `cause`; the executor renders silence
+/// for any block, forever, and never panics.
+fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
+    ed.reprepare(prep(96_000.0, 64))
+        .expect("the first half succeeds");
+    exec.apply_pending();
+    ed.collect(); // the second half fails here — and must not unwind
+    match ed.commit() {
+        Err(CommitError::Poisoned { cause: c }) => assert!(c.contains(cause), "{c}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        ed.reprepare(prep(48_000.0, 64)),
+        Err(CommitError::Poisoned { .. })
+    ));
+    assert_eq!(
+        ed.schedule(
+            tutti_types::At::NextBlock,
+            EventIn {
+                node: NodeKey(1),
+                port: 0
+            },
+            EventKind::Midi(Ump([0; 4]))
+        ),
+        Err(tutti_graph::ScheduleError::Poisoned)
+    );
+    assert_eq!(ed.cancel_all(), Err(tutti_graph::ScheduleError::Poisoned));
+    let t = Transport::default();
+    for n in [64usize, 256, 1, 1024] {
+        let mut out = vec![9.0f32; n];
+        exec.process(n, &t, &[], &mut [&mut out[..]]);
+        assert!(out.iter().all(|&x| x == 0.0), "silence, for any block");
+    }
+}
+
+/// A node panicking in `prepare` after the units are out poisons the editor
+/// instead of unwinding out of `collect` and stranding the executor.
+///
+/// Mutation: drop the `catch_unwind` in `Editor::resume` (call
+/// `finish_reprepare` directly) → the panic escapes `collect` → fails.
+#[test]
+fn a_panic_in_prepare_poisons_the_editor() {
+    let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
+    ed.insert(NodeKey(1), "fragile", FragileAt96k);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert_poisoned(ed, exec, "panicked");
+}
+
+/// Re-prepared shapes that no longer compile — an event resolution that
+/// coarsens under a marked edge — poison the editor too, and say why.
+///
+/// Mutation: in `Editor::finish_reprepare`, `expect` the compile instead of
+/// returning its error → the cause reads "panicked", not "no longer
+/// compile" → fails.
+#[test]
+fn a_resolution_that_coarsens_on_prepare_poisons_the_editor() {
+    let (mut ed, mut exec) = Editor::new(prep(48_000.0, 64));
+    ed.insert(
+        NodeKey(0),
+        "emit",
+        TestNode::new(Kind::Emitter {
+            period: 5,
+            phase: 0,
+        }),
+    );
+    ed.insert(
+        NodeKey(1),
+        "coarse",
+        CoarseAt96k(tutti_graph::Resolution::Sample),
+    );
+    let (from, at) = (
+        EventOut {
+            node: NodeKey(0),
+            port: 0,
+        },
+        EventIn {
+            node: NodeKey(1),
+            port: 0,
+        },
+    );
+    ed.spec_mut().connect_events(at, EventEdge::Direct(from));
+    ed.spec_mut()
+        .require_resolution(at, from, tutti_graph::Resolution::Sample);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(0),
+        port: 0,
+    })];
+    ed.commit().expect("sample-accurate at 48 kHz");
+    exec.apply_pending();
+    ed.collect();
+    assert_poisoned(ed, exec, "no longer compile");
+}
+
+/// `Frame` means samples at the current rate. On a rate change the clock and
+/// every pending frame-timed command scheduled before the re-prepare move to
+/// the same wall-clock time at the new rate (nearest frame); one scheduled
+/// after it already speaks the new rate. Blocks rendered while suspended
+/// count on the clock. Checked in both interpreters, with a suspended block
+/// between the two halves.
+///
+/// Mutation: skip `CommandRx::rescale` in the suspend → the old-rate command
+/// lands at 1 030 instead of 2 030 → fails. Mutation: rescale every pending
+/// command, ignoring `before` → the new-rate one lands at 3 030 → fails.
+/// Mutation: stop the executor's clock while suspended → it lands 64 frames
+/// off against the reference, and the clock check fails.
+#[test]
+fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
+    let mut rig = rig(prep(48_000.0, 64));
+    rig.render(&[64, 64, 64]);
+    let to = EventIn { node: REC, port: 0 };
+    let note = |t: u32| EventKind::Midi(Ump([t, 9, 0, 0]));
+    let old_rate = tutti_types::At::Frame(tutti_types::Frame(1_000));
+    rig.ed.schedule(old_rate, to, note(70_000)).expect("room");
+    rig.reference.schedule(old_rate, to, note(70_000));
+
+    let p = prep(96_000.0, 64);
+    rig.ed.reprepare(p).expect("reprepares");
+    rig.reference.suspend(p);
+    let new_rate = tutti_types::At::Frame(tutti_types::Frame(1_500));
+    rig.ed.schedule(new_rate, to, note(70_001)).expect("room");
+    rig.reference.schedule(new_rate, to, note(70_001));
+    // One block while suspended: silence in both, and the clock counts.
+    rig.render(&[64]);
+    assert_eq!(
+        rig.exec.frame().get(),
+        384 + 64,
+        "192 frames at 48 kHz is 384 at 96"
+    );
+    rig.ed.collect(); // the resume
+    rig.reference.resume();
+    rig.render(&[64; 30]);
+    for inbox in [&rig.exec_inbox, &rig.ref_inbox] {
+        let got: Vec<(u32, u64)> = inbox
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.0 >= 70_000)
+            .map(|e| (e.0, e.2))
+            .collect();
+        // The recorder's arrival is 30 frames (the EventLag path): both land
+        // 30 after their timeline frames.
+        assert_eq!(got, vec![(70_001, 1_530), (70_000, 2_030)]);
+    }
+    assert_eq!(rig.exec.late_commands(), 0);
 }

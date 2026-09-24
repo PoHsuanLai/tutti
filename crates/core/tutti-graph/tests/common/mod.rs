@@ -108,6 +108,8 @@ pub struct TestNode {
     count: f32,
     state: f32,
     pending: VecDeque<(Frame, Event)>,
+    /// The rate last prepared for.
+    rate: Option<f64>,
     calls: Arc<AtomicUsize>,
 }
 
@@ -129,6 +131,7 @@ impl TestNode {
             count: 0.0,
             state: 0.0,
             pending: VecDeque::with_capacity(1024),
+            rate: None,
             calls,
         }
     }
@@ -181,7 +184,18 @@ impl Node for TestNode {
         }
     }
 
-    fn prepare(&mut self, _p: &Prepare) {}
+    fn prepare(&mut self, p: &Prepare) {
+        // `Frame` means samples at the current rate: an `EventLag` holding
+        // absolute due frames moves them to the same wall-clock time when the
+        // rate changes, as the executor moves its own clock.
+        let rate = p.sample_rate().get();
+        if let Some(old) = self.rate.filter(|&old| old != rate) {
+            for (due, _) in &mut self.pending {
+                *due = Frame((due.get() as f64 * rate / old).round() as u64);
+            }
+        }
+        self.rate = Some(rate);
+    }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -280,15 +294,22 @@ impl Node for TestNode {
                     }
                     w[1] += 1;
                     let fwd = Event::midi(e.offset, w);
-                    self.pending
-                        .push_back((cx.env.frame_at(e.offset) + Samples(latency), fwd));
+                    // Kept sorted by due frame (stably): after a rate change
+                    // rescaled the older entries, new ones can fall due
+                    // before them. `insert` stays within the reserved
+                    // capacity, so it does not allocate.
+                    let due = cx.env.frame_at(e.offset) + Samples(latency);
+                    let at = self.pending.partition_point(|&(d, _)| d <= due);
+                    self.pending.insert(at, (due, fwd));
                 }
                 while let Some(&(due, e)) = self.pending.front() {
-                    // Queued in due order, never behind the block: the first
-                    // one not in this block is after it.
-                    let Some(offset) = cx.env.offset_of(due) else {
-                        debug_assert!(due >= cx.env.end(), "an EventLag fell behind");
-                        break;
+                    // Queued in due order. One behind the block — the clock
+                    // jumped: a re-prepare's suspension, or a rate change
+                    // rescaling it — goes out at once rather than never.
+                    let offset = match cx.env.offset_of(due) {
+                        Some(o) => o,
+                        None if due < cx.env.frame => tutti_graph::Offset::ZERO,
+                        None => break,
                     };
                     self.pending.pop_front();
                     let _ = io.event_out(0).push(Event { offset, ..e });
@@ -460,6 +481,17 @@ impl Pair {
             playing: true,
             ..Transport::default()
         };
+        self.block_at(frames, input, &transport)
+    }
+
+    /// `block`, under a transport the caller moves.
+    pub fn block_at(
+        &mut self,
+        frames: usize,
+        input: &[f32],
+        transport: &Transport,
+    ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+        let transport = *transport;
         // Channel `c` of the graph input is the signal scaled by 2^-c: exact,
         // and distinct per channel.
         let chans: Vec<Vec<f32>> = (0..self.inputs.max(1))

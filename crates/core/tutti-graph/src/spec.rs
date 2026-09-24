@@ -127,9 +127,34 @@ impl GraphSpec {
     /// accurate automation into one silently is not. So the edge carrying
     /// [`ParamRamp`](crate::ParamRamp) automation is the one to mark
     /// [`Resolution::Sample`]. A marked edge must exist ([`validate`](Self::validate)
-    /// checks it), and removing the edge does not remove the mark.
+    /// checks it): remove edges with [`disconnect_events`](Self::disconnect_events),
+    /// which drops the mark too (editing `events` by hand does not), or drop
+    /// a mark alone with [`unrequire_resolution`](Self::unrequire_resolution).
     pub fn require_resolution(&mut self, at: EventIn, from: EventOut, resolution: Resolution) {
         self.required_resolution.insert((at, from), resolution);
+    }
+
+    /// Drop the resolution mark on `from → at`, if any.
+    pub fn unrequire_resolution(&mut self, at: EventIn, from: EventOut) {
+        self.required_resolution.remove(&(at, from));
+    }
+
+    /// Remove the event edge `from → at` (direct or feedback), and its
+    /// resolution mark with it — so a disconnect can never leave a stale mark
+    /// that fails every later [`validate`](Self::validate). Returns whether an
+    /// edge was removed.
+    pub fn disconnect_events(&mut self, at: EventIn, from: EventOut) -> bool {
+        let Some(sources) = self.events.get_mut(&at) else {
+            return false;
+        };
+        let before = sources.len();
+        sources.retain(|e| e.from() != from);
+        let removed = sources.len() != before;
+        if sources.is_empty() {
+            self.events.remove(&at);
+        }
+        self.required_resolution.remove(&(at, from));
+        removed
     }
 
     /// Check everything that does not need the nodes' [`Shape`](crate::Shape)s.

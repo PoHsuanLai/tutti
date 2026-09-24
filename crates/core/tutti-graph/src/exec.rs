@@ -402,6 +402,10 @@ pub struct Executor {
     /// Between a re-prepare's two commits: every unit is checked out, and
     /// blocks render silence.
     suspended: bool,
+    /// The `Prepare` a pending re-prepare will adopt when its resume commit
+    /// lands. Not before: until then the device may still hand blocks sized
+    /// for the old one (a shrinking `MaxBlock` must not fail them).
+    next_prepare: Option<Prepare>,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -436,11 +440,13 @@ impl Executor {
             commands,
             applied: 0,
             suspended: false,
+            next_prepare: None,
             reset_time: false,
         }
     }
 
-    /// What this executor, and every unit it runs, is prepared for.
+    /// What this executor, and every unit it runs, is prepared for. During a
+    /// re-prepare, the old one until the resume commit lands.
     pub fn prepare(&self) -> &Prepare {
         &self.prepare
     }
@@ -450,9 +456,11 @@ impl Executor {
         self.plan.as_ref()
     }
 
-    /// Frames the graph has rendered so far — its clock, which
-    /// [`Env::frame`] reads. Blocks rendered as silence while a re-prepare
-    /// has the units checked out do not count: the graph is paused then.
+    /// The graph's clock, which [`Env::frame`] reads: samples at the current
+    /// rate since start. It tracks device time — blocks rendered as silence
+    /// while a re-prepare has the units checked out count — and a rate change
+    /// rescales it (and every pending frame-timed command) to the same
+    /// wall-clock time at the new rate, rounded to the nearest frame.
     pub fn frame(&self) -> Frame {
         self.frame
     }
@@ -475,6 +483,11 @@ impl Executor {
     /// fell due, so there was nowhere to deliver them.
     pub fn unrouted_commands(&self) -> u64 {
         self.commands.unrouted()
+    }
+
+    /// Scheduled commands cancelled before they landed.
+    pub fn cancelled_commands(&self) -> u64 {
+        self.commands.cancelled()
     }
 
     /// Apply every queued commit, in the order the editor sent them, and send
@@ -519,10 +532,27 @@ impl Executor {
                     }
                 }
             }
-            self.reset_time |= prepare.sample_rate() != self.prepare.sample_rate();
-            self.prepare = prepare;
+            let (old, new) = (
+                self.prepare.sample_rate().get(),
+                prepare.sample_rate().get(),
+            );
+            if old != new {
+                // `Frame` always means samples at the *current* rate since
+                // start. Graph time tracks device time, so the clock and
+                // every pending frame-timed command move to the same
+                // wall-clock time at the new rate.
+                self.reset_time = true;
+                let ratio = new / old;
+                self.frame = crate::command::rescale(self.frame, ratio);
+                self.commands.rescale(ratio, c.seq);
+            }
+            self.next_prepare = Some(prepare);
             self.suspended = true;
             return;
+        }
+        if let Some(p) = self.next_prepare.take() {
+            // The resume commit of a re-prepare: its plan is for this.
+            self.prepare = p;
         }
         let plan = c
             .plan
@@ -764,26 +794,36 @@ impl Executor {
     ) {
         let _rt = AudioThread::enter();
         let _ftz = ScopedNoDenormals::new();
-        // Before the bound is checked: a queued re-prepare changes it, and
-        // the first longer block may be the one that arrives with it.
+        // Before the bound is checked: a queued resume changes it, and the
+        // first longer block may be the one that arrives with it.
         self.apply_pending();
+        if self.suspended {
+            // Between a re-prepare's two commits the units are on the control
+            // thread: render silence, for whatever block arrives — the device
+            // may be on either side of the change, so no bound applies here.
+            // The graph's own state (rings, FIFOs) stands still, but its
+            // clock tracks device time: the frame counter advances, and the
+            // playhead sees the transport move. A command whose time passes
+            // meanwhile lands late when the units are back.
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
+            self.commands.observe(&Env {
+                frame: self.frame,
+                sample_rate: rate,
+                block_len: Samples(frames),
+                transport: *transport,
+            });
+            self.frame += Samples(frames);
+            return;
+        }
         let max = self.prepare.max_block();
         assert!(
             frames > 0 && frames <= max.get(),
             "block of {frames} frames against a max of {}",
             max.get()
         );
-        if self.suspended {
-            // Between a re-prepare's two commits the units are on the control
-            // thread: render silence. The graph is *paused*, clock included:
-            // rings, FIFOs, pending commands and the frame counter all stand
-            // still, so when the units come back every node sees its time
-            // continue from where it stopped rather than jump.
-            for o in outputs.iter_mut() {
-                o[..frames].fill(0.0);
-            }
-            return;
-        }
         let Self {
             prepare,
             event_cap,
@@ -797,6 +837,7 @@ impl Executor {
             commands,
             applied,
             suspended: _,
+            next_prepare: _,
             reset_time: _,
         } = self;
         let Some(plan) = plan.as_ref() else {

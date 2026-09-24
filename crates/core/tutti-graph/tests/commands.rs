@@ -301,7 +301,7 @@ fn scheduling_back_pressures_at_capacity() {
     rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     rig.exec.process(64, &t, &[], &mut [&mut [0.0; 64][..]]);
     assert_eq!(rig.ed.commands_outstanding(), COMMAND_CAPACITY - 28);
-    assert_eq!(rig.ed.schedule(At::NextBlock, to(), tag(0)), Ok(()));
+    assert!(rig.ed.schedule(At::NextBlock, to(), tag(0)).is_ok());
     assert_eq!(rig.exec.late_commands(), 0);
 }
 
@@ -598,4 +598,394 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
     let mut tags: Vec<u32> = log.lock().unwrap().iter().map(|e| e.3).collect();
     tags.sort_unstable();
     assert_eq!(tags, (1..=ROUNDS).collect::<Vec<_>>());
+}
+
+/// `cancel` and `cancel_all` take commands back and return their credit —
+/// even with every credit held by commands that will never fall due (beats
+/// on a stopped transport), where nothing else could be scheduled.
+///
+/// Mutation: in `CommandRx::pull`, do not return the credit of what it
+/// cancels (drop the `done.fetch_add`) → `schedule` still refuses after the
+/// `cancel_all` → fails. Mutation: apply cancels before pulling new
+/// commands → the targeted cancel misses its command, which lands → fails.
+#[test]
+fn cancel_takes_commands_back_and_frees_their_credit() {
+    let mut rig = rig();
+    let stopped = Transport::default();
+    // A targeted cancel, sent before the executor has seen its command.
+    let id = rig
+        .ed
+        .schedule(At::Frame(Frame(10)), to(), tag(7))
+        .expect("room");
+    rig.ed.cancel(id).expect("room");
+    rig.block(64, &stopped);
+    assert!(
+        rig.exec_log.lock().unwrap().is_empty(),
+        "cancelled, not landed"
+    );
+    assert_eq!(rig.exec.cancelled_commands(), 1);
+    // Cancelling one that already landed is a no-op.
+    let landed = rig.ed.schedule(At::NextBlock, to(), tag(8)).expect("room");
+    rig.block(64, &stopped);
+    rig.ed.cancel(landed).expect("room");
+    rig.block(64, &stopped);
+    assert_eq!(rig.exec.cancelled_commands(), 1);
+
+    for i in 0..COMMAND_CAPACITY as u32 {
+        rig.ed
+            .schedule(At::Beat(Beat(1.0 + f64::from(i))), to(), tag(i))
+            .expect("under capacity");
+    }
+    rig.block(64, &stopped);
+    assert_eq!(
+        rig.ed.schedule(At::NextBlock, to(), tag(0)),
+        Err(ScheduleError::Backpressure),
+        "every credit is held by a beat the stopped transport never reaches"
+    );
+    rig.ed
+        .cancel_all()
+        .expect("the cancel ring needs no credit");
+    rig.block(64, &stopped);
+    assert_eq!(rig.ed.commands_outstanding(), 0);
+    assert_eq!(rig.exec.cancelled_commands(), 1 + COMMAND_CAPACITY as u64);
+    assert!(rig.ed.schedule(At::NextBlock, to(), tag(0)).is_ok());
+}
+
+/// A ramp into a node that does not honour offsets sample-accurately is
+/// refused at `schedule`, as a marked edge would be at `compile`.
+///
+/// Mutation: drop the resolution check in `Editor::schedule` → accepted →
+/// fails.
+#[test]
+fn a_ramp_into_a_coarse_node_is_refused() {
+    struct Coarse;
+    impl Node for Coarse {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+                .with_events(1, 0)
+                .with_event_resolution(tutti_graph::Resolution::Frames(8))
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+    let (mut ed, mut exec) = Editor::new(prepare(MAX));
+    ed.insert(PROBE, "coarse", Coarse);
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    let ramp = EventKind::Ramp(ParamRamp::foreign(0, 1.0, Samples(0)));
+    assert_eq!(
+        ed.schedule(At::NextBlock, to(), ramp),
+        Err(ScheduleError::ResolutionTooCoarse {
+            to: to(),
+            sink: tutti_graph::Resolution::Frames(8)
+        })
+    );
+    assert!(
+        ed.schedule(At::NextBlock, to(), tag(1)).is_ok(),
+        "a note is fine"
+    );
+}
+
+/// A transport at `beat`. The oracle table runs at 1440 BPM and 48 kHz:
+/// 2 000 frames a beat, so a 500-frame block is a quarter beat.
+fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) -> Transport {
+    Transport {
+        playing,
+        tempo: Bpm(tempo),
+        beat: Beat(beat),
+        looping: looping.map(|(start, end)| tutti_graph::LoopRange {
+            start: Beat(start),
+            end: Beat(end),
+        }),
+    }
+}
+
+/// One case of the oracle table: blocks of 500 frames, each with its
+/// transport (hand-computed), a beat command scheduled before block
+/// `sched_at`, into a sink behind `arrival` frames of latency; where it must
+/// land (absolute frame at the sink) and whether late — or `None`, never.
+struct Case {
+    name: &'static str,
+    arrival: usize,
+    transports: Vec<Transport>,
+    sched_at: usize,
+    beat: f64,
+    want: Option<(u64, bool)>,
+}
+
+fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
+    (0..blocks)
+        .map(|i| {
+            at_beat(
+                from + i as f64 * 500.0 * tempo / 60.0 / 48_000.0,
+                true,
+                tempo,
+                None,
+            )
+        })
+        .collect()
+}
+
+/// Beat → frame resolution, checked against a table worked out by hand —
+/// independent of both interpreters, which share `Env::due_at_arrival` and
+/// the `Playhead` (so a bug there would pass the differential). Covers tempo,
+/// a loop wrap, a stopped transport, a seek over the beat and back, a beat
+/// crossed before it was scheduled (late), and an arrival shift.
+///
+/// Mutation: in `Playhead::crossed`, treat every beat behind the playhead as
+/// crossed → the seek-over case lands late at the seek → fails. Mutation:
+/// in `Env::beat_due`, drop the wrap branch → the loop case never lands →
+/// fails. Mutation: in `Env::due_at_arrival`, drop the arrival shift for a
+/// resolved beat → the arrival case lands 20 frames early → fails.
+#[test]
+fn beat_resolution_matches_a_hand_computed_table() {
+    let cases = vec![
+        Case {
+            name: "plain: beat 1.25 is frame 2 500",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 8),
+            sched_at: 0,
+            beat: 1.25,
+            want: Some((2_500, false)),
+        },
+        Case {
+            name: "behind a 20-frame latent path: 2 520",
+            arrival: 20,
+            transports: continuous(0.0, 1440.0, 8),
+            sched_at: 0,
+            beat: 1.25,
+            want: Some((2_520, false)),
+        },
+        Case {
+            // 720 BPM for two blocks (0.125 beat each), then 1440 from beat
+            // 0.25 at frame 1 000: beat 0.6 is 0.35 beat = 700 frames later.
+            name: "tempo change",
+            arrival: 0,
+            transports: vec![
+                at_beat(0.0, true, 720.0, None),
+                at_beat(0.125, true, 720.0, None),
+                at_beat(0.25, true, 1440.0, None),
+                at_beat(0.5, true, 1440.0, None),
+                at_beat(0.75, true, 1440.0, None),
+            ],
+            sched_at: 0,
+            beat: 0.6,
+            want: Some((1_700, false)),
+        },
+        Case {
+            // Loop [1, 2) from beat 1.8: the wrap is 0.2 beat = 400 frames in;
+            // beat 1.02 is 40 frames after it.
+            name: "loop wrap",
+            arrival: 0,
+            transports: vec![
+                at_beat(1.8, true, 1440.0, Some((1.0, 2.0))),
+                at_beat(1.05, true, 1440.0, Some((1.0, 2.0))),
+            ],
+            sched_at: 0,
+            beat: 1.02,
+            want: Some((440, false)),
+        },
+        Case {
+            // Stopped at 0 for three blocks, then rolling from frame 1 500.
+            name: "stopped, then playing",
+            arrival: 0,
+            transports: vec![
+                at_beat(0.0, false, 1440.0, None),
+                at_beat(0.0, false, 1440.0, None),
+                at_beat(0.0, false, 1440.0, None),
+                at_beat(0.0, true, 1440.0, None),
+            ],
+            sched_at: 0,
+            beat: 0.1,
+            want: Some((1_700, false)),
+        },
+        Case {
+            // Rolling from 0; at frame 1 000 a seek to beat 3 jumps over 2.0
+            // (not fired); at frame 2 000 a seek back to 1.9 reaches it 0.1
+            // beat = 200 frames later.
+            name: "seek over, then back",
+            arrival: 0,
+            transports: vec![
+                at_beat(0.0, true, 1440.0, None),
+                at_beat(0.25, true, 1440.0, None),
+                at_beat(3.0, true, 1440.0, None),
+                at_beat(3.25, true, 1440.0, None),
+                at_beat(1.9, true, 1440.0, None),
+                at_beat(2.15, true, 1440.0, None),
+            ],
+            sched_at: 0,
+            beat: 2.0,
+            want: Some((2_200, false)),
+        },
+        Case {
+            // Scheduled before block 2 (frame 1 000, beat 0.5), when playback
+            // has already crossed 0.1: late, at offset 0 of that block.
+            name: "crossed before it was scheduled",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 4),
+            sched_at: 2,
+            beat: 0.1,
+            want: Some((1_000, true)),
+        },
+        Case {
+            // Looping [1, 2) forever: beat 2.5 is never reached.
+            name: "past the loop end",
+            arrival: 0,
+            transports: (0..8)
+                .map(|i| {
+                    let b = 1.0 + (i as f64 * 0.25) % 1.0;
+                    at_beat(b, true, 1440.0, Some((1.0, 2.0)))
+                })
+                .collect(),
+            sched_at: 0,
+            beat: 2.5,
+            want: None,
+        },
+    ];
+    for case in cases {
+        let log: Arc<Mutex<Vec<(u64, u32)>>> = Arc::default();
+        let ref_log: Arc<Mutex<Vec<(u64, u32)>>> = Arc::default();
+        let (lat, sink) = (NodeKey(1), NodeKey(2));
+        let (mut ed, mut exec) = Editor::new(prepare(500));
+        let mut reference = Reference::new(prepare(500));
+        let build = |ed: &mut Editor, log: &Arc<Mutex<Vec<(u64, u32)>>>| {
+            ed.insert(
+                lat,
+                "lag",
+                common::TestNode::new(common::Kind::Lag {
+                    latency: case.arrival,
+                }),
+            );
+            ed.insert(sink, "impulse", Impulse(Arc::clone(log)));
+        };
+        build(&mut ed, &log);
+        let t = &mut ed.spec_mut().topology;
+        t.inputs = ChannelLayout::MONO;
+        t.edges.insert(
+            tutti_types::graph::InPort { node: lat, port: 0 },
+            tutti_types::graph::Edge::Direct(Source::Global(0)),
+        );
+        t.edges.insert(
+            tutti_types::graph::InPort {
+                node: sink,
+                port: 0,
+            },
+            tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: lat, port: 0 })),
+        );
+        ed.commit().expect("commits");
+        exec.apply_pending();
+        ed.collect();
+        let mut units: std::collections::BTreeMap<NodeKey, Box<dyn Node>> = Default::default();
+        units.insert(
+            lat,
+            Box::new(common::TestNode::new(common::Kind::Lag {
+                latency: case.arrival,
+            })),
+        );
+        units.insert(sink, Box::new(Impulse(Arc::clone(&ref_log))));
+        reference.set_graph(&ed.spec().validate().unwrap(), units);
+        let to = EventIn {
+            node: sink,
+            port: 0,
+        };
+        let silence = [0.0f32; 500];
+        for (i, tr) in case.transports.iter().enumerate() {
+            if i == case.sched_at {
+                ed.schedule(At::Beat(Beat(case.beat)), to, tag(9))
+                    .expect("room");
+                reference.schedule(At::Beat(Beat(case.beat)), to, tag(9));
+            }
+            exec.process(500, tr, &[&silence[..]], &mut []);
+            reference.process(500, tr, &[&silence[..]], &mut []);
+        }
+        let want: Vec<(u64, u32)> = case.want.iter().map(|&(f, _)| (f, 9)).collect();
+        assert_eq!(*log.lock().unwrap(), want, "executor: {}", case.name);
+        assert_eq!(*ref_log.lock().unwrap(), want, "reference: {}", case.name);
+        let late = u64::from(case.want.is_some_and(|w| w.1));
+        assert_eq!(exec.late_commands(), late, "{}", case.name);
+        assert_eq!(reference.late_commands(), late, "{}", case.name);
+    }
+}
+
+/// A command whose port vanished (its node replaced by one without event
+/// inputs) is still timed by the node's arrival: both interpreters count it
+/// unrouted when timeline frame 100 reaches the node, at its own frame 120 —
+/// not at 100.
+///
+/// Mutation: in `CommandRx::gather`, take the arrival from the port-filtered
+/// target (0 when the port is gone) → the executor counts it at 100, before
+/// the reference → fails.
+#[test]
+fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
+    let (lat, sink) = (NodeKey(1), NodeKey(2));
+    let log: Arc<Mutex<Vec<(u64, u32)>>> = Arc::default();
+    let (mut ed, mut exec) = Editor::new(prepare(MAX));
+    ed.insert(
+        lat,
+        "lag",
+        common::TestNode::new(common::Kind::Lag { latency: 20 }),
+    );
+    ed.insert(sink, "impulse", Impulse(Arc::clone(&log)));
+    let t = &mut ed.spec_mut().topology;
+    t.inputs = ChannelLayout::MONO;
+    t.edges.insert(
+        tutti_types::graph::InPort { node: lat, port: 0 },
+        tutti_types::graph::Edge::Direct(Source::Global(0)),
+    );
+    t.edges.insert(
+        tutti_types::graph::InPort {
+            node: sink,
+            port: 0,
+        },
+        tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: lat, port: 0 })),
+    );
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let mut reference = Reference::new(prepare(MAX));
+    let mut units: std::collections::BTreeMap<NodeKey, Box<dyn Node>> = Default::default();
+    units.insert(
+        lat,
+        Box::new(common::TestNode::new(common::Kind::Lag { latency: 20 })),
+    );
+    units.insert(sink, Box::new(Impulse(Arc::default())));
+    reference.set_graph(&ed.spec().validate().unwrap(), units);
+
+    let to = EventIn {
+        node: sink,
+        port: 0,
+    };
+    ed.schedule(At::Frame(Frame(100)), to, tag(1))
+        .expect("room");
+    reference.schedule(At::Frame(Frame(100)), to, tag(1));
+    // Same key, a unit with no event inputs.
+    let gain = || {
+        common::TestNode::new(common::Kind::Gain {
+            gain: 1.0,
+            width: 1,
+        })
+    };
+    ed.insert(sink, "gain", gain());
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let mut units: std::collections::BTreeMap<NodeKey, Box<dyn Node>> = Default::default();
+    units.insert(sink, Box::new(gain()));
+    reference.set_graph(&ed.spec().validate().unwrap(), units);
+
+    let silence = [0.0f32; 10];
+    for block in 0..14 {
+        exec.process(10, &Transport::default(), &[&silence[..]], &mut []);
+        reference.process(10, &Transport::default(), &[&silence[..]], &mut []);
+        let want = u64::from(block >= 12); // the block holding frame 120
+        assert_eq!(exec.unrouted_commands(), want, "executor, block {block}");
+        assert_eq!(
+            reference.unrouted_commands(),
+            want,
+            "reference, block {block}"
+        );
+    }
 }

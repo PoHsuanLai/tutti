@@ -405,9 +405,17 @@ proptest! {
     /// `Consumer` sees scheduled events after the port's own on a tie, in
     /// scheduling order, in both.
     ///
+    /// The transport rolls (120 BPM at 48 kHz, 24 000 frames a beat) and
+    /// seeks once; commands are timed by frame and by beat; and the graph is
+    /// recompiled (nodes removed, regenerated, rewired) between scheduling
+    /// and delivery, so some commands lose their node — the unrouted counts
+    /// must agree too.
+    ///
     /// Mutation: in `CommandRx::overlay`, merge the scheduled events
     /// *before* the port's own (`[due, base]`) → ties flip in the executor
-    /// only → diverges. Mutation: sort `due` by *reversed* scheduling order
+    /// only → diverges. Mutation: never feed the executor's playhead (drop
+    /// `playhead.observe` in `CommandRx::gather`) → a beat crossed before it
+    /// was scheduled waits instead of landing late → diverges. Mutation: sort `due` by *reversed* scheduling order
     /// on a tie → equal-offset commands reorder → diverges.
     #[test]
     fn scheduled_commands_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
@@ -424,22 +432,49 @@ proptest! {
         let mut frame = 0;
         let blocks = schedule(which, seed, 700);
         let (first, rest) = blocks.split_at(blocks.len() / 2);
-        run(&mut pair, first, &mut frame);
+        // The playhead: rolling, with one seek (a jump of `seek` beats) at
+        // block `seek_at` of the second half.
+        let (seek_at, seek) = (rng.below(rest.len() as u64) as usize, rng.below(3) as f64 * 0.004);
+        let beat_of = |frame: u64, jumped: bool| frame as f64 / 24_000.0 + if jumped { seek } else { 0.0 };
+        let run_rolling = |pair: &mut Pair, blocks: &[usize], frame: &mut u64, from_seek: Option<usize>| {
+            for (i, &n) in blocks.iter().enumerate() {
+                let t = tutti_graph::Transport {
+                    playing: true,
+                    tempo: tutti_types::Bpm(120.0),
+                    beat: tutti_types::Beat(beat_of(*frame, from_seek.is_some_and(|s| i >= s))),
+                    looping: None,
+                };
+                let input = input_signal(*frame, n);
+                let (a, b) = pair.block_at(n, &input, &t);
+                assert_eq!(bits(&a), bits(&b), "diverged at frame {frame}");
+                assert_eq!(pair.exec.dropped_events(), 0);
+                *frame += n as u64;
+            }
+        };
+        run_rolling(&mut pair, first, &mut frame, None);
         for _ in 0..rng.below(40) {
             let Some(to) = rng.pick(&ports) else { break };
             // Few distinct frames, so commands tie with each other and with
-            // emitters; some already past.
-            let at = match rng.below(8) {
+            // emitters; some already past; some by beat (on a frame, so they
+            // tie too).
+            let at = match rng.below(10) {
                 0 => tutti_types::At::NextBlock,
                 1 => tutti_types::At::Frame(tutti_types::Frame(rng.below(frame + 1))),
+                2 | 3 => tutti_types::At::Beat(tutti_types::Beat(
+                    (frame as f64 + 3.0 * rng.below(100) as f64 - 60.0) / 24_000.0,
+                )),
                 _ => tutti_types::At::Frame(tutti_types::Frame(frame + 3 * rng.below(100))),
             };
             let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
             pair.editor.schedule(at, to, kind).expect("room");
             pair.reference.schedule(at, to, kind);
         }
-        run(&mut pair, rest, &mut frame);
+        // Recompile before any of them lands.
+        let edited = mutate(&desc, &mut rng);
+        pair.switch(&edited.spec.validate().expect("valid"), &edited.kinds);
+        run_rolling(&mut pair, rest, &mut frame, Some(seek_at));
         prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
+        prop_assert_eq!(pair.exec.unrouted_commands(), pair.reference.unrouted_commands());
     }
 
     /// The same across a recompile: nodes, rings and feedback slots that
@@ -1257,13 +1292,23 @@ impl EditorPair {
         }
     }
 
-    fn reprepare(&mut self, prepare: tutti_graph::Prepare) {
+    /// Re-prepare both, rendering `suspended` blocks between the two
+    /// halves: silence in both, the clock counting in both.
+    fn reprepare(&mut self, prepare: tutti_graph::Prepare, suspended: &[usize], frame: &mut u64) {
         self.editor.reprepare(prepare).expect("reprepares");
-        self.exec.apply_pending();
-        self.editor.collect();
-        self.exec.apply_pending();
-        self.editor.collect();
-        self.reference.reprepare(prepare);
+        self.reference.suspend(prepare);
+        if suspended.is_empty() {
+            self.exec.apply_pending();
+        }
+        self.run(suspended, frame);
+        self.editor.collect(); // the resume
+        self.reference.resume();
+    }
+
+    /// Schedule `kind` into `to` at `at` on both.
+    fn schedule(&mut self, at: tutti_types::At, to: EventIn, kind: tutti_graph::EventKind) {
+        self.editor.schedule(at, to, kind).expect("room");
+        self.reference.schedule(at, to, kind);
     }
 
     fn run(&mut self, blocks: &[usize], frame: &mut u64) {
@@ -1305,14 +1350,18 @@ proptest! {
     /// the executor (two commits through the editor, units re-prepared on the
     /// control side) and the reference (one step, with the reset rule written
     /// out independently) still agree bit for bit, block schedules ragged on
-    /// both sides of the change.
+    /// both sides of the change — with zero to two blocks rendered while
+    /// suspended, and frame-timed commands pending across it (rescaled to
+    /// their wall-clock time on a rate change).
     ///
     /// Mutation: in `Executor::rebuild`, carry state across a rate change
     /// (`carry = true`) → the first graph with a PDC ring or feedback
     /// diverges after a rate change. Mutation: in `Reference::set_graph`,
     /// keep the audio lines on a reset → diverges the same way from the
     /// other side. Mutation: in `Executor::apply`, drop the `reset_time`
-    /// flag on suspend → diverges.
+    /// flag on suspend → diverges. Mutation: stop the executor's clock while
+    /// suspended, or skip rescaling it (or its pending commands) on a rate
+    /// change → diverges.
     #[test]
     fn reprepare_matches_the_reference(seed in any::<u64>(), which in 0usize..5, to in 0usize..6) {
         let desc = random_graph(seed);
@@ -1332,7 +1381,18 @@ proptest! {
             (48_000.0, MAX_BLOCK),
         ][to];
         let p = tutti_graph::Prepare::new(tutti_types::SampleRate(rate), Samples(max));
-        pair.reprepare(p);
+        let ports: Vec<EventIn> = desc
+            .kinds
+            .keys()
+            .flat_map(|&k| (0..shape(&desc.kinds[&k]).event_in).map(move |port| EventIn { node: k, port }))
+            .collect();
+        let mut rng = Rng::new(seed ^ 0xFA11);
+        for _ in 0..rng.below(12) {
+            let Some(to) = rng.pick(&ports) else { break };
+            let at = tutti_types::At::Frame(tutti_types::Frame(frame + rng.below(300)));
+            let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
+            pair.schedule(at, to, kind);
+        }
         let rest: Vec<usize> = rest
             .iter()
             .flat_map(|&n| {
@@ -1340,6 +1400,10 @@ proptest! {
                 (0..n.div_ceil(max)).map(move |i| (n - i * max).min(max))
             })
             .collect();
-        pair.run(&rest, &mut frame);
+        let k = (rng.below(3) as usize).min(rest.len());
+        let (suspended, rest) = rest.split_at(k);
+        pair.reprepare(p, suspended, &mut frame);
+        pair.run(rest, &mut frame);
+        prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
     }
 }

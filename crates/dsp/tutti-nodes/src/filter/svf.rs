@@ -198,19 +198,22 @@ impl<F: Real> SvfCoefficients<F> {
     }
 }
 
-/// One channel's integrator step (Cytomic/Zavalishin TPT form).
+/// One channel's integrator step (Cytomic/Zavalishin TPT form) over its two
+/// state words `[ic1eq, ic2eq]`.
 ///
-/// A free function over the two state words rather than a method on a
-/// per-channel struct: the state is stored structure-of-arrays (one `Vec` per
-/// word, one lane per channel), which is what a channel-inner loop wants.
+/// The pair is kept together per channel (array-of-structures), not split into
+/// one array per word: the two updates are symmetric and their loads and
+/// stores stay adjacent. Measured, splitting them cost 26% at width 6 — the
+/// across-channel layout design doc 013 sketched only pays once a
+/// channel-inner loop is explicitly vectorised, which this one is not.
 #[inline(always)]
-fn svf_step<F: Real>(c: &SvfCoefficients<F>, ic1eq: &mut F, ic2eq: &mut F, v0: F) -> F {
+fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
     let two = F::from_f64(2.0);
-    let v3 = v0 - *ic2eq;
-    let v1 = c.a1 * *ic1eq + c.a2 * v3;
-    let v2 = *ic2eq + c.a2 * *ic1eq + c.a3 * v3;
-    *ic1eq = two * v1 - *ic1eq;
-    *ic2eq = two * v2 - *ic2eq;
+    let [ic1eq, ic2eq] = *s;
+    let v3 = v0 - ic2eq;
+    let v1 = c.a1 * ic1eq + c.a2 * v3;
+    let v2 = ic2eq + c.a2 * ic1eq + c.a3 * v3;
+    *s = [two * v1 - ic1eq, two * v2 - ic2eq];
     c.m0 * v0 + c.m1 * v1 + c.m2 * v2
 }
 
@@ -257,12 +260,10 @@ pub struct SvfFilterNode<F: Real = f64> {
     sample_rate: SampleRate,
     /// The coefficients the last rendered sample ran at.
     coeffs: SvfCoefficients<F>,
-    /// First integrator word, one lane per channel; `len()` is the audio width.
-    /// Built at construction — never resized in `tick`/`process` (RT
-    /// no-alloc).
-    ic1eq: Vec<F>,
-    /// Second integrator word, one lane per channel.
-    ic2eq: Vec<F>,
+    /// Integrator state `[ic1eq, ic2eq]`, one pair per channel; `len()` is the
+    /// audio width. Built at construction — never resized in `tick`/`process`
+    /// (RT no-alloc).
+    state: Vec<[F; 2]>,
     /// When true, a cutoff param-input port follows the audio inputs.
     mod_cutoff: bool,
     /// When true, a Q param-input port follows the cutoff port (or the audio
@@ -323,8 +324,7 @@ impl<F: Real> SvfFilterNode<F> {
             gain_db: Param::new(Db(0.0)),
             sample_rate: SampleRate::DEFAULT,
             coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
-            ic1eq: vec![zero; n],
-            ic2eq: vec![zero; n],
+            state: vec![[zero; 2]; n],
             mod_cutoff: false,
             mod_q: false,
         }
@@ -363,7 +363,7 @@ impl<F: Real> SvfFilterNode<F> {
     /// Audio channel width (`inputs()` audio ports == `outputs()`).
     #[inline]
     fn width(&self) -> usize {
-        self.ic1eq.len()
+        self.state.len()
     }
 
     /// Input-port index of the cutoff param input, if present (right after the
@@ -475,20 +475,52 @@ impl<F: Real> SvfFilterNode<F> {
         }
     }
 
-    /// Render with the current coefficients held for the whole block:
-    /// channel-outer over planar slices, the integrator pair in registers.
+    /// Render with the current coefficients held for the whole block.
+    ///
+    /// The channels go through in groups of up to `ramp::LANES`, sample-inner, with
+    /// the group's integrators in registers. A recursive filter is
+    /// latency-bound on one channel — each sample waits for the last — so
+    /// running one channel at a time (measured: 2.7× slower at width 6) wastes
+    /// the independent chains the other channels offer; a group interleaves
+    /// them while still reading and writing planar slices.
     fn run_held(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let c = self.coeffs;
-        for ch in 0..self.width() {
-            let x = &input.channel_f32(ch)[..size];
-            let y = &mut output.channel_f32_mut(ch)[..size];
-            let (mut s1, mut s2) = (self.ic1eq[ch], self.ic2eq[ch]);
-            for (y, &x) in y.iter_mut().zip(x) {
-                *y = svf_step(&c, &mut s1, &mut s2, F::from_f32(x)).to_f32();
+        let w = self.width();
+        let mut first = 0;
+        while first < w {
+            let n = ramp::lane_group(w - first);
+            match n {
+                8 => self.held_group::<8>(first, size, input, output),
+                7 => self.held_group::<7>(first, size, input, output),
+                6 => self.held_group::<6>(first, size, input, output),
+                5 => self.held_group::<5>(first, size, input, output),
+                4 => self.held_group::<4>(first, size, input, output),
+                3 => self.held_group::<3>(first, size, input, output),
+                2 => self.held_group::<2>(first, size, input, output),
+                _ => self.held_group::<1>(first, size, input, output),
             }
-            self.ic1eq[ch] = s1;
-            self.ic2eq[ch] = s2;
+            first += n;
         }
+    }
+
+    #[inline]
+    fn held_group<const N: usize>(
+        &mut self,
+        first: usize,
+        size: usize,
+        input: &BufferRef,
+        output: &mut BufferMut,
+    ) {
+        let c = self.coeffs;
+        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.channel_f32(first + k)[..size]);
+        let ys: [&mut [f32]; N] =
+            core::array::from_fn(|k| &mut output.channel_f32_mut(first + k)[..size]);
+        let mut st: [[F; 2]; N] = core::array::from_fn(|k| self.state[first + k]);
+        for i in 0..size {
+            for k in 0..N {
+                ys[k][i] = svf_step(&c, &mut st[k], F::from_f32(xs[k][i])).to_f32();
+            }
+        }
+        self.state[first..first + N].copy_from_slice(&st);
     }
 
     /// Render with the parameters moving inside the block. `param_at(i)` is the
@@ -524,7 +556,7 @@ impl<F: Real> SvfFilterNode<F> {
                 };
                 for ch in 0..width {
                     let x = F::from_f32(input.at_f32(ch, i));
-                    let y = svf_step(&k, &mut self.ic1eq[ch], &mut self.ic2eq[ch], x);
+                    let y = svf_step(&k, &mut self.state[ch], x);
                     output.set_f32(ch, i, y.to_f32());
                 }
             }
@@ -545,8 +577,7 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
 
     fn reset(&mut self) {
         let zero = F::from_f64(0.0);
-        self.ic1eq.fill(zero);
-        self.ic2eq.fill(zero);
+        self.state.fill([zero; 2]);
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -567,13 +598,7 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
         self.coeffs = self.solve_toward(&self.coeffs, freq, q, gain_db);
         let c = self.coeffs;
         for ch in 0..self.width() {
-            output[ch] = svf_step(
-                &c,
-                &mut self.ic1eq[ch],
-                &mut self.ic2eq[ch],
-                F::from_f32(input[ch]),
-            )
-            .to_f32();
+            output[ch] = svf_step(&c, &mut self.state[ch], F::from_f32(input[ch])).to_f32();
         }
     }
 
@@ -674,8 +699,7 @@ impl<F: Real> Clone for SvfFilterNode<F> {
             gain_db: self.gain_db.handle(),
             sample_rate: self.sample_rate,
             coeffs: self.coeffs,
-            ic1eq: self.ic1eq.clone(),
-            ic2eq: self.ic2eq.clone(),
+            state: self.state.clone(),
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
         }

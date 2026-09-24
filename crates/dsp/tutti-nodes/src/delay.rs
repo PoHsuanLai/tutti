@@ -246,9 +246,9 @@ pub struct DelayLineNode {
     last: Option<DelayControls>,
     /// Per-channel delay (fractional samples) the previous block ended on.
     last_delay: Vec<f32>,
-    /// Per-channel delay (fractional samples) this block ramps to. Scratch,
+    /// Per-channel delay ramp for the block, in fractional samples. Scratch,
     /// sized at construction.
-    target_delay: Vec<f32>,
+    delay_ramps: Vec<Ramp>,
     /// Per-channel tap scratch for the cross-fed loop: every channel's
     /// feedback tap is read before any line is written. Sized at construction.
     taps: Vec<f32>,
@@ -345,7 +345,7 @@ impl DelayLineNode {
             mod_delay_time: false,
             last: None,
             last_delay: vec![0.0; n],
-            target_delay: vec![0.0; n],
+            delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
             taps: vec![0.0; n],
         }
     }
@@ -565,7 +565,7 @@ impl DelayLineNode {
         &mut self,
         size: usize,
         x: impl Fn(usize, usize) -> f32,
-        mut y: impl FnMut(usize, usize, f32),
+        y: impl FnMut(usize, usize, f32),
         fb_port: Option<&[f32]>,
         dt_port: Option<&[f32]>,
     ) {
@@ -587,81 +587,129 @@ impl DelayLineNode {
         let fb_r = Ramp::new(from.fb, target.fb, size);
         let cf_r = Ramp::new(from.cf, target.cf, size);
         let mix_r = Ramp::new(from.mix, target.mix, size);
-        // Self- and cross-feedback feed the same loop, so they are bounded as a
-        // pair — clamping each alone still admits a combined 1.98. A feedback
-        // port bypasses every constructor, so its clamp is reapplied here.
-        let loop_gain = |i: usize| -> (f32, f32) {
-            let fb = fb_port.map_or_else(|| fb_r.at(i), |s| Feedback::new_clamped(s[i]).get());
-            let (fb, cf) = Feedback::stable_pair(fb, cf_r.at(i));
-            (fb.get(), cf.get())
-        };
 
-        // Per-channel delay target from the atomics. Unprimed (first block,
+        // Per-channel delay ramps from the atomics. Unprimed (first block,
         // after `reset` or a rate change), the ramp starts on the target.
         let primed = self.last.is_some();
+        let mut steady = fb_port.is_none()
+            && dt_port.is_none()
+            && fb_r.is_flat()
+            && cf_r.is_flat()
+            && mix_r.is_flat();
         for c in 0..width {
             let d = fractional_samples(self.delay_time[c].load(), sr);
-            if !primed {
-                self.last_delay[c] = d;
-            }
-            self.target_delay[c] = d;
+            let from = if primed { self.last_delay[c] } else { d };
+            self.delay_ramps[c] = Ramp::new(from, d, size);
+            steady &= self.delay_ramps[c].is_flat();
         }
-        let (last_delay, target_delay) = (&self.last_delay, &self.target_delay);
-        // A delay-time port is audio and read per sample; the atomics ramp.
-        let delay_at = |c: usize, i: usize| -> f32 {
-            match dt_port {
-                Some(s) => fractional_samples(Seconds(s[i].clamp(0.0, max)), sr),
-                None => Ramp::new(last_delay[c], target_delay[c], size).at(i),
-            }
+        let coupled = self.cross_routed && (from.cf != 0.0 || target.cf != 0.0);
+        let lines = Lines {
+            delays: &mut self.delays,
+            taps: &mut self.taps,
+            routing: &self.cross_routing,
+            interp,
+            coupled,
         };
 
-        let coupled = self.cross_routed && (from.cf != 0.0 || target.cf != 0.0);
-        if !coupled {
+        if steady {
+            // Nothing moves this block: every control is a constant in the
+            // loop, which is the common case and the one worth keeping tight.
+            let (fb, cf) = Feedback::stable_pair(target.fb, target.cf);
+            let (fb, cf, mix) = (fb.get(), cf.get(), target.mix);
+            let ramps = &self.delay_ramps;
+            lines.run(size, x, y, |_| (fb, cf), |c, _| ramps[c].at(0), |_| mix);
+        } else {
+            // Self- and cross-feedback feed the same loop, so they are bounded
+            // as a pair — clamping each alone still admits a combined 1.98. A
+            // feedback port bypasses every constructor, so its clamp is
+            // reapplied here.
+            let loop_gain = |i: usize| -> (f32, f32) {
+                let fb = fb_port.map_or_else(|| fb_r.at(i), |s| Feedback::new_clamped(s[i]).get());
+                let (fb, cf) = Feedback::stable_pair(fb, cf_r.at(i));
+                (fb.get(), cf.get())
+            };
+            let ramps = &self.delay_ramps;
+            // A delay-time port is audio and read per sample; the atomics ramp.
+            let delay_at = |c: usize, i: usize| -> f32 {
+                match dt_port {
+                    Some(s) => fractional_samples(Seconds(s[i].clamp(0.0, max)), sr),
+                    None => ramps[c].at(i),
+                }
+            };
+            lines.run(size, x, y, loop_gain, delay_at, |i| mix_r.at(i));
+        }
+
+        // Where the next block's ramps start.
+        for c in 0..width {
+            self.last_delay[c] = match dt_port {
+                Some(s) => fractional_samples(Seconds(s[size - 1].clamp(0.0, max)), sr),
+                None => self.delay_ramps[c].at(size - 1),
+            };
+        }
+        self.last = Some(target);
+    }
+}
+
+/// The delay lines and the scratch their sample loop needs, borrowed apart
+/// from the node so the per-block control closures can borrow the rest.
+struct Lines<'a> {
+    delays: &'a mut [DelayLine],
+    taps: &'a mut [f32],
+    routing: &'a [f32],
+    interp: InterpolationMode,
+    coupled: bool,
+}
+
+impl Lines<'_> {
+    /// Render the block. `gain(i)` is the bounded `(fb, cf)` pair at sample
+    /// `i`, `delay_at(c, i)` channel `c`'s delay in samples, `mix_at(i)` the
+    /// wet/dry mix. Constant closures compile down to constants.
+    #[inline(always)]
+    fn run(
+        self,
+        size: usize,
+        x: impl Fn(usize, usize) -> f32,
+        mut y: impl FnMut(usize, usize, f32),
+        gain: impl Fn(usize) -> (f32, f32),
+        delay_at: impl Fn(usize, usize) -> f32,
+        mix_at: impl Fn(usize) -> f32,
+    ) {
+        let interp = self.interp;
+        if !self.coupled {
             // Independent channels: channel-outer, one line at a time.
             for (c, line) in self.delays.iter_mut().enumerate() {
                 for i in 0..size {
-                    let (fb, _) = loop_gain(i);
-                    let v = delay_step(line, x(c, i), delay_at(c, i), fb, mix_r.at(i), interp);
+                    let (fb, _) = gain(i);
+                    let v = delay_step(line, x(c, i), delay_at(c, i), fb, mix_at(i), interp);
                     y(c, i, v);
                 }
             }
-        } else {
-            // Cross-fed: every channel's feedback tap is read before any line
-            // is written, so the loop is sample-outer.
-            let n = width;
-            for i in 0..size {
-                let (fb, cf) = loop_gain(i);
-                let mix = Mix(mix_r.at(i));
-                for (c, line) in self.delays.iter().enumerate() {
-                    let d = delay_at(c, i);
-                    self.taps[c] = line.read_sample((d.max(1.0) - 1.0).max(0.0), interp);
-                }
-                for (c, line) in self.delays.iter_mut().enumerate() {
-                    let mut acc = x(c, i) + self.taps[c] * fb;
-                    for (j, &w) in self.cross_routing[c * n..(c + 1) * n].iter().enumerate() {
-                        if w != 0.0 {
-                            acc += (w * cf) * self.taps[j];
-                        }
+            return;
+        }
+        // Cross-fed: every channel's feedback tap is read before any line is
+        // written, so the loop is sample-outer.
+        let n = self.delays.len();
+        for i in 0..size {
+            let (fb, cf) = gain(i);
+            let mix = Mix(mix_at(i));
+            for (c, line) in self.delays.iter().enumerate() {
+                let d = delay_at(c, i);
+                self.taps[c] = line.read_sample((d.max(1.0) - 1.0).max(0.0), interp);
+            }
+            for (c, line) in self.delays.iter_mut().enumerate() {
+                let mut acc = x(c, i) + self.taps[c] * fb;
+                for (j, &w) in self.routing[c * n..(c + 1) * n].iter().enumerate() {
+                    if w != 0.0 {
+                        acc += (w * cf) * self.taps[j];
                     }
-                    line.push_sample(acc);
                 }
-                for (c, line) in self.delays.iter().enumerate() {
-                    y(
-                        c,
-                        i,
-                        mix.blend(x(c, i), line.read_sample(delay_at(c, i), interp)),
-                    );
-                }
+                line.push_sample(acc);
+            }
+            for (c, line) in self.delays.iter().enumerate() {
+                let wet = line.read_sample(delay_at(c, i), interp);
+                y(c, i, mix.blend(x(c, i), wet));
             }
         }
-
-        // Where the next block's ramps start. Staged through `taps` because
-        // `delay_at` still borrows `last_delay` while it is evaluated.
-        for c in 0..width {
-            self.taps[c] = delay_at(c, size - 1);
-        }
-        self.last_delay.copy_from_slice(&self.taps);
-        self.last = Some(target);
     }
 }
 
@@ -808,7 +856,7 @@ impl Clone for DelayLineNode {
             mod_delay_time: self.mod_delay_time,
             last: self.last,
             last_delay: self.last_delay.clone(),
-            target_delay: self.target_delay.clone(),
+            delay_ramps: self.delay_ramps.clone(),
             taps: self.taps.clone(),
         }
     }

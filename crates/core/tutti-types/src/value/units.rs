@@ -1166,9 +1166,21 @@ impl Phase {
     /// the input, so `-0.25` stays `-0.25` instead of becoming `0.75`. That is
     /// the whole bug class — a negative phase indexes off the front of a shape
     /// table, and no consumer checks for it.
+    ///
+    /// The two ranges an advance by less than one cycle lands in — already in
+    /// `[0, 1)`, or one cycle past it — are taken without the `fmodf` call
+    /// `rem_euclid` makes, which was a libm call per sample per channel on
+    /// every LFO. Both shortcuts are bit-identical to `rem_euclid`: in
+    /// `[1, 2)` the subtraction `v - 1` is exact (Sterbenz).
     #[inline]
     pub fn wrapped(v: f32) -> Phase {
-        Phase(v.rem_euclid(1.0))
+        if (0.0..1.0).contains(&v) {
+            Phase(v)
+        } else if (1.0..2.0).contains(&v) {
+            Phase(v - 1.0)
+        } else {
+            Phase(v.rem_euclid(1.0))
+        }
     }
 
     /// Advance by one step, wrapping. The replacement for `+`.
@@ -2367,6 +2379,44 @@ mod tests {
         // Many turns out, either direction, still lands in range.
         assert_eq!(Phase::wrapped(-3.25), Phase(0.75));
         assert_eq!(Phase::wrapped(7.5), Phase(0.5));
+    }
+
+    /// `wrapped`'s two shortcuts are `rem_euclid`, bit for bit — including at
+    /// the edges of each range, where a sloppier wrap (`v - 1.0` for all
+    /// `v >= 1`, or `< 1.0` tested as `<= 1.0`) would hand back `1.0`, which is
+    /// not a phase.
+    ///
+    /// Mutation: widening the second range to `1.0..=2.0` returns `1.0` for
+    /// `v = 2.0` (where `rem_euclid` gives `0.0`) and fails; dropping the first
+    /// range's upper bound returns `1.0` for `v = 1.0` and fails.
+    #[test]
+    fn the_wrap_shortcuts_are_rem_euclid_exactly() {
+        let mut probes = vec![
+            0.0f32,
+            -0.0,
+            1.0,
+            2.0,
+            -1.0,
+            f32::MIN_POSITIVE,
+            1.0 - f32::EPSILON / 2.0,
+            1.0 + f32::EPSILON,
+            2.0 - f32::EPSILON,
+            f32::NAN,
+            f32::INFINITY,
+        ];
+        let mut state = 0x1234_5678_u32;
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            probes.push((state >> 8) as f32 / (1u32 << 24) as f32 * 6.0 - 2.0);
+        }
+        for v in probes {
+            let want = v.rem_euclid(1.0);
+            let got = Phase::wrapped(v).get();
+            assert!(
+                got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()),
+                "wrapped({v:e}) = {got:e}, rem_euclid gives {want:e}"
+            );
+        }
     }
 
     #[test]

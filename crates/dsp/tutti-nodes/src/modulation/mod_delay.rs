@@ -269,7 +269,7 @@ impl ModDelayNode {
         &mut self,
         size: usize,
         x: impl Fn(usize, usize) -> f32,
-        mut y: impl FnMut(usize, usize, f32),
+        y: impl FnMut(usize, usize, f32),
     ) {
         debug_assert!(size <= MAX_BUFFER_SIZE);
         // Every control is read here, once, for the whole block.
@@ -289,24 +289,64 @@ impl ModDelayNode {
         let mut phases = [Phase::START; MAX_BUFFER_SIZE];
         self.lfo.fill_block(self.sample_rate, &mut phases[..size]);
 
-        // Narrowed once: the delay positions feed an interpolated read, so they
-        // keep their fraction rather than going through `Seconds::to_samples`.
-        let sr = self.sample_rate.get() as f32;
-        let base_delay = self.config.base_delay.get() * sr;
-        for (c, (line, &offset)) in self.delays.iter_mut().zip(&self.phase_offsets).enumerate() {
-            for (i, &phase) in phases[..size].iter().enumerate() {
+        let lines = SweptLines {
+            delays: &mut self.delays,
+            offsets: &self.phase_offsets,
+            phases: &phases[..size],
+            // Narrowed once: the delay positions feed an interpolated read, so
+            // they keep their fraction rather than going through
+            // `Seconds::to_samples`.
+            sr: self.sample_rate.get() as f32,
+            base_delay: self.config.base_delay.get(),
+        };
+        if depth_r.is_flat() && fb_r.is_flat() && mix_r.is_flat() {
+            // Nothing moved since the last block: constants in the loop.
+            let (d, f, m) = (target.depth, target.fb, target.mix);
+            lines.run(x, y, |_| d, |_| f, |_| m);
+        } else {
+            lines.run(x, y, |i| depth_r.at(i), |i| fb_r.at(i), |i| mix_r.at(i));
+        }
+        self.last = Some(target);
+    }
+}
+
+/// The delay lines and the block's LFO phases, borrowed apart from the node so
+/// the per-block control closures can be chosen outside the loop.
+struct SweptLines<'a> {
+    delays: &'a mut [DelayLine],
+    offsets: &'a [PhaseIncrement],
+    phases: &'a [Phase],
+    sr: f32,
+    base_delay: f32,
+}
+
+impl SweptLines<'_> {
+    /// Channel-outer over the lines. `depth_at` / `fb_at` / `mix_at` give the
+    /// controls at sample `i`; constant closures compile to constants.
+    #[inline(always)]
+    fn run(
+        self,
+        x: impl Fn(usize, usize) -> f32,
+        mut y: impl FnMut(usize, usize, f32),
+        depth_at: impl Fn(usize) -> f32,
+        fb_at: impl Fn(usize) -> f32,
+        mix_at: impl Fn(usize) -> f32,
+    ) {
+        let sr = self.sr;
+        let base_delay = self.base_delay * sr;
+        for (c, (line, &offset)) in self.delays.iter_mut().zip(self.offsets).enumerate() {
+            for (i, &phase) in self.phases.iter().enumerate() {
                 // Channel 0's offset is zero, and the old left channel read the
                 // phase directly; `offset_by(0)` is the same value.
                 let lfo = phase.offset_by(offset).to_radians().get().sin();
-                let delay = (base_delay + lfo * depth_r.at(i) * sr).max(1.0);
+                let delay = (base_delay + lfo * depth_at(i) * sr).max(1.0);
                 let input = x(c, i);
                 let fb_tap = line.read_sample(delay, InterpolationMode::Linear);
-                line.push_sample(input + fb_tap * fb_r.at(i));
+                line.push_sample(input + fb_tap * fb_at(i));
                 let wet = line.read_sample(delay, InterpolationMode::Linear);
-                y(c, i, Mix(mix_r.at(i)).blend(input, wet));
+                y(c, i, Mix(mix_at(i)).blend(input, wet));
             }
         }
-        self.last = Some(target);
     }
 }
 

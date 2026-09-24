@@ -159,15 +159,16 @@ fn the_stream_reads_every_frame_the_load_does() {
     }
 }
 
-/// After a seek, `FileIn` produces exactly the frames a whole-file load has at
-/// that position, for the lossless containers. (A lossy decoder restarted by a
-/// seek has no overlap state for its first packet, so sample identity is not
-/// its contract.) The probe agrees with the load on width and rate for all.
+/// The header agrees with the decode: `probe_metadata`'s width, rate **and
+/// frame count** are what `Wave::load` actually produces, for every fixture.
 ///
-/// Mutation: make `FileIn::seek` discard one extra preroll frame, and the slice
-/// comparison below fails at its first frame (checked).
+/// Restores the fork's `probe_metadata_matches_full_load`, which the move
+/// deleted along with the fork's WAV writer it depended on.
+///
+/// Mutation: have `probe_metadata` report `n_frames.map(|n| n + 1)` and every
+/// row fails (checked).
 #[test]
-fn seek_lands_on_the_whole_file_load_frames() {
+fn the_probe_agrees_with_the_full_load() {
     for &(name, _, _) in GOLDEN {
         let w = Wave::load(asset(name)).expect("load");
         let meta = Wave::probe_metadata(asset(name)).expect("probe");
@@ -177,30 +178,88 @@ fn seek_lands_on_the_whole_file_load_frames() {
             w.sample_rate().get(),
             "{name}: probed rate"
         );
-
-        if name.ends_with(".mp3") || name.ends_with(".ogg") {
-            continue;
-        }
-        let ch = w.channels();
-        let start = w.len() / 3;
-        let mut dec = FileIn::open(asset(name)).expect("open");
-        assert!(
-            dec.seekable(),
-            "{name}: a lossless fixture must be seekable"
+        assert_eq!(
+            meta.total_frames,
+            Some(w.len() as u64),
+            "{name}: probed frame count"
         );
-        dec.seek(start as u64).expect("seek");
-        let want = 257.min(w.len() - start);
-        let mut out = vec![0.0f32; want * ch];
-        assert_eq!(dec.poll_into(&mut out).0, want, "{name}: seek read count");
-        for f in 0..want {
-            for c in 0..ch {
-                assert_eq!(
-                    out[f * ch + c].to_bits(),
-                    w.at(c, start + f).to_bits(),
-                    "{name}: frame {} channel {c} after seek",
-                    start + f
-                );
-            }
+    }
+}
+
+/// Where a seek landed, as a lag against the whole-file load: the offset `d`
+/// at which the frames read after `seek(start)` equal the load's frames at
+/// `start + d`, or `None` if no offset in `-4096..=4096` matches. Used only to
+/// make a failure say *how far off* a seek was.
+fn lag_of(w: &Wave, start: usize, out: &[f32]) -> Option<i64> {
+    let ch = w.channels();
+    let n = out.len() / ch;
+    (-4096i64..=4096).find(|&d| {
+        let s = start as i64 + d;
+        s >= 0
+            && (s as usize + n) <= w.len()
+            && (0..n).all(|f| {
+                (0..ch).all(|c| out[f * ch + c].to_bits() == w.at(c, s as usize + f).to_bits())
+            })
+    })
+}
+
+/// After a seek, `FileIn` produces exactly the frames a whole-file load has
+/// at that position — for **every** container, lossy included. Position is the
+/// contract; the fixtures are also sample-identical after a seek, so that is
+/// asserted, bit for bit.
+///
+/// Starts cover frame 1 (inside the first packet), 700 (mid-packet for every
+/// codec here), a third of the way in, and 100 frames from the end. Each is
+/// seeked on a fresh decoder, then again in reverse order on one decoder, so a
+/// seek from a mid-stream state is covered too.
+///
+/// This pins the fix for an Ogg seek landing 1024 frames late (576 from frame
+/// 1): after `decoder.reset()` the first Vorbis packet decodes to zero frames
+/// and is skipped, but the preroll discard was counted from the seek's
+/// `actual_ts` rather than from the packet that produced audio — and when that
+/// primer is the packet containing `start`, no discard can recover it, so the
+/// seek has to step back past it.
+///
+/// Mutations (checked): the pre-fix `seek` fails `stereo.ogg` at lag +576
+/// (start 1); disabling only the step back past the primer fails it at lag
+/// +575; discarding one extra preroll frame fails `stereo_s16.wav` at lag +1.
+#[test]
+fn seek_lands_on_the_whole_file_load_frames() {
+    for &(name, _, _) in GOLDEN {
+        let w = Wave::load(asset(name)).expect("load");
+        let ch = w.channels();
+        let len = w.len();
+        let starts = [1, 700, len / 3, len - 100];
+
+        let check = |dec: &mut FileIn, start: usize, how: &str| {
+            dec.seek(start as u64).expect("seek");
+            assert_eq!(dec.cursor(), start as u64, "{name}: cursor after seek");
+            let want = 257.min(len - start);
+            let mut out = vec![0.0f32; want * ch];
+            assert_eq!(
+                dec.poll_into(&mut out).0,
+                want,
+                "{name}: read count after {how} seek to {start}"
+            );
+            let exact = (0..want).all(|f| {
+                (0..ch).all(|c| out[f * ch + c].to_bits() == w.at(c, start + f).to_bits())
+            });
+            assert!(
+                exact,
+                "{name}: {how} seek to {start} did not land on the load's frames; \
+                 it matches the load at lag {:?}",
+                lag_of(&w, start, &out)
+            );
+        };
+
+        for &start in &starts {
+            let mut dec = FileIn::open(asset(name)).expect("open");
+            assert!(dec.seekable(), "{name}: every fixture must be seekable");
+            check(&mut dec, start, "fresh");
+        }
+        let mut dec = FileIn::open(asset(name)).expect("open");
+        for &start in starts.iter().rev() {
+            check(&mut dec, start, "repeated");
         }
     }
 }

@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bevy_asset` features any more; name `tutti-io/wav` etc., and
   `tutti-io/bevy` for `WaveAsset`'s `Asset` derive. `tutti-sampler`,
   `bevy-tutti` and `tutti` keep their codec features and forward them to
-  `tutti-io`. `tutti-sampler` now depends on `tutti-io`.
+  `tutti-io`. `tutti-sampler` now depends on `tutti-io` and re-exports
+  `tutti_sampler::Wave`; `bevy_tutti::sampler` re-exports `Wave` and
+  `WaveAsset`, so a voice or asset consumer needs no direct `tutti-io` edge.
 
   The API was trimmed to what the engine calls. `Wave` keeps `new`,
   `with_capacity`, `zero`, `from_samples`, `sample_rate`, `channels`,
@@ -153,6 +155,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such files streamable, since the container carries a frame count. Zero-frame
   packets are now skipped; a streamed read now yields the same samples as
   `Wave::load`, bit for bit, for every fixture in `assets/audio/`.
+
+- **A `FileIn` seek into an Ogg Vorbis file landed up to ~1024 frames late.**
+  After a seek resets the decoder, its first Vorbis packet only primes the
+  overlap; the preroll discard was counted from the seek's `actual_ts` rather
+  than from the packet that produced audio, and when the primer was the packet
+  holding the target frame no discard could recover it. `seek` now counts from
+  the producing packet's timestamp and steps back past a primer that swallowed
+  the target. Every loop wrap, seek and reverse refill on a streamed Ogg clip
+  was off by ~23 ms. Seeks now land bit-exact on `Wave::load`'s frames for
+  every fixture, lossy included.
 
 - **Four defects in `Routing::route`, the arithmetic plugin delay
   compensation is computed from.** Each was inert in the tree as it stood,

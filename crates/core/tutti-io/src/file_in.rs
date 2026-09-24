@@ -75,6 +75,11 @@ pub struct FileIn {
     cursor: u64,
     /// Whether the container reports a frame count and supports accurate seek.
     seekable: bool,
+    /// Timestamp of the first zero-frame packet the latest
+    /// [`decode_next_packet`](Self::decode_next_packet) call skipped, if any —
+    /// the decoder primer. [`seek`](Self::seek) steps back past it when the
+    /// frames it swallowed include the one asked for.
+    skipped_primer: Option<u64>,
 }
 
 impl FileIn {
@@ -143,6 +148,7 @@ impl FileIn {
             leftover_pos: 0,
             cursor: 0,
             seekable,
+            skipped_primer: None,
         })
     }
 
@@ -157,19 +163,25 @@ impl FileIn {
 
     /// Refill `leftover` from the next packet of the selected track that
     /// decodes to audio. Returns the number of frames decoded, which is 0 only
-    /// at EOF. Retains a `convert_buf` scratch to stay allocation-free after
-    /// warmup.
+    /// at EOF, and the timestamp (`packet.ts()`, in frames) of the packet that
+    /// produced them. Retains a `convert_buf` scratch to stay allocation-free
+    /// after warmup.
     ///
     /// A packet can decode to **zero** frames without the stream ending —
-    /// Vorbis's first packet only primes the decoder's overlap — and both
-    /// callers read a 0 as end-of-stream, so such a packet is skipped here
-    /// rather than returned. Returning it made every Ogg file stream as empty.
-    fn decode_next_packet(&mut self) -> Result<usize, WaveError> {
+    /// Vorbis's first packet, and its first after a `reset`, only prime the
+    /// decoder's overlap — and both callers read a 0 as end-of-stream, so such
+    /// a packet is skipped here rather than returned. Returning it made every
+    /// Ogg file stream as empty. The skip is also why the timestamp comes back:
+    /// the frames in `leftover` start at the returned packet's `ts`, not at
+    /// the first packet read, and [`seek`](Self::seek) must count its preroll
+    /// from there.
+    fn decode_next_packet(&mut self) -> Result<(usize, u64), WaveError> {
+        self.skipped_primer = None;
         loop {
             let packet = match self.reader.next_packet() {
                 Ok(p) => p,
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(0);
+                    return Ok((0, 0));
                 }
                 Err(e) => return Err(e),
             };
@@ -180,9 +192,11 @@ impl FileIn {
             let (buf, frames) =
                 decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)?;
             if frames == 0 {
+                self.skipped_primer.get_or_insert(packet.ts());
                 continue;
             }
             let num_ch = buf.spec().channels.count();
+            let ts = packet.ts();
 
             self.leftover.clear();
             self.leftover_pos = 0;
@@ -205,7 +219,7 @@ impl FileIn {
                     self.leftover.push(0.0);
                 }
             }
-            return Ok(frames);
+            return Ok((frames, ts));
         }
     }
 
@@ -254,7 +268,7 @@ impl FileIn {
             }
 
             // Need another packet.
-            let decoded = self.decode_next_packet()?;
+            let (decoded, _) = self.decode_next_packet()?;
             if decoded == 0 {
                 // End-of-stream — leave the untouched tail for the caller.
                 break;
@@ -267,30 +281,66 @@ impl FileIn {
     /// Accurate-seek to `start` so the next [`poll_into`](Self::poll_into)
     /// produces frame `start`. Discards the preroll so `cursor == start`.
     pub fn seek(&mut self, start: u64) -> Result<(), WaveError> {
-        self.leftover.clear();
-        self.leftover_pos = 0;
+        // Accurate seek lands on the packet containing `target`; decoding then
+        // discards the preroll up to `start`. Two things make that subtler
+        // than `start - actual_ts`:
+        //
+        // 1. **The first packet after `reset` may decode to nothing.** A
+        //    Vorbis decoder needs one packet to prime its overlap, and
+        //    `decode_next_packet` skips it. The frames that come out then start
+        //    at the *next* packet's `ts`, so the preroll is counted from the
+        //    timestamp of the first packet that produced frames — never from
+        //    `actual_ts`. Counting from `actual_ts` landed every Ogg seek about
+        //    1024 frames late, with no error.
+        // 2. **That packet can start after `start`** — or not exist, when the
+        //    primer was the file's last packet. The primer was then the packet
+        //    containing `start`, and the frames at `start` cannot be discarded
+        //    back into existence. So the seek is retried from one frame before
+        //    the primer, which makes the packet before it the primer instead.
+        //    Each retry targets strictly earlier, and target 0 ends it.
+        //
+        // For codecs whose first packet decodes (PCM, FLAC, MP3 here) the
+        // first attempt succeeds and this is one seek, as before.
+        let mut target = start;
+        loop {
+            self.leftover.clear();
+            self.leftover_pos = 0;
+            self.reader.seek(
+                SeekMode::Accurate,
+                SeekTo::TimeStamp {
+                    ts: target,
+                    track_id: self.track_id,
+                },
+            )?;
+            self.decoder.reset();
 
-        let seeked = self.reader.seek(
-            SeekMode::Accurate,
-            SeekTo::TimeStamp {
-                ts: start,
-                track_id: self.track_id,
-            },
-        )?;
-        self.decoder.reset();
-
-        // Accurate seek lands at actual_ts <= start; decode-and-discard the
-        // preroll frames to reach the exact requested frame.
-        let mut discard = start.saturating_sub(seeked.actual_ts);
-        while discard > 0 {
-            let decoded = self.decode_next_packet()?;
+            let (decoded, ts) = self.decode_next_packet()?;
+            if decoded == 0 || ts > start {
+                if let Some(primer) = self.skipped_primer.filter(|&p| target > 0 && p <= target) {
+                    target = primer.saturating_sub(1);
+                    continue;
+                }
+            }
             if decoded == 0 {
-                // Seeked past EOF; nothing more to discard.
+                // Seeked past EOF; nothing to discard.
                 break;
             }
-            let skip = (decoded as u64).min(discard);
-            self.leftover_pos += skip as usize;
-            discard -= skip;
+
+            // The frames in `leftover` start at `ts`; discard up to `start`.
+            let mut discard = start.saturating_sub(ts);
+            loop {
+                let avail = self.leftover_len() as u64;
+                let skip = avail.min(discard);
+                self.leftover_pos += skip as usize;
+                discard -= skip;
+                if discard == 0 {
+                    break;
+                }
+                if self.decode_next_packet()?.0 == 0 {
+                    break; // EOF inside the preroll
+                }
+            }
+            break;
         }
 
         self.cursor = start;

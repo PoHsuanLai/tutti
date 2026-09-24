@@ -208,6 +208,44 @@ the interpreter.
 - **Block size is a `Prepare` parameter**, not `MAX_BUFFER_SIZE = 64`. The live
   path runs at the device quantum; export runs at 1024+.
 
+### 5. Types that make the footguns unrepresentable
+
+This is the same move `RtPublish`/`RtRef` made: when a rule keeps getting
+broken, put it in a type instead of a review note or a test that cannot reach
+the race. Every type below exists because the audit found the bug it prevents.
+
+| Type | Replaces | Bug class it prevents |
+|---|---|---|
+| **`Latency(Samples)`**, the only thing `Shape::latency` accepts; musical delay times stay `Seconds`/`Samples` | `route` → `Signal::Latency` carrying both "this node is late" and "this node echoes" | D1–D3: an echo compensated as if it were processing latency |
+| **`ParamKey<U>`**, typed by unit (`ParamKey::<Hz>::CUTOFF`) over the stable `UnitParam` `u16` wire id; `set<U>(ParamKey<U>, U)` | `Setting`/`unit_param` erasing `U` at `to_raw()` | Sending a `Db` to a `Hz` param compiles today; the units rule stops one layer too early |
+| **`Retire<T>`**: an owning box for deltas, retired units, old plans and arenas. It gives up its contents only through a return channel whose push cannot fail; in debug, `Drop` panics on the audio thread | The fork's return queue (drops the value on the audio thread when full) and its parking (allocates past its reserve) | Freeing on the audio thread. `RtRef` did this for reads; `Retire` does it for hand-offs |
+| **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
+| **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
+| **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
+
+**Deleted, once the native graph lands.** Each existed to work around fundsp:
+
+- `AudioThreadCell`, `RtEventBuf`'s `&self` interior mutability and
+  `reset_owner`. All three exist so `Arc`-shared state survives
+  clone-on-commit. Units owned once by the audio thread only need `&mut self`.
+- `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
+  value handed out through `Controls`; the hand-written sharing `Clone` impls
+  go.
+- `Signal`/`SignalFrame`/`Routing`/`route()`, replaced by declared `Latency`.
+  Nothing in production calls `response()`.
+- `Setting`/`Parameter`/`Address`/`NodeAddr`/`unit_param`, replaced by
+  `ParamKey<U>` and `Controls`.
+- The `Num`/`Float`/`Real`/`Sample`/`F32`/`F64` tower and the `F32x` buffer
+  layout: the graph is f32-only.
+- `impl Default for ChannelLayout` (STEREO). The `Topology` series already
+  tripped on it, when a derived default silently created two global inputs.
+  Callers should have to spell out the layout.
+
+**Not adding.** Const-generic port counts or typestate topology: runtime widths
+are settled, and `Valid` is the proof at the right level. A safe
+`NodeHandle<T>` downcast: `Controls` returned at insert removes the need to
+downcast at all, which is better than making downcasting safe.
+
 ### SIMD and DOD, concretely
 
 - The graph's own work (copy, sum, gain, delay, fade, meter) is a small set of
@@ -507,6 +545,11 @@ when `tick` goes. Replace it with the reference interpreter run at block size
 1, compared against the real block size.
 
 ## Decisions for the owner
+
+The owner delegated these on 2026-09-24. The migration uses the proposed
+option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
+ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
+now. Item 5 is decided when that phase runs.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
 2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`

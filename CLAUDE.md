@@ -96,6 +96,8 @@ crates/
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
                  tutti-node (node contract), tutti-cpal (device), tutti-io (live I/O edge)
                  tutti-mod (modulation), tutti-export (offline render)
+                 tutti-graph (doc 013 Phase 1: Node contract, Topology→Plan compiler,
+                 serial executor + reference interpreter; not wired in yet)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
   midi/          tutti-midi-{types,runtime,hardware,file}
@@ -105,6 +107,9 @@ crates/
 ```
 
 - `tutti-types` names no other tutti crate.
+- `tutti-graph` depends on `tutti-types` and `tutti-node` only, keeps every
+  module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
+  the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - The vendored forks are excluded from clippy and rustdoc.

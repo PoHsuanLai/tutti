@@ -50,8 +50,13 @@ checked against the tree.
 - **`tutti-polysynth`, `tutti-analysis`** — mentions in prose only, no
   `unsafe` code.
 
-`tutti-mod` carries `#![forbid(unsafe_code)]`. It is the only crate that does,
-and it should not be the last.
+`tutti-mod` and `tutti-graph` carry `#![forbid(unsafe_code)]`. The second is
+the one worth knowing: its executor hands every node `&[f32]` inputs and
+`&mut [f32]` outputs out of one shared arena, which is the textbook reason to
+reach for raw pointers. It does not — the disjoint borrows come from
+`split_at_mut` over sorted slot indices and the reinterpretation from
+`bytemuck`'s checked cast (`tutti-graph/src/arena.rs`), and a colouring bug
+would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
 
 ## The rules
 

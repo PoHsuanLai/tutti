@@ -89,9 +89,12 @@ const GOLDEN: &[(&str, u64, u64)] = &[
     // same generator, and a lossless decode must land on the same samples.
     ("stereo.flac", 0x9e907ce1c8607f10, 0xb9f775ef850a7f23),
     ("stereo.mp3", 0x83e5be1d21986f6e, 0x03180728f1ec4892),
-    // The streamed digest is the EMPTY digest: `FileIn` reads zero frames from
-    // this file. Recorded as found, so the move is shown to change nothing.
-    ("stereo.ogg", 0x40a6b908a599a73c, 0xcbf29ce484222325),
+    // The one row the move did not carry over unchanged. The fork's streamed
+    // digest here was the EMPTY digest (0xcbf29ce484222325): `FileIn` read zero
+    // frames from this file. The fix is in `FileIn::decode_next_packet`, and
+    // `the_stream_reads_every_frame_the_load_does` shows this new digest is the
+    // load's samples, bit for bit.
+    ("stereo.ogg", 0x40a6b908a599a73c, 0x833652fd27bdc9c9),
 ];
 
 #[test]
@@ -114,6 +117,46 @@ fn decoded_samples_match_the_golden_digests() {
         "digest mismatch:\n{}",
         failures.join("\n")
     );
+}
+
+/// Streaming a file from the start yields every frame the whole-file load
+/// does, bit for bit, in every container.
+///
+/// This is the test that found `FileIn` reading **nothing** from an Ogg file:
+/// Vorbis's first packet decodes to zero frames (it only primes the overlap),
+/// and the streamer took a zero-frame packet for end-of-stream. A streamed Ogg
+/// clip therefore played as silence from its first block, and `probe` called
+/// it streamable because the container reports a frame count.
+///
+/// Mutation: restoring `return Ok(frames)` for a zero-frame packet in
+/// `FileIn::decode_next_packet` fails this on `stereo.ogg` (checked).
+#[test]
+fn the_stream_reads_every_frame_the_load_does() {
+    for &(name, _, _) in GOLDEN {
+        let w = Wave::load(asset(name)).expect("load");
+        let ch = w.channels();
+        let mut dec = FileIn::open(asset(name)).expect("open");
+        let mut buf = vec![0.0f32; 333 * ch];
+        let mut at = 0usize;
+        loop {
+            let n = dec.poll_into(&mut buf).0;
+            if n == 0 {
+                break;
+            }
+            for f in 0..n {
+                for c in 0..ch {
+                    assert_eq!(
+                        buf[f * ch + c].to_bits(),
+                        w.at(c, at + f).to_bits(),
+                        "{name}: frame {} channel {c}",
+                        at + f
+                    );
+                }
+            }
+            at += n;
+        }
+        assert_eq!(at, w.len(), "{name}: streamed frame count");
+    }
 }
 
 /// After a seek, `FileIn` produces exactly the frames a whole-file load has at

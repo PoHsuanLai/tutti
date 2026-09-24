@@ -155,9 +155,15 @@ impl FileIn {
         (self.leftover.len() / ch).saturating_sub(self.leftover_pos)
     }
 
-    /// Refill `leftover` from exactly one more packet of the selected track.
-    /// Returns the number of frames decoded (0 at EOF). Retains a `convert_buf`
-    /// scratch to stay allocation-free after warmup.
+    /// Refill `leftover` from the next packet of the selected track that
+    /// decodes to audio. Returns the number of frames decoded, which is 0 only
+    /// at EOF. Retains a `convert_buf` scratch to stay allocation-free after
+    /// warmup.
+    ///
+    /// A packet can decode to **zero** frames without the stream ending —
+    /// Vorbis's first packet only primes the decoder's overlap — and both
+    /// callers read a 0 as end-of-stream, so such a packet is skipped here
+    /// rather than returned. Returning it made every Ogg file stream as empty.
     fn decode_next_packet(&mut self) -> Result<usize, WaveError> {
         loop {
             let packet = match self.reader.next_packet() {
@@ -173,6 +179,9 @@ impl FileIn {
 
             let (buf, frames) =
                 decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)?;
+            if frames == 0 {
+                continue;
+            }
             let num_ch = buf.spec().channels.count();
 
             self.leftover.clear();

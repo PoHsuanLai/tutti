@@ -136,6 +136,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`FileIn` streamed every Ogg Vorbis file as empty.** Vorbis's first packet
+  decodes to zero frames, and the streamer took any zero-frame packet for
+  end-of-stream, so a streamed `.ogg` clip played silence from its first block
+  (and a seek's preroll stopped early). `tutti_sampler::probe` still reported
+  such files streamable, since the container carries a frame count. Zero-frame
+  packets are now skipped; a streamed read now yields the same samples as
+  `Wave::load`, bit for bit, for every fixture in `assets/audio/`.
+
 - **Four defects in `Routing::route`, the arithmetic plugin delay
   compensation is computed from.** Each was inert in the tree as it stood,
   because every in-tree caller happened to pass the argument that makes the

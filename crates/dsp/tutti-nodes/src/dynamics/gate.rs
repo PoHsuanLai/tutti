@@ -2,15 +2,16 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, MAX_BUFFER_SIZE};
 use tutti_types::ChannelLayout;
 
 use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
 use super::utils::{
-    amplitude_to_db, compute_gate_gain, sidechain_level_buffer, sidechain_level_slice,
+    amplitude_to_db, apply_gain_lane, compute_gate_gain, ramp_db, sidechain_level_buffer,
+    sidechain_level_slice,
 };
-use tutti_core::{Db, Param, Seconds, Tail};
+use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -22,6 +23,24 @@ pub(super) struct GateCore {
 
     envelope: f32,
     follower: GateEnvelopeFollower,
+    /// The range the previous block ended on, the start of this block's ramp.
+    /// `None` until the first block, which starts on its own value.
+    last_range: Option<Db>,
+}
+
+/// The controls one block runs on, read from their atomics **once** at the
+/// top of `process` / `tick`.
+///
+/// Two atomic loads per sample used to sit inside the gain computation. The
+/// threshold only decides open/closed, and the attack/hold/release follower
+/// already turns a changed decision into a ramp, so it is held for the block.
+/// The range multiplies the output directly — the closed floor — so a step
+/// would click; it ramps linearly from the previous block's value instead.
+#[derive(Clone, Copy)]
+pub(super) struct GateBlock {
+    threshold: Db,
+    range_from: Db,
+    range_to: Db,
 }
 
 impl GateCore {
@@ -49,6 +68,7 @@ impl GateCore {
             range_db: Param::new(Db(-80.0)),
             envelope: 0.0,
             follower: GateEnvelopeFollower::new(attack, hold, release, SampleRate::DEFAULT),
+            last_range: None,
         }
     }
 
@@ -68,6 +88,8 @@ impl GateCore {
     pub fn reset(&mut self) {
         self.envelope = 0.0;
         self.follower.reset();
+        // Ramp history is state like the envelope; see `CompressorCore::reset`.
+        self.last_range = None;
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
@@ -85,21 +107,40 @@ impl GateCore {
             .update_coefficients(attack, self.hold.load(), release);
     }
 
-    /// Compute gate gain (linear) for the given sidechain level, with an
-    /// optional per-sample threshold override (dB). `None` reads the atomic
-    /// (the fast path); `Some(db)` overrides it (the audio-rate modulation
-    /// path). No extra clamp — the setter stores threshold unclamped.
+    /// Read every block-rate control once, and move the range ramp's start to
+    /// this block's end.
     #[inline]
-    pub fn compute_gain_with_threshold(
+    pub fn begin_block(&mut self) -> GateBlock {
+        let range_to = self.range_db.load();
+        let range_from = self.last_range.unwrap_or(range_to);
+        self.last_range = Some(range_to);
+        GateBlock {
+            threshold: self.threshold_db.load(),
+            range_from,
+            range_to,
+        }
+    }
+
+    /// Gate gain (linear) for frame `i` of an `n`-frame block, given the
+    /// sidechain level and an optional per-sample threshold override (dB).
+    /// `None` uses the block's threshold (the fast path); `Some(db)` overrides
+    /// it — the audio-rate modulation path, which stays per sample. No extra
+    /// clamp — the setter stores threshold unclamped.
+    #[inline]
+    pub fn compute_gain(
         &mut self,
+        block: &GateBlock,
+        i: usize,
+        n: usize,
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
-        let threshold = threshold_override.unwrap_or_else(|| self.threshold_db.load());
+        let threshold = threshold_override.unwrap_or(block.threshold);
         self.envelope = sc_level;
         self.follower.step(input_db >= threshold);
-        compute_gate_gain(self.follower.value(), self.range_db.load()).get()
+        let range = ramp_db(block.range_from, block.range_to, i, n);
+        compute_gate_gain(self.follower.value(), range).get()
     }
 }
 
@@ -361,12 +402,13 @@ impl AudioUnit for GateNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.core.update_coefficients();
+        // A tick is a block of one: the controls are read once here too.
+        let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic.
         let threshold = self.threshold_port().map(|p| Db(input[p]));
-        let gain = self
-            .core
-            .compute_gain_with_threshold(sidechain_level_slice(input, ch), threshold);
+        let sc = sidechain_level_slice(input, ch);
+        let gain = self.core.compute_gain(&block, 0, 1, sc, threshold);
         for c in 0..ch {
             output[c] = input[c] * gain;
         }
@@ -374,17 +416,19 @@ impl AudioUnit for GateNode {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.core.update_coefficients();
+        let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
         let threshold_port = self.threshold_port();
 
-        for i in 0..size {
+        // Detector sample-outer (a recursive envelope with a hold counter),
+        // apply channel-outer over planar slices — see `CompressorNode::process`.
+        let mut gains = [0.0f32; MAX_BUFFER_SIZE];
+        for (i, g) in gains[..size].iter_mut().enumerate() {
             let sc = sidechain_level_buffer(input, ch, i);
             let threshold = threshold_port.map(|p| Db(input.at_f32(p, i)));
-            let gain = self.core.compute_gain_with_threshold(sc, threshold);
-            for c in 0..ch {
-                output.set_f32(c, i, input.at_f32(c, i) * gain);
-            }
+            *g = self.core.compute_gain(&block, i, size, sc, threshold);
         }
+        apply_gain_lane(&gains[..size], ch, input, output);
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {

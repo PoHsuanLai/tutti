@@ -4,7 +4,9 @@
 //! than in any one processor, so a compressor and a gate measure a signal the
 //! same way and pin silence at the same floor.
 
-use tutti_core::{Amplitude, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
+use tutti_core::{
+    Amplitude, BufferMut, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds,
+};
 
 /// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
 ///
@@ -37,6 +39,44 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
         level = level.max(src.abs());
     }
     level
+}
+
+/// The value at frame `i` of an `n`-frame linear ramp from `from` to `to`, in
+/// dB.
+///
+/// Frame `i` sits `(i + 1) / n` of the way along, so the block's **last frame
+/// is exactly `to`** — returned directly rather than computed, because
+/// `from + (to - from) * 1.0` can round past `to`, and the next block starts
+/// from `to`. A held value (`from == to`) returns `to` bit for bit at every
+/// frame, which is what keeps a node whose controls never move identical to
+/// one that read them per sample. A tick is `n == 1`: the new value, at once.
+#[inline]
+pub(crate) fn ramp_db(from: Db, to: Db, i: usize, n: usize) -> Db {
+    if from == to || i + 1 >= n {
+        to
+    } else {
+        let t = (i + 1) as f32 / n as f32;
+        Db(from.get() + (to.get() - from.get()) * t)
+    }
+}
+
+/// Apply a per-frame gain lane to the first `ch` channels, channel-outer over
+/// planar slices: `output[c][i] = input[c][i] * gains[i]`.
+///
+/// The dynamics processors compute one linked gain per frame (the detector is
+/// sample-outer by nature — a recursive envelope) and apply it to every
+/// channel; doing the apply as a slice multiply per channel is the memoryless
+/// half, and the half that vectorizes.
+#[inline]
+pub(crate) fn apply_gain_lane(gains: &[f32], ch: usize, input: &BufferRef, output: &mut BufferMut) {
+    let n = gains.len();
+    for c in 0..ch {
+        let x = &input.channel_f32(c)[..n];
+        let y = &mut output.channel_f32_mut(c)[..n];
+        for ((y, &x), &g) in y.iter_mut().zip(x).zip(gains) {
+            *y = x * g;
+        }
+    }
 }
 
 /// Amplitude as decibels, for the dynamics detectors.

@@ -2,16 +2,16 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, MAX_BUFFER_SIZE};
 use tutti_types::ChannelLayout;
 
 use super::envelope::EnvelopeFollower;
 use super::params::{AttackRelease, ThresholdParams};
 use super::utils::{
-    amplitude_to_db, compute_compressor_gain_reduction, db_to_amplitude, sidechain_level_buffer,
-    sidechain_level_slice,
+    amplitude_to_db, apply_gain_lane, compute_compressor_gain_reduction, db_to_amplitude, ramp_db,
+    sidechain_level_buffer, sidechain_level_slice,
 };
-use tutti_core::{Amplitude, CompressionRatio, Db, Param, Seconds, Tail};
+use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -23,6 +23,28 @@ pub(super) struct CompressorCore {
 
     envelope: f32,
     follower: EnvelopeFollower,
+    /// The makeup gain the previous block ended on, the start of this block's
+    /// ramp. `None` until the first block, which then starts on its own value
+    /// — a node has no "previous" makeup to ramp in from.
+    last_makeup: Option<Db>,
+}
+
+/// The controls one block runs on, read from their atomics **once** at the
+/// top of `process` / `tick`.
+///
+/// Four atomic loads per sample used to sit inside the gain computation. The
+/// detector-side three (threshold, knee, ratio) are held for the block: they
+/// decide a *target* reduction that the attack/release follower then smooths,
+/// so a step between blocks reaches the output already ramped by the envelope.
+/// Makeup is not smoothed by anything — it multiplies the output directly — so
+/// it ramps linearly from the previous block's value to this one's.
+#[derive(Clone, Copy)]
+pub(super) struct CompressorBlock {
+    threshold: Db,
+    knee: Db,
+    ratio: CompressionRatio,
+    makeup_from: Db,
+    makeup_to: Db,
 }
 
 impl CompressorCore {
@@ -50,6 +72,7 @@ impl CompressorCore {
             makeup_db: Param::new(Db(0.0)),
             envelope: 0.0,
             follower: EnvelopeFollower::new(attack, release, SampleRate::DEFAULT),
+            last_makeup: None,
         }
     }
 
@@ -78,6 +101,10 @@ impl CompressorCore {
     pub fn reset(&mut self) {
         self.envelope = 0.0;
         self.follower.reset();
+        // Ramp history is state like the envelope: a reset node starts its
+        // next block on the current makeup rather than ramping in from a
+        // value it held before the discontinuity.
+        self.last_makeup = None;
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
@@ -93,25 +120,46 @@ impl CompressorCore {
         self.follower.update_coefficients(attack, release);
     }
 
-    /// Compute compressor gain (linear) for the given sidechain level, with an
-    /// optional per-sample threshold override (dB). `None` reads the atomic
-    /// (the fast path); `Some(db)` overrides it (the audio-rate modulation
-    /// path). The override is clamped the same way [`CompressorNode::set_threshold`]
-    /// would store it (no extra clamp — threshold has no min/max in the setter).
+    /// Read every block-rate control once, and move the makeup ramp's start
+    /// to this block's end.
     #[inline]
-    pub fn compute_gain_with_threshold(
+    pub fn begin_block(&mut self) -> CompressorBlock {
+        let (threshold, knee) = self.threshold.load();
+        let makeup_to = self.makeup_db.load();
+        let makeup_from = self.last_makeup.unwrap_or(makeup_to);
+        self.last_makeup = Some(makeup_to);
+        CompressorBlock {
+            threshold,
+            knee,
+            ratio: self.ratio.load(),
+            makeup_from,
+            makeup_to,
+        }
+    }
+
+    /// Compressor gain (linear) for frame `i` of an `n`-frame block, given the
+    /// sidechain level and an optional per-sample threshold override (dB).
+    /// `None` uses the block's threshold (the fast path); `Some(db)` overrides
+    /// it — the audio-rate modulation path, which stays per sample because it
+    /// is an audio signal, not an atomic. No extra clamp: threshold has no
+    /// min/max in the setter.
+    #[inline]
+    pub fn compute_gain(
         &mut self,
+        block: &CompressorBlock,
+        i: usize,
+        n: usize,
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
-        let (atomic_threshold_db, knee_db) = self.threshold.load();
-        let threshold_db = threshold_override.unwrap_or(atomic_threshold_db);
+        let threshold_db = threshold_override.unwrap_or(block.threshold);
         let target_reduction =
-            compute_compressor_gain_reduction(input_db, threshold_db, self.ratio.load(), knee_db);
+            compute_compressor_gain_reduction(input_db, threshold_db, block.ratio, block.knee);
         let gain_reduction = self.follower.smooth(target_reduction.get());
         self.envelope = sc_level;
-        db_to_amplitude(-gain_reduction + self.makeup_db.load().get()).get()
+        let makeup = ramp_db(block.makeup_from, block.makeup_to, i, n);
+        db_to_amplitude(-gain_reduction + makeup.get()).get()
     }
 }
 
@@ -402,13 +450,15 @@ impl AudioUnit for CompressorNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.core.update_coefficients();
+        // A tick is a block of one: the controls are read once here too, and
+        // the makeup ramp lands on its end point in its only frame.
+        let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic; the atomic
         // carries the base for the fast path / UI handle.
         let threshold = self.threshold_port().map(|p| Db(input[p]));
-        let gain = self
-            .core
-            .compute_gain_with_threshold(sidechain_level_slice(input, ch), threshold);
+        let sc = sidechain_level_slice(input, ch);
+        let gain = self.core.compute_gain(&block, 0, 1, sc, threshold);
         for c in 0..ch {
             output[c] = input[c] * gain;
         }
@@ -416,17 +466,22 @@ impl AudioUnit for CompressorNode {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.core.update_coefficients();
+        let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
         let threshold_port = self.threshold_port();
 
-        for i in 0..size {
+        // The detector is a recursive envelope, so it runs sample-outer into a
+        // per-block gain lane; the gain is then applied channel-outer over
+        // planar slices, a memoryless multiply the compiler can vectorize.
+        // `size` is at most `MAX_BUFFER_SIZE` (a buffer's fixed width), so the
+        // lane lives on the stack.
+        let mut gains = [0.0f32; MAX_BUFFER_SIZE];
+        for (i, g) in gains[..size].iter_mut().enumerate() {
             let sc = sidechain_level_buffer(input, ch, i);
             let threshold = threshold_port.map(|p| Db(input.at_f32(p, i)));
-            let gain = self.core.compute_gain_with_threshold(sc, threshold);
-            for c in 0..ch {
-                output.set_f32(c, i, input.at_f32(c, i) * gain);
-            }
+            *g = self.core.compute_gain(&block, i, size, sc, threshold);
         }
+        apply_gain_lane(&gains[..size], ch, input, output);
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {

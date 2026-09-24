@@ -193,7 +193,7 @@ pub type ClickState = ClickSettings;
 ///
 /// Inputs: the beat, on [`BEAT_PORTS`] ports — wire them from the
 /// [`TransportClock`](super::TransportClock)'s outputs 0 and 1. Outputs: the
-/// click, stereo. See the [module docs](self) for why the beat is a signal here.
+/// click, stereo. The beat arrives as a signal so each onset starts on its exact frame.
 ///
 /// Takes the live [`Transport`] concretely rather than a
 /// [`Timeline`](super::Timeline): the
@@ -501,7 +501,7 @@ impl AudioUnit for ClickNode {
     /// sample, so an onset starts on the frame whose beat first reaches it rather
     /// than on the next block boundary. That read is two port loads, not an
     /// atomic, and the onset test behind it is two compares except once per
-    /// notated beat — see [`advance_to`](Self::advance_to).
+    /// notated beat — see `advance_to`.
     ///
     /// This is *not* bit-identical to N calls of `tick` in general — `tick`
     /// re-reads the mode, the transport flags, and the volume per sample, so a UI

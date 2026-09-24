@@ -67,6 +67,14 @@ impl ExponentialSmoother {
         next
     }
 
+    /// The running value, in whichever space the caller steps it in (see
+    /// [`seed_at`](Self::seed_at) for why it is a bare `f32`). Already
+    /// wrapped when stepped with [`process_angle`](Self::process_angle).
+    #[inline]
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
     /// Seed the running value directly, discarding whatever ramp was in
     /// flight.
     ///

@@ -97,7 +97,7 @@ use tutti_spatial::VbapPannerNode;
 /// panner promises, and the missing half is the one that fails silently.
 fn gains_at(node: &mut VbapPannerNode, azimuth_deg: f32) -> Vec<f32> {
     node.set_position(azimuth_deg, 0.0f32);
-    // Width 0 takes `process_stereo_into`'s mono-fold branch, so a [1, 1] frame
+    // Width 0 takes the panner's mono-fold branch (`frame_gains`), so a [1, 1] frame
     // arrives at the panner as exactly 1.0 and the outputs are the raw gains.
     node.set_width(0.0f32);
 
@@ -337,7 +337,7 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 
 /// Spread is applied on the stereo-width path, not silently dropped.
 ///
-/// `process_stereo_into`'s width>0 branch used to call the upstream solver
+/// The width>0 branch (now `frame_gains`) used to call the upstream solver
 /// directly and never reach `apply_spread`, so a spread set on a node fed any
 /// non-zero width did nothing at all — a parameter the inspector shows, the
 /// document saves and the engine ignores. Width and spread are orthogonal
@@ -347,8 +347,8 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 /// Checked on 5.1, where full spread has somewhere to spread *to*: it must
 /// light up more speakers than a point source at the same bearing does.
 ///
-/// Mutation: delete the two `apply_spread` calls from `process_stereo_into`'s
-/// width branch → fails, because both readings light the same speakers.
+/// Mutation: skip `apply_spread` in `source_gains`, which both branches share (the
+/// width branch included) → fails, because both readings light the same speakers.
 #[test]
 fn spread_reaches_the_stereo_width_path() {
     let mut node = VbapPannerNode::surround_5_1().unwrap();

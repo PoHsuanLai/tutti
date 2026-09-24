@@ -1,11 +1,12 @@
 use super::error::Result;
+use tutti_core::fold_frame_to_mono;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
 use tutti_core::{
     Azimuth, BufferMut, BufferRef, Elevation, Param, SampleRate, SignalFrame, Spread, StereoWidth,
 };
 
-use super::panner::VbapPanner;
+use super::panner::{BlockGains, VbapPanner};
 use crate::layout::speaker_channel_map;
 use crate::SpatialTarget;
 
@@ -73,10 +74,17 @@ pub struct VbapPannerNode {
     /// scales the SIDE component against the mid. See [`StereoWidth`].
     width: Param<StereoWidth>,
     sample_rate: SampleRate,
-    scratch_output: Vec<f32>,
-    /// Gain-index → output-channel scatter map (see [`crate::layout`]).
-    /// Precomputed per layout so the RT path just indexes it.
-    channel_map: Vec<usize>,
+    /// Output-channel → speaker gather map, the inverse of the layout's
+    /// speaker → file-channel map (see [`crate::layout`]). `None` marks a
+    /// channel no speaker feeds — the LFE, which the panner leaves silent.
+    /// Precomputed per layout so the RT path just indexes it, and inverted so
+    /// the render can run channel-outer over each output's planar slice.
+    speaker_of_channel: Vec<Option<usize>>,
+    /// The gains the previous block ended on, which this block ramps away
+    /// from. `None` until the first block after construction, a clone or a
+    /// [`reset`](AudioUnit::reset): the ramp then starts from the smoother's
+    /// current position instead, so there is no stale vector to glide from.
+    ramp_from: Option<BlockGains>,
 }
 
 impl Clone for VbapPannerNode {
@@ -109,8 +117,10 @@ impl Clone for VbapPannerNode {
             spread: self.spread.handle(),
             width: self.width.handle(),
             sample_rate: self.sample_rate,
-            scratch_output: vec![0.0; self.layout.count() as usize],
-            channel_map: self.channel_map.clone(),
+            speaker_of_channel: self.speaker_of_channel.clone(),
+            // The clone's smoother is fresh, so its ramp must start from it
+            // rather than from the original's last gains.
+            ramp_from: None,
         }
     }
 }
@@ -199,8 +209,8 @@ impl VbapPannerNode {
             spread: Param::new(Spread::POINT),
             width: Param::new(StereoWidth::NATURAL),
             sample_rate: SampleRate::SR_48K,
-            scratch_output: vec![0.0; layout.count() as usize],
-            channel_map: speaker_channel_map(layout),
+            speaker_of_channel: speaker_of_channel(layout),
+            ramp_from: None,
         }
     }
 
@@ -261,6 +271,89 @@ impl VbapPannerNode {
         self.panner.set_position(azimuth, elevation);
         self.panner.set_spread(spread);
     }
+
+    /// The ramp for a block of `frames`: from where the previous block ended
+    /// to the gains at this block's last frame.
+    ///
+    /// Everything the solve depends on — target, spread, width — is read here,
+    /// once per block. The end point is remembered as the next block's start,
+    /// which is what keeps consecutive blocks continuous: a block boundary is
+    /// a point on the ramp, never a step.
+    fn block_gains(&mut self, frames: usize) -> (BlockGains, BlockGains) {
+        self.sync_position();
+        let width = self.width.load();
+        let from = match self.ramp_from {
+            Some(gains) => gains,
+            None => self.panner.gains_now(width),
+        };
+        let to = self.panner.solve_block(width, frames);
+        self.ramp_from = Some(to);
+        (from, to)
+    }
+}
+
+/// Invert the layout's speaker → file-channel map into channel → speaker.
+///
+/// A later speaker mapped to the same channel wins, matching the scatter this
+/// replaced (which wrote speakers in order). Allocates — construction only.
+fn speaker_of_channel(layout: ChannelLayout) -> Vec<Option<usize>> {
+    let channels = layout.count() as usize;
+    let mut inverse = vec![None; channels];
+    for (speaker, &ch) in speaker_channel_map(layout).iter().enumerate() {
+        if ch < channels {
+            inverse[ch] = Some(speaker);
+        }
+    }
+    inverse
+}
+
+/// Render one output channel for one block: speaker `speaker`'s gain ramped
+/// linearly from `from` to `to`, applied to the stereo pair.
+///
+/// Frame `i` of `n` uses `to - (to - from) * (n - 1 - i) / n`, so the ramp
+/// starts one step past `from` (which the previous block already played)
+/// and its **last frame is exactly `to`** — written as a subtraction of a
+/// zero term, which is exact for any `from`, rather than
+/// `from + (to - from) * 1.0`, which is exact only when the two are within a
+/// factor of two. That is what makes a one-frame block (`tick`) the old
+/// per-frame solver bit for bit, and a block edge the exact solve.
+///
+/// When both ends came from the mono-fold branch the pair is folded exactly
+/// as before (`fold(l, r) * g`); otherwise each end is expressed as a (left,
+/// right) gain pair — [`BlockGains::pair`] — so a width crossing the
+/// mono-fold threshold between blocks crossfades instead of stepping.
+#[inline]
+fn render_channel(
+    from: &BlockGains,
+    to: &BlockGains,
+    speaker: Option<usize>,
+    left: &[f32],
+    right: &[f32],
+    out: &mut [f32],
+) {
+    let Some(s) = speaker else {
+        out.fill(0.0);
+        return;
+    };
+    let n = out.len();
+    let inv_n = 1.0 / n as f32;
+    let remaining = |i: usize| (n - 1 - i) as f32 * inv_n;
+    if from.mono && to.mono {
+        let (g_from, g_to) = (from.a[s], to.a[s]);
+        let delta = g_to - g_from;
+        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
+            let gain = g_to - delta * remaining(i);
+            *o = fold_frame_to_mono(&[l, r]) * gain;
+        }
+    } else {
+        let (a_from, b_from) = from.pair(s);
+        let (a_to, b_to) = to.pair(s);
+        let (da, db) = (a_to - a_from, b_to - b_from);
+        for (i, ((o, &l), &r)) in out.iter_mut().zip(left).zip(right).enumerate() {
+            let t = remaining(i);
+            *o = l * (a_to - da * t) + r * (b_to - db * t);
+        }
+    }
 }
 
 impl AudioUnit for VbapPannerNode {
@@ -297,9 +390,13 @@ impl AudioUnit for VbapPannerNode {
     /// that pans nowhere, with no error raised. Pushing the target into the
     /// panner before seeding is what makes the first block after a reset
     /// already correct, which is the whole point of seating the smoother.
+    ///
+    /// Dropping `ramp_from` is the other half of the same seating: the
+    /// previous block's gains belong to the ramp being discarded.
     fn reset(&mut self) {
         self.sync_position();
         self.panner.reset_state();
+        self.ramp_from = None;
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -307,64 +404,43 @@ impl AudioUnit for VbapPannerNode {
         self.panner.set_sample_rate(sample_rate);
     }
 
+    /// A block of one frame. The ramp collapses to its end point, which is the
+    /// exact per-frame solve, so this matches the old per-sample path bit for
+    /// bit (pinned by `tests/vbap_block_gains.rs`).
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.sync_position();
-
-        let width = self.width.load();
-
         let left = input.first().copied().unwrap_or(0.0);
         let right = input.get(1).copied().unwrap_or(left);
-        // Same speaker→file-channel scatter as `process` (see there): pan into
-        // scratch in speaker order, then map to output channels, LFE left silent.
-        self.panner
-            .process_stereo_into(left, right, width, &mut self.scratch_output);
-        for slot in output.iter_mut() {
-            *slot = 0.0;
-        }
-        for (speaker, &ch) in self.channel_map.iter().enumerate() {
-            if ch < output.len() {
-                output[ch] = self.scratch_output[speaker];
-            }
+        let (from, to) = self.block_gains(1);
+        for (ch, out) in output.iter_mut().enumerate() {
+            let speaker = self.speaker_of_channel.get(ch).copied().flatten();
+            render_channel(
+                &from,
+                &to,
+                speaker,
+                &[left],
+                &[right],
+                core::slice::from_mut(out),
+            );
         }
     }
 
+    /// Solves the gains once for the block and ramps into them.
+    ///
+    /// Each output channel is rendered over its own planar slice, reading the
+    /// speaker that feeds it (LFE: none, so silence). The panner never feeds
+    /// LFE; `build_vbap_mix` feeds it a separate low-passed send.
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.sync_position();
-
-        let width = self.width.load();
-        let num_outputs = self.layout.count() as usize;
-
-        // scratch_output is pre-sized to num_outputs in from_panner and Clone.
-        // num_outputs is fixed for the node's lifetime, so this never grows at RT.
-        debug_assert_eq!(self.scratch_output.len(), num_outputs);
-
-        // Hoisted once per block: is a second input channel present?
-        let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();
-
-        for i in 0..size {
-            let left = input.at_f32(0, i);
-            let right = if has_stereo_in {
-                input.at_f32(1, i)
-            } else {
-                left
-            };
-
-            // The panner writes its VBAP gains in *speaker* order into
-            // scratch_output[0..num_speakers]. Scatter each to its file channel
-            // via channel_map (which skips LFE), zeroing every output channel
-            // first so unmapped channels (LFE) stay silent — the panner never
-            // feeds LFE; build_vbap_mix feeds it a separate low-passed send.
-            self.panner
-                .process_stereo_into(left, right, width, &mut self.scratch_output);
-
-            for ch in 0..num_outputs {
-                output.set_f32(ch, i, 0.0);
-            }
-            for (speaker, &ch) in self.channel_map.iter().enumerate() {
-                if ch < num_outputs {
-                    output.set_f32(ch, i, self.scratch_output[speaker]);
-                }
-            }
+        let (from, to) = self.block_gains(size);
+        let left = &input.channel_f32(0)[..size];
+        // A single input channel is centred: it feeds both virtual sources.
+        let right = if ChannelLayout::from(input.channels()).is_multi() {
+            &input.channel_f32(1)[..size]
+        } else {
+            left
+        };
+        for ch in 0..self.layout.count() as usize {
+            let out = &mut output.channel_f32_mut(ch)[..size];
+            render_channel(&from, &to, self.speaker_of_channel[ch], left, right, out);
         }
     }
 

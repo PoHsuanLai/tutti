@@ -1,8 +1,27 @@
 //! Metronome click node — click sounds synced to the transport.
 //!
-//! The click node reads position and live-session flags off the concrete
-//! [`Transport`]'s shared atomics, and its own settings (volume, meter, mode)
-//! from [`ClickSettings`].
+//! The click node reads the playhead **per sample** from the
+//! [`TransportClock`](super::TransportClock)'s two beat ports, the live-session
+//! flags off the concrete [`Transport`]'s shared atomics, and its own settings
+//! (volume, meter, mode) from [`ClickSettings`].
+//!
+//! # Why the beat arrives on ports, not through the transport's atomic
+//!
+//! The transport's `beat` atomic is the clock's *writeback*: stored once, at the
+//! end of the clock's block, as the beat the **next** block starts on. A node
+//! reading it gets one value per block, so a click could only ever start on a
+//! block boundary — up to a whole block (64 frames, 1.3 ms at 48 kHz) of jitter
+//! on every beat. Worse, which block that value belongs to depended on whether
+//! fundsp happened to order the clock before or after the click: two unconnected
+//! nodes have no defined order, so it read either this block's start or the
+//! next one's.
+//!
+//! Taking the beat as an input fixes both. The edge makes the clock run first,
+//! and the ports carry the playhead of every sample — including a loop wrap or
+//! a seek landing mid-block — so an onset starts on the exact frame whose beat
+//! first reaches it. It is the convention every other beat-driven node already
+//! uses (see [`BEAT_PORTS`]). The cost is that the click must be **wired**:
+//! with nothing on its inputs it reads beat 0 forever and clicks once.
 //!
 //! # Meter arrives here, not through the transport
 //!
@@ -11,6 +30,7 @@
 //! keeps meter a layer *over* the engine: `TransportSettings`, `Timeline`, and
 //! the graph know nothing about bars.
 
+use super::state::{beat_from_ports, BEAT_PORTS};
 use super::Transport;
 use crate::{AtomicF32, AtomicU8, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame};
 use std::sync::Arc;
@@ -171,7 +191,9 @@ pub type ClickState = ClickSettings;
 
 /// The metronome, as a graph node.
 ///
-/// Outputs stereo click sounds synced to the transport beat.
+/// Inputs: the beat, on [`BEAT_PORTS`] ports — wire them from the
+/// [`TransportClock`](super::TransportClock)'s outputs 0 and 1. Outputs: the
+/// click, stereo. The beat arrives as a signal so each onset starts on its exact frame.
 ///
 /// Takes the live [`Transport`] concretely rather than a
 /// [`Timeline`](super::Timeline): the
@@ -199,6 +221,18 @@ pub struct ClickNode {
     /// within one segment. `Option` rather than a sentinel value, since every
     /// finite beat — including negative pre-roll — is a legitimate onset.
     last_click_onset: Option<Beat>,
+    /// Where the notated beat latched in `last_click_onset` ends: the next
+    /// onset, or an earlier meter change. While the playhead stays in
+    /// `[last_click_onset, latched_until)` nothing can retrigger, so the
+    /// per-sample onset check is two compares instead of a `bar_at`.
+    ///
+    /// **A cache of the meter, so it is dropped at every block** (see
+    /// [`forget_latch`](Self::forget_latch)): a meter republished mid-beat must
+    /// be seen within one block, as it was when the beat was read per block,
+    /// not only once the playhead leaves a span the *old* meter drew.
+    ///
+    /// Meaningless while `last_click_onset` is `None`, and never read then.
+    latched_until: Beat,
 }
 
 impl ClickNode {
@@ -225,6 +259,7 @@ impl ClickNode {
             click_pos: 0,
             is_accent: false,
             last_click_onset: None,
+            latched_until: Beat(f64::NEG_INFINITY),
         }
     }
 
@@ -307,17 +342,28 @@ impl ClickNode {
     /// The index counts *notated* beats, not quarter notes: in 7/8 that is an
     /// eighth, so the metronome clicks seven times per bar rather than four.
     ///
-    /// Takes its three mutable fields individually rather than `&mut self`:
-    /// the meter arrives as a read lease borrowed from `self.settings`, so a
-    /// whole-`self` mutable borrow would collide with it at every call site.
+    /// Called once per **sample**, so the common case — still inside the beat
+    /// already latched — returns after two compares; `bar_at` runs only when the
+    /// playhead leaves that span, i.e. about once per notated beat.
+    ///
+    /// Takes its mutable fields individually rather than `&mut self`: the meter
+    /// arrives as a read lease borrowed from `self.settings`, so a whole-`self`
+    /// mutable borrow would collide with it at every call site.
     #[inline]
     fn advance_to(
         last_click_onset: &mut Option<Beat>,
+        latched_until: &mut Beat,
         click_pos: &mut usize,
         is_accent: &mut bool,
         meter: &MeterMap,
         beat: Beat,
     ) {
+        if let Some(onset) = *last_click_onset {
+            if beat >= onset && beat < *latched_until {
+                return;
+            }
+        }
+
         let position = meter.bar_at(beat);
 
         // Identify the beat by the *onset it belongs to*, not by a running
@@ -346,20 +392,56 @@ impl ClickNode {
             // moment the time signature is not 4/4.
             *is_accent = position.is_downbeat();
         }
+
+        // The latched beat ends at the next notated onset — or sooner, at a
+        // meter change, which may fall mid-beat (the bar before a change is
+        // simply short). Measured from the onset actually latched, so a
+        // within-epsilon non-change keeps the span it already had.
+        let latched = last_click_onset.unwrap_or(onset);
+        let next_onset = latched + position.signature.beat_length();
+        let changes = meter.changes();
+        let next_change = changes
+            .get(changes.partition_point(|c| c.beat <= latched))
+            .map(|c| c.beat);
+        *latched_until = match next_change {
+            Some(change) if change < next_onset => change,
+            _ => next_onset,
+        };
+    }
+
+    /// Drop the cached span, so the next onset check consults the meter.
+    ///
+    /// Called at the top of every block — `tick` included, being a one-frame
+    /// block — which is all it takes for a republished meter to reach the node:
+    /// the meter lease is re-read per block anyway, and this is the only thing
+    /// derived from it that outlives one.
+    #[inline]
+    fn forget_latch(&mut self) {
+        self.latched_until = Beat(f64::NEG_INFINITY);
     }
 
     /// One sample of the click envelope, or silence once it has run out.
+    ///
+    /// Over the playback fields rather than `&mut self`, for the reason
+    /// [`advance_to`](Self::advance_to) gives: the block loop holds the meter
+    /// lease borrowed from `self.settings` while it calls this.
     #[inline]
-    fn next_sample(&mut self, volume: Amplitude) -> f32 {
-        let buffer = if self.is_accent {
-            &self.click_accent
+    fn next_sample(
+        click_normal: &[f32],
+        click_accent: &[f32],
+        click_pos: &mut usize,
+        is_accent: bool,
+        volume: Amplitude,
+    ) -> f32 {
+        let buffer = if is_accent {
+            click_accent
         } else {
-            &self.click_normal
+            click_normal
         };
 
-        if self.click_pos < buffer.len() {
-            let sample = buffer[self.click_pos] * volume.get();
-            self.click_pos += 1;
+        if *click_pos < buffer.len() {
+            let sample = buffer[*click_pos] * volume.get();
+            *click_pos += 1;
             sample
         } else {
             0.0
@@ -368,8 +450,9 @@ impl ClickNode {
 }
 
 impl AudioUnit for ClickNode {
+    /// The beat, whole then fraction — the clock's two outputs.
     fn inputs(&self) -> usize {
-        0
+        BEAT_PORTS
     }
 
     fn outputs(&self) -> usize {
@@ -377,7 +460,7 @@ impl AudioUnit for ClickNode {
     }
 
     #[inline]
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         if !self.should_play() {
             self.go_silent();
             output[0] = 0.0;
@@ -385,16 +468,23 @@ impl AudioUnit for ClickNode {
             return;
         }
 
-        let beat = self.transport.settings.beat();
+        self.forget_latch();
         Self::advance_to(
             &mut self.last_click_onset,
+            &mut self.latched_until,
             &mut self.click_pos,
             &mut self.is_accent,
             &self.settings.meter(),
-            beat,
+            beat_from_ports(input[0], input[1]),
         );
 
-        let sample = self.next_sample(self.settings.volume());
+        let sample = Self::next_sample(
+            &self.click_normal,
+            &self.click_accent,
+            &mut self.click_pos,
+            self.is_accent,
+            self.settings.volume(),
+        );
         output[0] = sample;
         output[1] = sample;
     }
@@ -407,17 +497,21 @@ impl AudioUnit for ClickNode {
     /// volume, and meter to once per buffer is the same shape `TransportClock`
     /// uses, and is what makes reading a `MeterMap` here affordable at all.
     ///
-    /// The beat is likewise read once: it is published by `TransportClock` at the
-    /// end of each block, so it does not change mid-buffer anyway.
+    /// The beat is **not** hoisted: it is read from the input ports every
+    /// sample, so an onset starts on the frame whose beat first reaches it rather
+    /// than on the next block boundary. That read is two port loads, not an
+    /// atomic, and the onset test behind it is two compares except once per
+    /// notated beat — see `advance_to`.
     ///
     /// This is *not* bit-identical to N calls of `tick` in general — `tick`
     /// re-reads the mode, the transport flags, and the volume per sample, so a UI
     /// write lands mid-block there and at the next block boundary here. That is
     /// the intended trade and the granularity is bounded: `Engine::process_segment`
     /// already chops the callback into `MAX_BUFFER_SIZE` chunks, so the worst-case
-    /// lag is ~1.3 ms at 48 kHz. The two agree exactly whenever transport state is
-    /// stable across the block, which is what the equivalence test pins.
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+    /// lag is ~1.3 ms at 48 kHz. The two agree exactly whenever those settings are
+    /// stable across the block — the beat may move freely — which is what the
+    /// equivalence test pins.
+    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         if !self.should_play() {
             self.go_silent();
             for channel in 0..2 {
@@ -428,18 +522,27 @@ impl AudioUnit for ClickNode {
             return;
         }
 
+        self.forget_latch();
         let volume = self.settings.volume();
-        let beat = self.transport.settings.beat();
-        Self::advance_to(
-            &mut self.last_click_onset,
-            &mut self.click_pos,
-            &mut self.is_accent,
-            &self.settings.meter(),
-            beat,
-        );
+        // One lease for the whole block — `RtPublish::read` is never per sample.
+        let meter = self.settings.meter();
 
         for i in 0..size {
-            let sample = self.next_sample(volume);
+            Self::advance_to(
+                &mut self.last_click_onset,
+                &mut self.latched_until,
+                &mut self.click_pos,
+                &mut self.is_accent,
+                &meter,
+                beat_from_ports(input.at_f32(0, i), input.at_f32(1, i)),
+            );
+            let sample = Self::next_sample(
+                &self.click_normal,
+                &self.click_accent,
+                &mut self.click_pos,
+                self.is_accent,
+                volume,
+            );
             output.set_f32(0, i, sample);
             output.set_f32(1, i, sample);
         }
@@ -488,6 +591,8 @@ impl AudioUnit for ClickNode {
 
 #[cfg(test)]
 mod tests {
+    use super::super::clock::split_beat;
+    use super::super::{beats_per_sample, ClockLinks, TransportClock};
     use super::*;
     use crate::dsp::{BufferArray, U2};
     use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
@@ -506,10 +611,36 @@ mod tests {
     /// `Frame` the way [`AudioNode::tick`] did. The tests below assert on
     /// `output[0]` / `output[1]` and read better that way, so the shape is
     /// restored here instead of at eighteen call sites.
+    ///
+    /// The beat ports carry `transport.settings.beat()` — standing in for a
+    /// wired clock — so a test positions the playhead with `set_beat` and the
+    /// node sees exactly that on its inputs.
     fn tick(node: &mut ClickNode) -> [f32; 2] {
+        let (whole, frac) = split_beat(node.transport.settings.beat());
         let mut out = [0.0f32; 2];
-        AudioUnit::tick(node, &[], &mut out);
+        AudioUnit::tick(node, &[whole, frac], &mut out);
         out
+    }
+
+    /// The beat ports for one block, holding `beat` on every frame.
+    fn constant_beat(beat: Beat) -> BufferArray<U2> {
+        let (whole, frac) = split_beat(beat);
+        let mut ports = BufferArray::<U2>::new();
+        for i in 0..crate::MAX_BUFFER_SIZE {
+            ports.set_f32(0, i, whole);
+            ports.set_f32(1, i, frac);
+        }
+        ports
+    }
+
+    /// A clock at `bpm` starting at `start`, sharing nothing with any live
+    /// transport — the source of a realistic, moving beat signal.
+    fn clock_at(bpm: f64, start: f64, sample_rate: f64) -> TransportClock {
+        let links = ClockLinks::bare(
+            Arc::new(crate::AtomicF64::new(bpm)),
+            Arc::new(crate::AtomicBool::new(false)),
+        );
+        TransportClock::new(links, sample_rate).starting_at(Beat(start))
     }
 
     fn make_click() -> (Transport, Arc<ClickSettings>, ClickNode) {
@@ -714,6 +845,103 @@ mod tests {
         assert!(onsets.contains(&Beat(10.5)), "the change begins a bar");
     }
 
+    /// A meter change that lands *inside* a notated beat still clicks its
+    /// downbeat, on its frame.
+    ///
+    /// Within a block the onset check skips `bar_at` while the playhead stays in
+    /// the latched beat's span, so that span must end at the change rather than
+    /// at the next onset of the old meter — a change always begins a bar, and
+    /// here it begins one half-way through a quarter note. Driven through
+    /// `process` with the change mid-block, because the span is dropped at every
+    /// block boundary and `tick` is a one-frame block: a `tick`-driven version
+    /// of this test passes with or without the cap.
+    ///
+    /// Mutation: ending the latched span at `onset + beat_length` alone, without
+    /// the cap at the next change, keeps beat 2.5 inside `[2.0, 3.0)` for the
+    /// rest of the block, so the downbeat does not click and every assertion
+    /// fails.
+    #[test]
+    fn a_mid_beat_meter_change_clicks_its_downbeat() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_volume(1.0);
+        settings.set_meter(Arc::new(MeterMap::new([
+            MeterChange::new(Beat(0.0), TimeSignature::default()),
+            MeterChange::new(
+                Beat(2.5),
+                TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+            ),
+        ])));
+
+        // Frame `i` carries beat `2 + i/100`, so the change at 2.5 is frame 50.
+        let mut ports = BufferArray::<U2>::new();
+        for i in 0..crate::MAX_BUFFER_SIZE {
+            let (whole, frac) = split_beat(Beat(2.0 + i as f64 / 100.0));
+            ports.set_f32(0, i, whole);
+            ports.set_f32(1, i, frac);
+        }
+        // Beat 2's click has already played out, so only the change can sound.
+        node.last_click_onset = Some(Beat(2.0));
+        node.click_pos = node.click_normal.len();
+
+        let mut out = BufferArray::<U2>::new();
+        node.process(64, &ports.buffer_ref(), &mut out.buffer_mut());
+
+        assert_eq!(
+            node.last_click_onset,
+            Some(Beat(2.5)),
+            "the change's downbeat is a new onset"
+        );
+        assert!(node.is_accent, "and it is a downbeat");
+        let first_sound = (0..64).position(|i| out.at_f32(0, i) != 0.0);
+        // The click's first frame is exactly zero, so it sounds one frame after
+        // its onset — see `click_onset_is_sample_accurate_within_the_block`.
+        assert_eq!(first_sound, Some(51), "clicked on the change's frame");
+    }
+
+    /// A meter published while a beat is latched is in force from the next
+    /// block, not from whenever the playhead leaves the span the old meter drew.
+    ///
+    /// Mutation: removing `forget_latch` from `process` keeps the 4/4 span
+    /// `[2.0, 3.0)` across the publish, so the node still holds onset 2.0 after
+    /// the second block and fails.
+    #[test]
+    fn a_republished_meter_is_seen_within_one_block() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+
+        // Frame `i` of a block starting at `start` carries beat `start + i/100`.
+        let block_at = |start: f64| {
+            let mut ports = BufferArray::<U2>::new();
+            for i in 0..crate::MAX_BUFFER_SIZE {
+                let (whole, frac) = split_beat(Beat(start + i as f64 / 100.0));
+                ports.set_f32(0, i, whole);
+                ports.set_f32(1, i, frac);
+            }
+            ports
+        };
+        let mut out = BufferArray::<U2>::new();
+
+        // 4/4 (the default): 2.00..2.10 all belong to the quarter at 2.0.
+        node.process(10, &block_at(2.0).buffer_ref(), &mut out.buffer_mut());
+        assert_eq!(node.last_click_onset, Some(Beat(2.0)));
+
+        // 3/16: sixteenth-note beats, three to a 0.75-quarter bar. Beat 2.64
+        // falls in the sixteenth starting at 2.5 — inside the old span.
+        settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::new(BeatsPerBar::new(3), NoteValue::SIXTEENTH),
+        )])));
+        node.process(10, &block_at(2.64).buffer_ref(), &mut out.buffer_mut());
+        assert_eq!(
+            node.last_click_onset,
+            Some(Beat(2.5)),
+            "the new meter's beat must be the one latched"
+        );
+    }
+
     /// Pre-roll sits at negative beats, so the accent must be derived from the
     /// meter rather than from a cast — `(beat as u32)` turns -1 into
     /// 4294967295 and accents an arbitrary beat.
@@ -735,22 +963,46 @@ mod tests {
 
     /// `process` must render exactly what a `tick` loop would, since it exists
     /// only to hoist the per-block reads.
+    ///
+    /// The beat *moves* through the block and crosses an onset mid-block, so
+    /// this pins the per-sample onset path as well as the steady one: a
+    /// `process` that read the beat once per block would start the click on
+    /// frame 0 and diverge from `tick` there.
     #[test]
     fn process_matches_tick_sample_for_sample() {
         let (transport, settings, mut block_node) = make_click();
         playing(&transport);
         settings.set_mode(MetronomeMode::Always);
         settings.set_volume(1.0);
-        transport.settings.set_beat(2.0);
 
+        // 44.1 kHz at 120 BPM is 1/22050 beat per frame, so starting 20 frames
+        // before beat 2 puts that onset at frame 20 of the block.
+        let mut clock = clock_at(120.0, 2.0 - 20.0 / 22_050.0, 44_100.0);
+        let mut beats = BufferArray::<U2>::new();
+        const N: usize = 64;
+        clock.process(N, &BufferRef::new(&[]), &mut beats.buffer_mut());
+
+        // Latch the beat before it, as a transport rolling into this block
+        // would have, with its click already played out, so the onset at beat 2
+        // is the only sound in the block.
+        block_node.last_click_onset = Some(Beat(1.0));
+        block_node.click_pos = block_node.click_normal.len();
         let mut tick_node = block_node.clone();
 
-        const N: usize = 64;
         let mut buffer = BufferArray::<U2>::new();
-        block_node.process(N, &BufferRef::new(&[]), &mut buffer.buffer_mut());
+        block_node.process(N, &beats.buffer_ref(), &mut buffer.buffer_mut());
+        assert!(
+            (0..N).any(|i| buffer.at_f32(0, i) != 0.0),
+            "the onset must fall inside the block, or this compares silence"
+        );
 
         for i in 0..N {
-            let expected = tick(&mut tick_node);
+            let mut expected = [0.0f32; 2];
+            AudioUnit::tick(
+                &mut tick_node,
+                &[beats.at_f32(0, i), beats.at_f32(1, i)],
+                &mut expected,
+            );
             assert_eq!(
                 buffer.at_f32(0, i),
                 expected[0],
@@ -760,6 +1012,77 @@ mod tests {
                 buffer.at_f32(1, i),
                 expected[1],
                 "right channel diverged at sample {i}"
+            );
+        }
+    }
+
+    /// A click starts on the frame where the playhead reaches its onset — not
+    /// on the next block boundary — at more than one block size.
+    ///
+    /// D8 in design doc 013: the node read one beat per block from the clock's
+    /// writeback, so every click started on a block boundary, up to a block late.
+    ///
+    /// The expected frame is derived from tempo arithmetic alone, not from the
+    /// node: the clock emits `start + i·bps` on frame `i` (emit, then advance),
+    /// so the first frame at or past the onset is `ceil((onset − start) / bps)`.
+    /// `±1` absorbs the `f32` fraction port rounding across that boundary.
+    ///
+    /// Mutation: reading the beat from frame 0 of the ports for the whole block
+    /// (the old once-per-block read) moves the onset to the next block boundary
+    /// and fails at both block sizes: frame 2112 at 64 and 2120 at 40, against
+    /// 2103. (A second size that shared a boundary with the first would prove
+    /// nothing more, so 40 is chosen to land elsewhere.)
+    #[test]
+    fn click_onset_is_sample_accurate_within_the_block() {
+        const SR: f64 = 48_000.0;
+        const BPM: f64 = 137.0;
+        const START: f64 = 0.9;
+        const ONSET: f64 = 1.0;
+
+        for block in [64usize, 40] {
+            let transport = Transport::new(SR);
+            playing(&transport);
+            let settings = Arc::new(ClickSettings::new());
+            settings.set_mode(MetronomeMode::Always);
+            settings.set_volume(1.0);
+            let mut node = ClickNode::with_transport(transport, settings, SR);
+            // The click's first frame is exactly zero (`sin(0)` under a zero
+            // attack) and its second is not, so the onset is one before the
+            // first non-zero frame. Asserted, since the test leans on it.
+            assert_eq!(node.click_normal[0], 0.0);
+            assert_ne!(node.click_normal[1], 0.0);
+            // As if the transport had rolled through beat 0 already: the click
+            // under test is the one at beat 1, and beat 0's has played out.
+            node.last_click_onset = Some(Beat(0.0));
+            node.click_pos = node.click_normal.len();
+
+            let bps = beats_per_sample(BPM, SR).get();
+            let expected = ((ONSET - START) / bps).ceil() as usize;
+            assert_ne!(
+                expected % block,
+                0,
+                "the onset must land mid-block, or a block-quantised click passes"
+            );
+
+            let mut clock = clock_at(BPM, START, SR);
+            let mut left = Vec::new();
+            while left.len() < expected + 2 * block {
+                let mut beats = BufferArray::<U2>::new();
+                clock.process(block, &BufferRef::new(&[]), &mut beats.buffer_mut());
+                let mut out = BufferArray::<U2>::new();
+                node.process(block, &beats.buffer_ref(), &mut out.buffer_mut());
+                left.extend((0..block).map(|i| out.at_f32(0, i)));
+            }
+
+            let first_sound = left
+                .iter()
+                .position(|s| *s != 0.0)
+                .expect("the click at beat 1 must sound");
+            let onset = first_sound - 1;
+            assert!(
+                onset.abs_diff(expected) <= 1,
+                "block {block}: click started at frame {onset}, the beat reaches \
+                 {ONSET} at frame {expected}"
             );
         }
     }
@@ -819,10 +1142,15 @@ mod tests {
         // onsets fire, the accent alternates, and a whole click envelope plays
         // out across block boundaries.
         let mut rendered = Vec::with_capacity(8 * 64 * 2);
+        //
+        // The beat is held constant across each block on the ports. That is the
+        // schedule the reference was captured with — the node then read one
+        // beat per block from the transport — so the same samples must come
+        // out now that it reads the beat per frame.
         for block in 0..8 {
-            transport.settings.set_beat(f64::from(block) * 0.5);
+            let beats = constant_beat(Beat(f64::from(block) * 0.5));
             let mut buffer = BufferArray::<U2>::new();
-            node.process(64, &BufferRef::new(&[]), &mut buffer.buffer_mut());
+            node.process(64, &beats.buffer_ref(), &mut buffer.buffer_mut());
             for i in 0..64 {
                 rendered.push(buffer.at_f32(0, i));
                 rendered.push(buffer.at_f32(1, i));

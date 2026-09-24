@@ -118,13 +118,16 @@ fn engine_process_with_metronome_is_allocation_free() {
 
     let mut net = Net::new(0, 2);
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
-    net.push(Box::new(clock));
+    let clock_id = net.push(Box::new(clock));
 
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(1.0);
     let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
     let click_id = net.push(Box::new(click));
+    // The click reads the beat per sample off the clock's two ports.
+    net.connect(clock_id, 0, click_id, 0);
+    net.connect(clock_id, 1, click_id, 1);
     net.pipe_output(click_id);
 
     net.set_sample_rate(SampleRate(sample_rate));
@@ -143,10 +146,10 @@ fn engine_process_with_metronome_is_allocation_free() {
     }
 
     assert_no_alloc::assert_no_alloc(|| {
-        for i in 0..1_000 {
-            // Move the playhead so beat changes — and therefore the retrigger
-            // path — run inside the gate rather than only the steady state.
-            transport.settings.set_beat(i as f64 * 0.25);
+        for _ in 0..1_000 {
+            // The rolling clock moves the beat the click reads — ~21 beats over
+            // these ~10.7 s — so the retrigger path runs inside the gate rather
+            // than only the steady state.
             engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
         }
     });

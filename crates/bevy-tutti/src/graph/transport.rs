@@ -221,8 +221,10 @@ pub struct EngineNodes {
     /// }
     /// ```
     ///
-    /// **Nothing in this crate wires it.** bevy-tutti's own modulation reads the
-    /// beat per *frame* from [`TransportRes`] and pushes it into the driver (see
+    /// **This crate wires it to one node only: the [`click`](Self::click)**,
+    /// whose beat inputs `build_into` declares so every onset lands on its exact
+    /// frame. bevy-tutti's own modulation reads the beat per *frame* from
+    /// [`TransportRes`] and pushes it into the driver (see
     /// `modulation::driver`), trading sample accuracy for
     /// a scalar that ECS change detection can carry; a sink that wants the
     /// smooth form asks for a beat-evaluated curve instead. So this field exists
@@ -231,13 +233,20 @@ pub struct EngineNodes {
     pub clock: Entity,
     /// The [`ClickNode`](tutti_core::ClickNode) — the metronome.
     ///
-    /// Deliberately **unwired**: where the click lands is the host's
-    /// declaration, like every other source. A `pipe_output` here would read
-    /// like "mix the click into master" but overwrite every global output edge,
-    /// so the first soundfont to load would silently disconnect the metronome.
+    /// Its **outputs are deliberately unwired**: where the click lands is the
+    /// host's declaration, like every other source. A `pipe_output` here would
+    /// read like "mix the click into master" but overwrite every global output
+    /// edge, so the first soundfont to load would silently disconnect the
+    /// metronome.
     ///
     /// Declare it with [`MasterSources`](crate::graph::MasterSources), or feed
     /// it into a mixer with [`PortSources`](crate::graph::PortSources).
+    ///
+    /// Its **inputs are wired by the engine**: the entity is born with a
+    /// [`PortSources`](crate::graph::PortSources) taking the beat from
+    /// [`clock`](Self::clock)'s two ports, which is how each click starts on its
+    /// exact frame rather than on a block boundary. Replacing that component
+    /// re-points the metronome's beat; removing it leaves the click on beat 0.
     ///
     /// Volume, mode and meter are separate — those are atomics on
     /// [`MetronomeRes`], not graph edges.

@@ -95,8 +95,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
     let clock_id = net.push(Box::new(clock));
 
-    // Metronome. It only READS the transport (beat + rolling/recording), so it
-    // takes a read view, not a control handle.
+    // Metronome. It only READS the transport (rolling/recording), so it takes a
+    // read view, not a control handle; the beat itself arrives on its two input
+    // ports from the clock, declared below once both have entities.
     //
     // It is NOT wired to the output here, and must not be. `pipe_output` reads
     // like "mix the click into master" and is not what it does — it overwrites
@@ -246,10 +247,23 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // runs, they are otherwise unreachable: both carry `AudioNode` and nothing
     // else, so a query cannot tell them apart — and `PortSources` names sources
     // by `Entity`, so an unnameable node is an unwirable one. The clock exists
-    // precisely to be wired to, and the click is left unwired *so that* the host
-    // declares where it lands.
+    // precisely to be wired to, and the click's *output* is left unwired so that
+    // the host declares where it lands.
+    //
+    // The click's *inputs* are declared here: it takes the beat from the clock's
+    // two ports, per sample, so each click starts on the frame its beat lands on
+    // rather than on a block boundary. Declared rather than `net.connect`ed so
+    // the reconciler owns the edge like every other one — and the edge is also
+    // what orders the clock before the click, which two unconnected nodes do not
+    // get.
     let clock_entity = app.world_mut().spawn(tutti_core::AudioNode(clock_id)).id();
-    let click_entity = app.world_mut().spawn(tutti_core::AudioNode(click_id)).id();
+    let click_entity = app
+        .world_mut()
+        .spawn((
+            tutti_core::AudioNode(click_id),
+            crate::graph::PortSources::stereo_from(clock_entity),
+        ))
+        .id();
     app.insert_resource(EngineNodes {
         clock: clock_entity,
         click: click_entity,

@@ -5,7 +5,7 @@ which was extracted from Steinberg's SDK headers **before** any of our code was 
 That ordering is the point: a checklist derived from our implementation can only ever
 report that we do what we already do.
 
-**Scope: the format layer only** — `crates/tutti/crates/plugin/formats/tutti-vst3-host/`.
+**Scope: the format layer only** — `crates/plugin/formats/tutti-vst3-host/`.
 It says nothing about whether the engine above (`tutti-plugin`, `tutti-plugin-server`)
 can reach these capabilities. That seam is 13 trait methods wide and is a separate audit;
 a capability can be perfectly bound here and still be unreachable from the DAW. See the

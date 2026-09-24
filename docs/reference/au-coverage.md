@@ -5,7 +5,7 @@ extracted from Apple's SDK headers **before** any of our code was read. That ord
 point: a checklist derived from our implementation can only ever report that we do what we
 already do.
 
-**Scope: the format layer only** — `crates/tutti/crates/plugin/formats/tutti-au-host/`. The
+**Scope: the format layer only** — `crates/plugin/formats/tutti-au-host/`. The
 crate declares itself AUv2 (`lib.rs:1-4`), which turns out to matter for grading — see the
 AUv3 finding.
 

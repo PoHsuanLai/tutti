@@ -24,7 +24,7 @@ from seven more.
 
 This is not a style preference. The codebase has already made the argument for
 sum types over collapsed answers, repeatedly and in writing —
-[`ParamRange`](../../crates/tutti/crates/plugin/tutti-plugin-types/src/parameters.rs),
+[`ParamRange`](../../crates/plugin/tutti-plugin-types/src/parameters.rs),
 `ParamSteps`, `ParamFlags`+`known`, `EditorPresence`, `PluginTail`,
 `LayoutSupport`, `PresetSupport`. `PresetSupport` puts it most sharply, in a
 doc comment on a variant **no format produces today**:
@@ -111,7 +111,7 @@ defaults and says nothing.
 fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
 ```
 
-`StateError` follows [`EditorError`](../../crates/tutti/crates/plugin/tutti-plugin-types/src/editor.rs)'s
+`StateError` follows [`EditorError`](../../crates/plugin/tutti-plugin-types/src/editor.rs)'s
 shape — a `thiserror` enum whose variants name the cause rather than one opaque
 string:
 

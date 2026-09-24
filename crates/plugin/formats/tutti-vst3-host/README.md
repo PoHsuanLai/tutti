@@ -220,7 +220,7 @@ Everything a plugin sends through these arrives at the one
 ## Testing
 
 `build.rs` compiles `audio-probe`, a reference VST3 plugin, against the SDK
-submodules vendored under `crates/tutti/crates/plugin/vendor/vst3-sdk/`. That is
+submodules vendored under `crates/plugin/vendor/vst3-sdk/`. That is
 what lets the suite run on a bare checkout instead of needing `VST3_SDK_DIR` to
 name an external SDK — but **a `git clone` without `--recursive` leaves those
 submodules empty**, and the build script says so. Fix with

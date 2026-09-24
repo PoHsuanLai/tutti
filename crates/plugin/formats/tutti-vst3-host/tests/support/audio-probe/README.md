@@ -44,7 +44,7 @@ invocation. No CMake, and nothing to set up:
 cargo test -p tutti-vst3-host
 ```
 
-The SDK is in-tree at `crates/tutti/crates/plugin/vendor/vst3-sdk/` (three git
+The SDK is in-tree at `crates/plugin/vendor/vst3-sdk/` (three git
 submodules), and this crate dev-depends on itself with `conformance` on, so its
 own tests always have a probe. Both used to be the caller's problem —
 `VST3_SDK_DIR` had to name an external checkout and `--features conformance` had

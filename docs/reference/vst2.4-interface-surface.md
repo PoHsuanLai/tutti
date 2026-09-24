@@ -1,7 +1,7 @@
 # VST 2.4 Plugin-Format Interface Surface
 
 Extracted from the vendored `vst-rs` bindings at
-`crates/tutti/crates/plugin/vendor/vst-tutti/src/` — treated as the machine-readable
+`crates/plugin/vendor/vst-tutti/src/` — treated as the machine-readable
 form of the VST 2.4 SDK. Host's perspective.
 
 Two call directions, both funnelled through one C signature shape

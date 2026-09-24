@@ -24,8 +24,6 @@ hashbrown = "0.16.1"
 microfft = { version = "0.6.0", features = ["size-32768"] }
 funutd = { version = "0.16.0", default-features = false }
 once_cell = { version = "1.21.3", default-features = false, features = ["race", "alloc"] }
-# Audio file decoding - symphonia with no default features, codecs enabled individually
-symphonia = { version = "0.5.5", optional = true, default-features = false }
 # The AudioIn/AudioOut vocabulary the FileIn speaks, and the latency-graph
 # traits `Net` implements (see `net::latency`). Std-only.
 tutti-types = { version = "0.0.1", path = "../../core/tutti-types" }
@@ -38,9 +36,6 @@ tutti-node = { version = "0.0.1", path = "../../core/tutti-node" }
 resampler = { version = "0.4.0", features = ["no_std"] }
 fft-convolver = { version = "0.3.0", optional = true }
 lfqueue = { version = "0.8.1", default-features = false }
-
-bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.89"
@@ -55,26 +50,13 @@ read_input = "0.8.6"
 rayon = "1.10.0"
 
 [features]
-default = ["files-all", "fft"]
+default = ["fft"]
 # No `std` feature: this fork links `std` unconditionally (see `src/lib.rs`).
-
-# Individual codec features
-# Note: wav needs pcm codec for actual audio decoding (wav is just the container format)
-wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
-flac = ["dep:symphonia", "symphonia/flac"]
-mp3 = ["dep:symphonia", "symphonia/mp3"]
-ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
-
-# Convenience: all file formats
-files-all = ["wav", "flac", "mp3", "ogg"]
-# Backwards compat alias
-files = ["files-all"]
+#
+# No codec (`wav`/`flac`/`mp3`/`ogg`/`files`) or `bevy_asset` features: file
+# decode and `WaveAsset` moved to `tutti-io` (tutti design doc 013, Phase 0).
 
 fft = ["dep:fft-convolver"]
-
-# Enables `WaveAsset` (inherent `from_bytes` + `#[derive(Asset, TypePath)]`).
-# Pulls in bevy_asset and bevy_reflect as optional deps.
-bevy_asset = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [[bench]]
 name = "benchmark"

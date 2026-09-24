@@ -34,7 +34,8 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::AudioUnit;
-use tutti_core::{Beat, BeatDuration, Bpm, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, Bpm, Timeline};
+use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
 
 /// A transport parked at a beat the test controls.

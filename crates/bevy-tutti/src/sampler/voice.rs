@@ -165,7 +165,7 @@ impl InsertVoice for EntityCommands<'_> {
 /// what makes that omission impossible: `apply_placement` is `pub(crate)` in
 /// the sampler, so there is no after-the-fact fix available outside that crate.
 pub fn memory_voice(
-    wave: Arc<tutti_core::Wave>,
+    wave: Arc<tutti_io::Wave>,
     width: ChannelLayout,
     play: Playback,
     window: tutti_sampler::VoiceWindow,
@@ -206,7 +206,7 @@ pub fn voice_width(file: ChannelLayout) -> ChannelLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Wave;
+    use tutti_io::Wave;
 
     /// `voice_width` is the file's own width clamped to `1..=MAX_SAMPLER_CHANNELS`
     /// — the device is deliberately not consulted, or a voice would be narrowed

@@ -19,9 +19,8 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{
-    fold_frame, Beat, BeatDuration, ReadRate, SamplePosition, SampleRate, Timeline, Wave,
-};
+use tutti_core::{fold_frame, Beat, BeatDuration, ReadRate, SamplePosition, SampleRate, Timeline};
+use tutti_io::Wave;
 
 use crate::MAX_SAMPLER_CHANNELS;
 

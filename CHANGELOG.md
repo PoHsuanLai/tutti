@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **File I/O moved from `tutti-core` (the fundsp fork) to `tutti-io`.** Old →
+  new: `tutti_core::Wave` → `tutti_io::Wave`, `tutti_core::FileIn` →
+  `tutti_io::FileIn`, `tutti_core::{WaveAsset, WaveMetadata, WaveError}` →
+  `tutti_io::{WaveAsset, WaveMetadata, WaveError}`,
+  `tutti_core::{can_decode, decodable_extensions}` →
+  `tutti_io::{can_decode, decodable_extensions}`. Through the `tutti` umbrella
+  they are `tutti::io::…`, which is now present with any codec feature as well
+  as with `audio-io`. Decoded samples are bit-identical
+  (`tutti-io/tests/decode_golden.rs` pins them against fixtures in
+  `assets/audio/`).
+
+  Features moved with them. `tutti-core` has no `wav`/`flac`/`mp3`/`ogg` or
+  `bevy_asset` features any more; name `tutti-io/wav` etc., and
+  `tutti-io/bevy` for `WaveAsset`'s `Asset` derive. `tutti-sampler`,
+  `bevy-tutti` and `tutti` keep their codec features and forward them to
+  `tutti-io`. `tutti-sampler` now depends on `tutti-io`.
+
+  The API was trimmed to what the engine calls. `Wave` keeps `new`,
+  `with_capacity`, `zero`, `from_samples`, `sample_rate`, `channels`,
+  `channel`, `channel_mut`, `at`, `set`, `len`, `is_empty`, `duration`, `load`
+  and `probe_metadata`. `Wave::push(frame)` (a typenum tuple or a broadcast
+  scalar) is `Wave::push_frame(&[f32])`, one sample per channel. Gone, with no
+  engine caller: `render*`, `filter*`, `multifilter*`, `resample_fir`,
+  `fade*`, `normalize`, `amplify`, `amplitude`, `retain`, `append`, `mix*`,
+  `set_sample_rate`, channel insert/remove/push, `load_slice*`,
+  `load_track*`, `load_with_progress`, `load_with_peaks`, and the WAV writers
+  (`WavOut` is the engine's sink). `FileIn::open(path, track)` is
+  `FileIn::open(path)`; every caller passed `None`. The fork's own `Wave` stays
+  for its internal nodes and no longer decodes; its `files`/codec/`bevy_asset`
+  features, symphonia dependency and `pub use symphonia` are gone.
+
 - **Every count on the `AudioIn`/`AudioOut` edge is a `Samples`, not a
   `usize`.** `AudioIn::poll_into` and `pump` return `Samples` — the engine's
   existing frame count, the same type latency and `Seconds::to_samples` use —

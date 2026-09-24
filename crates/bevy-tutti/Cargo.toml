@@ -29,10 +29,10 @@ bevy_tasks.workspace = true
 
 # Tutti audio engine — bevy-tutti is the umbrella, so it depends on the
 # subsystem crates directly. `tutti-core/bevy_ecs` enables the `Component`
-# derives on the entity-as-node primitives; `tutti-core/bevy_asset` the
-# Asset/TypePath derives on loadable types. bevy-tutti supplies the reconcile
-# systems and the CPAL audio callback (src/engine/).
-tutti-core = { path = "../core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+# derives on the entity-as-node primitives. (The Asset derive on `WaveAsset`
+# is `tutti-io/bevy`, enabled by `sampler` below.) bevy-tutti supplies the
+# reconcile systems and the CPAL audio callback (src/engine/).
+tutti-core = { path = "../core/tutti-core", default-features = false, features = ["bevy_ecs"] }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
 # `ChannelLayout` field, and a `#[reflect(ignore)]` there silently reset a
@@ -53,8 +53,8 @@ tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optio
 # than exposing as components.
 tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
 tutti-sampler = { path = "../dsp/tutti-sampler", optional = true, default-features = false }
-# The live I/O edge — `WavOut`, `MicMonitorNode`, `Recorder`. Separate from the
-# sampler since the layering split; re-exported through `engine`.
+# The I/O edge — `WavOut`, `MicMonitorNode`, `Recorder` for `audio-io`, and
+# `Wave`/`WaveAsset`/the decoder for `sampler`. Re-exported through `engine`.
 tutti-io = { path = "../core/tutti-io", optional = true }
 tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
@@ -132,11 +132,12 @@ convolution = ["tutti-nodes/convolution"]
 # the units and the curve type underneath.
 modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy"]
 
-# Audio formats (codec on tutti-core + the sampler decoder).
-wav = ["tutti-core/wav", "tutti-sampler?/wav"]
-flac = ["tutti-core/flac", "tutti-sampler?/flac"]
-mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3"]
-ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
+# Audio formats. The decoder is `tutti-io`'s; the sampler forwards to it too,
+# so either edge being on is enough for the codec to reach it.
+wav = ["tutti-io?/wav", "tutti-sampler?/wav"]
+flac = ["tutti-io?/flac", "tutti-sampler?/flac"]
+mp3 = ["tutti-io?/mp3", "tutti-sampler?/mp3"]
+ogg = ["tutti-io?/ogg", "tutti-sampler?/ogg"]
 
 # MIDI — two axes. `midi` is the hardware-free engine: types, bus, routing, clip
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
@@ -166,10 +167,11 @@ soundfont = ["midi", "dep:tutti-soundfont"]
 # (`tutti-sampler` → `crate::sampler`).
 #
 # Deliberately does NOT carry the live I/O edge — that is `audio-io` below.
-# They are separate engine crates and neither depends on the other, so folding
-# them together would make a host wanting only mic→WAV compile the butler
-# thread to get it.
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy"]
+# `tutti-sampler` depends on `tutti-io` for `Wave` and the decoder, but not
+# the other way, so folding them together would make a host wanting only
+# mic→WAV compile the butler thread to get it. `tutti-io/bevy` is the
+# `WaveAsset` derive the `.wav` loader hands out.
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "dep:tutti-io", "tutti-io/bevy"]
 
 # The live audio I/O edge: mic capture, WAV sink, and the pump between them
 # (`tutti-io` + `tutti-cpal/capture` → `crate::io`). Independent of `sampler` in

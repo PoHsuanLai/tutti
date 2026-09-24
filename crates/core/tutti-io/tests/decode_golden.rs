@@ -5,11 +5,14 @@
 //! change nothing. Every sample of every channel is folded into an FNV-1a
 //! digest over its `f32` bit pattern — a tolerance would let a changed
 //! conversion or a dropped packet through.
-#![cfg(all(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+//!
+//! Not feature-gated: the crate's dev-dependency on itself turns every codec
+//! on for its tests, so this fails to compile rather than silently vanishing
+//! if that ever stops being true.
 
 use std::path::PathBuf;
 
-use tutti_core::{AudioIn, FileIn, Wave};
+use tutti_io::{AudioIn, FileIn, Wave};
 
 fn asset(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -50,7 +53,7 @@ fn wave_digest(w: &Wave) -> u64 {
 /// Read the whole file through `FileIn` in odd-sized chunks, so reads cross
 /// packet boundaries mid-packet, and digest the interleaved stream.
 fn stream_digest(name: &str) -> (u64, usize) {
-    let mut dec = FileIn::open(asset(name), None).expect("open");
+    let mut dec = FileIn::open(asset(name)).expect("open");
     let ch = dec.layout().count() as usize;
     let mut buf = vec![0.0f32; 333 * ch];
     let mut h = Fnv::new();
@@ -70,8 +73,10 @@ fn stream_digest(name: &str) -> (u64, usize) {
 
 /// `(file, load digest, streamed digest)`.
 ///
-/// Recorded from the fork's decoder (`fundsp::read` / `fundsp::stream`) before
-/// the move; the rehomed decoder must reproduce them exactly.
+/// Recorded from the fundsp fork's decoder (`fundsp::read` / `fundsp::stream`,
+/// reached as `tutti_core::{Wave, FileIn}`) before the decoder moved to this
+/// crate; this file was written against that path first and then moved, so
+/// these rows are the fork's output and the rehomed decoder reproduces them.
 ///
 /// Mutation: shortening every decoded packet by one frame in the shared
 /// packet-decode helper changes every row that has audio (checked).
@@ -104,7 +109,11 @@ fn decoded_samples_match_the_golden_digests() {
             ));
         }
     }
-    assert!(failures.is_empty(), "digest mismatch:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "digest mismatch:\n{}",
+        failures.join("\n")
+    );
 }
 
 /// After a seek, `FileIn` produces exactly the frames a whole-file load has at
@@ -131,8 +140,11 @@ fn seek_lands_on_the_whole_file_load_frames() {
         }
         let ch = w.channels();
         let start = w.len() / 3;
-        let mut dec = FileIn::open(asset(name), None).expect("open");
-        assert!(dec.seekable(), "{name}: a lossless fixture must be seekable");
+        let mut dec = FileIn::open(asset(name)).expect("open");
+        assert!(
+            dec.seekable(),
+            "{name}: a lossless fixture must be seekable"
+        );
         dec.seek(start as u64).expect("seek");
         let want = 257.min(w.len() - start);
         let mut out = vec![0.0f32; want * ch];
@@ -149,4 +161,3 @@ fn seek_lands_on_the_whole_file_load_frames() {
         }
     }
 }
-

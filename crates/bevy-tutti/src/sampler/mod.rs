@@ -12,7 +12,7 @@ use bevy_app::{App, Plugin};
 use bevy_asset::AssetApp;
 use bevy_ecs::prelude::*;
 
-use tutti_core::WaveAsset;
+use tutti_io::WaveAsset;
 use tutti_sampler::DiskStreamer;
 
 pub mod voice;

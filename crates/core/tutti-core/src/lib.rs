@@ -251,38 +251,13 @@ pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 // that had a caller. They are `tutti_node`'s to add back if one appears.
 pub use tutti_node::{Real, Sample, F32, F64};
 
-// `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
-// lives in fundsp's `read` module, which only exists once a codec is on. Gating
-// on either alone breaks the other combination.
-#[cfg(all(
-    feature = "bevy_asset",
-    any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")
-))]
-pub use fundsp::read::WaveAsset;
-// Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`
-// in tutti-sampler wraps it.
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-pub use fundsp::read::WaveError;
-// `WaveMetadata` is a plain metadata struct (frame count / sample rate /
-// channels) — available with any decode feature, no `bevy_asset` needed.
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-pub use fundsp::read::WaveMetadata;
-// `FileIn` decodes arbitrary sample-frame ranges incrementally from
-// disk (real streaming). Butler-thread only. Same codec gating as the rest of
-// the decode path.
 pub use fundsp::realnet::NetBackend;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-pub use fundsp::stream::FileIn;
-pub use fundsp::wave::Wave;
 
-/// Which audio formats this build can decode.
-///
-/// Lives here rather than in `tutti-sampler` because this is where the codec
-/// features terminate: the sampler's `wav = ["tutti-core/wav"]` forwards, and
-/// this crate's `wav = ["fundsp/wav"]` is the line that pulls a decoder in. An
-/// answer computed anywhere else is a copy that goes stale.
-mod codec;
-pub use codec::{can_decode, decodable_extensions};
+// `Wave`, `FileIn`, `WaveMetadata`, `WaveError`, `WaveAsset` and the
+// `can_decode`/`decodable_extensions` pair used to be re-exported here from the
+// fork's `wave`/`read`/`stream` modules, with this crate's codec features
+// forwarding to `fundsp/…`. They are file I/O, so they moved to `tutti-io`
+// with the codec features (design doc 013, Phase 0). This crate decodes nothing.
 
 mod node_id;
 // The node-id helpers. `assert_unique` is the one every DSP crate calls from its

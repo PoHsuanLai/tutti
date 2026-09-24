@@ -99,7 +99,8 @@ crates/
     tutti-core        # Audio graph runtime (Net, Transport, Metering, PDC)
     tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
     tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
-    tutti-io          # Live I/O edge: mic monitor node, WavOut, Recorder.
+    tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the
+                      #   file side (Wave, FileIn, the symphonia decoder).
                       #   Device-free, so tutti-cpal depends on it, not vice
                       #   versa. Peer of tutti-export (the offline edge).
     tutti-mod         # Pure modulation (audio-free mod matrix, curves)

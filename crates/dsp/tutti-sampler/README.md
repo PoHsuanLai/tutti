@@ -6,8 +6,9 @@ phase-vocoder time stretch.
 ## What this is
 
 Voices that play a `Wave`, and the butler thread that keeps a streamed one fed
-from disk. Decoding is [symphonia](https://crates.io/crates/symphonia)'s, reached
-through `tutti-core`'s codec features.
+from disk. `Wave` and decoding are [`tutti-io`](../../core/tutti-io)'s (the
+decoder is [symphonia](https://crates.io/crates/symphonia)); this crate's codec
+features forward to that crate's.
 
 There is no `Sampler` façade type and no channel-strip builder. The entry points
 are the voices themselves — `MemorySource` and `DiskVoice` — plus `VoicePool`
@@ -55,13 +56,13 @@ build the `Wave`, wrap it, push it into a `Net` and render.
 use std::sync::Arc;
 use tutti_core::dsp::Net;
 use tutti_core::AudioUnit;
-use tutti_core::Wave;
+use tutti_io::Wave;
 use tutti_sampler::MemorySource;
 
-// 100 stereo FRAMES — `push` takes one frame, not one sample.
+// 100 stereo FRAMES — `push_frame` takes one frame, not one sample.
 let mut wave = Wave::new(2, 44_100.0);
 for _ in 0..100 {
-    wave.push((0.5, 0.5));
+    wave.push_frame(&[0.5, 0.5]);
 }
 
 let source = MemorySource::new(Arc::new(wave));

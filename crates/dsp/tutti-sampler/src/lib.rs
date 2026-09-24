@@ -135,7 +135,7 @@ pub use ports::{Command, Commands, Source, Status};
 // butler read one function rather than two copies of a rule.
 //
 // Codec-gated because it *is* the codec layer: `Wave::probe_metadata` and
-// `WaveMetadata` are themselves gated in `tutti-core`, so with no format feature
+// `WaveMetadata` are themselves gated in `tutti-io`, so with no format feature
 // there is no header to read. Absent rather than always-`false` — a host that
 // compiled out every codec cannot open files at all, and a probe that silently
 // answered "not streamable" would look like a property of the file.

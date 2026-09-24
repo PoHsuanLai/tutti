@@ -94,8 +94,16 @@ pub use tutti_nodes as nodes;
 #[cfg(feature = "device")]
 pub use tutti_cpal as device;
 
-/// The live I/O edge: mic monitor, WAV sink, `Recorder`.
-#[cfg(feature = "audio-io")]
+/// The I/O edge: mic monitor, WAV sink, `Recorder`, and the file side —
+/// `Wave`, `Wave::load`, `FileIn`. Present with `audio-io` or any codec
+/// (`sampler` implies `wav`), since the decoder lives there.
+#[cfg(any(
+    feature = "audio-io",
+    feature = "wav",
+    feature = "flac",
+    feature = "mp3",
+    feature = "ogg"
+))]
 pub use tutti_io as io;
 
 /// Offline rendering and export — the live edge's opposite number.

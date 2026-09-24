@@ -30,8 +30,9 @@ use tutti_core::SampleRate;
 #[cfg(test)]
 use tutti_core::{
     Amplitude, AudioUnit, Beat, Cents, ChannelLayout, SamplePosition, SignalFrame, StretchFactor,
-    Wave,
 };
+#[cfg(test)]
+use tutti_io::Wave;
 
 #[cfg(test)]
 mod tests {

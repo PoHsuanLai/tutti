@@ -114,7 +114,6 @@ pub mod oscillator;
 pub mod oversample;
 pub mod pan;
 pub mod params;
-pub mod peak_builder;
 pub mod prelude;
 pub mod prelude32;
 pub mod prelude64;
@@ -165,43 +164,11 @@ pub type Queue<T, const N: usize> = lfqueue::ConstBoundedQueue<T, N>;
 
 pub mod write;
 
-#[cfg(any(
-    feature = "wav",
-    feature = "flac",
-    feature = "mp3",
-    feature = "ogg",
-    feature = "files"
-))]
-pub mod read;
-
-#[cfg(any(
-    feature = "wav",
-    feature = "flac",
-    feature = "mp3",
-    feature = "ogg",
-    feature = "files"
-))]
-pub mod stream;
-
-/// The decoder this crate reads files with, re-exported.
-///
-/// [`read`] and [`stream`] are the engine's only decode path, and both are built
-/// on symphonia's traits — `FormatReader`, `Decoder`, `MediaSource`. Those are
-/// already public upstream; what was missing was a way for a consumer to *name*
-/// them without adding its own `symphonia` dependency, which would let a second,
-/// differently-resolved copy into the graph. Re-exporting from here makes the
-/// version the one this crate actually decodes with, by construction.
-///
-/// Gated exactly as [`read`]/[`stream`] are: with no codec feature there is no
-/// symphonia to re-export, and this is absent rather than empty.
-#[cfg(any(
-    feature = "wav",
-    feature = "flac",
-    feature = "mp3",
-    feature = "ogg",
-    feature = "files"
-))]
-pub use symphonia;
+// No file decode here. `read.rs` (`Wave::load`, `WaveAsset`, `WaveMetadata`,
+// `WaveError`), `stream.rs` (`FileIn`) and the peak builder only `read.rs`
+// used moved to `tutti-io`, with symphonia and the codec features (tutti
+// design doc 013, Phase 0). This fork's `Wave` stays for its own nodes and its
+// WAV writer, and cannot load a file.
 
 #[cfg(feature = "fft")]
 pub mod convolve;

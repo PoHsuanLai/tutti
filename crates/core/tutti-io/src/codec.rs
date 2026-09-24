@@ -4,9 +4,9 @@
 //!
 //! Codec support is a cargo feature, and `default = []` on this crate — a host
 //! that names none can decode nothing. Even `tutti-sampler`, whose own default
-//! is `["wav"]`, only forwards: its `wav = ["tutti-core/wav"]` enables no
+//! is `["wav"]`, only forwards: its `wav = ["tutti-io/wav"]` enables no
 //! decoder, and the line that pulls one in is this crate's
-//! `wav = ["fundsp/wav"]`.
+//! `wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]`.
 //!
 //! So "supported" is a property of the resolved feature set, and the only place
 //! that can answer it honestly is where the features terminate. Anywhere else
@@ -23,7 +23,7 @@
 //! # What this is not
 //!
 //! Not a claim that a given file will decode. An extension is a filename
-//! convention: a `.wav` holding a codec `fundsp` does not implement still
+//! convention: a `.wav` holding a codec this build does not enable still
 //! fails, and a mislabelled file fails whatever this returns. This answers
 //! "is it worth offering?", which is the question a file browser has.
 
@@ -40,7 +40,7 @@
 /// ```
 /// // On a build with no codec features this is empty; with `wav` it contains
 /// // "wav". Either way it never contains a leading dot or an uppercase letter.
-/// for ext in tutti_core::decodable_extensions() {
+/// for ext in tutti_io::decodable_extensions() {
 ///     assert!(!ext.starts_with('.'));
 ///     assert_eq!(*ext, ext.to_ascii_lowercase());
 /// }
@@ -64,14 +64,15 @@ pub fn decodable_extensions() -> &'static [&'static str] {
 ///
 /// What stays hand-written is the **feature → reader** mapping below, because
 /// that is tutti's own knowledge and not symphonia's: nothing upstream can know
-/// that `fundsp/wav` resolves to `symphonia/{wav,pcm}` and never `symphonia/aiff`.
+/// that this crate's `wav` resolves to `symphonia/{wav,pcm}` and never
+/// `symphonia/aiff`.
 ///
 /// A `LazyLock` rather than a `const`, because `Descriptor::extensions` is only
 /// reachable through a trait method. The work is a few slice copies, once per
 /// process.
 static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    use fundsp::symphonia::core::probe::QueryDescriptor;
+    use symphonia::core::probe::QueryDescriptor;
 
     #[allow(
         unused_mut,
@@ -97,19 +98,19 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 
     // One arm per *feature*. AIFF's absence is the case worth stating: symphonia
     // has an `AiffReader` in the very crate that provides `WavReader`
-    // (`symphonia-format-riff`), but `fundsp`'s `wav` enables `symphonia/wav`
+    // (`symphonia-format-riff`), but this crate's `wav` enables `symphonia/wav`
     // and `symphonia/pcm` only — never `symphonia/aiff`. So no current build
     // decodes AIFF, however much the format resembles WAV, and listing it would
     // be exactly the lie this module exists to stop. Adding it is one line in
-    // `fundsp-tutti/Cargo.toml` plus an arm here.
+    // this crate's `Cargo.toml` plus an arm here.
     #[cfg(feature = "wav")]
-    add!(fundsp::symphonia::default::formats::WavReader);
+    add!(symphonia::default::formats::WavReader);
     #[cfg(feature = "flac")]
-    add!(fundsp::symphonia::default::formats::FlacReader);
+    add!(symphonia::default::formats::FlacReader);
     #[cfg(feature = "mp3")]
-    add!(fundsp::symphonia::default::formats::MpaReader);
+    add!(symphonia::default::formats::MpaReader);
     #[cfg(feature = "ogg")]
-    add!(fundsp::symphonia::default::formats::OggReader);
+    add!(symphonia::default::formats::OggReader);
 
     // The descriptors are upstream data, so the case guarantee this module's
     // docs make is asserted rather than assumed. symphonia documents them as
@@ -134,7 +135,7 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 /// file browser.
 ///
 /// ```
-/// # use tutti_core::can_decode;
+/// # use tutti_io::can_decode;
 /// // Whatever this build enables, these three agree with each other.
 /// assert_eq!(can_decode("wav"), can_decode(".WAV"));
 /// assert_eq!(can_decode("wav"), can_decode("Wav"));
@@ -240,7 +241,7 @@ mod tests {
     /// AIFF is *not* decodable, and this pins it so the next person to assume
     /// otherwise gets a red test rather than a browser row that fails on click.
     ///
-    /// It reads like WAV and symphonia can do it, but `fundsp`'s `wav` feature
+    /// It reads like WAV and symphonia can do it, but this crate's `wav` feature
     /// maps to `["symphonia/wav", "symphonia/pcm"]` — `symphonia/aiff` is never
     /// turned on. Delete this test when the feature is added, not before.
     #[cfg(feature = "wav")]
@@ -250,12 +251,10 @@ mod tests {
         assert!(!can_decode("aif"));
     }
 
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
-    #[test]
-    fn a_build_with_no_codecs_decodes_nothing() {
-        // `default = []` on this crate, so this is the *default* build rather
-        // than an exotic one. A caller assuming at least wav is wrong here.
-        assert!(decodable_extensions().is_empty());
-        assert!(!can_decode("wav"));
-    }
+    // No test for the codec-free build. In `tutti-core` one asserted that
+    // `decodable_extensions()` is empty there, but this crate's test targets
+    // always have every codec on (its dev-dependency on itself), so that test
+    // could never compile here and would claim coverage it does not have. The
+    // property holds by construction instead: every `add!` above is gated on
+    // its feature, and `cargo check -p tutti-io` builds that configuration.
 }

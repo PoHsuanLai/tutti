@@ -179,7 +179,7 @@ fn _surface_compiles() {
     // `VoiceWindow` and `Voice` are memory_voice's arguments and return, so a
     // prelude carrying only the function would be an incomplete forward.
     #[cfg(feature = "sampler")]
-    fn _build_voice(wave: std::sync::Arc<tutti_core::Wave>, width: ChannelLayout) -> Voice {
+    fn _build_voice(wave: std::sync::Arc<tutti_io::Wave>, width: ChannelLayout) -> Voice {
         memory_voice(
             wave,
             voice_width(width),

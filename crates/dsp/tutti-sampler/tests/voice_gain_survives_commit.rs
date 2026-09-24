@@ -55,7 +55,8 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::AudioUnit;
-use tutti_core::{Amplitude, Beat, Bpm, Timeline, UnitParam, Wave};
+use tutti_core::{Amplitude, Beat, Bpm, Timeline, UnitParam};
+use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
 
 /// A transport that is always rolling at beat 0.

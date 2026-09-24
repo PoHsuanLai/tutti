@@ -55,8 +55,9 @@ use std::sync::Arc;
 
 use tutti_core::BufferVec;
 use tutti_core::{
-    AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave,
+    AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline,
 };
+use tutti_io::Wave;
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
 use tutti_sampler::{DiskVoice, MemorySource, VoiceWindow};
 
@@ -267,7 +268,7 @@ fn load_wave(path: &Path) -> Arc<Wave> {
     let mut wave = Wave::new(2, SR);
     let samples: Vec<f32> = r.samples::<f32>().map(|s| s.unwrap()).collect();
     for frame in samples.as_chunks::<2>().0 {
-        wave.push((frame[0], frame[1]));
+        wave.push_frame(&[frame[0], frame[1]]);
     }
     Arc::new(wave)
 }

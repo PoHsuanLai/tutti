@@ -72,11 +72,17 @@ device = ["dep:tutti-cpal"]
 # libjack at build time — see that crate's own `jack` feature.
 jack = ["device", "tutti-cpal/jack"]
 
-# --- codecs (identical to bevy-tutti) ---------------------------------------
-wav = ["tutti-core/wav", "tutti-sampler?/wav"]
-flac = ["tutti-core/flac", "tutti-sampler?/flac"]
-mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3"]
-ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
+# --- codecs -----------------------------------------------------------------
+#
+# The decoder is `tutti-io`'s, so a codec pulls that crate in: `Wave::load`
+# and `FileIn` are reached as `tutti::io::…`, which is why `io` is also
+# surfaced for these features and not only for `audio-io`. bevy-tutti forwards
+# with `tutti-io?/` instead, because there `tutti-io` arrives only with an
+# edge that uses it.
+wav = ["dep:tutti-io", "tutti-io/wav", "tutti-sampler?/wav"]
+flac = ["dep:tutti-io", "tutti-io/flac", "tutti-sampler?/flac"]
+mp3 = ["dep:tutti-io", "tutti-io/mp3", "tutti-sampler?/mp3"]
+ogg = ["dep:tutti-io", "tutti-io/ogg", "tutti-sampler?/ogg"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------
 midi = [

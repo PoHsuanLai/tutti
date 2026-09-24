@@ -121,15 +121,14 @@ Bevy-free unless a consumer asks:
 - `bevy` — the `Component` derive on `AudioNode` described above.
 - `bevy_ecs` — a back-compat alias for `bevy`, kept because sibling crates still
   spell it that way.
-- `bevy_asset` — the above plus fundsp's asset integration (`WaveAsset`). Needs
-  a codec feature as well: the type lives in fundsp's decode module, so gating
-  on either axis alone breaks the other combination.
-- `wav` / `flac` / `mp3` / `ogg` — fundsp's decoders, for loading a `Wave` from
-  disk. `can_decode` reports which of them a given build has.
 - `midi` — reserved; the MIDI subsystems are separate crates.
 - `serde` — `Serialize`/`Deserialize` on the shared value vocabulary (forwards
   to `tutti-types/serde`). Off by default, since the engine itself never
   serializes.
+
+There are no codec or asset features. Decoding a file (`Wave`, `FileIn`,
+`can_decode`) and the Bevy `WaveAsset` are `tutti-io`'s, behind its own
+`wav` / `flac` / `mp3` / `ogg` and `bevy` features.
 
 ## License
 

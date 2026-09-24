@@ -32,7 +32,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
+use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline};
+use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
 };
@@ -83,7 +84,7 @@ impl Timeline for Clock {
 fn dc_wave(len: usize) -> Arc<Wave> {
     let mut w = Wave::new(2, SR);
     for _ in 0..len {
-        w.push((LEVEL, LEVEL));
+        w.push_frame(&[LEVEL, LEVEL]);
     }
     Arc::new(w)
 }

@@ -1,11 +1,11 @@
 # tutti-io
 
-Tutti's **live** audio I/O edge: what comes in from a device, and what goes out
-to a file.
+Tutti's audio I/O edge: what comes in from a device or a file, and what goes
+out to a file.
 
 ## What this is
 
-Four pieces, and recording is just a pump between two of them:
+Four live pieces, and recording is just a pump between two of them:
 
 - `MicMonitorNode` — the read side, an `AudioUnit` over a device-filled ring, so
   a live input can sit anywhere in the graph.
@@ -17,6 +17,19 @@ Four pieces, and recording is just a pump between two of them:
 - `WavOut` — the write side, an `AudioOut` sink.
 - `Recorder` — `pump(src, sink)` on its own thread, plus the stop policy and the
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
+
+And the file side, which needs no device either:
+
+- `Wave` — a resident, planar sample buffer: what a sampler voice plays.
+- `Wave::load` / `Wave::probe_metadata` — decode a file into one, or read only
+  its header. Behind the codec features.
+- `FileIn` — the streaming read, an `AudioIn` over a file at the file's own
+  width, with sample-accurate `seek`. The read-side twin of `WavOut`.
+- `WaveAsset` — the Bevy asset wrapper (feature `bevy`).
+- `can_decode` / `decodable_extensions` — which formats *this build* reads.
+
+These came from the fundsp fork (design doc 013, Phase 0); decode output is
+pinned bit-for-bit by `tests/decode_golden.rs`.
 
 The traits this crate implements are re-exported from its root (`pump`,
 `AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches the
@@ -41,15 +54,17 @@ vocabulary and its live impls from one place.
 ```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-core     Wave, AudioUnit, AudioTap; re-exports io
+tutti-core     AudioUnit, AudioTap; re-exports io
     ↑
-tutti-io       MicMonitorNode, WavOut, TapIn, Recorder   (device-free)
+tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
+               Wave, FileIn, the decoder
     ↑
 tutti-cpal     MicIn, the output stream, the driver      (owns CPAL)
 ```
 
 `tutti-cpal` depends on this crate (behind its `capture` feature) for the ring
-and the monitor node; `tutti-sampler` and `bevy-tutti` depend on it too.
+and the monitor node; `tutti-sampler` depends on it for `Wave` and the decoder,
+and `bevy-tutti` for both.
 
 ## Example — recording what the graph is playing
 
@@ -102,7 +117,13 @@ wav.finalize().expect("header back-patches");
 
 ## Features
 
-None. The crate is the live I/O edge; there is nothing here to gate.
+All off by default (`default = []`):
+
+- `wav` / `flac` / `mp3` / `ogg` — one symphonia container (and codec) each,
+  for `Wave::load`, `Wave::probe_metadata` and `FileIn`. With none, those do
+  not exist and `decodable_extensions()` is empty; `Wave` itself is always
+  there.
+- `bevy` — the `Asset` derive on `WaveAsset`. Needs a codec as well.
 
 ## License
 

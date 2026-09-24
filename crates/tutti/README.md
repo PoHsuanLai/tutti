@@ -45,7 +45,7 @@ assert!(out.iter().any(|&s| s != 0.0));
 | `tutti::nodes` | `tutti-nodes` | always |
 | `tutti::node` | `tutti-node` | always |
 | `tutti::device` | `tutti-cpal` | `device` |
-| `tutti::io` | `tutti-io` | `audio-io` |
+| `tutti::io` | `tutti-io` | `audio-io`, or any codec (`wav` `flac` `mp3` `ogg`) |
 | `tutti::export` | `tutti-export` | `export` |
 | `tutti::sampler` | `tutti-sampler` | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | `synth` |

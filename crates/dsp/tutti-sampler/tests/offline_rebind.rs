@@ -13,7 +13,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline, Wave};
+use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline};
+use tutti_io::Wave;
 use tutti_nodes::testing::Const;
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode,

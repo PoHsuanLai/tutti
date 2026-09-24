@@ -11,8 +11,9 @@ use std::sync::Arc;
 use tutti_core::{
     Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
     ChannelLayout, Param, PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame,
-    SrcRatio, Timeline, Wave,
+    SrcRatio, Timeline,
 };
+use tutti_io::Wave;
 
 use super::loop_crossfade::LoopCrossfade;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};

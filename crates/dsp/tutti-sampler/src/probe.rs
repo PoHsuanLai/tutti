@@ -106,7 +106,7 @@ pub enum ProbeError {
 /// ```
 pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     let path = path.as_ref();
-    let meta = tutti_core::Wave::probe_metadata(path).map_err(|e| ProbeError::Unreadable {
+    let meta = tutti_io::Wave::probe_metadata(path).map_err(|e| ProbeError::Unreadable {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
@@ -124,13 +124,13 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
 /// is a named function rather than an inline `&&`: if the butler's conditions
 /// change, this is the one other place that must move, and a grep for either name
 /// finds both.
-fn streamable(path: &Path, meta: &tutti_core::WaveMetadata) -> bool {
+fn streamable(path: &Path, meta: &tutti_io::WaveMetadata) -> bool {
     // 1. No frame count means no seekable end — the butler falls back whole-file.
     if meta.total_frames.is_none() {
         return false;
     }
     // 2. The incremental decoder must actually open.
-    let Ok(decoder) = tutti_core::FileIn::open(path, None) else {
+    let Ok(decoder) = tutti_io::FileIn::open(path) else {
         return false;
     };
     // 3. Defensive, and inherited from `open_stream`: a decoder that reports

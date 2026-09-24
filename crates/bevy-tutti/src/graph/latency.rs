@@ -216,6 +216,10 @@ mod tests {
         graph.set_output_source(1, Source::Local(b, 0));
 
         let lat = tutti_core::LatencyGraph::latency(&graph, eff);
+        // Every test built on this graph compares against `lat`; if the
+        // limiter ever reported no latency they would all agree on zero and
+        // pass while testing nothing.
+        assert!(lat.get() > 0, "LimiterNode must report its lookahead");
         (graph, lat)
     }
 

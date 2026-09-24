@@ -941,16 +941,22 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     // Energy near Nyquist, with its true peak *between* samples, is what SRC
     // overshoots on; a DC constant barely moves and would hide the bug entirely.
     //
-    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns so
-    // the samples straddle the peak unevenly (-0.28, -0.93, +0.28, +0.93 of it).
-    // That is exactly what the fundsp `square_hz(11025.0)` this test used to
-    // build rendered: a band-limited square at fs/4 has no harmonic below
-    // Nyquist but its fundamental, and its phase came from the graph's hash —
-    // measured, not assumed. The phase is load-bearing: at 1/8 turn the samples
-    // sit symmetrically about the peak, the render-rate true-peak
-    // estimate is already right, and the test passes with the measure-before-
-    // resample bug put back. The amplitude is not: peak normalization divides
-    // it out.
+    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns.
+    // That is what the fundsp `square_hz(11025.0)` this test used to build
+    // rendered: a band-limited square at fs/4 keeps no harmonic below Nyquist
+    // but its fundamental, and its phase came from the graph's hash — measured,
+    // not assumed. At that phase the samples are ±0.285 and ±0.958 of the peak
+    // (±0.279 / ±0.939 at this amplitude of 0.98).
+    //
+    // The property that matters is where the meter looks. It estimates true
+    // peak on a 4× oversampled grid, one point every 1/16 turn of this tone,
+    // and from 0.546 turns the nearest grid point misses the crest by 0.0165
+    // turns — so the render-rate estimate reads low, and a gain chosen from it
+    // lands high once the resampled file puts samples closer to the crest.
+    // At a start of 1/8 turn the grid lands exactly on the crest, the estimate
+    // is already right, and the test passes with the measure-before-resample
+    // bug put back. So the phase is load-bearing; the amplitude is not, since
+    // peak normalization divides it out.
     let square = || {
         let mut n = tutti_core::dsp::Net::new(0, 2);
         let tone = Osc::sine(Hz(11025.0))

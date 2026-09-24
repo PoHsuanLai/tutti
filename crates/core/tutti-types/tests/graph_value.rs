@@ -337,14 +337,15 @@ fn param_equality_is_structural() {
 
 /// The default topology has **no** global inputs.
 ///
-/// Not a formality: `ChannelLayout::default()` is `STEREO`, so a *derived*
-/// `Default` on `Topology` silently gives every master graph two input channels
-/// nobody declared — and a `Source::Global(1)` typo then resolves against them
-/// instead of being rejected as out of range.
+/// Not a formality: when `ChannelLayout::default()` was `STEREO`, a *derived*
+/// `Default` on `Topology` silently gave every master graph two input channels
+/// nobody declared — and a `Source::Global(1)` typo then resolved against them
+/// instead of being rejected as out of range. `ChannelLayout` has no `Default`
+/// any more, so that derive no longer compiles; this pins the hand-written
+/// impl's *choice* of width, which the compiler cannot.
 ///
-/// Mutation: `#[derive(Default)]` on `Topology` instead of the hand-written impl
-/// → `inputs` is `STEREO` and the out-of-range edge validates → both assertions
-/// fail.
+/// Mutation: `inputs: ChannelLayout::STEREO` in the hand-written impl → the
+/// out-of-range edge validates → both assertions fail.
 #[test]
 fn the_default_topology_has_no_global_inputs() {
     let t = Topology::default();

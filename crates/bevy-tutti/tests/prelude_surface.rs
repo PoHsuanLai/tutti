@@ -125,7 +125,11 @@ fn _surface_compiles() {
         // outright, and `pump` debug-asserts it.
         let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
             .expect("sink opens");
-        Ok(AudioPump::start(TapIn::new(tap.open()?), wav, 1024))
+        Ok(AudioPump::start(
+            TapIn::new(tap.open()?),
+            wav,
+            Samples(1024),
+        ))
     }
 
     // Recording a mic: `io/mod.rs`'s `matching_sink` example.
@@ -137,7 +141,7 @@ fn _surface_compiles() {
     fn _record_mic(path: std::path::PathBuf, rate: SampleRate) -> std::io::Result<AudioPump> {
         let mic = MicIn::open(None, rate).map_err(std::io::Error::other)?;
         let wav = mic.matching_sink(path, BitDepth::Float32)?;
-        Ok(AudioPump::start(mic, wav, 1024))
+        Ok(AudioPump::start(mic, wav, Samples(1024)))
     }
 
     // Live monitoring: `io/mod.rs`'s graph-wiring example.

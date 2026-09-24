@@ -23,7 +23,7 @@
 //!
 //! | mutation | fails |
 //! |---|---|
-//! | `out.len() / 2` → `out.len()` in `poll_into` (frames→samples) | `…_in_order_through_the_whole_chain` only |
+//! | `Samples::from_interleaved_len(out.len(), …)` → `out.len()` in `poll_into` (frames→samples) | `…_in_order_through_the_whole_chain` only |
 //! | swap `l`/`r` when writing the frame | both |
 //!
 //! That first row is why `…_in_order_…` pushes more frames than the pump's
@@ -33,7 +33,7 @@
 //! comes out right by accident. Only a push that *exceeds* the scratch forces
 //! the bad bound to be used. Keep `FRAMES` above `SCRATCH_FRAMES`.
 
-use tutti_core::{AudioTap, ChannelLayout};
+use tutti_core::{AudioTap, ChannelLayout, Samples};
 use tutti_io::{AudioIn, BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 
 /// Frames pushed into the tap, as the audio callback would.
@@ -92,7 +92,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     let moved = pump.pump_until_dry(64);
     assert_eq!(
         moved,
-        FRAMES,
+        Samples(FRAMES),
         "every frame pushed must be moved, and counted in FRAMES — a pump that \
          returned samples here would report {}",
         FRAMES * 2
@@ -156,12 +156,16 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
 
     const BURST: usize = 512;
     const BURSTS: usize = 6;
-    let mut moved = 0usize;
+    let mut moved = Samples::ZERO;
     for b in 0..BURSTS {
         push_block(&tap, b * BURST, BURST);
         moved += pump.pump_until_dry(16);
     }
-    assert_eq!(moved, BURST * BURSTS, "no frame may be lost between bursts");
+    assert_eq!(
+        moved,
+        Samples(BURST * BURSTS),
+        "no frame may be lost between bursts"
+    );
 
     rec.stop().expect("the take finalizes cleanly");
 

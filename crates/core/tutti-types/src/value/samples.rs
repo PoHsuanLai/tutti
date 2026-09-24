@@ -11,7 +11,16 @@
 //! in the derives: `Eq + Ord + Hash`, which counts need for map keys and
 //! `max()`, and which the float units cannot have.
 
-/// A count of audio frames: reported latency, compensation delay, ring length.
+/// A count of audio frames: reported latency, compensation delay, ring length,
+/// and every count crossing the [`AudioIn`](crate::io::AudioIn) /
+/// [`AudioOut`](crate::io::AudioOut) edge.
+///
+/// "Samples" in the *sample-frame* sense — one tick of the clock, however many
+/// channels wide — which is how the plugin formats and `Seconds::to_samples`
+/// already use it. It is **never** a count of interleaved `f32`s; that quantity
+/// is a slice length, reached only through
+/// [`interleaved_len`](Self::interleaved_len), and brought back only through
+/// [`from_interleaved_len`](Self::from_interleaved_len).
 ///
 /// Integer by construction. Distinct from `SamplePosition`, which is an `f64`
 /// *position* within a wave that may be fractional so interpolating readers can
@@ -104,6 +113,45 @@ impl Samples {
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
+    }
+
+    /// How many **samples** these frames occupy in a flat interleaved buffer
+    /// `layout` wide — `frames × channels`. The one sanctioned way from a frame
+    /// count to a slice length.
+    ///
+    /// Returns a bare `usize` on purpose: the result indexes a `&[S]`, and a
+    /// slice has no other unit. It is the *only* place on the
+    /// [`AudioIn`](crate::io::AudioIn) / [`AudioOut`](crate::io::AudioOut) edge
+    /// where a count leaves this type, so a stride mistake has one site to live
+    /// in rather than one per caller.
+    ///
+    /// Saturating, like the `Mul` impl: an overflowing length can only come
+    /// from a corrupt count, and slicing with `usize::MAX` panics at the slice
+    /// rather than wrapping to a short, plausible-looking window.
+    #[inline]
+    pub const fn interleaved_len(self, layout: crate::ChannelLayout) -> usize {
+        self.0.saturating_mul(layout.count() as usize)
+    }
+
+    /// How many **whole frames** a flat interleaved buffer of `len` samples
+    /// holds at `layout`'s width — `len / channels`, the inverse of
+    /// [`interleaved_len`](Self::interleaved_len).
+    ///
+    /// A trailing partial frame is **not** counted, matching
+    /// [`Interleaved::len`](crate::Interleaved::len): a short frame is not a
+    /// frame, and writing one desynchronises the interleave for everything
+    /// after it.
+    ///
+    /// A zero-width layout holds no frames, so
+    /// [`EMPTY`](crate::ChannelLayout::EMPTY) gives [`ZERO`](Self::ZERO) rather
+    /// than a divide-by-zero panic. That is the answer a pump over an empty bus
+    /// wants: nothing to move.
+    #[inline]
+    pub const fn from_interleaved_len(len: usize, layout: crate::ChannelLayout) -> Samples {
+        match layout.count() {
+            0 => Samples::ZERO,
+            ch => Samples(len / ch as usize),
+        }
     }
 
     /// The span these frames occupy at `rate`. Inverse of
@@ -330,6 +378,46 @@ mod tests {
         assert_eq!(Samples(1024) / Samples(256), 4);
         assert_eq!(Samples(512) * 2, Samples(1024));
         assert_eq!(Samples(1024) / 2, Samples(512));
+    }
+
+    /// Frames ↔ interleaved length, checked at six channels, where confusing
+    /// the two is a 6× error rather than a 2× one that can hide in a round
+    /// number.
+    ///
+    /// Mutation: `interleaved_len` returning `self.0` (frames as the slice
+    /// length) → the first assertion fails; `from_interleaved_len` returning
+    /// `Samples(len)` (samples as the frame count) → the second fails.
+    #[test]
+    fn interleaved_len_is_frames_times_width() {
+        use crate::ChannelLayout;
+        let six = ChannelLayout::from(6u16);
+        assert_eq!(Samples(10).interleaved_len(six), 60);
+        assert_eq!(Samples::from_interleaved_len(60, six), Samples(10));
+
+        // A trailing partial frame is not a frame.
+        assert_eq!(Samples::from_interleaved_len(65, six), Samples(10));
+        // Round trip from the frame side is exact.
+        for n in [0usize, 1, 7, 512] {
+            let f = Samples(n);
+            assert_eq!(
+                Samples::from_interleaved_len(f.interleaved_len(six), six),
+                f
+            );
+        }
+    }
+
+    /// A zero-width buffer holds no frames — and says so rather than dividing
+    /// by zero.
+    ///
+    /// Mutation: drop the `0 =>` arm → the division panics → this fails.
+    #[test]
+    fn an_empty_layout_holds_no_frames() {
+        use crate::ChannelLayout;
+        assert_eq!(
+            Samples::from_interleaved_len(64, ChannelLayout::EMPTY),
+            Samples::ZERO
+        );
+        assert_eq!(Samples(64).interleaved_len(ChannelLayout::EMPTY), 0);
     }
 
     #[test]

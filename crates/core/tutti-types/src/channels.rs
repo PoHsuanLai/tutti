@@ -55,6 +55,24 @@
 //! [`from_count`](ChannelLayout::from_count) remains, but as the `const`
 //! primitive the `From` impls delegate to: `From::from` cannot be `const`, so a
 //! `const` item still needs it. It is not call-site vocabulary.
+//!
+//! # No `Default`, deliberately
+//!
+//! This used to implement `Default` as `STEREO`. Nothing about a width has a
+//! neutral value — stereo is a guess, and `EMPTY` is a different guess — and
+//! the guess propagated invisibly through every `#[derive(Default)]` on a struct
+//! holding one. That is how `Topology::default()` came to declare two global
+//! inputs nobody asked for, so that a `Source::Global(1)` typo validated
+//! instead of being rejected. A struct that wants a default now writes its own
+//! and names the width it means, which puts the choice where a reader can see
+//! it. The absence is pinned by a `compile_fail` doctest (mutation: re-add the
+//! impl → the block compiles → the doctest fails):
+//!
+//! ```compile_fail
+//! # use tutti_types::ChannelLayout;
+//! // A width is always chosen, never defaulted.
+//! let _ = ChannelLayout::default();
+//! ```
 
 /// How many audio channels a signal, node port, bus, wave, or device carries.
 ///
@@ -146,13 +164,6 @@ impl ChannelLayout {
     /// that isn't one of the named ones. The `From` impls delegate here.
     pub const fn from_count(n: u16) -> Self {
         Self(n)
-    }
-}
-
-impl Default for ChannelLayout {
-    /// Stereo — the overwhelmingly common edge default across the engine.
-    fn default() -> Self {
-        Self::STEREO
     }
 }
 

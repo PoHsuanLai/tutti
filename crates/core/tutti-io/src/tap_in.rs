@@ -31,7 +31,7 @@
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
 use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::{ChannelLayout, TapCons};
+use tutti_core::{ChannelLayout, Samples, TapCons};
 
 /// The analysis tap's consumer end as an [`AudioIn`].
 ///
@@ -78,8 +78,8 @@ impl AudioIn for TapIn {
     /// `out` is flat interleaved stereo — two samples per frame — so the return
     /// is half its filled length, never the sample count. A short or zero count
     /// is normal for a live source; the pump parks and retries.
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
-        let frames = out.len() / 2;
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
         let mut n = 0;
         while n < frames {
             match self.cons.try_pop() {
@@ -91,7 +91,7 @@ impl AudioIn for TapIn {
                 None => break,
             }
         }
-        n
+        Samples(n)
     }
 }
 
@@ -127,7 +127,7 @@ mod tests {
         let mut out = [0.0f32; 8 * 2];
         assert_eq!(
             tap.poll_into(&mut out),
-            4,
+            Samples(4),
             "the return is FRAMES, not samples"
         );
 
@@ -145,11 +145,15 @@ mod tests {
     fn a_poll_never_writes_past_the_output_slice() {
         let mut tap = tap_with(&[(1.0, 1.0); 32]);
         let mut out = [0.0f32; 4 * 2];
-        assert_eq!(tap.poll_into(&mut out), 4, "must fill exactly the slice");
+        assert_eq!(
+            tap.poll_into(&mut out),
+            Samples(4),
+            "must fill exactly the slice"
+        );
 
         // The rest is still queued, not dropped.
         let mut rest = [0.0f32; 32 * 2];
-        assert_eq!(tap.poll_into(&mut rest), 28);
+        assert_eq!(tap.poll_into(&mut rest), Samples(28));
     }
 
     /// An empty tap yields nothing and says so — without claiming the end.
@@ -162,7 +166,7 @@ mod tests {
         let mut tap = tap_with(&[]);
 
         let mut out = [0.0f32; 4 * 2];
-        assert_eq!(tap.poll_into(&mut out), 0);
+        assert_eq!(tap.poll_into(&mut out), Samples::ZERO);
         assert_eq!(
             TapIn::ON_EMPTY,
             OnEmpty::Starved,

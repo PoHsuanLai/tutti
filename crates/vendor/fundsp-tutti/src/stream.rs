@@ -30,8 +30,8 @@
 use super::read::{WaveResult, decode_packet_into};
 use std::fs::File;
 use std::path::Path;
-use tutti_types::ChannelLayout;
 use tutti_types::io::{AudioIn, OnEmpty};
+use tutti_types::{ChannelLayout, Samples};
 extern crate alloc;
 use alloc::boxed::Box;
 use symphonia::core::audio::{AudioBuffer, Signal};
@@ -358,8 +358,13 @@ impl AudioIn for FileIn {
     ///
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
-        self.fill_sequential_interleaved(out).unwrap_or(0)
+    ///
+    /// The inherent [`fill_sequential_interleaved`](Self::fill_sequential_interleaved)
+    /// keeps its bare `usize` frame count — this is vendored code, and the
+    /// engine's frame type is applied here, at the trait boundary, rather than
+    /// threaded through the decoder.
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
     }
 }
 
@@ -408,7 +413,7 @@ mod tests {
         while pos < frames {
             let end = (pos + chunk).min(frames);
             let n = dec.poll_into(got[pos..end].as_flattened_mut());
-            assert_eq!(n, end - pos);
+            assert_eq!(n, Samples(end - pos));
             pos = end;
         }
 
@@ -439,7 +444,7 @@ mod tests {
         assert_eq!(dec.cursor(), start);
         let mut got = vec![[0.0f32; 2]; len];
         let n = dec.poll_into(got.as_flattened_mut());
-        assert_eq!(n, len);
+        assert_eq!(n, Samples(len));
 
         for i in 0..len {
             let e = expected[start as usize + i];
@@ -470,7 +475,7 @@ mod tests {
         // Pre-fill with a sentinel so we can assert the untouched tail stays put.
         let mut got = vec![[1.0f32; 2]; len];
         let n = dec.poll_into(got.as_flattened_mut());
-        assert_eq!(n, 500, "only 500 frames of real audio remain");
+        assert_eq!(n, Samples(500), "only 500 frames of real audio remain");
 
         for i in 0..500 {
             let e = expected[start as usize + i];
@@ -486,7 +491,7 @@ mod tests {
         }
         // A further poll at EOF yields nothing.
         let mut more = [[0.0f32; 2]; 8];
-        assert_eq!(dec.poll_into(more.as_flattened_mut()), 0);
+        assert_eq!(dec.poll_into(more.as_flattened_mut()), Samples::ZERO);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -600,7 +605,7 @@ mod tests {
 
         let mut out = [0.0f32; 6 * 16];
         let got = decoder.poll_into(&mut out);
-        assert!(got > 0);
+        assert!(!got.is_zero());
 
         // Frame 0, channel by channel: the centre survived and nothing leaked
         // into the front pair. A fold would put ~0.35 in both L and R.
@@ -648,7 +653,7 @@ mod tests {
 
         let mut out = [0.0f32; 16];
         let got = decoder.poll_into(&mut out);
-        assert!(got > 0);
+        assert!(!got.is_zero());
 
         // One sample per frame, so consecutive slots differ by one ramp step.
         // Under the old duplicating impl they would have come in equal pairs.
@@ -679,7 +684,7 @@ mod tests {
         let ch = decoder.layout().count() as usize;
         let mut native = vec![0.0f32; ch * 16];
         let got = decoder.poll_into(&mut native);
-        assert!(got > 0);
+        assert!(!got.is_zero());
 
         let mut stereo = [0.0f32; 2];
         tutti_types::fold_frame(&native[..ch], &mut stereo);

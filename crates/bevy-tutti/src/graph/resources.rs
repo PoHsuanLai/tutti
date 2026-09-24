@@ -27,11 +27,20 @@ pub struct AudioConfig {
     pub sample_rate: SampleRate,
     /// The device's output width. The graph root is widened to match a
     /// declaration, not to this — see `MasterSources`.
-    // Not reflected: `ChannelLayout` is a `tutti-types` value type with no
-    // `Reflect` impl (its API is frozen). Reflect-construction falls back to
-    // `ChannelLayout::default()` (Stereo).
-    #[reflect(ignore)]
+    // Not reflected: `ChannelLayout` derives `Reflect` only under
+    // `tutti-types/bevy`, the same optional-feature trap as `sample_rate`
+    // above. Reflect-construction falls back to `ChannelLayout::EMPTY` — named
+    // here because the type deliberately has no `Default` (a derived width is
+    // how `Topology` once grew two global inputs nobody declared). Zero
+    // channels, not a guessed stereo, for a config that was never built from a
+    // device: like the 0.0 rate beside it, it reads as "not configured".
+    #[reflect(ignore, default = "unconfigured_channels")]
     pub channels: ChannelLayout,
+}
+
+/// The width a reflected [`AudioConfig`] carries before a device fills it in.
+fn unconfigured_channels() -> ChannelLayout {
+    ChannelLayout::EMPTY
 }
 
 /// Owns the editable DSP graph — fundsp's [`Net`]. `&mut` edits; call

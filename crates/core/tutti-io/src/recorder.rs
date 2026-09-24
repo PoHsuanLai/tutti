@@ -60,7 +60,7 @@
 //! the path that hands the result straight back.
 //!
 //! The scratch buffer is allocated once before the loop, sized
-//! `SCRATCH_FRAMES * channels` samples at the source's own width; the loop body
+//! `SCRATCH_FRAMES.interleaved_len(layout)` samples at the source's own width; the loop body
 //! never allocates.
 //!
 //! Whether a zero-FRAME poll means "back off" or "finished" is the source's
@@ -97,6 +97,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
+use tutti_core::Samples;
 
 use crate::error::{Error, Result};
 use crate::wav_out::WavOut;
@@ -104,7 +105,7 @@ use crate::wav_out::WavOut;
 /// Frames moved per pump pass. One bufferful, allocated once before the loop so
 /// the pump body stays allocation-free. ~21ms at 48kHz — small enough to bound
 /// how far the sink can lag the source, large enough to amortize per-pass cost.
-const SCRATCH_FRAMES: usize = 1024;
+const SCRATCH_FRAMES: Samples = Samples(1024);
 
 /// How long [`ThreadDriver`] parks when a [`Starved`](OnEmpty::Starved) source
 /// yields nothing. A live mic has nothing ready between callback pushes;
@@ -125,8 +126,9 @@ const IDLE_PARK: Duration = Duration::from_millis(5);
 /// take milliseconds in, with no error anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PumpPass {
-    /// Frames moved from the source into the sink.
-    Wrote(usize),
+    /// Frames moved from the source into the sink — never zero, since a
+    /// zero-frame pass is one of the other two variants.
+    Wrote(Samples),
     /// The source had nothing ready *yet* ([`OnEmpty::Starved`]). Park and come
     /// back; there is more coming.
     Starved,
@@ -157,12 +159,13 @@ impl<I: AudioIn> PumpLoop<I> {
     /// [`Ended`](PumpPass::Ended) according to the source's own
     /// [`ON_EMPTY`](AudioIn::ON_EMPTY) — the one place that const is spent.
     pub fn pump_once(&mut self) -> PumpPass {
-        match pump(&mut self.src, &mut self.sink, &mut self.scratch) {
-            0 => match I::ON_EMPTY {
-                OnEmpty::Starved => PumpPass::Starved,
-                OnEmpty::EndOfStream => PumpPass::Ended,
-            },
-            n => PumpPass::Wrote(n),
+        let n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        if !n.is_zero() {
+            return PumpPass::Wrote(n);
+        }
+        match I::ON_EMPTY {
+            OnEmpty::Starved => PumpPass::Starved,
+            OnEmpty::EndOfStream => PumpPass::Ended,
         }
     }
 
@@ -348,8 +351,8 @@ impl ManualPump {
     /// any fixture here models, and exhausting it means the test is measuring
     /// something other than what it meant to.
     #[must_use]
-    pub fn pump_until_dry(&self, budget: usize) -> usize {
-        let mut total = 0;
+    pub fn pump_until_dry(&self, budget: usize) -> Samples {
+        let mut total = Samples::ZERO;
         for _ in 0..budget {
             match self.pump_once() {
                 Some(PumpPass::Wrote(n)) => total += n,
@@ -546,7 +549,7 @@ impl Recorder {
             });
         }
         // Sized once, here, from the width both endpoints agreed on above.
-        let scratch_samples = SCRATCH_FRAMES * layout.count().max(1) as usize;
+        let scratch_samples = SCRATCH_FRAMES.interleaved_len(layout);
 
         let running = Arc::new(AtomicBool::new(true));
         let pump_loop = PumpLoop {
@@ -702,13 +705,13 @@ mod tests {
             self.layout
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
             let ch = self.layout.count() as usize;
             let total = self.samples.len() / ch;
             let n = (total - self.pos).min(out.len() / ch);
             out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
             self.pos += n;
-            n
+            Samples(n)
         }
     }
 
@@ -736,8 +739,8 @@ mod tests {
 
         // The exact loop the pump thread runs — allocate the scratch once, drain
         // to exhaustion. (No idle-park: the fake source never returns 0 early.)
-        let mut scratch = vec![0.0f32; SCRATCH_FRAMES * 2];
-        while pump(&mut src, &mut wav, &mut scratch) != 0 {}
+        let mut scratch = vec![0.0f32; SCRATCH_FRAMES.interleaved_len(ChannelLayout::STEREO)];
+        while !pump(&mut src, &mut wav, &mut scratch).is_zero() {}
         wav.finalize()
             .expect("finalize should back-patch the header");
 
@@ -838,7 +841,8 @@ mod tests {
         // decide. Here the passes are the caller's, so "drained" is a fact.
         let written = pump.pump_until_dry(16);
         assert_eq!(
-            written, FRAMES,
+            written,
+            Samples(FRAMES),
             "the pump moved {written} frames of {FRAMES} -- a short drain here would \
              make the header assertion below measure the harness"
         );
@@ -871,15 +875,15 @@ mod tests {
                 ChannelLayout::STEREO
             }
 
-            fn poll_into(&mut self, out: &mut [f32]) -> usize {
+            fn poll_into(&mut self, out: &mut [f32]) -> Samples {
                 let n = self.polls.fetch_add(1, Ordering::Relaxed);
                 // Every other poll is empty — never exhausted.
                 if n % 2 == 1 || out.len() < 2 {
-                    return 0;
+                    return Samples::ZERO;
                 }
                 out[0] = 0.25;
                 out[1] = -0.25;
-                1
+                Samples(1)
             }
         }
 
@@ -907,7 +911,7 @@ mod tests {
         // sequence below fails if a `Starved` pass is treated as end-of-stream
         // (writes stop at 1), and it fails if the parity of the fixture changes,
         // which is the only other way the count can move.
-        let mut wrote = 0;
+        let mut wrote = Samples::ZERO;
         for pass in 0..6 {
             let outcome = pump.pump_once().expect("the take is live");
             match (pass % 2, outcome) {
@@ -919,7 +923,7 @@ mod tests {
                 ),
             }
         }
-        assert_eq!(wrote, 3, "three yielding passes, one frame each");
+        assert_eq!(wrote, Samples(3), "three yielding passes, one frame each");
 
         rec.stop().expect("finalize should succeed");
 
@@ -945,9 +949,12 @@ mod tests {
             ChannelLayout::STEREO
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
-            let frames = out.len() / 2;
-            for (i, s) in out[..frames * 2].iter_mut().enumerate() {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+            let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
+            for (i, s) in out[..frames.interleaved_len(ChannelLayout::STEREO)]
+                .iter_mut()
+                .enumerate()
+            {
                 *s = if i % 2 == 0 { 0.5 } else { -0.5 };
             }
             frames
@@ -980,7 +987,7 @@ mod tests {
             // The old version slept 30 ms and hoped; three passes is a count.
             for _ in 0..3 {
                 assert!(
-                    matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if n > 0),
+                    matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if !n.is_zero()),
                     "AlwaysLive fills every buffer it is handed"
                 );
             }
@@ -1010,7 +1017,7 @@ mod tests {
         assert_eq!(reader.spec().channels, 2);
         assert_eq!(
             reader.len() as usize,
-            3 * SCRATCH_FRAMES * 2,
+            (SCRATCH_FRAMES * 3).interleaved_len(ChannelLayout::STEREO),
             "the header must report exactly the frames the three counted passes wrote"
         );
     }
@@ -1050,7 +1057,7 @@ mod tests {
             // One pass is enough: the first sample is already too wide, and
             // `WavOut` latches `first_error` and stops writing from there.
             assert!(
-                matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if n > 0),
+                matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if !n.is_zero()),
                 "the pump reports frames moved; the sink's failure is latched, not returned"
             );
             status

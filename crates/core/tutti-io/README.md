@@ -60,7 +60,7 @@ the same three lines record a microphone — that interchangeability is the reas
 the traits exist.
 
 ```rust
-use tutti_core::AudioTap;
+use tutti_core::{AudioTap, Samples};
 use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
 
 let tap = AudioTap::new();
@@ -77,13 +77,13 @@ let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
     .expect("sink opens");
 assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
 
-// The scratch is sized in SAMPLES (`frames * channels`) because a flat
-// interleaved slice has no other unit — but `pump` returns FRAMES. Conflating
-// the two is this boundary's most repeated defect: a stereo take compared
-// against a sample count runs half as long as it should.
-let channels = src.layout().count() as usize;
-let mut scratch = vec![0.0f32; 1024 * channels];
-assert_eq!(pump(&mut src, &mut wav, &mut scratch), 3);
+// The scratch is sized in SAMPLES because a flat interleaved slice has no other
+// unit — but `pump` returns FRAMES, as a `Samples`. Conflating the two is this
+// boundary's most repeated defect: a stereo take compared against a sample
+// count runs half as long as it should. So the one crossing is named, and a
+// bare `usize` is not accepted where a frame count is meant.
+let mut scratch = vec![0.0f32; Samples(1024).interleaved_len(src.layout())];
+assert_eq!(pump(&mut src, &mut wav, &mut scratch), Samples(3));
 
 // `finalize` takes `self`, so the header back-patch happens exactly once and
 // writing after it is a compile error rather than a corrupt file.

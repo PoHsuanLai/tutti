@@ -69,7 +69,7 @@ use tutti_core::AudioTap;
 ///     let wav = WavOut::create(&path.0, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
 ///         .expect("a writable path");
 ///     let src = TapIn::new(tap.open().expect("tap is free"));
-///     commands.spawn(AudioPump::start(src, wav, 1024));
+///     commands.spawn(AudioPump::start(src, wav, Samples(1024)));
 /// }
 ///
 /// let dir = tempfile::tempdir().expect("a temp dir");

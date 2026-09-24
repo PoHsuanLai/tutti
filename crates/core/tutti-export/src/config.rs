@@ -85,7 +85,7 @@ impl Default for RenderConfig {
 }
 
 /// The encode stage: what file to write.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EncodeConfig {
     /// The container to write, carrying that format's own settings.
     pub format: AudioFormat,
@@ -95,6 +95,24 @@ pub struct EncodeConfig {
     /// Width of the written file. A graph wider than this is folded with the
     /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
     pub channels: ChannelLayout,
+}
+
+/// The format's and depth's own defaults, written to a **stereo** file.
+///
+/// Hand-written because [`ChannelLayout`] has no `Default` — a width silently
+/// chosen by a derive is how a graph once grew two global inputs nobody
+/// declared. Stereo is still the right answer for a bounce left unspecified,
+/// but here it is a stated choice: a wider graph folds down to it through the
+/// ITU/Dolby matrix, and a caller wanting the graph's own width sets
+/// `channels`.
+impl Default for EncodeConfig {
+    fn default() -> Self {
+        Self {
+            format: AudioFormat::default(),
+            bit_depth: BitDepth::default(),
+            channels: ChannelLayout::STEREO,
+        }
+    }
 }
 
 /// Sample-rate conversion applied on the way out.

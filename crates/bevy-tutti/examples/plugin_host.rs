@@ -134,7 +134,7 @@ fn main() {
     app.insert_resource(AudioGraphRes(net));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE.into(),
-        channels: Default::default(),
+        channels: tutti_core::ChannelLayout::STEREO,
     });
     app.insert_resource(TransportRes(transport));
     // The metronome, for its meter cell rather than its click: the meter is

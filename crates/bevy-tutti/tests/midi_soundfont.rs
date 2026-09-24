@@ -76,7 +76,7 @@ mod soundfont_spawn {
         )));
         app.insert_resource(AudioConfig {
             sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
-            channels: Default::default(),
+            channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiSoundFontPlugin));
@@ -306,7 +306,7 @@ mod midi_soundfont_audio {
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
-            channels: Default::default(),
+            channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());

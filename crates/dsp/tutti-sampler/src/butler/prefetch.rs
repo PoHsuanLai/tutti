@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tutti_core::{AtomicU64, ChannelLayout, Ordering};
+use tutti_core::{AtomicU64, ChannelLayout, Ordering, Samples};
 
 use crate::nonempty;
 
@@ -110,6 +110,11 @@ impl RegionMeta {
 /// compares `read_position` against a loop range in *file frames*, and
 /// `loops.rs` uses it to index the file directly. Exposing samples anywhere on
 /// this boundary would silently multiply every loop point by the channel count.
+///
+/// So every count these methods return is a [`Samples`] (the engine's frame
+/// count), not a `usize`: the refill path adds the landed count to a file
+/// position, and a bare `usize` would have accepted a sample count there just
+/// as happily.
 pub(crate) struct RegionOut {
     prod: SendProd<f32>,
     /// Declared ring width. One frame is `channels.count()` consecutive slots.
@@ -162,13 +167,24 @@ impl RegionOut {
     }
 
     /// Free space in **frames**.
-    pub fn write_space(&self) -> usize {
-        self.prod.vacant_len() / self.stride
+    pub fn write_space(&self) -> Samples {
+        Samples::from_interleaved_len(self.prod.vacant_len(), self.channels)
     }
 
     /// Total capacity in **frames**.
-    pub fn capacity(&self) -> usize {
-        self.prod.capacity().get() / self.stride
+    pub fn capacity(&self) -> Samples {
+        Samples::from_interleaved_len(self.prod.capacity().get(), self.channels)
+    }
+
+    /// Frames buffered and not yet consumed — capacity less free space.
+    ///
+    /// Named because the refill heuristics and the stall detector each used to
+    /// spell it `capacity() - write_space()`, and `Samples` deliberately has no
+    /// `-`. Vacancy never exceeds capacity, so the saturation in
+    /// [`remaining_after`](Samples::remaining_after) never engages here; it is
+    /// what the type offers instead of a wrapping subtraction.
+    pub fn buffered(&self) -> Samples {
+        self.capacity().remaining_after(self.write_space())
     }
 
     /// Push interleaved frames from a flat slice, returning how many **frames**
@@ -182,7 +198,7 @@ impl RegionOut {
     /// `vacant_len` is conservative under SPSC concurrency, but only in the safe
     /// direction here: the producer's view of free space can only *grow* as the
     /// consumer pops, so a frame that passes the check still fits.
-    pub fn push_interleaved(&mut self, samples: &[f32]) -> usize {
+    pub fn push_interleaved(&mut self, samples: &[f32]) -> Samples {
         let ch = self.stride;
         let mut written = 0;
         for f in samples.chunks_exact(ch) {
@@ -198,7 +214,7 @@ impl RegionOut {
             }
             written += 1;
         }
-        written
+        Samples(written)
     }
 
     /// Write frames in reverse order (for reverse playback). Frames are taken
@@ -209,7 +225,7 @@ impl RegionOut {
     /// Only the *frame sequence* reverses — the channels **within** each frame
     /// stay in order. Reversing those too would swap L/R (and every other pair)
     /// on every reverse-played source.
-    pub fn write_interleaved_reversed(&mut self, samples: &[f32]) -> usize {
+    pub fn write_interleaved_reversed(&mut self, samples: &[f32]) -> Samples {
         let ch = self.stride;
         let mut written = 0;
         for f in samples.chunks_exact(ch).rev() {
@@ -221,7 +237,7 @@ impl RegionOut {
             }
             written += 1;
         }
-        written
+        Samples(written)
     }
 
     /// The file this region streams. The butler uses it to reach the whole-file
@@ -270,8 +286,8 @@ impl tutti_core::AudioOut<f32> for RegionOut {
     /// is back-pressure, not an error, and the trait has no way to report it.
     /// Any caller that must not lose frames wants
     /// [`push_interleaved`](Self::push_interleaved), which returns the count.
-    fn write(&mut self, frames: &[f32]) {
-        let _ = self.push_interleaved(frames);
+    fn write(&mut self, interleaved: &[f32]) {
+        let _ = self.push_interleaved(interleaved);
     }
 
     /// No-op: the ring is a live SPSC channel with a consumer on the audio
@@ -561,7 +577,7 @@ mod tests {
 
         let samples: Vec<f32> = (0..4096).flat_map(|i| [i as f32; 2]).collect();
         let written = prod.push_interleaved(&samples);
-        assert!(written <= 4096);
+        assert!(written <= Samples(4096));
     }
 
     #[test]
@@ -570,7 +586,7 @@ mod tests {
             RegionBuffer::with_capacity(RegionId(1), PathBuf::from("test.wav"), 100, 2usize);
 
         let section_a: Vec<f32> = (0..50).flat_map(|i| [i as f32 / 100.0; 2]).collect();
-        assert_eq!(prod.push_interleaved(&section_a), 50);
+        assert_eq!(prod.push_interleaved(&section_a), Samples(50));
 
         let mut f = [0.0f32; 2];
         assert!(cons.read_into(&mut f));
@@ -580,7 +596,7 @@ mod tests {
         assert!(!cons.read_into(&mut f), "cleared ring must underrun");
 
         let section_b: Vec<f32> = (0..50).flat_map(|_| [0.5f32; 2]).collect();
-        assert_eq!(prod.push_interleaved(&section_b), 50);
+        assert_eq!(prod.push_interleaved(&section_b), Samples(50));
         assert!(cons.read_into(&mut f));
         assert!((f[0] - 0.5).abs() < 0.001, "refill must serve section B");
     }
@@ -593,7 +609,7 @@ mod tests {
     fn read_position_counts_frames_not_samples_at_six_channels() {
         let (mut prod, mut cons) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
-        assert_eq!(prod.push_interleaved(&indexed(10, 6)), 10);
+        assert_eq!(prod.push_interleaved(&indexed(10, 6)), Samples(10));
 
         let pos = cons.read_position_shared();
         let mut f = [0.0f32; 6];
@@ -647,8 +663,8 @@ mod tests {
     fn a_full_ring_never_hands_out_a_torn_frame() {
         let (mut prod, mut cons) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 6usize);
-        let n = prod.capacity() + 37; // deliberately past the end
-        let pushed = prod.push_interleaved(&indexed(n, 6));
+        let n = prod.capacity() + Samples(37); // deliberately past the end
+        let pushed = prod.push_interleaved(&indexed(n.get(), 6));
         assert_eq!(
             pushed,
             prod.capacity(),
@@ -656,7 +672,7 @@ mod tests {
         );
 
         let mut f = [0.0f32; 6];
-        for k in 0..pushed {
+        for k in 0..pushed.get() {
             assert!(cons.read_into(&mut f));
             for (c, &s) in f.iter().enumerate() {
                 assert_eq!(
@@ -684,7 +700,7 @@ mod tests {
                 "capacity must be exact at width {ch}"
             );
             assert!(
-                prod.capacity() >= 4096,
+                prod.capacity() >= Samples(4096),
                 "floor applies in frames at width {ch}"
             );
         }
@@ -698,7 +714,7 @@ mod tests {
         let (mut prod, mut cons) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4usize);
         let data = [0., 1., 2., 3., 10., 11., 12., 13., 20., 21., 22., 23.];
-        assert_eq!(prod.write_interleaved_reversed(&data), 3);
+        assert_eq!(prod.write_interleaved_reversed(&data), Samples(3));
 
         let mut f = [0.0f32; 4];
         assert!(cons.read_into(&mut f));
@@ -716,15 +732,21 @@ mod tests {
     fn write_space_and_capacity_are_frames() {
         let (mut prod, _cons) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192, 6usize);
-        assert_eq!(prod.capacity(), 8192, "capacity is in frames");
+        assert_eq!(prod.capacity(), Samples(8192), "capacity is in frames");
         assert_eq!(
             prod.write_space(),
-            8192,
+            Samples(8192),
             "empty ring has full frame vacancy"
         );
+        assert_eq!(prod.buffered(), Samples::ZERO);
 
         prod.push_interleaved(&indexed(100, 6));
-        assert_eq!(prod.write_space(), 8192 - 100);
+        assert_eq!(prod.write_space(), Samples(8192 - 100));
+        assert_eq!(
+            prod.buffered(),
+            Samples(100),
+            "100 frames buffered — not 600, and not the free space"
+        );
     }
 
     /// The `AudioOut` impl is the inherent `push_interleaved` — same frames,

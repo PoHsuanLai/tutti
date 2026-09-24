@@ -37,12 +37,20 @@
 //! once, loudly, and never relaxed:**
 //!
 //! - [`poll_into`](AudioIn::poll_into) **returns a frame count**, never a sample
-//!   count. The samples it wrote are `returned * layout().count()`.
-//! - [`write`](AudioOut::write) is handed `frames.len() / layout().count()`
+//!   count, and the type says so: it is a [`Samples`], the engine's frame
+//!   count. The samples it wrote are
+//!   [`returned.interleaved_len(layout())`](Samples::interleaved_len).
+//! - [`write`](AudioOut::write) is handed
+//!   [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
 //!   frames. A trailing partial frame is not a frame.
-//! - [`pump`] returns frames. Its `buf` is *sized* in samples only because a
-//!   flat slice has no other unit — a caller writes `frames * ch` and gets
-//!   frames back.
+//! - [`pump`] returns frames, as a [`Samples`]. Its `buf` is *sized* in samples
+//!   only because a flat slice has no other unit — a caller writes
+//!   `frames.interleaved_len(layout)` and gets frames back.
+//!
+//! Those two conversions are the only crossings between the units, so a stride
+//! mistake has one home instead of one per call site. A bare `usize` from a
+//! slice length no longer type-checks where a frame count is expected: the
+//! caller has to *say* which conversion it means.
 //!
 //! Exposing samples anywhere on this boundary is not a cosmetic slip. A
 //! consumer compares a returned count against a loop range, a region length, or
@@ -73,7 +81,7 @@
 //! per-sample graph read stays behind the monomorphized clip-source enum and
 //! must remain alloc-free / lock-free; these block interfaces do not touch it.
 
-use crate::ChannelLayout;
+use crate::{ChannelLayout, Samples};
 
 /// What a 0-frame [`poll_into`](AudioIn::poll_into) means for a given source.
 ///
@@ -146,16 +154,22 @@ pub trait AudioIn<S = f32> {
     /// number of **FRAMES** written — not samples.
     ///
     /// `out` is flat interleaved at [`layout`](Self::layout)'s width, so it
-    /// holds `out.len() / layout().count()` frames and the return is bounded by
-    /// that. Samples past `returned * count` are left untouched, and a trailing
+    /// holds [`Samples::from_interleaved_len(out.len(), layout())`](Samples::from_interleaved_len)
+    /// frames and the return is bounded by that. Samples past
+    /// `returned.interleaved_len(layout())` are left untouched, and a trailing
     /// partial frame (an `out` whose length is not a whole multiple of the
     /// width) is never partly filled — a short frame desynchronises the
     /// interleave for everything after it.
     ///
+    /// Returned as [`Samples`] rather than `usize` because the consumer's next
+    /// move is to compare it against a loop range, a region length or a file
+    /// position — all frame counts. As a bare `usize`, a sample count slotted
+    /// in just as easily, and a 6-channel clip looped at a sixth of its length.
+    ///
     /// `0` means "nothing available right now" for a live source, or
     /// end-of-stream for a finite one — which of the two is
     /// [`ON_EMPTY`](Self::ON_EMPTY).
-    fn poll_into(&mut self, out: &mut [S]) -> usize;
+    fn poll_into(&mut self, out: &mut [S]) -> Samples;
 }
 
 /// A push destination for audio frames: write blocks of **flat interleaved**
@@ -177,14 +191,20 @@ pub trait AudioOut<S = f32> {
     /// peer) was already told, and it cannot be renegotiated mid-stream.
     fn layout(&self) -> ChannelLayout;
 
-    /// Append `frames` — flat interleaved at [`layout`](Self::layout)'s width —
-    /// to the destination. That is `frames.len() / layout().count()` **frames**;
-    /// a trailing partial frame is ignored rather than written short, because a
-    /// short frame desynchronises the interleave for everything after it.
+    /// Append `interleaved` — flat interleaved **samples** at
+    /// [`layout`](Self::layout)'s width — to the destination. That is
+    /// [`Samples::from_interleaved_len(interleaved.len(), layout())`](Samples::from_interleaved_len)
+    /// **frames**; a trailing partial frame is ignored rather than written
+    /// short, because a short frame desynchronises the interleave for
+    /// everything after it.
+    ///
+    /// The slice's length is not a frame count and is not typed as one: it is
+    /// `frames × channels`, which a caller computes with
+    /// [`Samples::interleaved_len`] — as [`pump`] does — never by hand.
     ///
     /// Called repeatedly as data arrives; implementations write incrementally
     /// and never buffer the whole stream.
-    fn write(&mut self, frames: &[S]);
+    fn write(&mut self, interleaved: &[S]);
 
     /// Close the destination, flushing and committing. For a file sink this is
     /// where the header is back-patched, so a failure here can mean an
@@ -201,18 +221,19 @@ pub trait AudioOut<S = f32> {
 /// runs this on a background thread until its stop flag is set:
 ///
 /// ```ignore
-/// let ch = src.layout().count() as usize;
-/// let mut buf = vec![0.0f32; 1024 * ch];  // caller owns the buffer — no alloc per pump
+/// // Caller owns the buffer — no alloc per pump. Sized in samples, from frames.
+/// let mut buf = vec![0.0f32; Samples(1024).interleaved_len(src.layout())];
 /// while running.load(Ordering::Relaxed) {
-///     if pump(&mut mic, &mut wav, &mut buf) == 0 {
+///     if pump(&mut mic, &mut wav, &mut buf).is_zero() {
 ///         std::thread::yield_now();       // nothing ready — a live source may starve briefly
 ///     }
 /// }
 /// wav.finalize()?;                        // caller finalizes once, after the loop
 /// ```
 ///
-/// `buf` is flat interleaved and therefore *sized* in samples (`frames * ch`) —
-/// a flat slice has no other unit. Everything **returned** is in frames.
+/// `buf` is flat interleaved and therefore *sized* in samples
+/// ([`Samples::interleaved_len`]) — a flat slice has no other unit. Everything
+/// **returned** is in frames, as a [`Samples`].
 ///
 /// Generic over the element `S` and, not `dyn`, over the concrete source and
 /// sink: the caller picks both at the call site, so `poll_into` and `write`
@@ -236,7 +257,7 @@ pub trait AudioOut<S = f32> {
 /// the constructor-level check is what a shipped binary relies on, and panicking
 /// here would abort a pump thread mid-take over a condition its caller was
 /// already given a chance to reject.
-pub fn pump<S, I, O>(src: &mut I, dst: &mut O, buf: &mut [S]) -> usize
+pub fn pump<S, I, O>(src: &mut I, dst: &mut O, buf: &mut [S]) -> Samples
 where
     S: Copy,
     I: AudioIn<S> + ?Sized,
@@ -248,10 +269,11 @@ where
         "pump source and sink must agree on channel width; \
          a mismatch rotates the sink's channels every frame"
     );
-    // Once, outside anything per-frame.
-    let ch = src.layout().count().max(1) as usize;
     let n = src.poll_into(buf);
-    dst.write(&buf[..n * ch]);
+    // The one frames → samples crossing on this path, and it is named: an
+    // `n * ch` written by hand here is exactly where a count in the wrong unit
+    // used to be accepted without complaint.
+    dst.write(&buf[..n.interleaved_len(src.layout())]);
     n
 }
 
@@ -285,13 +307,13 @@ mod tests {
             self.layout
         }
 
-        fn poll_into(&mut self, out: &mut [S]) -> usize {
+        fn poll_into(&mut self, out: &mut [S]) -> Samples {
             let ch = self.layout.count() as usize;
             let total = self.samples.len() / ch;
             let n = (total - self.pos).min(out.len() / ch).min(self.chunk);
             out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
             self.pos += n;
-            n
+            Samples(n)
         }
     }
 
@@ -341,20 +363,20 @@ mod tests {
         let mut dst = CountingSink::new(ChannelLayout::STEREO);
         let mut buf = vec![0.0f32; 64 * 2];
 
-        let mut total = 0;
+        let mut total = Samples::ZERO;
         loop {
             let n = pump(&mut src, &mut dst, &mut buf);
-            if n == 0 {
+            if n.is_zero() {
                 break;
             }
             assert!(
-                n <= buf.len() / 2,
+                n <= Samples::from_interleaved_len(buf.len(), ChannelLayout::STEREO),
                 "pump reported more FRAMES than the buffer holds"
             );
             total += n;
         }
 
-        assert_eq!(total, 1000);
+        assert_eq!(total, Samples(1000));
         assert_eq!(
             dst.written, samples,
             "frames must arrive intact and in order"
@@ -377,7 +399,7 @@ mod tests {
         let mut dst: CountingSink<f64> = CountingSink::new(ChannelLayout::from(6u16));
         let mut buf = vec![0.0f64; 64 * 6];
 
-        while pump(&mut src, &mut dst, &mut buf) != 0 {}
+        while !pump(&mut src, &mut dst, &mut buf).is_zero() {}
 
         assert_eq!(
             dst.written, samples,
@@ -408,7 +430,7 @@ mod tests {
         let mut buf = vec![0.0f32; 10 * CH];
         assert_eq!(
             src.poll_into(&mut buf),
-            10,
+            Samples(10),
             "poll_into returns FRAMES (10), not samples (60)"
         );
         assert_eq!(src.pos, 10, "and the source advanced by 10 FRAMES");
@@ -423,7 +445,7 @@ mod tests {
         let mut dst = CountingSink::new(ChannelLayout::from(6u16));
         assert_eq!(
             pump(&mut src2, &mut dst, &mut buf),
-            10,
+            Samples(10),
             "pump returns FRAMES"
         );
         assert_eq!(
@@ -453,16 +475,16 @@ mod tests {
             ChannelLayout::STEREO
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
             self.polls += 1;
             if self.polls % 2 == 1 {
-                return 0; // "nothing ready yet" — but not finished
+                return Samples::ZERO; // "nothing ready yet" — but not finished
             }
             let total = self.samples.len() / 2;
             let n = (total - self.pos).min(out.len() / 2).min(4);
             out[..n * 2].copy_from_slice(&self.samples[self.pos * 2..(self.pos + n) * 2]);
             self.pos += n;
-            n
+            Samples(n)
         }
     }
 
@@ -476,7 +498,7 @@ mod tests {
     fn drain<I: AudioIn>(src: &mut I, dst: &mut CountingSink<f32>, max_polls: usize) {
         let mut buf = [0.0f32; 16 * 2];
         for _ in 0..max_polls {
-            if pump(src, dst, &mut buf) == 0 {
+            if pump(src, dst, &mut buf).is_zero() {
                 match I::ON_EMPTY {
                     // A live source has more coming — keep polling.
                     OnEmpty::Starved => continue,

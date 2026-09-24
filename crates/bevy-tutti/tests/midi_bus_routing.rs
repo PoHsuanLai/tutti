@@ -59,7 +59,7 @@ mod midi_route {
         )));
         app.insert_resource(AudioConfig {
             sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
-            channels: Default::default(),
+            channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
@@ -332,7 +332,7 @@ mod midi_registration {
         ));
         app.insert_resource(bevy_tutti::graph::AudioConfig {
             sample_rate: tutti_core::SampleRate(48_000.0),
-            channels: Default::default(),
+            channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
@@ -504,7 +504,7 @@ mod plugin_crash_unwire {
         ));
         app.insert_resource(bevy_tutti::graph::AudioConfig {
             sample_rate: tutti_core::SampleRate(48_000.0),
-            channels: Default::default(),
+            channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());

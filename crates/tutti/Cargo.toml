@@ -74,15 +74,19 @@ jack = ["device", "tutti-cpal/jack"]
 
 # --- codecs -----------------------------------------------------------------
 #
-# The decoder is `tutti-io`'s, so a codec pulls that crate in: `Wave::load`
-# and `FileIn` are reached as `tutti::io::…`, which is why `io` is also
-# surfaced for these features and not only for `audio-io`. bevy-tutti forwards
-# with `tutti-io?/` instead, because there `tutti-io` arrives only with an
-# edge that uses it.
-wav = ["dep:tutti-io", "tutti-io/wav", "tutti-sampler?/wav"]
-flac = ["dep:tutti-io", "tutti-io/flac", "tutti-sampler?/flac"]
-mp3 = ["dep:tutti-io", "tutti-io/mp3", "tutti-sampler?/mp3"]
-ogg = ["dep:tutti-io", "tutti-io/ogg", "tutti-sampler?/ogg"]
+# The decoder is `tutti-io`'s, so a codec turns on `io` (below): `Wave::load`
+# and `FileIn` are reached as `tutti::io::…`. bevy-tutti forwards with
+# `tutti-io?/` instead, because there `tutti-io` arrives only with an edge
+# that uses it.
+wav = ["io", "tutti-io/wav", "tutti-sampler?/wav"]
+flac = ["io", "tutti-io/flac", "tutti-sampler?/flac"]
+mp3 = ["io", "tutti-io/mp3", "tutti-sampler?/mp3"]
+ogg = ["io", "tutti-io/ogg", "tutti-sampler?/ogg"]
+
+# `tutti::io` — `tutti-io`, the I/O edge. Implied by `audio-io` and by every
+# codec, so it is rarely named directly; it exists so `src/lib.rs` gates the
+# module on one feature rather than a list that must track the codecs.
+io = ["dep:tutti-io"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------
 midi = [
@@ -104,7 +108,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 synth = ["dep:tutti-polysynth"]
 soundfont = ["midi", "dep:tutti-soundfont"]
 sampler = ["wav", "dep:tutti-sampler"]
-audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
+audio-io = ["io", "tutti-cpal?/capture"]
 export = ["dep:tutti-export"]
 spatial = ["dep:tutti-spatial"]
 modulation = ["dep:tutti-mod"]

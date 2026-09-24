@@ -25,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tutti_io::{WaveAsset, WaveMetadata, WaveError}`,
   `tutti_core::{can_decode, decodable_extensions}` →
   `tutti_io::{can_decode, decodable_extensions}`. Through the `tutti` umbrella
-  they are `tutti::io::…`, which is now present with any codec feature as well
-  as with `audio-io`. Decoded samples are bit-identical
+  they are `tutti::io::…`, gated on a new `io` feature that every codec
+  feature and `audio-io` imply. Decoded samples are bit-identical
   (`tutti-io/tests/decode_golden.rs` pins them against fixtures in
   `assets/audio/`).
 

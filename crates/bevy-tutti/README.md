@@ -207,7 +207,7 @@ app.add_audio_pump::<f32, 6>();   // 5.1 render
 let mic = MicIn::open(None)?;
 let wav = mic.matching_sink(&path, BitDepth::Float32)
     .ok_or("could not create WAV")?;
-let pump = commands.spawn(AudioPump::start(mic, wav, 1024)).id();
+let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
 
 // Later:
 audio_pumps.get(pump)?.stop();
@@ -222,7 +222,7 @@ lock-free copy of it, and `TapIn` adapts the consumer end into an `AudioIn`:
 let src = TapIn::new(tap.open()?);
 let wav = WavOut::create(&path, config.sample_rate, 2, BitDepth::Float32)
     .ok_or("could not create WAV")?;
-commands.spawn(AudioPump::start(src, wav, 1024));
+commands.spawn(AudioPump::start(src, wav, Samples(1024)));
 ```
 
 Nothing can check that a sink's rate matches its source — `AudioIn` carries no

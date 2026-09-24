@@ -45,7 +45,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_core::ChannelLayout;
+use tutti_core::{ChannelLayout, Samples};
 use tutti_io::{AudioIn, BitDepth, OnEmpty, Recorder, WavOut};
 
 /// Block until `cond` holds, or fail the test at `deadline`.
@@ -112,7 +112,7 @@ impl AudioIn for Ramp {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         self.polls.fetch_add(1, Ordering::Release);
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
@@ -120,7 +120,7 @@ impl AudioIn for Ramp {
         let n = (self.frames - self.pos).min(out.len() / 2);
         if n == 0 {
             self.drained.store(true, Ordering::Release);
-            return 0;
+            return Samples::ZERO;
         }
         for i in 0..n {
             // Distinct per frame and per channel, so a dropped, duplicated or
@@ -130,7 +130,7 @@ impl AudioIn for Ramp {
             out[i * 2 + 1] = -(f / 100_000.0);
         }
         self.pos += n;
-        n
+        Samples(n)
     }
 }
 
@@ -149,13 +149,13 @@ impl AudioIn for HalfStarving {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         let n = self.polls.fetch_add(1, Ordering::Release) + 1;
         if n.is_multiple_of(2) {
-            return 0;
+            return Samples::ZERO;
         }
-        let frames = out.len() / 2;
-        out[..frames * 2].fill(0.25);
+        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
+        out[..frames.interleaved_len(ChannelLayout::STEREO)].fill(0.25);
         frames
     }
 }
@@ -174,7 +174,7 @@ impl AudioIn for Exploding {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, _out: &mut [f32]) -> usize {
+    fn poll_into(&mut self, _out: &mut [f32]) -> Samples {
         self.polled.fetch_add(1, Ordering::Release);
         panic!("the source fell over mid-take");
     }

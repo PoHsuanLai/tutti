@@ -87,7 +87,7 @@
 //!     // Paired at the one place both halves are in scope, so the sink cannot
 //!     // declare a rate the source does not produce.
 //!     let wav = mic.matching_sink(path, BitDepth::Float32).expect("sink opens");
-//!     commands.spawn(AudioPump::start(mic, wav, 1024));
+//!     commands.spawn(AudioPump::start(mic, wav, Samples(1024)));
 //! }
 //! ```
 //!
@@ -121,7 +121,7 @@
 //!     // The rate is `AudioConfig`'s: a tap has no device to ask.
 //!     let wav = WavOut::create(&path.0, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)
 //!         .expect("a writable path");
-//!     commands.spawn(AudioPump::start(src, wav, 1024));
+//!     commands.spawn(AudioPump::start(src, wav, Samples(1024)));
 //! }
 //!
 //! let dir = tempfile::tempdir().expect("a temp dir");
@@ -158,6 +158,8 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 // takes no policy argument; `ChannelLayout` is the *channel* width, which the
 // I/O traits carry at runtime rather than as a const parameter — so a host
 // building a source or a sink needs it named here, not fetched from `tutti-core`.
+// `Samples` is the frame count `poll_into` and `pump` return, and the unit an
+// `AudioPump`'s capacity is given in — the same "needs it named here" reason.
 pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 pub use tutti_core::pcm::BitDepth;
-pub use tutti_core::ChannelLayout;
+pub use tutti_core::{ChannelLayout, Samples};

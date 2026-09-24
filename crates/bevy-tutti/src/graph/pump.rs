@@ -11,7 +11,7 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
 //! use tutti_core::io::{AudioIn, AudioOut, OnEmpty};
-//! use tutti_core::ChannelLayout;
+//! use tutti_core::{ChannelLayout, Samples};
 //! use std::sync::{Arc, Mutex};
 //!
 //! /// A finite stereo source. `MicIn` (`audio-io`) is the live counterpart; the
@@ -22,12 +22,13 @@
 //!     // than parking. A live source says `Starved` and the pump waits.
 //!     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 //!     fn layout(&self) -> ChannelLayout { ChannelLayout::STEREO }
-//!     fn poll_into(&mut self, out: &mut [f32]) -> usize {
+//!     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
 //!         // `out` is flat interleaved, so it holds len/2 FRAMES — the return
-//!         // is a frame count, never a sample count.
-//!         let frames = (out.len() / 2).min(self.frames_left);
-//!         out[..frames * 2].fill(0.25);
-//!         self.frames_left -= frames;
+//!         // is a frame count, never a sample count, and the type says so.
+//!         let fits = Samples::from_interleaved_len(out.len(), self.layout());
+//!         let frames = fits.min(Samples(self.frames_left));
+//!         out[..frames.interleaved_len(self.layout())].fill(0.25);
+//!         self.frames_left -= frames.get();
 //!         frames
 //!     }
 //! }
@@ -49,7 +50,7 @@
 //! // the width rides on the value rather than in the type.
 //! app.add_audio_pump::<f32>();
 //! // Any AudioIn into any AudioOut of the same frame type.
-//! app.world_mut().spawn(AudioPump::start(Tone { frames_left: 4096 }, sink, 1024));
+//! app.world_mut().spawn(AudioPump::start(Tone { frames_left: 4096 }, sink, Samples(1024)));
 //!
 //! // The source ends on its own; the drain system joins the thread and reports.
 //! let mut finalized = None;
@@ -103,6 +104,7 @@ use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
 
 use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
+use tutti_core::Samples;
 
 /// How long the pump parks when a [`Starved`](OnEmpty::Starved) source yields
 /// nothing. Matches `tutti_io::Recorder`: long enough not to spin a core,
@@ -144,9 +146,11 @@ pub struct AudioPump<S = f32> {
 impl<S> AudioPump<S> {
     /// Start pumping `src` into `dst` on a background thread.
     ///
-    /// `capacity` is the scratch buffer in **frames**; it is allocated once,
-    /// sized `capacity * width` from the source's own layout, so the loop body
-    /// never allocates.
+    /// `capacity` is the scratch buffer in **frames** — a [`Samples`], so a
+    /// caller cannot hand over a sample count by mistake and get a buffer
+    /// `width` times too large. It is allocated once, sized
+    /// [`capacity.interleaved_len(layout)`](Samples::interleaved_len) from the
+    /// source's own layout, so the loop body never allocates.
     ///
     /// There is no policy argument: whether an empty poll means "retry" or
     /// "done" is [`AudioIn::ON_EMPTY`], a property of the source type. A caller
@@ -157,7 +161,7 @@ impl<S> AudioPump<S> {
     /// unlike `tutti_io::Recorder::start` it has no error channel (it returns a
     /// `Component`, not a `Result`). A host that needs the checked form uses
     /// `Recorder`.
-    pub fn start<I, O>(src: I, dst: O, capacity: usize) -> Self
+    pub fn start<I, O>(src: I, dst: O, capacity: Samples) -> Self
     where
         I: AudioIn<S> + Send + 'static,
         O: AudioOut<S> + Send + 'static,
@@ -172,7 +176,7 @@ impl<S> AudioPump<S> {
     /// [`EndOfStream`](OnEmpty::EndOfStream) one never parks, it exits. How long
     /// to wait is the consumer's tuning; *whether* to wait is the source's
     /// nature, which is why only this half is an argument.
-    pub fn start_with_park<I, O>(mut src: I, mut dst: O, capacity: usize, park: Duration) -> Self
+    pub fn start_with_park<I, O>(mut src: I, mut dst: O, capacity: Samples, park: Duration) -> Self
     where
         I: AudioIn<S> + Send + 'static,
         O: AudioOut<S> + Send + 'static,
@@ -181,16 +185,21 @@ impl<S> AudioPump<S> {
         // The source's width, read ONCE here — the scratch is sized from it and
         // never resized, so a layout that changed mid-stream would be a bug in
         // the source, not something this loop re-checks per pass.
-        let width = src.layout().count().max(1) as usize;
+        let layout = src.layout();
 
         let running = Arc::new(AtomicBool::new(true));
         let flag = Arc::clone(&running);
 
         let handle = std::thread::spawn(move || {
             // Allocated once; the loop body below never allocates.
-            let mut scratch = vec![S::default(); capacity.max(1) * width];
+            let frames = if capacity.is_zero() {
+                Samples(1)
+            } else {
+                capacity
+            };
+            let mut scratch = vec![S::default(); frames.interleaved_len(layout)];
             while flag.load(Ordering::Acquire) {
-                if pump(&mut src, &mut dst, &mut scratch) == 0 {
+                if pump(&mut src, &mut dst, &mut scratch).is_zero() {
                     match I::ON_EMPTY {
                         // The producer has not caught up — back off, don't spin.
                         OnEmpty::Starved => std::thread::sleep(park),

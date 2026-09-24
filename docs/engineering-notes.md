@@ -243,8 +243,9 @@ the engine fixes a channel count in a type any more.
 - **`AudioIn` / `AudioOut`** (`tutti-types::io`) — engine **edges**: mic in, WAV
   out, `TapIn`, `FileIn`. Both take a **flat interleaved `&[S]`** and report
   their width as a runtime `ChannelLayout` from `layout()`. **Every count on this
-  boundary is denominated in FRAMES** — `poll_into` returns frames, `write`
-  receives `frames * ch` samples. That rule is the whole risk surface: a consumer
+  boundary is denominated in FRAMES** — `poll_into` and `pump` return a
+  `Samples` (the frame count), `write` receives
+  `frames.interleaved_len(layout)` samples. That rule is the whole risk surface: a consumer
   compares a returned count against a loop range or a file position, both in
   frames, so leaking samples makes a 6-channel looped clip wrap at a sixth of its
   length and present as "the loop points are wrong".

@@ -55,7 +55,7 @@ use tutti_types::{
 /// a `use ... as _` to prove both paths name the same item.
 #[test]
 fn the_pump_helper_resolves_through_both_paths() {
-    type Fn_ = fn(&mut Silence, &mut Sink, &mut [f32]) -> usize;
+    type Fn_ = fn(&mut Silence, &mut Sink, &mut [f32]) -> tutti_types::Samples;
     let via_root: Fn_ = tutti_types::pump;
     let via_prelude: Fn_ = {
         use tutti_types::prelude::pump;
@@ -70,9 +70,9 @@ impl tutti_types::AudioIn<f32> for Silence {
     fn layout(&self) -> tutti_types::ChannelLayout {
         tutti_types::ChannelLayout::MONO
     }
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+    fn poll_into(&mut self, out: &mut [f32]) -> tutti_types::Samples {
         out.fill(0.0);
-        out.len()
+        tutti_types::Samples::from_interleaved_len(out.len(), tutti_types::ChannelLayout::MONO)
     }
 }
 
@@ -91,10 +91,10 @@ impl tutti_types::AudioOut<f32> for Sink {
 
 /// The prelude carries the whole `AudioIn` contract, not just the trait name.
 ///
-/// `ON_EMPTY` is an associated const on `AudioIn`, and `OnEmpty` is its type. A
-/// consumer writing an impl needs both, so a prelude that carried the trait
-/// alone would be an incomplete forward — the caller could name the trait but
-/// not write the impl.
+/// `ON_EMPTY` is an associated const on `AudioIn`, and `OnEmpty` is its type;
+/// `poll_into` returns a `Samples` frame count. A consumer writing an impl
+/// needs all three, so a prelude that carried the trait alone would be an
+/// incomplete forward — the caller could name the trait but not write the impl.
 #[test]
 fn implementing_audio_in_needs_nothing_beyond_the_prelude() {
     use tutti_types::prelude::*;
@@ -105,15 +105,15 @@ fn implementing_audio_in_needs_nothing_beyond_the_prelude() {
         fn layout(&self) -> ChannelLayout {
             ChannelLayout::MONO
         }
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
             out.fill(0.0);
-            out.len()
+            Samples::from_interleaved_len(out.len(), self.layout())
         }
     }
 
     let mut s = Quiet;
     let mut buf = [1.0f32; 4];
-    assert_eq!(s.poll_into(&mut buf), 4);
+    assert_eq!(s.poll_into(&mut buf), Samples(4));
     assert_eq!(buf, [0.0; 4]);
     assert_eq!(s.layout(), ChannelLayout::MONO);
 }

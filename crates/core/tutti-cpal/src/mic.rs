@@ -37,6 +37,7 @@ use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
 use tutti_core::SampleRate;
+use tutti_core::Samples;
 use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
 
@@ -284,11 +285,11 @@ impl AudioIn for MicIn {
         ChannelLayout::STEREO
     }
 
-    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         // Pop up to `out.len() / 2` FRAMES the callback has pushed — the return
         // is frames, the slice is samples. A short/zero count is normal for a
         // live source — the pump backs off and tries again.
-        let frames = out.len() / 2;
+        let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
         let mut n = 0;
         while n < frames {
             match self.cons.try_pop() {
@@ -300,7 +301,7 @@ impl AudioIn for MicIn {
                 None => break,
             }
         }
-        n
+        Samples(n)
     }
 }
 

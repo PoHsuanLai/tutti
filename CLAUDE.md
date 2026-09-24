@@ -151,7 +151,9 @@ Non-scalar state handed to the audio thread goes through
 - **`AudioIn` / `AudioOut`** (`tutti-types::io`) are engine **edges** (mic,
   WAV, `TapIn`, `FileIn`, the sampler's butler ring). They take flat
   interleaved `&[S]` with a runtime `ChannelLayout`. **Every count on this
-  boundary is in frames.**
+  boundary is in frames**, typed as `Samples` (the frame count). Cross to a
+  slice length only with `Samples::interleaved_len` /
+  `Samples::from_interleaved_len`.
 - **`AudioUnit::process`** is for anything that is a node in the graph
   (including sampler voices).
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The

@@ -34,7 +34,7 @@ mod audio_pump {
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
     // need to name `tutti-core` or `tutti-io` to write a pump, and this pins that.
-    use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, WavOut};
+    use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, Samples, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -52,7 +52,7 @@ mod audio_pump {
             ChannelLayout::STEREO
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
             // `out` is flat interleaved; the fixture holds `[f32; 2]` frames, and
             // the two have identical layout, so this is a reinterpretation not a
             // copy. The RETURN is frames.
@@ -60,7 +60,7 @@ mod audio_pump {
             let n = (self.frames.len() - self.pos).min(out.len());
             out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);
             self.pos += n;
-            n
+            Samples(n)
         }
     }
 
@@ -80,18 +80,18 @@ mod audio_pump {
             ChannelLayout::STEREO
         }
 
-        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        fn poll_into(&mut self, out: &mut [f32]) -> Samples {
             self.polls += 1;
             // Every other poll is empty; the rest yield one frame.
             if self.polls % 2 == 1 {
-                return 0;
+                return Samples::ZERO;
             }
             if out.len() < 2 {
-                return 0;
+                return Samples::ZERO;
             }
             out[0] = 0.5;
             out[1] = -0.5;
-            1
+            Samples(1)
         }
     }
 
@@ -155,7 +155,7 @@ mod audio_pump {
             pos: 0,
         };
         app.world_mut()
-            .spawn(AudioPump::start(src, sink(&path), 256));
+            .spawn(AudioPump::start(src, sink(&path), Samples(256)));
 
         assert!(
             run_until_drained(&mut app, 200),
@@ -185,7 +185,11 @@ mod audio_pump {
         let mut app = app();
         let entity = app
             .world_mut()
-            .spawn(AudioPump::start(LiveSource { polls: 0 }, sink(&path), 64))
+            .spawn(AudioPump::start(
+                LiveSource { polls: 0 },
+                sink(&path),
+                Samples(64),
+            ))
             .id();
 
         // Let it move some frames across several park cycles.
@@ -226,7 +230,11 @@ mod audio_pump {
         let mut app = app();
         let entity = app
             .world_mut()
-            .spawn(AudioPump::start(LiveSource { polls: 0 }, sink(&path), 64))
+            .spawn(AudioPump::start(
+                LiveSource { polls: 0 },
+                sink(&path),
+                Samples(64),
+            ))
             .id();
 
         for _ in 0..4 {
@@ -261,7 +269,7 @@ mod audio_pump {
                     pos: 0,
                 },
                 sink(&path),
-                256,
+                Samples(256),
             ))
             .id();
 
@@ -303,7 +311,7 @@ mod audio_pump {
                 pos: 0,
             },
             sink(&path),
-            256,
+            Samples(256),
         ));
 
         assert!(run_until_drained(&mut app, 200), "the pump should finish");
@@ -336,7 +344,10 @@ mod audio_pump {
         };
         let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
             .expect("could not create WAV");
-        let pump = app.world_mut().spawn(AudioPump::start(src, wav, 1024)).id();
+        let pump = app
+            .world_mut()
+            .spawn(AudioPump::start(src, wav, Samples(1024)))
+            .id();
 
         // The stop path a host writes, through the component.
         if let Some(p) = app.world().entity(pump).get::<AudioPump<f32>>() {
@@ -367,7 +378,7 @@ mod master_record {
 
     use bevy_app::prelude::*;
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, AudioTapRes};
-    use bevy_tutti::io::{BitDepth, ChannelLayout, TapIn, WavOut};
+    use bevy_tutti::io::{BitDepth, ChannelLayout, Samples, TapIn, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -419,7 +430,7 @@ mod master_record {
 
         let mut app = app();
         app.world_mut()
-            .spawn(AudioPump::start(src, sink(&path), 512));
+            .spawn(AudioPump::start(src, sink(&path), Samples(512)));
 
         // Play the audio callback: interleaved stereo, the shape `push` takes.
         let block: Vec<f32> = (0..256).flat_map(|i| [i as f32 / 256.0, -1.0]).collect();
@@ -478,7 +489,7 @@ mod master_record {
 
         let mut app = app();
         app.world_mut()
-            .spawn(AudioPump::start(src, sink(&path), 512));
+            .spawn(AudioPump::start(src, sink(&path), Samples(512)));
 
         // Nothing pushed: the graph is running but silent.
         for _ in 0..6 {

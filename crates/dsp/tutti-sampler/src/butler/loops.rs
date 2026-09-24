@@ -95,7 +95,7 @@ pub(crate) fn handle_loops(
                         let loop_len = loop_end - loop_start as usize;
                         // Both sides are FRAME counts — `write_space()` is
                         // frame-denominated, so this comparison needs no scaling.
-                        let prefill_len = loop_len.min(writer.write_space());
+                        let prefill_len = loop_len.min(writer.write_space().get());
                         capture_frames(&wave, loop_start as usize, prefill_len, writer.channels())
                     } else {
                         Vec::new()
@@ -106,7 +106,7 @@ pub(crate) fn handle_loops(
 
                 if !prefill_samples.is_empty() {
                     let written = writer.push_interleaved(&prefill_samples);
-                    writer.set_file_position(loop_start + written as u64);
+                    writer.set_file_position(loop_start + written.get() as u64);
                 }
             }
         }

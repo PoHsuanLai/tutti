@@ -221,7 +221,7 @@ fn total_buffered(
         .filter_map(|entry| {
             let link = entry.value().link.as_ref()?;
             let writer = regions.get(link.region_id)?;
-            Some(writer.capacity() - writer.write_space())
+            Some(writer.buffered().get())
         })
         .sum()
 }

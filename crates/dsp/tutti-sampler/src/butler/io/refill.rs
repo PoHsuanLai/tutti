@@ -97,10 +97,7 @@ pub(crate) fn refill_all(
             continue;
         };
 
-        let available = writer.capacity() - writer.write_space();
-        let buffer_capacity = writer.capacity();
-
-        let fill_pct = available as f32 / buffer_capacity as f32;
+        let fill_pct = writer.buffered().get() as f32 / writer.capacity().get() as f32;
 
         stream_state.rt_state.set_buffer_fill(fill_pct);
 
@@ -208,8 +205,7 @@ pub(crate) fn refill_all_parallel(
             let idx = *regions.index().get(&link.region_id)?;
             let writer = regions.writers().get(idx)?;
 
-            let available = writer.capacity() - writer.write_space();
-            let fill_pct = available as f32 / writer.capacity() as f32;
+            let fill_pct = writer.buffered().get() as f32 / writer.capacity().get() as f32;
 
             if fill_pct >= fill_threshold {
                 return None;
@@ -373,7 +369,10 @@ fn refill_forward_stream(
 
     let written = writer.push_interleaved(interleave_buffer);
 
-    let new_pos = wrap_position(file_position + written, loop_range);
+    // `written` is FRAMES (a `Samples`), added to a file position in frames.
+    // Were it the interleaved sample count, a 6-channel loop would wrap at a
+    // sixth of its length — see `a_six_channel_loop_wraps_at_its_frame_length`.
+    let new_pos = wrap_position(file_position + written.get(), loop_range);
     writer.set_file_position(new_pos as u64);
 }
 
@@ -419,7 +418,7 @@ fn refill_reverse_stream(
     // not. `write_interleaved_reversed` reverses the frame sequence and keeps
     // channels in order within each frame.
     let written = writer.write_interleaved_reversed(interleave_buffer);
-    writer.set_file_position(file_position.saturating_sub(written) as u64);
+    writer.set_file_position(file_position.saturating_sub(written.get()) as u64);
 }
 
 /// Refill for forward playback from a resident `Wave`, respecting loop
@@ -450,7 +449,10 @@ fn refill_forward(
 
     let written = writer.push_interleaved(interleave_buffer);
 
-    let new_pos = wrap_position(file_position + written, loop_range);
+    // `written` is FRAMES (a `Samples`), added to a file position in frames.
+    // Were it the interleaved sample count, a 6-channel loop would wrap at a
+    // sixth of its length — see `a_six_channel_loop_wraps_at_its_frame_length`.
+    let new_pos = wrap_position(file_position + written.get(), loop_range);
     writer.set_file_position(new_pos as u64);
 }
 
@@ -483,7 +485,7 @@ fn refill_reverse(
     }
 
     let written = writer.write_interleaved_reversed(interleave_buffer);
-    writer.set_file_position(file_position.saturating_sub(written) as u64);
+    writer.set_file_position(file_position.saturating_sub(written.get()) as u64);
 }
 
 /// The whole-file fallback: hand back a cached [`Wave`], or decode one and cache
@@ -689,6 +691,70 @@ mod tests {
             wave.push((*l, *r));
         }
         wave
+    }
+
+    /// **A 6-channel loop wraps at its full FRAME length**, and a reverse
+    /// refill steps back by frames — the failure `CLAUDE.md` names for this
+    /// boundary ("a 6-channel looped clip wraps at a sixth of its length").
+    ///
+    /// Both refills advance `file_position` by the count the ring reports
+    /// landing. That count is a `Samples` now, so a *caller* can no longer hand
+    /// in the interleaved length by accident; what remains checkable at runtime
+    /// is that the ring itself reports frames, end to end through the real
+    /// refill arithmetic. At six channels a sample count is a 6× error, which
+    /// the loop wrap turns into a visibly wrong position rather than a
+    /// plausible one.
+    ///
+    /// Mutation: `push_interleaved` returning `Samples(samples.len())` (the
+    /// interleaved length) → 900 "frames" land, `wrap(900) = 0`, not 50 → the
+    /// forward assertion fails. `write_interleaved_reversed` returning the
+    /// sample count → 180 back from 100 saturates to 0, not 70 → the reverse
+    /// assertion fails.
+    #[test]
+    fn a_six_channel_loop_wraps_at_its_frame_length() {
+        use crate::butler::command::RegionId;
+        use crate::butler::RegionBuffer;
+        use tutti_core::Samples;
+
+        const CH: usize = 6;
+        const LOOP_FRAMES: usize = 100;
+        let mut wave = Wave::zero(CH, 48_000.0, LOOP_FRAMES as f64 / 48_000.0);
+        for i in 0..LOOP_FRAMES {
+            for c in 0..CH {
+                wave.set(c, i, (i * CH + c) as f32 / 1000.0);
+            }
+        }
+        assert_eq!(wave.len(), LOOP_FRAMES);
+        let mut buf = Vec::new();
+
+        // Forward: 150 frames from frame 0 of a 100-frame loop.
+        let (mut writer, _reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, CH);
+        refill_forward(
+            &mut writer,
+            &wave,
+            0,
+            150,
+            &mut buf,
+            Some((0, LOOP_FRAMES as u64)),
+        );
+        assert_eq!(writer.buffered(), Samples(150), "150 frames landed");
+        assert_eq!(
+            writer.file_position(),
+            50,
+            "150 frames into a 100-frame loop is frame 50 — a sample-denominated \
+             count (900) would have wrapped to 0"
+        );
+
+        // Reverse: 30 frames back from frame 100.
+        let (mut writer, _reader) =
+            RegionBuffer::with_capacity(RegionId(2), PathBuf::new(), 4096, CH);
+        refill_reverse(&mut writer, &wave, LOOP_FRAMES, 30, &mut buf);
+        assert_eq!(
+            writer.file_position(),
+            70,
+            "30 frames back from 100 is 70 — a sample count (180) would saturate to 0"
+        );
     }
 
     #[test]

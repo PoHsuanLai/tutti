@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every count on the `AudioIn`/`AudioOut` edge is a `Samples`, not a
+  `usize`.** `AudioIn::poll_into` and `pump` return `Samples` — the engine's
+  existing frame count, the same type latency and `Seconds::to_samples` use —
+  and so do `tutti_io::PumpPass::Wrote`, `ManualPump::pump_until_dry` and
+  `tutti-sampler`'s `RegionOut::{push_interleaved, write_interleaved_reversed,
+  write_space, capacity}`. `AudioPump::start`'s `capacity` is a `Samples`.
+  The frame ↔ slice-length crossing is named: `Samples::interleaved_len(layout)`
+  and `Samples::from_interleaved_len(len, layout)`.
+
+  Migrating an implementor: return `Samples(n)` instead of `n`, or
+  `Samples::from_interleaved_len(out.len(), self.layout())` for "the whole
+  buffer". A caller comparing against zero uses `.is_zero()`.
+
+- **`ChannelLayout` no longer implements `Default`.** It defaulted to `STEREO`,
+  and that guess leaked through every `#[derive(Default)]` on a struct holding
+  one — which is how `Topology::default()` once declared two global inputs.
+  Name the width: `ChannelLayout::STEREO`, `::EMPTY`, `::from(n)`. Knock-on:
+  `tutti_vst2_host::PluginInfo` no longer derives `Default`; `EncodeConfig`
+  (stereo), `PeakBlocks` and `PeakAccum` (empty) have hand-written defaults
+  that name their width.
+
 - **`tutti-midi-io` is renamed `tutti-midi-hardware`.** The crate is the OS port
   edge and nothing else; `-io` invited the reading that it also covered file I/O,
   which is `tutti-midi-file`'s job. `bevy-tutti`'s `midi-hardware` feature now

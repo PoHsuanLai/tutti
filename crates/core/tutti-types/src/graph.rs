@@ -272,12 +272,14 @@ pub struct Topology {
 /// An empty graph with **no global inputs** — a master graph before anything is
 /// added to it.
 ///
-/// Hand-written rather than derived, and the reason is a real trap:
-/// [`ChannelLayout::default`] is `STEREO`, so a derived `Default` would give
-/// every `Topology::default()` two global input channels nobody asked for. That
-/// is silent — the value validates, and the compiled graph merely has two
-/// unused inputs — right up until a `Source::Global` typo resolves against them
-/// instead of being rejected as out of range.
+/// Hand-written, and the reason is a real trap. `ChannelLayout` used to
+/// implement `Default` as `STEREO`, so a derived `Default` here gave every
+/// `Topology::default()` two global input channels nobody asked for. That was
+/// silent — the value validated, and the compiled graph merely had two unused
+/// inputs — right up until a `Source::Global` typo resolved against them
+/// instead of being rejected as out of range. `ChannelLayout` no longer has a
+/// `Default` at all, so a derive here would not compile: every width is now
+/// written where it is chosen.
 impl Default for Topology {
     fn default() -> Self {
         Self {

@@ -12,7 +12,7 @@ pub use tutti_plugin_types::{
 };
 
 /// Plugin metadata gathered at load time.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PluginInfo {
     /// Stable identifier built from the plugin's `unique_id`.
     pub id: String,

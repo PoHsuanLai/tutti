@@ -90,12 +90,27 @@ impl PeakBlock {
 /// contiguous slice, which is exactly the layout a GPU texture upload wants —
 /// one row per channel — so a renderer hands the whole buffer over without
 /// re-packing it.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PeakBlocks {
     /// Channel-major: channel `c` occupies `[c * per_channel .. (c+1) * per_channel]`.
     blocks: Vec<PeakBlock>,
     layout: ChannelLayout,
     per_channel: usize,
+}
+
+/// The empty summary: no blocks, and **no channels**.
+///
+/// Hand-written because `ChannelLayout` deliberately has no `Default` — a
+/// derived one used to say `STEREO` here, describing two channels of a summary
+/// that holds none. `EMPTY` is the width that agrees with an empty `blocks`.
+impl Default for PeakBlocks {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            layout: ChannelLayout::EMPTY,
+            per_channel: 0,
+        }
+    }
 }
 
 impl PeakBlocks {
@@ -426,17 +441,30 @@ pub fn finish(state: &mut PeakState, out: PeakAccum) -> PeakBlocks {
 /// layouts: appending wants one growable run per channel, while the result
 /// wants one flat channel-major buffer. Flattening once at the end beats
 /// splicing into the middle of a flat buffer on every chunk.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PeakAccum {
     channels: Vec<Vec<PeakBlock>>,
     layout: ChannelLayout,
 }
 
+impl Default for PeakAccum {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeakAccum {
     /// An empty accumulator. The channel layout is adopted from the first
     /// chunk appended, so this needs no width up front.
+    ///
+    /// Until then it is [`ChannelLayout::EMPTY`], matching the zero channel
+    /// runs it holds. (A derived `Default` used to make it `STEREO` over zero
+    /// runs — a width that disagreed with the accumulator's own contents.)
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            channels: Vec::new(),
+            layout: ChannelLayout::EMPTY,
+        }
     }
 
     /// Widen to `layout` if this is the first chunk. Idempotent.
@@ -787,6 +815,26 @@ mod tests {
         let mut state = PeakState::new();
         let blocks = finish(&mut state, PeakAccum::new());
         assert!(blocks.is_empty(), "finish on an empty state emits nothing");
+    }
+
+    /// An empty summary reports **no** channels, not a guessed stereo pair.
+    ///
+    /// Before `ChannelLayout` lost its `Default`, both types derived one and
+    /// reported `STEREO` over zero channel runs — so `channel(1)` on a summary
+    /// of nothing answered "which channel?" with a width the data never had.
+    ///
+    /// Mutation: `layout: ChannelLayout::STEREO` in `PeakAccum::new` → the
+    /// finished summary is two channels wide → the second assertion fails.
+    #[test]
+    fn an_empty_summary_has_no_channels() {
+        assert_eq!(PeakBlocks::default().layout(), ChannelLayout::EMPTY);
+        let blocks = finish(&mut PeakState::new(), PeakAccum::new());
+        assert_eq!(
+            blocks.layout(),
+            ChannelLayout::EMPTY,
+            "no chunk was appended, so no width was adopted"
+        );
+        assert_eq!(blocks.channel(0), None);
     }
 
     #[test]

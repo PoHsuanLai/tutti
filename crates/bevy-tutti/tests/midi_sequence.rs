@@ -61,7 +61,7 @@ fn app() -> App {
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
-        channels: Default::default(),
+        channels: tutti_core::ChannelLayout::STEREO,
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());

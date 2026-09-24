@@ -15,7 +15,7 @@
 //!  ValidGraph          proof in the type
 //!      │ compile(&ValidGraph, &Shapes, prev) -> (Plan, Delta)      pure, control thread
 //!  Plan (SoA)          ops, slots, CSR DAG, delay + feedback tables
-//!      │ CommitBox { plan, delta, units }  ⇄  back with retirees        phase 2: SPSC
+//!      │ commit box { plan, delta, units }  ──SPSC──▶  and back with retirees
 //!  Executor            unit store + arena, serial walk of the ops
 //! ```
 //!
@@ -33,13 +33,13 @@
 //!   block by construction.
 //! - **[`ParamRamp`]** — built from a typed `ParamKey<U>` and read back as a
 //!   `U`; the raw `f32` in between is private.
-//! - **[`CommitBox`]** and the crate-private unit box — everything that
-//!   crosses to the executor is freed on the control side; a drop inside
-//!   [`Executor::process`] or [`Executor::apply`] panics in debug builds.
-//!   Their `&mut` never leaves this crate, which is what seals them
+//! - **The commit box and the unit box**, both crate-private — everything
+//!   that crosses to the executor travels over the editor/executor queue
+//!   pair and is freed on the control side; a drop while the executor runs
+//!   or applies panics in debug builds. No caller ever holds a box, so none
+//!   can be dropped unapplied or applied out of order (see [`Editor`]).
 //!   (`tutti_types::Retire` is the generic, move-only form of the same
-//!   guard). Dropping a box returns its credit; dropping one unapplied rolls
-//!   the editor back.
+//!   guard.)
 //! - **`FeedbackFrom::delay`** — a feedback loop's length is part of the
 //!   graph, so a bounce at a larger `MaxBlock` loops like playback; a delay
 //!   shorter than `MaxBlock` is [`CompileError::FeedbackTooShort`].
@@ -90,8 +90,8 @@
 //! - [`Node`] and [`Io`] — the contract, and what it drops from `AudioUnit`.
 //! - [`compile`] — the pass pipeline, including the buffer colouring that is
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
-//! - [`Editor`] and [`Executor`] — the phase-1 runtime, and the commit /
-//!   reclaim protocol with its back-pressure.
+//! - [`Editor`] and [`Executor`] — the runtime pair, the queue between them,
+//!   and its back-pressure.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //!
 //! # Import paths
@@ -119,11 +119,11 @@ mod reference;
 mod spec;
 
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
-pub use editor::{CommitError, Editor, ReclaimError, MAX_IN_FLIGHT};
+pub use editor::{CommitError, Editor};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents, Ump,
 };
-pub use exec::{Commit, CommitBox, Executor, DEFAULT_EVENT_CAPACITY};
+pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{

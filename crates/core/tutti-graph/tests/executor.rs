@@ -1,6 +1,6 @@
 //! The executor's own behaviour: silence skipping, status handling, the
 //! audio-thread mark, the block bound, and the editor's control-side
-//! protocol (typed controls, generations, back-pressure, reclaim).
+//! protocol (typed controls, generations, the commit queue and its back-pressure).
 
 mod common;
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use common::{prepare, Kind, TestNode};
 use tutti_graph::{
     CommitError, Cx, Editor, Executor, IntoNode, Io, Node, Prepare, Shape, SilenceMask, Status,
-    Transport, MAX_IN_FLIGHT,
+    Transport, QUEUE_CAPACITY,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail};
@@ -61,8 +61,9 @@ fn counted_after_silence(tail: Tail) -> (Editor, Executor, Arc<AtomicUsize>) {
     );
     wire(&mut ed, FX, SRC);
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
-    let done = exec.apply(ed.commit().expect("commits"));
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     (ed, exec, calls)
 }
 
@@ -169,8 +170,9 @@ fn status_silent_zeroes_and_flags() {
         Source::Node(OutPort { node: SRC, port: 0 }),
         Source::Node(OutPort { node: FX, port: 0 }),
     ];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     for _ in 0..6 {
         let out = render(&mut exec, 32, 2);
         assert!(out[0].iter().all(|&x| x == 0.0));
@@ -229,8 +231,9 @@ fn masked_status_reaches_the_next_nodes_mask() {
         );
     }
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     render(&mut exec, 16, 1);
     assert_eq!(seen.load(Ordering::Relaxed), 0b01);
 }
@@ -263,8 +266,9 @@ fn freeing_a_retire_inside_process_panics_in_debug() {
         Freer(Some(tutti_types::Retire::new(vec![0.0; 8]))),
     );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(&mut exec, 16, 1)));
     let msg = r.expect_err("the drop panics");
     let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
@@ -330,44 +334,169 @@ fn insert_returns_typed_controls() {
     let gain = ed.insert(FX, "gain", GainBuilder);
     wire(&mut ed, FX, SRC);
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     assert_eq!(render(&mut exec, 8, 1)[0][0], 2.0);
     gain.store(Amplitude(0.25));
     assert_eq!(render(&mut exec, 8, 1)[0][0], 0.5);
 }
 
-/// At most `MAX_IN_FLIGHT` commits may be out; reclaiming one frees a credit.
-/// This is what makes the phase-2 return push unable to fail.
+fn const_node(value: f32) -> TestNode {
+    TestNode::new(Kind::Const { value, width: 1 })
+}
+
+/// Up to `QUEUE_CAPACITY` commits may be out; one more is `Backpressure`,
+/// returned **before** anything is compiled or the plan advances. Once the
+/// executor runs a block, every queued commit is applied in the order sent
+/// and the next commit goes through.
 ///
-/// Mutation: never increment `in_flight` in `commit` → no back-pressure →
-/// fails.
+/// Mutation: in `Editor::commit`, advance `self.plan` before the capacity
+/// check (or drop the check) → the refused commit changes the base, or the
+/// push hits a full queue → fails.
 #[test]
-fn commits_are_back_pressured_until_reclaimed() {
+fn commits_queue_up_to_capacity_then_backpressure_without_advancing() {
     let (mut ed, mut exec) = Editor::new(prepare(8));
-    let mut out = Vec::new();
-    for i in 0..MAX_IN_FLIGHT {
-        ed.insert(
-            NodeKey(i as u64),
-            "c",
-            TestNode::new(Kind::Const {
-                value: 1.0,
-                width: 1,
-            }),
-        );
-        out.push(exec.apply(ed.commit().expect("a credit is free")));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    for i in 0..QUEUE_CAPACITY {
+        ed.insert(SRC, "c", const_node(i as f32 + 1.0));
+        ed.commit().expect("room in the queue");
     }
+    assert_eq!(ed.in_flight(), QUEUE_CAPACITY);
+    let base = std::sync::Arc::clone(ed.base().unwrap());
+    ed.insert(SRC, "c", const_node(99.0));
+    assert_eq!(ed.commit(), Err(CommitError::Backpressure));
+    assert!(
+        std::sync::Arc::ptr_eq(ed.base().unwrap(), &base),
+        "a refused commit does not advance the plan"
+    );
+    assert!(
+        exec.plan().is_none(),
+        "nothing applied until the executor runs"
+    );
+
+    assert_eq!(
+        render(&mut exec, 8, 1)[0][0],
+        QUEUE_CAPACITY as f32,
+        "the last one sent"
+    );
+    // Every generation but the last was retired, in the order sent.
+    let retired = ed.collect();
+    assert_eq!(retired, vec![SRC; QUEUE_CAPACITY - 1]);
+    assert_eq!(ed.in_flight(), 0);
+    ed.commit().expect("room again");
+    assert_eq!(render(&mut exec, 8, 1)[0][0], 99.0);
+}
+
+/// Commits apply in the order they were sent, each on top of the last — a
+/// linear chain — even when several are queued before a block runs.
+///
+/// Mutation: pop the queue in reverse (collect, then apply newest first) →
+/// the final plan is the first one sent → fails.
+#[test]
+fn queued_commits_apply_in_fifo_order() {
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    ed.insert(SRC, "c", const_node(1.0));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    ed.commit().unwrap();
+    // Second: a gain after it. Third: the gain changed. Each is compiled on
+    // the one before, none of which has run.
     ed.insert(
-        NodeKey(99),
-        "c",
-        TestNode::new(Kind::Const {
-            value: 1.0,
+        FX,
+        "g",
+        TestNode::new(Kind::Gain {
+            gain: 0.5,
             width: 1,
         }),
     );
-    assert_eq!(ed.commit().err(), Some(CommitError::Backpressure));
-    ed.reclaim(out.pop().unwrap()).expect("our own applied box");
-    assert!(ed.commit().is_ok());
+    wire(&mut ed, FX, SRC);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
+    ed.commit().unwrap();
+    ed.insert(
+        FX,
+        "g",
+        TestNode::new(Kind::Gain {
+            gain: 0.25,
+            width: 1,
+        }),
+    );
+    ed.commit().unwrap();
+    assert_eq!(render(&mut exec, 8, 1)[0][0], 0.25);
+    assert_eq!(ed.collect(), vec![FX], "only the first gain was retired");
+}
+
+/// Review probe d, which the old API allowed: c1 applied; c2 (inserts node
+/// 2) in flight; c3 (inserts node 3) dropped unapplied; then every later
+/// commit failed with `MissingUnit { 2 }`. A commit can no longer be dropped
+/// — the caller never holds one — so the same interleaving, expressed in
+/// the API that remains, just works: c2 and c3 queue, run in order, and the
+/// next commit applies.
+///
+/// Mutation: in `Editor::send`, set `self.plan` to the plan the executor
+/// last applied instead of the one just sent (a rebase) → the next commit's
+/// delta re-inserts node 2, whose unit is gone → `MissingUnit` → fails.
+#[test]
+fn probe_d_can_no_longer_be_expressed_and_its_interleaving_works() {
+    let (a, b, c) = (NodeKey(1), NodeKey(2), NodeKey(3));
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    ed.insert(a, "a", const_node(1.0));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: a, port: 0 })];
+    ed.commit().unwrap(); // c1
+    render(&mut exec, 8, 1); // applied
+    ed.insert(b, "b", const_node(2.0));
+    ed.commit().unwrap(); // c2, in flight
+    ed.insert(c, "c", const_node(3.0));
+    ed.commit().unwrap(); // c3, in flight behind it
+    ed.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort { node: a, port: 0 }),
+        Source::Node(OutPort { node: b, port: 0 }),
+        Source::Node(OutPort { node: c, port: 0 }),
+    ];
+    ed.commit()
+        .expect("the next commit compiles against c3 and needs no lost unit");
+    let out = render(&mut exec, 8, 3);
+    assert_eq!([out[0][0], out[1][0], out[2][0]], [1.0, 2.0, 3.0]);
+    ed.collect();
+    ed.insert(a, "a", const_node(4.0));
+    ed.commit().expect("and later commits keep working");
+    assert_eq!(render(&mut exec, 8, 3)[0][0], 4.0);
+}
+
+/// Nothing a commit carries is freed while the executor applies or renders:
+/// the whole exchange runs under the audio-thread marker, and the old plan,
+/// units and state come back to the editor to be freed.
+///
+/// Mutation: drop a retired or a replaced unit inside applying instead of
+/// keeping it in the box → the unit's `Drop` check fires under the marker →
+/// panics → fails (each path mutated separately).
+#[test]
+fn applying_frees_nothing_on_the_audio_thread() {
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    ed.insert(SRC, "c", const_node(1.0));
+    ed.insert(FX, "f", const_node(0.0));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    ed.commit().unwrap();
+    let mut back = Vec::new();
+    for v in 2..6 {
+        render(&mut exec, 8, 1);
+        back.extend(ed.collect());
+        // Every commit replaces SRC; the first also removes FX outright, so
+        // both the replace path and the retire path run under the marker.
+        ed.insert(SRC, "c", const_node(v as f32));
+        if v == 2 {
+            ed.remove(FX);
+        }
+        ed.commit().unwrap();
+    }
+    // `process` applies under the marker; any unit, commit or plan freed
+    // there would panic in this debug build.
+    render(&mut exec, 8, 1);
+    back.extend(ed.collect());
+    back.sort();
+    let mut want = vec![SRC; 4];
+    want.push(FX);
+    want.sort();
+    assert_eq!(back, want, "every replaced and removed unit came back");
 }
 
 /// Re-inserting at a key is a new generation: the unit is replaced, the old
@@ -388,8 +517,9 @@ fn reinserting_a_key_replaces_its_unit() {
         }),
     );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    assert!(ed.reclaim(done).expect("reclaims").is_empty());
+    ed.commit().unwrap();
+    exec.apply_pending();
+    assert!(ed.collect().is_empty());
     assert_eq!(render(&mut exec, 8, 1)[0][0], 1.0);
 
     ed.insert(
@@ -400,12 +530,9 @@ fn reinserting_a_key_replaces_its_unit() {
             width: 1,
         }),
     );
-    let done = exec.apply(ed.commit().unwrap());
-    assert_eq!(
-        ed.reclaim(done).expect("reclaims"),
-        vec![SRC],
-        "the old unit came back"
-    );
+    ed.commit().unwrap();
+    exec.apply_pending();
+    assert_eq!(ed.collect(), vec![SRC], "the old unit came back");
     assert_eq!(render(&mut exec, 8, 1)[0][0], 3.0);
 
     ed.remove(SRC);
@@ -418,8 +545,9 @@ fn reinserting_a_key_replaces_its_unit() {
         }),
     );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    assert_eq!(ed.reclaim(done).expect("reclaims"), vec![SRC]);
+    ed.commit().unwrap();
+    exec.apply_pending();
+    assert_eq!(ed.collect(), vec![SRC]);
     assert_eq!(render(&mut exec, 8, 1)[0][0], 5.0);
 }
 
@@ -601,8 +729,9 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
         );
     }
     spec.topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     let mut out = Vec::new();
     for _ in 0..blocks {
         out.extend(render(&mut exec, 32, 1).remove(0));
@@ -610,36 +739,16 @@ fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
     out
 }
 
-fn one_node_commit(ed: &mut Editor) -> tutti_graph::CommitBox {
-    ed.insert(
-        SRC,
-        "c",
-        TestNode::new(Kind::Const {
-            value: 1.0,
-            width: 1,
-        }),
-    );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
-    ed.commit().expect("commits")
-}
-
-/// A plan compiled for another `Prepare` is refused at `apply` — the units in
-/// it were prepared for a `MaxBlock` this executor does not keep.
+/// A plan compiled for another `Prepare` is refused when applied — the units
+/// in it were prepared for a `MaxBlock` this executor does not keep.
 ///
 /// Mutation: delete the `assert_eq!(plan.prepare, self.prepare)` in
 /// `Executor::apply` → the foreign plan installs → fails.
 #[test]
 #[should_panic(expected = "another Prepare")]
-fn apply_refuses_a_plan_for_another_prepare() {
+fn applying_refuses_a_plan_for_another_prepare() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
-    ed.insert(
-        SRC,
-        "c",
-        TestNode::new(Kind::Const {
-            value: 1.0,
-            width: 1,
-        }),
-    );
+    ed.insert(SRC, "c", const_node(1.0));
     let valid = ed.spec().validate().unwrap();
     let (plan, delta) = tutti_graph::compile(&valid, ed.shapes(), &prepare(128), None).unwrap();
     let units = common::units_for(
@@ -653,173 +762,8 @@ fn apply_refuses_a_plan_for_another_prepare() {
         .into(),
         [SRC],
     );
-    let commit = ed.package(plan, delta, units);
-    drop(exec.apply(commit));
-}
-
-/// An executor installs only its own editor's commits: another editor's box,
-/// even with the same `Prepare`, is refused before anything moves.
-///
-/// Mutation: delete the link comparison in `Executor::apply` → the foreign
-/// commit installs → fails.
-#[test]
-#[should_panic(expected = "another editor")]
-fn apply_refuses_another_editors_commit() {
-    let (mut ed, _) = Editor::new(prepare(16));
-    let (_, mut exec) = Editor::new(prepare(16));
-    drop(exec.apply(one_node_commit(&mut ed)));
-}
-
-/// A box goes back only to the editor that sent it, and only once applied;
-/// an unapplied one is handed back to be applied.
-///
-/// Mutation: drop the link comparison in `Editor::reclaim` → the foreign
-/// box is accepted → fails. Drop the `applied` check → the unapplied box is
-/// accepted → fails.
-#[test]
-fn reclaim_checks_the_editor_and_that_the_box_was_applied() {
-    let (mut ed, mut exec) = Editor::new(prepare(16));
-    let (mut other, _) = Editor::new(prepare(16));
-
-    let commit = one_node_commit(&mut ed);
-    let commit = match ed.reclaim(commit) {
-        Err(tutti_graph::ReclaimError::NotApplied(c)) => c,
-        other => panic!("expected NotApplied, got {other:?}"),
-    };
-    assert_eq!(
-        ed.in_flight(),
-        1,
-        "the credit stays spent until the box goes"
-    );
-    let done = exec.apply(commit);
-    let done = match other.reclaim(done) {
-        Err(tutti_graph::ReclaimError::ForeignEditor(c)) => c,
-        other => panic!("expected ForeignEditor, got {other:?}"),
-    };
-    assert!(ed.reclaim(done).is_ok());
-    assert_eq!(ed.in_flight(), 0);
-}
-
-/// Review R3: the box `apply` returns holds the previous plan (and with it the
-/// previous arena and delay state), so the executor frees none of it.
-///
-/// Mutation: in `apply`, leave `c.plan` empty instead of storing the old plan
-/// → the returned box has no plan → fails.
-#[test]
-fn apply_returns_what_it_replaced() {
-    let (mut ed, mut exec) = Editor::new(prepare(16));
-    let first = one_node_commit(&mut ed);
-    let first_plan = std::sync::Arc::clone(first.plan().unwrap());
-    let done = exec.apply(first);
-    assert!(done.plan().is_none(), "nothing was running before");
-    ed.reclaim(done).unwrap();
-
-    ed.insert(
-        SRC,
-        "c",
-        TestNode::new(Kind::Const {
-            value: 2.0,
-            width: 1,
-        }),
-    );
-    let done = exec.apply(ed.commit().unwrap());
-    assert!(
-        std::sync::Arc::ptr_eq(done.plan().unwrap(), &first_plan),
-        "the previous plan comes back in the box"
-    );
-    assert!(done.is_applied());
-    ed.reclaim(done).unwrap();
-}
-
-/// A commit dropped on the audio thread panics in a debug build: the only
-/// way to free one is to drop its box, and that drop checks the marker.
-///
-/// Mutation: delete `AudioThread::check_not_current("Commit")` from
-/// `Commit::drop` → the drop is silent → fails.
-#[test]
-#[cfg(debug_assertions)]
-fn a_commit_dropped_on_the_audio_thread_panics() {
-    let (mut ed, _exec) = Editor::new(prepare(16));
-    let a = one_node_commit(&mut ed);
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let _rt = tutti_types::AudioThread::enter();
-        drop(a);
-    }));
-    let msg = caught.expect_err("the drop panics");
-    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(msg.contains("Commit dropped on the audio thread"), "{msg}");
-}
-
-/// Review: an explicit `drop(commit)` must not wedge the editor. Two commits
-/// are dropped unapplied; the credits come back, their units return to the
-/// editor, the editor rebases on what the executor really runs, and later
-/// commits apply and render correctly. A commit compiled against a plan the
-/// executor never ran is handed back unapplied rather than installed.
-///
-/// Mutation: in `Commit::drop`, skip `in_flight.fetch_sub` → the third
-/// commit hits `Backpressure` → fails. Skip handing the units back → the
-/// recovery commit reports `MissingUnit` → fails. Skip the rollback in
-/// `Editor::recover` (keep the dropped plan as the base) → the recovery
-/// commit's delta assumes units the executor never received → it is refused
-/// as stale → fails.
-#[test]
-fn dropped_commits_do_not_wedge_the_editor() {
-    let (mut ed, mut exec) = Editor::new(prepare(8));
-    // One applied commit, so there is a real base to roll back to.
-    let done = exec.apply(one_node_commit(&mut ed));
-    ed.reclaim(done).unwrap();
-    assert_eq!(render(&mut exec, 8, 1)[0][0], 1.0);
-
-    // Two more, both dropped before the executor sees them.
-    ed.insert(
-        FX,
-        "gain",
-        TestNode::new(Kind::Gain {
-            gain: 0.5,
-            width: 1,
-        }),
-    );
-    ed.spec_mut().topology.edges.insert(
-        InPort { node: FX, port: 0 },
-        Edge::Direct(Source::Node(OutPort { node: SRC, port: 0 })),
-    );
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
-    let c1 = ed.commit().expect("a credit is free");
-    ed.insert(
-        SRC,
-        "c",
-        TestNode::new(Kind::Const {
-            value: 4.0,
-            width: 1,
-        }),
-    );
-    let c2 = ed.commit().expect("the second credit");
-    assert_eq!(ed.in_flight(), 2);
-    assert_eq!(ed.commit().err(), Some(CommitError::Backpressure));
-    // A commit built on c1 — which never ran — is refused as stale.
-    let stale = exec.apply(c2);
-    assert!(
-        !stale.is_applied(),
-        "compiled against a plan the executor never ran"
-    );
-    drop(stale);
-    drop(c1);
-    assert_eq!(ed.in_flight(), 0, "both credits came back");
-    assert_eq!(
-        render(&mut exec, 8, 1)[0][0],
-        1.0,
-        "the executor never changed"
-    );
-
-    // The editor recovers: same spec, units back, rebased — and it applies.
-    let done = exec.apply(ed.commit().expect("recovers"));
-    assert!(done.is_applied());
-    ed.reclaim(done).unwrap();
-    assert_eq!(
-        render(&mut exec, 8, 1)[0][0],
-        2.0,
-        "const 4 through gain 0.5: both dropped edits landed"
-    );
+    ed.package(plan, delta, units).unwrap();
+    exec.apply_pending();
 }
 
 /// Review: a merge used to drop past one slot's capacity with no note-off
@@ -881,8 +825,9 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
             }),
         );
     }
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).unwrap();
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     render(&mut exec, 8, 0);
     assert_eq!(seen.load(Ordering::Relaxed), 60);
     assert_eq!(exec.dropped_events(), 0);

@@ -1,36 +1,59 @@
-//! The runtime's audio side: [`Executor`], and the [`Commit`] box that carries
-//! an edit to it and the retired state back.
+//! The runtime's audio side: [`Executor`], and the commit box that carries an
+//! edit to it over a queue and the retired state back.
 //!
-//! Doc 013 §4, phase-1 form. The *shape* is phase 2's: units exist exactly
-//! once, in the executor's store; a commit carries only the units that change
-//! plus the new plan, inside a [`CommitBox`]; [`Executor::apply`] swaps
-//! pointers and hands **the same box** back holding everything it replaced —
-//! the previous plan, the retired units, and the previous arena, event slots
-//! and delay state — so nothing it replaced is freed on its side. `apply` and
-//! [`process`](Executor::process) both mark the thread with
-//! [`AudioThread::enter`]: a unit or a commit dropped inside either panics in
-//! a debug build instead of freeing on the audio thread.
+//! Doc 013 §4. Units exist exactly once, in the executor's store. An edit
+//! travels as a **commit box** holding the new plan and only the units that
+//! change. [`Editor::new`](crate::Editor::new) builds the editor and the
+//! executor as a pair joined by two preallocated single-producer,
+//! single-consumer rings:
 //!
-//! What phase 1 does not do yet is put a thread boundary in the middle: here
-//! `apply` runs on the caller's thread and *allocates* (it builds the new
-//! arena and delay state). **The marker's coverage of `apply` is therefore
-//! partial**: what it replaces goes back in the box, but `apply` also frees
-//! transient allocations of its own — the key maps it builds to carry state
-//! across, a ring's old buffer on a retune, the flush lists — which are plain
-//! `Vec`s and `BTreeMap`s the marker does not see. Moving that work to the
-//! control side, so `apply` only swaps pointers, is Phase 2. Phase 2 moves that half to the control side, ships
-//! the prepared state in the commit, and delivers the box over an SPSC ring
-//! whose return push cannot fail because the control side holds at most
-//! [`MAX_IN_FLIGHT`](crate::MAX_IN_FLIGHT) commits (`Editor` enforces it
-//! now). Every type crossing that boundary is already `Send` (units, commits)
-//! or `Send + Sync` (the plan).
+//! ```text
+//!   Editor ──commit()──▶ [ queue, QUEUE_CAPACITY ] ──▶ Executor::process
+//!   Editor ◀─collect()── [ return, QUEUE_CAPACITY+1 ] ◀── (applied box)
+//! ```
+//!
+//! At the start of every [`process`](Executor::process) the executor pulls
+//! whatever is queued and applies it in FIFO order: it swaps pointers and
+//! pushes **the same box** back, now holding everything it replaced — the
+//! previous plan, the retired units, and the previous arena, event slots and
+//! delay state. So nothing it replaced is freed on its side.
+//!
+//! Nobody else ever holds a box. That is what makes the protocol simple: a
+//! box cannot be dropped unapplied, applied twice, applied to another
+//! editor's executor or applied out of order, so every commit is compiled
+//! against the plan sent just before it and the executor installs them in
+//! that order — a linear chain, with no rollback to get wrong.
+//!
+//! **The return push cannot fail.** The editor counts a commit as out from
+//! the moment it is sent until it has drained the box back, and refuses a
+//! commit ([`CommitError::Backpressure`](crate::CommitError)) with
+//! [`QUEUE_CAPACITY`] out — so at most that many boxes are ever in the
+//! return ring, whose capacity is one more. (Were it ever full regardless,
+//! the executor would leak the box rather than free it on the audio thread.)
+//!
+//! **Where boxes are freed.** Drained boxes are dropped by the editor, on the
+//! control thread. If the executor is dropped with commits still queued, the
+//! rings go with it and those commits are dropped on the thread that drops
+//! the executor — the control thread in practice, never the callback. If the
+//! editor is dropped, the executor keeps running its current plan; boxes it
+//! returns afterwards wait in the return ring until the executor is dropped.
+//!
+//! Applying runs under the [`AudioThread::enter`] marker, so a unit or a
+//! commit dropped there panics in a debug build. The marker's coverage of
+//! applying is **partial** in this phase: applying *allocates* (it builds the
+//! new arena and delay state) and frees transient allocations of its own —
+//! the key maps it builds to carry state across, a ring's old buffer on a
+//! retune, the flush lists — which are plain `Vec`s and `BTreeMap`s the
+//! marker does not see. Moving that work to the control side, so applying
+//! only swaps pointers, is the remaining Phase 2 work. Every type crossing
+//! the queue is already `Send` (units, commits) or `Send + Sync` (the plan).
 //!
 //! # The serial executor
 //!
 //! Walks [`Plan::ops`] in order, under a flush-to-zero guard
-//! ([`ScopedNoDenormals`]). Per block it never allocates (see
-//! `tests/rt_no_alloc.rs`) and hands every node the **whole block** and its
-//! sorted events.
+//! ([`ScopedNoDenormals`]). Per block it never allocates when no commit is
+//! pending (see `tests/rt_no_alloc.rs`) and hands every node the **whole
+//! block** and its sorted events.
 //!
 //! **It does not split blocks at a loop wrap.** The whole-block promise is
 //! what keeps an out-of-process plugin's declared latency constant, so a
@@ -69,9 +92,10 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{AudioThread, NodeKey, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{borrow_disjoint, Arena, Role};
@@ -88,6 +112,10 @@ use crate::spec::EventIn;
 /// Events one event slot holds per block, unless configured otherwise.
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
+/// Commits that may be out at once: sent and not yet drained back. The
+/// queue holds this many; the return ring one more.
+pub const QUEUE_CAPACITY: usize = 4;
+
 /// A unit, owned. Crate-private, so the only code that can replace or drop
 /// the box is this crate's; its drop is checked against the audio-thread
 /// marker. (`tutti_types::Retire` is the generic, move-only form; this crate
@@ -97,13 +125,6 @@ pub(crate) struct NodeBox(Box<dyn Node>);
 impl NodeBox {
     pub(crate) fn new(node: Box<dyn Node>) -> Self {
         Self(node)
-    }
-
-    /// Give the unit back, on the control side.
-    pub(crate) fn into_inner(mut self) -> Box<dyn Node> {
-        AudioThread::check_not_current("a unit reclaimed");
-        // Swap in a placeholder so `Drop` has nothing to check.
-        std::mem::replace(&mut self.0, Box::new(Parked))
     }
 }
 
@@ -126,66 +147,16 @@ impl Drop for NodeBox {
     }
 }
 
-/// A zero-sized stand-in left behind by [`NodeBox::into_inner`]; boxing it
-/// does not allocate, so neither does dropping it.
-struct Parked;
-
-impl Node for Parked {
-    fn shape(&self) -> crate::node::Shape {
-        crate::node::Shape::audio(
-            tutti_types::ChannelLayout::EMPTY,
-            tutti_types::ChannelLayout::EMPTY,
-        )
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
-        Status::Idle
-    }
-    fn reset(&mut self) {}
-}
-
-/// What an editor and its executor share: the credit count, what the
-/// executor last applied, and the units of commits dropped unapplied.
-pub(crate) struct Link {
-    pub(crate) in_flight: AtomicUsize,
-    /// Plan id the executor runs; 0 before the first apply.
-    pub(crate) applied: AtomicU64,
-    /// Set when a commit is dropped without being applied; the editor rolls
-    /// back on its next commit.
-    pub(crate) rolled_back: AtomicBool,
-    /// `(key, generation, unit)` from commits dropped unapplied — control
-    /// thread only (a commit's drop is checked off the audio thread).
-    pub(crate) returned: Mutex<Vec<(NodeKey, u32, Box<dyn Node>)>>,
-}
-
-impl Link {
-    pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            in_flight: AtomicUsize::new(0),
-            applied: AtomicU64::new(0),
-            rolled_back: AtomicBool::new(false),
-            returned: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-/// A plan and the unit changes that go with it — what travels inside a
-/// [`CommitBox`] to the executor and back.
+/// A plan and the unit changes that go with it — what travels to the
+/// executor and back. Crate-private: nobody outside the pair ever holds one.
 ///
-/// Before [`Executor::apply`] it holds the new plan and the incoming units;
-/// after, everything the executor replaced. Dropping it on the audio thread
-/// panics in a debug build. Dropping it anywhere returns its credit to the
-/// editor; dropping it *unapplied* also hands its units back to the editor
-/// and makes the editor roll back to the plan the executor really runs.
-pub struct Commit {
-    pub(crate) link: Arc<Link>,
-    pub(crate) applied: bool,
-    /// The plan this commit installs, and the one it was compiled against.
-    pub(crate) plan_id: u64,
-    pub(crate) base_id: u64,
+/// Before it is applied it holds the new plan and the incoming units; after,
+/// everything the executor replaced. Dropping it on the audio thread panics
+/// in a debug build.
+pub(crate) struct Commit {
     plan: Option<Arc<Plan>>,
     delta: Delta,
-    incoming: Vec<(NodeKey, UnitIdx, u32, NodeBox)>,
+    incoming: Vec<(UnitIdx, u32, NodeBox)>,
     retired: Vec<(NodeKey, NodeBox)>,
     old_state: Option<State>,
 }
@@ -193,28 +164,15 @@ pub struct Commit {
 impl Drop for Commit {
     fn drop(&mut self) {
         AudioThread::check_not_current("Commit");
-        if !self.applied && !self.incoming.is_empty() {
-            let mut back = self.link.returned.lock().unwrap_or_else(|e| e.into_inner());
-            for (key, _, gen, unit) in self.incoming.drain(..) {
-                back.push((key, gen, unit.into_inner()));
-            }
-        }
-        if !self.applied {
-            self.link.rolled_back.store(true, Ordering::Release);
-        }
-        self.link.in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
 impl Commit {
     pub(crate) fn build(
-        link: &Arc<Link>,
-        plan_id: u64,
-        base_id: u64,
-        plan: Plan,
+        plan: Arc<Plan>,
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
-    ) -> CommitBox {
+    ) -> Box<Commit> {
         let wanted = delta
             .insert
             .iter()
@@ -225,7 +183,7 @@ impl Commit {
                 let unit = units
                     .remove(&p.key)
                     .unwrap_or_else(|| panic!("no unit supplied for node {}", p.key.0));
-                (p.key, p.idx, p.gen, NodeBox::new(unit))
+                (p.idx, p.gen, NodeBox::new(unit))
             })
             .collect();
         assert!(
@@ -233,69 +191,42 @@ impl Commit {
             "units supplied for nodes the delta does not place: {:?}",
             units.keys().collect::<Vec<_>>()
         );
-        // Reserved here so `apply` moves retirees in without growing.
+        // Reserved here so applying moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
-        link.in_flight.fetch_add(1, Ordering::AcqRel);
-        CommitBox(Box::new(Self {
-            link: Arc::clone(link),
-            applied: false,
-            plan_id,
-            base_id,
-            plan: Some(Arc::new(plan)),
+        Box::new(Self {
+            plan: Some(plan),
             delta,
             incoming,
             retired,
             old_state: None,
-        }))
+        })
     }
 
-    /// The plan this box carries: the new one before `apply`, the previous
-    /// one (if any) after.
-    pub fn plan(&self) -> Option<&Arc<Plan>> {
-        self.plan.as_ref()
-    }
-
-    /// The unit changes.
-    pub fn delta(&self) -> &Delta {
-        &self.delta
-    }
-
-    /// Whether an executor has applied it.
-    pub fn is_applied(&self) -> bool {
-        self.applied
-    }
-
-    /// The units `apply` removed, by key.
-    pub fn retired(&self) -> impl Iterator<Item = NodeKey> + '_ {
+    /// The units applying removed, by key.
+    pub(crate) fn retired(&self) -> impl Iterator<Item = NodeKey> + '_ {
         self.retired.iter().map(|(k, _)| *k)
     }
 }
 
-/// The box a [`Commit`] travels in: made by an [`Editor`](crate::Editor),
-/// installed by that editor's [`Executor`], and reclaimed by the editor.
-///
-/// Read-only outside this crate (it derefs to `&Commit`, never `&mut`), so
-/// nothing but the executor can take units out of it, and nothing can
-/// replace its contents: the only way to free a commit is to drop the box,
-/// and that drop is checked against the audio-thread marker.
-#[must_use = "a commit must be applied, and the box it returns reclaimed"]
-pub struct CommitBox(Box<Commit>);
-
-impl Deref for CommitBox {
-    type Target = Commit;
-    fn deref(&self) -> &Commit {
-        &self.0
-    }
+/// The queue pair between an editor and its executor.
+pub(crate) struct Channels {
+    pub(crate) to_executor: HeapProd<Box<Commit>>,
+    pub(crate) returned: HeapCons<Box<Commit>>,
 }
 
-impl CommitBox {
-    fn get(&mut self) -> &mut Commit {
-        &mut self.0
-    }
+/// Build the queue pair: the editor's ends and the executor's.
+pub(crate) fn channels() -> (Channels, HeapCons<Box<Commit>>, HeapProd<Box<Commit>>) {
+    let (tx, rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY).split();
+    let (back_tx, back_rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY + 1).split();
+    (
+        Channels {
+            to_executor: tx,
+            returned: back_rx,
+        },
+        rx,
+        back_tx,
+    )
 }
-
-// No `DerefMut` for `CommitBox`: it would let a caller outside this crate
-// replace the commit wholesale. `get` above is private.
 
 struct Unit {
     gen: u32,
@@ -320,13 +251,13 @@ struct Inject {
     unit: u32,
     port: u16,
     events: Vec<Event>,
-    /// Where `events` and the sink's own slot events are merged, sized at
-    /// `apply` so the merge never grows.
+    /// Where `events` and the sink's own slot events are merged, sized when
+    /// applying so the merge never grows.
     merged: Vec<Event>,
     live: bool,
 }
 
-/// Everything the executor rebuilds on `apply`: the arenas, the delay and
+/// Everything the executor rebuilds when applying: the arenas, the delay and
 /// feedback state, and pending injections. Retired into the commit box
 /// whole, so the old one is freed on the control side.
 struct State {
@@ -359,13 +290,14 @@ impl State {
 
 /// The serial plan executor. Built with its [`Editor`](crate::Editor) by
 /// [`Editor::new`](crate::Editor::new): the two share one [`Prepare`] and
-/// one link, and the executor installs only that editor's commits.
+/// one queue pair, and the executor applies that editor's commits, in order,
+/// at the start of each block.
 pub struct Executor {
     prepare: Prepare,
     event_cap: usize,
-    link: Arc<Link>,
+    queue: HeapCons<Box<Commit>>,
+    back: HeapProd<Box<Commit>>,
     plan: Option<Arc<Plan>>,
-    plan_id: u64,
     store: Vec<Option<Unit>>,
     state: State,
     frame: u64,
@@ -381,13 +313,18 @@ fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
 }
 
 impl Executor {
-    pub(crate) fn new(prepare: Prepare, cap: usize, link: Arc<Link>) -> Self {
+    pub(crate) fn new(
+        prepare: Prepare,
+        cap: usize,
+        queue: HeapCons<Box<Commit>>,
+        back: HeapProd<Box<Commit>>,
+    ) -> Self {
         Self {
             prepare,
             event_cap: cap,
-            link,
+            queue,
+            back,
             plan: None,
-            plan_id: 0,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
             frame: 0,
@@ -417,33 +354,34 @@ impl Executor {
         self.dropped
     }
 
-    /// Install `commit` and hand the box back holding what it replaced.
+    /// Apply every queued commit, in the order the editor sent them, and send
+    /// each box back. [`process`](Self::process) calls this first; it is
+    /// public so a caller can install a commit without rendering.
     ///
     /// Delay rings, feedback state and units carry over by key (see
     /// [`DelayKey`] and [`FeedbackKey`]). An event delay or event feedback
     /// whose key disappears flushes its pending events to its sink when the
     /// sink survives — see the module docs for where they land.
     ///
-    /// A commit compiled against a plan this executor is not running (an
-    /// earlier commit was dropped before it was applied) is handed back
-    /// **unapplied**; dropping it makes the editor roll back and recompile.
-    ///
     /// # Panics
     ///
-    /// If the commit belongs to another editor, was already applied, or its
-    /// plan was compiled for a different [`Prepare`].
-    #[must_use = "the returned box holds the replaced state; reclaim it on the control side"]
-    pub fn apply(&mut self, mut commit: CommitBox) -> CommitBox {
+    /// If a plan was compiled for a different [`Prepare`] than this
+    /// executor's (only possible through
+    /// [`Editor::package`](crate::Editor::package)).
+    pub fn apply_pending(&mut self) {
         let _rt = AudioThread::enter();
-        let c = commit.get();
-        assert!(
-            Arc::ptr_eq(&c.link, &self.link),
-            "a commit from another editor: its credit and its units are that editor's"
-        );
-        assert!(!c.applied, "a commit is applied once");
-        if c.base_id != self.plan_id {
-            return commit;
+        while let Some(mut commit) = self.queue.try_pop() {
+            self.apply(&mut commit);
+            if let Err(full) = self.back.try_push(commit) {
+                // Unreachable by the credit count (module docs). Leak rather
+                // than free on the audio thread.
+                debug_assert!(false, "the return ring is full");
+                std::mem::forget(full);
+            }
         }
+    }
+
+    fn apply(&mut self, c: &mut Commit) {
         let plan = c
             .plan
             .take()
@@ -471,7 +409,7 @@ impl Executor {
         if self.store.len() < c.delta.store_len as usize {
             self.store.resize_with(c.delta.store_len as usize, || None);
         }
-        for (_, idx, gen, node) in c.incoming.drain(..) {
+        for (idx, gen, node) in c.incoming.drain(..) {
             let slot = &mut self.store[idx.0 as usize];
             debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
             *slot = Some(Unit {
@@ -488,11 +426,7 @@ impl Executor {
         let old_state = std::mem::replace(&mut self.state, new_state);
         c.old_state = Some(old_state);
         self.plan = Some(plan);
-        self.plan_id = c.plan_id;
-        self.link.applied.store(c.plan_id, Ordering::Release);
         c.plan = old_plan;
-        c.applied = true;
-        commit
     }
 
     /// The state for `plan`, carrying what survives out of `self.state`
@@ -659,7 +593,8 @@ impl Executor {
     ///
     /// `inputs` must have a slice per global input channel the plan reads, and
     /// `outputs` one per global output channel; every slice at least `frames`
-    /// long. Never allocates, and marks the thread with
+    /// long. Applies queued commits first ([`apply_pending`](Self::apply_pending));
+    /// with none queued it never allocates. Marks the thread with
     /// [`AudioThread::enter`] for the duration.
     ///
     /// # Panics
@@ -680,12 +615,13 @@ impl Executor {
         );
         let _rt = AudioThread::enter();
         let _ftz = ScopedNoDenormals::new();
+        self.apply_pending();
         let Self {
             prepare,
             event_cap,
-            link: _,
+            queue: _,
+            back: _,
             plan,
-            plan_id: _,
             store,
             state,
             frame,

@@ -141,8 +141,9 @@ fn process_is_allocation_free_in_steady_state() {
             port: 0,
         }),
     ];
-    let done = exec.apply(ed.commit().expect("commits"));
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     let plan = exec.plan().expect("applied");
     assert!(
         plan.delays().len() >= 2,

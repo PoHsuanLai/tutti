@@ -67,8 +67,9 @@ fn legacy_nodes_render_what_net_renders() {
         Edge::Direct(Source::Node(OutPort { node: fa, port: 0 })),
     );
     t.outputs = vec![Source::Node(OutPort { node: fb, port: 0 })];
-    let done = exec.apply(ed.commit().expect("commits"));
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     // Aliased in place: the adapter opts in, and this exercises its path.
     assert!(exec.plan().unwrap().in_place(fb).get(0));
 
@@ -257,8 +258,9 @@ fn legacy_reports_silence_so_a_silent_unit_is_skipped() {
         .edges
         .insert(InPort { node: key, port: 0 }, Edge::Direct(Source::Zero));
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("applied");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     let mut out = vec![0.0f32; 64];
     for _ in 0..10 {
         exec.process(

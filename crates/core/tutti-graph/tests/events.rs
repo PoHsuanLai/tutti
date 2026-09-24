@@ -253,8 +253,9 @@ fn run(
                 .collect();
             let mut units = units_of(ph, emitters, &ledger, &inbox, &stop);
             units.retain(|k, _| placed.contains(k));
-            let done = exec.apply(ed.package(plan, delta, units));
-            ed.reclaim(done).expect("applied");
+            ed.package(plan, delta, units).expect("room in the queue");
+            exec.apply_pending();
+            ed.collect();
         } else {
             reference.set_graph(&valid, units_of(ph, emitters, &ledger, &inbox, &stop));
         }
@@ -486,8 +487,9 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
             }),
         );
         let (mut ed, mut exec) = Editor::with_event_capacity(prep, 4096);
-        let done = exec.apply(ed.package(plan, delta, units));
-        ed.reclaim(done).expect("applied");
+        ed.package(plan, delta, units).expect("room in the queue");
+        exec.apply_pending();
+        ed.collect();
         exec.process(MAX, &Transport::default(), &[], &mut []);
         let got: Vec<u32> = inbox
             .lock()
@@ -623,8 +625,9 @@ fn feedback_delays_by_its_declared_delay_at_any_max_block() {
             let mut reference = Reference::new(prep);
             if executor {
                 let (plan, delta) = compile(&valid, &shapes, &prep, None).unwrap();
-                let done = exec.apply(ed.package(plan, delta, units()));
-                ed.reclaim(done).expect("applied");
+                ed.package(plan, delta, units()).expect("room in the queue");
+                exec.apply_pending();
+                ed.collect();
             } else {
                 reference.set_graph(&valid, units());
             }
@@ -761,8 +764,9 @@ fn wide_fan_in_matches_the_reference() {
         let mut reference = Reference::new(prep);
         if executor {
             let (plan, delta) = compile(&valid, &shapes, &prep, None).unwrap();
-            let done = exec.apply(ed.package(plan, delta, units));
-            ed.reclaim(done).expect("applied");
+            ed.package(plan, delta, units).expect("room in the queue");
+            exec.apply_pending();
+            ed.collect();
         } else {
             reference.set_graph(&valid, units);
         }

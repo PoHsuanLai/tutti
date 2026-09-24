@@ -398,10 +398,11 @@ impl Pair {
         self.plan = Some(plan.clone());
         // Back on the control side, where the box and what it retired are
         // freed.
-        let commit = self.editor.package(plan, delta, units_for(kinds, placed));
-        let done = self.exec.apply(commit);
-        assert!(done.is_applied(), "the harness never drops a commit");
-        self.editor.reclaim(done).expect("our own applied box");
+        self.editor
+            .package(plan, delta, units_for(kinds, placed))
+            .expect("the harness collects every box");
+        self.exec.apply_pending();
+        self.editor.collect();
 
         // The reference decides for itself what is new, from generations; give
         // it a fresh unit for every key it might need.

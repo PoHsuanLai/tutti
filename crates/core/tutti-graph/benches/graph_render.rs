@@ -163,8 +163,9 @@ fn executor_for(shape: &Shape) -> Executor {
         node: last,
         port: 0,
     })];
-    let done = exec.apply(ed.commit().expect("the bench graph compiles"));
-    ed.reclaim(done).expect("our own applied box");
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
     exec
 }
 

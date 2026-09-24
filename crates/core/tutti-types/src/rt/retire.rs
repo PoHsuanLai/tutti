@@ -40,6 +40,15 @@
 //! *r = Vec::new(); // would free the old buffer wherever this runs
 //! ```
 //!
+//! # Interior mutability is outside the guarantee
+//!
+//! `Retire` refuses `&mut`, but a `&T` can still free through interior
+//! mutability: a `Retire<RefCell<Vec<f32>>>` lets
+//! `r.borrow_mut().clear(); r.borrow_mut().shrink_to_fit()` free the buffer
+//! on whatever thread runs it, and a `Mutex` or `Cell<Option<Box<_>>>` does the
+//! same. Don't put interior-mutable owners in a `Retire`. No in-tree type
+//! does, and nothing here can check it.
+//!
 //! # What it does not do in release builds
 //!
 //! The check is a `debug_assertions` check. A release build that breaks the

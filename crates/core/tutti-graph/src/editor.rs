@@ -1,38 +1,33 @@
 //! The runtime's control side: [`Editor`] holds the graph value, prepares
-//! units, compiles, and packages [`CommitBox`]es — and takes them back.
+//! units, compiles, and sends commits to its paired [`Executor`] — and drains
+//! the boxes it sends back.
 //!
-//! # Back-pressure lives here
+//! # Commits are sent, not handed out
 //!
-//! Doc 013 §4: the audio thread returns every commit box after applying it,
-//! and that return must never fail — a failed push on the audio thread means
-//! either dropping (freeing there) or blocking. The guarantee is a credit
-//! count on this side: at most [`MAX_IN_FLIGHT`] commits may be out at once,
-//! so a return ring of that capacity (plus one preallocated overflow slot, in
-//! phase 2) always has room. When the credits are spent,
-//! [`commit`](Editor::commit) refuses with [`CommitError::Backpressure`].
+//! [`commit`](Editor::commit) compiles and, on success, **sends the box
+//! itself** to the paired executor over a preallocated queue. The caller
+//! never holds a box, so one cannot be dropped unapplied, applied twice or
+//! reordered: every commit is compiled against the plan sent just before it,
+//! the executor applies them in that order, and the editor's idea of the
+//! running plan can never run ahead of what the executor will install.
 //!
-//! # A dropped box cannot wedge the editor
+//! # Back-pressure
 //!
-//! The credit is held by the box itself, in a counter the editor and its
-//! executor share: dropping a box — reclaimed, or not — returns it. A box
-//! dropped **unapplied** also hands its units back and marks a rollback, and
-//! on its next commit the editor takes the units back into its pending set
-//! and recompiles against the plan the executor *actually* runs (which the
-//! executor publishes as it applies). An executor that is handed a commit
-//! compiled against a plan it is not running returns it unapplied rather
-//! than install a delta meant for another base. So a lost box costs one
-//! recompile, never a stuck editor or a divergent executor.
-//!
-//! A box belongs to one editor: `apply` refuses another editor's box (they
-//! share no link), and `reclaim` hands back a box that is not its own or was
-//! never applied.
+//! Doc 013 §4: the audio thread sends every box back after applying it, and
+//! that push must never fail — a failed push on the audio thread means either
+//! freeing there or blocking. At most [`QUEUE_CAPACITY`] commits may be out
+//! (sent, and not yet drained back by [`collect`](Editor::collect)); with that
+//! many out, `commit` returns [`CommitError::Backpressure`] **before**
+//! compiling or advancing its plan. The return ring holds one more than that,
+//! so the executor's push always has room. `commit` drains the return ring
+//! first, so a caller that only ever commits never has to call `collect`.
 //!
 //! # One `Prepare`
 //!
 //! [`Editor::new`] builds the editor *and* its [`Executor`], from one
 //! [`Prepare`]. Units are prepared by the editor and run by the executor, so
 //! the `MaxBlock` a node sized its scratch from is the one every block it is
-//! handed obeys; the plan carries its `Prepare` too, and `apply` refuses a
+//! handed obeys; the plan carries its `Prepare` too, and applying refuses a
 //! plan prepared for anything else.
 //!
 //! # Changing the rate or the maximum block (designed, not built)
@@ -40,7 +35,7 @@
 //! A `Prepare` change is a **full recompile with every unit re-prepared**:
 //! latency can depend on the rate (a lookahead is a time — see `Legacy`), so
 //! the shapes, and therefore the plan, change with it. The intended protocol:
-//! the editor sends a commit that retires every unit; on reclaim it calls
+//! the editor sends a commit that retires every unit; on collecting it calls
 //! `prepare` on each returned unit, reads its new shape, recompiles, and sends
 //! the units back in a commit for a *new* executor built for the new
 //! `Prepare` (its arena is sized by `MaxBlock`). Until that exists, change the
@@ -48,21 +43,18 @@
 //! be prepared with a `MaxBlock` no larger than the graph's shortest feedback
 //! delay (see `tutti_types::graph::FeedbackFrom`); `compile` enforces it.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::Ordering;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::NodeKey;
 
 use crate::compile::{compile, CompileError, Shapes};
-use crate::exec::{Commit, CommitBox, Executor, Link, DEFAULT_EVENT_CAPACITY};
+use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 use crate::node::{IntoNode, Node, Prepare};
 use crate::plan::{Delta, Plan};
 use crate::spec::{EventEdge, GraphInvalid, GraphSpec};
-
-/// Commits that may be out (sent, not yet dropped) at once.
-pub const MAX_IN_FLIGHT: usize = 2;
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +69,8 @@ pub enum CommitError {
         /// The node.
         node: NodeKey,
     },
-    /// [`MAX_IN_FLIGHT`] commits are out; reclaim (or drop) one first.
+    /// [`QUEUE_CAPACITY`] commits are out. Nothing was compiled or sent and
+    /// the plan did not advance; retry once the executor has run a block.
     Backpressure,
 }
 
@@ -87,47 +80,27 @@ impl std::fmt::Display for CommitError {
             Self::Invalid(errs) => write!(f, "graph is invalid ({} faults)", errs.len()),
             Self::Compile(e) => write!(f, "{e}"),
             Self::MissingUnit { node } => write!(f, "node {} has no unit", node.0),
-            Self::Backpressure => write!(f, "{MAX_IN_FLIGHT} commits in flight; reclaim one"),
+            Self::Backpressure => write!(f, "{QUEUE_CAPACITY} commits in flight"),
         }
     }
 }
 
 impl std::error::Error for CommitError {}
 
-/// Why [`Editor::reclaim`] refused a box.
-#[must_use]
-pub enum ReclaimError {
-    /// The box was made by another editor; its credit and units are that
-    /// editor's.
-    ForeignEditor(CommitBox),
-    /// The box was never applied (or its executor refused it as stale). It is
-    /// handed back: apply it, or drop it and the editor rolls back.
-    NotApplied(CommitBox),
-}
-
-impl std::fmt::Debug for ReclaimError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::ForeignEditor(_) => "ForeignEditor",
-            Self::NotApplied(_) => "NotApplied",
-        })
-    }
-}
-
 /// The control-side half: the graph value, the units not yet shipped, and the
 /// plans sent. See the [module docs](self).
 pub struct Editor {
-    link: Arc<Link>,
+    channels: Channels,
+    /// Commits sent and not yet drained back.
+    out: usize,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
     pending: BTreeMap<NodeKey, Box<dyn Node>>,
     next_gen: BTreeMap<NodeKey, u32>,
-    /// The plan the next commit is compiled against, with its id.
-    plan: Option<(u64, Arc<Plan>)>,
-    /// Plans sent and possibly applied, oldest first, for a rollback.
-    sent: VecDeque<(u64, Arc<Plan>)>,
-    next_plan: u64,
+    /// The plan sent last: what the executor will be running once the queue
+    /// drains, and what the next commit is compiled against.
+    plan: Option<Arc<Plan>>,
 }
 
 impl Editor {
@@ -140,19 +113,18 @@ impl Editor {
     /// As [`new`](Self::new), with `cap` events per event slot per block
     /// (the declared event rate the delay FIFOs are sized from).
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
-        let link = Link::new();
+        let (channels, queue, back) = channels();
         let editor = Self {
-            link: Arc::clone(&link),
+            channels,
+            out: 0,
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
-            sent: VecDeque::new(),
-            next_plan: 1,
         };
-        (editor, Executor::new(prepare, cap, link))
+        (editor, Executor::new(prepare, cap, queue, back))
     }
 
     /// The graph value.
@@ -171,14 +143,14 @@ impl Editor {
         &self.shapes
     }
 
-    /// Commits sent and not yet dropped.
+    /// Commits sent and not yet drained back.
     pub fn in_flight(&self) -> usize {
-        self.link.in_flight.load(Ordering::Acquire)
+        self.out
     }
 
-    /// The plan the next commit will be compiled against.
+    /// The plan sent last — what the next commit is compiled against.
     pub fn base(&self) -> Option<&Arc<Plan>> {
-        self.plan.as_ref().map(|(_, p)| p)
+        self.plan.as_ref()
     }
 
     /// Add `node` at `key`, or replace the unit there (a new generation).
@@ -245,31 +217,24 @@ impl Editor {
         self.pending.remove(&key);
     }
 
-    /// Recover from boxes dropped unapplied: take their units back (where the
-    /// value still wants that unit) and rebase on the plan the executor runs.
-    fn recover(&mut self) {
-        if !self.link.rolled_back.swap(false, Ordering::AcqRel) {
-            return;
+    /// Drain the boxes the executor sent back and free what they retired,
+    /// here on the control thread. Returns the retired units' keys.
+    pub fn collect(&mut self) -> Vec<NodeKey> {
+        let mut keys = Vec::new();
+        while let Some(done) = self.channels.returned.try_pop() {
+            keys.extend(done.retired());
+            drop(done);
+            self.out -= 1;
         }
-        let returned =
-            std::mem::take(&mut *self.link.returned.lock().unwrap_or_else(|e| e.into_inner()));
-        for (key, gen, unit) in returned {
-            let wanted = self.spec.topology.nodes.contains_key(&key)
-                && self.spec.generation(key) == gen
-                && !self.pending.contains_key(&key);
-            if wanted {
-                self.pending.insert(key, unit);
-            }
-        }
-        let applied = self.link.applied.load(Ordering::Acquire);
-        self.plan = self.sent.iter().find(|(id, _)| *id == applied).cloned();
+        keys
     }
 
-    /// Validate, compile against the plan the executor will be running, and
-    /// package the result with the units it places. Spends one credit.
-    pub fn commit(&mut self) -> Result<CommitBox, CommitError> {
-        self.recover();
-        if self.in_flight() >= MAX_IN_FLIGHT {
+    /// Validate, compile against the plan sent last, and send the result with
+    /// the units it places. Returns `Backpressure` — having compiled and sent
+    /// nothing — when [`QUEUE_CAPACITY`] commits are out.
+    pub fn commit(&mut self) -> Result<(), CommitError> {
+        self.collect();
+        if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
@@ -295,11 +260,12 @@ impl Editor {
             .into_iter()
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))
             .collect();
-        Ok(self.package(plan, delta, units))
+        self.send(plan, delta, units);
+        Ok(())
     }
 
-    /// Box a plan compiled elsewhere — against [`base`](Self::base) — with the
-    /// units its delta places, as this editor's next commit. For a caller
+    /// Send a plan compiled elsewhere — against [`base`](Self::base) — with
+    /// the units its delta places, as this editor's next commit. For a caller
     /// that compiles itself (a test harness driving two interpreters from one
     /// spec); [`commit`](Self::commit) is the usual path.
     pub fn package(
@@ -307,38 +273,24 @@ impl Editor {
         plan: Plan,
         delta: Delta,
         units: BTreeMap<NodeKey, Box<dyn Node>>,
-    ) -> CommitBox {
-        self.recover();
-        let id = self.next_plan;
-        self.next_plan += 1;
-        let base = self.plan.as_ref().map_or(0, |(id, _)| *id);
-        let commit = Commit::build(&self.link, id, base, plan, delta, units);
-        let plan = Arc::clone(commit.plan().expect("a fresh commit carries its plan"));
-        // Forget plans older than the one the executor runs.
-        let applied = self.link.applied.load(Ordering::Acquire);
-        while self.sent.front().is_some_and(|(i, _)| *i < applied) {
-            self.sent.pop_front();
+    ) -> Result<(), CommitError> {
+        self.collect();
+        if self.out >= QUEUE_CAPACITY {
+            return Err(CommitError::Backpressure);
         }
-        self.sent.push_back((id, Arc::clone(&plan)));
-        self.plan = Some((id, plan));
-        commit
+        self.send(plan, delta, units);
+        Ok(())
     }
 
-    /// Take back a box the executor returned and free what it retired, here
-    /// on the control thread. (Dropping it does the same; this also checks
-    /// it and reports what came back.)
-    ///
-    /// Returns the keys of the units it retired, or the box itself when it is
-    /// not this editor's or was never applied.
-    pub fn reclaim(&mut self, done: CommitBox) -> Result<Vec<NodeKey>, ReclaimError> {
-        if !Arc::ptr_eq(&done.link, &self.link) {
-            return Err(ReclaimError::ForeignEditor(done));
+    /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
+    /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
+    fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
+        let plan = Arc::new(plan);
+        let commit = Commit::build(Arc::clone(&plan), delta, units);
+        if self.channels.to_executor.try_push(commit).is_err() {
+            unreachable!("the queue has a free slot for every credit");
         }
-        if !done.applied {
-            return Err(ReclaimError::NotApplied(done));
-        }
-        let keys = done.retired().collect();
-        drop(done);
-        Ok(keys)
+        self.out += 1;
+        self.plan = Some(plan);
     }
 }

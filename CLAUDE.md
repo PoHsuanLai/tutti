@@ -107,7 +107,8 @@ crates/
 ```
 
 - `tutti-types` names no other tutti crate.
-- `tutti-graph` depends on `tutti-types` and `tutti-node` only, keeps every
+- `tutti-graph` depends on no tutti crate but `tutti-types` and `tutti-node`
+  (its outside deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.

@@ -28,6 +28,11 @@ tutti-node = { version = "0.0.1", path = "../tutti-node" }
 # comes from the element type, the reinterpretation from a checked `Pod` cast,
 # and the disjoint borrows from `split_at_mut`. See `src/arena.rs`.
 bytemuck = { version = "1.16", features = ["derive"] }
+# The preallocated SPSC rings between an editor and its executor: commits in,
+# retired boxes back. Already the engine's ring (tutti-core, tutti-io,
+# tutti-sampler use it); lock-free and allocation-free once built, which is
+# what the audio-thread side of the queue needs.
+ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

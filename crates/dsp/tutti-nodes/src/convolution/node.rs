@@ -30,7 +30,7 @@ use tutti_core::Tail;
 use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::buffer::CircularBuffer;
-use crate::ramp::Ramp;
+use crate::ramp::{LastGood, Ramp};
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.
@@ -170,6 +170,10 @@ pub struct ConvolverNode {
     /// ramp starts. `None` until the first block and after `reset`, which then
     /// start on the current values instead of ramping in from nothing.
     last: Option<(Mix, Amplitude)>,
+    /// Last finite mix and gain. Neither feeds recursive state here, but the
+    /// block's end is the next block's ramp start, so a NaN would carry into
+    /// the block after it (see [`LastGood`]).
+    good: [LastGood; 2],
 }
 
 impl ConvolverNode {
@@ -195,6 +199,7 @@ impl ConvolverNode {
             latency_samples,
             frame: vec![0.0; width],
             last: None,
+            good: [LastGood::new(0.5), LastGood::new(1.0)],
         }
     }
 
@@ -355,6 +360,8 @@ impl ConvolverNode {
     /// exactly on the new value (a block of one, `tick`, takes it at once).
     fn begin_block(&mut self, size: usize) -> BlendRamp {
         let (mix, gain) = self.params.load();
+        let mix = Mix(self.good[0].read(mix.get()));
+        let gain = Amplitude(self.good[1].read(gain.get()));
         let (from_mix, from_gain) = self.last.unwrap_or((mix, gain));
         self.last = Some((mix, gain));
         BlendRamp {

@@ -13,6 +13,8 @@ use super::utils::{
 };
 use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 
+use crate::ramp::LastGood;
+
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone)]
 pub(super) struct GateCore {
@@ -26,6 +28,11 @@ pub(super) struct GateCore {
     /// The range the previous block ended on, the start of this block's ramp.
     /// `None` until the first block, which starts on its own value.
     last_range: Option<Db>,
+    /// Last finite threshold, range, attack, hold and release. The times
+    /// become the follower's coefficients and hold count, and the range the
+    /// start of every later ramp, so a non-finite write reads as unchanged
+    /// (see [`LastGood`]).
+    good: [LastGood; 5],
 }
 
 /// The controls one block runs on, read from their atomics **once** at the
@@ -69,6 +76,13 @@ impl GateCore {
             envelope: 0.0,
             follower: GateEnvelopeFollower::new(attack, hold, release, SampleRate::DEFAULT),
             last_range: None,
+            good: [
+                LastGood::new(threshold_db.get()),
+                LastGood::new(-80.0),
+                LastGood::new(attack.get()),
+                LastGood::new(hold.get()),
+                LastGood::new(release.get()),
+            ],
         }
     }
 
@@ -93,29 +107,36 @@ impl GateCore {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
-        let attack = self.timing.attack.load();
-        let release = self.timing.release.load();
+        let (attack, hold, release) = self.times();
         self.follower
-            .set_sample_rate(sample_rate, attack, self.hold.load(), release);
+            .set_sample_rate(sample_rate, attack, hold, release);
     }
 
     #[inline]
     pub fn update_coefficients(&mut self) {
-        let attack = self.timing.attack.load();
-        let release = self.timing.release.load();
-        self.follower
-            .update_coefficients(attack, self.hold.load(), release);
+        let (attack, hold, release) = self.times();
+        self.follower.update_coefficients(attack, hold, release);
+    }
+
+    /// Attack, hold and release, with non-finite writes held off.
+    #[inline]
+    fn times(&mut self) -> (Seconds, Seconds, Seconds) {
+        (
+            Seconds(self.good[2].read(self.timing.attack.load().get())),
+            Seconds(self.good[3].read(self.hold.load().get())),
+            Seconds(self.good[4].read(self.timing.release.load().get())),
+        )
     }
 
     /// Read every block-rate control once, and move the range ramp's start to
     /// this block's end.
     #[inline]
     pub fn begin_block(&mut self) -> GateBlock {
-        let range_to = self.range_db.load();
+        let range_to = Db(self.good[1].read(self.range_db.load().get()));
         let range_from = self.last_range.unwrap_or(range_to);
         self.last_range = Some(range_to);
         GateBlock {
-            threshold: self.threshold_db.load(),
+            threshold: Db(self.good[0].read(self.threshold_db.load().get())),
             range_from,
             range_to,
         }
@@ -136,7 +157,9 @@ impl GateCore {
         threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
-        let threshold = threshold_override.unwrap_or(block.threshold);
+        let threshold = threshold_override
+            .filter(|t| t.get().is_finite())
+            .unwrap_or(block.threshold);
         self.envelope = sc_level;
         self.follower.step(input_db >= threshold);
         let range = ramp_db(block.range_from, block.range_to, i, n);

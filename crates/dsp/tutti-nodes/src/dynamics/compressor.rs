@@ -13,6 +13,8 @@ use super::utils::{
 };
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
+use crate::ramp::LastGood;
+
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
 pub(super) struct CompressorCore {
@@ -27,6 +29,11 @@ pub(super) struct CompressorCore {
     /// ramp. `None` until the first block, which then starts on its own value
     /// — a node has no "previous" makeup to ramp in from.
     last_makeup: Option<Db>,
+    /// Last finite threshold, knee, ratio, makeup, attack and release. Every
+    /// one of them reaches the envelope follower — a recursive state that a
+    /// single NaN or ±∞ leaves NaN for good — so a non-finite write reads as
+    /// unchanged (see [`LastGood`]).
+    good: [LastGood; 6],
 }
 
 /// The controls one block runs on, read from their atomics **once** at the
@@ -73,6 +80,14 @@ impl CompressorCore {
             envelope: 0.0,
             follower: EnvelopeFollower::new(attack, release, SampleRate::DEFAULT),
             last_makeup: None,
+            good: [
+                LastGood::new(threshold_db.get()),
+                LastGood::new(0.0),
+                LastGood::new(ratio.get()),
+                LastGood::new(0.0),
+                LastGood::new(attack.get()),
+                LastGood::new(release.get()),
+            ],
         }
     }
 
@@ -108,16 +123,23 @@ impl CompressorCore {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
-        let attack = self.timing.attack.load();
-        let release = self.timing.release.load();
+        let (attack, release) = self.times();
         self.follower.set_sample_rate(sample_rate, attack, release);
     }
 
     #[inline]
     pub fn update_coefficients(&mut self) {
-        let attack = self.timing.attack.load();
-        let release = self.timing.release.load();
+        let (attack, release) = self.times();
         self.follower.update_coefficients(attack, release);
+    }
+
+    /// Attack and release, with non-finite writes held off.
+    #[inline]
+    fn times(&mut self) -> (Seconds, Seconds) {
+        (
+            Seconds(self.good[4].read(self.timing.attack.load().get())),
+            Seconds(self.good[5].read(self.timing.release.load().get())),
+        )
     }
 
     /// Read every block-rate control once, and move the makeup ramp's start
@@ -125,13 +147,15 @@ impl CompressorCore {
     #[inline]
     pub fn begin_block(&mut self) -> CompressorBlock {
         let (threshold, knee) = self.threshold.load();
-        let makeup_to = self.makeup_db.load();
+        let threshold = Db(self.good[0].read(threshold.get()));
+        let knee = Db(self.good[1].read(knee.get()));
+        let makeup_to = Db(self.good[3].read(self.makeup_db.load().get()));
         let makeup_from = self.last_makeup.unwrap_or(makeup_to);
         self.last_makeup = Some(makeup_to);
         CompressorBlock {
             threshold,
             knee,
-            ratio: self.ratio.load(),
+            ratio: CompressionRatio(self.good[2].read(self.ratio.load().get())),
             makeup_from,
             makeup_to,
         }
@@ -153,7 +177,11 @@ impl CompressorCore {
         threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
-        let threshold_db = threshold_override.unwrap_or(block.threshold);
+        // A non-finite port sample falls back to the block's threshold rather
+        // than reaching the follower.
+        let threshold_db = threshold_override
+            .filter(|t| t.get().is_finite())
+            .unwrap_or(block.threshold);
         let target_reduction =
             compute_compressor_gain_reduction(input_db, threshold_db, block.ratio, block.knee);
         let gain_reduction = self.follower.smooth(target_reduction.get());

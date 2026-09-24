@@ -13,7 +13,7 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds};
 
-use crate::ramp::Ramp;
+use crate::ramp::{finite_or, LastGood, Ramp};
 
 /// How a fractional delay position is turned into a sample.
 ///
@@ -252,6 +252,12 @@ pub struct DelayLineNode {
     /// Per-channel tap scratch for the cross-fed loop: every channel's
     /// feedback tap is read before any line is written. Sized at construction.
     taps: Vec<f32>,
+    /// The last finite feedback / cross-feedback / mix the cells held, and
+    /// each channel's last finite delay time: a non-finite write reads as
+    /// unchanged, so it never reaches a line (see [`LastGood`]). A NaN pushed
+    /// into a recirculating line stays there for good.
+    good: [LastGood; 3],
+    good_delay: Vec<LastGood>,
 }
 
 impl DelayLineNode {
@@ -347,6 +353,12 @@ impl DelayLineNode {
             last_delay: vec![0.0; n],
             delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
             taps: vec![0.0; n],
+            good: [
+                LastGood::new(feedback.get()),
+                LastGood::new(0.0),
+                LastGood::new(Mix::WET.get()),
+            ],
+            good_delay: vec![LastGood::new(delay_secs.get()); n],
         }
     }
 
@@ -581,13 +593,13 @@ impl DelayLineNode {
         let max = self.max_delay.get();
 
         let target = DelayControls {
-            fb: self.feedback.load().get(),
+            fb: self.good[0].read(self.feedback.load().get()),
             cf: if self.cross_routed {
-                self.cross_feedback.load().get()
+                self.good[1].read(self.cross_feedback.load().get())
             } else {
                 0.0
             },
-            mix: self.mix.load().get(),
+            mix: self.good[2].read(self.mix.load().get()),
         };
         let from = self.last.unwrap_or(target);
         let fb_r = Ramp::new(from.fb, target.fb, size);
@@ -603,7 +615,8 @@ impl DelayLineNode {
             && cf_r.is_flat()
             && mix_r.is_flat();
         for c in 0..width {
-            let d = fractional_samples(self.delay_time[c].load(), sr);
+            let secs = self.good_delay[c].read(self.delay_time[c].load().get());
+            let d = fractional_samples(Seconds(secs), sr);
             let from = if primed { self.last_delay[c] } else { d };
             self.delay_ramps[c] = Ramp::new(from, d, size);
             steady &= self.delay_ramps[c].is_flat();
@@ -630,7 +643,12 @@ impl DelayLineNode {
             // feedback port bypasses every constructor, so its clamp is
             // reapplied here.
             let loop_gain = |i: usize| -> (f32, f32) {
-                let fb = fb_port.map_or_else(|| fb_r.at(i), |s| Feedback::new_clamped(s[i]).get());
+                let fb = fb_port.map_or_else(
+                    || fb_r.at(i),
+                    // `clamp` passes NaN: a non-finite sample falls back to the
+                    // block's feedback instead of entering the loop.
+                    |s| Feedback::new_clamped(finite_or(s[i], fb_r.at(i))).get(),
+                );
                 let (fb, cf) = Feedback::stable_pair(fb, cf_r.at(i));
                 (fb.get(), cf.get())
             };
@@ -638,8 +656,10 @@ impl DelayLineNode {
             // A delay-time port is audio and read per sample; the atomics ramp.
             let delay_at = |c: usize, i: usize| -> f32 {
                 match dt_port {
-                    Some(s) => fractional_samples(Seconds(s[i].clamp(0.0, max)), sr),
-                    None => ramps[c].at(i),
+                    Some(s) if s[i].is_finite() => {
+                        fractional_samples(Seconds(s[i].clamp(0.0, max)), sr)
+                    }
+                    _ => ramps[c].at(i),
                 }
             };
             lines.run(size, x, y, loop_gain, delay_at, |i| mix_r.at(i));
@@ -648,8 +668,10 @@ impl DelayLineNode {
         // Where the next block's ramps start.
         for c in 0..width {
             self.last_delay[c] = match dt_port {
-                Some(s) => fractional_samples(Seconds(s[size - 1].clamp(0.0, max)), sr),
-                None => self.delay_ramps[c].at(size - 1),
+                Some(s) if s[size - 1].is_finite() => {
+                    fractional_samples(Seconds(s[size - 1].clamp(0.0, max)), sr)
+                }
+                _ => self.delay_ramps[c].at(size - 1),
             };
         }
         self.last = Some(target);
@@ -866,6 +888,8 @@ impl Clone for DelayLineNode {
             last_delay: self.last_delay.clone(),
             delay_ramps: self.delay_ramps.clone(),
             taps: self.taps.clone(),
+            good: self.good,
+            good_delay: self.good_delay.clone(),
         }
     }
 }

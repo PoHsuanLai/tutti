@@ -96,6 +96,19 @@ pub struct VbapPannerNode {
     /// [`reset`](AudioUnit::reset): the ramp then starts from the smoother's
     /// current position instead, so there is no stale vector to glide from.
     ramp_from: Option<BlockGains>,
+    /// The last finite azimuth, elevation, spread and width the cells held. The
+    /// de-zipper smoother is recursive, so one NaN or ±∞ bearing would leave
+    /// it NaN for good; a non-finite write reads as unchanged instead.
+    good: [f32; 4],
+}
+
+/// `value` if finite (and remembered in `slot`), else what `slot` last held.
+#[inline]
+fn hold_finite(slot: &mut f32, value: f32) -> f32 {
+    if value.is_finite() {
+        *slot = value;
+    }
+    *slot
 }
 
 impl Clone for VbapPannerNode {
@@ -137,6 +150,7 @@ impl Clone for VbapPannerNode {
             // The clone's smoother is fresh, so its ramp must start from it
             // rather than from the original's last gains.
             ramp_from: None,
+            good: self.good,
         }
     }
 }
@@ -227,6 +241,7 @@ impl VbapPannerNode {
             sample_rate: SampleRate::SR_48K,
             speaker_of_channel: speaker_of_channel(layout),
             ramp_from: None,
+            good: [0.0, 0.0, Spread::POINT.get(), StereoWidth::NATURAL.get()],
         }
     }
 
@@ -283,7 +298,9 @@ impl VbapPannerNode {
     #[inline]
     fn sync_position(&mut self) {
         let (azimuth, elevation) = self.target.load();
-        let spread = self.spread.load();
+        let azimuth = Azimuth(hold_finite(&mut self.good[0], azimuth.get()));
+        let elevation = Elevation(hold_finite(&mut self.good[1], elevation.get()));
+        let spread = Spread(hold_finite(&mut self.good[2], self.spread.load().get()));
         self.panner.set_position(azimuth, elevation);
         self.panner.set_spread(spread);
     }
@@ -297,7 +314,7 @@ impl VbapPannerNode {
     /// a point on the ramp, never a step.
     fn block_gains(&mut self, frames: usize) -> (BlockGains, BlockGains) {
         self.sync_position();
-        let width = self.width.load();
+        let width = StereoWidth(hold_finite(&mut self.good[3], self.width.load().get()));
         let from = match self.ramp_from {
             Some(gains) => gains,
             None => self.panner.gains_now(width),
@@ -489,6 +506,7 @@ impl AudioUnit for VbapPannerNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::Ordering;
 
     #[test]
     fn vbap_panner_tick() {
@@ -760,6 +778,63 @@ mod tests {
             original.tick(&[1.0, 1.0], &mut a);
             clone.tick(&[1.0, 1.0], &mut b);
             assert_eq!(a, b, "frame {i}: the clone's ramp diverged");
+        }
+    }
+
+    /// A non-finite position, spread or width never reaches the de-zipper
+    /// smoother, whose state is recursive: the node keeps the last finite
+    /// value, renders finite audio, and follows the next finite write.
+    ///
+    /// Mutation (each run, each fails): reading the azimuth, elevation, spread
+    /// or width raw (no `hold_finite`) — the first two leave the smoother, and
+    /// so every later frame, NaN.
+    #[test]
+    fn a_non_finite_control_never_reaches_the_smoother() {
+        let bad = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+        for value in bad {
+            for which in 0..4 {
+                let mut node = VbapPannerNode::surround_5_1().unwrap();
+                node.set_position(Azimuth(30.0), Elevation::LEVEL);
+                let (mut out, input) = ([0.0f32; 6], [0.5f32, -0.25]);
+                let mut all_finite = true;
+                let mut run = |node: &mut VbapPannerNode, frames: usize| {
+                    for _ in 0..frames {
+                        node.tick(&input, &mut out);
+                        all_finite &= out.iter().all(|s| s.is_finite());
+                    }
+                };
+                run(&mut node, 64);
+                match which {
+                    0 => node
+                        .target
+                        .azimuth
+                        .as_atomic()
+                        .store(value, Ordering::Release),
+                    1 => node
+                        .target
+                        .elevation
+                        .as_atomic()
+                        .store(value, Ordering::Release),
+                    2 => node.spread.as_atomic().store(value, Ordering::Release),
+                    _ => node.width.as_atomic().store(value, Ordering::Release),
+                }
+                // Everything else moves in the same block.
+                if which != 0 {
+                    node.target
+                        .azimuth
+                        .as_atomic()
+                        .store(-70.0, Ordering::Release);
+                }
+                if which != 2 {
+                    node.spread.as_atomic().store(0.4, Ordering::Release);
+                }
+                run(&mut node, 4_800);
+                node.set_position(Azimuth(10.0), Elevation(5.0));
+                node.set_spread(Spread(0.1));
+                node.set_width(StereoWidth(1.0));
+                run(&mut node, 4_800);
+                assert!(all_finite, "control {which} = {value} reached the output");
+            }
         }
     }
 }

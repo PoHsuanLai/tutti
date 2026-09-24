@@ -2,6 +2,8 @@
 
 use tutti_core::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleRate, Seconds};
 
+use crate::ramp::LastGood;
+
 /// LFO driver block: rate + running phase.
 ///
 /// Each modulation effect owns one and reads its rate **once per block**,
@@ -12,13 +14,18 @@ use tutti_core::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleR
 pub struct LfoDrive {
     pub rate: Param<Hz>,
     pub phase: Phase,
+    /// The last finite rate: a NaN or ±∞ rate would make the phase NaN, and a
+    /// NaN phase never wraps back (see [`LastGood`]).
+    good_rate: LastGood,
 }
 
 impl LfoDrive {
     pub fn new(rate_hz: impl Into<Hz>) -> Self {
+        let rate = rate_hz.into();
         Self {
-            rate: Param::new(rate_hz.into()),
+            rate: Param::new(rate),
             phase: Phase::START,
+            good_rate: LastGood::new(rate.get()),
         }
     }
 
@@ -43,7 +50,8 @@ impl LfoDrive {
     /// rate ran the phase down without ever meeting the `>= 1.0` test.
     #[inline]
     pub fn fill_block(&mut self, sample_rate: impl Into<SampleRate>, out: &mut [Phase]) {
-        let inc = PhaseIncrement::per_sample(self.rate.load(), sample_rate);
+        let rate = Hz(self.good_rate.read(self.rate.load().get()));
+        let inc = PhaseIncrement::per_sample(rate, sample_rate);
         for p in out {
             *p = self.phase;
             self.phase = self.phase.advance(inc);
@@ -73,6 +81,8 @@ pub struct LinearModMix {
     pub depth: Param<Depth>,
     pub feedback: Param<Feedback>,
     pub mix: Param<Mix>,
+    /// Last finite depth / feedback / mix (see [`LastGood`]).
+    good: [LastGood; 3],
 }
 
 impl LinearModMix {
@@ -81,10 +91,20 @@ impl LinearModMix {
         feedback: impl Into<Feedback>,
         mix: impl Into<Mix>,
     ) -> Self {
+        let (depth, feedback, mix) = (
+            depth.into(),
+            Feedback::new_clamped(feedback.into().get()),
+            Mix::new_clamped(mix.into().get()),
+        );
         Self {
-            depth: Param::new(depth.into()),
-            feedback: Param::new(Feedback::new_clamped(feedback.into().get())),
-            mix: Param::new(Mix::new_clamped(mix.into().get())),
+            depth: Param::new(depth),
+            feedback: Param::new(feedback),
+            mix: Param::new(mix),
+            good: [
+                LastGood::new(depth.get()),
+                LastGood::new(feedback.get()),
+                LastGood::new(mix.get()),
+            ],
         }
     }
 
@@ -92,11 +112,14 @@ impl LinearModMix {
     /// [`Mix::blend`] rather than by raw arithmetic; the other two feed
     /// per-sample math and unwrap here.
     #[inline]
-    pub fn load(&self) -> (f32, f32, Mix) {
+    pub fn load(&mut self) -> (f32, f32, Mix) {
+        // Non-finite writes read as unchanged: all three feed recursive state
+        // (the sweep, the recirculation) or the output every later block ramps
+        // from.
         (
-            self.depth.load().get(),
-            self.feedback.load().get(),
-            self.mix.load(),
+            self.good[0].read(self.depth.load().get()),
+            self.good[1].read(self.feedback.load().get()),
+            Mix(self.good[2].read(self.mix.load().get())),
         )
     }
 }
@@ -110,6 +133,8 @@ pub struct TimeModMix {
     pub depth: Param<Seconds>,
     pub feedback: Param<Feedback>,
     pub mix: Param<Mix>,
+    /// Last finite depth / feedback / mix (see [`LastGood`]).
+    good: [LastGood; 3],
 }
 
 impl TimeModMix {
@@ -118,10 +143,20 @@ impl TimeModMix {
         feedback: impl Into<Feedback>,
         mix: impl Into<Mix>,
     ) -> Self {
+        let (depth, feedback, mix) = (
+            depth.into(),
+            Feedback::new_clamped(feedback.into().get()),
+            Mix::new_clamped(mix.into().get()),
+        );
         Self {
-            depth: Param::new(depth.into()),
-            feedback: Param::new(Feedback::new_clamped(feedback.into().get())),
-            mix: Param::new(Mix::new_clamped(mix.into().get())),
+            depth: Param::new(depth),
+            feedback: Param::new(feedback),
+            mix: Param::new(mix),
+            good: [
+                LastGood::new(depth.get()),
+                LastGood::new(feedback.get()),
+                LastGood::new(mix.get()),
+            ],
         }
     }
 
@@ -129,11 +164,14 @@ impl TimeModMix {
     /// semantically but unwraps to `f32` here for the per-sample math. `mix`
     /// stays typed: it is consumed by [`Mix::blend`], not by raw arithmetic.
     #[inline]
-    pub fn load(&self) -> (f32, f32, Mix) {
+    pub fn load(&mut self) -> (f32, f32, Mix) {
+        // Non-finite writes read as unchanged: all three feed recursive state
+        // (the sweep, the recirculation) or the output every later block ramps
+        // from.
         (
-            self.depth.load().get(),
-            self.feedback.load().get(),
-            self.mix.load(),
+            self.good[0].read(self.depth.load().get()),
+            self.good[1].read(self.feedback.load().get()),
+            Mix(self.good[2].read(self.mix.load().get())),
         )
     }
 }

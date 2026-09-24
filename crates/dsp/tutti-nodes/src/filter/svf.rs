@@ -11,14 +11,14 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
 use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Q};
 
-use crate::ramp::{self, Ramp};
+use crate::ramp::{self, LastGood, Ramp};
 
 /// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
 ///
-/// A NaN compares as *unchanged* against every threshold (`|NaN - last| > eps`
-/// is false), so a NaN written to a raw cell is held off only until another
-/// control moves — see the raw-cell accessors' docs.
+/// The thresholds alone would not keep a NaN out (`|NaN - last| > eps` is
+/// false, so a NaN is held off only until another control moves); the cells
+/// are read through `LastGood`, which does.
 const FREQ_EPS: f32 = 0.01;
 const Q_EPS: f32 = 0.0001;
 const GAIN_EPS: f32 = 0.01;
@@ -268,6 +268,9 @@ pub struct SvfFilterNode<F: Real = f64> {
     /// audio width. Built at construction — never resized in `tick`/`process`
     /// (RT no-alloc).
     state: Vec<[F; 2]>,
+    /// The last finite cutoff / Q / gain the cells held: a non-finite write
+    /// reads as unchanged, so it never reaches the solve (see [`LastGood`]).
+    good: [LastGood; 3],
     /// When true, a cutoff param-input port follows the audio inputs.
     mod_cutoff: bool,
     /// When true, a Q param-input port follows the cutoff port (or the audio
@@ -329,6 +332,11 @@ impl<F: Real> SvfFilterNode<F> {
             sample_rate: SampleRate::DEFAULT,
             coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
             state: vec![[zero; 2]; n],
+            good: [
+                LastGood::new(frequency.get()),
+                LastGood::new(q.get()),
+                LastGood::new(0.0),
+            ],
             mod_cutoff: false,
             mod_q: false,
         }
@@ -390,6 +398,7 @@ impl<F: Real> SvfFilterNode<F> {
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
+        self.good[2] = LastGood::new(db.get());
         self.coeffs = SvfCoefficients::solve(
             self.filter_type,
             self.frequency.load(),
@@ -408,12 +417,9 @@ impl<F: Real> SvfFilterNode<F> {
     /// diverges at Nyquist. **A present cutoff param-input port overrides
     /// it.** Shared across clones.
     ///
-    /// **Write a finite value.** A NaN compares as *unchanged* against the
-    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
-    /// ignored and the filter holds its last coefficients. But if another
-    /// control moves in the same block, the NaN reaches the coefficient solve
-    /// and poisons the filter state until `reset`. The setters cannot store a
-    /// NaN cutoff (`max` drops it); the raw cell can.
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
@@ -425,12 +431,9 @@ impl<F: Real> SvfFilterNode<F> {
     /// value at `0.01` to avoid a division blow-up. **A present Q param-input
     /// port overrides it.** Shared across clones.
     ///
-    /// **Write a finite value.** A NaN compares as *unchanged* against the
-    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
-    /// ignored and the filter holds its last coefficients. But if another
-    /// control moves in the same block, the NaN reaches the coefficient solve
-    /// and poisons the filter state until `reset`. The setters cannot store a
-    /// NaN cutoff (`max` drops it); the raw cell can.
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.q.as_atomic()
     }
@@ -440,12 +443,9 @@ impl<F: Real> SvfFilterNode<F> {
     /// Always read from the atomic — there is no gain param-input port. Inert
     /// on the non-gain filter types.
     ///
-    /// **Write a finite value.** A NaN compares as *unchanged* against the
-    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
-    /// ignored and the filter holds its last coefficients. But if another
-    /// control moves in the same block, the NaN reaches the coefficient solve
-    /// and poisons the filter state until `reset`. The setters cannot store a
-    /// NaN cutoff (`max` drops it); the raw cell can.
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.gain_db.as_atomic()
     }
@@ -482,6 +482,16 @@ impl<F: Real> SvfFilterNode<F> {
     pub fn set_filter_type(&mut self, filter_type: SvfType) {
         self.filter_type = filter_type;
         self.coeffs.invalidate();
+    }
+
+    /// Read the three control cells, once, with non-finite values held off.
+    #[inline]
+    fn read_controls(&mut self) -> (Hz, Q, Db) {
+        (
+            Hz(self.good[0].read(self.frequency.load().get())),
+            Q(self.good[1].read(self.q.load().get())),
+            Db(self.good[2].read(self.gain_db.load().get())),
+        )
     }
 
     /// Solve at `(freq, q, gain_db)` unless the current set is already there.
@@ -613,13 +623,12 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // A block of one: read every control once, solve at it if it moved.
+        // A port's `max` floor also maps a NaN sample to the floor.
+        let (base_freq, base_q, gain_db) = self.read_controls();
         let freq = self
             .cutoff_port()
-            .map_or_else(|| self.frequency.load(), |p| Hz(input[p].max(1.0)));
-        let q = self
-            .q_port()
-            .map_or_else(|| self.q.load(), |p| Q(input[p].max(0.01)));
-        let gain_db = self.gain_db.load();
+            .map_or(base_freq, |p| Hz(input[p].max(1.0)));
+        let q = self.q_port().map_or(base_q, |p| Q(input[p].max(0.01)));
         self.coeffs = self.solve_toward(&self.coeffs, freq, q, gain_db);
         let c = self.coeffs;
         for ch in 0..self.width() {
@@ -631,10 +640,10 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
         if size == 0 {
             return;
         }
-        // Every control is read here, once, for the whole block.
-        let gain_db = self.gain_db.load();
-        let base_freq = self.frequency.load();
-        let base_q = self.q.load();
+        // Every control is read here, once, for the whole block. A port's
+        // `max` floor maps a NaN sample to the floor, and ±∞ is clamped by the
+        // solve, so only the cells need holding off.
+        let (base_freq, base_q, gain_db) = self.read_controls();
         match (self.cutoff_port(), self.q_port()) {
             (None, None) => {
                 if self.coeffs.is_invalid() {
@@ -727,6 +736,7 @@ impl<F: Real> Clone for SvfFilterNode<F> {
             sample_rate: self.sample_rate,
             coeffs: self.coeffs,
             state: self.state.clone(),
+            good: self.good,
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
         }
@@ -1368,15 +1378,16 @@ mod tests {
         );
     }
 
-    /// Pins what the raw-cell docs say about a NaN: alone it is held off (the
-    /// filter renders on at its last coefficients); once another control
-    /// moves, it reaches the solve and the output goes non-finite.
+    /// A NaN in a raw cell never reaches the filter state — not even in the
+    /// block where another control moves and forces a re-solve, which is the
+    /// case a threshold comparison alone lets through. The filter keeps
+    /// running at the last good cutoff, and picks up the next finite write.
     ///
-    /// This documents a hazard rather than guarding one — the cells are the
-    /// modulation fast path and are not sanitised per block. Mutation: making
-    /// `moved` report a change on NaN (`!(|d| <= eps)`) fails the first half.
+    /// Mutation: reading the cutoff cell raw in `read_controls` (no
+    /// `LastGood`) fails the second assertion — the NaN reaches the solve and
+    /// the output goes NaN for good.
     #[test]
-    fn a_nan_in_a_raw_cell_is_held_off_until_another_control_moves() {
+    fn a_nan_in_a_raw_cell_never_reaches_the_state() {
         use crate::test_support::{noise, process_block};
         let x = noise(31, 64);
         let mut f = SvfFilterNode::<f64>::new(SvfType::LowPass, 800.0, 0.7);
@@ -1385,15 +1396,24 @@ mod tests {
         f.frequency()
             .store(f32::NAN, std::sync::atomic::Ordering::Release);
         let held = process_block(&mut f, &[&x]);
-        assert!(
-            held[0].iter().all(|s| s.is_finite()),
-            "a NaN alone is held off"
-        );
+        assert!(held[0].iter().all(|s| s.is_finite()), "a NaN alone");
         f.set_q(3.0);
         let moved = process_block(&mut f, &[&x]);
         assert!(
-            moved[0].iter().any(|s| !s.is_finite()),
-            "with another control moving, the NaN reaches the solve"
+            moved[0].iter().all(|s| s.is_finite()),
+            "a NaN with another control moving in the same block"
+        );
+        assert_eq!(
+            f.coeffs.last_freq,
+            Hz(800.0),
+            "held at the last good cutoff"
+        );
+        f.set_frequency(2_000.0);
+        process_block(&mut f, &[&x]);
+        assert_eq!(
+            f.coeffs.last_freq,
+            Hz(2_000.0),
+            "and back on a finite write"
         );
     }
 }

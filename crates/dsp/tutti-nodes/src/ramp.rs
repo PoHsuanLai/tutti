@@ -92,6 +92,48 @@ impl Ramp {
     }
 }
 
+/// The last finite value a control cell held — what a non-finite write reads
+/// as.
+///
+/// A raw `Arc<AtomicF32>` cell accepts anything, and a NaN or ±∞ that reaches
+/// a recursive node's state (a filter integrator, a delay line, an LFO phase,
+/// an envelope follower) stays there for good: every later sample is computed
+/// from it. So each per-block read goes through one of these, and a
+/// non-finite value reads as "unchanged" — the last good value — until a
+/// finite one is written.
+///
+/// Clamping cannot stand in for this: `f32::clamp` passes NaN through.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LastGood(f32);
+
+impl LastGood {
+    /// Starts at `initial` (the constructor's value, or `0.0` if even that is
+    /// not finite).
+    pub(crate) fn new(initial: f32) -> Self {
+        Self(if initial.is_finite() { initial } else { 0.0 })
+    }
+
+    /// `value` if finite (and remembered), otherwise the last finite value.
+    #[inline]
+    pub(crate) fn read(&mut self, value: f32) -> f32 {
+        if value.is_finite() {
+            self.0 = value;
+        }
+        self.0
+    }
+}
+
+/// `value` if finite, else `fallback` — for audio-rate param ports, which are
+/// read per sample and fall back to the block's (already sanitised) value.
+#[inline]
+pub(crate) fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
 /// Split `0..size` into control segments of at most [`COEFF_INTERVAL`] samples.
 ///
 /// Yields `(start, end)` half-open ranges. The coefficient solve for a segment

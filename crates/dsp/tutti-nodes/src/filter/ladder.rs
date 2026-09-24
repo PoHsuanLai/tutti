@@ -14,14 +14,14 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
 use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate};
 
-use crate::ramp::{self, Ramp};
+use crate::ramp::{self, finite_or, LastGood, Ramp};
 
 /// Below these deltas a freq/resonance change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
 ///
-/// A NaN compares as *unchanged* against every threshold (`|NaN - last| > eps`
-/// is false), so a NaN written to a raw cell is held off only until another
-/// control moves — see the raw-cell accessors' docs.
+/// The thresholds alone would not keep a NaN out (`|NaN - last| > eps` is
+/// false, so a NaN is held off only until another control moves); the cells
+/// are read through `LastGood`, which does.
 const FREQ_EPS: f32 = 0.01;
 const RES_EPS: f32 = 0.0001;
 
@@ -219,6 +219,10 @@ pub struct LadderFilterNode<F: Real = f64> {
     /// Stage state, four words per channel; `len()` is the audio width. Built
     /// at construction and never resized in `tick`/`process` (RT no-alloc).
     stages: Vec<[F; 4]>,
+    /// The last finite cutoff / resonance / drive the cells held: a
+    /// non-finite write reads as unchanged, so it never reaches the solve or
+    /// the saturator (see [`LastGood`]).
+    good: [LastGood; 3],
     mod_cutoff: bool,
     mod_q: bool,
     mod_drive: bool,
@@ -273,6 +277,11 @@ impl<F: Real> LadderFilterNode<F> {
             coeffs: LadderCoefficients::solve(frequency, resonance, SampleRate::DEFAULT),
             last_drive: None,
             stages: vec![[zero; 4]; n],
+            good: [
+                LastGood::new(frequency.get()),
+                LastGood::new(resonance.get()),
+                LastGood::new(Drive::UNITY.get()),
+            ],
             mod_cutoff: false,
             mod_q: false,
             mod_drive: false,
@@ -342,12 +351,9 @@ impl<F: Real> LadderFilterNode<F> {
     /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. **A present
     /// cutoff param-input port overrides it.** Shared across clones.
     ///
-    /// **Write a finite value.** A NaN compares as *unchanged* against the
-    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
-    /// ignored and the filter holds its last coefficients. But if another
-    /// control moves in the same block, the NaN reaches the coefficient solve
-    /// and poisons the filter state until `reset`. The setters cannot store a
-    /// NaN cutoff (`max` drops it); the raw cell can.
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
@@ -359,12 +365,9 @@ impl<F: Real> LadderFilterNode<F> {
     /// what is written here. Read once per block. **A present Q param-input
     /// port overrides it.**
     ///
-    /// **Write a finite value.** A NaN compares as *unchanged* against the
-    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
-    /// ignored and the filter holds its last coefficients. But if another
-    /// control moves in the same block, the NaN reaches the coefficient solve
-    /// and poisons the filter state until `reset`. The setters cannot store a
-    /// NaN cutoff (`max` drops it); the raw cell can.
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn resonance(&self) -> Arc<AtomicF32> {
         self.resonance.as_atomic()
     }
@@ -402,6 +405,16 @@ impl<F: Real> LadderFilterNode<F> {
     /// input, so `0.0` would mute rather than clean up.
     pub fn set_drive(&self, drive: impl Into<Drive>) {
         self.drive.store(Drive(drive.into().get().max(0.1)));
+    }
+
+    /// Read the three control cells, once, with non-finite values held off.
+    #[inline]
+    fn read_controls(&mut self) -> (Hz, Resonance, Drive) {
+        (
+            Hz(self.good[0].read(self.frequency.load().get())),
+            Resonance(self.good[1].read(self.resonance.load().get())),
+            Drive(self.good[2].read(self.drive.load().get())),
+        )
     }
 
     #[inline]
@@ -557,7 +570,9 @@ impl<F: Real> LadderFilterNode<F> {
                     |i| {
                         (
                             cutoff.map_or(base_freq, |s| Hz(s[i].max(1.0))),
-                            res.map_or(base_res, |s| Resonance(s[i].clamp(0.0, 1.0))),
+                            res.map_or(base_res, |s| {
+                                Resonance(finite_or(s[i], base_res.get()).clamp(0.0, 1.0))
+                            }),
                         )
                     },
                     drive_at,
@@ -590,16 +605,18 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // A block of one: every control read once, solved at if it moved.
+        // Port samples fall back to the cell's value when non-finite: `clamp`
+        // passes NaN, and an infinite drive times a zero input is NaN.
+        let (base_freq, base_res, base_drive) = self.read_controls();
         let freq = self
             .cutoff_port()
-            .map_or_else(|| self.frequency.load(), |p| Hz(input[p].max(1.0)));
-        let res = self.q_port().map_or_else(
-            || self.resonance.load(),
-            |p| Resonance(input[p].clamp(0.0, 1.0)),
-        );
-        let drive = self
-            .drive_port()
-            .map_or_else(|| self.drive.load(), |p| Drive(input[p].max(0.1)));
+            .map_or(base_freq, |p| Hz(input[p].max(1.0)));
+        let res = self.q_port().map_or(base_res, |p| {
+            Resonance(finite_or(input[p], base_res.get()).clamp(0.0, 1.0))
+        });
+        let drive = self.drive_port().map_or(base_drive, |p| {
+            Drive(finite_or(input[p], base_drive.get()).max(0.1))
+        });
         self.coeffs = self.solve_toward(&self.coeffs, freq, res);
         self.last_drive = Some(drive);
         let (c, ty, d) = (self.coeffs, self.ladder_type, F::from_f32(drive.get()));
@@ -613,9 +630,8 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
             return;
         }
         // Every control is read here, once, for the whole block.
-        let base_freq = self.frequency.load();
-        let base_res = self.resonance.load();
-        let base_drive = self.drive.load();
+        let (base_freq, base_res, base_drive) = self.read_controls();
+        let bd = base_drive.get();
 
         // Drive: a port is an audio signal read per sample; the atomic ramps
         // from where the last block ended. Each source gets its own
@@ -624,12 +640,14 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
         let drive_from = self.last_drive.unwrap_or(base_drive);
         let drive_ramp = Ramp::new(drive_from.get(), base_drive.get(), size);
         self.last_drive = Some(match drive_port {
-            Some(s) => Drive(s[size - 1].max(0.1)),
+            Some(s) => Drive(finite_or(s[size - 1], bd).max(0.1)),
             None => base_drive,
         });
         let (f, r) = (base_freq, base_res);
         match drive_port {
-            Some(s) => self.render(size, input, output, f, r, |i| F::from_f32(s[i].max(0.1))),
+            Some(s) => self.render(size, input, output, f, r, |i| {
+                F::from_f32(finite_or(s[i], bd).max(0.1))
+            }),
             None if drive_ramp.is_flat() => {
                 let d = F::from_f32(base_drive.get());
                 self.render(size, input, output, f, r, move |_| d);
@@ -692,6 +710,7 @@ impl<F: Real> Clone for LadderFilterNode<F> {
             coeffs: self.coeffs,
             last_drive: self.last_drive,
             stages: self.stages.clone(),
+            good: self.good,
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
             mod_drive: self.mod_drive,

@@ -53,13 +53,26 @@ pub enum SvfType {
 }
 
 /// Pure SVF coefficient set computed from filter parameters.
+///
+/// Public so a voice engine that runs the same topology across SIMD lanes
+/// (`tutti-polysynth`'s voice bank) derives its coefficients from this one
+/// function rather than a copy of it. The per-sample recurrence those
+/// coefficients feed is `v3 = v0 - ic2; v1 = a1*ic1 + a2*v3;
+/// v2 = ic2 + a2*ic1 + a3*v3; ic1 = 2*v1 - ic1; ic2 = 2*v2 - ic2;
+/// y = m0*v0 + m1*v1 + m2*v2` (Simper's trapezoidal SVF).
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SvfCoeffs {
+pub struct SvfCoeffs {
+    /// `1 / (1 + g*(g + k))`, with `g = tan(pi * fc / sr)` and `k = 1 / Q`.
     pub a1: f64,
+    /// `g * a1`.
     pub a2: f64,
+    /// `g * a2`.
     pub a3: f64,
+    /// Output weight of the input `v0`.
     pub m0: f64,
+    /// Output weight of the band-pass state `v1`.
     pub m1: f64,
+    /// Output weight of the low-pass state `v2`.
     pub m2: f64,
 }
 
@@ -70,7 +83,7 @@ pub(super) struct SvfCoeffs {
 /// adjacent and interchangeable — the call reads as a run of positional numbers,
 /// `(LowPass, 1000.0, 0.707, 0.0, 44100.0)`, where transposing any two compiles
 /// and detunes the filter.
-pub(super) fn compute_svf_coeffs(
+pub fn compute_svf_coeffs(
     filter_type: SvfType,
     freq: impl Into<Hz>,
     q: impl Into<Q>,

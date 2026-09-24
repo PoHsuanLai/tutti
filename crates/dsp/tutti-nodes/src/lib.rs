@@ -108,8 +108,9 @@ pub use distortion::{DistortionNode, ShapeKind};
 
 mod filter;
 pub use filter::{
-    BandState, EqBandNode, LadderFilterNode, LadderType, StereoLadderFilterNode,
-    StereoSvfFilterNode, SvfFilterNode, SvfType,
+    compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
+    LadderFilterNode, LadderType, StereoLadderFilterNode, StereoSvfFilterNode, SvfCoeffs,
+    SvfFilterNode, SvfType,
 };
 
 mod dynamics;

@@ -130,6 +130,10 @@ jobs:
       #   tutti-cpal/midi     — the pre_block/post_block arms of process_audio
       #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had
       #                         never once run in this repo
+      #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its
+      #                         5 tests looked for the .sf2 at the pre-extraction
+      #                         `crates/tutti/assets/` path and failed on every
+      #                         run, which no run ever made
       #
       # Not `--all-features`: that pulls every plugin-format SDK. Name the
       # combinations, and add one here whenever a new feature is added.
@@ -139,11 +143,13 @@ jobs:
           cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
           cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
+          cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
 
       - name: Test
         run: |
           cargo nextest run -p tutti-cpal --features capture,midi
           cargo nextest run -p bevy-tutti --features audio-io
+          cargo nextest run -p bevy-tutti --features soundfont
 
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`

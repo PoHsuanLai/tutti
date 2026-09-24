@@ -46,7 +46,7 @@ fn sf2_path() -> std::path::PathBuf {
         p.is_file(),
         "the SoundFont fixture is missing: {}\n\
          (resolved from CARGO_MANIFEST_DIR + {SF2}). Fetch it with \
-         `crates/tutti/assets/soundfonts/download-timgm6mb.sh`.",
+         `assets/soundfonts/download-timgm6mb.sh`.",
         p.display()
     );
     p

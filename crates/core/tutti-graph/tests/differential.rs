@@ -352,7 +352,8 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
 }
 
 /// A transport, played: it rolls at `tempo`, and `block` sometimes seeks,
-/// stops or starts, ramps the tempo across a block, or toggles a short loop.
+/// stops or starts, changes the tempo inside a block (a linear ramp, or a
+/// step at a random offset), or toggles a short loop.
 struct Script {
     beat: f64,
     playing: bool,
@@ -392,10 +393,19 @@ impl Script {
                 end: tutti_types::Beat(end),
             }),
         };
-        let ramped = 0.5 * (self.tempo + next_tempo);
+        // Half the changes ramp linearly across the block; half step at a
+        // random offset inside it. Either way the block reports its starting
+        // tempo, and the next block the new one.
+        let beats = |frames: f64, tempo: f64| frames * tempo / 60.0 / 48_000.0;
+        let advance = if next_tempo != self.tempo && rng.chance(50) {
+            let at = rng.below(n as u64 + 1) as f64;
+            beats(at, self.tempo) + beats(n as f64 - at, next_tempo)
+        } else {
+            beats(n as f64, 0.5 * (self.tempo + next_tempo))
+        };
         self.tempo = next_tempo;
         if self.playing {
-            let x = self.beat + n as f64 * ramped / 60.0 / 48_000.0;
+            let x = self.beat + advance;
             self.beat = match self.looping {
                 Some((start, end)) if self.beat < end && x >= end => {
                     start + (x - end) % (end - start)
@@ -473,8 +483,9 @@ proptest! {
     /// playhead fires late in the executor only → diverges. Mutation: in
     /// `CommandRx::overlay`, merge the scheduled events *before* the port's
     /// own → ties flip → diverges. Mutation: never feed the executor's
-    /// playhead → diverges. Mutation: drop the executor's ramp estimate → a
-    /// tempo ramp breaks its run but not the reference's → diverges. (The
+    /// playhead → diverges. Mutation: accept only the steady advance at the
+    /// block's own tempo in the executor → a tempo ramp or step breaks its
+    /// run but not the reference's → diverges. (The
     /// frame-sized slack itself is pinned by `time::tests`: the script's
     /// positions are exact, so a 1e-6-beat slack would pass here.)
     #[test]

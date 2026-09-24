@@ -335,10 +335,13 @@ place that loses precision to be written out explicitly:
    *continuous playback* (a loop wrap landing at or after it counts); a seek
    or loop that jumps over it leaves it pending until reached or cancelled,
    and it is late only if continuous playback crossed it before the command
-   was processed — inside a loop, a beat ahead of the playhead is not
+   was processed (a block continues the last when its start is within a
+   frame of any advance between the old and new tempo, so a tempo step or
+   ramp inside a block is not a seek) — inside a loop, a beat ahead of the playhead is not
    "crossed" even if an earlier pass went through it, since this pass
    reaches it (it waits). Pairing (every note-on's note-off) is the caller's job:
-   `schedule` returns a `CommandId`, and `Editor::cancel` / `cancel_all`
+   `schedule` returns a `CommandId` (tied to its editor/executor pair, so
+   an id kept across a rebuild is refused), and `Editor::cancel` / `cancel_all`
    (on their own ring, needing no credit) take commands back and free their
    credit, since a beat-timed command holds it while pending. A ramp into a
    node coarser than `Sample` is refused at `schedule`. `Frame` always means

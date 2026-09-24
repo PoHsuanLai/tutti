@@ -793,10 +793,9 @@ const FRAME_ROUNDING: f64 = 1e-6;
 
 /// One block's continuous traversal, stepped through naively: the beat
 /// intervals `[from, to)` it covers, each with the frame (from the block's
-/// start) at which it begins, and the beat it arrives at.
+/// start) at which it begins.
 struct Traversal {
     segs: Vec<(f64, f64, f64)>,
-    arrives: f64,
 }
 
 /// What `t` traverses in `len` frames at `tempo` and `rate`.
@@ -804,10 +803,7 @@ fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
     let beat = t.beat.get();
     let usable = |x: f64| x.is_finite() && x > 0.0;
     if !t.playing || !usable(tempo) || !usable(rate) {
-        return Traversal {
-            segs: Vec::new(),
-            arrives: beat,
-        };
+        return Traversal { segs: Vec::new() };
     }
     let fpb = rate * 60.0 / tempo;
     let (mut pos, mut left, mut frame0) = (beat, len as f64 / fpb, 0.0);
@@ -836,7 +832,34 @@ fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
             }
         }
     }
-    Traversal { segs, arrives: pos }
+    let _ = pos;
+    Traversal { segs }
+}
+
+/// The beat intervals a playhead at `t.beat` covers moving `dist` beats
+/// forward, wrapping at `t`'s loop.
+fn walk(t: &Transport, dist: f64) -> Vec<(f64, f64)> {
+    let (mut pos, mut left) = (t.beat.get(), dist.max(0.0));
+    let mut path = Vec::new();
+    while left > 0.0 {
+        match t.looping {
+            Some(l) if l.start.get() < l.end.get() && pos < l.end.get() => {
+                let room = l.end.get() - pos;
+                if left < room {
+                    path.push((pos, pos + left));
+                    break;
+                }
+                path.push((pos, l.end.get()));
+                left -= room;
+                pos = l.start.get();
+            }
+            _ => {
+                path.push((pos, pos + left));
+                break;
+            }
+        }
+    }
+    path
 }
 
 /// The reference's record of continuous playback: every beat interval
@@ -853,38 +876,58 @@ struct RefPlayhead {
 impl RefPlayhead {
     /// Record the block about to be rendered.
     fn observe(&mut self, t: &Transport, rate: f64, len: usize) {
-        let continues = self.last.and_then(|(p, prate, plen)| {
+        let now = t.beat.get();
+        let walked = self.last.and_then(|(p, prate, plen)| {
             if p.looping != t.looping {
                 return None;
             }
-            let frame = |tempo: f64| {
-                (tempo.is_finite() && tempo > 0.0 && rate > 0.0).then(|| tempo / (60.0 * rate))
-            };
-            let slack = frame(t.tempo.get())
-                .or_else(|| frame(p.tempo.get()))
-                .unwrap_or(STILL);
-            let now = t.beat.get();
-            let steady = traverse(&p, p.tempo.get(), prate, plen);
-            let ramp = traverse(&p, 0.5 * (p.tempo.get() + t.tempo.get()), prate, plen);
-            [steady, ramp]
+            // How far the previous block could have carried the playhead:
+            // its length at any tempo between its own and this block's (the
+            // tempo changed somewhere inside it), in beats; nothing if it was
+            // stopped. Slack: one frame at the faster tempo.
+            let usable = |x: f64| x.is_finite() && x > 0.0;
+            let tempos: Vec<f64> = [p.tempo.get(), t.tempo.get()]
                 .into_iter()
-                .find(|tr| (tr.arrives - now).abs() <= slack)
-                .map(|tr| (tr, slack))
-        });
-        match continues {
-            Some((tr, slack)) => {
-                self.history
-                    .extend(tr.segs.iter().map(|&(from, to, _)| (from, to)));
-                // The estimate arrived within a frame of where the transport
-                // says it is; the playhead really went to `now`, so the
-                // record ends there.
-                let now = t.beat.get();
-                match self.history.last_mut() {
-                    Some(last) if (last.1 - tr.arrives).abs() <= slack => last.1 = now,
-                    _ if now > tr.arrives => self.history.push((tr.arrives, now)),
-                    _ => {}
+                .filter(|&x| usable(x) && usable(prate))
+                .collect();
+            let beats = |tempo: f64| plen as f64 * tempo / (60.0 * prate);
+            let (lo, hi) = if !p.playing || tempos.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let d: Vec<f64> = tempos.iter().map(|&x| beats(x)).collect();
+                (
+                    d.iter().cloned().fold(f64::MAX, f64::min),
+                    d.iter().cloned().fold(0.0, f64::max),
+                )
+            };
+            let slack = [p.tempo.get(), t.tempo.get()]
+                .into_iter()
+                .filter(|&x| usable(x) && usable(rate))
+                .map(|x| x / (60.0 * rate))
+                .fold(STILL, f64::max);
+            // Every distance that would put the playhead at `now`: straight
+            // there, or round the loop once, twice, ...
+            let from = p.beat.get();
+            let mut distances = vec![now - from];
+            if let Some(l) = p.looping {
+                let (start, end) = (l.start.get(), l.end.get());
+                // Only a playhead inside the loop can have wrapped there.
+                let inside = now >= start - slack && now < end + slack;
+                if start < end && from < end && inside {
+                    let mut d = (end - from) + (now - start);
+                    while d <= hi + slack {
+                        distances.push(d);
+                        d += end - start;
+                    }
                 }
             }
+            distances
+                .into_iter()
+                .find(|&d| d >= lo - slack && d <= hi + slack)
+                .map(|d| walk(&p, d))
+        });
+        match walked {
+            Some(path) => self.history.extend(path),
             None => self.history.clear(),
         }
         self.last = Some((*t, rate, len));

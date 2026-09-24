@@ -871,6 +871,23 @@ fn beat_resolution_matches_a_hand_computed_table() {
             want: Some((3_500, true)),
         },
         Case {
+            // 1440 BPM, then a step to 2880 at offset 250 of block 1: it
+            // moves 0.125 + 0.25 beat, arriving at 0.625, and block 2 reports
+            // 2880. Beat 0.5, crossed inside block 1 and scheduled before
+            // block 2, is late at frame 1 000 — the step is not a seek.
+            name: "a mid-block tempo step",
+            arrival: 0,
+            transports: vec![
+                at_beat(0.0, true, 1440.0, None),
+                at_beat(0.25, true, 1440.0, None),
+                at_beat(0.625, true, 2880.0, None),
+                at_beat(1.125, true, 2880.0, None),
+            ],
+            sched_at: 2,
+            beat: 0.5,
+            want: Some((1_000, true)),
+        },
+        Case {
             // Looping [1, 2) forever: beat 2.5 is never reached.
             name: "past the loop end",
             arrival: 0,
@@ -1081,4 +1098,49 @@ fn cancels_are_never_lost_across_threads() {
     let exec = audio.join().expect("the audio thread");
     assert_eq!(exec.cancelled_commands(), u64::from(ROUNDS));
     assert!(log.lock().unwrap().is_empty());
+}
+
+/// A `CommandId` belongs to the pair that issued it. After a rebuild (the
+/// recovery from a poisoned editor), an old id is refused by the new editor
+/// — it can neither cancel the new pair's command that shares its number
+/// nor clog the executor's held-cancel list for a command that never comes.
+///
+/// Mutation: drop the pair check in `CommandTx::cancel` → the old id #0
+/// cancels the new pair's own #0, which never lands → fails; and the spam of
+/// old ids is accepted → fails.
+#[test]
+fn a_command_id_from_another_pair_is_refused() {
+    let mut old = rig();
+    let stale = old
+        .ed
+        .schedule(At::Frame(Frame(10_000)), to(), tag(1))
+        .expect("room");
+    drop(old);
+
+    let mut new = rig();
+    let own = new
+        .ed
+        .schedule(At::Frame(Frame(100)), to(), tag(2))
+        .expect("room");
+    assert_ne!(own, stale, "same number, different pair");
+    assert_eq!(
+        new.ed.cancel(stale),
+        Err(ScheduleError::UnknownCommand { id: stale })
+    );
+    for _ in 0..2 * tutti_graph::CANCEL_CAPACITY {
+        assert!(new.ed.cancel(stale).is_err(), "never queued");
+    }
+    let later = new
+        .ed
+        .schedule(At::Frame(Frame(50_000)), to(), tag(3))
+        .expect("room");
+    new.ed
+        .cancel(later)
+        .expect("a genuine cancel still goes through");
+    for _ in 0..4 {
+        new.block(64, &Transport::default());
+    }
+    let got: Vec<u32> = new.exec_log.lock().unwrap().iter().map(|e| e.3).collect();
+    assert_eq!(got, vec![2], "its own #0 landed; its cancelled #1 did not");
+    assert_eq!(new.exec.cancelled_commands(), 1);
 }

@@ -136,14 +136,15 @@ pub enum Due {
 /// playback crossed it before the command was resolved.
 ///
 /// Fed one [`Env`] per block with [`observe`](Self::observe). A block
-/// continues the previous one when its start beat is **within one frame**
-/// (at its tempo) of where the previous block's transport would have arrived
-/// — its start, advanced by its length at its tempo and rate, wrapped by its
-/// loop, unmoved when stopped — or of where a linear tempo ramp from the
-/// previous block's tempo to this one's would have taken it; and the loop is
-/// the same. A frame of slack absorbs a host's `f32` beat (a step of ~8e-6
-/// beat at beat 100, far below a frame); the ramp estimate absorbs a tempo
-/// automated inside a block. Anything else — a seek, a loop change, a first
+/// continues the previous one when the loop is the same and its start beat
+/// is where the previous block could have arrived: advanced, from the
+/// previous block's start, by **between** its length at the previous block's
+/// tempo and its length at this block's tempo — **± one frame** — and
+/// wrapped by the loop (unmoved when stopped). The host reports one tempo
+/// per block, so a tempo that changed inside the previous block — a step at
+/// any offset, or any monotonic ramp — moved the playhead by an amount in
+/// that range; and a frame of slack absorbs a host's `f32` beat (a step of
+/// ~8e-6 beat at beat 100). Anything else — a seek, a loop change, a first
 /// block — starts a new run, and a new run has crossed nothing yet.
 ///
 /// **What counts as crossed.** Without a loop wrap, `[anchor, now)`: where
@@ -177,17 +178,7 @@ impl Playhead {
             if p.transport.looping != env.transport.looping {
                 return None;
             }
-            // One frame, in beats, at whichever tempo is there to measure by.
-            let slack = env
-                .frames_per_beat_at(env.transport.tempo.get())
-                .or_else(|| p.frames_per_beat_at(p.transport.tempo.get()))
-                .map_or(STILL, |fpb| 1.0 / fpb);
-            let steady = p.advance(p.transport.tempo.get());
-            let ramp = p.advance(0.5 * (p.transport.tempo.get() + env.transport.tempo.get()));
-            [steady, ramp]
-                .into_iter()
-                .find(|(arrives, _)| (arrives - now).abs() <= slack)
-                .map(|(_, wrapped)| wrapped)
+            p.arrives_at(now, env.transport.tempo.get())
         });
         match continues {
             Some(wrapped) => self.wrapped |= wrapped,
@@ -279,21 +270,58 @@ impl Env {
         }
     }
 
-    /// Where the transport arrives at the end of this block if it rolls at
-    /// `tempo`, and whether it wrapped its loop on the way.
-    fn advance(&self, tempo: f64) -> (f64, bool) {
+    /// Whether this block, with its tempo changing to `next_tempo` at some
+    /// point inside it, could have left the transport at beat `next` — and
+    /// if so, whether it wrapped its loop on the way. See [`Playhead`] for
+    /// the rule. No allocation: the next block's start is unwrapped against
+    /// the loop candidate by candidate.
+    fn arrives_at(&self, next: f64, next_tempo: f64) -> Option<bool> {
         let t = &self.transport;
-        let now = t.beat.get();
-        let Some(frames_per_beat) = self.frames_per_beat_at(tempo).filter(|_| t.playing) else {
-            return (now, false);
+        let from = t.beat.get();
+        let len = self.block_len.get() as f64;
+        let rolls = |tempo: f64| self.frames_per_beat_at(tempo).filter(|_| t.playing);
+        let (a, b) = (rolls(t.tempo.get()), rolls(next_tempo));
+        // The distance range, in beats: nothing when stopped.
+        let (lo, hi) = match (a, b) {
+            (None, None) => (0.0, 0.0),
+            (Some(f), None) | (None, Some(f)) => (len / f, len / f),
+            (Some(f), Some(g)) => ((len / f).min(len / g), (len / f).max(len / g)),
         };
-        let x = now + self.block_len.get() as f64 / frames_per_beat;
+        // One frame of slack, in beats, at the faster of the two tempos (a
+        // frame is fewer beats at the slower), whether or not it rolls.
+        let slack = [t.tempo.get(), next_tempo]
+            .into_iter()
+            .filter_map(|tempo| self.frames_per_beat_at(tempo))
+            .map(|fpb| 1.0 / fpb)
+            .fold(STILL, f64::max);
+        let fits = |x: f64| x - from >= lo - slack && x - from <= hi + slack;
+        if fits(next) {
+            return Some(false);
+        }
         match t.looping {
-            Some(l) if now < l.end.get() && l.start.get() < l.end.get() && x >= l.end.get() => {
-                let len = l.end.get() - l.start.get();
-                (l.start.get() + (x - l.end.get()) % len, true)
+            // A wrap leaves the playhead inside the loop: a `next` outside
+            // it was reached some other way (a seek), however the distances
+            // happen to line up.
+            Some(l)
+                if from < l.end.get()
+                    && l.start.get() < l.end.get()
+                    && next >= l.start.get() - slack
+                    && next < l.end.get() + slack =>
+            {
+                let (start, end) = (l.start.get(), l.end.get());
+                let period = end - start;
+                // Wrapped k + 1 times: unwrapped, `next` sat at
+                // `end + (next - start) + k * period`.
+                let mut x = end + (next - start);
+                while x - from <= hi + slack {
+                    if fits(x) {
+                        return Some(true);
+                    }
+                    x += period;
+                }
+                None
             }
-            _ => (x, false),
+            _ => None,
         }
     }
 
@@ -628,7 +656,9 @@ mod tests {
     ///
     /// Mutation: continuity within 1e-6 beat (the old rule) → the `f32`
     /// positions break the run and nothing is crossed → fails. Mutation:
-    /// drop the ramp estimate → the ramp breaks the run → fails.
+    /// accept only the steady advance at the block's own tempo (drop the
+    /// next tempo from `arrives_at`'s range) → the ramp and the step break
+    /// the run → fails.
     #[test]
     fn continuity_survives_f32_beats_and_tempo_ramps() {
         let at = |beat: f64, tempo: f64| {
@@ -662,6 +692,53 @@ mod tests {
             tempo = next;
         }
         assert!(ph.crossed(10.05), "one run, through the ramp");
+        // A step from 120 to 240 BPM at offset 64 of a 256-frame block: the
+        // block reports 120, the next 240, and the position moved 64 frames
+        // at 120 and 192 at 240. A beat crossed inside it was crossed.
+        let mut ph = Playhead::new();
+        let e = |beat: f64, tempo: f64| {
+            env(
+                0,
+                256,
+                Transport {
+                    playing: true,
+                    tempo: Bpm(tempo),
+                    beat: Beat(beat),
+                    looping: None,
+                },
+            )
+        };
+        ph.observe(&e(1.0, 120.0));
+        let after = 1.0 + 64.0 / 24_000.0 + 192.0 / 12_000.0;
+        ph.observe(&e(after, 240.0));
+        assert!(ph.crossed(1.01), "the step is not a seek");
+        // A real seek still is one.
+        ph.observe(&e(after + 0.5, 240.0));
+        assert!(!ph.crossed(1.01) && !ph.crossed(after + 0.2));
+    }
+
+    /// A seek out of a loop is a seek, even when the distances line up with
+    /// some number of wraps. Loop [4, 4.5) at 120 BPM; a 1 200-frame block
+    /// (0.05 beat) from 4.45; the next block starts at 3.0, which two whole
+    /// loops plus the block's advance would also "explain" arithmetically —
+    /// but a wrap leaves the playhead inside the loop, and 3.0 is not.
+    ///
+    /// Mutation: drop the "inside the loop" guard in `arrives_at` → the seek
+    /// reads as continuous (wrapped), the run keeps its old anchor, and the
+    /// beat just crossed from 3.0 is not → fails.
+    #[test]
+    fn a_seek_out_of_a_loop_is_not_a_wrap() {
+        let l = Some(LoopRange {
+            start: Beat(4.0),
+            end: Beat(4.5),
+        });
+        let at = |beat: f64| block(beat, 1_200, true, l);
+        let mut ph = Playhead::new();
+        ph.observe(&at(4.45));
+        ph.observe(&at(3.0));
+        ph.observe(&at(3.05));
+        assert!(ph.crossed(3.02), "a new run from 3.0");
+        assert!(!ph.crossed(4.46), "not the old one");
     }
 
     /// Resolution with history: a beat crossed by continuous playback before

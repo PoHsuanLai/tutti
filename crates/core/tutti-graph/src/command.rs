@@ -110,8 +110,18 @@ pub const CANCEL_CAPACITY: usize = 64;
 
 /// A scheduled command, as [`Editor::schedule`](crate::Editor::schedule)
 /// returns it — the handle [`Editor::cancel`](crate::Editor::cancel) takes.
+///
+/// Carries the identity of the editor/executor pair that issued it, so an id
+/// kept past a rebuild (the recovery from a poisoned editor is a new pair)
+/// cannot cancel the new pair's command that happens to share its number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CommandId(u64);
+pub struct CommandId {
+    pair: u64,
+    seq: u64,
+}
+
+/// Pair identities: every command channel takes the next one.
+static NEXT_PAIR: AtomicU64 = AtomicU64::new(0);
 
 /// Why [`Editor::schedule`](crate::Editor::schedule) refused a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +151,13 @@ pub enum ScheduleError {
     /// The editor is poisoned (see
     /// [`CommitError::Poisoned`](crate::CommitError::Poisoned)).
     Poisoned,
+    /// A cancel named a command this editor never issued: one from another
+    /// editor/executor pair (an id kept across a rebuild), or one not
+    /// scheduled yet. Nothing was sent.
+    UnknownCommand {
+        /// The id.
+        id: CommandId,
+    },
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -157,6 +174,7 @@ impl std::fmt::Display for ScheduleError {
                 to.node.0, to.port
             ),
             Self::Poisoned => write!(f, "the editor is poisoned; build a new pair"),
+            Self::UnknownCommand { id } => write!(f, "{id:?} was not issued by this editor"),
         }
     }
 }
@@ -193,6 +211,8 @@ enum Cancel {
 
 /// The editor's end.
 pub(crate) struct CommandTx {
+    /// This pair's identity, stamped into every `CommandId`.
+    pair: u64,
     tx: HeapProd<Scheduled>,
     cancel: HeapProd<Cancel>,
     sent: u64,
@@ -238,6 +258,7 @@ pub(crate) fn command_channel() -> (CommandTx, CommandRx) {
     let done = Arc::new(AtomicU64::new(0));
     (
         CommandTx {
+            pair: NEXT_PAIR.fetch_add(1, Ordering::Relaxed),
             tx,
             cancel: cancel_tx,
             sent: 0,
@@ -296,13 +317,22 @@ impl CommandTx {
             unreachable!("the command ring has a free slot for every credit");
         }
         self.sent += 1;
-        Ok(CommandId(cmd.seq))
+        Ok(CommandId {
+            pair: self.pair,
+            seq: cmd.seq,
+        })
     }
 
-    /// Cancel `id` if it has not landed yet (a no-op if it has).
+    /// Cancel `id` if it has not landed yet (a no-op if it has). Refuses an
+    /// id this pair never issued — another pair's, or one past the last it
+    /// sent — which the executor would otherwise hold for a command that
+    /// never comes, or match against an unrelated one of its own.
     pub(crate) fn cancel(&mut self, id: CommandId) -> Result<(), ScheduleError> {
+        if id.pair != self.pair || id.seq >= self.sent {
+            return Err(ScheduleError::UnknownCommand { id });
+        }
         self.cancel
-            .try_push(Cancel::One(id.0))
+            .try_push(Cancel::One(id.seq))
             .map_err(|_| ScheduleError::Backpressure)
     }
 
@@ -572,6 +602,25 @@ mod tests {
             EventKind::Midi(Ump([0; 4])),
         )
         .expect("room")
+    }
+
+    /// An id this pair never issued — a number past the last it sent — is
+    /// refused, not queued for a command that never comes.
+    ///
+    /// Mutation: drop the `id.seq >= self.sent` check → accepted → fails.
+    #[test]
+    fn a_never_issued_id_is_refused() {
+        let (mut tx, _rx) = command_channel();
+        let issued = send(&mut tx, 1_000);
+        let unissued = CommandId {
+            pair: issued.pair,
+            seq: 1,
+        };
+        assert_eq!(
+            tx.cancel(unissued),
+            Err(ScheduleError::UnknownCommand { id: unissued })
+        );
+        assert_eq!(tx.cancel(issued), Ok(()));
     }
 
     /// The lost-cancel race, staged: with the editor on another thread the

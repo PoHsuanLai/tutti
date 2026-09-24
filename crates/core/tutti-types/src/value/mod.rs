@@ -20,19 +20,21 @@ pub mod midi_channel;
 pub mod midi_group;
 pub mod note;
 
+pub mod latency;
 pub mod param;
 pub mod samples;
 pub mod tail;
 pub mod unit_param;
 
 pub use cc_number::CCNumber;
+pub use latency::Latency;
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;
 pub use tail::Tail;
-pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
+pub use unit_param::{ParamAddr, ParamKey, UnitParam, UnitParamOutOfRange};
 pub use units::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
     Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz,

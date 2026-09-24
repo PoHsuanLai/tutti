@@ -210,9 +210,10 @@ fn a_cycle_is_rejected_unless_feedback_breaks_it() {
     assert_eq!(cycle, &vec![A, B], "both nodes are named");
 
     let mut broken = t.clone();
-    broken
-        .edges
-        .insert(at(A, 0), Edge::Feedback(FeedbackFrom { from: out(B, 0) }));
+    broken.edges.insert(
+        at(A, 0),
+        Edge::Feedback(FeedbackFrom::one_block(out(B, 0), Samples(64))),
+    );
     let valid = broken.validate().expect("feedback breaks the cycle");
     assert_eq!(
         valid.get().topo_order().expect("acyclic once cut"),

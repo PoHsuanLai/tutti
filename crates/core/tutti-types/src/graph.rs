@@ -92,7 +92,25 @@ pub enum Source {
     Zero,
 }
 
-/// A source read through a one-block delay, closing a cycle.
+/// A source read through an explicit delay, closing a cycle.
+///
+/// # The delay is part of the edge
+///
+/// A feedback edge delays by exactly [`delay`](Self::delay) frames, whatever
+/// the block size. It is *not* "one block", because the block size is a
+/// property of the runtime, not of the graph: a bounce prepared at a larger
+/// maximum block than live playback would otherwise loop at a different
+/// period, and a bounce must sound like what was heard.
+///
+/// A block cannot read samples it has not produced yet, so an interpreter
+/// needs `delay >= its maximum block`, and `tutti-graph` refuses to compile a
+/// shorter one. **An offline render must therefore be prepared with a maximum
+/// block no larger than the smallest feedback delay in the graph**; the
+/// compile error enforces it rather than silently changing the sound.
+/// [`one_block`](Self::one_block) spells the common case: a delay of one
+/// block at the size the author chose.
+///
+/// The rest of this module's "last block" wording means this delay.
 ///
 /// **The only way to express feedback.** A [`Source`] edge that closes a cycle
 /// is an [`Invalid::Cycle`]; a feedback edge is a cycle the author declared. The
@@ -105,8 +123,24 @@ pub enum Source {
 /// types called `Feedback` in one crate is a collision, not a pun.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FeedbackFrom {
-    /// The port whose *previous block's* output feeds the sink.
+    /// The port whose delayed output feeds the sink.
     pub from: OutPort,
+    /// How far back, in frames. See the type docs for the lower bound.
+    pub delay: Samples,
+}
+
+impl FeedbackFrom {
+    /// A feedback edge from `from`, delayed by `delay` frames.
+    pub const fn new(from: OutPort, delay: Samples) -> Self {
+        Self { from, delay }
+    }
+
+    /// A feedback edge from `from`, delayed by one block of `block` frames —
+    /// the block size the author designed the loop for, fixed here so every
+    /// interpreter (live or offline) renders the same loop.
+    pub const fn one_block(from: OutPort, block: Samples) -> Self {
+        Self { from, delay: block }
+    }
 }
 
 /// One incoming connection: a normal edge, or a feedback edge.
@@ -413,7 +447,9 @@ impl Topology {
                 });
             }
             let from = match *edge {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p }) => Some(p),
+                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
+                    Some(p)
+                }
                 Edge::Direct(Source::Global(ch)) => {
                     if ch >= self.inputs.count() {
                         errs.push(Invalid::GlobalInputOutOfRange {

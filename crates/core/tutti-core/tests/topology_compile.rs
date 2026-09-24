@@ -628,8 +628,10 @@ fn a_feedback_edge_is_refused_explicitly() {
     t.nodes.insert(A, spec("gain", 1, 1));
     t.nodes.insert(B, spec("gain", 1, 1));
     edge(&mut t, at(B, 0), out(A, 0));
-    t.edges
-        .insert(at(A, 0), Edge::Feedback(FeedbackFrom { from: out(B, 0) }));
+    t.edges.insert(
+        at(A, 0),
+        Edge::Feedback(FeedbackFrom::one_block(out(B, 0), Samples(64))),
+    );
     t.outputs = vec![Source::Node(out(B, 0))];
 
     t.validate().expect("feedback breaks the cycle");

@@ -162,9 +162,208 @@ impl From<UnitParam> for ParamAddr {
     }
 }
 
+/// A [`UnitParam`] that knows the unit its value is in.
+///
+/// `UnitParam` alone is untyped: `Cutoff` and `GainDb` both carry an `f32`,
+/// and nothing stops a caller writing a decibel figure to a cutoff. A
+/// `ParamKey<U>` pins the unit, so a value travelling under a key — an
+/// automation ramp in `tutti-graph`, for one — is built from a `U` and read
+/// back as a `U`, with the `f32` in between never exposed.
+///
+/// The keys exist only for parameters whose unit is not in doubt, as
+/// associated constants on the unit: `ParamKey::<Hz>::CUTOFF`,
+/// `ParamKey::<Db>::THRESHOLD`. There is deliberately **no key** yet for
+/// `DelayTime` ("beats or seconds — unit-defined"), `RoomSize` and `Damping`
+/// (bare `0..1` with no unit type of their own), `StereoSpread` (whether it is
+/// `Spread` or `StereoWidth` is the node's call today), `Pan` (the `Pan` type
+/// is a *measurement*, and a pan control needs its own), and `Mute` (a switch,
+/// not a scalar). Each needs its unit decided first; until then they stay
+/// reachable through [`UnitParam`] and cannot be ramped by key.
+///
+/// ```compile_fail
+/// use tutti_types::{Db, ParamKey};
+/// let _ = ParamKey::<Db>::CUTOFF; // a cutoff is not in decibels
+/// ```
+pub struct ParamKey<U> {
+    id: UnitParam,
+    _unit: core::marker::PhantomData<fn() -> U>,
+}
+
+impl<U> ParamKey<U> {
+    const fn of(id: UnitParam) -> Self {
+        Self {
+            id,
+            _unit: core::marker::PhantomData,
+        }
+    }
+
+    /// The untyped id, for a channel that carries it type-erased.
+    #[inline]
+    pub const fn id(self) -> UnitParam {
+        self.id
+    }
+}
+
+// Written out: the derives would demand `U: Clone`/`Eq`/…, and the float units
+// cannot be `Eq`. The key's identity is its id alone.
+impl<U> Clone for ParamKey<U> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<U> Copy for ParamKey<U> {}
+impl<U> PartialEq for ParamKey<U> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl<U> Eq for ParamKey<U> {}
+impl<U> core::hash::Hash for ParamKey<U> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl<U> core::fmt::Debug for ParamKey<U> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "ParamKey<{}>({:?})",
+            core::any::type_name::<U>(),
+            self.id
+        )
+    }
+}
+
+impl<U> From<ParamKey<U>> for UnitParam {
+    fn from(k: ParamKey<U>) -> Self {
+        k.id
+    }
+}
+
+use super::units::{
+    Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Seconds, Q,
+};
+
+/// Defines the typed keys, and — from the same lines — the registry
+/// [`ParamKey::registry`] lists, so a test can check every key at once and a
+/// new key cannot be added without landing in it.
+macro_rules! param_keys {
+    ($($unit:ident { $($(#[$m:meta])* $name:ident = $id:ident;)+ })+) => {
+        $(impl ParamKey<$unit> {
+            $($(#[$m])* pub const $name: Self = Self::of(UnitParam::$id);)+
+        })+
+
+        /// Every keyed param, with the name of its unit type.
+        const KEYED: &[(UnitParam, &str)] = &[
+            $($((UnitParam::$id, stringify!($unit)),)+)+
+        ];
+    };
+}
+
+param_keys! {
+    Hz {
+        /// Filter cutoff / centre frequency.
+        CUTOFF = Cutoff;
+        /// Modulation rate.
+        RATE = Rate;
+    }
+    Q {
+        /// Filter Q.
+        Q = Q;
+    }
+    Db {
+        /// Filter / EQ gain.
+        GAIN_DB = GainDb;
+        /// Dynamics threshold.
+        THRESHOLD = Threshold;
+        /// Limiter ceiling.
+        CEILING = Ceiling;
+        /// Compressor make-up gain.
+        MAKEUP = Makeup;
+    }
+    Mix {
+        /// Wet/dry mix.
+        WET = Wet;
+    }
+    Feedback {
+        /// Feedback amount.
+        FEEDBACK = Feedback;
+    }
+    Depth {
+        /// Modulation depth.
+        DEPTH = Depth;
+    }
+    CompressionRatio {
+        /// Compressor ratio.
+        RATIO = Ratio;
+    }
+    Seconds {
+        /// Envelope attack.
+        ATTACK = Attack;
+        /// Envelope release.
+        RELEASE = Release;
+    }
+    Drive {
+        /// Drive / saturation amount.
+        DRIVE = Drive;
+    }
+    Amplitude {
+        /// Synth / master volume (linear).
+        VOLUME = Volume;
+    }
+    Cents {
+        /// Unison detune spread.
+        DETUNE = Detune;
+    }
+}
+
+impl ParamKey<()> {
+    /// Every param that has a typed key, with the name of its unit.
+    pub fn registry() -> &'static [(UnitParam, &'static str)] {
+        KEYED
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each typed key names the param its unit belongs to — a key is only as
+    /// good as the pairing, and a swapped pair still compiles.
+    ///
+    /// Mutation: swap the ids of `ParamKey::<Db>::THRESHOLD` and
+    /// `ParamKey::<Db>::CEILING` → fails.
+    #[test]
+    fn typed_keys_name_their_params() {
+        use super::super::units::{Db, Hz, Seconds};
+        assert_eq!(ParamKey::<Hz>::CUTOFF.id(), UnitParam::Cutoff);
+        assert_eq!(ParamKey::<Hz>::RATE.id(), UnitParam::Rate);
+        assert_eq!(ParamKey::<Db>::THRESHOLD.id(), UnitParam::Threshold);
+        assert_eq!(ParamKey::<Db>::CEILING.id(), UnitParam::Ceiling);
+        assert_eq!(ParamKey::<Db>::GAIN_DB.id(), UnitParam::GainDb);
+        assert_eq!(ParamKey::<Db>::MAKEUP.id(), UnitParam::Makeup);
+        assert_eq!(ParamKey::<Seconds>::ATTACK.id(), UnitParam::Attack);
+        assert_eq!(ParamKey::<Seconds>::RELEASE.id(), UnitParam::Release);
+        assert_eq!(UnitParam::from(ParamKey::<Hz>::CUTOFF), UnitParam::Cutoff);
+        assert_ne!(ParamKey::<Hz>::CUTOFF, ParamKey::<Hz>::RATE);
+    }
+
+    /// Every keyed param has exactly one key: no id appears twice (under the
+    /// same unit or under two), so a value can never be read back in a unit
+    /// it was not written in.
+    ///
+    /// Mutation: add `WET = Wet;` under `Depth` in `param_keys!` → `Wet`
+    /// appears twice → fails.
+    #[test]
+    fn every_keyed_param_has_one_unit() {
+        let reg = ParamKey::registry();
+        assert!(reg.len() >= 15, "the registry is the macro's full list");
+        let mut ids: Vec<u16> = reg.iter().map(|&(p, _)| u16::from(p)).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "a UnitParam is keyed twice: {reg:?}");
+    }
 
     #[test]
     fn u16_round_trips() {

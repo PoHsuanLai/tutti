@@ -125,15 +125,52 @@ impl tutti_core::AudioUnit for ChannelSumNode {
         }
     }
 
+    /// Each output carries the **largest** latency among the inputs it sums.
+    ///
+    /// A sum is only as early as its latest arrival: the output sample at `n`
+    /// holds source `s`'s sample at `n - latency_s` for every `s`, so the
+    /// output is not complete until the most-delayed contribution lands. That
+    /// is the figure `AudioUnit::latency` — and through it
+    /// `tutti_export::reported_latency` — needs, so a lookahead limiter or a
+    /// plugin feeding one side of a bus still counts.
+    ///
+    /// This used to report `Latency(0)` whatever arrived, which hid every
+    /// upstream latency behind the bus. (fundsp's `sum` combined linearly and
+    /// kept the *smaller*, which under-reports the same way whenever the paths
+    /// differ.) Constant inputs carry no latency and sum as constants; an input
+    /// with nothing known about it makes the output unknown, rather than a
+    /// guess.
     fn route(
         &mut self,
-        _input: &tutti_core::SignalFrame,
+        input: &tutti_core::SignalFrame,
         _frequency: f64,
     ) -> tutti_core::SignalFrame {
         let channels = self.channels();
         let mut output = tutti_core::SignalFrame::new(channels);
         for c in 0..channels {
-            output.set(c, Signal::Latency(0.0));
+            let mut latency: Option<f64> = None;
+            let mut constant = 0.0;
+            let mut unknown = false;
+            for s in 0..self.sources {
+                let port = s * channels + c;
+                if port >= input.len() {
+                    unknown = true;
+                    continue;
+                }
+                match input.at(port) {
+                    Signal::Latency(l) | Signal::Response(_, l) => {
+                        latency = Some(latency.map_or(l, |m: f64| m.max(l)));
+                    }
+                    Signal::Value(v) => constant += v,
+                    Signal::Unknown => unknown = true,
+                }
+            }
+            let signal = match (unknown, latency) {
+                (true, _) => Signal::Unknown,
+                (false, Some(l)) => Signal::Latency(l),
+                (false, None) => Signal::Value(constant),
+            };
+            output.set(c, signal);
         }
         output
     }
@@ -216,6 +253,36 @@ mod tests {
         u.tick(&input, &mut out);
         assert!((out[0] - 0.9).abs() < 1e-6); // 0.1+0.3+0.5
         assert!((out[1] - 1.2).abs() < 1e-6); // 0.2+0.4+0.6
+    }
+
+    /// The bus reports its latest input, per channel — so a latency-bearing
+    /// node upstream of a bus is not hidden by it.
+    ///
+    /// Mutation: the old `Latency(0)` body fails the first assertion; taking
+    /// the `min` rather than the `max` fails it too (it reads 3, not 64).
+    #[test]
+    fn route_carries_the_largest_input_latency_per_channel() {
+        let mut u = ChannelSumNode::new(2, ChannelLayout::STEREO);
+        let mut input = tutti_core::SignalFrame::new(4);
+        // Source 0: L at 3, R at 10. Source 1: L at 64, R at 0.
+        input.set(0, Signal::Latency(3.0));
+        input.set(1, Signal::Latency(10.0));
+        input.set(2, Signal::Latency(64.0));
+        input.set(3, Signal::Latency(0.0));
+        let out = u.route(&input, 1.0);
+        assert!(matches!(out.at(0), Signal::Latency(l) if l == 64.0), "L");
+        assert!(matches!(out.at(1), Signal::Latency(l) if l == 10.0), "R");
+
+        // A constant contributes no latency; an unknown poisons the channel.
+        input.set(2, Signal::Value(0.5));
+        input.set(1, Signal::Unknown);
+        let out = u.route(&input, 1.0);
+        assert!(matches!(out.at(0), Signal::Latency(l) if l == 3.0));
+        assert!(matches!(out.at(1), Signal::Unknown));
+
+        // And through the trait's own `latency()`, which is what a graph walk
+        // reads: all inputs at latency 0 gives 0, not `None`.
+        assert_eq!(u.latency(), Some(0.0));
     }
 
     /// Summing, not averaging — the property that rules out fundsp's

@@ -211,6 +211,41 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     );
 }
 
+/// A summing bus does not hide the latency of what feeds it.
+///
+/// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and its
+/// `route` answered `Latency(0)` whatever arrived. A lookahead limiter summed
+/// with a dry path then read as a zero-latency graph, and `reported_latency`
+/// (which is this `latency()`) pre-rolled an export by nothing. The bus now
+/// carries its latest input, so the graph reports the limiter's lookahead.
+///
+/// Mutation: reverting the bus's `route` to `Latency(0)` fails the first
+/// assertion; taking the `min` of its inputs fails it too (the dry path is 0).
+#[test]
+fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
+    use tutti_core::{ChannelLayout, Db};
+    use tutti_nodes::{ChannelSumNode, LimiterNode};
+
+    let mut net = Net::new(1, 1);
+    let lim = net.add(LimiterNode::with_channels(
+        ChannelLayout::MONO,
+        Db(-1.0),
+        Db(-0.3),
+    ));
+    let dry = net.add(Through::mono());
+    let sum = net.add(ChannelSumNode::new(2, ChannelLayout::MONO));
+    net.set_source(lim, 0, Source::Global(0));
+    net.set_source(dry, 0, Source::Global(0));
+    net.set_source(sum, 0, Source::Local(lim, 0));
+    net.set_source(sum, 1, Source::Local(dry, 0));
+    net.set_output_source(0, Source::Local(sum, 0));
+    net.set_sample_rate(SR);
+
+    let lookahead = net.node_mut(lim).latency().expect("the limiter reports");
+    assert!(lookahead > 0.0, "a lookahead limiter has latency");
+    assert_eq!(net.latency(), Some(lookahead));
+}
+
 // ---------------------------------------------------------------------------
 // D3: the convolver's reported latency is true of the whole output.
 // ---------------------------------------------------------------------------

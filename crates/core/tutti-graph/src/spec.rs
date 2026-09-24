@@ -46,8 +46,10 @@ pub struct EventOut {
 pub enum EventEdge {
     /// This block's events from the named port.
     Direct(EventOut),
-    /// Last block's events from the named port — a declared cycle, exactly as
-    /// `tutti_types::graph::Edge::Feedback` is for audio.
+    /// The named port's events delayed by exactly the prepared `MaxBlock`
+    /// frames — a declared cycle, exactly as
+    /// `tutti_types::graph::Edge::Feedback` is for audio (see
+    /// [`FeedbackKey`](crate::FeedbackKey) for the rule).
     Feedback(EventOut),
 }
 

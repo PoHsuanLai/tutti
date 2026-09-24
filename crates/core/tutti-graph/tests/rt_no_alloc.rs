@@ -13,7 +13,7 @@ mod common;
 use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Legacy, Transport};
+use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Legacy, Transport};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey};
 
@@ -39,7 +39,7 @@ fn from(node: u64, port: u16) -> Edge {
 /// inside the gate grows its slot → aborts.
 #[test]
 fn process_is_allocation_free_in_steady_state() {
-    let mut ed = Editor::new(prepare(256));
+    let (mut ed, mut exec) = Editor::new(prepare(256));
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
     ed.insert(
         NodeKey(1),
@@ -140,10 +140,8 @@ fn process_is_allocation_free_in_steady_state() {
             port: 0,
         }),
     ];
-
-    let mut exec = Executor::new(prepare(256));
     let done = exec.apply(ed.commit().expect("commits"));
-    ed.reclaim(done);
+    ed.reclaim(done).expect("our own applied box");
     let plan = exec.plan().expect("applied");
     assert!(
         plan.delays().len() >= 2,

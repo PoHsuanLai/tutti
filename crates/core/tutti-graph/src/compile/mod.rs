@@ -1,21 +1,36 @@
-//! The compiler: `compile(&ValidGraph, &Shapes, prev) -> (Plan, Delta)`.
+//! The compiler: `compile(&ValidGraph, &Shapes, &Prepare, prev) -> (Plan, Delta)`.
 //!
 //! Doc 013 §3. Pure: no I/O, no audio, no units — only the value, the shapes
 //! the units declared, and the previous plan (for placements and nothing
 //! else). The passes, in order:
 //!
-//! 1. **Check** every node's shape against its spec, and every event edge's
-//!    ports against the shapes.
+//! 1. **Check** every node's shape against its spec — widths, latency and
+//!    tail must all agree — and every event edge's ports against the shapes.
+//!    The shape is what the unit says about itself and the spec is what the
+//!    value says; if they disagree, one of them is stale, and compiling
+//!    either would make the latency folds over the value
+//!    (`tutti_types::latency::plan`) disagree with the plan.
 //! 2. **SCC** ([`order::scc`]) over direct audio + event dependencies. A cycle
 //!    not broken by a feedback edge is [`CompileError::Cycle`], naming the
-//!    edges. A feedback edge becomes a read of a persistent slot written by a
-//!    `Capture` op at the end of the block, so the op DAG stays acyclic.
+//!    edges. A feedback edge becomes a read of a slot the executor fills from
+//!    the edge's `MaxBlock`-long delay before the block, and a `Capture` op
+//!    that feeds the delay, so the op DAG stays acyclic.
 //! 3. **Order** ([`order::kahn`]) — one deterministic topological sort.
 //! 4. **Latency solve** — `arrival = max(departures)`, `departure = arrival +
-//!    own`, exactly `tutti_types::latency::plan`'s forward pass, extended to
-//!    event edges. Emits a `Delay` op per mismatched audio port and per
-//!    mismatched event *source*, plus per-output alignment rings, with state
-//!    keyed by [`DelayKey`].
+//!    own`, `tutti_types::latency::plan`'s forward pass, with two deliberate
+//!    differences until `Net` goes (doc 013 Phase 5) and the two solves are
+//!    unified:
+//!    - **event edges count toward arrival** here; `latency::plan` walks audio
+//!      only, because `Net` has no event ports;
+//!    - **a `Source::Global` input is a merge-point source** here, delayed to
+//!      the node's arrival like any other; `latency::plan` treats it as
+//!      outside the graph and never delays it.
+//!
+//!    Emits a `Delay` op per mismatched audio port and per mismatched event
+//!    *source*, plus per-output alignment rings, with state keyed by
+//!    [`DelayKey`]. An event fan-in wider than [`MAX_PORTS`] becomes a tree
+//!    of merges over contiguous source ranges, which keeps the
+//!    `(offset, source order)` rule exactly.
 //! 5. **Emit ops** in the serial order, recording every value's writer and
 //!    readers, and the op DAG.
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
@@ -38,9 +53,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{ChannelLayout, Latency, NodeKey, Samples};
+use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
-use crate::node::{InPlaceMask, Shape, MAX_PORTS};
+use crate::node::{InPlaceMask, Prepare, Shape, MAX_PORTS};
 use crate::plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,
     Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
@@ -98,6 +113,25 @@ pub enum CompileError {
         /// The offending count.
         count: usize,
     },
+    /// The shape's latency disagrees with the spec's (see the module docs,
+    /// step 1).
+    LatencyMismatch {
+        /// The node.
+        node: NodeKey,
+        /// What the spec declared.
+        declared: Samples,
+        /// What the shape reports.
+        shape: Latency,
+    },
+    /// The shape's tail disagrees with the spec's.
+    TailMismatch {
+        /// The node.
+        node: NodeKey,
+        /// What the spec declared.
+        declared: Tail,
+        /// What the shape reports.
+        shape: Tail,
+    },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
     Cycle {
@@ -134,6 +168,24 @@ impl std::fmt::Display for CompileError {
             Self::TooManyPorts { node, count } => write!(
                 f,
                 "node {} has {count} ports on one side; the limit is {MAX_PORTS}",
+                node.0
+            ),
+            Self::LatencyMismatch {
+                node,
+                declared,
+                shape,
+            } => write!(
+                f,
+                "node {} declares {declared} frames of latency but its unit reports {shape}",
+                node.0
+            ),
+            Self::TailMismatch {
+                node,
+                declared,
+                shape,
+            } => write!(
+                f,
+                "node {} declares tail {declared:?} but its unit reports {shape:?}",
                 node.0
             ),
             Self::Cycle { edges } => write!(f, "unbroken cycle through {} edges", edges.len()),
@@ -275,6 +327,7 @@ impl Emitted {
 pub fn compile(
     graph: &ValidGraph,
     shapes: &Shapes,
+    prepare: &Prepare,
     prev: Option<&Plan>,
 ) -> Result<(Plan, Delta), CompileError> {
     let topology = graph.topology();
@@ -292,6 +345,20 @@ pub fn compile(
                 node: key,
                 declared: (spec.inputs, spec.outputs),
                 shape: (shape.audio_in, shape.audio_out),
+            });
+        }
+        if spec.latency != shape.latency.samples() {
+            return Err(CompileError::LatencyMismatch {
+                node: key,
+                declared: spec.latency,
+                shape: shape.latency,
+            });
+        }
+        if spec.tail != shape.tail {
+            return Err(CompileError::TailMismatch {
+                node: key,
+                declared: spec.tail,
+                shape: shape.tail,
             });
         }
         for count in [
@@ -394,11 +461,20 @@ pub fn compile(
     let compensation: Vec<Samples> = channel_arrivals.iter().map(|&a| a.gap_to(total)).collect();
 
     // ---- 5. emit ----------------------------------------------------------
+    let audio_fb_key = |from: OutPort| FeedbackKey::Audio {
+        from,
+        gen: graph.generation(from.node),
+    };
+    let event_fb_key = |at: EventIn, from: EventOut| FeedbackKey::Event {
+        at,
+        from,
+        gen: graph.generation(from.node),
+    };
     let audio_fb: Vec<FeedbackKey> = topology
         .edges
         .values()
         .filter_map(|e| match *e {
-            Edge::Feedback(f) => Some(FeedbackKey::Audio(f.from)),
+            Edge::Feedback(f) => Some(audio_fb_key(f.from)),
             _ => None,
         })
         .collect::<BTreeSet<_>>()
@@ -406,12 +482,14 @@ pub fn compile(
         .collect();
     let event_fb: Vec<FeedbackKey> = graph
         .events()
-        .values()
-        .flatten()
-        .filter_map(|e| match *e {
-            EventEdge::Feedback(f) => Some(FeedbackKey::Event(f)),
-            _ => None,
+        .iter()
+        .flat_map(|(&at, sources)| {
+            sources.iter().filter_map(move |e| match *e {
+                EventEdge::Feedback(from) => Some((at, from)),
+                EventEdge::Direct(_) => None,
+            })
         })
+        .map(|(at, from)| event_fb_key(at, from))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -466,35 +544,37 @@ pub fn compile(
             let at = InPort { node: key, port };
             let r = match topology.edges.get(&at) {
                 None | Some(Edge::Direct(Source::Zero)) => ARef::Zero,
-                Some(Edge::Direct(Source::Global(ch))) => ARef::Val(global_val[ch]),
-                Some(Edge::Direct(Source::Node(p))) => {
-                    let v = audio_out_val[p];
-                    let d = departure(dense[&p.node]).gap_to(arrival[n]);
-                    match d {
-                        d if !d.is_zero() => {
-                            let delay = em.delays.len() as u32;
-                            em.delays.push(DelaySpec {
-                                key: DelayKey::Audio(at),
-                                len: d,
-                            });
-                            let op = em.push(Pre::Delay {
-                                delay,
-                                src: v,
-                                dst: 0,
-                            });
-                            em.read_audio(v, op);
-                            let dv = em.audio_value(op);
-                            if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
-                                *dst = dv;
-                            }
-                            ARef::Val(dv)
+                Some(&Edge::Direct(from @ (Source::Global(_) | Source::Node(_)))) => {
+                    // A global input arrives at zero: it is a merge-point
+                    // source like any other (see the module docs, step 4).
+                    let (v, dep) = match from {
+                        Source::Global(ch) => (global_val[&ch], Latency::ZERO),
+                        Source::Node(p) => (audio_out_val[&p], departure(dense[&p.node])),
+                        Source::Zero => unreachable!("matched above"),
+                    };
+                    let d = dep.gap_to(arrival[n]);
+                    if d.is_zero() {
+                        ARef::Val(v)
+                    } else {
+                        let delay = em.delays.len() as u32;
+                        em.delays.push(DelaySpec {
+                            key: DelayKey::Audio { at, from },
+                            len: d,
+                        });
+                        let op = em.push(Pre::Delay {
+                            delay,
+                            src: v,
+                            dst: 0,
+                        });
+                        em.read_audio(v, op);
+                        let dv = em.audio_value(op);
+                        if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+                            *dst = dv;
                         }
-                        _ => ARef::Val(v),
+                        ARef::Val(dv)
                     }
                 }
-                Some(Edge::Feedback(f)) => {
-                    ARef::Fb(fb_index(FeedbackKey::Audio(f.from), &audio_fb))
-                }
+                Some(Edge::Feedback(f)) => ARef::Fb(fb_index(audio_fb_key(f.from), &audio_fb)),
             };
             ain.push(r);
         }
@@ -508,7 +588,7 @@ pub fn compile(
             for e in sources {
                 refs.push(match *e {
                     EventEdge::Feedback(from) => {
-                        ERef::Fb(fb_index(FeedbackKey::Event(from), &event_fb))
+                        ERef::Fb(fb_index(event_fb_key(at, from), &event_fb))
                     }
                     EventEdge::Direct(from) => {
                         let v = event_out_val[&from];
@@ -537,25 +617,7 @@ pub fn compile(
                     }
                 });
             }
-            let r = match refs.len() {
-                0 => ERef::Empty,
-                1 => refs[0],
-                _ => {
-                    let op = em.push(Pre::EventMerge {
-                        srcs: refs.clone(),
-                        dst: 0,
-                    });
-                    for &r in &refs {
-                        em.read_eref(r, op);
-                    }
-                    let mv = em.event_value(op);
-                    if let Pre::EventMerge { dst, .. } = &mut em.pre[op as usize] {
-                        *dst = mv;
-                    }
-                    ERef::Val(mv)
-                }
-            };
-            ein.push(r);
+            ein.push(merge_tree(&mut em, refs));
         }
 
         let op = em.push(Pre::Node {
@@ -606,7 +668,10 @@ pub fn compile(
         // compensation (as `latency::plan` does) but gets no ring.
         let delay = (!d.is_zero() && src != ARef::Zero).then(|| {
             em.delays.push(DelaySpec {
-                key: DelayKey::Output(channel),
+                key: DelayKey::Output {
+                    channel,
+                    from: *source,
+                },
                 len: d,
             });
             (em.delays.len() - 1) as u32
@@ -619,60 +684,31 @@ pub fn compile(
         em.read_aref(src, op);
     }
 
-    // Captures run last, after every reader of the slot they overwrite.
-    let mut fb_readers_audio: Vec<Vec<u32>> = vec![Vec::new(); audio_fb.len()];
-    let mut fb_readers_event: Vec<Vec<u32>> = vec![Vec::new(); event_fb.len()];
-    for (i, op) in em.pre.iter().enumerate() {
-        match op {
-            Pre::Node { ain, ein, .. } => {
-                for r in ain {
-                    if let ARef::Fb(f) = r {
-                        fb_readers_audio[*f as usize].push(i as u32);
-                    }
-                }
-                for r in ein {
-                    if let ERef::Fb(f) = r {
-                        fb_readers_event[*f as usize].push(i as u32);
-                    }
-                }
-            }
-            Pre::EventMerge { srcs, .. } => {
-                for r in srcs {
-                    if let ERef::Fb(f) = r {
-                        fb_readers_event[*f as usize].push(i as u32);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    // Captures run last. They feed the feedback delays, which the executor
+    // reads from *before* the block (into the feedback slots), so a capture
+    // needs no ordering against the feedback's readers: with a delay of a
+    // whole `MaxBlock`, nothing it queues is due this block.
     for (f, key) in audio_fb.iter().enumerate() {
-        let FeedbackKey::Audio(p) = *key else {
-            unreachable!()
+        let FeedbackKey::Audio { from, .. } = *key else {
+            unreachable!("audio feedback keys are audio")
         };
-        let v = audio_out_val[&p];
+        let v = audio_out_val[&from];
         let op = em.push(Pre::Capture {
             feedback: f as u32,
             src: v,
         });
         em.read_audio(v, op);
-        for &r in &fb_readers_audio[f] {
-            em.preds[op as usize].insert(r);
-        }
     }
     for (f, key) in event_fb.iter().enumerate() {
-        let FeedbackKey::Event(p) = *key else {
-            unreachable!()
+        let FeedbackKey::Event { from, .. } = *key else {
+            unreachable!("event feedback keys are events")
         };
-        let v = event_out_val[&p];
+        let v = event_out_val[&from];
         let op = em.push(Pre::EventCapture {
             feedback: f as u32,
             src: v,
         });
         em.read_event(v, op);
-        for &r in &fb_readers_event[f] {
-            em.preds[op as usize].insert(r);
-        }
     }
 
     // ---- 6. colour --------------------------------------------------------
@@ -897,6 +933,7 @@ pub fn compile(
         .collect();
 
     let plan = Plan {
+        prepare: *prepare,
         ops,
         audio_list,
         event_list,
@@ -942,6 +979,42 @@ pub fn compile(
     }
 
     Ok((plan, delta))
+}
+
+/// Merge `refs` into one event stream, in `(offset, source order)`.
+///
+/// Up to [`MAX_PORTS`] sources is one `EventMerge` op. Wider fan-in becomes a
+/// tree: contiguous runs of at most `MAX_PORTS` sources merge first, and the
+/// run results merge in run order. Because each merge breaks ties toward the
+/// lower input and the runs are contiguous and in order, a tie between
+/// sources in different runs still goes to the earlier source — the tree
+/// delivers exactly what one flat merge would.
+fn merge_tree(em: &mut Emitted, refs: Vec<ERef>) -> ERef {
+    match refs.len() {
+        0 => ERef::Empty,
+        1 => refs[0],
+        n if n <= MAX_PORTS => {
+            let op = em.push(Pre::EventMerge {
+                srcs: refs.clone(),
+                dst: 0,
+            });
+            for &r in &refs {
+                em.read_eref(r, op);
+            }
+            let mv = em.event_value(op);
+            if let Pre::EventMerge { dst, .. } = &mut em.pre[op as usize] {
+                *dst = mv;
+            }
+            ERef::Val(mv)
+        }
+        _ => {
+            let runs: Vec<ERef> = refs
+                .chunks(MAX_PORTS)
+                .map(|run| merge_tree(em, run.to_vec()))
+                .collect();
+            merge_tree(em, runs)
+        }
+    }
 }
 
 /// Fuse chains: op `b` joins its only predecessor's task when that

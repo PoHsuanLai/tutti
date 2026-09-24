@@ -94,6 +94,11 @@ pub enum Source {
 
 /// A source read through a one-block delay, closing a cycle.
 ///
+/// "One block" is made exact by the interpreter: `tutti-graph` delays a
+/// feedback edge by precisely its prepared maximum block, whatever length
+/// the current block is, so the value stays well defined when blocks are
+/// ragged. The rest of this module's "last block" wording means that delay.
+///
 /// **The only way to express feedback.** A [`Source`] edge that closes a cycle
 /// is an [`Invalid::Cycle`]; a feedback edge is a cycle the author declared. The
 /// mandatory delay is a property of the *edge kind*, not a node the author has

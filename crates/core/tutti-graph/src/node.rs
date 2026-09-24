@@ -90,6 +90,33 @@ impl Shape {
     }
 
     /// This shape with processing latency.
+    ///
+    /// Takes a [`Latency`], never a frame count: a delay time is not a
+    /// processing latency, and passing one is a type error —
+    ///
+    /// ```compile_fail
+    /// use tutti_graph::Shape;
+    /// use tutti_types::{ChannelLayout, Samples};
+    /// let echo_time = Samples(24_000);
+    /// let _ = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_latency(echo_time);
+    /// ```
+    ///
+    /// — and there is no conversion that would make it one silently:
+    ///
+    /// ```compile_fail
+    /// use tutti_types::{Latency, Samples};
+    /// let _: Latency = Samples(24_000).into();
+    /// ```
+    ///
+    /// The one spelling is [`Latency::new`], a visible decision:
+    ///
+    /// ```
+    /// use tutti_graph::Shape;
+    /// use tutti_types::{ChannelLayout, Latency, Samples};
+    /// let lookahead = Latency::new(Samples(512));
+    /// let s = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_latency(lookahead);
+    /// assert_eq!(s.latency.samples(), Samples(512));
+    /// ```
     #[must_use]
     pub const fn with_latency(mut self, latency: Latency) -> Self {
         self.latency = latency;

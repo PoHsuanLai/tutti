@@ -17,7 +17,9 @@
 
 use std::cell::Cell;
 
-use tutti_types::{ParamKey, Samples, Unit, UnitParam};
+#[cfg(doc)]
+use tutti_types::UnitParam;
+use tutti_types::{ParamAddr, ParamKey, Samples, Unit};
 
 /// Four raw Universal MIDI Packet words.
 ///
@@ -29,12 +31,19 @@ pub struct Ump(pub [u32; 4]);
 
 /// A linear ramp of one parameter to a target, starting at the event's offset.
 ///
-/// Built from a typed [`ParamKey<U>`] and a `U`, and read back the same way,
-/// so the unit is checked at both ends. In between it travels type-erased —
-/// the key's stable [`UnitParam`] id plus the raw `f32` — because one event
-/// port carries ramps for parameters of different units, and an `Event` has
-/// to be one `Copy` type. The raw value is private: nothing reads it without
-/// naming the key, and so the unit.
+/// Addressed by [`ParamAddr`], so it reaches both tutti's own parameters and a
+/// foreign unit's (a hosted plugin's numeric id) without a later breaking
+/// change:
+///
+/// - **Built-in params** are built from a typed [`ParamKey<U>`] and a `U`,
+///   and read back the same way, so the unit is checked at both ends. In
+///   between the value travels type-erased (the stable [`UnitParam`] id and
+///   the raw `f32`), because one event port carries ramps for parameters of
+///   different units and an `Event` has to be one `Copy` type. The raw value
+///   is private: nothing reads a built-in ramp without naming its key.
+/// - **Foreign params** ([`ParamRamp::foreign`]) carry an opaque `u32` id and
+///   a raw value in the foreign unit's own normalisation. That is the C ABI
+///   boundary the units rule stops at: tutti does not know the unit.
 ///
 /// ```
 /// use tutti_graph::ParamRamp;
@@ -42,32 +51,50 @@ pub struct Ump(pub [u32; 4]);
 /// let r = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(800.0), Samples(64));
 /// assert_eq!(r.target(ParamKey::<Hz>::CUTOFF), Some(Hz(800.0)));
 /// assert_eq!(r.target(ParamKey::<Db>::THRESHOLD), None); // another param
+/// assert_eq!(r.foreign_target(7), None); // not a foreign param at all
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamRamp {
-    param: UnitParam,
+    addr: ParamAddr,
     target: f32,
     duration: Samples,
 }
 
 impl ParamRamp {
-    /// Ramp `key` to `target` over `duration` (zero is a step).
+    /// Ramp built-in parameter `key` to `target` over `duration` (zero is a
+    /// step).
     pub fn new<U: Unit<Raw = f32>>(key: ParamKey<U>, target: U, duration: Samples) -> Self {
         Self {
-            param: key.id(),
+            addr: ParamAddr::Unit(key.id()),
             target: target.to_raw(),
             duration,
         }
     }
 
-    /// Which parameter this ramps, untyped — for routing on the id.
-    pub fn param(&self) -> UnitParam {
-        self.param
+    /// Ramp a foreign unit's parameter `id` to the raw `target` over
+    /// `duration`. The value is in the foreign unit's own terms (see the type
+    /// docs).
+    pub fn foreign(id: u32, target: f32, duration: Samples) -> Self {
+        Self {
+            addr: ParamAddr::Id(id),
+            target,
+            duration,
+        }
+    }
+
+    /// Which parameter this ramps — for routing on the address.
+    pub fn addr(&self) -> ParamAddr {
+        self.addr
     }
 
     /// The target, in `key`'s unit, if this ramp is for `key`.
     pub fn target<U: Unit<Raw = f32>>(&self, key: ParamKey<U>) -> Option<U> {
-        (self.param == key.id()).then(|| U::from_raw(self.target))
+        (self.addr == ParamAddr::Unit(key.id())).then(|| U::from_raw(self.target))
+    }
+
+    /// The raw target, if this ramp is for foreign parameter `id`.
+    pub fn foreign_target(&self, id: u32) -> Option<f32> {
+        (self.addr == ParamAddr::Id(id)).then_some(self.target)
     }
 
     /// How long the ramp takes.
@@ -104,6 +131,23 @@ impl Event {
         Self {
             offset,
             kind: EventKind::Midi(Ump(words)),
+        }
+    }
+
+    /// Whether this is a MIDI note-off: a MIDI 1.0 channel-voice note-off, a
+    /// note-on at velocity 0 (the MIDI 1.0 spelling of the same thing), or a
+    /// MIDI 2.0 channel-voice note-off. The one event the graph refuses to
+    /// lose — see the delay FIFO's overflow policy.
+    pub fn is_note_off(&self) -> bool {
+        let EventKind::Midi(Ump(w)) = self.kind else {
+            return false;
+        };
+        let mt = w[0] >> 28;
+        let status = (w[0] >> 20) & 0xf;
+        match mt {
+            0x2 => status == 0x8 || (status == 0x9 && w[0] & 0x7f == 0),
+            0x4 => status == 0x8,
+            _ => false,
         }
     }
 
@@ -436,5 +480,41 @@ mod tests {
         assert_eq!(w.push(ev(6, 0)), Err(EventRejected::Full));
         assert_eq!(w.len(), 2);
         assert_eq!(dropped.get(), 3);
+    }
+
+    /// A foreign ramp and a built-in ramp never answer for each other, even
+    /// when the foreign id equals the built-in's discriminant.
+    ///
+    /// Mutation: compare only the numeric id in `target` (drop the `Unit`
+    /// arm) → the foreign ramp with id 0 reads back as a cutoff → fails.
+    #[test]
+    fn foreign_and_builtin_ramps_are_distinct_addresses() {
+        use tutti_types::{Hz, ParamKey};
+        let foreign = ParamRamp::foreign(
+            u16::from(ParamKey::<Hz>::CUTOFF.id()) as u32,
+            0.5,
+            Samples(0),
+        );
+        assert_eq!(foreign.target(ParamKey::<Hz>::CUTOFF), None);
+        assert_eq!(foreign.foreign_target(0), Some(0.5));
+        let builtin = ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(100.0), Samples(0));
+        assert_eq!(builtin.foreign_target(0), None);
+    }
+
+    /// The three MIDI spellings of a note-off are recognised, and a note-on
+    /// or a ramp is not one.
+    ///
+    /// Mutation: drop the velocity-0 note-on arm → fails.
+    #[test]
+    fn note_offs_are_recognised() {
+        let m1 = |status: u32, vel: u32| {
+            Event::midi(0, [0x2000_0000 | (status << 16) | (60 << 8) | vel, 0, 0, 0])
+        };
+        assert!(m1(0x80, 64).is_note_off());
+        assert!(m1(0x90, 0).is_note_off());
+        assert!(!m1(0x90, 64).is_note_off());
+        assert!(Event::midi(0, [0x4080_3c00, 0x8000_0000, 0, 0]).is_note_off());
+        assert!(!Event::midi(0, [0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
+        assert!(!Event::ramp(0, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 }

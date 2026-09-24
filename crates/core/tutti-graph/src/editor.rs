@@ -11,6 +11,31 @@
 //! phase 2) always has room. When the credits are spent,
 //! [`commit`](Editor::commit) refuses with [`CommitError::Backpressure`]; the
 //! caller retries after [`reclaim`](Editor::reclaim)ing a returned box.
+//!
+//! The credit count is only as good as its bookkeeping, so a box is tied to
+//! the editor that made it (a per-editor token checked by `reclaim`), must
+//! have been applied before it is reclaimed, and every type on the path is
+//! `#[must_use]`: a box dropped instead of reclaimed would leak a credit and
+//! wedge the editor after `MAX_IN_FLIGHT` edits.
+//!
+//! # One `Prepare`
+//!
+//! [`Editor::new`] builds the editor *and* its [`Executor`], from one
+//! [`Prepare`]. Units are prepared by the editor and run by the executor, so
+//! the `MaxBlock` a node sized its scratch from is the one every block it is
+//! handed obeys; the plan carries its `Prepare` too, and `apply` refuses a
+//! plan prepared for anything else.
+//!
+//! # Changing the rate or the maximum block (designed, not built)
+//!
+//! A `Prepare` change is a **full recompile with every unit re-prepared**:
+//! latency can depend on the rate (a lookahead is a time — see `Legacy`), so
+//! the shapes, and therefore the plan, change with it. The intended protocol:
+//! the editor sends a commit that retires every unit; on reclaim it calls
+//! `prepare` on each returned unit, reads its new shape, recompiles, and sends
+//! the units back in a commit for a *new* executor built for the new
+//! `Prepare` (its arena is sized by `MaxBlock`). Until that exists, change the
+//! rate by building a new editor and executor pair.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,7 +44,9 @@ use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::{NodeKey, Retire};
 
 use crate::compile::{compile, CompileError, Shapes};
-use crate::exec::Commit;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::exec::{Commit, Executor, DEFAULT_EVENT_CAPACITY};
 use crate::node::{IntoNode, Node, Prepare};
 use crate::plan::Plan;
 use crate::spec::{EventEdge, GraphInvalid, GraphSpec};
@@ -57,9 +84,32 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
+/// Why [`Editor::reclaim`] refused a box.
+#[must_use]
+pub enum ReclaimError {
+    /// The box was made by another editor, or by [`Commit::new`]; its credit
+    /// is not this editor's to restore.
+    ForeignEditor(Retire<Commit>),
+    /// The box was never applied. It is handed back so it can be.
+    NotApplied(Retire<Commit>),
+}
+
+impl std::fmt::Debug for ReclaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ForeignEditor(_) => "ForeignEditor",
+            Self::NotApplied(_) => "NotApplied",
+        })
+    }
+}
+
+/// Editor tokens: 0 is "no editor" (`Commit::new`).
+static NEXT_EDITOR: AtomicU64 = AtomicU64::new(1);
+
 /// The control-side half: the graph value, the units not yet shipped, and the
 /// plan last committed. See the [module docs](self).
 pub struct Editor {
+    id: u64,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
@@ -70,9 +120,21 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// An empty graph whose units will be prepared for `prepare`.
-    pub fn new(prepare: Prepare) -> Self {
+    /// An empty graph, and the executor that will run it, both for
+    /// `prepare`. The only way to build an [`Executor`].
+    pub fn new(prepare: Prepare) -> (Self, Executor) {
+        Self::with_event_capacity(prepare, DEFAULT_EVENT_CAPACITY)
+    }
+
+    /// As [`new`](Self::new), with `cap` events per event slot per block
+    /// (the declared event rate the delay FIFOs are sized from).
+    pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
+        (Self::bare(prepare), Executor::new(prepare, cap))
+    }
+
+    fn bare(prepare: Prepare) -> Self {
         Self {
+            id: NEXT_EDITOR.fetch_add(1, Ordering::Relaxed),
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
@@ -175,8 +237,8 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
-        let (plan, delta) =
-            compile(&valid, &self.shapes, self.plan.as_deref()).map_err(CommitError::Compile)?;
+        let (plan, delta) = compile(&valid, &self.shapes, &self.prepare, self.plan.as_deref())
+            .map_err(CommitError::Compile)?;
         let needed: Vec<NodeKey> = delta
             .insert
             .iter()
@@ -192,7 +254,7 @@ impl Editor {
             .into_iter()
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))
             .collect();
-        let commit = Commit::new(plan, delta, units);
+        let commit = Commit::for_editor(self.id, plan, delta, units);
         self.plan = commit.plan().cloned();
         self.in_flight += 1;
         Ok(commit)
@@ -201,11 +263,24 @@ impl Editor {
     /// Take back a box the executor returned: free what it retired, here on
     /// the control thread, and restore the credit it spent.
     ///
-    /// Returns the keys of the units it retired.
-    pub fn reclaim(&mut self, done: Retire<Commit>) -> Vec<NodeKey> {
+    /// Returns the keys of the units it retired, or the box itself when it is
+    /// not this editor's or was never applied.
+    ///
+    /// # Panics
+    ///
+    /// If this editor has no commit out — an applied box of its own with no
+    /// credit spent is a bookkeeping bug, not a caller error.
+    pub fn reclaim(&mut self, done: Retire<Commit>) -> Result<Vec<NodeKey>, ReclaimError> {
+        if done.editor != self.id {
+            return Err(ReclaimError::ForeignEditor(done));
+        }
+        if !done.applied {
+            return Err(ReclaimError::NotApplied(done));
+        }
+        assert!(self.in_flight > 0, "reclaimed more commits than were sent");
         let keys = done.retired().collect();
         drop(done.reclaim());
-        self.in_flight = self.in_flight.saturating_sub(1);
-        keys
+        self.in_flight -= 1;
+        Ok(keys)
     }
 }

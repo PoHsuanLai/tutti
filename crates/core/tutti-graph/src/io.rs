@@ -93,9 +93,12 @@ impl<'a> Io<'a> {
     ///
     /// # Panics
     ///
-    /// If `frames` is zero or exceeds `max`, if an output is not exactly
-    /// `frames` long, or if an input is not — except an aliased one, which is
-    /// empty.
+    /// Always, if `frames` is zero or exceeds `max` — the bound a node's
+    /// scratch was sized from. In debug builds also if an output is not
+    /// exactly `frames` long, or an input is not (an aliased input is empty):
+    /// both executors build every slice from `frames` themselves, so that
+    /// check is a guard on this crate's code, not on the caller's, and is not
+    /// worth a per-channel loop on every node call in release.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         max: MaxBlock,

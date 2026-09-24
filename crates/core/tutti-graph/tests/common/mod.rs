@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tutti_graph::{
-    compile, Commit, Cx, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
-    Shapes, Status, Transport, Ump, ValidGraph,
+    compile, Commit, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference,
+    Shape, Shapes, Status, Transport, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
 
@@ -69,6 +69,9 @@ pub enum Kind {
     EnvProbe,
     /// `Status::Bypass` over `width` channels.
     Thru { width: usize },
+    /// `Status::Bypass` over `width` channels, accepting in-place channels —
+    /// the executor must then leave the aliased output as it is.
+    ThruInPlace { width: usize },
     /// A spec-driven node for the ported shapes: `dc`/`gain`/`sum`/`fan`
     /// behaviour with a *declared* latency and tail it does not realise.
     Spec {
@@ -147,6 +150,7 @@ impl Node for TestNode {
                 .with_tail(Tail::Finite(Samples(latency))),
             Kind::EnvProbe => Shape::audio(ch(0), ch(1)),
             Kind::Thru { width } => Shape::audio(ch(width), ch(width)),
+            Kind::ThruInPlace { width } => Shape::audio(ch(width), ch(width)).with_in_place(),
             Kind::Spec {
                 ins,
                 outs,
@@ -285,7 +289,7 @@ impl Node for TestNode {
                 }
                 Status::Modified
             }
-            Kind::Thru { .. } => Status::Bypass,
+            Kind::Thru { .. } | Kind::ThruInPlace { .. } => Status::Bypass,
             Kind::Spec {
                 behaviour,
                 outs,
@@ -355,15 +359,23 @@ pub struct Pair {
     pub reference: Reference,
     pub plan: Option<Plan>,
     pub outputs: usize,
+    pub inputs: usize,
+    pub max_block: usize,
 }
 
 impl Pair {
     pub fn new(max_block: usize) -> Self {
+        // The editor is not used: the harness compiles itself, to hand the
+        // same spec to both interpreters. It is still the only way to build
+        // an executor.
+        let (_editor, exec) = Editor::with_event_capacity(prepare(max_block), EVENT_CAPACITY);
         Self {
-            exec: Executor::with_event_capacity(prepare(max_block), EVENT_CAPACITY),
+            exec,
             reference: Reference::new(prepare(max_block)),
             plan: None,
             outputs: 0,
+            inputs: 0,
+            max_block,
         }
     }
 
@@ -371,7 +383,8 @@ impl Pair {
     /// regenerated.
     pub fn switch(&mut self, graph: &ValidGraph, kinds: &BTreeMap<NodeKey, Kind>) {
         let shapes = shapes_of(kinds);
-        let (plan, delta) = compile(graph, &shapes, self.plan.as_ref()).expect("compiles");
+        let (plan, delta) = compile(graph, &shapes, &prepare(self.max_block), self.plan.as_ref())
+            .expect("compiles");
         tutti_graph::verify(&plan).expect("verifies");
         let placed: Vec<NodeKey> = delta
             .insert
@@ -380,6 +393,7 @@ impl Pair {
             .chain(delta.replace.iter().map(|(_, n)| n.key))
             .collect();
         self.outputs = graph.topology().outputs.len();
+        self.inputs = graph.topology().inputs.count() as usize;
         self.plan = Some(plan.clone());
         // Back on the control side, where the box and what it retired are
         // freed.
@@ -400,7 +414,17 @@ impl Pair {
             playing: true,
             ..Transport::default()
         };
-        let ins: Vec<&[f32]> = vec![&input[..frames]];
+        // Channel `c` of the graph input is the signal scaled by 2^-c: exact,
+        // and distinct per channel.
+        let chans: Vec<Vec<f32>> = (0..self.inputs.max(1))
+            .map(|c| {
+                input[..frames]
+                    .iter()
+                    .map(|x| x * 0.5f32.powi(c as i32))
+                    .collect()
+            })
+            .collect();
+        let ins: Vec<&[f32]> = chans.iter().map(Vec::as_slice).collect();
         let mut a = vec![vec![0.0f32; frames]; self.outputs];
         let mut b = vec![vec![0.0f32; frames]; self.outputs];
         {

@@ -37,6 +37,15 @@
 //!   executor (the commit box, every unit) is freed on the control side; a
 //!   drop inside [`Executor::process`] panics in debug builds.
 //!
+//! # Whole blocks, and loop wraps
+//!
+//! The executor hands every node the **whole block** — it never splits one,
+//! not at event offsets (sub-chunking at an event is the node's job) and not
+//! at a transport loop wrap. That is what keeps an out-of-process plugin's
+//! declared pipeline latency constant. A wrap inside a block is visible to
+//! the nodes that care through [`Transport::looping`] and the block-start
+//! beat in [`Env`], from which a node computes where the wrap falls.
+//!
 //! # Precision
 //!
 //! The graph is `f32` by decision (doc 013, owner decision 2): every buffer a
@@ -103,7 +112,7 @@ mod reference;
 mod spec;
 
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
-pub use editor::{CommitError, Editor, MAX_IN_FLIGHT};
+pub use editor::{CommitError, Editor, ReclaimError, MAX_IN_FLIGHT};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents, Ump,
 };

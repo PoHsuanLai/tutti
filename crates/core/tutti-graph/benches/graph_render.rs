@@ -124,7 +124,7 @@ fn net_for(shape: &Shape) -> Net {
 
 fn executor_for(shape: &Shape) -> Executor {
     let prepare = Prepare::new(SampleRate(SR), Samples(MAX_BLOCK));
-    let mut ed = Editor::new(prepare);
+    let (mut ed, mut exec) = Editor::new(prepare);
     let src = NodeKey(0);
     ed.insert(src, "sine", Legacy::new(sine_hz(440.0)));
     let wire = |ed: &mut Editor, sink: NodeKey, port: u16, from: NodeKey| {
@@ -163,9 +163,8 @@ fn executor_for(shape: &Shape) -> Executor {
         node: last,
         port: 0,
     })];
-    let mut exec = Executor::new(prepare);
     let done = exec.apply(ed.commit().expect("the bench graph compiles"));
-    ed.reclaim(done);
+    ed.reclaim(done).expect("our own applied box");
     exec
 }
 

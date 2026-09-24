@@ -110,6 +110,9 @@ fn random_kind(rng: &mut Rng) -> Kind {
             latency: rng.below(30) as usize,
         },
         8 => Kind::EnvProbe,
+        9 if rng.chance(50) => Kind::ThruInPlace {
+            width: 1 + rng.below(2) as usize,
+        },
         _ => Kind::Thru {
             width: 1 + rng.below(2) as usize,
         },
@@ -151,11 +154,12 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
         let roll = rng.below(100);
         let edge = if roll < 64 {
             rng.pick(&direct).map(|p| Edge::Direct(Source::Node(p)))
-        } else if roll < 71 {
-            Some(Edge::Direct(Source::Global(0)))
         } else if roll < 76 {
+            let width = u64::from(desc.spec.topology.inputs.count());
+            Some(Edge::Direct(Source::Global(rng.below(width) as u16)))
+        } else if roll < 80 {
             Some(Edge::Direct(Source::Zero))
-        } else if roll < 86 {
+        } else if roll < 90 {
             rng.pick(&any)
                 .map(|from| Edge::Feedback(FeedbackFrom { from }))
         } else {
@@ -176,8 +180,17 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
         let at = EventIn { node: key, port };
         let mut seen = BTreeSet::new();
         let mut sources = Vec::new();
-        for _ in 0..1 + rng.below(3) {
-            let e = if rng.chance(85) {
+        // Up to six sources, so fan-in wider than the common two or three is
+        // exercised — and now and then a hub fed by every earlier event port
+        // (a > 64-wide fan-in has its own test in `events.rs`).
+        let hub = rng.chance(30);
+        let tries = if hub {
+            direct_ev.len() as u64 * 2
+        } else {
+            1 + rng.below(6)
+        };
+        for _ in 0..tries {
+            let e = if hub || rng.chance(85) {
                 rng.pick(&direct_ev).map(EventEdge::Direct)
             } else {
                 rng.pick(&any_ev).map(EventEdge::Feedback)
@@ -202,10 +215,11 @@ fn spec_for(kind: &Kind) -> NodeSpec {
 fn wire_outputs(desc: &mut Desc, rng: &mut Rng) {
     let all = desc.order.clone();
     let outs = audio_outs(desc, &all);
-    desc.spec.topology.outputs = (0..2)
+    let width = u64::from(desc.spec.topology.inputs.count());
+    desc.spec.topology.outputs = (0..1 + rng.below(4))
         .map(|_| match rng.below(10) {
             0 => Source::Zero,
-            1 => Source::Global(0),
+            1 => Source::Global(rng.below(width) as u16),
             _ => rng.pick(&outs).map_or(Source::Zero, Source::Node),
         })
         .collect();
@@ -227,14 +241,32 @@ fn random_graph(seed: u64) -> Desc {
         order: Vec::new(),
         used: BTreeSet::new(),
         spec: GraphSpec::new(Topology {
-            inputs: ChannelLayout::MONO,
+            inputs: ChannelLayout::from_count(1 + rng.below(3) as u16),
             ..Topology::default()
         }),
     };
     let n = 2 + rng.below(11) as usize;
+    // Some graphs are mostly event nodes, so that wide event fan-in (which
+    // needs several earlier event outputs) turns up regularly.
+    let event_heavy = rng.chance(25);
     for _ in 0..n {
         let key = fresh_key(&mut desc, &mut rng);
-        let kind = random_kind(&mut rng);
+        let kind = if event_heavy && rng.chance(80) {
+            match rng.below(4) {
+                0 | 1 => Kind::Emitter {
+                    period: 3 + rng.below(40),
+                    phase: rng.below(10),
+                },
+                2 => Kind::EventLag {
+                    latency: rng.below(30) as usize,
+                },
+                _ => Kind::Consumer {
+                    inputs: 1 + rng.below(2) as u16,
+                },
+            }
+        } else {
+            random_kind(&mut rng)
+        };
         desc.spec.topology.nodes.insert(key, spec_for(&kind));
         desc.kinds.insert(key, kind);
         desc.order.push(key);
@@ -392,13 +424,42 @@ proptest! {
 fn the_generator_covers_what_the_suite_claims() {
     let (mut delays, mut event_delays, mut feedback, mut event_fb, mut merges, mut in_place) =
         (0, 0, 0, 0, 0, 0);
-    for seed in 0..256u64 {
+    let (mut wide, mut global_delays, mut bypass_in_place, mut multi_io) = (0, 0, 0, 0);
+    for seed in 0..512u64 {
         let desc = random_graph(seed);
         let valid = desc.spec.validate().expect("valid");
-        let (plan, _) =
-            tutti_graph::compile(&valid, &common::shapes_of(&desc.kinds), None).expect("compiles");
+        let (plan, _) = tutti_graph::compile(
+            &valid,
+            &common::shapes_of(&desc.kinds),
+            &common::prepare(MAX_BLOCK),
+            None,
+        )
+        .expect("compiles");
+        if desc.spec.topology.inputs.count() > 1 && desc.spec.topology.outputs.len() > 2 {
+            multi_io += 1;
+        }
+        for d in plan.delays() {
+            if matches!(
+                d.key,
+                tutti_graph::DelayKey::Audio {
+                    from: Source::Global(_),
+                    ..
+                }
+            ) {
+                global_delays += 1;
+            }
+        }
+        for (k, kind) in &desc.kinds {
+            if matches!(kind, Kind::ThruInPlace { .. }) && plan.in_place(*k).0 != 0 {
+                bypass_in_place += 1;
+            }
+        }
         for op in plan.ops() {
             match op {
+                tutti_graph::Op::EventMerge { srcs, .. } if srcs.len > 3 => {
+                    wide += 1;
+                    merges += 1;
+                }
                 tutti_graph::Op::Delay { .. } => delays += 1,
                 tutti_graph::Op::EventDelay { .. } => event_delays += 1,
                 tutti_graph::Op::Capture { .. } => feedback += 1,
@@ -416,12 +477,134 @@ fn the_generator_covers_what_the_suite_claims() {
         ("event feedback", event_fb),
         ("event fan-in merges", merges),
         ("in-place nodes", in_place),
+        ("event fan-ins wider than 3", wide),
+        ("delayed global inputs", global_delays),
+        ("in-place nodes returning Bypass", bypass_in_place),
+        ("graphs with >1 input and >2 outputs", multi_io),
     ];
     for (what, n) in all {
         eprintln!("{what}: {n}");
     }
-    for (what, n) in all {
-        assert!(n > 25, "only {n} {what} over 256 graphs");
+    // The four added with the review are rarer by construction (each needs
+    // two features to meet); ten over 512 graphs still exercises each.
+    for (i, (what, n)) in all.iter().enumerate() {
+        let min = if i < 6 { 25 } else { 10 };
+        assert!(*n > min, "only {n} {what} over 512 graphs");
+    }
+}
+
+/// Add a direct back edge — audio or event — from a node to one created no
+/// later than it, closing a cycle no feedback edge breaks.
+fn close_a_cycle(desc: &mut Desc, rng: &mut Rng) -> bool {
+    let n = desc.order.len();
+    for _ in 0..32 {
+        let (i, j) = (rng.below(n as u64) as usize, rng.below(n as u64) as usize);
+        let (early, late) = (desc.order[i.min(j)], desc.order[i.max(j)]);
+        let (se, sl) = (shape(&desc.kinds[&early]), shape(&desc.kinds[&late]));
+        // `late` must depend on `early` for the back edge to close a cycle.
+        let reaches = |d: &Desc| {
+            let mut stack = vec![early];
+            let mut seen = BTreeSet::new();
+            while let Some(k) = stack.pop() {
+                if k == late {
+                    return true;
+                }
+                if !seen.insert(k) {
+                    continue;
+                }
+                for (at, e) in &d.spec.topology.edges {
+                    if let Edge::Direct(Source::Node(p)) = e {
+                        if p.node == k {
+                            stack.push(at.node);
+                        }
+                    }
+                }
+                for (at, v) in &d.spec.events {
+                    if v.iter()
+                        .any(|e| matches!(e, EventEdge::Direct(f) if f.node == k))
+                    {
+                        stack.push(at.node);
+                    }
+                }
+            }
+            false
+        };
+        if !reaches(desc) {
+            continue;
+        }
+        if se.audio_in.count() > 0 && sl.audio_out.count() > 0 {
+            desc.spec.topology.edges.insert(
+                InPort {
+                    node: early,
+                    port: 0,
+                },
+                Edge::Direct(Source::Node(OutPort {
+                    node: late,
+                    port: 0,
+                })),
+            );
+            return true;
+        }
+        let from = EventOut {
+            node: late,
+            port: 0,
+        };
+        let listed = desc
+            .spec
+            .events
+            .get(&EventIn {
+                node: early,
+                port: 0,
+            })
+            .is_some_and(|v| v.iter().any(|e| e.from() == from));
+        if se.event_in > 0 && sl.event_out > 0 && !listed {
+            desc.spec.connect_events(
+                EventIn {
+                    node: early,
+                    port: 0,
+                },
+                EventEdge::Direct(EventOut {
+                    node: late,
+                    port: 0,
+                }),
+            );
+            return true;
+        }
+    }
+    false
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// A cycle no feedback edge breaks is rejected — by `validate` when it is
+    /// all audio, by `compile` (naming its edges) when it runs through an
+    /// event edge — and never reaches an executor.
+    ///
+    /// Mutation: in `compile`, skip the SCC error (`if !cycle.is_empty()`) →
+    /// a graph with an event back edge compiles (and `kahn` asserts in debug)
+    /// → fails.
+    #[test]
+    fn unbroken_cycles_are_rejected(seed in any::<u64>()) {
+        let mut desc = random_graph(seed);
+        let mut rng = Rng::new(seed ^ 0xC1C1E);
+        prop_assume!(close_a_cycle(&mut desc, &mut rng));
+        let rejected = match desc.spec.validate() {
+            Err(errs) => errs.iter().any(|e| matches!(
+                e,
+                tutti_graph::GraphInvalid::Topology(tutti_types::graph::Invalid::Cycle { .. })
+            )),
+            Ok(valid) => matches!(
+                tutti_graph::compile(
+                    &valid,
+                    &common::shapes_of(&desc.kinds),
+                    &common::prepare(MAX_BLOCK),
+                    None,
+                ),
+                Err(tutti_graph::CompileError::Cycle { .. })
+            ),
+        };
+        prop_assert!(rejected, "a direct cycle got through");
     }
 }
 
@@ -498,7 +681,7 @@ proptest! {
     fn colouring_is_safe_under_any_schedule(seed in any::<u64>()) {
         let desc = random_graph(seed);
         let valid = desc.spec.validate().expect("valid");
-        let (plan, _) = tutti_graph::compile(&valid, &common::shapes_of(&desc.kinds), None)
+        let (plan, _) = tutti_graph::compile(&valid, &common::shapes_of(&desc.kinds), &common::prepare(MAX_BLOCK), None)
             .expect("compiles");
         tutti_graph::verify(&plan).expect("the verifier accepts it");
         brute_force_interference(&plan);
@@ -561,7 +744,10 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
             .plan
             .as_ref()
             .unwrap()
-            .delay(tutti_graph::DelayKey::Audio(InPort { node: mix, port: 1 })),
+            .delay(tutti_graph::DelayKey::Audio {
+                at: InPort { node: mix, port: 1 },
+                from: Source::Node(OutPort { node: c, port: 0 })
+            }),
         tutti_types::Samples(37),
         "the edit must land while a PDC ring is full of signal"
     );

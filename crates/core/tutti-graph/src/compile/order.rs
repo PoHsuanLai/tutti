@@ -2,8 +2,8 @@
 //! produce the one deterministic topological order.
 //!
 //! Both run over the **direct** dependencies only — audio `Edge::Direct(Node)`
-//! and `EventEdge::Direct` — because a feedback edge reads last block's value
-//! and is not a predecessor this block.
+//! and `EventEdge::Direct` — because a feedback edge reads its source `MaxBlock`
+//! frames in the past and is not a predecessor this block.
 
 use std::collections::BTreeMap;
 

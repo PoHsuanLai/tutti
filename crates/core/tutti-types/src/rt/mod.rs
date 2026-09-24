@@ -63,6 +63,6 @@ pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
 pub use publish::{RtPublish, RtRef};
-pub use retire::Retire;
+pub use retire::{Guarded, Retire};
 pub use scratch::{RtScratch, RtScratchOverflow};
 pub use vec::RtVec;

@@ -244,59 +244,84 @@ use super::units::{
     Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Seconds, Q,
 };
 
-impl ParamKey<Hz> {
-    /// Filter cutoff / centre frequency.
-    pub const CUTOFF: Self = Self::of(UnitParam::Cutoff);
-    /// Modulation rate.
-    pub const RATE: Self = Self::of(UnitParam::Rate);
+/// Defines the typed keys, and — from the same lines — the registry
+/// [`ParamKey::registry`] lists, so a test can check every key at once and a
+/// new key cannot be added without landing in it.
+macro_rules! param_keys {
+    ($($unit:ident { $($(#[$m:meta])* $name:ident = $id:ident;)+ })+) => {
+        $(impl ParamKey<$unit> {
+            $($(#[$m])* pub const $name: Self = Self::of(UnitParam::$id);)+
+        })+
+
+        /// Every keyed param, with the name of its unit type.
+        const KEYED: &[(UnitParam, &str)] = &[
+            $($((UnitParam::$id, stringify!($unit)),)+)+
+        ];
+    };
 }
-impl ParamKey<Q> {
-    /// Filter Q.
-    pub const Q: Self = Self::of(UnitParam::Q);
+
+param_keys! {
+    Hz {
+        /// Filter cutoff / centre frequency.
+        CUTOFF = Cutoff;
+        /// Modulation rate.
+        RATE = Rate;
+    }
+    Q {
+        /// Filter Q.
+        Q = Q;
+    }
+    Db {
+        /// Filter / EQ gain.
+        GAIN_DB = GainDb;
+        /// Dynamics threshold.
+        THRESHOLD = Threshold;
+        /// Limiter ceiling.
+        CEILING = Ceiling;
+        /// Compressor make-up gain.
+        MAKEUP = Makeup;
+    }
+    Mix {
+        /// Wet/dry mix.
+        WET = Wet;
+    }
+    Feedback {
+        /// Feedback amount.
+        FEEDBACK = Feedback;
+    }
+    Depth {
+        /// Modulation depth.
+        DEPTH = Depth;
+    }
+    CompressionRatio {
+        /// Compressor ratio.
+        RATIO = Ratio;
+    }
+    Seconds {
+        /// Envelope attack.
+        ATTACK = Attack;
+        /// Envelope release.
+        RELEASE = Release;
+    }
+    Drive {
+        /// Drive / saturation amount.
+        DRIVE = Drive;
+    }
+    Amplitude {
+        /// Synth / master volume (linear).
+        VOLUME = Volume;
+    }
+    Cents {
+        /// Unison detune spread.
+        DETUNE = Detune;
+    }
 }
-impl ParamKey<Db> {
-    /// Filter / EQ gain.
-    pub const GAIN_DB: Self = Self::of(UnitParam::GainDb);
-    /// Dynamics threshold.
-    pub const THRESHOLD: Self = Self::of(UnitParam::Threshold);
-    /// Limiter ceiling.
-    pub const CEILING: Self = Self::of(UnitParam::Ceiling);
-    /// Compressor make-up gain.
-    pub const MAKEUP: Self = Self::of(UnitParam::Makeup);
-}
-impl ParamKey<Mix> {
-    /// Wet/dry mix.
-    pub const WET: Self = Self::of(UnitParam::Wet);
-}
-impl ParamKey<Feedback> {
-    /// Feedback amount.
-    pub const FEEDBACK: Self = Self::of(UnitParam::Feedback);
-}
-impl ParamKey<Depth> {
-    /// Modulation depth.
-    pub const DEPTH: Self = Self::of(UnitParam::Depth);
-}
-impl ParamKey<CompressionRatio> {
-    /// Compressor ratio.
-    pub const RATIO: Self = Self::of(UnitParam::Ratio);
-}
-impl ParamKey<Seconds> {
-    /// Envelope attack.
-    pub const ATTACK: Self = Self::of(UnitParam::Attack);
-    /// Envelope release.
-    pub const RELEASE: Self = Self::of(UnitParam::Release);
-}
-impl ParamKey<Drive> {
-    /// Drive / saturation amount.
-    pub const DRIVE: Self = Self::of(UnitParam::Drive);
-}
-impl ParamKey<Amplitude> {
-    /// Synth / master volume (linear).
-    pub const VOLUME: Self = Self::of(UnitParam::Volume);
-}
-impl ParamKey<Cents> {
-    /// Unison detune spread.
-    pub const DETUNE: Self = Self::of(UnitParam::Detune);
+
+impl ParamKey<()> {
+    /// Every param that has a typed key, with the name of its unit.
+    pub fn registry() -> &'static [(UnitParam, &'static str)] {
+        KEYED
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +346,23 @@ mod tests {
         assert_eq!(ParamKey::<Seconds>::RELEASE.id(), UnitParam::Release);
         assert_eq!(UnitParam::from(ParamKey::<Hz>::CUTOFF), UnitParam::Cutoff);
         assert_ne!(ParamKey::<Hz>::CUTOFF, ParamKey::<Hz>::RATE);
+    }
+
+    /// Every keyed param has exactly one key: no id appears twice (under the
+    /// same unit or under two), so a value can never be read back in a unit
+    /// it was not written in.
+    ///
+    /// Mutation: add `WET = Wet;` under `Depth` in `param_keys!` → `Wet`
+    /// appears twice → fails.
+    #[test]
+    fn every_keyed_param_has_one_unit() {
+        let reg = ParamKey::registry();
+        assert!(reg.len() >= 15, "the registry is the macro's full list");
+        let mut ids: Vec<u16> = reg.iter().map(|&(p, _)| u16::from(p)).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "a UnitParam is keyed twice: {reg:?}");
     }
 
     #[test]

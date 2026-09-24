@@ -19,18 +19,47 @@
 //! what guarantees the phase-2 return ring always has room — back-pressure
 //! lands on the control side, never as a failed push on the audio side.
 //!
+//! # Mutable access, and why there is no `DerefMut`
+//!
+//! A `DerefMut` would reopen the hole this type closes: `*r = other` or
+//! `mem::take(&mut *r)` frees the old contents in place, on whatever thread
+//! runs it, and `Retire`'s own drop check never sees it. So `&mut T` is
+//! available only through [`get_mut`](Retire::get_mut), and only for contents
+//! that implement [`Guarded`]: types whose `&mut` cannot be used to free them
+//! unnoticed.
+//!
+//! ```compile_fail
+//! use tutti_types::Retire;
+//! let mut r = Retire::new(vec![1.0f32; 64]);
+//! *r = Vec::new(); // would free the old buffer wherever this runs
+//! ```
+//!
 //! # What it does not do in release builds
 //!
 //! The check is a `debug_assertions` check. A release build that breaks the
 //! rule frees on the audio thread rather than aborting a live performance;
 //! the debug check plus the tests that run under it are the gate.
 
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 
 use super::audio_thread::AudioThread;
 
+/// Contents a [`Retire`] may hand out `&mut` to.
+///
+/// The contract: holding `&mut Self` must not let a caller free part of it
+/// without a debug check firing on the audio thread. Two kinds of type meet
+/// it, and only the crate that owns the type can say which:
+///
+/// - **a trait object** (`dyn Node`): unsized, so it cannot be assigned,
+///   swapped or taken out of in safe Rust at all;
+/// - **a type whose own `Drop` checks [`AudioThread`]** (see
+///   [`AudioThread::check_not_current`]), and whose fields are private, so
+///   the only code that can touch them is the type's own.
+pub trait Guarded {}
+
 /// An owning box that must not be dropped on the audio thread. See the
 /// [module docs](self).
+#[must_use = "a Retire must travel back to the control thread to be reclaimed"]
 pub struct Retire<T: ?Sized> {
     inner: Option<Box<T>>,
 }
@@ -75,8 +104,10 @@ impl<T: ?Sized> Deref for Retire<T> {
     }
 }
 
-impl<T: ?Sized> DerefMut for Retire<T> {
-    fn deref_mut(&mut self) -> &mut T {
+impl<T: ?Sized + Guarded> Retire<T> {
+    /// Mutable access to [`Guarded`] contents. See the
+    /// [module docs](self) for why this is not a `DerefMut`.
+    pub fn get_mut(&mut self) -> &mut T {
         self.inner
             .as_deref_mut()
             .expect("a Retire is full until reclaimed")
@@ -147,6 +178,33 @@ mod tests {
         let _ = r.reclaim();
     }
 
+    /// `get_mut` reaches a `Guarded` value; a guarded type whose `Drop`
+    /// checks the marker catches the `*r = other` replacement a `DerefMut`
+    /// would have allowed.
+    ///
+    /// Mutation: make `Probe::drop` skip `check_not_current` → the
+    /// replacement below is silent → fails.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_guarded_value_replaced_on_the_audio_thread_panics() {
+        struct Probe(u8);
+        impl Guarded for Probe {}
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                AudioThread::check_not_current("Probe");
+            }
+        }
+        let mut r = Retire::new(Probe(1));
+        r.get_mut().0 = 2; // field mutation is fine
+        assert_eq!(r.0, 2);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _rt = AudioThread::enter();
+            *r.get_mut() = Probe(3); // drops the old Probe here
+        }));
+        assert!(caught.is_err());
+        let _ = r.reclaim();
+    }
+
     /// Moving a `Retire` around on the audio thread is fine — only freeing is
     /// not. This is the audio side's whole job: swap pointers, send the box on.
     #[test]
@@ -157,10 +215,9 @@ mod tests {
             // A pointer swap between two slots, as `apply` does: nothing is
             // dropped, so nothing panics.
             slots.swap(0, 1);
-            **slots[1].as_mut().unwrap() += 1;
         }
         let [empty, full] = slots;
         assert!(empty.is_none());
-        assert_eq!(*full.unwrap().reclaim(), 6);
+        assert_eq!(*full.unwrap().reclaim(), 5);
     }
 }

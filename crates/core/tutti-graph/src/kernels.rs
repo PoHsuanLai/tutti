@@ -117,23 +117,71 @@ impl AudioRing {
     }
 }
 
+impl AudioRing {
+    /// Copy the oldest `dst.len()` samples, without consuming them — the
+    /// read half of a fixed-length feedback delay, whose write half
+    /// ([`push`](Self::push)) runs later in the same block. Returns whether
+    /// they are known silent.
+    pub(crate) fn peek_oldest(&self, dst: &mut [f32]) -> bool {
+        let n = self.buf.len();
+        debug_assert!(dst.len() <= n, "a feedback read is at most one ring long");
+        for (i, o) in dst.iter_mut().enumerate() {
+            *o = self.buf[(self.pos + i) % n];
+        }
+        self.quiet >= n
+    }
+
+    /// Append `src`, displacing the oldest `src.len()` samples.
+    pub(crate) fn push(&mut self, src: &[f32], src_silent: bool) {
+        let n = self.buf.len();
+        for &x in src {
+            self.buf[self.pos] = x;
+            self.pos += 1;
+            if self.pos == n {
+                self.pos = 0;
+            }
+        }
+        self.account(src.len(), src_silent);
+    }
+}
+
 /// An event delay: a FIFO of `(input time, event)` on the delay's own clock.
 ///
 /// Input time rather than due time is stored so a retune can reschedule: an
 /// event already past due under the new length is delivered at offset 0 of the
 /// next block rather than dropped — a dropped note-off is a stuck note.
+///
+/// # Capacity, and what is never dropped
+///
+/// Sized on the control side from a **declared rate**: at most `cap` events
+/// per port per `max_block` frames (the same `cap` every event slot holds per
+/// block). A delay of `len` frames then holds at most
+/// `cap × (⌈len / max_block⌉ + 2)` events; that is the `limit`. Above it,
+/// a quarter again is **reserved for note-offs**. Past the limit an incoming
+/// non-note-off is dropped (and counted); a note-off uses the reserve, and if
+/// even that is full it evicts the oldest non-note-off instead. A note-off is
+/// dropped only when the whole FIFO is note-offs.
+///
+/// Delivery never drops: when the output slot is full the due events stay
+/// queued and go out at offset 0 of the next block — late, not lost.
 pub(crate) struct EventFifo {
     q: VecDeque<(u64, Event)>,
     len: u64,
     clock: u64,
+    limit: usize,
 }
 
 impl EventFifo {
-    pub(crate) fn new(len: Samples, cap: usize) -> Self {
+    /// A FIFO for a delay of `len`, sized from the declared rate (see the
+    /// type docs). Control side: allocates.
+    pub(crate) fn sized(len: Samples, cap: usize, max_block: usize) -> Self {
+        let limit = cap.max(1) * (len.get().div_ceil(max_block.max(1)) + 2);
+        let reserve = limit / 4 + 8;
         Self {
-            q: VecDeque::with_capacity(cap),
+            q: VecDeque::with_capacity(limit + reserve),
             len: len.get() as u64,
             clock: 0,
+            limit,
         }
     }
 
@@ -141,33 +189,64 @@ impl EventFifo {
         self.len = len.get() as u64;
     }
 
-    /// Take `input` (this block's events), emit what falls due in the block
-    /// into `out`. Returns how many events did not fit.
-    pub(crate) fn run(&mut self, input: &[Event], out: &mut Vec<Event>, frames: usize) -> u32 {
+    /// Every event still queued, oldest first — for a flush when the delay
+    /// itself goes away.
+    pub(crate) fn pending(&self) -> impl Iterator<Item = Event> + '_ {
+        self.q.iter().map(|&(_, e)| e)
+    }
+
+    /// Queue this block's `input`. Returns how many were dropped.
+    pub(crate) fn push(&mut self, input: &[Event]) -> u32 {
         let mut dropped = 0;
         let start = self.clock;
         for e in input {
-            if self.q.len() < self.q.capacity() {
-                self.q.push_back((start + e.offset as u64, *e));
+            let item = (start + e.offset as u64, *e);
+            if self.q.len() < self.limit {
+                self.q.push_back(item);
+            } else if !e.is_note_off() {
+                dropped += 1;
+            } else if self.q.len() < self.q.capacity() {
+                self.q.push_back(item);
+            } else if let Some(i) = self.q.iter().position(|(_, x)| !x.is_note_off()) {
+                // `remove` shifts in place; it never reallocates.
+                self.q.remove(i);
+                self.q.push_back(item);
+                dropped += 1;
             } else {
                 dropped += 1;
             }
         }
+        dropped
+    }
+
+    /// Emit into `out` what falls due in the block of `frames` starting at
+    /// the FIFO's clock. Stops, without dropping, when `out` is full.
+    pub(crate) fn pop_due(&mut self, out: &mut Vec<Event>, frames: usize) {
+        let start = self.clock;
         let end = start + frames as u64;
         while let Some(&(t, e)) = self.q.front() {
             let due = t + self.len;
-            if due >= end {
+            if due >= end || out.len() >= out.capacity() {
                 break;
             }
             self.q.pop_front();
-            let offset = due.saturating_sub(start) as u32;
-            if out.len() < out.capacity() {
-                out.push(Event { offset, ..e });
-            } else {
-                dropped += 1;
-            }
+            out.push(Event {
+                offset: due.saturating_sub(start) as u32,
+                ..e
+            });
         }
-        self.clock = end;
+    }
+
+    /// Move the clock past a block of `frames`.
+    pub(crate) fn advance(&mut self, frames: usize) {
+        self.clock += frames as u64;
+    }
+
+    /// A PDC delay's whole block: queue, emit what is due, advance.
+    pub(crate) fn run(&mut self, input: &[Event], out: &mut Vec<Event>, frames: usize) -> u32 {
+        let dropped = self.push(input);
+        self.pop_due(out, frames);
+        self.advance(frames);
         dropped
     }
 }
@@ -215,11 +294,106 @@ mod tests {
     /// is emitted one block early with offset == frames → fails.
     #[test]
     fn fifo_delays_events_across_blocks() {
-        let mut f = EventFifo::new(Samples(6), 8);
+        let mut f = EventFifo::sized(Samples(6), 8, 8);
         let mut out = Vec::with_capacity(8);
         f.run(&[Event::midi(2, [7, 0, 0, 0])], &mut out, 8);
         assert!(out.is_empty(), "due at 8, which is the next block");
         f.run(&[], &mut out, 8);
         assert_eq!(out, vec![Event::midi(0, [7, 0, 0, 0])]);
+    }
+
+    /// A feedback ring read before it is written delays by exactly its
+    /// length, whatever the block sizes.
+    ///
+    /// Mutation: in `peek_oldest`, read from `pos + n - dst.len()` (the
+    /// newest samples) → the ragged schedule reads the wrong samples → fails.
+    #[test]
+    fn a_feedback_ring_delays_by_its_length_across_ragged_blocks() {
+        let mut r = AudioRing::new(Samples(8));
+        let src: Vec<f32> = (1..=40).map(|x| x as f32).collect();
+        let mut got = Vec::new();
+        let mut at = 0;
+        for n in [8, 3, 1, 8, 5, 7, 8] {
+            let mut out = vec![0.0; n];
+            r.peek_oldest(&mut out);
+            r.push(&src[at..at + n], false);
+            got.extend(out);
+            at += n;
+        }
+        let want: Vec<f32> = (0..at)
+            .map(|i| if i < 8 { 0.0 } else { src[i - 8] })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    fn note(offset: u32, off: bool, tag: u32) -> Event {
+        // MIDI 1.0 channel voice in UMP: 0x2 group 0, status 0x8 (off) or
+        // 0x9 (on), note `tag`, velocity 100.
+        let status = if off { 0x80 } else { 0x90 };
+        Event::midi(
+            offset,
+            [
+                0x2000_0000 | (status << 16) | ((tag & 0x7f) << 8) | 100,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+
+    /// A note-off survives an overflow: past the limit it takes the reserve,
+    /// and when even that is full it evicts the oldest non-note-off.
+    ///
+    /// Mutation: drop the note-off branches in `push` (treat every event
+    /// alike) → the note-off is refused like the note-ons → fails.
+    #[test]
+    fn a_note_off_survives_overflow() {
+        let mut f = EventFifo::sized(Samples(4), 1, 4);
+        let limit = f.limit;
+        let cap = f.q.capacity();
+        let ons: Vec<Event> = (0..cap as u32 + 5).map(|i| note(0, false, i)).collect();
+        let dropped = f.push(&ons);
+        assert_eq!(f.q.len(), limit, "note-ons stop at the limit");
+        assert_eq!(dropped as usize, ons.len() - limit);
+        // Fill the reserve with note-offs, then one more.
+        let offs: Vec<Event> = (0..(cap - limit) as u32 + 1)
+            .map(|i| note(0, true, i))
+            .collect();
+        f.push(&offs);
+        let kept_offs = f.pending().filter(Event::is_note_off).count();
+        assert_eq!(kept_offs, offs.len(), "every note-off is kept");
+        assert!(f.q.len() <= cap, "and the FIFO never grew");
+    }
+
+    /// Delivery never drops: when the output slot is full, due events stay
+    /// queued and go out at offset 0 of the next block — late, not lost.
+    ///
+    /// Mutation: in `pop_due`, pop and discard when `out` is full instead of
+    /// stopping → three of the five events vanish → fails.
+    #[test]
+    fn a_full_output_slot_delays_events_rather_than_dropping_them() {
+        let mut f = EventFifo::sized(Samples(1), 16, 8);
+        let burst: Vec<Event> = (0..5).map(|i| Event::midi(0, [i, 0, 0, 0])).collect();
+        f.push(&burst);
+        let mut out = Vec::with_capacity(2);
+        f.pop_due(&mut out, 8);
+        f.advance(8);
+        assert_eq!(out.len(), 2, "the slot takes two");
+        let mut got = out.clone();
+        for _ in 0..3 {
+            out.clear();
+            f.pop_due(&mut out, 8);
+            f.advance(8);
+            assert!(out.iter().all(|e| e.offset == 0), "late events land at 0");
+            got.extend(out.iter().copied());
+        }
+        let tags: Vec<u32> = got
+            .iter()
+            .map(|e| match e.kind {
+                crate::event::EventKind::Midi(crate::event::Ump(w)) => w[0],
+                crate::event::EventKind::Ramp(_) => unreachable!(),
+            })
+            .collect();
+        assert_eq!(tags, vec![0, 1, 2, 3, 4], "all five, in order");
     }
 }

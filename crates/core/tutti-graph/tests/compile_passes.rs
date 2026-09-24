@@ -18,6 +18,9 @@ use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort,
 use tutti_types::latency::{self, DelayInsertion, LatencyGraph};
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail, Topology};
 
+/// The `MaxBlock` every plan in this file is compiled for.
+const PREP: usize = 128;
+
 const A: NodeKey = NodeKey(10);
 const B: NodeKey = NodeKey(20);
 const C: NodeKey = NodeKey(30);
@@ -213,7 +216,7 @@ fn shapes_of_spec(t: &Topology) -> Shapes {
 
 fn compiled(t: &Topology) -> tutti_graph::Plan {
     let valid = GraphSpec::new(t.clone()).validate().expect("valid");
-    compile(&valid, &shapes_of_spec(t), None)
+    compile(&valid, &shapes_of_spec(t), &common::prepare(PREP), None)
         .expect("compiles")
         .0
 }
@@ -272,7 +275,14 @@ fn ties_break_by_key_across_edge_kinds() {
         (b, Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)),
     ]
     .into();
-    let plan = compile(&g.validate().unwrap(), &shapes, None).unwrap().0;
+    let plan = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .unwrap()
+    .0;
     assert_eq!(plan.order(), &[x, a, b]);
 }
 
@@ -342,13 +352,19 @@ fn pdc_delays_equal_latency_compensate() {
         let mut want_in: Vec<(DelayKey, Samples)> = rec
             .inputs
             .iter()
-            .map(|&(n, p, by)| (DelayKey::Audio(at(n, p as u16)), by))
+            .map(|&(n, p, by)| {
+                let sink = at(n, p as u16);
+                let Edge::Direct(from) = t.edges[&sink] else {
+                    unreachable!("latency::plan delays only direct edges")
+                };
+                (DelayKey::Audio { at: sink, from }, by)
+            })
             .collect();
         want_in.sort();
         let mut got_in: Vec<(DelayKey, Samples)> = plan
             .delays()
             .iter()
-            .filter(|d| matches!(d.key, DelayKey::Audio(_)))
+            .filter(|d| matches!(d.key, DelayKey::Audio { .. }))
             .map(|d| (d.key, d.len))
             .collect();
         got_in.sort();
@@ -358,12 +374,18 @@ fn pdc_delays_equal_latency_compensate() {
             .outputs
             .iter()
             .filter(|&&(ch, _)| t.outputs[ch] != Source::Zero)
-            .map(|&(ch, by)| (DelayKey::Output(ch as u16), by))
+            .map(|&(ch, by)| {
+                let key = DelayKey::Output {
+                    channel: ch as u16,
+                    from: t.outputs[ch],
+                };
+                (key, by)
+            })
             .collect();
         let got_out: Vec<(DelayKey, Samples)> = plan
             .delays()
             .iter()
-            .filter(|d| matches!(d.key, DelayKey::Output(_)))
+            .filter(|d| matches!(d.key, DelayKey::Output { .. }))
             .map(|d| (d.key, d.len))
             .collect();
         assert_eq!(got_out, want_out, "{name}: output alignment");
@@ -466,7 +488,8 @@ fn a_cycle_through_an_event_edge_is_an_error_naming_its_edges() {
         EventEdge::Direct(EventOut { node: B, port: 0 }),
     );
     let valid = g.validate().expect("the value alone cannot see it");
-    let err = compile(&valid, &gain_kinds(&[A, B]), None).expect_err("cyclic");
+    let err =
+        compile(&valid, &gain_kinds(&[A, B]), &common::prepare(PREP), None).expect_err("cyclic");
     assert_eq!(
         err,
         CompileError::Cycle {
@@ -494,7 +517,7 @@ fn an_event_self_loop_is_a_cycle() {
     );
     let valid = g.validate().expect("valid value");
     assert!(matches!(
-        compile(&valid, &gain_kinds(&[A, B]), None),
+        compile(&valid, &gain_kinds(&[A, B]), &common::prepare(PREP), None),
         Err(CompileError::Cycle { .. })
     ));
 }
@@ -516,7 +539,8 @@ fn feedback_edges_break_cycles() {
         EventEdge::Feedback(EventOut { node: B, port: 0 }),
     );
     let valid = g.validate().expect("feedback breaks the cycle");
-    let (plan, _) = compile(&valid, &gain_kinds(&[A, B]), None).expect("compiles");
+    let (plan, _) =
+        compile(&valid, &gain_kinds(&[A, B]), &common::prepare(PREP), None).expect("compiles");
     verify(&plan).expect("sound");
     assert_eq!(plan.feedback(PortKind::Audio).len(), 1);
     assert_eq!(plan.feedback(PortKind::Event).len(), 1);
@@ -545,13 +569,13 @@ fn shape_disagreements_are_errors() {
     let mut shapes = gain_kinds(&[A, B]);
     shapes.insert(A, Shape::audio(ChannelLayout::STEREO, ChannelLayout::MONO));
     assert!(matches!(
-        compile(&valid, &shapes, None),
+        compile(&valid, &shapes, &common::prepare(PREP), None),
         Err(CompileError::WidthMismatch { node: A, .. })
     ));
 
     let shapes = gain_kinds(&[A]);
     assert_eq!(
-        compile(&valid, &shapes, None).unwrap_err(),
+        compile(&valid, &shapes, &common::prepare(PREP), None).unwrap_err(),
         CompileError::MissingShape { node: B }
     );
 
@@ -562,7 +586,7 @@ fn shape_disagreements_are_errors() {
     );
     let valid = g.validate().unwrap();
     assert_eq!(
-        compile(&valid, &gain_kinds(&[A, B]), None).unwrap_err(),
+        compile(&valid, &gain_kinds(&[A, B]), &common::prepare(PREP), None).unwrap_err(),
         CompileError::EventPortOutOfRange {
             at: EventIn { node: A, port: 3 },
             from: None
@@ -578,7 +602,7 @@ fn shape_disagreements_are_errors() {
     )]
     .into();
     assert_eq!(
-        compile(&valid, &shapes, None).unwrap_err(),
+        compile(&valid, &shapes, &common::prepare(PREP), None).unwrap_err(),
         CompileError::TooManyPorts { node: A, count: 65 }
     );
 }
@@ -677,11 +701,25 @@ fn in_place_spec(ports_read_twice: bool) -> (GraphSpec, Shapes) {
 #[test]
 fn in_place_aliasing_happens_exactly_when_legal() {
     let (g, shapes) = in_place_spec(false);
-    let plan = compile(&g.validate().unwrap(), &shapes, None).unwrap().0;
+    let plan = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .unwrap()
+    .0;
     assert!(plan.in_place(B).get(0), "sole reader, one port: aliased");
 
     let (g, shapes) = in_place_spec(true);
-    let plan = compile(&g.validate().unwrap(), &shapes, None).unwrap().0;
+    let plan = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .unwrap()
+    .0;
     assert_eq!(plan.in_place(B).0, 0, "read on two ports: not aliased");
 
     // Not opted in: never aliased.
@@ -690,7 +728,14 @@ fn in_place_aliasing_happens_exactly_when_legal() {
         B,
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO),
     );
-    let plan = compile(&g.validate().unwrap(), &shapes, None).unwrap().0;
+    let plan = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .unwrap()
+    .0;
     assert_eq!(plan.in_place(B).0, 0);
 
     // Another reader that may run concurrently: not aliased.
@@ -700,7 +745,14 @@ fn in_place_aliasing_happens_exactly_when_legal() {
     edge(&mut g.topology, at(C, 0), out(A, 0));
     g.topology.outputs.push(Source::Node(out(C, 0)));
     shapes.insert(C, Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO));
-    let plan = compile(&g.validate().unwrap(), &shapes, None).unwrap().0;
+    let plan = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .unwrap()
+    .0;
     assert_eq!(plan.in_place(B).0, 0, "C still reads A's slot");
 }
 
@@ -754,6 +806,7 @@ fn the_delta_moves_only_what_changed() {
     let (first, delta) = compile(
         &GraphSpec::new(t.clone()).validate().unwrap(),
         &shapes,
+        &common::prepare(PREP),
         None,
     )
     .unwrap();
@@ -766,7 +819,13 @@ fn the_delta_moves_only_what_changed() {
     g.generations.insert(C, 1);
     let mut shapes = shapes_of_spec(&g.topology);
     shapes.remove(&B);
-    let (second, delta) = compile(&g.validate().unwrap(), &shapes, Some(&first)).unwrap();
+    let (second, delta) = compile(
+        &g.validate().unwrap(),
+        &shapes,
+        &common::prepare(PREP),
+        Some(&first),
+    )
+    .unwrap();
 
     assert_eq!(idx(&second, A), idx(&first, A), "A kept its place");
     assert_eq!(delta.retire.len(), 1);
@@ -779,4 +838,94 @@ fn the_delta_moves_only_what_changed() {
     assert_eq!(delta.insert[0].key, D);
     assert_eq!(idx(&second, D), idx(&first, B), "D reuses B's freed index");
     assert_eq!(delta.store_len, 3);
+}
+
+/// Decision (review): a `Source::Global` input that merges with a latent
+/// path **is** delayed to align, like any other merge-point source. This is
+/// where the compiler deliberately differs from `latency::plan`, which
+/// treats a global input as outside the graph (unified in doc 013 Phase 5).
+///
+/// Mutation: in `compile`, give `Source::Global` ports no delay (the old
+/// rule) → the plan has no `DelayKey::Audio { from: Global(0) }` → fails.
+/// The reference computes the same delay independently.
+#[test]
+fn a_global_input_merging_with_a_latent_path_is_delayed() {
+    let mut t = Topology {
+        inputs: ChannelLayout::MONO,
+        ..Topology::default()
+    };
+    t.nodes.insert(A, spec("dc", 0, 1));
+    t.nodes
+        .insert(B, spec("gain", 1, 1).with_latency(Samples(48)));
+    t.nodes.insert(C, spec("sum", 2, 1));
+    edge(&mut t, at(B, 0), out(A, 0));
+    edge(&mut t, at(C, 0), out(B, 0));
+    t.edges.insert(at(C, 1), Edge::Direct(Source::Global(0)));
+    t.outputs = vec![Source::Node(out(C, 0))];
+
+    let plan = compiled(&t);
+    let key = DelayKey::Audio {
+        at: at(C, 1),
+        from: Source::Global(0),
+    };
+    assert_eq!(plan.delay(key), Samples(48));
+    // `latency::plan` does not: the two solves differ here until Phase 5.
+    let mut rec = Recorder {
+        t: &t,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+    };
+    latency::compensate(&mut rec);
+    assert!(
+        rec.inputs.is_empty(),
+        "latency::plan never delays a global input"
+    );
+
+    let mut pair = Pair::new(128);
+    pair.switch(
+        &GraphSpec::new(t.clone()).validate().unwrap(),
+        &kinds_for(&t),
+    );
+    assert_eq!(pair.reference.delay(key), Samples(48));
+    let mut frame = 0;
+    for _ in 0..6 {
+        let (a, b) = pair.block(100, &input_signal(frame, 100));
+        assert_eq!(bits(&a), bits(&b));
+        frame += 100;
+    }
+}
+
+/// N3: a shape whose latency or tail disagrees with its spec is refused, as
+/// a width mismatch is — one of them is stale, and compiling either would
+/// make `latency::plan` over the value disagree with the plan.
+///
+/// Mutation: delete the latency comparison in `compile` → compiles → fails;
+/// likewise the tail comparison.
+#[test]
+fn a_shape_disagreeing_on_latency_or_tail_is_refused() {
+    let mut t = Topology::default();
+    t.nodes
+        .insert(A, spec("gain", 1, 1).with_latency(Samples(10)));
+    let valid = GraphSpec::new(t).validate().unwrap();
+    let late: Shapes = [(
+        A,
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_latency(Latency::new(Samples(12))),
+    )]
+    .into();
+    assert!(matches!(
+        compile(&valid, &late, &common::prepare(PREP), None),
+        Err(CompileError::LatencyMismatch { node: A, .. })
+    ));
+    let tailed: Shapes = [(
+        A,
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_latency(Latency::new(Samples(10)))
+            .with_tail(Tail::Unbounded),
+    )]
+    .into();
+    assert!(matches!(
+        compile(&valid, &tailed, &common::prepare(PREP), None),
+        Err(CompileError::TailMismatch { node: A, .. })
+    ));
 }

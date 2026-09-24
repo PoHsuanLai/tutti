@@ -43,6 +43,16 @@ impl AudioThread {
     pub fn is_current() -> bool {
         DEPTH.with(|d| d.get() > 0)
     }
+
+    /// In debug builds, panic if the current thread is marked — for a `Drop`
+    /// impl whose value must be freed on the control thread. `what` names it
+    /// in the message. Silent while already unwinding, so a first panic is
+    /// not turned into an abort.
+    pub fn check_not_current(what: &str) {
+        if cfg!(debug_assertions) && Self::is_current() && !std::thread::panicking() {
+            panic!("{what} dropped on the audio thread: it must be freed on the control thread");
+        }
+    }
 }
 
 impl Drop for AudioThreadGuard {

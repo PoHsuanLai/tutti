@@ -12,21 +12,38 @@
 //! arenas, one per port kind. The layout of each arena is fixed:
 //!
 //! ```text
-//! audio:  [0: ZERO][1..=F: feedback, persistent][F+1..: coloured, per block]
-//! event:  [0: EMPTY][1..=G: feedback, persistent][G+1..: coloured, per block]
+//! audio:  [0: ZERO][1..=F: feedback reads][F+1..: coloured, per block]
+//! event:  [0: EMPTY][1..=G: feedback reads][G+1..: coloured, per block]
 //! ```
 //!
-//! Slot 0 is never written. Feedback slots carry last block's value of one
-//! output port across blocks and across recompiles (keyed by the port).
-//! Coloured slots are shared between values whose lifetimes cannot overlap
-//! under *any* schedule that respects the op DAG — see `compile`'s colouring
-//! pass.
+//! Slot 0 is never written. A feedback slot is filled by the executor before
+//! the first op of each block, from the feedback's delay state, and is never
+//! written by an op. Coloured slots are shared between values whose lifetimes
+//! cannot overlap under *any* schedule that respects the op DAG — see
+//! `compile`'s colouring pass.
+//!
+//! # Keys: one rule for delay and feedback state
+//!
+//! Every piece of state that outlives a block is keyed so that a recompile
+//! carries it exactly when it is still the same wire:
+//!
+//! - **A PDC delay** is keyed by **(sink port, source port)** — [`DelayKey`].
+//!   Rewiring a sink to another source starts a fresh (silent) ring: the old
+//!   source's past audio is never played out of the new wire. Pending events
+//!   of an event delay whose key disappears are flushed to the sink at offset
+//!   0 of the next block if the sink survives (a dropped note-off is a stuck
+//!   note), and dropped with it otherwise.
+//! - **A feedback edge** is a delay of exactly the prepared `MaxBlock` frames
+//!   (see [`FeedbackKey`]). Audio feedback is keyed by the source port *and
+//!   its unit generation*, so a replaced unit's last output does not feed the
+//!   new loop. Event feedback is keyed per edge (sink, source, generation),
+//!   and a disappearing key flushes like a PDC event delay.
 
-use tutti_types::graph::{InPort, OutPort};
+use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples};
 
 use crate::io::PortKind;
-use crate::node::{InPlaceMask, Shape};
+use crate::node::{InPlaceMask, Prepare, Shape};
 use crate::spec::{EventIn, EventOut};
 
 /// The audio slot every unconnected or `Source::Zero` input reads.
@@ -60,13 +77,19 @@ impl Span {
 /// Which PDC delay a ring belongs to. The ring's **state is keyed by this**,
 /// so it survives any recompile that keeps the key (doc 013 §3 step 3: "an
 /// unrelated edit does not click"), where fundsp re-minted — and zeroed —
-/// every `PdcDelay` vertex on every compensation run.
+/// every `PdcDelay` vertex on every compensation run. The key names both ends
+/// of the wire; see the [module docs](self) for why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DelayKey {
-    /// The audio input port the delay feeds.
-    Audio(InPort),
-    /// One source of an event input port. Keyed by the pair because each
-    /// source of a fan-in port can need a different delay.
+    /// An audio input port, delayed to align with the node's latest input.
+    Audio {
+        /// The sink port.
+        at: InPort,
+        /// What feeds it: a node port or a global input channel.
+        from: Source,
+    },
+    /// One source of an event input port. Each source of a fan-in port can
+    /// need a different delay.
     Event {
         /// The sink.
         at: EventIn,
@@ -74,7 +97,12 @@ pub enum DelayKey {
         from: EventOut,
     },
     /// A global output channel, delayed to align with the slowest channel.
-    Output(u16),
+    Output {
+        /// The graph output channel.
+        channel: u16,
+        /// What feeds it.
+        from: Source,
+    },
 }
 
 /// One PDC delay in a plan.
@@ -86,13 +114,31 @@ pub struct DelaySpec {
     pub len: Samples,
 }
 
-/// Which port a feedback slot carries last block's value of.
+/// Which feedback delay a slot is read from.
+///
+/// **A feedback edge delays by exactly the prepared `MaxBlock` frames**,
+/// whatever length the current block is: a fixed-length ring for audio, a
+/// FIFO for events. That is Web Audio's fixed-quantum rule, and unlike "last
+/// block's buffer" it stays well defined when blocks are ragged — nothing is
+/// lost or repeated when the block size changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FeedbackKey {
-    /// An audio output port.
-    Audio(OutPort),
-    /// An event output port.
-    Event(EventOut),
+    /// An audio output port of a unit generation. Shared by every reader.
+    Audio {
+        /// The source port.
+        from: OutPort,
+        /// The source unit's generation.
+        gen: u32,
+    },
+    /// One event feedback edge.
+    Event {
+        /// The sink port.
+        at: EventIn,
+        /// The source port.
+        from: EventOut,
+        /// The source unit's generation.
+        gen: u32,
+    },
 }
 
 /// One feedback slot.
@@ -183,16 +229,16 @@ pub enum Op {
         /// Index into [`Plan::delays`], when the channel is delayed.
         delay: Option<u32>,
     },
-    /// Save an audio port's value for next block's feedback readers.
+    /// Push an audio port's block into its feedback ring.
     Capture {
-        /// Index into [`Plan::audio_feedback`].
+        /// Index into [`Plan::feedback`] (audio).
         feedback: u32,
         /// Audio slot read.
         src: u32,
     },
-    /// Save an event port's events for next block's feedback readers.
+    /// Queue an event port's events into its feedback delay.
     EventCapture {
-        /// Index into [`Plan::event_feedback`].
+        /// Index into [`Plan::feedback`] (events).
         feedback: u32,
         /// Event slot read.
         src: u32,
@@ -250,6 +296,7 @@ pub struct Value {
 /// every such order, not just the serial one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
+    pub(crate) prepare: Prepare,
     pub(crate) ops: Vec<Op>,
     pub(crate) audio_list: Vec<u32>,
     pub(crate) event_list: Vec<u32>,
@@ -283,6 +330,12 @@ const _: fn() = || {
 };
 
 impl Plan {
+    /// What this plan was compiled for. An executor refuses a plan prepared
+    /// for anything else.
+    pub fn prepare(&self) -> &Prepare {
+        &self.prepare
+    }
+
     /// The ops, in serial order.
     pub fn ops(&self) -> &[Op] {
         &self.ops

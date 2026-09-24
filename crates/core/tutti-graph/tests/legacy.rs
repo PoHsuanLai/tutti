@@ -6,7 +6,7 @@ mod common;
 use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
-use tutti_graph::{Editor, Executor, Legacy, Node, Transport};
+use tutti_graph::{Editor, Legacy, Node, Transport};
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -53,7 +53,7 @@ fn legacy_nodes_render_what_net_renders() {
 
     // The graph side.
     let (fa, fb) = (NodeKey(1), NodeKey(2));
-    let mut ed = Editor::new(prepare(256));
+    let (mut ed, mut exec) = Editor::new(prepare(256));
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
     ed.insert(fa, "lowpass", Legacy::new(lowpass_hz(700.0, 0.8)));
     ed.insert(fb, "lowpass", Legacy::new(lowpass_hz(2_300.0, 1.1)));
@@ -67,9 +67,8 @@ fn legacy_nodes_render_what_net_renders() {
         Edge::Direct(Source::Node(OutPort { node: fa, port: 0 })),
     );
     t.outputs = vec![Source::Node(OutPort { node: fb, port: 0 })];
-    let mut exec = Executor::new(prepare(256));
     let done = exec.apply(ed.commit().expect("commits"));
-    ed.reclaim(done);
+    ed.reclaim(done).expect("our own applied box");
     // Aliased in place: the adapter opts in, and this exercises its path.
     assert!(exec.plan().unwrap().in_place(fb).get(0));
 

@@ -18,6 +18,13 @@
 //!   on `AudioUnit`, and [`Node::shape`] takes `&self`.
 //!   The rounding is `Net`'s own (`fundsp-tutti/src/latency/mod.rs:51`), so a
 //!   compiled plan and a `Net` agree about the same unit.
+//! - **Bit-identity with `Net` holds only for per-sample units.** The adapter
+//!   chunks at 64 frames from the start of *each* block, so its chunk
+//!   boundaries drift against the ones `Net` would use. A unit whose output
+//!   depends only on its per-sample state (filters, oscillators, gains — the
+//!   `tests/legacy.rs` comparison) renders bit-identically; one that does
+//!   block-rate work at chunk boundaries (a coefficient update per call, a
+//!   block FFT) can differ from `Net` by where those boundaries fall.
 //! - **In place.** The adapter copies each chunk of input into its own buffer
 //!   before the unit runs, so an output that already holds its input is no
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].

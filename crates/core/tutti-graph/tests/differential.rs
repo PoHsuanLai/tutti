@@ -769,8 +769,10 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
 /// Every way the executor borrows a node's buffers renders what the
 /// reference renders:
 ///
-/// - the three direct forms: a source, a one-in/one-out node in two slots,
-///   and one in place;
+/// - the one-channel direct forms: a source, a one-in/one-out node in two
+///   slots, and one in place;
+/// - the stereo direct form in each of its shapes (0→2, 1→2, 2→1 including
+///   two ports on one slot, 2→2 split, in place and half in place);
 /// - the audio-only walk in each stack-table bucket: up to 4, up to 16, and
 ///   a 64-input sum (65 audio ports, no events);
 /// - the general walk (event ports) in each of its buckets:
@@ -791,6 +793,10 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
 /// wider general nodes overrun the tables → panics (so does sending only the
 /// `<16, 4>` arm there). Mutation: build the general call's `Io` with
 /// `InPlaceMask::NONE` → the in-place mixers are handed no input → fails.
+/// Mutation: in `Arena::direct`, hand output `c` to channel `O - 1 - c` →
+/// the stereo nodes swap channels → diverges. Mutation: make every direct
+/// input read `reads[0]` → the stereo-to-mono sum reads one slot twice →
+/// diverges.
 #[test]
 fn every_borrow_form_matches_the_reference() {
     let key = NodeKey;
@@ -949,6 +955,92 @@ fn every_borrow_form_matches_the_reference() {
         wire(pre2, c, Source::Global(c));
         wire(mix2, c, out(pre2, c));
     }
+    // The direct stereo shapes: a stereo source, mono to stereo, stereo to
+    // mono (once from two slots, once with both ports on one slot, so the
+    // record dedupes a read), stereo to stereo split, fully in place and
+    // half in place; and a three-wide node, which stays on the walk.
+    let (st_src, fan12, sum2, sum2dup, st_pre, st_in, half, w3) = (
+        key(20),
+        key(21),
+        key(22),
+        key(23),
+        key(24),
+        key(25),
+        key(26),
+        key(27),
+    );
+    let direct_kinds = [
+        (
+            st_src,
+            Kind::Const {
+                value: 0.625,
+                width: 2,
+            },
+        ),
+        (
+            fan12,
+            Kind::Spec {
+                behaviour: common::SpecBehaviour::Fan,
+                ins: 1,
+                outs: 2,
+                latency: 0,
+                tail: tutti_types::Tail::None,
+            },
+        ),
+        (sum2, Kind::Sum { inputs: 2 }),
+        (sum2dup, Kind::Sum { inputs: 2 }),
+        (
+            st_pre,
+            Kind::Gain {
+                gain: 0.5,
+                width: 2,
+            },
+        ),
+        (
+            st_in,
+            Kind::Gain {
+                gain: 1.5,
+                width: 2,
+            },
+        ),
+        (
+            half,
+            Kind::Gain {
+                gain: 0.75,
+                width: 2,
+            },
+        ),
+        (
+            w3,
+            Kind::Gain {
+                gain: 2.0,
+                width: 3,
+            },
+        ),
+    ];
+    for (k, kind) in direct_kinds {
+        t.nodes.insert(k, spec_for(&kind));
+        kinds.insert(k, kind);
+    }
+    let mut wire = |node, port, from| {
+        t.edges.insert(InPort { node, port }, Edge::Direct(from));
+    };
+    wire(fan12, 0, Source::Global(1));
+    wire(sum2, 0, out(st_src, 0));
+    wire(sum2, 1, out(fan12, 1));
+    wire(sum2dup, 0, Source::Global(0));
+    wire(sum2dup, 1, Source::Global(0));
+    for c in 0..2 {
+        wire(st_pre, c, Source::Global(c));
+        wire(st_in, c, out(st_pre, c));
+    }
+    // `half` is the last reader of `fan12`'s port 0 only: channel 0 is in
+    // place, channel 1 reads a global input.
+    wire(half, 0, out(fan12, 0));
+    wire(half, 1, Source::Global(1));
+    for c in 0..3 {
+        wire(w3, c, Source::Global(c % 2));
+    }
     t.outputs = vec![
         out(sum, 0),
         out(inplace, 0),
@@ -957,6 +1049,13 @@ fn every_borrow_form_matches_the_reference() {
         out(mixwide, 19),
         out(manyev, 0),
         out(mix2, 1),
+        out(st_src, 1),
+        out(sum2, 0),
+        out(sum2dup, 0),
+        out(st_in, 1),
+        out(half, 0),
+        out(half, 1),
+        out(w3, 2),
     ];
     let mut g = GraphSpec::new(t);
     let ev = |node, port| EventOut { node, port };
@@ -1010,6 +1109,14 @@ fn every_borrow_form_matches_the_reference() {
                 (0, 1, false) => "source",
                 (1, 1, false) if in_place.get(0) => "in place",
                 (1, 1, false) => "split",
+                (0, 2, false) => "direct 0-2",
+                (1, 2, false) => "direct 1-2",
+                (2, 1, false) => "direct 2-1",
+                (2, 2, false) => match in_place.0 {
+                    0 => "direct 2-2 split",
+                    0b11 => "direct 2-2 in place",
+                    _ => "direct 2-2 half in place",
+                },
                 _ if wide <= 4 => "audio up to 4",
                 _ if wide <= 16 => "audio up to 16",
                 _ => "audio up to 64",
@@ -1026,6 +1133,12 @@ fn every_borrow_form_matches_the_reference() {
             "source",
             "in place",
             "split",
+            "direct 0-2",
+            "direct 1-2",
+            "direct 2-1",
+            "direct 2-2 split",
+            "direct 2-2 in place",
+            "direct 2-2 half in place",
             "audio up to 4",
             "audio up to 16",
             "audio up to 64"

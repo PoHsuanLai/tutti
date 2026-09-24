@@ -266,10 +266,13 @@ pub enum Op {
 /// How the executor borrows one node op's buffers — decided at compile time,
 /// so a call does not re-derive it from the port counts.
 ///
-/// The three direct forms cover the shape most nodes have (zero or one audio
-/// input, one audio output, no event ports): one or two slots, borrowed with
-/// no request table at all. Everything else walks the op's presorted borrow
-/// requests ([`NodeRec::borrows`]).
+/// The direct forms cover the shapes most nodes have: zero or one audio
+/// input and one audio output ([`Source`](Self::Source),
+/// [`Split`](Self::Split), [`InPlace`](Self::InPlace)), and the stereo
+/// shapes ([`Direct`](Self::Direct)), all with no event ports. Their slots
+/// are borrowed with no request table, and each gets its own specialised
+/// call path. Everything else walks the op's presorted borrow requests
+/// ([`NodeRec::borrows`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Form {
     /// No audio input, one audio output, no event ports.
@@ -291,10 +294,87 @@ pub(crate) enum Form {
         /// The slot that holds the input and receives the output.
         slot: u32,
     },
+    /// One of the fixed small shapes in [`Direct::SHAPES`], no event ports.
+    Direct(Direct),
     /// Any audio width, no event ports: the audio borrow walk only.
     Audio,
     /// Event ports too.
     General,
+}
+
+/// The borrow of a [`Form::Direct`] node: its distinct slots in ascending
+/// order, what each one is, and where each input channel finds its slot.
+///
+/// Distinct, because two input channels may read one slot (two ports on the
+/// zero slot, say) and a slot can be split off the arena only once. Sorted,
+/// so the executor peels them off with `split_at_mut` in one pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Direct {
+    /// Audio input channels.
+    pub(crate) ins: u8,
+    /// Audio output channels.
+    pub(crate) outs: u8,
+    /// How many of `slots` are used.
+    pub(crate) count: u8,
+    /// The distinct slots, ascending; unused entries are 0.
+    pub(crate) slots: [u32; 4],
+    /// Per slot: the output channel it is, or [`Direct::READ`] for a slot
+    /// only read.
+    pub(crate) role: [u8; 4],
+    /// Per input channel: the index into `slots` it reads, or
+    /// [`Direct::IN_PLACE`] when the channel is aliased in place (it is then
+    /// in its output's buffer).
+    pub(crate) input: [u8; 2],
+}
+
+impl Direct {
+    /// `(inputs, outputs)` shapes that take the direct form: a stereo
+    /// source, mono to stereo, stereo to mono, and stereo to stereo. The
+    /// one-output shapes with at most one input have their own forms.
+    pub(crate) const SHAPES: [(usize, usize); 4] = [(0, 2), (1, 2), (2, 1), (2, 2)];
+    /// `role` of a slot that is only read.
+    pub(crate) const READ: u8 = u8::MAX;
+    /// `input` of a channel aliased in place.
+    pub(crate) const IN_PLACE: u8 = u8::MAX;
+
+    /// The direct borrow for these ports, if the shape has one.
+    fn lower(ain: &[u32], aout: &[u32], in_place: InPlaceMask) -> Option<Self> {
+        if !Self::SHAPES.contains(&(ain.len(), aout.len())) {
+            return None;
+        }
+        let mut entries: Vec<(u32, u8)> = aout
+            .iter()
+            .enumerate()
+            .map(|(c, &s)| (s, c as u8))
+            .collect();
+        for (c, &s) in ain.iter().enumerate() {
+            if !in_place.get(c) && !entries.contains(&(s, Self::READ)) {
+                entries.push((s, Self::READ));
+            }
+        }
+        entries.sort_unstable();
+        let mut d = Self {
+            ins: ain.len() as u8,
+            outs: aout.len() as u8,
+            count: entries.len() as u8,
+            slots: [0; 4],
+            role: [0; 4],
+            input: [Self::IN_PLACE; 2],
+        };
+        for (i, &(s, r)) in entries.iter().enumerate() {
+            d.slots[i] = s;
+            d.role[i] = r;
+        }
+        for (c, &s) in ain.iter().enumerate() {
+            if !in_place.get(c) {
+                d.input[c] = entries
+                    .iter()
+                    .position(|&e| e == (s, Self::READ))
+                    .expect("every read was entered") as u8;
+            }
+        }
+        Some(d)
+    }
 }
 
 /// One [`Op::Node`], lowered into a single record: everything a node call
@@ -446,7 +526,9 @@ impl NodeTables {
                 (&[], &[out], true) => Form::Source { out },
                 (&[slot], &[_], true) if in_place.get(0) => Form::InPlace { slot },
                 (&[input], &[out], true) => Form::Split { input, out },
-                _ => Form::Audio,
+                (_, _, true) => {
+                    Direct::lower(ain, aout, in_place).map_or(Form::Audio, Form::Direct)
+                }
             };
             let rec = NodeRec {
                 unit,

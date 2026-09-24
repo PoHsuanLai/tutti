@@ -60,9 +60,10 @@
 //! slots, the buffer borrow requests **already sorted**, and a `Form` that
 //! picks the borrow. The verifier checks each record against its op, so a
 //! call does one indexed load where it used to do six, and
-//! never sorts. The commonest shape — at most one audio input, one audio
-//! output, no event ports — borrows its one or two slots directly, and its
-//! whole call path is specialised so the per-port loops fold away. An
+//! never sorts. The commonest shapes — at most one audio input and one
+//! audio output, or the stereo shapes 0→2, 1→2, 2→1 and 2→2, all with no
+//! event ports — borrow their slots directly, and their whole call path is
+//! specialised so the per-port loops fold away. An
 //! event-free node of any width builds no event table. Per slot, what is
 //! known about the block (silent, constant) is one flags byte.
 //!
@@ -117,7 +118,7 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
     MAX_PORTS,
 };
-use crate::plan::{DelayKey, Delta, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
+use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::spec::EventIn;
 
 /// Events one event slot holds per block, unless configured otherwise.
@@ -797,6 +798,18 @@ impl Executor {
                                 (call.process(node, &[&[]], &mut outs), 0)
                             },
                         ),
+                        // The stereo shapes: fixed widths, so `direct_op`
+                        // gets the same straight-line call path.
+                        Form::Direct(d) => {
+                            let slots = &plan.nodes.slots[..];
+                            match (d.ins, d.outs) {
+                                (0, 2) => direct_op::<0, 2>(u, &head, &mut st, &d, slots),
+                                (1, 2) => direct_op::<1, 2>(u, &head, &mut st, &d, slots),
+                                (2, 1) => direct_op::<2, 1>(u, &head, &mut st, &d, slots),
+                                (2, 2) => direct_op::<2, 2>(u, &head, &mut st, &d, slots),
+                                _ => unreachable!("rule 7 admits only `Direct::SHAPES`"),
+                            }
+                        }
                         // Port tables are stack arrays; pick the smallest
                         // bucket that fits so a two-port node does not
                         // initialise 64 entries per call. An event-free node
@@ -1011,6 +1024,28 @@ fn node_op(
     finish(status, frames, ain, aout, rec.in_place, st.arena, st.flags);
     u.last_quiet = aout.iter().all(|&s| st.flags[s as usize] & SILENT != 0)
         && eout.iter().all(|&s| st.events[s as usize].is_empty());
+}
+
+/// A [`Form::Direct`] node op with `I` inputs and `O` outputs: its port
+/// slots as fixed-size arrays, so `node_op`'s per-port loops fold as they do
+/// for the one-channel forms, and its buffers borrowed by
+/// [`Arena::direct`].
+#[inline(always)]
+fn direct_op<const I: usize, const O: usize>(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &mut OpState<'_>,
+    d: &Direct,
+    slots: &[u32],
+) {
+    let [ain, aout, _, _] = h.rec.ports(slots);
+    let ain: &[u32; I] = ain.try_into().expect("a direct record's input count");
+    let aout: &[u32; O] = aout.try_into().expect("a direct record's output count");
+    let frames = h.frames;
+    node_op(u, h, st, [ain, aout, &[], &[]], |call, node, st| {
+        let (ins, mut outs) = st.arena.direct::<I, O>(frames, d);
+        (call.process(node, &ins, &mut outs), 0)
+    });
 }
 
 /// One node call's constants, shared by every borrow form.

@@ -161,6 +161,60 @@ impl Arena {
         &mut bytemuck::cast_slice_mut::<Line, f32>(lines)[..frames]
     }
 
+    /// A [`Direct`](crate::plan::Direct) node's buffers: `I` inputs (an
+    /// in-place one empty) and `O` outputs, peeled off in one ascending pass
+    /// over its distinct slots, with no request table and no sort.
+    ///
+    /// # Panics
+    ///
+    /// If the slots are not strictly ascending, a role names an output past
+    /// `O`, or an input names a slot that is not a read. Rule 7 of the
+    /// verifier refuses each of those; here they are panics, never a wrong
+    /// or aliased buffer.
+    #[inline]
+    pub(crate) fn direct<const I: usize, const O: usize>(
+        &mut self,
+        frames: usize,
+        d: &crate::plan::Direct,
+    ) -> ([&[f32]; I], [&mut [f32]; O]) {
+        use crate::plan::Direct;
+        let st = self.stride;
+        let mut rest: &mut [Line] = &mut self.lines;
+        let mut base = 0usize;
+        let mut reads: [&[f32]; 4] = [&[]; 4];
+        let mut outs: [&mut [f32]; O] = std::array::from_fn(|_| &mut [][..]);
+        let entries = d.slots.iter().zip(&d.role).zip(reads.iter_mut());
+        for ((&slot, &role), read) in entries.take(usize::from(d.count)) {
+            let slot = slot as usize;
+            let skip = slot.checked_sub(base).expect("direct slots are sorted");
+            let (_, tail) = std::mem::take(&mut rest).split_at_mut(skip * st);
+            let (cur, after) = tail.split_at_mut(st);
+            rest = after;
+            base = slot + 1;
+            match role {
+                Direct::READ => {
+                    let cur: &[Line] = cur;
+                    *read = &bytemuck::cast_slice::<Line, f32>(cur)[..frames];
+                }
+                c => {
+                    outs[usize::from(c)] = &mut bytemuck::cast_slice_mut::<Line, f32>(cur)[..frames]
+                }
+            }
+        }
+        let ins = std::array::from_fn(|c| match d.input[c] {
+            Direct::IN_PLACE => &[][..],
+            r => {
+                assert_eq!(
+                    d.role[usize::from(r)],
+                    Direct::READ,
+                    "a direct input reads a read slot"
+                );
+                reads[usize::from(r)]
+            }
+        });
+        (ins, outs)
+    }
+
     /// `src` for reading and `dst` for writing, at once. They must differ.
     #[inline]
     pub(crate) fn pair(&mut self, src: u32, dst: u32, frames: usize) -> (&[f32], &mut [f32]) {

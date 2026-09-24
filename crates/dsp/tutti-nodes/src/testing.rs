@@ -223,9 +223,22 @@ impl Osc {
     /// Start the cycle at `phase` rather than 0 — fundsp's
     /// `sine_hz(f)` with `Setting::phase`. A sine sampled off its peaks is how
     /// a test gets a true peak that falls *between* samples.
+    ///
+    /// `phase` is in turns and is wrapped into `[0, 1)` here, so `1.25` and
+    /// `-0.75` both start a quarter-cycle in. `Phase` is a bare `pub` newtype,
+    /// so an unwrapped value is constructible, and the closed forms in
+    /// [`Waveform`] assume `0..1` — a saw started at `1.25` would emit `1.5`,
+    /// off the end of its range, until the first wrap.
     pub fn with_phase(mut self, phase: Phase) -> Self {
-        self.start = phase;
-        self.phase = f64::from(phase.get());
+        let wrapped = Phase::wrapped(phase.get());
+        // `rem_euclid` in f32 can round a tiny negative up to exactly 1.0,
+        // which is outside the half-open range; that is the start of a cycle.
+        self.start = if wrapped.get() >= 1.0 {
+            Phase::START
+        } else {
+            wrapped
+        };
+        self.phase = f64::from(self.start.get());
         self
     }
 
@@ -639,5 +652,32 @@ mod tests {
 
         let sink = Sink::new(ChannelLayout::from(6u16));
         assert_eq!((sink.inputs(), sink.outputs()), (6, 0));
+    }
+
+    /// The start phase is wrapped into `[0, 1)`, both when set and after
+    /// `reset`: `1.25` and `-0.75` start where `0.25` does.
+    ///
+    /// A saw shows it, because its closed form is only a ramp on `0..1`: from
+    /// an unwrapped `1.25` it would emit `2·1.25 − 1 = 1.5`.
+    ///
+    /// Mutation: skipping `Phase::wrapped` fails the `1.25` row (the guard then
+    /// sends it to 0, so the saw emits −1.0; with no guard either it emits 1.5);
+    /// relaxing the guard to `> 1.0` makes the `-1e-9` start emit +1.0 rather
+    /// than −1.0.
+    #[test]
+    fn with_phase_wraps_into_one_cycle_and_reset_restores_it() {
+        let quarter = 2.0 * 0.25 - 1.0; // the saw's value at 0.25 turns
+        for start in [0.25f32, 1.25, -0.75, 3.25] {
+            let mut osc = Osc::saw(Hz(1_000.0)).with_phase(Phase(start));
+            osc.set_sample_rate(SampleRate(8_000.0));
+            let first = render(&mut osc, 3).at_f32(0, 0);
+            assert!((first - quarter).abs() < 1e-6, "start {start}: {first}");
+            osc.reset();
+            let again = render(&mut osc, 1).at_f32(0, 0);
+            assert!((again - quarter).abs() < 1e-6, "reset {start}: {again}");
+        }
+        // The f32 edge: a tiny negative rounds to 1.0 in `rem_euclid`.
+        let mut edge = Osc::saw(Hz(1_000.0)).with_phase(Phase(-1e-9));
+        assert_eq!(render(&mut edge, 1).at_f32(0, 0), -1.0);
     }
 }

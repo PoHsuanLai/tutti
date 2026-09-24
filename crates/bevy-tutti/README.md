@@ -101,7 +101,7 @@ Every component is a thin wrapper over a tutti capability that already exists.
 | `AudioNode(NodeId)` | always | Identity for "this entity owns a graph node." |
 | `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
 | `PortSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
-| `AudioPump<S, CH>` | always | A running `AudioIn` → `AudioOut` transfer. Registered with `App::add_audio_pump`. |
+| `AudioPump<S>` | always | A running `AudioIn` → `AudioOut` transfer; `S` is the sample type, the width is runtime. Registered with `App::add_audio_pump`. |
 | `ModParamRange` | `modulation` | Depth/range for a modulated param. |
 | `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
 | `MidiRouteRule` | `midi` | Which inbound MIDI channel reaches which entities. |
@@ -198,19 +198,23 @@ commands.spawn(SendMidi {
 ### Recording, and audio I/O generally
 
 Recording is one case of moving frames from an `AudioIn` to an `AudioOut`, which
-is what `AudioPump` does. Register the frame type once, then spawn a pump:
+is what `AudioPump` does. Register the sample type once, then spawn a pump. The
+channel count is not part of the registration — endpoints report it at runtime
+as a `ChannelLayout` — so one call covers stereo, 5.1, and whatever width a
+device turns out to have:
 
 ```rust
-app.add_audio_pump::<f32, 2>();   // stereo — mic, WAV
-app.add_audio_pump::<f32, 6>();   // 5.1 render
+app.add_audio_pump::<f32>();   // idempotent: a host and a library may both call it
 
-// Mic -> WAV. `matching_sink` builds the sink from the device's own rate and
-// width, which is the one place both halves are in scope — hand-rolling the
-// `WavOut` is how you get a file that plays at the wrong speed.
-// `MicIn::open_with_monitor` also hands back a monitor node; see below.
-let mic = MicIn::open(None)?;
-let wav = mic.matching_sink(&path, BitDepth::Float32)
-    .ok_or("could not create WAV")?;
+// Mic -> WAV. The mic is opened *at* the graph rate (a device that cannot run
+// there is an error, not a stream that drifts). `matching_sink` then builds the
+// sink from the mic's own rate and width, which is the one place both halves
+// are in scope — hand-rolling the `WavOut` is how you get a file that plays at
+// the wrong speed. `MicIn::open_with_monitor` also hands back a monitor node;
+// see below.
+let mic = MicIn::open(None, config.sample_rate)?;
+let wav = mic.matching_sink(&path, BitDepth::Float32)?;
+// `Samples(1024)` is the pump's scratch buffer in frames, allocated once up front.
 let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
 
 // Later:
@@ -224,8 +228,7 @@ lock-free copy of it, and `TapIn` adapts the consumer end into an `AudioIn`:
 // One consumer at a time: `open` returns `Err(TapBusy)` rather than displacing
 // an analysis reader that got there first.
 let src = TapIn::new(tap.open()?);
-let wav = WavOut::create(&path, config.sample_rate, 2, BitDepth::Float32)
-    .ok_or("could not create WAV")?;
+let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
 commands.spawn(AudioPump::start(src, wav, Samples(1024)));
 ```
 
@@ -264,9 +267,10 @@ from the other.
 The node is a plain `AudioUnit`; add it and declare what it feeds, like any node:
 
 ```rust
-let (mic, monitor) = MicIn::open_with_monitor(None)?;
-let id = graph.0.add(Box::new(monitor));
-commands.spawn(AudioNode(id));   // then name it in MasterSources or an PortSources
+// The graph's rate: the monitor node does not resample.
+let (mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)?;
+let id = graph.0.add(monitor);
+commands.spawn(AudioNode(id));   // then name it in MasterSources or a PortSources
 ```
 
 A monitor node that is never wired fills its ~10 ms ring and then silently drops

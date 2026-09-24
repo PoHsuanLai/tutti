@@ -8,8 +8,8 @@ exists on this machine, and JUCE does not ship one either. **The vendored `vst-r
 *are* our spec**, so a "gap" here is measured against bindings someone else wrote, not
 against Steinberg's intent. Two findings below turn on a binding bug rather than on ours.
 
-**Scope: the format layer only** — `crates/tutti/crates/plugin/formats/tutti-vst2-host/`
-plus `crates/tutti/crates/plugin/vendor/vst-tutti/`.
+**Scope: the format layer only** — `crates/plugin/formats/tutti-vst2-host/`
+plus `crates/plugin/vendor/vst-tutti/`.
 
 ## Method
 

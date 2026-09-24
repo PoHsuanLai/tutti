@@ -5,7 +5,7 @@
 //! `World`, an `App` or an asset handle. The adapter's own tests are about
 //! asset loading and promotion; this file is about whether the unit sounds.
 //!
-//! The fixture is committed at `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so
+//! The fixture is committed at `assets/soundfonts/TimGM6mb.sf2`, so
 //! a missing one is a broken checkout and fails loudly. The bevy-tutti copies
 //! `return`ed silently instead, which meant a green run proved nothing.
 
@@ -19,15 +19,15 @@ use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 /// Path to the committed test SoundFont.
 ///
-/// `CARGO_MANIFEST_DIR` is `crates/tutti/crates/dsp/tutti-soundfont`; the asset
-/// lives three levels up under `assets/`.
+/// `CARGO_MANIFEST_DIR` is `crates/dsp/tutti-soundfont`; the asset lives three
+/// levels up, under the repo root's `assets/`.
 fn test_soundfont_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent() // dsp/
         .unwrap()
         .parent() // crates/
         .unwrap()
-        .parent() // tutti/
+        .parent() // repo root
         .unwrap()
         .join("assets/soundfonts/TimGM6mb.sf2")
 }

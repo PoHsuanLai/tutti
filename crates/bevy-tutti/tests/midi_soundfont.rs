@@ -8,7 +8,7 @@
 //! Together because they are the two halves of one path and share a fixture:
 //! spawning proves the node exists, rendering proves it sounds, and neither is
 //! evidence for the other. The `.sf2` both need is **committed** at
-//! `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so a missing one fails loudly
+//! `assets/soundfonts/TimGM6mb.sf2`, so a missing one fails loudly
 //! with the resolved path rather than skipping.
 
 #![cfg(all(feature = "midi", feature = "soundfont"))]
@@ -22,7 +22,7 @@
 /// next door build their node by hand and never reach this path.
 ///
 /// The `.sf2` these need is **committed** at
-/// `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
+/// `assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
 /// checkout and fails loudly with the resolved path. These used to skip on the
 /// `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
 /// where a wrong path meant every one of them silently passed without running.
@@ -52,7 +52,7 @@ mod soundfont_spawn {
             .parent() // crates/
             .and_then(|p| p.parent()) // repo root
             .expect("bevy-tutti lives two levels below the repo root")
-            .join("crates/tutti/assets/soundfonts/TimGM6mb.sf2");
+            .join("assets/soundfonts/TimGM6mb.sf2");
         let bytes = std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",
@@ -189,7 +189,7 @@ mod soundfont_spawn {
 /// step, which no example implemented.
 ///
 /// The `.sf2` these need is **committed** at
-/// `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
+/// `assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
 /// checkout and fails loudly with the resolved path. These used to skip on the
 /// `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
 /// where a wrong path meant every one of them silently passed without running.
@@ -247,7 +247,7 @@ mod midi_soundfont_audio {
             .parent() // crates/
             .and_then(|p| p.parent()) // repo root
             .expect("bevy-tutti lives two levels below the repo root")
-            .join("crates/tutti/assets/soundfonts/TimGM6mb.sf2");
+            .join("assets/soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",

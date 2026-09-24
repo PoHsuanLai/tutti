@@ -5,7 +5,7 @@ which was extracted from the official `free-audio/clap` headers **before** any o
 was read. That ordering is the point: a checklist derived from our implementation can only
 ever report that we do what we already do.
 
-**Scope: the format layer only** — `crates/tutti/crates/plugin/formats/tutti-clap-host/`.
+**Scope: the format layer only** — `crates/plugin/formats/tutti-clap-host/`.
 It says nothing about whether the engine above can reach these capabilities. See
 [the boundary note](#the-boundary-above-changes-what-user-visible-means) — for this format
 that caveat is load-bearing, not boilerplate.

@@ -5,7 +5,7 @@
 A plugin with 400 parameters presents as one flat list. Every format we host has a
 mechanism to prevent that, all four format crates decode it correctly, and all four
 answers are discarded when the loader builds the shared
-[`ParameterInfo`](../../crates/tutti/crates/plugin/tutti-plugin-types/src/parameters.rs).
+[`ParameterInfo`](../../crates/plugin/tutti-plugin-types/src/parameters.rs).
 
 The loss is uniform, which is what makes it worth one change rather than four:
 

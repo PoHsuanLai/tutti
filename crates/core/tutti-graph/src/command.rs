@@ -60,7 +60,11 @@
 //! **Order.** A scheduled event joins the port's own events as one more
 //! source *after* the port's edges (and after events flushed from a vanished
 //! delay): on a tie at one offset, the graph's events come first, then
-//! scheduled ones in the order they were scheduled.
+//! scheduled ones by their timeline position, then in the order they were
+//! scheduled. The position is unrounded, so two frames that a rate change
+//! rounds to one frame keep their order (frames 1 000 and 1 001, halved,
+//! both land on 500 — 1 000 first); a late command's position is its past
+//! frame, so it sorts before one due exactly at that offset.
 //!
 //! **Timing and PDC.** A time is a **timeline** time, compensated like any
 //! upstream event: a sink with compiled arrival latency `a` hears timeline
@@ -169,6 +173,11 @@ pub(crate) struct Scheduled {
     at: At,
     to: EventIn,
     kind: EventKind,
+    /// Its timeline position, unrounded — the tie-break after the offset:
+    /// the frame it was scheduled for (rescaled, unrounded, on a rate
+    /// change, so two frames that round to one keep their order), where a
+    /// beat resolved, or where a `NextBlock` landed.
+    pos: f64,
 }
 
 /// A cancellation, on its own ring: it needs no credit, so a full set of
@@ -196,6 +205,8 @@ struct DueItem {
     unit: u32,
     port: u16,
     seq: u64,
+    /// `Scheduled::pos`, as bits (non-negative, so they sort like the value).
+    pos: u64,
     event: Event,
 }
 
@@ -204,6 +215,10 @@ struct DueItem {
 pub(crate) struct CommandRx {
     rx: HeapCons<Scheduled>,
     cancel: HeapCons<Cancel>,
+    /// Cancels that arrived before the commands they name (see `pull`).
+    held: Vec<Cancel>,
+    /// One past the highest `seq` pulled so far.
+    next_seq: u64,
     pending: Vec<Scheduled>,
     due: Vec<DueItem>,
     due_events: Vec<Event>,
@@ -231,6 +246,8 @@ pub(crate) fn command_channel() -> (CommandTx, CommandRx) {
         CommandRx {
             rx,
             cancel: cancel_rx,
+            held: Vec::with_capacity(CANCEL_CAPACITY),
+            next_seq: 0,
             pending: Vec::with_capacity(COMMAND_CAPACITY),
             due: Vec::with_capacity(COMMAND_CAPACITY),
             due_events: Vec::with_capacity(COMMAND_CAPACITY),
@@ -261,12 +278,17 @@ impl CommandTx {
         if self.outstanding() >= COMMAND_CAPACITY as u64 {
             return Err(ScheduleError::Backpressure);
         }
+        let pos = match at {
+            At::Frame(f) => f.get() as f64,
+            _ => 0.0,
+        };
         let cmd = Scheduled {
             seq: self.sent,
             plan_seq,
             at,
             to,
             kind,
+            pos,
         };
         // Cannot fail: at most `outstanding` commands sit in the ring, and
         // that is below its capacity.
@@ -309,30 +331,64 @@ impl CommandRx {
         self.cancelled
     }
 
-    /// Pull new commands, then apply cancellations (after, so a cancel sees
-    /// every command scheduled before it). Frees the credit of what it
-    /// cancels. Audio thread: no allocation — `Vec::remove`/`retain` shift in
-    /// place.
+    /// Pull new commands, then apply cancellations. Frees the credit of what
+    /// it cancels. Audio thread: no allocation — `Vec::remove`/`retain`/
+    /// `swap_remove` shift in place, and `held` never passes its capacity.
+    ///
+    /// **A cancel can arrive before the command it names.** With the editor
+    /// on another thread, the executor can find the command ring empty, the
+    /// editor then push command N and its cancel, and the executor pop the
+    /// cancel. So a cancel naming a command not pulled yet (`seq >=
+    /// next_seq`) is *held* and re-applied after every pull until the
+    /// command has arrived; a `Below(n)` is held until every `seq < n` has.
     fn pull(&mut self) {
         while let Some(cmd) = self.rx.try_pop() {
             debug_assert!(self.pending.len() < self.pending.capacity());
+            self.next_seq = cmd.seq + 1;
             self.pending.push(cmd);
         }
         let before = self.pending.len();
-        while let Some(c) = self.cancel.try_pop() {
-            match c {
-                Cancel::One(id) => {
-                    if let Some(i) = self.pending.iter().position(|p| p.seq == id) {
-                        self.pending.remove(i);
-                    }
-                }
-                Cancel::Below(below) => self.pending.retain(|p| p.seq >= below),
+        let mut i = 0;
+        while i < self.held.len() {
+            if self.apply_cancel(self.held[i]) {
+                self.held.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        // Past the held list's capacity, cancels wait in their ring.
+        while self.held.len() < self.held.capacity() {
+            let Some(c) = self.cancel.try_pop() else {
+                break;
+            };
+            if !self.apply_cancel(c) {
+                self.held.push(c);
             }
         }
         let gone = (before - self.pending.len()) as u64;
         if gone > 0 {
             self.cancelled += gone;
             self.done.fetch_add(gone, Ordering::Release);
+        }
+    }
+
+    /// Apply `c` to what has been pulled. Returns whether it is finished
+    /// with — false while a command it names may still be on its way.
+    fn apply_cancel(&mut self, c: Cancel) -> bool {
+        match c {
+            Cancel::One(id) => {
+                if id >= self.next_seq {
+                    return false;
+                }
+                if let Some(i) = self.pending.iter().position(|p| p.seq == id) {
+                    self.pending.remove(i);
+                }
+                true
+            }
+            Cancel::Below(below) => {
+                self.pending.retain(|p| p.seq >= below);
+                below <= self.next_seq
+            }
         }
     }
 
@@ -351,8 +407,9 @@ impl CommandRx {
         self.pull();
         for cmd in &mut self.pending {
             if cmd.plan_seq < before {
-                if let At::Frame(f) = cmd.at {
-                    cmd.at = At::Frame(rescale(f, ratio));
+                if let At::Frame(_) = cmd.at {
+                    cmd.pos *= ratio;
+                    cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
                 }
             }
         }
@@ -392,7 +449,14 @@ impl CommandRx {
             // is — either way it is counted unrouted when its time comes.
             let arrival = node.map_or(Latency::ZERO, |u| plan.units[u].arrival);
             let target = node.filter(|&u| cmd.to.port < plan.units[u].shape.event_in);
-            let offset = match env.due_at_arrival(&mut cmd.at, arrival, playhead) {
+            let was_beat = matches!(cmd.at, At::Beat(_));
+            let resolved = env.due_at_arrival(&mut cmd.at, arrival, playhead);
+            match cmd.at {
+                At::Frame(f) if was_beat => cmd.pos = f.get() as f64,
+                At::NextBlock => cmd.pos = env.frame.get() as f64,
+                _ => {}
+            }
+            let offset = match resolved {
                 Due::NotYet => return true,
                 Due::In(o) => o,
                 Due::Late => {
@@ -408,6 +472,7 @@ impl CommandRx {
                         unit: u as u32,
                         port: cmd.to.port,
                         seq: cmd.seq,
+                        pos: cmd.pos.to_bits(),
                         event: Event {
                             offset,
                             kind: cmd.kind,
@@ -421,10 +486,11 @@ impl CommandRx {
         if finished > 0 {
             self.done.fetch_add(finished, Ordering::Release);
         }
+        // Ties at one offset go by timeline position, then scheduling order.
         // Unique keys (`seq` is), so the unstable sort is deterministic —
         // and it sorts in place, where the stable one would allocate.
         self.due
-            .sort_unstable_by_key(|d| (d.unit, d.port, d.event.offset, d.seq));
+            .sort_unstable_by_key(|d| (d.unit, d.port, d.event.offset, d.pos, d.seq));
         self.due_events.extend(self.due.iter().map(|d| d.event));
     }
 
@@ -487,4 +553,64 @@ pub(crate) fn overlay_capacity(plan: &Plan, cap: usize, flushed: usize) -> usize
 /// 2^53, about 5 900 years at 48 kHz.
 pub(crate) fn rescale(f: tutti_types::Frame, ratio: f64) -> tutti_types::Frame {
     tutti_types::Frame((f.get() as f64 * ratio).round() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Ump;
+    use tutti_types::{Frame, NodeKey};
+
+    fn send(tx: &mut CommandTx, frame: u64) -> CommandId {
+        tx.send(
+            0,
+            At::Frame(Frame(frame)),
+            EventIn {
+                node: NodeKey(1),
+                port: 0,
+            },
+            EventKind::Midi(Ump([0; 4])),
+        )
+        .expect("room")
+    }
+
+    /// The lost-cancel race, staged: with the editor on another thread the
+    /// executor can see a cancel before the command it names (it drained the
+    /// command ring just before the editor pushed both). Staged here by
+    /// pushing the cancel into its ring first. The cancel must be held and
+    /// applied when the command arrives — for `One` and for `Below`.
+    ///
+    /// Mutation: drop a cancel that names nothing pulled yet (make
+    /// `apply_cancel` return `true` for an unseen `One`) → the command
+    /// survives its cancel → fails. Mutation: resolve a `Below` at once
+    /// (`true` regardless of `next_seq`) → the later-arriving command
+    /// survives → fails.
+    #[test]
+    fn a_cancel_seen_before_its_command_is_held_until_it_arrives() {
+        let (mut tx, mut rx) = command_channel();
+        // `One`: the cancel for seq 0 is visible first.
+        tx.cancel.try_push(Cancel::One(0)).expect("room");
+        rx.pull();
+        assert_eq!(rx.held.len(), 1, "held, not dropped");
+        send(&mut tx, 1_000_000);
+        rx.pull();
+        assert!(rx.pending.is_empty(), "applied when the command arrived");
+        assert_eq!((rx.cancelled(), tx.outstanding()), (1, 0));
+        assert!(rx.held.is_empty());
+
+        // `Below`: covers seq 1 and 2, which arrive after it.
+        tx.cancel.try_push(Cancel::Below(3)).expect("room");
+        rx.pull();
+        send(&mut tx, 1_000_000);
+        rx.pull();
+        assert!(rx.pending.is_empty());
+        send(&mut tx, 1_000_000);
+        rx.pull();
+        assert!(rx.pending.is_empty(), "the second one too");
+        assert!(rx.held.is_empty(), "released once seq 2 was seen");
+        send(&mut tx, 1_000_000); // seq 3: not covered
+        rx.pull();
+        assert_eq!(rx.pending.len(), 1);
+        assert_eq!(rx.cancelled(), 3);
+    }
 }

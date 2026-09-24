@@ -136,11 +136,22 @@ pub enum Due {
 /// playback crossed it before the command was resolved.
 ///
 /// Fed one [`Env`] per block with [`observe`](Self::observe). A block
-/// continues the previous one when its start beat is where the previous
-/// block's transport would have arrived (its start, advanced by its length at
-/// its tempo and rate, wrapped by its loop; unmoved when stopped), with the
-/// same loop. Anything else — a seek, a loop change, a first block — starts a
-/// new run, and a new run has crossed nothing yet.
+/// continues the previous one when its start beat is **within one frame**
+/// (at its tempo) of where the previous block's transport would have arrived
+/// — its start, advanced by its length at its tempo and rate, wrapped by its
+/// loop, unmoved when stopped — or of where a linear tempo ramp from the
+/// previous block's tempo to this one's would have taken it; and the loop is
+/// the same. A frame of slack absorbs a host's `f32` beat (a step of ~8e-6
+/// beat at beat 100, far below a frame); the ramp estimate absorbs a tempo
+/// automated inside a block. Anything else — a seek, a loop change, a first
+/// block — starts a new run, and a new run has crossed nothing yet.
+///
+/// **What counts as crossed.** Without a loop wrap, `[anchor, now)`: where
+/// the run started, up to the playhead. Once the run has wrapped its loop,
+/// `[min(anchor, loop start), now)` — the part of the loop *ahead* of the
+/// playhead is not crossed, even though an earlier pass went through it,
+/// because this pass will reach it again: a beat there waits for that,
+/// rather than firing now as late.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Playhead {
     prev: Option<Env>,
@@ -150,10 +161,8 @@ pub struct Playhead {
     wrapped: bool,
 }
 
-/// Continuity tolerance, in beats: far below a frame at any musical tempo
-/// (a frame is ~4e-5 of a beat at 120 BPM and 48 kHz), far above the drift
-/// of an accumulated `f64` position.
-const CONTINUITY: f64 = 1e-6;
+/// Continuity slack when no tempo is moving to measure a frame by, in beats.
+const STILL: f64 = 1e-9;
 
 impl Playhead {
     /// A playhead with no history.
@@ -165,9 +174,20 @@ impl Playhead {
     pub fn observe(&mut self, env: &Env) {
         let now = env.transport.beat.get();
         let continues = self.prev.and_then(|p| {
-            let (arrives, wrapped) = p.advance();
-            ((arrives - now).abs() <= CONTINUITY && p.transport.looping == env.transport.looping)
-                .then_some(wrapped)
+            if p.transport.looping != env.transport.looping {
+                return None;
+            }
+            // One frame, in beats, at whichever tempo is there to measure by.
+            let slack = env
+                .frames_per_beat_at(env.transport.tempo.get())
+                .or_else(|| p.frames_per_beat_at(p.transport.tempo.get()))
+                .map_or(STILL, |fpb| 1.0 / fpb);
+            let steady = p.advance(p.transport.tempo.get());
+            let ramp = p.advance(0.5 * (p.transport.tempo.get() + env.transport.tempo.get()));
+            [steady, ramp]
+                .into_iter()
+                .find(|(arrives, _)| (arrives - now).abs() <= slack)
+                .map(|(_, wrapped)| wrapped)
         });
         match continues {
             Some(wrapped) => self.wrapped |= wrapped,
@@ -187,7 +207,7 @@ impl Playhead {
         };
         let now = env.transport.beat.get();
         match env.transport.looping {
-            Some(l) if self.wrapped => beat >= anchor.min(l.start.get()) && beat < l.end.get(),
+            Some(l) if self.wrapped => beat >= anchor.min(l.start.get()) && beat < now,
             _ => beat >= anchor && beat < now,
         }
     }
@@ -259,12 +279,12 @@ impl Env {
         }
     }
 
-    /// Where the transport arrives at the end of this block, and whether it
-    /// wrapped its loop on the way.
-    fn advance(&self) -> (f64, bool) {
+    /// Where the transport arrives at the end of this block if it rolls at
+    /// `tempo`, and whether it wrapped its loop on the way.
+    fn advance(&self, tempo: f64) -> (f64, bool) {
         let t = &self.transport;
         let now = t.beat.get();
-        let Some(frames_per_beat) = self.frames_per_beat() else {
+        let Some(frames_per_beat) = self.frames_per_beat_at(tempo).filter(|_| t.playing) else {
             return (now, false);
         };
         let x = now + self.block_len.get() as f64 / frames_per_beat;
@@ -279,16 +299,21 @@ impl Env {
 
     /// Frames per beat while the transport rolls, `None` when it does not.
     fn frames_per_beat(&self) -> Option<f64> {
-        let t = &self.transport;
-        let tempo = t.tempo.get();
+        self.frames_per_beat_at(self.transport.tempo.get())
+            .filter(|_| self.transport.playing)
+    }
+
+    /// Frames per beat at `tempo` and this block's rate, when both are
+    /// usable, whether or not the transport rolls.
+    fn frames_per_beat_at(&self, tempo: f64) -> Option<f64> {
         let rate = self.sample_rate.get();
         // `is_finite` and `> 0.0` together also refuse a NaN, which no
         // comparison would.
-        let moving = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
+        let usable = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
         // Raw `f64` beats and frames, on purpose: `BeatDuration::to_seconds`
         // lands in `Seconds`, which is `f32` and cannot resolve a frame an
         // hour into a session (CLAUDE.md, "where the types stop").
-        (t.playing && moving).then(|| rate * 60.0 / tempo)
+        usable.then(|| rate * 60.0 / tempo)
     }
 
     /// Where a scheduled command lands in the block of a sink whose inputs
@@ -574,18 +599,69 @@ mod tests {
         // A seek forward: a new run; what it jumped over is not crossed.
         ph.observe(&block(3.0, 64, true, None));
         assert!(!ph.crossed(2.0) && !ph.crossed(1.15));
-        // Looping [4, 8): start at 7.5, wrap, keep going.
+        // Looping [4, 8): start at 3.5, before the loop, in half-beat
+        // blocks; play through the loop, wrap, and on to 4.5.
         let l = Some(LoopRange {
             start: Beat(4.0),
             end: Beat(8.0),
         });
         let mut ph = Playhead::new();
-        ph.observe(&block(7.5, 12_000, true, l));
-        assert!(!ph.crossed(4.2));
+        for b in [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5] {
+            ph.observe(&block(b, 12_000, true, l));
+        }
+        assert!(ph.crossed(7.2) && !ph.crossed(7.7), "before the wrap");
         ph.observe(&block(4.0, 12_000, true, l));
-        assert!(ph.crossed(7.7), "before the wrap");
-        assert!(ph.crossed(4.2), "the whole loop, once wrapped");
+        ph.observe(&block(4.5, 12_000, true, l));
+        assert!(ph.crossed(3.7), "before the loop: never reached again");
+        assert!(ph.crossed(4.2), "this pass, behind the playhead");
+        assert!(
+            !ph.crossed(4.6) && !ph.crossed(7.7),
+            "ahead of the playhead: the last pass crossed it, this one will reach it"
+        );
         assert!(!ph.crossed(8.5) && !ph.crossed(3.0));
+    }
+
+    /// Continuity survives what hosts actually send: a beat position rounded
+    /// to `f32` (a step of ~8e-6 beat at beat 100), and a tempo ramped
+    /// inside each block (the block-start tempo then misses the next start
+    /// by frames, the ramp estimate does not).
+    ///
+    /// Mutation: continuity within 1e-6 beat (the old rule) → the `f32`
+    /// positions break the run and nothing is crossed → fails. Mutation:
+    /// drop the ramp estimate → the ramp breaks the run → fails.
+    #[test]
+    fn continuity_survives_f32_beats_and_tempo_ramps() {
+        let at = |beat: f64, tempo: f64| {
+            env(
+                0,
+                512,
+                Transport {
+                    playing: true,
+                    tempo: Bpm(tempo),
+                    beat: Beat(beat),
+                    looping: None,
+                },
+            )
+        };
+        // f32 beats around beat 100 at 120 BPM (512 frames = 0.02133 beat).
+        let mut ph = Playhead::new();
+        let mut exact = 100.0f64;
+        for _ in 0..8 {
+            ph.observe(&at(f64::from(exact as f32), 120.0));
+            exact += 512.0 / 24_000.0;
+        }
+        assert!(ph.crossed(100.05), "one run, despite the f32 steps");
+        // A ramp from 120 to 180 BPM, 2 BPM per block, linear inside each:
+        // each block advances by its average tempo.
+        let mut ph = Playhead::new();
+        let (mut beat, mut tempo) = (10.0f64, 120.0f64);
+        for _ in 0..8 {
+            ph.observe(&at(beat, tempo));
+            let next = tempo + 2.0;
+            beat += 512.0 * 0.5 * (tempo + next) / 60.0 / 48_000.0;
+            tempo = next;
+        }
+        assert!(ph.crossed(10.05), "one run, through the ramp");
     }
 
     /// Resolution with history: a beat crossed by continuous playback before

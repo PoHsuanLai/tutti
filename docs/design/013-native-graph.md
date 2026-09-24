@@ -335,7 +335,9 @@ place that loses precision to be written out explicitly:
    *continuous playback* (a loop wrap landing at or after it counts); a seek
    or loop that jumps over it leaves it pending until reached or cancelled,
    and it is late only if continuous playback crossed it before the command
-   was processed. Pairing (every note-on's note-off) is the caller's job:
+   was processed — inside a loop, a beat ahead of the playhead is not
+   "crossed" even if an earlier pass went through it, since this pass
+   reaches it (it waits). Pairing (every note-on's note-off) is the caller's job:
    `schedule` returns a `CommandId`, and `Editor::cancel` / `cancel_all`
    (on their own ring, needing no credit) take commands back and free their
    credit, since a beat-timed command holds it while pending. A ramp into a

@@ -693,3 +693,37 @@ fn a_rate_change_keeps_pending_commands_at_their_wall_clock_time() {
     }
     assert_eq!(rig.exec.late_commands(), 0);
 }
+
+/// Two frames a rate change rounds to one frame keep their order: 999 and
+/// 1 000 at 96 kHz both land on 500 at 48 kHz (499.5 rounds half away from
+/// zero), and 999 still comes first — though it was scheduled second. Ties
+/// go by the unrounded timeline position, then scheduling order.
+///
+/// Mutation: drop `pos` from the executor's due sort key → scheduling order
+/// wins, 1 000 first → fails. Mutation: the same in the reference (sort by
+/// offset only) → fails on the reference.
+#[test]
+fn frames_a_rate_change_merges_keep_their_order() {
+    let mut rig = rig(prep(96_000.0, 64));
+    rig.render(&[64, 64, 64]);
+    let to = EventIn { node: REC, port: 0 };
+    for (frame, tag) in [(1_000u64, 80_000u32), (999, 80_001)] {
+        let at = tutti_types::At::Frame(tutti_types::Frame(frame));
+        let note = EventKind::Midi(Ump([tag, 9, 0, 0]));
+        rig.ed.schedule(at, to, note).expect("room");
+        rig.reference.schedule(at, to, note);
+    }
+    rig.reprepare(prep(48_000.0, 64));
+    rig.render(&[64; 12]);
+    for inbox in [&rig.exec_inbox, &rig.ref_inbox] {
+        let got: Vec<(u32, u64)> = inbox
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e.0 >= 80_000)
+            .map(|e| (e.0, e.2))
+            .collect();
+        // Both on 500 + the recorder's 30-frame arrival.
+        assert_eq!(got, vec![(80_001, 530), (80_000, 530)]);
+    }
+}

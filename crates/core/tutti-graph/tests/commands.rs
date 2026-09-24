@@ -716,6 +716,15 @@ struct Case {
     want: Option<(u64, bool)>,
 }
 
+/// Beat 0.5 to 1.75 in quarter-beat blocks, a wrap of loop [1, 2) at frame
+/// 3 000, then 1.0 to 1.75 again.
+fn looped_from_half() -> Vec<Transport> {
+    [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 1.0, 1.25, 1.5, 1.75]
+        .into_iter()
+        .map(|b| at_beat(b, true, 1440.0, Some((1.0, 2.0))))
+        .collect()
+}
+
 fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
     (0..blocks)
         .map(|i| {
@@ -737,6 +746,9 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 ///
 /// Mutation: in `Playhead::crossed`, treat every beat behind the playhead as
 /// crossed → the seek-over case lands late at the seek → fails. Mutation:
+/// after a wrap, call the whole loop crossed (`beat < loop end` instead of
+/// `beat < now`, the reviewed bug) → the beat ahead of the playhead fires
+/// late at once → fails. Mutation:
 /// in `Env::beat_due`, drop the wrap branch → the loop case never lands →
 /// fails. Mutation: in `Env::due_at_arrival`, drop the arrival shift for a
 /// resolved beat → the arrival case lands 20 frames early → fails.
@@ -829,6 +841,34 @@ fn beat_resolution_matches_a_hand_computed_table() {
             sched_at: 2,
             beat: 0.1,
             want: Some((1_000, true)),
+        },
+        Case {
+            // Loop [1, 2) entered from beat 0.5: through the loop, wrap at
+            // frame 3 000, scheduled before block 7 (frame 3 500, beat 1.25).
+            // Beat 1.6 is ahead of the playhead in this pass — the last pass
+            // crossed it, this one reaches it 0.35 beat = 700 frames on.
+            name: "after a wrap: ahead of the playhead waits",
+            arrival: 0,
+            transports: looped_from_half(),
+            sched_at: 7,
+            beat: 1.6,
+            want: Some((4_200, false)),
+        },
+        Case {
+            name: "after a wrap: behind the playhead in this pass is late",
+            arrival: 0,
+            transports: looped_from_half(),
+            sched_at: 7,
+            beat: 1.1,
+            want: Some((3_500, true)),
+        },
+        Case {
+            name: "after a wrap: before the loop (crossed on the way in) is late",
+            arrival: 0,
+            transports: looped_from_half(),
+            sched_at: 7,
+            beat: 0.6,
+            want: Some((3_500, true)),
         },
         Case {
             // Looping [1, 2) forever: beat 2.5 is never reached.
@@ -988,4 +1028,57 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
             "reference, block {block}"
         );
     }
+}
+
+/// Cancels are never lost with the editor on its own thread: every round
+/// schedules a command far in the future and cancels it at once, while the
+/// audio thread spins one-frame blocks. A lost cancel would leave its command
+/// pending forever, holding its credit. The staged, deterministic version of
+/// the race is `command::tests::a_cancel_seen_before_its_command_is_held_until_it_arrives`.
+///
+/// Mutation: drop cancels that name a command not pulled yet (the pre-fix
+/// behaviour) → in some runs a command outlives its cancel and the credit
+/// never returns → the deadline fails. (The window is narrow: this is a
+/// stress test, and the staged test is the one that always catches it.)
+#[test]
+fn cancels_are_never_lost_across_threads() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const ROUNDS: u32 = 20_000;
+    let rig = rig();
+    let (mut ed, mut exec, log) = (rig.ed, rig.exec, rig.exec_log);
+    let done = Arc::new(AtomicBool::new(false));
+    let stop = Arc::clone(&done);
+    let audio = std::thread::spawn(move || {
+        let t = Transport::default();
+        let mut out = [0.0f32; 1];
+        while !stop.load(Ordering::Acquire) {
+            exec.process(1, &t, &[], &mut [&mut out[..]]);
+        }
+        exec
+    });
+    for round in 0..ROUNDS {
+        let id = loop {
+            match ed.schedule(At::Frame(Frame(u64::MAX / 2)), to(), tag(round)) {
+                Ok(id) => break id,
+                Err(ScheduleError::Backpressure) => std::thread::yield_now(),
+                Err(e) => panic!("{e}"),
+            }
+        };
+        while ed.cancel(id) == Err(ScheduleError::Backpressure) {
+            std::thread::yield_now();
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ed.commands_outstanding() > 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} commands outlived their cancels",
+            ed.commands_outstanding()
+        );
+        std::thread::yield_now();
+    }
+    done.store(true, Ordering::Release);
+    let exec = audio.join().expect("the audio thread");
+    assert_eq!(exec.cancelled_commands(), u64::from(ROUNDS));
+    assert!(log.lock().unwrap().is_empty());
 }

@@ -58,7 +58,7 @@ use crate::node::{
 };
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
-use crate::time::{Due, Offset, Playhead};
+use crate::time::Offset;
 
 struct RefFifo {
     pending: Vec<(u64, Event)>,
@@ -79,15 +79,17 @@ pub struct Reference {
     fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
     /// Scheduled commands not yet due, in scheduling order.
-    scheduled: Vec<(u64, At, EventIn, EventKind)>,
+    scheduled: Vec<RefCommand>,
     next_id: u64,
     cancelled: u64,
-    /// What continuous playback has crossed (see `Playhead`).
-    playhead: Playhead,
+    /// What continuous playback has crossed — the reference's own record,
+    /// sharing no code with the executor's `Playhead`.
+    playhead: RefPlayhead,
     /// Between `suspend` and `resume`: the `Prepare` to adopt.
     suspended: Option<Prepare>,
-    /// This block's scheduled deliveries, per port, in scheduling order.
-    landing: BTreeMap<EventIn, Vec<Event>>,
+    /// This block's scheduled deliveries, per port, each with its timeline
+    /// position (the tie-break after the offset), in scheduling order.
+    landing: BTreeMap<EventIn, Vec<(f64, Event)>>,
     late: u64,
     unrouted: u64,
     /// Set by a rate change; the next `set_graph` carries no time-based
@@ -113,7 +115,7 @@ impl Reference {
             scheduled: Vec::new(),
             next_id: 0,
             cancelled: 0,
-            playhead: Playhead::new(),
+            playhead: RefPlayhead::default(),
             suspended: None,
             landing: BTreeMap::new(),
             late: 0,
@@ -132,14 +134,24 @@ impl Reference {
     pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.scheduled.push((id, at, to, kind));
+        let pos = match at {
+            At::Frame(f) => f.get() as f64,
+            _ => 0.0,
+        };
+        self.scheduled.push(RefCommand {
+            id,
+            at,
+            to,
+            kind,
+            pos,
+        });
         id
     }
 
     /// Take back command `id` if it has not landed.
     pub fn cancel(&mut self, id: u64) {
         let before = self.scheduled.len();
-        self.scheduled.retain(|c| c.0 != id);
+        self.scheduled.retain(|c| c.id != id);
         self.cancelled += (before - self.scheduled.len()) as u64;
     }
 
@@ -167,11 +179,13 @@ impl Reference {
         );
         if old != new {
             let ratio = new / old;
-            let scale = |f: Frame| Frame((f.get() as f64 * ratio).round() as u64);
-            self.frame = scale(self.frame);
+            self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
             for c in &mut self.scheduled {
-                if let At::Frame(f) = c.1 {
-                    c.1 = At::Frame(scale(f));
+                if let At::Frame(_) = c.at {
+                    // Rounded for landing; the unrounded position keeps the
+                    // order of two frames that round to one.
+                    c.pos *= ratio;
+                    c.at = At::Frame(Frame(c.pos.round() as u64));
                 }
             }
         }
@@ -482,12 +496,8 @@ impl Reference {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
-            self.playhead.observe(&Env {
-                frame: self.frame,
-                sample_rate: next.sample_rate(),
-                block_len: Samples(frames),
-                transport: *transport,
-            });
+            self.playhead
+                .observe(transport, next.sample_rate().get(), frames);
             self.frame += Samples(frames);
             return;
         }
@@ -511,22 +521,24 @@ impl Reference {
         // scheduling order per port; the gather below appends them after the
         // port's own events.
         self.landing.clear();
-        self.playhead.observe(&env);
+        self.playhead
+            .observe(transport, self.prepare.sample_rate().get(), frames);
         let mut waiting = Vec::new();
-        for (id, mut at, to, kind) in std::mem::take(&mut self.scheduled) {
+        for mut cmd in std::mem::take(&mut self.scheduled) {
             // PDC: timeline frame F reaches this sink at F + its arrival.
-            let arrival = self.arrival.get(&to.node).copied().unwrap_or_default();
-            let offset = match env.due_at_arrival(&mut at, arrival, &self.playhead) {
-                Due::NotYet => {
-                    waiting.push((id, at, to, kind));
+            let arrival = self.arrival.get(&cmd.to.node).copied().unwrap_or_default();
+            let offset = match self.land(&mut cmd, arrival, transport, frames) {
+                None => {
+                    waiting.push(cmd);
                     continue;
                 }
-                Due::In(o) => o,
-                Due::Late => {
+                Some(Some(o)) => o,
+                Some(None) => {
                     self.late += 1;
                     Offset::ZERO
                 }
             };
+            let (to, kind, pos) = (cmd.to, cmd.kind, cmd.pos);
             let has_port = self
                 .units
                 .get(&to.node)
@@ -535,7 +547,7 @@ impl Reference {
                 self.landing
                     .entry(to)
                     .or_default()
-                    .push(Event { offset, kind });
+                    .push((pos, Event { offset, kind }));
             } else {
                 self.unrouted += 1;
             }
@@ -679,7 +691,11 @@ impl Reference {
             }
             // Stable: equal offsets keep source order.
             // Scheduled commands: one more source, after the edges.
-            all.extend(self.landing.remove(&at).unwrap_or_default());
+            // Ties at one offset: by timeline position, then scheduling
+            // order (the sort is stable).
+            let mut landed = self.landing.remove(&at).unwrap_or_default();
+            landed.sort_by(|a, b| a.1.offset.cmp(&b.1.offset).then(a.0.total_cmp(&b.0)));
+            all.extend(landed.into_iter().map(|(_, e)| e));
             all.sort_by_key(|e| e.offset);
             ev_ins.push(all);
         }
@@ -753,6 +769,199 @@ impl Reference {
                 },
                 e,
             );
+        }
+    }
+}
+
+/// A command waiting in the reference.
+struct RefCommand {
+    id: u64,
+    at: At,
+    to: EventIn,
+    kind: EventKind,
+    /// Its timeline position, unrounded: the frame it was scheduled for
+    /// (rescaled on a rate change), or where a beat resolved. The tie-break
+    /// after the offset.
+    pos: f64,
+}
+
+/// A frame of slack, in beats, when no tempo is usable.
+const STILL: f64 = 1e-9;
+/// Beat → frame rounding: the first frame at or after the beat, within a
+/// millionth of a frame.
+const FRAME_ROUNDING: f64 = 1e-6;
+
+/// One block's continuous traversal, stepped through naively: the beat
+/// intervals `[from, to)` it covers, each with the frame (from the block's
+/// start) at which it begins, and the beat it arrives at.
+struct Traversal {
+    segs: Vec<(f64, f64, f64)>,
+    arrives: f64,
+}
+
+/// What `t` traverses in `len` frames at `tempo` and `rate`.
+fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
+    let beat = t.beat.get();
+    let usable = |x: f64| x.is_finite() && x > 0.0;
+    if !t.playing || !usable(tempo) || !usable(rate) {
+        return Traversal {
+            segs: Vec::new(),
+            arrives: beat,
+        };
+    }
+    let fpb = rate * 60.0 / tempo;
+    let (mut pos, mut left, mut frame0) = (beat, len as f64 / fpb, 0.0);
+    let mut segs = Vec::new();
+    loop {
+        match t.looping {
+            Some(l) if l.start.get() < l.end.get() && pos < l.end.get() => {
+                let room = l.end.get() - pos;
+                if left < room {
+                    segs.push((pos, pos + left, frame0));
+                    pos += left;
+                    break;
+                }
+                segs.push((pos, l.end.get(), frame0));
+                frame0 += room * fpb;
+                left -= room;
+                pos = l.start.get();
+                if left <= 0.0 {
+                    break;
+                }
+            }
+            _ => {
+                segs.push((pos, pos + left, frame0));
+                pos += left;
+                break;
+            }
+        }
+    }
+    Traversal { segs, arrives: pos }
+}
+
+/// The reference's record of continuous playback: every beat interval
+/// traversed since the last discontinuity, as a list. Deliberately naive and
+/// independent of the executor's `Playhead`, so a shared-decision bug in
+/// either shows up as a divergence.
+#[derive(Default)]
+struct RefPlayhead {
+    history: Vec<(f64, f64)>,
+    last: Option<(Transport, f64, usize)>,
+    now: Option<Transport>,
+}
+
+impl RefPlayhead {
+    /// Record the block about to be rendered.
+    fn observe(&mut self, t: &Transport, rate: f64, len: usize) {
+        let continues = self.last.and_then(|(p, prate, plen)| {
+            if p.looping != t.looping {
+                return None;
+            }
+            let frame = |tempo: f64| {
+                (tempo.is_finite() && tempo > 0.0 && rate > 0.0).then(|| tempo / (60.0 * rate))
+            };
+            let slack = frame(t.tempo.get())
+                .or_else(|| frame(p.tempo.get()))
+                .unwrap_or(STILL);
+            let now = t.beat.get();
+            let steady = traverse(&p, p.tempo.get(), prate, plen);
+            let ramp = traverse(&p, 0.5 * (p.tempo.get() + t.tempo.get()), prate, plen);
+            [steady, ramp]
+                .into_iter()
+                .find(|tr| (tr.arrives - now).abs() <= slack)
+                .map(|tr| (tr, slack))
+        });
+        match continues {
+            Some((tr, slack)) => {
+                self.history
+                    .extend(tr.segs.iter().map(|&(from, to, _)| (from, to)));
+                // The estimate arrived within a frame of where the transport
+                // says it is; the playhead really went to `now`, so the
+                // record ends there.
+                let now = t.beat.get();
+                match self.history.last_mut() {
+                    Some(last) if (last.1 - tr.arrives).abs() <= slack => last.1 = now,
+                    _ if now > tr.arrives => self.history.push((tr.arrives, now)),
+                    _ => {}
+                }
+            }
+            None => self.history.clear(),
+        }
+        self.last = Some((*t, rate, len));
+        self.now = Some(*t);
+    }
+
+    /// Whether continuous playback went through `beat` before this block —
+    /// and this pass of a loop will not reach it again (a beat ahead of the
+    /// playhead inside the loop is reached again, so it is not crossed).
+    fn crossed(&self, beat: f64) -> bool {
+        let traversed = self
+            .history
+            .iter()
+            .any(|&(from, to)| from <= beat && beat < to);
+        let reached_again = self.now.is_some_and(|t| {
+            t.looping.is_some_and(|l| {
+                beat >= l.start.get() && beat < l.end.get() && beat >= t.beat.get()
+            })
+        });
+        traversed && !reached_again
+    }
+}
+
+impl Reference {
+    /// Where `cmd` lands this block: `Some(Some(offset))`, `Some(None)` for
+    /// late (offset 0), or `None` for not yet. Written out from scratch —
+    /// no `Env::due`, no `Playhead` — so the executor's time logic has an
+    /// independent check.
+    fn land(
+        &self,
+        cmd: &mut RefCommand,
+        arrival: Latency,
+        t: &Transport,
+        frames: usize,
+    ) -> Option<Option<Offset>> {
+        let start = self.frame.get();
+        let at_frame = |f: u64| -> Option<Option<Offset>> {
+            let target = f + arrival.samples().get() as u64;
+            if target < start {
+                Some(None)
+            } else if target - start < frames as u64 {
+                Some(Some(Offset::raw((target - start) as u32)))
+            } else {
+                None
+            }
+        };
+        match cmd.at {
+            At::NextBlock => {
+                cmd.pos = start as f64;
+                Some(Some(Offset::ZERO))
+            }
+            At::Frame(f) => at_frame(f.get()),
+            At::Beat(b) => {
+                let b = b.get();
+                let rate = self.prepare.sample_rate().get();
+                let tempo = t.tempo.get();
+                let tr = traverse(t, tempo, rate, frames);
+                let fpb = rate * 60.0 / tempo;
+                let reached = tr
+                    .segs
+                    .iter()
+                    .find(|&&(from, to, _)| from <= b && b < to)
+                    .map(|&(from, _, frame0)| {
+                        ((b - from) * fpb + frame0 - FRAME_ROUNDING).ceil().max(0.0)
+                    })
+                    .filter(|&k| k < frames as f64);
+                match reached {
+                    Some(k) => {
+                        let f = start + k as u64;
+                        cmd.at = At::Frame(Frame(f));
+                        cmd.pos = f as f64;
+                        at_frame(f)
+                    }
+                    None if self.playhead.crossed(b) => Some(None),
+                    None => None,
+                }
+            }
         }
     }
 }

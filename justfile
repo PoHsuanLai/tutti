@@ -137,6 +137,7 @@ pressure:
 # has. There is no sweep that would pick one up silently.
 bench *ARGS:
     cargo bench -p tutti-nodes     --bench engine_render   {{ARGS}}
+    cargo bench -p tutti-graph     --bench graph_render    {{ARGS}}
     cargo bench -p tutti-cpal      --bench audio_callback  {{ARGS}}
     cargo bench -p tutti-export    --bench offline_render  {{ARGS}}
     cargo bench -p tutti-polysynth --bench polysynth       {{ARGS}}

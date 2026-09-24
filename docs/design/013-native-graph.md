@@ -288,6 +288,33 @@ means:
 - **Feedback edges** delay by exactly one `MaxBlock`, as in every DAW.
   Sample-level feedback belongs inside a node.
 
+**In the type system.** Types cannot prove that a node's DSP honours its
+offsets; the contract suite does that. What types can do is make the
+sample-accurate path the only one that compiles for timing, and force every
+place that loses precision to be written out explicitly:
+
+1. **`Offset(u32)` vs `Frame(u64)` (Phase 2).** An `Offset` is valid only
+   within its block and is created checked against the block length. A
+   `Frame` is an absolute timeline position. The only conversion is through
+   `Env` (`env.offset_of(frame) -> Option<Offset>`), so mixing a frame with a
+   block offset (the off-by-a-block bug) does not compile.
+2. **Timing precision in the parameter's type (Phase 3).** `Smoothed<U>`
+   (block-rate, ramped: for a fader someone drags) vs `SampleAccurate<U>`
+   (read as per-sample values for the block, built from `ParamRamp` events or
+   an audio-rate port). `ParamKey<U, PerSample>` carries the rate, and a
+   `ParamRamp` can only be built from a `PerSample` key, so automating a
+   block-rate knob is a compile error.
+3. **Commands must say when (Phase 2).** Control-thread commands take
+   `At::{Frame(Frame), Beat(Beat), NextBlock}`, with no untimed overload.
+   `NextBlock` stays available, but it is a visible, greppable choice.
+4. **`io.sub_blocks()` (Phase 2)** yields `(chunk, events_at_chunk_start)`
+   split at event offsets, so a node written against it is sample-accurate by
+   construction. The polysynth hand-rolls this today.
+5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` (Phase 2).**
+   Nodes declare their resolution (SoundFont: `Frames(8)`). The compiler can
+   refuse sample-accurate automation into a `Block` node, and the contract
+   suite checks each node against what it declared.
+
 **Proof.** A contract suite in Phase 3: for every node type and every path
 (direct, behind PDC, through a fan-in, across a recompile, across ragged block
 sizes), an event at offset `k` produces output at exactly frame

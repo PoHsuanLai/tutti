@@ -328,7 +328,7 @@ mod tests {
     /// A mono net whose one channel carries a constant.
     fn mono_dc(v: f32) -> tutti_core::dsp::Net {
         let mut net = tutti_core::dsp::Net::new(0, 1);
-        let id = net.push(Box::new(tutti_core::dsp::dc(v)));
+        let id = net.push(Box::new(tutti_nodes::testing::Const::mono(v)));
         net.pipe_output(id);
         net
     }

@@ -1,6 +1,6 @@
 //! The **whole** output callback, not just the graph render.
 //!
-//! `tutti-core`'s `engine_render` bench measures `Engine::process`. That is
+//! `tutti-nodes`' `engine_render` bench measures `Engine::process`. That is
 //! not what a sound card calls. The real callback also clamps to
 //! `MAX_FRAMES`, zero-fills the mix, folds the device buffer to stereo, calls
 //! `meter_output`, and converts to the device's sample format — and until
@@ -20,16 +20,17 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use parking_lot::Mutex;
-use tutti_core::dsp::{sine_hz, Net};
-use tutti_core::{AudioTap, AudioUnit, ChannelLayout, Engine, InterleavedMut};
+use tutti_core::dsp::Net;
+use tutti_core::{AudioTap, AudioUnit, ChannelLayout, Engine, Hz, InterleavedMut};
 use tutti_core::{MasterMeter, MotionFsm, SampleRate, TransportSettings};
 use tutti_cpal::{process_audio, AudioCallbackState, OutputBlock};
+use tutti_nodes::testing::Osc;
 
 const SR: f64 = 48_000.0;
 
 fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<tutti_core::TapCons>) {
     let mut net = Net::new(0, outputs);
-    let src = net.push(Box::new(sine_hz::<f32>(440.0)));
+    let src = net.push(Box::new(Osc::sine(Hz(440.0))));
     net.pipe_output(src);
     net.set_sample_rate(SampleRate(SR));
     let backend = net.backend();

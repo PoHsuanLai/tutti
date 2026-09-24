@@ -28,11 +28,11 @@
 
 #![cfg(feature = "wav")]
 
-use tutti_core::dsp::dc;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig,
 };
+use tutti_nodes::testing::Const;
 
 const SR: f64 = 44_100.0;
 /// One LSB at 16-bit in the [-1, 1] float domain.
@@ -40,7 +40,7 @@ const LSB16: f32 = 1.0 / 32_767.0;
 
 fn dc_net(level: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((level, level))));
+    let id = n.push(Box::new(Const::frame(&[level, level])));
     n.pipe_output(id);
     n
 }

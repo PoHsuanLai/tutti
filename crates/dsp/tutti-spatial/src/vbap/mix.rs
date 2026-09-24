@@ -149,9 +149,10 @@ mod tests {
     /// ch3 RR -135°.
     #[test]
     fn surround_graph_places_front_and_rear_sources() {
-        use tutti_core::dsp::{dc, Net};
+        use tutti_core::dsp::Net;
         use tutti_core::BufferRef;
         use tutti_core::{BufferVec, MAX_BUFFER_SIZE};
+        use tutti_nodes::testing::Const;
         use tutti_types::ChannelLayout;
 
         const CH: usize = 4; // quad
@@ -159,8 +160,8 @@ mod tests {
         let mut net = Net::new(0, CH);
 
         // Two DC sources (constant on both stereo inputs of each panner).
-        let src_front = net.push(Box::new(dc((1.0, 1.0))));
-        let src_rear = net.push(Box::new(dc((1.0, 1.0))));
+        let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+        let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
 
         // Place one at the front-left speaker (45° → ch0) and one at the
         // rear-left speaker (135° → ch2). The builder wires each source through a
@@ -318,14 +319,14 @@ mod tests {
     /// `[FL,FR,C,LFE,SL,SR]`, so the surrounds don't slide into the LFE slot.
     #[test]
     fn center_source_lands_in_center_not_lfe() {
-        use tutti_core::dsp::dc;
+        use tutti_nodes::testing::Const;
 
         // One DC source, dead center. (No high frequencies, so the LFE low-pass
         // passes the DC send — the assertion is that center DOMINATES and LFE
         // is a smaller (bass-managed) share, not that LFE is zero.)
         let energy = render_5_1_energy(&[(0.0, 0.0)], |_| {
             let mut n = tutti_core::dsp::Net::new(0, 2);
-            let id = n.push(Box::new(dc((1.0, 1.0))));
+            let id = n.push(Box::new(Const::frame(&[1.0, 1.0])));
             n.pipe_output(id);
             n
         });
@@ -352,13 +353,13 @@ mod tests {
     /// non-silent (bass management is wired) for a broadband source.
     #[test]
     fn lfe_channel_receives_bass_managed_send() {
-        use tutti_core::dsp::dc;
+        use tutti_nodes::testing::Const;
 
         // A DC (0 Hz) source is entirely below the 120 Hz cutoff, so the LFE
         // send passes it — LFE must be non-silent.
         let energy = render_5_1_energy(&[(30.0, 0.0)], |_| {
             let mut n = tutti_core::dsp::Net::new(0, 2);
-            let id = n.push(Box::new(dc((1.0, 1.0))));
+            let id = n.push(Box::new(Const::frame(&[1.0, 1.0])));
             n.pipe_output(id);
             n
         });

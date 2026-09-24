@@ -18,11 +18,13 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
-use tutti_core::dsp::{dc, sine_hz};
+use tutti_core::Amplitude;
+use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig, Resample,
 };
+use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 48_000.0;
 const DUR: f64 = 1.0;
@@ -38,7 +40,9 @@ const TONE_HZ: f32 = 1_000.0;
 fn tone_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
     let id = n.push(Box::new(
-        (sine_hz::<f32>(TONE_HZ) | sine_hz::<f32>(TONE_HZ)) * 0.5,
+        Osc::sine(Hz(TONE_HZ))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
     ));
     n.pipe_output(id);
     n
@@ -47,7 +51,7 @@ fn tone_net() -> tutti_core::dsp::Net {
 /// Constant DC — the case whose correct output is knowable exactly.
 fn dc_net(level: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((level, level))));
+    let id = n.push(Box::new(Const::frame(&[level, level])));
     n.pipe_output(id);
     n
 }
@@ -55,7 +59,9 @@ fn dc_net(level: f32) -> tutti_core::dsp::Net {
 /// A mono graph, for the upmix/fold cases.
 fn mono_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(sine_hz::<f32>(TONE_HZ) * 0.5));
+    let id = n.push(Box::new(
+        Osc::sine(Hz(TONE_HZ)).with_amplitude(Amplitude(0.5)),
+    ));
     n.pipe_output(id);
     n
 }
@@ -69,7 +75,9 @@ fn mono_net() -> tutti_core::dsp::Net {
 fn near_nyquist_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
     let id = n.push(Box::new(
-        (sine_hz::<f32>(18_000.0) | sine_hz::<f32>(18_000.0)) * 0.5,
+        Osc::sine(Hz(18_000.0))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
     ));
     n.pipe_output(id);
     n

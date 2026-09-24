@@ -28,9 +28,11 @@ mod graph_wire {
     };
     use bevy_tutti::AudioEngineState;
     // `outputs()` on `Net` is an `AudioUnit` method — the graph's own arity.
-    use tutti_core::dsp::{pass, sine_hz, Net, Source};
+    use tutti_core::dsp::{Net, Source};
     use tutti_core::AudioNode;
     use tutti_core::AudioUnit as _;
+    use tutti_core::{ChannelLayout, Hz};
+    use tutti_nodes::testing::{Osc, Through};
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     fn app() -> App {
@@ -58,8 +60,8 @@ mod graph_wire {
     #[test]
     fn a_declared_source_reaches_the_graph() {
         let mut app = app();
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let filt = spawn_node(&mut app, pass());
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let filt = spawn_node(&mut app, Through::mono());
 
         app.world_mut()
             .entity_mut(filt)
@@ -83,8 +85,8 @@ mod graph_wire {
     #[test]
     fn the_master_bus_has_one_declaration_not_a_race() {
         let mut app = app();
-        let a = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let b = spawn_node(&mut app, sine_hz::<f32>(880.0));
+        let a = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let b = spawn_node(&mut app, Osc::sine(Hz(880.0)));
 
         // Both nodes exist and both want the master. Only a declaration decides.
         app.world_mut()
@@ -104,8 +106,8 @@ mod graph_wire {
     #[test]
     fn removing_the_declaration_silences_the_ports() {
         let mut app = app();
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let filt = spawn_node(&mut app, pass());
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
 
         app.world_mut()
@@ -135,7 +137,7 @@ mod graph_wire {
     #[test]
     fn an_unresolvable_source_is_skipped_then_picked_up() {
         let mut app = app();
-        let filt = spawn_node(&mut app, pass());
+        let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
 
         // An entity with no node yet.
@@ -153,7 +155,7 @@ mod graph_wire {
         // The node turns up. The declaration is untouched.
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.add(sine_hz::<f32>(440.0))
+            graph.0.add(Osc::sine(Hz(440.0)))
         };
         app.world_mut().entity_mut(pending).insert(AudioNode(id));
         app.update();
@@ -173,7 +175,7 @@ mod graph_wire {
     #[test]
     fn a_self_connection_is_skipped_not_panicked_on() {
         let mut app = app();
-        let filt = spawn_node(&mut app, pass());
+        let filt = spawn_node(&mut app, Through::mono());
 
         app.world_mut()
             .entity_mut(filt)
@@ -193,8 +195,8 @@ mod graph_wire {
     #[test]
     fn an_out_of_range_source_port_is_skipped() {
         let mut app = app();
-        let mono = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let filt = spawn_node(&mut app, pass());
+        let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let filt = spawn_node(&mut app, Through::mono());
 
         app.world_mut()
             .entity_mut(filt)
@@ -225,8 +227,8 @@ mod graph_wire {
     #[test]
     fn re_binding_an_entity_to_a_new_node_re_derives_the_wire() {
         let mut app = app();
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let filt = spawn_node(&mut app, pass());
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
 
         app.world_mut()
@@ -242,7 +244,7 @@ mod graph_wire {
         // Same entity, different node.
         let second = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.add(sine_hz::<f32>(880.0))
+            graph.0.add(Osc::sine(Hz(880.0)))
         };
         app.world_mut().entity_mut(osc).insert(AudioNode(second));
         app.update();
@@ -262,10 +264,10 @@ mod graph_wire {
     #[test]
     fn removing_a_declaration_leaves_undeclared_ports_alone() {
         let mut app = app();
-        let declared_src = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let foreign_src = spawn_node(&mut app, sine_hz::<f32>(880.0));
+        let declared_src = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let foreign_src = spawn_node(&mut app, Osc::sine(Hz(880.0)));
         // Two inputs; the declaration will claim only port 0.
-        let sink = spawn_node(&mut app, pass() | pass());
+        let sink = spawn_node(&mut app, Through::new(ChannelLayout::STEREO));
         let (sink_id, foreign_id) = (node_id(&app, sink), node_id(&app, foreign_src));
 
         app.world_mut()
@@ -303,7 +305,7 @@ mod graph_wire {
     #[test]
     fn a_mono_source_can_claim_both_master_channels() {
         let mut app = app();
-        let mono = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
         app.world_mut()
             .insert_resource(MasterSources::mono_from(mono));
@@ -328,8 +330,8 @@ mod graph_wire {
     #[test]
     fn replacing_a_stereo_master_with_a_mono_one_releases_both_channels() {
         let mut app = app();
-        let stereo = spawn_node(&mut app, pass() | pass());
-        let mono = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let stereo = spawn_node(&mut app, Through::new(ChannelLayout::STEREO));
+        let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
         app.world_mut().insert_resource(MasterSources::from(stereo));
         app.update();
@@ -375,8 +377,8 @@ mod graph_wire {
         use std::sync::Arc;
 
         let mut app = app();
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let filt = spawn_node(&mut app, pass());
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let filt = spawn_node(&mut app, Through::mono());
         app.world_mut()
             .entity_mut(filt)
             .insert(PortSources::from(osc));
@@ -398,7 +400,7 @@ mod graph_wire {
 
         // A new node elsewhere: the rebuild runs, but nothing it already wired has
         // changed.
-        spawn_node(&mut app, sine_hz::<f32>(880.0));
+        spawn_node(&mut app, Osc::sine(Hz(880.0)));
         app.update();
 
         assert!(
@@ -424,10 +426,7 @@ mod graph_wire {
     #[test]
     fn a_wider_master_declaration_widens_the_root() {
         let mut app = app();
-        let wide = spawn_node(
-            &mut app,
-            tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
-        );
+        let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
@@ -454,10 +453,7 @@ mod graph_wire {
     #[test]
     fn a_widened_root_survives_a_real_commit() {
         let mut app = app();
-        let wide = spawn_node(
-            &mut app,
-            tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
-        );
+        let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
@@ -483,10 +479,7 @@ mod graph_wire {
     #[test]
     fn a_shorter_master_declaration_does_not_narrow_the_root() {
         let mut app = app();
-        let wide = spawn_node(
-            &mut app,
-            tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
-        );
+        let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
@@ -512,7 +505,7 @@ mod graph_wire {
     #[test]
     fn a_master_declaration_cannot_exceed_the_render_scratch() {
         let mut app = app();
-        let node = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let node = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
         let mut sources = MasterSources::default();
         for channel in 0..32 {
@@ -536,14 +529,8 @@ mod graph_wire {
     #[test]
     fn from_node_at_width_maps_every_channel_straight_through() {
         let mut app = app();
-        let sink = spawn_node(
-            &mut app,
-            tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
-        );
-        let src = spawn_node(
-            &mut app,
-            tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
-        );
+        let sink = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
+        let src = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.world_mut()
             .entity_mut(sink)
@@ -570,7 +557,7 @@ mod graph_wire {
     #[test]
     fn from_node_at_width_at_stereo_is_stereo_from() {
         let mut app = app();
-        let e = spawn_node(&mut app, pass());
+        let e = spawn_node(&mut app, Through::mono());
 
         assert_eq!(
             PortSources::from_node_at_width(e, tutti_core::ChannelLayout::STEREO),
@@ -595,8 +582,10 @@ mod param_port_wire {
         AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSource, PortSources,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{sine_hz, Net, Source};
+    use tutti_core::dsp::{Net, Source};
     use tutti_core::AudioNode;
+    use tutti_core::Hz;
+    use tutti_nodes::testing::Osc;
     use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
     use tutti_types::UnitParam;
 
@@ -635,7 +624,7 @@ mod param_port_wire {
         assert_eq!(drive_port, 2, "the param port follows the audio inputs");
 
         let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         // The base-sum chain feeding the param port.
         let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
         let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
@@ -703,8 +692,8 @@ mod param_port_wire {
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
         let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-        let other = spawn_node(&mut app, sine_hz::<f32>(220.0));
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let other = spawn_node(&mut app, Osc::sine(Hz(220.0)));
         let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
         app.world_mut().entity_mut(target).insert(
@@ -767,7 +756,7 @@ mod param_port_wire {
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
         let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
         // Wire the param port imperatively first — a host that has not adopted the
@@ -810,7 +799,7 @@ mod param_port_wire {
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
         let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
         let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 

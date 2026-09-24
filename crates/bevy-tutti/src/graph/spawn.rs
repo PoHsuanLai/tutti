@@ -31,16 +31,23 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// use bevy_app::prelude::*;
 /// use bevy_ecs::prelude::*;
 /// use bevy_tutti::prelude::*;
-/// use tutti_core::dsp::{lowpass_hz, sine_hz, Net, Source};
+/// use tutti_core::dsp::{Net, Source};
+/// use tutti_core::{Hz, Q};
+/// use tutti_nodes::testing::Osc;
+/// use tutti_nodes::{SvfFilterNode, SvfType};
 ///
 /// /// Marks the filter so the assertion below can find it again.
 /// #[derive(Component)]
 /// struct Filter;
 ///
 /// fn build(mut commands: Commands) {
-///     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+///     let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
 ///     let filt = commands
-///         .spawn_audio_node(lowpass_hz(1000.0, 1.0))
+///         .spawn_audio_node(SvfFilterNode::<f64>::new(
+///             SvfType::LowPass,
+///             Hz(1000.0),
+///             Q(1.0),
+///         ))
 ///         .insert((Filter, PortSources::from(osc)))
 ///         .id();
 ///     commands.insert_resource(MasterSources::mono_from(filt));

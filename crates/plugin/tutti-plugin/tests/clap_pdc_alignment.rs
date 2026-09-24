@@ -62,7 +62,9 @@ mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 
 use tutti_core::dsp::Net;
-use tutti_core::{latency, AudioUnit, BufferVec, SampleRate, Samples, F32};
+use tutti_core::{latency, AudioUnit, BufferVec, ChannelLayout, SampleRate, Samples, F32};
+use tutti_nodes::testing::Through;
+use tutti_nodes::ChannelSumNode;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -212,7 +214,7 @@ fn arrivals(samples: &[f32]) -> Vec<(usize, f32)> {
 /// is the same discipline `tutti_core::topology::compile` and
 /// `bevy_tutti::graph::wire::rebuild` follow.
 fn build_graph(plugin: Box<dyn AudioUnit>) -> Net {
-    use tutti_core::dsp::{pass, sum, Source};
+    use tutti_core::dsp::Source;
 
     // The probe is a stereo effect (2 in, 2 out), and `Net` requires every input
     // port of every node to have a source — an unwired port renders silence, and
@@ -225,19 +227,19 @@ fn build_graph(plugin: Box<dyn AudioUnit>) -> Net {
     net.set_sample_rate(SampleRate(SAMPLE_RATE));
 
     let plugin_id = net.push(plugin);
-    // The dry twin. A `pass` rather than wiring the global input straight to the
+    // The dry twin. A pass-through rather than wiring the global input straight to the
     // sum: the planner delays an *edge into a node*, and a path that is only a
     // global-to-output link has no node on it to delay.
-    let dry = net.push(Box::new(pass()));
+    let dry = net.push(Box::new(Through::mono()));
     // Summing is a node's job — `Net` holds one source per input port, so a
     // fan-in has to be an explicit adder.
     //
-    // `sum(pass(), pass())` and NOT `join::<U2>()`: join *averages* its inputs,
-    // so two aligned arrivals of `IMPULSE` would come out as `IMPULSE` — exactly
-    // what one arrival alone produces. The assertion that both paths contributed
+    // `ChannelSumNode` and NOT fundsp's `join::<U2>()`: join *averages* its
+    // inputs, so two aligned arrivals of `IMPULSE` would come out as `IMPULSE` —
+    // exactly what one arrival alone produces. The assertion that both paths contributed
     // would then be satisfied by either of them arriving alone, which is the
     // thing it exists to rule out.
-    let sum = net.push(Box::new(sum(pass(), pass())));
+    let sum = net.push(Box::new(ChannelSumNode::new(2, ChannelLayout::MONO)));
 
     for port in 0..plugin_inputs {
         net.set_source(plugin_id, port, Source::Global(0));

@@ -79,10 +79,12 @@ the adapter. This spawns an oscillator and wires it to the master out:
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::{sine_hz, Net};
+use tutti_core::dsp::Net;
+use tutti_core::Hz;
+use tutti_nodes::testing::Osc;
 
 fn build_chain(mut commands: Commands) {
-    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
     // Wiring is *declared*, never called: the resource names what feeds each
     // global output channel, so two nodes cannot both claim the master.
     commands.insert_resource(MasterSources::mono_from(osc));

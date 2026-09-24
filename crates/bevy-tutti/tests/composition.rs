@@ -195,7 +195,9 @@ mod master_bus {
     // documenting a silent bug was itself silently running zero tests in the
     // default configuration.
 
-    use tutti_core::dsp::{sine_hz, Net, Source};
+    use tutti_core::dsp::{Net, Source};
+    use tutti_core::{ChannelLayout, Hz};
+    use tutti_nodes::testing::Osc;
 
     /// Two `pipe_output` calls do not sum. The second wins outright.
     ///
@@ -204,8 +206,8 @@ mod master_bus {
     #[test]
     fn a_second_pipe_output_silently_replaces_the_first() {
         let mut net = Net::new(0, 2);
-        let first = net.push(Box::new(sine_hz::<f32>(440.0)));
-        let second = net.push(Box::new(sine_hz::<f32>(880.0)));
+        let first = net.push(Box::new(Osc::sine(Hz(440.0))));
+        let second = net.push(Box::new(Osc::sine(Hz(880.0))));
 
         net.pipe_output(first);
         assert_eq!(
@@ -235,8 +237,10 @@ mod master_bus {
     #[test]
     fn pipe_output_claims_every_channel_even_from_a_mono_source() {
         let mut net = Net::new(0, 2);
-        let stereo = net.push(Box::new(sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)));
-        let mono = net.push(Box::new(sine_hz::<f32>(880.0)));
+        let stereo = net.push(Box::new(
+            Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO),
+        ));
+        let mono = net.push(Box::new(Osc::sine(Hz(880.0))));
 
         net.pipe_output(stereo);
         net.pipe_output(mono);
@@ -260,11 +264,11 @@ mod master_bus {
         let mut net = Net::new(0, 2);
 
         // Stand-in for the click node `build_into` pipes to output.
-        let click = net.push(Box::new(sine_hz::<f32>(1000.0)));
+        let click = net.push(Box::new(Osc::sine(Hz(1000.0))));
         net.pipe_output(click);
 
         // A soundfont finishes loading a few frames later.
-        let soundfont = net.push(Box::new(sine_hz::<f32>(261.0)));
+        let soundfont = net.push(Box::new(Osc::sine(Hz(261.0))));
         net.pipe_output(soundfont);
 
         assert_ne!(

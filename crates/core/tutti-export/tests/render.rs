@@ -12,16 +12,17 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::dsp::{dc, reverb_stereo, split, square_hz, U2};
-use tutti_core::{AudioUnit, SampleRate};
+use tutti_core::dsp::reverb_stereo;
+use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,
 };
+use tutti_nodes::testing::{Const, Osc};
 
 fn net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((0.5, 0.5))));
+    let id = n.push(Box::new(Const::frame(&[0.5, 0.5])));
     n.pipe_output(id);
     n
 }
@@ -82,7 +83,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("q.wav");
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(dc(0.5)));
+    let id = n.push(Box::new(Const::mono(0.5)));
     n.pipe_output(id);
     render_to_file(
         n,
@@ -195,7 +196,7 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
@@ -214,7 +215,7 @@ fn cascaded_convolvers_sum_their_tails() {
     let a = vec![0.5f32; 1024];
     let b = vec![0.5f32; 2048];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let first = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
     let second = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
     n.connect(src, 0, first, 0);
@@ -281,7 +282,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
 
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let quiet = n.push(Box::new(Unreporting));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, quiet, 0);
@@ -322,7 +323,7 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let src = n.push(Box::new(dc((0.5, 0.5))));
+    let src = n.push(Box::new(Const::frame(&[0.5, 0.5])));
     let rev = n.push(Box::new(reverb_stereo(10.0, 2.0, 0.5)));
     n.connect(src, 0, rev, 0);
     n.connect(src, 1, rev, 1);
@@ -344,7 +345,7 @@ fn resolving_an_unbounded_graph_spends_the_cap() {
 fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
@@ -726,7 +727,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
 
     let d = tempfile::tempdir().unwrap();
     let mut n = tutti_core::dsp::Net::new(0, 6);
-    let id = n.push(Box::new(dc((0.1, 0.2, 0.3, 0.4, 0.5, 0.6))));
+    let id = n.push(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
     n.pipe_output(id);
 
     let mut cfg = config(
@@ -828,7 +829,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 
     let silence = || {
         let mut n = tutti_core::dsp::Net::new(0, 2);
-        let id = n.push(Box::new(dc((0.0, 0.0))));
+        let id = n.push(Box::new(Const::frame(&[0.0, 0.0])));
         n.pipe_output(id);
         n
     };
@@ -873,11 +874,26 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     use tutti_export::{render_normalized_to_file, Normalize};
     use tutti_types::{Db, Interleaved};
 
-    // Hard edges near Nyquist are what SRC overshoots on; a DC constant barely
-    // moves and would hide the bug entirely.
+    // Energy near Nyquist, with its true peak *between* samples, is what SRC
+    // overshoots on; a DC constant barely moves and would hide the bug entirely.
+    //
+    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns so
+    // the samples straddle the peak unevenly (-0.28, -0.93, +0.28, +0.93 of it).
+    // That is exactly what the fundsp `square_hz(11025.0)` this test used to
+    // build rendered: a band-limited square at fs/4 has no harmonic below
+    // Nyquist but its fundamental, and its phase came from the graph's hash —
+    // measured, not assumed. The phase is load-bearing: at 1/8 turn the samples
+    // sit symmetrically about the peak, the render-rate true-peak
+    // estimate is already right, and the test passes with the measure-before-
+    // resample bug put back. The amplitude is not: peak normalization divides
+    // it out.
     let square = || {
         let mut n = tutti_core::dsp::Net::new(0, 2);
-        let id = n.push(Box::new((square_hz(11025.0) * 0.98) >> split::<U2>()));
+        let tone = Osc::sine(Hz(11025.0))
+            .with_phase(tutti_core::Phase(0.546))
+            .with_amplitude(Amplitude(0.98))
+            .with_layout(ChannelLayout::STEREO);
+        let id = n.push(Box::new(tone));
         n.pipe_output(id);
         n
     };
@@ -971,7 +987,7 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
         // a dropped or duplicated channel is visible.
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
-            let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+            let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
             n.connect_output(id, 0, c);
         }
 
@@ -1026,7 +1042,7 @@ fn an_odd_width_round_trips_through_buffers() {
         let layout = ChannelLayout::from(width);
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
-            let id = n.push(Box::new(dc(0.25)));
+            let id = n.push(Box::new(Const::mono(0.25)));
             n.connect_output(id, 0, c);
         }
 
@@ -1052,7 +1068,7 @@ fn an_odd_width_survives_a_resample() {
     let width = 5u16;
     let mut n = tutti_core::dsp::Net::new(0, width as usize);
     for c in 0..width as usize {
-        let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+        let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
         n.connect_output(id, 0, c);
     }
 

@@ -525,9 +525,10 @@ mod io_graph_composition {
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use bevy_tutti::io::{MicMonitorNode, MicRing};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{pass, Net, Source};
+    use tutti_core::dsp::{Net, Source};
     use tutti_core::AudioNode;
     use tutti_core::AudioUnit as _;
+    use tutti_nodes::testing::Through;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     /// Same shape as `graph_wire.rs`'s harness — deliberately, so a difference in
@@ -608,7 +609,7 @@ mod io_graph_composition {
 
         let (mon_id, fx_id) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            (graph.0.add(monitor), graph.0.add(pass()))
+            (graph.0.add(monitor), graph.0.add(Through::mono()))
         };
         let mon = app.world_mut().spawn(AudioNode(mon_id)).id();
         let fx = app.world_mut().spawn(AudioNode(fx_id)).id();

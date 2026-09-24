@@ -154,7 +154,9 @@ mod tests {
         let mut app = test_app();
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(tutti_core::dsp::dc(0.0)))
+            graph
+                .0
+                .push(Box::new(tutti_nodes::testing::Const::mono(0.0)))
         };
         let entity = app.world_mut().spawn(AudioNode(id)).id();
 

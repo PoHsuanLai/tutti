@@ -171,14 +171,15 @@ pub struct EngineNodes {
     /// use bevy_app::prelude::*;
     /// use bevy_ecs::prelude::*;
     /// use bevy_tutti::prelude::*;
-    /// use tutti_core::dsp::{pass, Net, Source};
+    /// use tutti_core::dsp::{Net, Source};
     /// use tutti_core::transport::{TransportClock, BEAT_PORTS};
+    /// use tutti_nodes::testing::Through;
     ///
     /// /// Stands in for a beat-driven node — `tutti_nodes::Lfo` in beat-synced
     /// /// mode, or an automation lane. What matters is that it takes the beat on
     /// /// two input ports, in port order.
     /// fn beat_driven_node() -> impl tutti_core::AudioUnit {
-    ///     pass() | pass()
+    ///     Through::new(tutti_core::ChannelLayout::STEREO)
     /// }
     ///
     /// fn wire_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {

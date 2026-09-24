@@ -8,14 +8,22 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::{lowpass_hz, sine_hz, split, Net, Source, U2};
+//! use tutti_core::dsp::{Net, Source};
+//! use tutti_core::{ChannelLayout, Hz, Q};
+//! use tutti_nodes::testing::Osc;
+//! use tutti_nodes::{StereoSvfFilterNode, SvfType};
 //!
 //! fn build(mut commands: Commands) {
-//!     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
-//!     // Stereo out, so `MasterSources::from` has two output ports to take.
+//!     // Stereo throughout, so `MasterSources::from` has two output ports to take.
+//!     let tone = Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO);
+//!     let osc = commands.spawn_audio_node(tone).id();
 //!     let filt = commands
-//!         .spawn_audio_node(lowpass_hz(1000.0f32, 1.0) >> split::<U2>())
-//!         .insert(PortSources::from(osc))
+//!         .spawn_audio_node(StereoSvfFilterNode::<f64>::new(
+//!             SvfType::LowPass,
+//!             Hz(1000.0),
+//!             Q(1.0),
+//!         ))
+//!         .insert(PortSources::stereo_from(osc))
 //!         .id();
 //!     commands.insert_resource(MasterSources::from(filt));
 //! }

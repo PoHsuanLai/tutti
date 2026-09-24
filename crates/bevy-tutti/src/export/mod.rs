@@ -17,7 +17,8 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
 //! use bevy_tutti::graph::AudioConfig;
-//! use tutti_core::dsp::{dc, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_nodes::testing::Const;
 //! use tutti_export::{
 //!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock,
 //!     RenderConfig,
@@ -38,7 +39,7 @@
 //! };
 //!
 //! let mut net = Net::with_backend(2);
-//! net.master(dc(0.5));
+//! net.master(Const::mono(0.5));
 //!
 //! let mut app = App::new();
 //! app.add_plugins((bevy_app::TaskPoolPlugin::default(), ExportPlugin));

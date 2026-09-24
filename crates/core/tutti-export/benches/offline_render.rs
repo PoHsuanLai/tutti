@@ -26,19 +26,22 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::{dc, sine_hz, Net};
-use tutti_core::{ChannelLayout, FrozenClock, SampleRate};
+use tutti_core::dsp::Net;
+use tutti_core::{Amplitude, ChannelLayout, FrozenClock, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig,
     RenderConfig,
 };
+use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 48_000.0;
 
 fn tone_net() -> Net {
     let mut n = Net::new(0, 2);
     let id = n.push(Box::new(
-        (sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)) * 0.5,
+        Osc::sine(Hz(440.0))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
     ));
     n.pipe_output(id);
     n
@@ -46,7 +49,7 @@ fn tone_net() -> Net {
 
 fn dc_net() -> Net {
     let mut n = Net::new(0, 2);
-    let id = n.push(Box::new(dc((0.25, 0.25))));
+    let id = n.push(Box::new(Const::frame(&[0.25, 0.25])));
     n.pipe_output(id);
     n
 }

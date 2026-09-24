@@ -41,6 +41,7 @@
 //!          SCCOMP  SSCGAT  SSCCOM  LIMITER1 BRKWLLMT PAN\0  BIN\0
 //!          (svf/ladder/phaser also derive a stereo sibling via `^ 0xDA02`;
 //!           PAN\0 ORs num_outputs into the low byte)
+//!          TSTCONST TSTOSCIL TSTTHRU1 TSTSPLIT TSTSINK1 (`testing` stimulus)
 //! polysynth: POLYSYNT
 //! soundfont: \0RUSTYSY
 //! plugin:  PLUGINCL

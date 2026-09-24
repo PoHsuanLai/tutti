@@ -14,12 +14,13 @@ tutti = { git = "…", features = ["export", "analysis", "wav"] }
 ```
 
 ```rust
-use tutti::dsp::{sine_hz, Net};
+use tutti::dsp::Net;
+use tutti::nodes::testing::Osc;
 use tutti::prelude::*;
 
 // A graph, rendered offline, with no device and no Bevy.
 let mut net = Net::new(0, 2);
-let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
 net.pipe_output(tone);
 
 let engine = tutti::core::Engine::new(

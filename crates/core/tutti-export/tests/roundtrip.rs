@@ -28,11 +28,11 @@
 
 #![cfg(all(feature = "wav", feature = "flac"))]
 
-use tutti_core::dsp::dc;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig,
 };
+use tutti_nodes::testing::Const;
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.1;
@@ -44,7 +44,7 @@ const DUR: f64 = 0.1;
 /// being smeared across a waveform. The spectral cases live in the Python judge.
 fn dc_net(level: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((level, level))));
+    let id = n.push(Box::new(Const::frame(&[level, level])));
     n.pipe_output(id);
     n
 }
@@ -290,7 +290,7 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     let path = d.path().join("quad.wav");
 
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(dc(0.5)));
+    let id = n.push(Box::new(Const::mono(0.5)));
     n.pipe_output(id);
 
     let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);

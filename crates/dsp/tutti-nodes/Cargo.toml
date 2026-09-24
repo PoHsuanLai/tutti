@@ -57,6 +57,15 @@ approx = "0.5"
 # is already in the tree.
 biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
+criterion.workspace = true
+
+# The engine's graph-render bench. It measures `Engine::process`, which is
+# `tutti-core`'s, but it lives here because the graph it renders is built from
+# this crate's nodes and `tutti-core` cannot depend on them (the edge runs the
+# other way).
+[[bench]]
+name = "engine_render"
+harness = false
 
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the

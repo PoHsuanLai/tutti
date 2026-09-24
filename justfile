@@ -130,7 +130,7 @@ pressure:
 # Adding a bench means adding a line here, the same contract `check-features`
 # has. There is no sweep that would pick one up silently.
 bench *ARGS:
-    cargo bench -p tutti-core      --bench engine_render   {{ARGS}}
+    cargo bench -p tutti-nodes     --bench engine_render   {{ARGS}}
     cargo bench -p tutti-cpal      --bench audio_callback  {{ARGS}}
     cargo bench -p tutti-export    --bench offline_render  {{ARGS}}
     cargo bench -p tutti-polysynth --bench polysynth       {{ARGS}}
@@ -167,7 +167,7 @@ profile-stretch:
 
 # Samply a criterion bench. `--profile-time` turns criterion's own analysis
 # off, so the profile is of the code rather than of the statistics.
-profile-bench BENCH="engine_render" PKG="tutti-core" SECS="10":
+profile-bench BENCH="engine_render" PKG="tutti-nodes" SECS="10":
     cargo bench -p {{PKG}} --bench {{BENCH}} --profile profiling --no-run
     samply record target/profiling/deps/{{BENCH}}-* --bench --profile-time {{SECS}}
 

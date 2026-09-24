@@ -172,6 +172,13 @@ pub use convolution::{
     ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
 };
 
+// Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a
+// test, example or bench wires a graph out of. Ungated and public, because the
+// consumers are other crates' tests — a `cfg(test)` module is invisible to
+// them. They replace the fundsp one-liners (`dc`, `sine_hz`, `pass`, `split`,
+// `sink`, …) that `tutti_core::dsp` used to forward for the same job.
+pub mod testing;
+
 // No `///` here on purpose: a doc comment on a `pub mod` line shadows the
 // module's own `//!` and re-resolves its intra-doc links in this scope, which
 // breaks every link the module makes to its own items. See `automation/mod.rs`.

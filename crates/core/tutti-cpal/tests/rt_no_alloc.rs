@@ -33,11 +33,13 @@
 
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
-use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
-use tutti_core::{AudioTap, Engine, MasterMeter};
+use tutti_core::dsp::Net;
+use tutti_core::{AudioTap, Engine, Hz, MasterMeter, Q};
 use tutti_core::{ChannelLayout, InterleavedMut};
 use tutti_core::{MotionEvent, Transport, TransportClock};
 use tutti_cpal::{process_audio, AudioCallbackState, MAX_FRAMES};
+use tutti_nodes::testing::Osc;
+use tutti_nodes::{SvfFilterNode, SvfType};
 
 // Without this every `assert_no_alloc` below is a silent no-op. See the module
 // header — this is the whole reason the gate is an integration test.
@@ -60,8 +62,12 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
         SAMPLE_RATE,
     )));
 
-    let source = net.push(Box::new(sine_hz::<f32>(220.0)));
-    let filter = net.push(Box::new(lowpass_hz::<f32>(2_000.0, 0.7)));
+    let source = net.push(Box::new(Osc::sine(Hz(220.0))));
+    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
+        SvfType::LowPass,
+        Hz(2_000.0),
+        Q(0.7),
+    )));
     net.connect(source, 0, filter, 0);
     net.pipe_output(filter);
 

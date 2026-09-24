@@ -79,8 +79,9 @@ A whole mix: `build_vbap_mix` places several sources and returns the summed
 N-wide node.
 
 ```rust
-use tutti_core::dsp::{dc, Net};
+use tutti_core::dsp::Net;
 use tutti_core::AudioUnit;
+use tutti_nodes::testing::Const;
 use tutti_spatial::{build_vbap_mix, VbapSource};
 use tutti_types::ChannelLayout;
 
@@ -88,8 +89,8 @@ let mut net = Net::new(0, 4);
 
 // Two sources, each a node whose output ports 0 and 1 feed its panner. A mono
 // source presents the same sample on both.
-let front = net.push(Box::new(dc((1.0, 1.0))));
-let rear = net.push(Box::new(dc((1.0, 1.0))));
+let front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+let rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
 
 let mix = build_vbap_mix(
     &mut net,

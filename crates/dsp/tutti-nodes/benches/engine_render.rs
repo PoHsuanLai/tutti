@@ -1,5 +1,11 @@
 //! The graph render, per block — the engine's hot path.
 //!
+//! `Engine::process` is `tutti-core`'s, but the graph it renders here is built
+//! from this crate's nodes (`Osc`, `EqBandNode`, `BusStripNode`,
+//! `SvfFilterNode`), so the numbers are for the filters the engine ships rather
+//! than fundsp's. That is why the bench lives here: `tutti-core` cannot depend
+//! on this crate without a cycle.
+//!
 //! # Reading these numbers
 //!
 //! Nanoseconds per block are not actionable. Every group here sets
@@ -19,7 +25,8 @@
 //! # Where criterion is the wrong instrument
 //!
 //! Criterion suits steady-state, allocation-free, fixed-working-set code, and
-//! this path is exactly that — `tests/rt_no_alloc_engine.rs` *proves* the
+//! this path is exactly that — `tests/rt_no_alloc_engine.rs` (beside this
+//! bench, in `tutti-nodes`) *proves* the
 //! precondition. It is the wrong tool where cost is dominated by allocation
 //! churn or by the scheduler: `tutti-sampler`'s
 //! `examples/profile_stretch_clone.rs` measured an **81× wall-clock spread**
@@ -32,7 +39,7 @@
 //!
 //! ```text
 //! just bench                       # everything
-//! cargo bench -p tutti-core --bench engine_render
+//! cargo bench -p tutti-nodes --bench engine_render
 //! just bench-save main             # a baseline on THIS machine
 //! just bench-cmp main              # compare against it
 //! ```
@@ -42,11 +49,12 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use parking_lot::Mutex;
-use tutti_core::dsp::{bell_hz, lowpass_hz, pan, sine_hz, Net};
-use tutti_core::AudioUnit;
+use tutti_core::dsp::Net;
+use tutti_core::{AudioUnit, Db, Hz, Q};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, SampleRate};
 use tutti_core::{MotionFsm, Transport, TransportClock, TransportSettings};
+use tutti_nodes::testing::Osc;
+use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 
 const SR: f64 = 48_000.0;
 
@@ -57,7 +65,7 @@ const SR: f64 = 48_000.0;
 /// number of cases rather than by the iteration count — the trap this idiom
 /// invites.
 fn keep(net: Net) {
-    let _: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
+    let _: &'static Net = Box::leak(Box::new(net));
 }
 
 /// A rolling transport driving a four-node chain, the shape
@@ -68,9 +76,14 @@ fn chain_engine(outputs: usize) -> Engine {
     net.push(Box::new(TransportClock::new(transport.clock_links(), SR)));
     {
         let inner = &mut net;
-        inner.chain(Box::new(sine_hz::<f32>(440.0)));
-        inner.chain(Box::new(pan(0.0)));
-        inner.chain(Box::new(bell_hz::<f32>(1_000.0, 1.0, 6.0)));
+        inner.chain(Box::new(Osc::sine(Hz(440.0))));
+        inner.chain(Box::new(EqBandNode::<f64>::new(
+            SvfType::Bell,
+            Hz(1_000.0),
+            Q(1.0),
+            Db(6.0),
+        )));
+        inner.chain(Box::new(BusStripNode::with_channels(ChannelLayout::STEREO)));
     }
     net.set_sample_rate(SampleRate(SR));
     let backend = net.backend();
@@ -85,10 +98,14 @@ fn chain_engine(outputs: usize) -> Engine {
 /// `depth` filters in series off one source — the "how many nodes" axis.
 fn depth_engine(depth: usize) -> Engine {
     let mut net = Net::new(0, 2);
-    let mut last = net.push(Box::new(sine_hz::<f32>(440.0)));
+    let mut last = net.push(Box::new(Osc::sine(Hz(440.0))));
     for i in 0..depth {
         // Vary the cutoff so nothing can be folded away as identical work.
-        let f = net.push(Box::new(lowpass_hz::<f32>(500.0 + (i as f32) * 7.0, 0.7)));
+        let f = net.push(Box::new(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(500.0 + (i as f32) * 7.0),
+            Q(0.7),
+        )));
         net.connect(last, 0, f, 0);
         last = f;
     }

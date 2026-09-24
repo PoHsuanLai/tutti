@@ -149,10 +149,12 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// otherwise pure arithmetic:
 ///
 /// ```
-/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_core::dsp::Net;
+/// # use tutti_core::Hz;
+/// # use tutti_nodes::testing::Osc;
 /// # use tutti_export::{reported_latency, ExportConfig, RenderConfig};
 /// # let mut net = Net::new(0, 2);
-/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
 /// # net.pipe_output(tone);
 /// let latency = reported_latency(&mut net);
 /// let config = ExportConfig {
@@ -182,11 +184,13 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 /// happens at the call site:
 ///
 /// ```
-/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_core::dsp::Net;
+/// # use tutti_core::Hz;
+/// # use tutti_nodes::testing::Osc;
 /// # use tutti_core::{SampleRate, Seconds};
 /// # use tutti_export::{reported_tail, ExportConfig, RenderConfig};
 /// # let mut net = Net::new(0, 2);
-/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
 /// # net.pipe_output(tone);
 /// # let rate = SampleRate(48_000.0);
 /// let reported = reported_tail(&net);

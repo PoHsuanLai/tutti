@@ -24,8 +24,9 @@ A driver is built from an opened device plus the state its callback reads
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_core::dsp::{sine_hz, Net};
-use tutti_core::{AudioTap, Engine, MasterMeter, Transport, TransportClock};
+use tutti_core::dsp::Net;
+use tutti_core::{AudioTap, Engine, Hz, MasterMeter, Transport, TransportClock};
+use tutti_nodes::testing::Osc;
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 # fn main() -> tutti_cpal::Result<()> {
@@ -39,7 +40,7 @@ net.push(Box::new(TransportClock::new(
     transport.clock_links(),
     sample_rate,
 )));
-let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
 net.pipe_output(tone);
 
 // `backend()` is the audio thread's half of the graph; the control thread

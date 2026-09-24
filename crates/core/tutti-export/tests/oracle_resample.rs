@@ -43,18 +43,24 @@
 
 #![cfg(feature = "wav")]
 
-use tutti_core::dsp::{sine_hz, split, U2};
+use tutti_core::Amplitude;
+use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig, Resample,
 };
+use tutti_nodes::testing::Osc;
 
 const IN_RATE: f64 = 48_000.0;
 const OUT_RATE: f64 = 44_100.0;
 
 fn sine_net(freq: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new((sine_hz::<f32>(freq) * 0.5) >> split::<U2>()));
+    let id = n.push(Box::new(
+        Osc::sine(Hz(freq))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
+    ));
     n.pipe_output(id);
     n
 }

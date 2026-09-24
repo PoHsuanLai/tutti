@@ -20,13 +20,13 @@ use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderConfig,
 };
+use tutti_nodes::testing::{Const, Sink};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so
 /// `clone_isolated` succeeds.
 fn graph_with_one_node() -> (AudioGraphRes, tutti_core::NodeId) {
-    use tutti_core::dsp::dc;
     let mut net = tutti_core::dsp::Net::with_backend(2);
-    let id = net.master(dc(0.5));
+    let id = net.master(Const::mono(0.5));
     (AudioGraphRes(net), id)
 }
 
@@ -200,10 +200,10 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
 fn an_unrenderable_node_reports_a_failure() {
     let (mut app, _node) = app_with_engine();
 
-    // `sink()` consumes one channel and produces nothing.
+    // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let id = graph.0.push(Box::new(tutti_core::dsp::sink()));
+        let id = graph.0.push(Box::new(Sink::mono()));
         app.world_mut().spawn(tutti_core::AudioNode(id)).id()
     };
 
@@ -310,7 +310,7 @@ fn a_prepare_hook_reaches_the_net_that_gets_rendered() {
     .with_prepare(|prepared, world| {
         // Replace the whole graph's output with a constant read from the world.
         let level = world.resource::<Level>().0;
-        prepared.net.master(tutti_core::dsp::dc(level));
+        prepared.net.master(Const::mono(level));
     });
 
     app.world_mut()

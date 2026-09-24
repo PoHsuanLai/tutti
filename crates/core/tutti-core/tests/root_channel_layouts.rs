@@ -8,15 +8,18 @@
 //! indexes past the end and panics *in release*, inside the CPAL callback. These
 //! run in both profiles on purpose: the failure mode was release-only.
 
-use tutti_core::dsp::{sine_hz, Net};
-use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionFsm, TransportSettings};
+mod support;
+
+use support::Sine;
+use tutti_core::dsp::Net;
+use tutti_core::{ChannelLayout, Engine, Hz, InterleavedMut, MotionFsm, TransportSettings};
 
 /// Render one block of a root with `outputs` channels into a `target`-wide
 /// interleaved buffer. `wire` connects the source to root outputs (its `NodeId`
 /// output 0 is fed to whichever channels `wire` picks).
 fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
     let mut net = Net::new(0, outputs);
-    let id = net.push(Box::new(sine_hz::<f32>(440.0)));
+    let id = net.push(Box::new(Sine::new(Hz(440.0))));
     for &ch in wire {
         net.connect_output(id, 0, ch);
     }

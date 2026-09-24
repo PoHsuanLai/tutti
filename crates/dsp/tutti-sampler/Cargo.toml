@@ -87,6 +87,9 @@ criterion.workspace = true
 # coverage it does not have, and one that silently does not run is the same
 # claim with fewer clues.
 tutti-sampler = { path = ".", features = ["test-support"] }
+# Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
+# nothing above `tutti-core`.
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

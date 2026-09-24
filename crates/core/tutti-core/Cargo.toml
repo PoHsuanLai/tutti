@@ -87,7 +87,3 @@ insta = { version = "1.41", features = ["yaml"] }
 approx = "0.5"
 tempfile = "3.8"
 rand = "0.8"
-
-[[bench]]
-name = "engine_render"
-harness = false

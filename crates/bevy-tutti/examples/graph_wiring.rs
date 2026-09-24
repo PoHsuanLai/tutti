@@ -19,8 +19,11 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
 // `AudioUnit` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
-use tutti_core::dsp::{lowpass_hz, pass, saw_hz, Net, Source};
+use tutti_core::dsp::{Net, Source};
 use tutti_core::transport::Transport;
+use tutti_core::{Hz, Q};
+use tutti_nodes::testing::{Osc, Through};
+use tutti_nodes::{SvfFilterNode, SvfType};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -72,21 +75,25 @@ fn build_chain(mut commands: Commands) {
     // `spawn_audio_node` adds the unit and binds an entity to it. The node is
     // unwired: it renders nothing until something declares it as a source.
     let osc = commands
-        .spawn_audio_node(saw_hz(110.0))
+        .spawn_audio_node(Osc::saw(Hz(110.0)))
         .insert(Label("osc"))
         .id();
 
     // `PortSources` on the *sink* says what feeds each of its input ports.
     // Index 0 is input port 0. The filter takes the oscillator.
     let filter = commands
-        .spawn_audio_node(lowpass_hz(800.0, 1.0))
+        .spawn_audio_node(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(800.0),
+            Q(1.0),
+        ))
         .insert((Label("filter"), PortSources::from(osc)))
         .id();
 
     // A stereo pair fed from the same mono filter — `with` sets one port at a
     // time, so an asymmetric chain is just two different declarations.
     let out = commands
-        .spawn_audio_node(pass() | pass())
+        .spawn_audio_node(Through::new(ChannelLayout::STEREO))
         .insert((
             Label("out"),
             PortSources::silent()

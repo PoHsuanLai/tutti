@@ -116,3 +116,128 @@ impl ParamPorts for LimiterNode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{noise, process_block};
+    use crate::{LadderType, SvfType};
+    use tutti_core::{AudioUnit, ChannelLayout, SampleRate};
+
+    /// Render one block with every param port held at its value in `held`,
+    /// except `param`'s, which is held at `value`. The audio inputs carry
+    /// noise. The port for each param is the one the node *advertises*.
+    fn render_with_port<N: AudioUnit + ParamPorts>(
+        mut node: N,
+        held: &[(UnitParam, f32)],
+        param: UnitParam,
+        value: f32,
+    ) -> Vec<Vec<f32>> {
+        node.set_sample_rate(SampleRate(48_000.0));
+        let width = node.outputs();
+        let mut ports: Vec<usize> = held
+            .iter()
+            .map(|&(p, _)| node.param_port(p).expect("every held param has a port"))
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(
+            ports.len(),
+            held.len(),
+            "one distinct port per param: {ports:?}"
+        );
+        let mut inputs: Vec<Vec<f32>> = (0..node.inputs())
+            .map(|c| noise(c as u32 + 40, 64))
+            .collect();
+        for &(p, v) in held {
+            let port = node.param_port(p).expect("every held param has a port");
+            inputs[port] = vec![if p == param { value } else { v }; 64];
+        }
+        assert_eq!(
+            node.inputs(),
+            width + held.len(),
+            "the ports follow the audio inputs, one each"
+        );
+        let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
+        process_block(&mut node, &refs)
+    }
+
+    /// At every width, the port a node advertises for a param is the input its
+    /// DSP reads for it: moving only that input moves the output.
+    ///
+    /// This is the property `ParamPortMap` relies on, and the one a merge can
+    /// break silently — the indices move with the width, so an advertised index
+    /// computed from one width and a read computed from another would still
+    /// report the right arity.
+    ///
+    /// Mutation (each run, each fails): `SvfFilterNode::q_port` returning the
+    /// cutoff port's index; `DelayLineNode::delay_time_port` ignoring
+    /// `mod_feedback`; the SVF's `process` reading the Q port as its cutoff;
+    /// the ladder reading its drive one port early.
+    #[test]
+    fn the_advertised_port_is_the_one_the_dsp_reads_at_every_width() {
+        for w in [1usize, 2, 6] {
+            let layout = ChannelLayout::from(w);
+            let svf_held = [(UnitParam::Cutoff, 1_000.0), (UnitParam::Q, 0.707)];
+            for (param, a, b) in [
+                (UnitParam::Cutoff, 200.0, 8_000.0),
+                (UnitParam::Q, 0.5, 8.0),
+            ] {
+                let mk = || {
+                    SvfFilterNode::<f64>::with_param_inputs(
+                        layout,
+                        SvfType::LowPass,
+                        1_000.0,
+                        0.707,
+                        true,
+                        true,
+                    )
+                };
+                assert_ne!(
+                    render_with_port(mk(), &svf_held, param, a),
+                    render_with_port(mk(), &svf_held, param, b),
+                    "svf width {w}: {param:?}"
+                );
+            }
+            let ladder_held = [
+                (UnitParam::Cutoff, 1_000.0),
+                (UnitParam::Q, 0.3),
+                (UnitParam::Drive, 1.0),
+            ];
+            for (param, a, b) in [
+                (UnitParam::Cutoff, 200.0, 8_000.0),
+                (UnitParam::Q, 0.0, 0.9),
+                (UnitParam::Drive, 1.0, 8.0),
+            ] {
+                let mk = || {
+                    LadderFilterNode::<f64>::with_param_inputs(
+                        layout,
+                        LadderType::LP24,
+                        1_000.0,
+                        0.3,
+                        true,
+                        true,
+                        true,
+                    )
+                };
+                assert_ne!(
+                    render_with_port(mk(), &ladder_held, param, a),
+                    render_with_port(mk(), &ladder_held, param, b),
+                    "ladder width {w}: {param:?}"
+                );
+            }
+            let delay_held = [(UnitParam::Feedback, 0.5), (UnitParam::DelayTime, 0.0003)];
+            for (param, a, b) in [
+                (UnitParam::Feedback, 0.0, 0.9),
+                (UnitParam::DelayTime, 0.0002, 0.0008),
+            ] {
+                let mk = || DelayLineNode::with_param_inputs(layout, 0.01, 0.0003, 0.5, true, true);
+                assert_ne!(
+                    render_with_port(mk(), &delay_held, param, a),
+                    render_with_port(mk(), &delay_held, param, b),
+                    "delay width {w}: {param:?}"
+                );
+            }
+        }
+    }
+}

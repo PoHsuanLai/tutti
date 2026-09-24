@@ -173,10 +173,16 @@ pub use convolution::{
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a
-// test, example or bench wires a graph out of. Ungated and public, because the
-// consumers are other crates' tests — a `cfg(test)` module is invisible to
-// them. They replace the fundsp one-liners (`dc`, `sine_hz`, `pass`, `split`,
-// `sink`, …) that `tutti_core::dsp` used to forward for the same job.
+// test, example or bench wires a graph out of. They replace the fundsp
+// one-liners (`dc`, `sine_hz`, `pass`, `split`, `sink`, …) that
+// `tutti_core::dsp` used to forward for the same job.
+//
+// Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
+// crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
+// it out of the production API — a crate turns it on from its
+// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `test-support`
+// set. This crate reaches its own through a self dev-dependency.
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 // No `///` here on purpose: a doc comment on a `pub mod` line shadows the

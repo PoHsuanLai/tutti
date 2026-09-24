@@ -120,6 +120,9 @@ optional = true
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 
 [dev-dependencies]
+# `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
+# feature is dev-only, so the production dependency above stays without it.
+tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 criterion.workspace = true
 # The shared resolver; see its docs for the newest-wins rule.
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }

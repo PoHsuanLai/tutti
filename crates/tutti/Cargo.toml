@@ -32,6 +32,9 @@ tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
 tutti-plugin = { path = "../plugin/tutti-plugin", optional = true }
 
 [dev-dependencies]
+# `tutti::nodes::testing` for this crate's own test, examples and README
+# doctest. Dev-only: a consumer of the umbrella never sees the module.
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 tempfile = "3.8"
 
 [features]

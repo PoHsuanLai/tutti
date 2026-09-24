@@ -40,9 +40,10 @@ aifc = { version = "0.7", optional = true }
 criterion.workspace = true
 tempfile = "3.10"
 approx = "0.5"
-# Convolution nodes for the end-to-end export integration tests. Acyclic:
-# tutti-nodes does NOT depend on tutti-export.
-tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["convolution"] }
+# Convolution nodes and the `testing` stimulus nodes for the end-to-end export
+# tests, examples and bench. Acyclic: tutti-nodes does NOT depend on
+# tutti-export.
+tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["convolution", "testing"] }
 # Surround producer nodes (SpatialPannerNode + build_surround_mix) for the
 # end-to-end multichannel-export integration test. Also acyclic.
 tutti-spatial = { path = "../../dsp/tutti-spatial", default-features = false }

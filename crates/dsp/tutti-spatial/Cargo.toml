@@ -41,6 +41,9 @@ hrtf = { version = "0.8", optional = true }
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
+# `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
+# feature is dev-only, so the production dependency above stays without it.
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 approx = "0.5"
 # The RT no-alloc gate. Must be a dev-dep of the crate that OWNS the nodes:
 # `assert_no_alloc` installs a global allocator, which only a test binary may do.

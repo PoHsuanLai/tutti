@@ -30,8 +30,11 @@ pub(crate) const BUS_STRIP_ID: u64 = 0x_4255_5353_5452_5031; // "BUSSTRP1"
 /// Distinct from the DAW-side StereoSumUnit id (0xDA02).
 pub(crate) const CHANNEL_SUM_ID: u64 = 0x_0000_0000_0000_5501;
 pub(crate) const DOWNMIX_ID: u64 = 0x_444F_574E_4D49_5831; // "DOWNMIX1"
-                                                           // The `testing` stimulus nodes. Test-only in purpose, but they still go into a
-                                                           // `Net` and are hashed through `get_id`, so they get real mnemonics.
+
+// The `testing` stimulus nodes. Test-only in purpose, but they still go into a
+// `Net` and are hashed through `get_id`, so they get real mnemonics. Kept
+// ungated (they are `pub(crate)` values, not API) so the uniqueness guard below
+// checks them in every build.
 pub(crate) const TEST_CONST_ID: u64 = tutti_core::mnemonic(b"TSTCONST");
 pub(crate) const TEST_OSC_ID: u64 = tutti_core::mnemonic(b"TSTOSCIL");
 pub(crate) const TEST_THROUGH_ID: u64 = tutti_core::mnemonic(b"TSTTHRU1");

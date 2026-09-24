@@ -95,7 +95,7 @@ criterion.workspace = true
 tutti-sampler = { path = ".", features = ["test-support"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
-tutti-nodes = { path = "../tutti-nodes", default-features = false }
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

@@ -200,6 +200,9 @@ au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 export = ["dep:tutti-export"]
 
 [dev-dependencies]
+# `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
+# feature is dev-only, so the production dependency above stays without it.
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 # The fake MIDI backend, for the session-layer tests. A headless CI box has no
 # MIDI port, so without it every path through `MidiSession` is testable only
 # against "no device found". Dev-only: `midi-hardware` deliberately does not

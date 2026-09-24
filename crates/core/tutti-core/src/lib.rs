@@ -230,12 +230,8 @@ pub mod dsp {
         adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse,
         saw, sine, triangle, var,
     };
-    // The waveshaping curves. `tutti-nodes`' distortion node holds one per
-    // `ShapeKind` and calls [`Shape::shape`] on it per sample — it does *not*
-    // build a `shape(..)` node, because that opcode bakes its drive in at
-    // construction and the drive is a live parameter. So the curve types are
-    // here and the constructor is not.
-    pub use fundsp::shape::{Atan, Clip, Crush, Shape, SoftCrush, Softsign, Tanh};
+    // The waveshaping curves are NOT here: they are `tutti_nodes::ShapeKind::apply`,
+    // six one-line formulas the distortion node owns outright.
 
     // ── Block-buffer scratch, and the type-level arities that size it ───────
     //

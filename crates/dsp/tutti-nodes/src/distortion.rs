@@ -1,5 +1,11 @@
-//! Waveshaping distortion node backed by fundsp's [`Shape`](tutti_core::dsp::Shape)
-//! waveshapers.
+//! Waveshaping distortion node over six memoryless curves ([`ShapeKind`]).
+//!
+//! The curves are this crate's own ([`ShapeKind::apply`]). They were fundsp's
+//! `Shape` impls (`Tanh`, `Atan`, `Softsign`, `Clip`, `Crush`, `SoftCrush`),
+//! reached through `tutti_core::dsp`; each is one line of arithmetic, so owning
+//! them cost less than the re-export surface did. The formulas are fundsp's,
+//! in the same operation order, and matched fundsp's output bit for bit when
+//! they were moved (design doc 013, Phase 0b).
 //!
 //! fundsp's `shape(..)` opcode bakes its drive (the shaper's hardness field) in
 //! at construction and exposes no `set()`, so driving it live would force a
@@ -29,13 +35,10 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{
-    dsp::{Atan, Clip, Crush, Shape, SoftCrush, Softsign, Tanh},
-    AudioUnit, BufferMut, BufferRef, SignalFrame,
-};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 use tutti_core::{Drive, Param, Tail};
 
-/// Selects which fundsp waveshaper a [`DistortionNode`] applies.
+/// Selects which waveshaping curve a [`DistortionNode`] applies.
 ///
 /// Discriminants are stable — they persist in saved projects via
 /// `EffectKind::Distortion`. Append new kinds at the end.
@@ -48,7 +51,7 @@ pub enum ShapeKind {
     Atan,
     /// `softsign` (`x / (1 + |x|)`) — gentle.
     Softsign,
-    /// Hard clip to ±1 (fundsp `Clip`).
+    /// Hard clip to ±1.
     HardClip,
     /// Bitcrush-style staircase quantization.
     Crush,
@@ -56,40 +59,77 @@ pub enum ShapeKind {
     SoftCrush,
 }
 
-/// One of fundsp's stateless shapers, monomorphized behind an enum so the kind
-/// is a runtime field. `drive` maps to each shaper's hardness/levels argument.
-#[derive(Clone)]
-enum Shaper {
-    Tanh(Tanh),
-    Atan(Atan),
-    Softsign(Softsign),
-    HardClip(Clip),
-    Crush(Crush),
-    SoftCrush(SoftCrush),
+impl ShapeKind {
+    /// Shape one sample: `x` through this curve at `drive`.
+    ///
+    /// `drive` is input gain into the curve, floored at 0 — the same
+    /// normalization [`DistortionNode`] applies to its param. For the two
+    /// staircases it is instead the number of **levels per unit**, floored at 1
+    /// (fewer than one level per unit is not a staircase).
+    ///
+    /// Memoryless and total: every curve maps every finite `x` to a finite
+    /// output, and none keeps state between calls.
+    #[inline]
+    pub fn apply(self, x: f32, drive: Drive) -> f32 {
+        Shaper::build(self, drive.get().max(0.0)).shape(x)
+    }
+
+    /// The curve at a hardness already normalized by [`Shaper::build`].
+    ///
+    /// Each arm is the formula fundsp's corresponding `Shape` impl used, in the
+    /// same operation order — which is what kept the move bit-identical.
+    #[inline]
+    fn curve(self, hardness: f32, x: f32) -> f32 {
+        use core::f32::consts::PI;
+        match self {
+            Self::Tanh => (x * hardness).tanh(),
+            // Rescaled to saturate at ±1 while keeping unit slope at the origin.
+            Self::Atan => (x * (hardness * PI * 0.5)).atan() * (2.0 / PI),
+            Self::Softsign => {
+                let y = x * hardness;
+                y / (1.0 + y.abs())
+            }
+            Self::HardClip => (x * hardness).clamp(-1.0, 1.0),
+            Self::Crush => (x * hardness).round() / hardness,
+            Self::SoftCrush => {
+                let y = x * hardness;
+                let step = y.floor();
+                (step + smooth9(y - step)) / hardness
+            }
+        }
+    }
+}
+
+/// The ninth-order smoothstep: `0 → 0`, `1 → 1`, with the first four
+/// derivatives zero at both ends, so each [`ShapeKind::SoftCrush`] step is a
+/// smooth S rather than a jump.
+#[inline]
+fn smooth9(x: f32) -> f32 {
+    let x2 = x * x;
+    ((((70.0 * x - 315.0) * x + 540.0) * x - 420.0) * x + 126.0) * x2 * x2 * x
+}
+
+/// A curve at a fixed hardness: the kind plus its drive, already floored the
+/// way the kind needs. Rebuilt only when drive moves, which is a field swap —
+/// the curves carry no state.
+#[derive(Clone, Copy)]
+struct Shaper {
+    kind: ShapeKind,
+    hardness: f32,
 }
 
 impl Shaper {
     fn build(kind: ShapeKind, drive: f32) -> Self {
-        match kind {
-            ShapeKind::Tanh => Shaper::Tanh(Tanh(drive)),
-            ShapeKind::Atan => Shaper::Atan(Atan(drive)),
-            ShapeKind::Softsign => Shaper::Softsign(Softsign(drive)),
-            ShapeKind::HardClip => Shaper::HardClip(Clip(drive)),
-            ShapeKind::Crush => Shaper::Crush(Crush(drive.max(1.0))),
-            ShapeKind::SoftCrush => Shaper::SoftCrush(SoftCrush(drive.max(1.0))),
-        }
+        let hardness = match kind {
+            ShapeKind::Crush | ShapeKind::SoftCrush => drive.max(1.0),
+            _ => drive,
+        };
+        Self { kind, hardness }
     }
 
     #[inline]
-    fn shape(&mut self, x: f32) -> f32 {
-        match self {
-            Shaper::Tanh(s) => s.shape(x),
-            Shaper::Atan(s) => s.shape(x),
-            Shaper::Softsign(s) => s.shape(x),
-            Shaper::HardClip(s) => s.shape(x),
-            Shaper::Crush(s) => s.shape(x),
-            Shaper::SoftCrush(s) => s.shape(x),
-        }
+    fn shape(&self, x: f32) -> f32 {
+        self.kind.curve(self.hardness, x)
     }
 }
 
@@ -211,7 +251,7 @@ impl Clone for DistortionNode {
         Self {
             kind: self.kind,
             drive: self.drive.handle(),
-            shaper: self.shaper.clone(),
+            shaper: self.shaper,
             last_drive: self.last_drive,
             channels: self.channels,
             mod_drive: self.mod_drive,
@@ -518,6 +558,77 @@ mod tests {
             plain.tick(&frame, &mut a);
             ported.tick(&frame, &mut b);
             assert_eq!(a, b, "the two construction paths diverged at sample {i}");
+        }
+    }
+
+    /// The curves, pinned.
+    ///
+    /// These used to be fundsp's `Shape` impls. When they moved here they were
+    /// compared bit for bit against fundsp over 2.16 M (x, drive) points — six
+    /// curves, nine drives from 0 to 100, x in [-2, 2] — and matched exactly.
+    /// That comparison cannot outlive the move (it needs the fundsp types
+    /// `tutti_core::dsp` stopped re-exporting), so what stays is these values.
+    ///
+    /// The four curves built from `+ * / round floor clamp abs` are pinned
+    /// **exactly**: IEEE-754 rounds each of those correctly, so the result is
+    /// the same on every platform. `tanh` and `atan` are libm
+    /// quality-of-implementation and differ in the last ulp between C runtimes
+    /// (the same reason `tutti-core`'s click digest is gated off MSVC), so those
+    /// two are pinned against the f64 closed form with a tolerance instead.
+    ///
+    /// Mutation: dropping `Crush`'s `max(1.0)` floor fails the drive-0.5 row
+    /// (round(0.6·0.5) is 0, not 1); dropping Atan's `2/π`
+    /// rescale fails its row by ~0.36; swapping Softsign's `abs` for the signed
+    /// value fails the −3 row (−3/−2 = 1.5).
+    #[test]
+    fn curves_are_pinned() {
+        let exact = [
+            (ShapeKind::HardClip, 0.75, 2.0, 1.0),
+            (ShapeKind::HardClip, -0.2, 2.0, -0.4),
+            (ShapeKind::HardClip, -3.0, 1.0, -1.0),
+            (ShapeKind::Softsign, 1.0, 1.0, 0.5),
+            (ShapeKind::Softsign, -3.0, 1.0, -0.75),
+            (ShapeKind::Crush, 0.3, 4.0, 0.25),
+            // Drive below one level per unit floors to one.
+            (ShapeKind::Crush, 0.6, 0.5, 1.0),
+            (ShapeKind::Crush, 0.3, 0.5, 0.0),
+            // SoftCrush passes through each step's midpoint and each integer.
+            (ShapeKind::SoftCrush, 1.5, 1.0, 1.5),
+            (ShapeKind::SoftCrush, 1.0, 1.0, 1.0),
+            (ShapeKind::SoftCrush, 0.25, 2.0, 0.25),
+        ];
+        for (kind, x, drive, want) in exact {
+            let got = kind.apply(x, Drive(drive));
+            assert_eq!(
+                got.to_bits(),
+                f32::to_bits(want),
+                "{kind:?}({x}, drive {drive}) = {got}, want exactly {want}"
+            );
+        }
+
+        // Off the midpoint the S-curve is a rational: smooth9(1/4) is
+        // 12826 / 262144 exactly, so at hardness 1 a quarter step lands there.
+        let quarter = ShapeKind::SoftCrush.apply(0.25, Drive(1.0));
+        assert!((f64::from(quarter) - 12826.0 / 262144.0).abs() < 1e-7);
+
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let closed = [
+            (ShapeKind::Tanh, 0.5f32, 2.0f32, 1.0f64.tanh()),
+            (ShapeKind::Tanh, -1.0, 3.0, (-3.0f64).tanh()),
+            (ShapeKind::Atan, 1.0, 1.0, half_pi.atan() / half_pi),
+            (
+                ShapeKind::Atan,
+                -0.5,
+                4.0,
+                (-half_pi * 2.0).atan() / half_pi,
+            ),
+        ];
+        for (kind, x, drive, want) in closed {
+            let got = f64::from(kind.apply(x, Drive(drive)));
+            assert!(
+                (got - want).abs() < 1e-6,
+                "{kind:?}({x}, drive {drive}) = {got}, want {want}"
+            );
         }
     }
 }

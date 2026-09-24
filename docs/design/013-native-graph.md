@@ -269,26 +269,54 @@ Each phase ships green and is reversible up to phase 4.
 
 ### Phase 0 — shrink the surface (no behaviour change)
 
-- Rewrite `tutti_polysynth::synth_voice::build_sub_voice_dsp`
-  (`synth_voice.rs:585-656`, the **only** production operator-DSL use) as a
-  plain node. This alone removes the need for `An`/`AudioNode`/`combinator`.
-- Replace test/example DSL (`sine_hz`, `dc`, `pass()|pass()`, `split::<U2>`,
-  ~15 bevy sites, tutti-export tests/examples) with a `tutti-nodes::testing`
-  module of tiny nodes.
-- Delete legacy trait methods with no callers: `get_mono`, `get_stereo`,
-  `filter_*`, `response*`, `display`, `ping`, `set_hash`.
+Status as of 2026-09-25: **done**, with two items deliberately narrower than
+planned (the trait methods, see below). What each item became:
+
+- **Done** — `tutti_polysynth::synth_voice::build_sub_voice_dsp`, the **only**
+  production operator-DSL use, is gone: the polysynth renders from its own SoA
+  voice bank (`bank.rs`, `kernel.rs`). This removed the need for
+  `An`/`AudioNode`/`combinator` outside the fork.
+- **Done** — test/example DSL (`sine_hz`, `dc`, `pass()|pass()`,
+  `split::<U2>`, the bevy sites, tutti-export tests/examples) is
+  `tutti_nodes::testing`, a module of tiny nodes behind that crate's
+  dev-only `testing` feature.
+- **Done, narrower** — legacy `AudioUnit` methods. `get_mono`, `get_stereo`,
+  `filter_mono`, `filter_stereo`, `response`, `response_db` and `display` had
+  no caller outside the fork and left the trait; they are
+  `fundsp_tutti::audiounit::AudioUnitExt`, blanket-implemented for the fork's
+  own tests and examples. `footprint` is now defaulted (`size_of_val`), since
+  only `display` and tests read it; the existing overrides go in Phase 4.
+  **`ping` and `set_hash` stay**: the survey's "no callers" missed a dynamic
+  one. `Net::determine_order` calls `ping` through `Box<dyn AudioUnit>` on
+  every reorder, and that is how an `An<X>` generator held in a `Net` gets
+  its seed via `set_hash`. No engine node overrides either, so they are inert
+  for the engine; they go with `Net` in Phase 5.
 - Rehome what is really used from the fork:
-  - `Wave`/`WaveAsset`/`WaveMetadata`/`read.rs`/`FileIn` (`stream.rs`) →
-    `tutti-io` or a `tutti-wave` crate (~2.1k lines; `FileIn` already
-    implements our `AudioIn`)
-  - shaper curves (`shape.rs`), moog, 4 SVF modes, sine/polyblep/wavetable,
-    pink, `adsr_live` → `tutti-nodes::kernel` (~1.5–2.5k lines trimmed)
-  - `real_fft`/`inverse_fft` → call `microfft` directly
-  - `Fade` → the new graph crate
-- Fix the doc drift the survey found: `LiveGraph` docs
-  (`bevy-tutti/src/graph/topology.rs:114`), `tutti-core/src/topology.rs:20-27`,
-  and the "27 `node_as` sites" claim at `tutti-core/src/lib.rs:156` (28 by
-  grep today, 23 outside comments/tests).
+  - **Done** — `Wave`, `WaveAsset`, `WaveMetadata`, `WaveError`, `read.rs`'s
+    decode, `FileIn` (`stream.rs`) and tutti-core's `codec.rs` →
+    **`tutti-io`** (decision 5), with the `wav`/`flac`/`mp3`/`ogg` features
+    and a `bevy` feature for `WaveAsset`. `tutti-core` no longer has codec
+    features. `Wave` was trimmed to the buffer the engine uses (no
+    render/filter/resample/edit methods; `resample.rs` was not needed), and
+    `tutti-io/tests/decode_golden.rs` pins decode output bit-for-bit against
+    fixtures in `assets/audio/`, recorded from the fork before the move. The
+    fork keeps its own `Wave` for its internal nodes and no longer decodes.
+    One behaviour change, a fix the golden test found: `FileIn` read zero
+    frames from any Ogg Vorbis file (a zero-frame first packet was taken for
+    end-of-stream).
+  - **Done, elsewhere** — shaper curves are `tutti_nodes::ShapeKind::apply`;
+    the oscillators, noise and ADSR the polysynth needed are
+    `tutti-polysynth`'s own `kernel.rs`/`bank.rs` rather than a
+    `tutti-nodes::kernel`; moog and the SVF modes are the bank's own ladder
+    and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
+  - **Done** — `real_fft`/`inverse_fft`: the sampler's vocoder calls
+    `microfft` directly (`stretch/fft.rs`).
+  - **Done, for now in `tutti-core`** — `Fade` is `tutti_core::CrossfadeCurve`;
+    it moves to the graph crate when that exists.
+- **Done** — doc drift: the `LiveGraph` docs
+  (`bevy-tutti/src/graph/topology.rs`), `tutti-core/src/topology.rs`'s "what
+  this does not do", and the "27 `node_as` sites" count in `tutti-core/src/lib.rs`
+  (now named by role, not counted), plus neighbouring post-0b drift.
 
 ### Phase 0b — re-exports that tutti already does better
 
@@ -343,11 +371,11 @@ dropped:
   `bevy-tutti/src/engine/build.rs` and `midi-runtime/.../post_block.rs`
   (`sink`). Add a `tutti-nodes::testing` module (`Const`, `Sine`, `Through<N>`,
   `Sink<N>`), with widths taken from `ChannelLayout`.
-- **`Wave`, `FileIn`, `WaveAsset`, `WaveMetadata`, `WaveError`**: rehome, as
-  listed in Phase 0. The sampler uses `Wave` only as a resident buffer
-  (`new`/`zero`/`from_samples`/`at`/`load`/`probe_metadata`), so a tutti-owned
-  planar sample buffer plus a symphonia decode is smaller than the 855-line
-  original.
+- **`Wave`, `FileIn`, `WaveAsset`, `WaveMetadata`, `WaveError`**: rehomed
+  to `tutti-io` in Phase 0 (see there). The sampler uses `Wave` only as a
+  resident buffer (`new`/`zero`/`from_samples`/`at`/`load`/`probe_metadata`),
+  so the moved `Wave` is that planar buffer plus the symphonia decode, not the
+  855-line original.
 
 After 0b, `tutti_core::dsp` holds only `Net`, `NodeId`, `Source` and the
 combinators the polysynth still needs until its rewrite. Both umbrellas stop
@@ -609,7 +637,7 @@ when `tick` goes. Replace it with the reference interpreter run at block size
 The owner delegated these on 2026-09-24. The migration uses the proposed
 option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
 ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
-now. Item 5 is decided when that phase runs.
+now. Item 5 was decided when Phase 0 ran: `tutti-io`.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
 2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`
@@ -635,6 +663,10 @@ now. Item 5 is decided when that phase runs.
 4. **Events as graph ports** (proposed) vs a side channel. Ports make PDC of
    MIDI/automation fall out of the same pass.
 5. **Where `Wave`/`FileIn` land** — `tutti-io` vs a dedicated crate.
+   **Decided: `tutti-io`.** `FileIn` is an `AudioIn` edge, the read-side twin
+   of `WavOut`, and decoding is file I/O. `tutti-io` depends only on
+   `tutti-core`, so the sampler, export and bevy-tutti take it without a
+   cycle.
 6. **Events fan-in.** Layering a keyboard and a clip means two producers feed
    one events input, so fan-in is the normal case. Options:
    - allow fan-in on `Events` ports only, with a deterministic merge by

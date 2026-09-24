@@ -18,7 +18,9 @@
 //! `n` nodes that do no work (a `Net` unit whose `process` is empty; a native
 //! node that returns `Status::Modified` on its in-place channel; the same
 //! empty unit behind `Legacy`, which still copies). The per-node figure is the
-//! slope between `n = 1` and `n = 128`.
+//! slope between `n = 1` and `n = 128`. `overhead_form/<form>` does the same
+//! for each of the executor's borrow forms (native nodes only): the in-place
+//! and split direct forms, the audio walk and the general walk.
 //!
 //! The shapes mirror `tutti-nodes/benches/engine_render.rs`: `nodes/<depth>`
 //! (a chain of filters off one source) and `block_size/<frames>` (a fixed
@@ -535,11 +537,128 @@ fn bench_overhead(c: &mut Criterion) {
     compare(c, "overhead", &cases);
 }
 
+// ---- per-form overhead (native only) ----------------------------------------
+
+/// A do-nothing node of a chosen shape, to time each of the executor's
+/// borrow forms: `in_place` aliases every channel (otherwise the node writes
+/// nothing, so its output holds stale samples the bench never reads), and
+/// `events` adds unconnected event inputs, which moves it to the general
+/// path.
+struct FormNop {
+    width: u16,
+    in_place: bool,
+    events: u16,
+}
+
+impl Node for FormNop {
+    fn shape(&self) -> Shape {
+        let ch = ChannelLayout::from_count(self.width);
+        let s = Shape::audio(ch, ch).with_events(self.events, 0);
+        if self.in_place {
+            s.with_in_place()
+        } else {
+            s
+        }
+    }
+    fn prepare(&mut self, _p: &Prepare) {}
+    fn process(&mut self, _cx: &Cx<'_>, _io: Io<'_>) -> Status {
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A chain of `n` [`FormNop`]s like `nop`, fed by as many global inputs.
+fn form_executor(n: usize, nop: impl Fn() -> FormNop) -> Executor {
+    let prepare = Prepare::new(SampleRate(SR), Samples(MAX_BLOCK));
+    let (mut ed, mut exec) = Editor::new(prepare);
+    let width = nop().width;
+    ed.spec_mut().topology.inputs = ChannelLayout::from_count(width);
+    for i in 0..n {
+        let k = NodeKey(i as u64);
+        ed.insert(k, "nop", Box::new(nop()) as Box<dyn Node>);
+        for c in 0..width {
+            let from = if i == 0 {
+                Source::Global(c)
+            } else {
+                Source::Node(OutPort {
+                    node: NodeKey(i as u64 - 1),
+                    port: c,
+                })
+            };
+            ed.spec_mut()
+                .topology
+                .edges
+                .insert(InPort { node: k, port: c }, Edge::Direct(from));
+        }
+    }
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(n as u64 - 1),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    exec
+}
+
+/// The fixed per-node cost of each borrow form, at 64 frames: the slope
+/// between 1 and 128 nodes, as in `overhead`. `in-place` is the `overhead`
+/// group's native row; `split` is one channel in two slots; `audio` is two
+/// in-place channels (the presorted borrow walk); `general` is one in-place
+/// channel plus an unconnected event input (the walk with event tables).
+fn bench_overhead_forms(c: &mut Criterion) {
+    let mut g = c.benchmark_group("overhead_form");
+    let frames = 64;
+    let forms: [(&str, fn() -> FormNop); 4] = [
+        ("in-place", || FormNop {
+            width: 1,
+            in_place: true,
+            events: 0,
+        }),
+        ("split", || FormNop {
+            width: 1,
+            in_place: false,
+            events: 0,
+        }),
+        ("audio", || FormNop {
+            width: 2,
+            in_place: true,
+            events: 0,
+        }),
+        ("general", || FormNop {
+            width: 1,
+            in_place: true,
+            events: 1,
+        }),
+    ];
+    let input = vec![0.25f32; MAX_BLOCK];
+    let mut out = vec![0.0f32; MAX_BLOCK];
+    for (name, nop) in forms {
+        for n in [1usize, 128] {
+            let mut exec = form_executor(n, nop);
+            let width = nop().width as usize;
+            g.bench_function(BenchmarkId::new(name, format!("{n}-nodes/{frames}")), |b| {
+                b.iter(|| {
+                    let ins: [&[f32]; 2] = [&input[..frames], &input[..frames]];
+                    exec.process(
+                        frames,
+                        &Transport::default(),
+                        &ins[..width],
+                        &mut [black_box(&mut out[..frames])],
+                    );
+                });
+            });
+        }
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_depth,
     bench_block_size,
     bench_fan,
-    bench_overhead
+    bench_overhead,
+    bench_overhead_forms
 );
 criterion_main!(benches);

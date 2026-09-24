@@ -493,7 +493,8 @@ event writers. Silent/constant flags are one byte per slot. Separately,
 1.5× slower than the same arithmetic in fundsp.
 
 **Per-node fixed cost** (a chain of nodes that do no work; the slope
-between 1 and 128 nodes):
+between 1 and 128 nodes). The graph rows are a mono node aliased in place,
+so they time the `InPlace` form, the cheapest path:
 
 | | instructions / node | ns / node, 64-frame block | ns / node, 512-frame block |
 |---|---|---|---|
@@ -501,9 +502,27 @@ between 1 and 128 nodes):
 | graph, native node, before | ~486 | 22.1 | 21.7 |
 | graph, native node, after | ~125 | 5.3 | 5.4 |
 
+**By borrow form** (after; native no-op nodes at 64 frames, `overhead_form`
+bench):
+
+| form | shape | instructions / node | ns / node |
+|---|---|---|---|
+| `InPlace` | 1 channel, in place | ~125 | 5.2 |
+| `Split` | 1 channel, two slots | ~172 | 8.8 |
+| `Audio` | 2 channels, in place | ~473 | 17.7 |
+| `General` | 1 channel in place + 1 event input | ~533 | 33.4 |
+
+**The walk forms are the next target.** A stereo node, the commonest real
+shape, takes the `Audio` walk, and pays about 3× the direct forms. About
+160 of its instructions are `borrow_sorted` itself: the group scan, the
+closures, and a checked `split_at_mut` and cast per request. The rest is
+the stack tables and the per-port loops, which do not fold at a runtime
+width. A two-channel direct form, or a leaner walk, is the obvious next
+cut. The `General` form adds the event tables on top of that.
+
 **Target missed at 64 frames.** Per 64-frame block the executor is still
 about 1.4× `Net`'s per-node cost when the node does no work. Most of the
-remaining ~125 instructions are the contract, not the executor: building
+remaining ~125 instructions (the `InPlace` form) are the contract, not the executor: building
 the `Io` (twelve words), the 24-byte `Status` coming back through memory,
 and the silence bookkeeping `Net` does not have (input masks, the skip
 decision, output flags). Getting under `Net` would need a leaner `Io` or

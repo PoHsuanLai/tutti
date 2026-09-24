@@ -130,10 +130,23 @@ pub mod dsp {
     //! This used to be `pub use fundsp::prelude::*`, which made the wall one of
     //! *dependency direction* and not of surface area: a consumer could not name
     //! `fundsp`, but it could reach anything the prelude exports. It is now an
-    //! explicit list of **44** symbols, every one of which had a caller when it
-    //! was written. Anything not named below is unreachable outside this crate,
-    //! and adding a symbol is a decision someone makes rather than a side effect
-    //! of the prelude growing. The groups are the argument for why each is here.
+    //! explicit list of **19** symbols, every one of which has a caller. Anything
+    //! not named below is unreachable outside this crate, and adding a symbol is
+    //! a decision someone makes rather than a side effect of the prelude
+    //! growing. The groups are the argument for why each is here.
+    //!
+    //! It was 44 until design doc 013's Phase 0b removed every name the engine
+    //! already does better: the test stimulus (`sine_hz`, `dc`-as-a-stimulus,
+    //! `pass`, `split`, `sink`, …) is `tutti_nodes::testing`; the filters,
+    //! limiter, panner, summing bus and reverb are `tutti-nodes`' own nodes;
+    //! the distortion curves are `tutti_nodes::ShapeKind::apply`; the default
+    //! rate is `SampleRate::DEFAULT`; `F32x` and the `U1`/`U6` arities gave way
+    //! to `BufferVec`. (The crate root lost the fork's `Fade`, now
+    //! [`CrossfadeCurve`](crate::CrossfadeCurve), its FFT, now the sampler's
+    //! own, and its second copy of `NodeId`/`Source` in the same pass.)
+    //! What remains is the runtime (`Net`, `NodeId`, `Source`) and what
+    //! `tutti-polysynth` still builds from until its voice-engine rewrite —
+    //! after which the runtime is all this module holds.
     //!
     //! **Prefer a Tutti name where one exists.** The node contract is
     //! `tutti-node`'s and is re-exported at the crate root, so a node writes
@@ -218,14 +231,13 @@ pub mod dsp {
     // need an argument; the default answer for new work is a `Topology`, or an
     // `impl AudioUnit`.
     //
-    // The remaining users are tests and examples building a stimulus graph in
-    // one line — a legitimate use, and the reason `sine_hz`/`dc`/`pass` have the
-    // counts they do. `sum` is the one that is *structural* rather than a
-    // generator or filter: `Net` holds one source per input port, so a fan-in
-    // has to be an explicit adder, and `sum(a, b)` is that. It is deliberately
-    // not `join`, which AVERAGES — a PDC test summing two aligned arrivals of
-    // the same impulse would then read the same as either arriving alone, which
-    // is the thing it exists to rule out.
+    // That site, and the polysynth's own tests, are the only callers left:
+    // every name here is one `build_sub_voice_dsp` uses, and the list goes when
+    // the polysynth's voice engine is rewritten. Tests and examples that need
+    // a stimulus build it from `tutti_nodes::testing` (`Const`, `Osc`,
+    // `Through`, `Split`, `Sink`), and a fan-in is `tutti_nodes::ChannelSumNode`,
+    // which sums — fundsp's `join` AVERAGES, so a PDC test summing two aligned
+    // arrivals of one impulse would read the same as either arriving alone.
     //
     // `An<X>` — the `AudioNode`→`AudioUnit` bridge — is deliberately NOT
     // exported. Nothing outside the fork implements `AudioNode` any more, so the

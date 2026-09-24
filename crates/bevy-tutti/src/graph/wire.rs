@@ -417,7 +417,7 @@ pub fn rebuild(
     // that the value **cannot see a re-bind** — `insert`ing a different
     // `AudioNode` on the same entity changes which `NodeId` the declaration
     // resolves to while leaving the entity, and therefore the key, alone. If the
-    // replacement has the same shape (two `sine_hz` nodes do), the two values
+    // replacement has the same shape (two mono oscillators do), the two values
     // are equal and every edge naming that entity would keep pointing at the
     // retired node — silently, since nothing renders it.
     //

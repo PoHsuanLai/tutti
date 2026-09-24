@@ -224,7 +224,7 @@ mod master_bus {
         );
         assert_eq!(
             net.output_source(1),
-            // `sine_hz` has one output, so `channel % node_outputs` wraps both
+            // a mono `Osc` has one output, so `channel % node_outputs` wraps both
             // global channels onto port 0.
             Source::Local(second, 0),
             "on every channel, not just channel 0"

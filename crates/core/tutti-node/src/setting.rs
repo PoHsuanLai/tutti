@@ -138,22 +138,18 @@ pub struct Setting {
     address: ArrayVec<[Address; 4]>,
 }
 
+// The constructors cover the variants something in the tree still sends: the
+// engine's own path is `value` (every `UnitParam` travels as a `Value`), and
+// `center`, `biquad`, `pan`, `phase`, `seed` and `interval` are the fork's.
+// `center_q`, `center_q_gain`, `delay`, `time`, `roughness`, `variability` and
+// `attack_release` had no caller anywhere — fork included — and were removed
+// (design doc 013, Phase 0b). Their `Parameter` variants stay only because
+// fork nodes still match on them in `set`; the whole channel goes when params
+// move to `Controls` (Phase 3).
 impl Setting {
     pub fn center(center: f32) -> Self {
         Self {
             parameter: Parameter::Center(center),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn center_q(center: f32, q: f32) -> Self {
-        Self {
-            parameter: Parameter::CenterQ(center, q),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn center_q_gain(center: f32, q: f32, gain: f32) -> Self {
-        Self {
-            parameter: Parameter::CenterQGain(center, q, gain),
             address: ArrayVec::new(),
         }
     }
@@ -169,39 +165,9 @@ impl Setting {
             address: ArrayVec::new(),
         }
     }
-    pub fn delay(delay: f32) -> Self {
-        Self {
-            parameter: Parameter::Delay(delay),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn time(time: f32) -> Self {
-        Self {
-            parameter: Parameter::Time(time),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn roughness(roughness: f32) -> Self {
-        Self {
-            parameter: Parameter::Roughness(roughness),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn variability(variability: f32) -> Self {
-        Self {
-            parameter: Parameter::Variability(variability),
-            address: ArrayVec::new(),
-        }
-    }
     pub fn pan(pan: f32) -> Self {
         Self {
             parameter: Parameter::Pan(pan),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn attack_release(attack: f32, release: f32) -> Self {
-        Self {
-            parameter: Parameter::AttackRelease(attack, release),
             address: ArrayVec::new(),
         }
     }

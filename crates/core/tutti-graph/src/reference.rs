@@ -65,7 +65,7 @@ struct RefFifo {
     clock: u64,
 }
 
-/// The naive interpreter. See the [module docs](self).
+/// The naive interpreter. See the `reference` module's docs (`src/reference.rs`).
 pub struct Reference {
     prepare: Prepare,
     graph: Option<ValidGraph>,

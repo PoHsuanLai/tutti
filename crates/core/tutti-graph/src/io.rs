@@ -34,7 +34,7 @@ pub enum PortKind {
     Event,
 }
 
-/// One node call's buffers. See the [module docs](self).
+/// One node call's buffers. See the `io` module's docs (`src/io.rs`).
 pub struct Io<'a> {
     frames: usize,
     inputs: &'a [&'a [f32]],

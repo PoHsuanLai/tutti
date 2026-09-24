@@ -74,7 +74,7 @@ impl EventEdge {
 
 /// The graph value `compile` takes.
 ///
-/// See the [module docs](self) for why this wraps `Topology` rather than
+/// See the `spec` module's docs (`src/spec.rs`) for why this wraps `Topology` rather than
 /// extending it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GraphSpec {

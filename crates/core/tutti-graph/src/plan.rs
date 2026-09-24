@@ -81,7 +81,7 @@ impl Span {
 /// so it survives any recompile that keeps the key (doc 013 §3 step 3: "an
 /// unrelated edit does not click"), where fundsp re-minted — and zeroed —
 /// every `PdcDelay` vertex on every compensation run. The key names both ends
-/// of the wire; see the [module docs](self) for why.
+/// of the wire; see the `plan` module's docs (`src/plan.rs`) for why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DelayKey {
     /// An audio input port, delayed to align with the node's latest input.

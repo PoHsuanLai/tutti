@@ -88,7 +88,7 @@ impl std::fmt::Display for CommitError {
 impl std::error::Error for CommitError {}
 
 /// The control-side half: the graph value, the units not yet shipped, and the
-/// plans sent. See the [module docs](self).
+/// plans sent. See the `editor` module's docs (`src/editor.rs`).
 pub struct Editor {
     channels: Channels,
     /// Commits sent and not yet drained back.

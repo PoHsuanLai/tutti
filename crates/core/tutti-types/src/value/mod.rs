@@ -5,6 +5,8 @@
 //!   "What kind of value this is."
 //! - [`param`] — [`Param`], a lock-free atomic cell holding a `Unit` value,
 //!   shareable with the audio thread (load / store / handle).
+//! - [`frame`] — [`Frame`], an absolute frame position (a count's affine
+//!   partner), and [`At`], when a scheduled command takes effect.
 //! - [`samples`] — [`Samples`], an integer frame count. A discrete quantity,
 //!   deliberately *not* a `Unit` (it is compared and added, not interpolated
 //!   or automated).
@@ -20,6 +22,7 @@ pub mod midi_channel;
 pub mod midi_group;
 pub mod note;
 
+pub mod frame;
 pub mod latency;
 pub mod param;
 pub mod samples;
@@ -27,6 +30,7 @@ pub mod tail;
 pub mod unit_param;
 
 pub use cc_number::CCNumber;
+pub use frame::{At, Frame};
 pub use latency::Latency;
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;

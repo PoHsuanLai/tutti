@@ -23,6 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use tutti_types::graph::{Invalid, Valid};
 use tutti_types::{NodeKey, Samples, Topology};
 
+use crate::node::Resolution;
+
 /// An event **input** port of a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventIn {
@@ -88,6 +90,10 @@ pub struct GraphSpec {
     /// unit" — a rebind or a replacement (doc 013 §1, `NodeSpec.gen`). Absent
     /// means generation 0.
     pub generations: BTreeMap<NodeKey, u32>,
+    /// Event edges that require their sink to honour offsets at least this
+    /// finely, keyed `(sink, source)` — see
+    /// [`require_resolution`](Self::require_resolution).
+    pub required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
 }
 
 impl GraphSpec {
@@ -108,6 +114,47 @@ impl GraphSpec {
     /// Append one event source to `at`'s merge list.
     pub fn connect_events(&mut self, at: EventIn, edge: EventEdge) {
         self.events.entry(at).or_default().push(edge);
+    }
+
+    /// Mark the event edge `from → at` as requiring its sink to honour event
+    /// offsets at least as finely as `resolution` (doc 013 §6 item 5).
+    ///
+    /// **The rule:** `compile` refuses a marked edge whose sink declares a
+    /// coarser [`Shape::event_resolution`](crate::Shape::event_resolution)
+    /// ([`CompileError::ResolutionTooCoarse`](crate::CompileError::ResolutionTooCoarse)).
+    /// Unmarked edges are never refused — a note into a block-rate node is
+    /// late by at most a block, which is a choice a patch may make; sample-
+    /// accurate automation into one silently is not. So the edge carrying
+    /// [`ParamRamp`](crate::ParamRamp) automation is the one to mark
+    /// [`Resolution::Sample`]. A marked edge must exist ([`validate`](Self::validate)
+    /// checks it): remove edges with [`disconnect_events`](Self::disconnect_events),
+    /// which drops the mark too (editing `events` by hand does not), or drop
+    /// a mark alone with [`unrequire_resolution`](Self::unrequire_resolution).
+    pub fn require_resolution(&mut self, at: EventIn, from: EventOut, resolution: Resolution) {
+        self.required_resolution.insert((at, from), resolution);
+    }
+
+    /// Drop the resolution mark on `from → at`, if any.
+    pub fn unrequire_resolution(&mut self, at: EventIn, from: EventOut) {
+        self.required_resolution.remove(&(at, from));
+    }
+
+    /// Remove the event edge `from → at` (direct or feedback), and its
+    /// resolution mark with it — so a disconnect can never leave a stale mark
+    /// that fails every later [`validate`](Self::validate). Returns whether an
+    /// edge was removed.
+    pub fn disconnect_events(&mut self, at: EventIn, from: EventOut) -> bool {
+        let Some(sources) = self.events.get_mut(&at) else {
+            return false;
+        };
+        let before = sources.len();
+        sources.retain(|e| e.from() != from);
+        let removed = sources.len() != before;
+        if sources.is_empty() {
+            self.events.remove(&at);
+        }
+        self.required_resolution.remove(&(at, from));
+        removed
     }
 
     /// Check everything that does not need the nodes' [`Shape`](crate::Shape)s.
@@ -158,12 +205,22 @@ impl GraphSpec {
                 errs.push(GraphInvalid::UnknownGeneration { node: key });
             }
         }
+        for &(at, from) in self.required_resolution.keys() {
+            let wired = self
+                .events
+                .get(&at)
+                .is_some_and(|v| v.iter().any(|e| e.from() == from));
+            if !wired {
+                errs.push(GraphInvalid::RequirementWithoutEdge { at, from });
+            }
+        }
 
         match valid {
             Some(valid) if errs.is_empty() => Ok(ValidGraph {
                 valid,
                 events: self.events.clone(),
                 generations: self.generations.clone(),
+                required_resolution: self.required_resolution.clone(),
             }),
             _ => Err(errs),
         }
@@ -197,6 +254,14 @@ pub enum GraphInvalid {
         /// The key.
         node: NodeKey,
     },
+    /// A resolution requirement names an event edge that is not in the
+    /// graph — a stale mark, which would otherwise pass unchecked.
+    RequirementWithoutEdge {
+        /// The sink port.
+        at: EventIn,
+        /// The source port.
+        from: EventOut,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -205,6 +270,7 @@ pub struct ValidGraph {
     valid: Valid,
     events: BTreeMap<EventIn, Vec<EventEdge>>,
     generations: BTreeMap<NodeKey, u32>,
+    required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
 }
 
 impl ValidGraph {
@@ -221,5 +287,10 @@ impl ValidGraph {
     /// The generation of `node`: 0 unless one was set.
     pub fn generation(&self, node: NodeKey) -> u32 {
         self.generations.get(&node).copied().unwrap_or(0)
+    }
+
+    /// The checked resolution requirements, keyed `(sink, source)`.
+    pub fn required_resolution(&self) -> &BTreeMap<(EventIn, EventOut), Resolution> {
+        &self.required_resolution
     }
 }

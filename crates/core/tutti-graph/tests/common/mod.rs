@@ -18,7 +18,7 @@ use tutti_graph::{
     compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
     Shapes, Status, Transport, Ump, ValidGraph,
 };
-use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 
 pub const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -107,7 +107,9 @@ pub struct TestNode {
     prev: f32,
     count: f32,
     state: f32,
-    pending: VecDeque<(u64, Event)>,
+    pending: VecDeque<(Frame, Event)>,
+    /// The rate last prepared for.
+    rate: Option<f64>,
     calls: Arc<AtomicUsize>,
 }
 
@@ -129,6 +131,7 @@ impl TestNode {
             count: 0.0,
             state: 0.0,
             pending: VecDeque::with_capacity(1024),
+            rate: None,
             calls,
         }
     }
@@ -181,7 +184,18 @@ impl Node for TestNode {
         }
     }
 
-    fn prepare(&mut self, _p: &Prepare) {}
+    fn prepare(&mut self, p: &Prepare) {
+        // `Frame` means samples at the current rate: an `EventLag` holding
+        // absolute due frames moves them to the same wall-clock time when the
+        // rate changes, as the executor moves its own clock.
+        let rate = p.sample_rate().get();
+        if let Some(old) = self.rate.filter(|&old| old != rate) {
+            for (due, _) in &mut self.pending {
+                *due = Frame((due.get() as f64 * rate / old).round() as u64);
+            }
+        }
+        self.rate = Some(rate);
+    }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -235,13 +249,10 @@ impl Node for TestNode {
                 Status::Modified
             }
             Kind::Emitter { period, phase } => {
-                let start = cx.env.frame;
-                for i in 0..n as u64 {
-                    let f = start + i;
+                for at in cx.env.offsets() {
+                    let f = cx.env.frame_at(at).get();
                     if (f + phase).is_multiple_of(period) {
-                        let _ = io
-                            .event_out(0)
-                            .push(Event::midi(i as u32, [f as u32, 0, 0, 0]));
+                        let _ = io.event_out(0).push(Event::midi(at, [f as u32, 0, 0, 0]));
                         self.count += 1.0;
                     }
                 }
@@ -255,7 +266,7 @@ impl Node for TestNode {
                 for i in 0..n {
                     for (p, h) in heads.iter_mut().enumerate().take(inputs as usize) {
                         let evs = io.events(p);
-                        while *h < evs.len() && evs[*h].offset as usize == i {
+                        while *h < evs.len() && evs[*h].offset.index() == i {
                             if let EventKind::Midi(Ump(w)) = evs[*h].kind {
                                 self.state = 0.5 * self.state + (w[0] % 97) as f32 + p as f32;
                             }
@@ -267,7 +278,6 @@ impl Node for TestNode {
                 Status::Modified
             }
             Kind::EventLag { latency } => {
-                let start = cx.env.frame;
                 for e in io.events(0) {
                     // Word 1 counts hops. Forwarding at most `MAX_HOPS`
                     // times bounds how far an event feedback loop can
@@ -284,18 +294,25 @@ impl Node for TestNode {
                     }
                     w[1] += 1;
                     let fwd = Event::midi(e.offset, w);
-                    self.pending
-                        .push_back((start + e.offset as u64 + latency as u64, fwd));
+                    // Kept sorted by due frame (stably): after a rate change
+                    // rescaled the older entries, new ones can fall due
+                    // before them. `insert` stays within the reserved
+                    // capacity, so it does not allocate.
+                    let due = cx.env.frame_at(e.offset) + Samples(latency);
+                    let at = self.pending.partition_point(|&(d, _)| d <= due);
+                    self.pending.insert(at, (due, fwd));
                 }
                 while let Some(&(due, e)) = self.pending.front() {
-                    if due >= start + n as u64 {
-                        break;
-                    }
+                    // Queued in due order. One behind the block — the clock
+                    // jumped: a re-prepare's suspension, or a rate change
+                    // rescaling it — goes out at once rather than never.
+                    let offset = match cx.env.offset_of(due) {
+                        Some(o) => o,
+                        None if due < cx.env.frame => tutti_graph::Offset::ZERO,
+                        None => break,
+                    };
                     self.pending.pop_front();
-                    let _ = io.event_out(0).push(Event {
-                        offset: (due - start) as u32,
-                        ..e
-                    });
+                    let _ = io.event_out(0).push(Event { offset, ..e });
                 }
                 Status::Modified
             }
@@ -303,7 +320,7 @@ impl Node for TestNode {
                 let base =
                     cx.arrival.samples().get() as f32 + cx.env.transport.tempo.get() as f32 * 1e-3;
                 for (i, o) in io.output(0).iter_mut().enumerate() {
-                    *o = ((cx.env.frame + i as u64) % 1000) as f32 * 1e-3 + base;
+                    *o = ((cx.env.frame.get() + i as u64) % 1000) as f32 * 1e-3 + base;
                 }
                 Status::Modified
             }
@@ -464,6 +481,17 @@ impl Pair {
             playing: true,
             ..Transport::default()
         };
+        self.block_at(frames, input, &transport)
+    }
+
+    /// `block`, under a transport the caller moves.
+    pub fn block_at(
+        &mut self,
+        frames: usize,
+        input: &[f32],
+        transport: &Transport,
+    ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+        let transport = *transport;
         // Channel `c` of the graph input is the signal scaled by 2^-c: exact,
         // and distinct per channel.
         let chans: Vec<Vec<f32>> = (0..self.inputs.max(1))

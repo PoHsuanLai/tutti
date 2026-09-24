@@ -45,12 +45,13 @@ pub use rt::{
 
 // Value vocabulary.
 pub use value::{
-    Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
-    CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
-    Feedback, Hz, Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange,
-    Pan, Param, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlaybackRate, Radians,
-    ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
-    StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
+    Amplitude, ArcDegrees, At, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration,
+    Bpm, CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
+    Feedback, Frame, Hz, Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note,
+    NoteNumberOutOfRange, Pan, Param, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass,
+    PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds,
+    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam,
+    UnitParamOutOfRange, Velocity, Q,
 };
 
 // Channel layout — how many channels.
@@ -99,9 +100,9 @@ pub use meter::{
 /// types `NotOnMidiScale` / `UnitParamOutOfRange`.
 pub mod prelude {
     pub use crate::value::{
-        Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Hz, MidiChannel, MidiGroup,
-        Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, SamplePosition, SampleRate,
-        Samples, Seconds, Semitones, Tail, UnitParam, Velocity, Q,
+        Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Frame, Hz, MidiChannel,
+        MidiGroup, Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, SamplePosition,
+        SampleRate, Samples, Seconds, Semitones, Tail, UnitParam, Velocity, Q,
     };
 
     pub use crate::channels::ChannelLayout;

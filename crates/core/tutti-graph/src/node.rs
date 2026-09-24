@@ -21,7 +21,7 @@
 //!   offsets is the node's job (doc 013 §4: an out-of-process plugin's declared
 //!   pipeline latency is only constant if it sees whole blocks).
 
-use tutti_types::{Beat, Bpm, ChannelLayout, Latency, SampleRate, Samples, Tail};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 
 use crate::io::Io;
 
@@ -64,11 +64,56 @@ pub struct Shape {
     /// Opt-in because it changes what the node is handed: on an aliased
     /// channel the input arrives *already in the output buffer*.
     pub in_place: bool,
+    /// How finely the node honours the offsets of the events it is handed
+    /// (doc 013 §6 item 5). A declaration, not a request: the executor still
+    /// hands every node its sorted events and whole block, and the compiler
+    /// refuses an event edge that requires a finer resolution than its sink
+    /// declares (see [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution)).
+    pub event_resolution: Resolution,
+}
+
+/// How finely a node honours event offsets: the timing it promises for what
+/// arrives on its event inputs.
+///
+/// Ordered from finest to coarsest. A node written against
+/// [`Io::sub_blocks`](crate::Io::sub_blocks) is [`Sample`](Self::Sample) by
+/// construction; one bound by an engine that renders in fixed chunks declares
+/// the chunk (a rustysynth-backed SoundFont is `Frames(8)`); one that reads its
+/// events once per call is [`Block`](Self::Block).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Resolution {
+    /// Every event takes effect on its exact frame.
+    Sample,
+    /// Events take effect on the first frame of the `n`-frame chunk they fall
+    /// in, counted from the block's start. `n` is at least 1; `Frames(1)`
+    /// promises what `Sample` does.
+    Frames(u32),
+    /// Events take effect somewhere in the block they arrive in — whatever
+    /// the offset. Also the resolution of a node with no event inputs, whose
+    /// promise is vacuous.
+    Block,
+}
+
+impl Resolution {
+    /// Whether a node at this resolution honours an edge that requires
+    /// `required`: it is at least as fine.
+    ///
+    /// `Frames(n)` honours `Frames(m)` when `n <= m` — a finer chunk is still
+    /// inside the coarser one's promise — but never `Sample` unless `n == 1`.
+    pub const fn honours(self, required: Resolution) -> bool {
+        match (self, required) {
+            (Resolution::Sample, _) | (_, Resolution::Block) => true,
+            (Resolution::Frames(n), Resolution::Sample) => n <= 1,
+            (Resolution::Frames(n), Resolution::Frames(m)) => n <= m,
+            (Resolution::Block, _) => false,
+        }
+    }
 }
 
 impl Shape {
     /// A shape with these audio widths, no event ports, no latency, no tail,
-    /// and no in-place support.
+    /// no in-place support, and [`Resolution::Sample`] — a new node is
+    /// written to honour its event offsets, and says otherwise explicitly.
     pub const fn audio(audio_in: ChannelLayout, audio_out: ChannelLayout) -> Self {
         Self {
             audio_in,
@@ -78,6 +123,7 @@ impl Shape {
             latency: Latency::ZERO,
             tail: Tail::None,
             in_place: false,
+            event_resolution: Resolution::Sample,
         }
     }
 
@@ -134,6 +180,13 @@ impl Shape {
     #[must_use]
     pub const fn with_in_place(mut self) -> Self {
         self.in_place = true;
+        self
+    }
+
+    /// This shape, honouring event offsets only as finely as `resolution`.
+    #[must_use]
+    pub const fn with_event_resolution(mut self, resolution: Resolution) -> Self {
+        self.event_resolution = resolution;
         self
     }
 }
@@ -373,12 +426,14 @@ impl Default for Transport {
 /// `tutti-core/src/lib.rs:175-181` given a seam).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Env {
-    /// Frames the executor has rendered before this block.
+    /// The block's first frame on the executor's clock: frames rendered
+    /// before it.
     ///
-    /// `u64` and not `Samples`: `Samples` is `usize`, which on a 32-bit
-    /// target wraps after about a day at 48 kHz, and `SamplePosition` is an
-    /// `f64` playhead rather than a count.
-    pub frame: u64,
+    /// A [`Frame`] — an absolute position — and never an
+    /// [`Offset`](crate::Offset): the two convert only through this `Env`
+    /// ([`offset_of`](Self::offset_of), [`frame_at`](Self::frame_at)), so an
+    /// event cannot be stamped with one where the other was meant.
+    pub frame: Frame,
     /// The rate the graph runs at.
     pub sample_rate: SampleRate,
     /// This block's length.

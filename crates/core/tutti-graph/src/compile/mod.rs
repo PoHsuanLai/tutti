@@ -9,7 +9,9 @@
 //!    The shape is what the unit says about itself and the spec is what the
 //!    value says; if they disagree, one of them is stale, and compiling
 //!    either would make the latency folds over the value
-//!    (`tutti_types::latency::plan`) disagree with the plan.
+//!    (`tutti_types::latency::plan`) disagree with the plan. Every event
+//!    edge marked with a required resolution is checked against its sink's
+//!    declared `Shape::event_resolution`.
 //! 2. **SCC** ([`order::scc`]) over direct audio + event dependencies. A cycle
 //!    not broken by a feedback edge is [`CompileError::Cycle`], naming the
 //!    edges. A feedback edge becomes a read of a slot the executor fills from
@@ -55,7 +57,7 @@ use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
-use crate::node::{InPlaceMask, Prepare, Shape, MAX_PORTS};
+use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
 use crate::plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, NodeTables, Op, Placement, Plan,
     PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
@@ -144,6 +146,20 @@ pub enum CompileError {
         /// What the shape reports.
         shape: Tail,
     },
+    /// An event edge marked as requiring a resolution (see
+    /// [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution))
+    /// targets a node that declares a coarser one: sample-accurate automation
+    /// into a block-rate node, say.
+    ResolutionTooCoarse {
+        /// The sink port.
+        at: EventIn,
+        /// The source port.
+        from: EventOut,
+        /// What the edge requires.
+        required: Resolution,
+        /// What the sink declares.
+        sink: Resolution,
+    },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
     Cycle {
@@ -207,6 +223,17 @@ impl std::fmt::Display for CompileError {
                 f,
                 "node {} declares tail {declared:?} but its unit reports {shape:?}",
                 node.0
+            ),
+            Self::ResolutionTooCoarse {
+                at,
+                from,
+                required,
+                sink,
+            } => write!(
+                f,
+                "event edge from node {} port {} into node {} port {} requires {required:?} \
+                 timing, but the sink honours only {sink:?}",
+                from.node.0, from.port, at.node.0, at.port
             ),
             Self::Cycle { edges } => write!(f, "unbroken cycle through {} edges", edges.len()),
         }
@@ -405,6 +432,20 @@ pub fn compile(
                     from: Some(from),
                 });
             }
+        }
+    }
+
+    // Resolution: a marked edge's sink must honour what it requires (see
+    // `GraphSpec::require_resolution` for the rule, and why only marked edges).
+    for (&(at, from), &required) in graph.required_resolution() {
+        let sink = node_shapes[dense[&at.node]].event_resolution;
+        if !sink.honours(required) {
+            return Err(CompileError::ResolutionTooCoarse {
+                at,
+                from,
+                required,
+                sink,
+            });
         }
     }
 

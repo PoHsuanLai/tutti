@@ -21,6 +21,8 @@ use std::cell::Cell;
 use tutti_types::UnitParam;
 use tutti_types::{ParamAddr, ParamKey, Samples, Unit};
 
+use crate::time::Offset;
+
 /// Four raw Universal MIDI Packet words.
 ///
 /// The meaningful prefix is determined by the message type in the first word's
@@ -112,22 +114,24 @@ pub enum EventKind {
     Ramp(ParamRamp),
 }
 
-/// One event on an event port: a frame offset into the current block, and what
+/// One event on an event port: an offset into the current block, and what
 /// happens there.
 ///
-/// `offset` is frames from the start of the block the event is delivered in —
-/// always `< block length`. Slices of events handed to a node are sorted by it.
+/// `offset` is an [`Offset`] — a position inside the block the event is
+/// delivered in, never an absolute [`Frame`](tutti_types::Frame) (see the
+/// `time` module docs, `src/time.rs`). Slices of events handed to a node are
+/// sorted by it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Event {
-    /// Frames from the start of the block.
-    pub offset: u32,
+    /// Where in the block.
+    pub offset: Offset,
     /// The payload.
     pub kind: EventKind,
 }
 
 impl Event {
     /// A MIDI event at `offset`.
-    pub const fn midi(offset: u32, words: [u32; 4]) -> Self {
+    pub const fn midi(offset: Offset, words: [u32; 4]) -> Self {
         Self {
             offset,
             kind: EventKind::Midi(Ump(words)),
@@ -152,7 +156,7 @@ impl Event {
     }
 
     /// A parameter ramp starting at `offset`.
-    pub const fn ramp(offset: u32, ramp: ParamRamp) -> Self {
+    pub const fn ramp(offset: Offset, ramp: ParamRamp) -> Self {
         Self {
             offset,
             kind: EventKind::Ramp(ramp),
@@ -196,7 +200,7 @@ impl<'a> SortedEvents<'a> {
     /// `frames`.
     pub fn new(events: &'a [Event], frames: usize) -> Result<Self, EventOrderError> {
         for (i, e) in events.iter().enumerate() {
-            if e.offset as usize >= frames {
+            if e.offset.index() >= frames {
                 return Err(EventOrderError::OutOfBlock { at: i });
             }
             if i > 0 && events[i - 1].offset > e.offset {
@@ -209,7 +213,7 @@ impl<'a> SortedEvents<'a> {
     /// Sort `events` in place by offset (stably), then view them. Fails only
     /// when an offset is outside the block. Control side: may allocate.
     pub fn sort(events: &'a mut [Event], frames: usize) -> Result<Self, EventOrderError> {
-        if let Some(at) = events.iter().position(|e| e.offset as usize >= frames) {
+        if let Some(at) = events.iter().position(|e| e.offset.index() >= frames) {
             return Err(EventOrderError::OutOfBlock { at });
         }
         events.sort_by_key(|e| e.offset);
@@ -243,6 +247,65 @@ impl<'a> SortedEvents<'a> {
         self.events.iter()
     }
 }
+
+/// A block split at its event offsets: the iterator
+/// [`Io::sub_blocks`](crate::Io::sub_blocks) returns.
+///
+/// Yields `(range, events)` pairs that tile the block in order: `range` is a
+/// run of frames (slice indices into the block's buffers), and `events` are
+/// exactly the events at `range.start` — so a node that applies `events`,
+/// then renders `range`, applies every event on its own frame. A block with
+/// no events is one chunk; several events on one offset arrive together, in
+/// their delivered order; an event on the last frame gets a one-frame chunk.
+///
+/// Zero allocation: it walks the event slice it was built from.
+#[derive(Clone, Debug)]
+pub struct SubBlocks<'a> {
+    events: &'a [Event],
+    pos: usize,
+    frames: usize,
+}
+
+impl<'a> SortedEvents<'a> {
+    /// Split a block of `frames` at these events' offsets. `frames` is the
+    /// length these events were checked against.
+    pub(crate) fn sub_blocks(self, frames: usize) -> SubBlocks<'a> {
+        SubBlocks {
+            events: self.events,
+            pos: 0,
+            frames,
+        }
+    }
+}
+
+impl<'a> Iterator for SubBlocks<'a> {
+    type Item = (std::ops::Range<usize>, SortedEvents<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.frames {
+            return None;
+        }
+        // Every event before `pos` was yielded with an earlier chunk, so the
+        // ones at `pos` are the prefix; `<=` rather than `==` only so a
+        // malformed slice could never stall the walk.
+        let here = self
+            .events
+            .iter()
+            .take_while(|e| e.offset.index() <= self.pos)
+            .count();
+        let (now, rest) = self.events.split_at(here);
+        let end = rest
+            .first()
+            .map_or(self.frames, |e| e.offset.index())
+            .min(self.frames);
+        let range = self.pos..end;
+        self.events = rest;
+        self.pos = end;
+        Some((range, SortedEvents { events: now }))
+    }
+}
+
+impl std::iter::FusedIterator for SubBlocks<'_> {}
 
 impl<'a> IntoIterator for SortedEvents<'a> {
     type Item = &'a Event;
@@ -327,7 +390,7 @@ impl<'a> EventWriter<'a> {
 
     /// Append `event`. Offsets must be non-decreasing and inside the block.
     pub fn push(&mut self, event: Event) -> Result<(), EventRejected> {
-        if event.offset >= self.frames {
+        if event.offset.get() >= self.frames {
             return self.reject(EventRejected::OutOfBlock);
         }
         if self.len() >= self.cap {
@@ -364,7 +427,7 @@ pub(crate) fn merge_into(sources: &[&[Event]], out: &mut Vec<Event>, cap: usize)
     let heads = &mut heads[..sources.len()];
     let mut dropped = 0u32;
     loop {
-        let mut best: Option<(u32, usize)> = None;
+        let mut best: Option<(Offset, usize)> = None;
         for (i, src) in sources.iter().enumerate() {
             if let Some(e) = src.get(heads[i]) {
                 // Strict `<`: on a tie the lower source index keeps it.
@@ -390,7 +453,7 @@ mod tests {
     use super::*;
 
     fn ev(offset: u32, tag: u32) -> Event {
-        Event::midi(offset, [tag, 0, 0, 0])
+        Event::midi(Offset::raw(offset), [tag, 0, 0, 0])
     }
 
     /// Ties go to the earlier source; otherwise offset order.
@@ -482,6 +545,110 @@ mod tests {
         assert_eq!(dropped.get(), 3);
     }
 
+    /// The splitter under test, written the obvious way: every distinct
+    /// offset (and 0) starts a chunk, each chunk runs to the next start, and
+    /// its events are those whose offset equals its start.
+    fn hand_split(events: &[Event], frames: usize) -> Vec<(std::ops::Range<usize>, Vec<Event>)> {
+        let mut starts: Vec<usize> = std::iter::once(0)
+            .chain(events.iter().map(|e| e.offset.index()))
+            .collect();
+        starts.sort_unstable();
+        starts.dedup();
+        let ends = starts
+            .iter()
+            .skip(1)
+            .copied()
+            .chain(std::iter::once(frames));
+        starts
+            .iter()
+            .zip(ends)
+            .map(|(&a, b)| {
+                let here = events
+                    .iter()
+                    .filter(|e| e.offset.index() == a)
+                    .copied()
+                    .collect();
+                (a..b, here)
+            })
+            .collect()
+    }
+
+    fn split(events: &[Event], frames: usize) -> Vec<(std::ops::Range<usize>, Vec<Event>)> {
+        SortedEvents::new(events, frames)
+            .expect("sorted and in the block")
+            .sub_blocks(frames)
+            .map(|(r, e)| (r, e.to_vec()))
+            .collect()
+    }
+
+    /// The edges `sub_blocks` has to get right, spelled out: an event at
+    /// offset 0 (no empty leading chunk), several on one offset (one chunk,
+    /// all of them, in order), one on the last frame (a one-frame chunk), and
+    /// no events at all (the whole block).
+    ///
+    /// Mutation: in `SubBlocks::next`, split off only the *first* event at
+    /// `pos` (`split_at(here.min(1))`) → the second event at offset 5 comes
+    /// out in a zero-length chunk of its own → fails.
+    #[test]
+    fn sub_blocks_split_at_every_offset() {
+        let evs = [ev(0, 1), ev(5, 2), ev(5, 3), ev(7, 4)];
+        let got = split(&evs, 8);
+        assert_eq!(
+            got,
+            vec![
+                (0..5, vec![ev(0, 1)]),
+                (5..7, vec![ev(5, 2), ev(5, 3)]),
+                (7..8, vec![ev(7, 4)]),
+            ]
+        );
+        assert_eq!(split(&[], 8), vec![(0..8, vec![])]);
+        assert_eq!(
+            split(&[ev(3, 9)], 8),
+            vec![(0..3, vec![]), (3..8, vec![ev(3, 9)])]
+        );
+        assert_eq!(split(&evs, 8), hand_split(&evs, 8));
+    }
+
+    proptest::proptest! {
+        /// Against the hand-rolled splitter, on random sorted offsets — with
+        /// offset 0, the last frame and repeats all drawn often — and random
+        /// block lengths including 1.
+        ///
+        /// Mutation: yield all but the last of several events that share an
+        /// offset → the count and the comparison both fail.
+        #[test]
+        fn sub_blocks_match_a_hand_rolled_splitter(
+            frames in 1usize..40,
+            raw in proptest::collection::vec(0u32..6, 0..24),
+        ) {
+            // Bias toward the edges: 0 → offset 0, 5 → the last frame,
+            // anything else → a frame in between (repeats are frequent).
+            let last = frames as u32 - 1;
+            let mut offsets: Vec<u32> = raw
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| match r {
+                    0 => 0,
+                    5 => last,
+                    _ => (r * 7 + i as u32) % frames as u32,
+                })
+                .collect();
+            offsets.sort_unstable();
+            let evs: Vec<Event> = offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &o)| ev(o, i as u32))
+                .collect();
+            let got = split(&evs, frames);
+            proptest::prop_assert_eq!(&got, &hand_split(&evs, frames));
+            // The chunks tile the block and every event comes out once.
+            let covered: usize = got.iter().map(|(r, _)| r.len()).sum();
+            proptest::prop_assert_eq!(covered, frames);
+            let n: usize = got.iter().map(|(_, e)| e.len()).sum();
+            proptest::prop_assert_eq!(n, evs.len());
+        }
+    }
+
     /// A foreign ramp and a built-in ramp never answer for each other, even
     /// when the foreign id equals the built-in's discriminant.
     ///
@@ -508,13 +675,16 @@ mod tests {
     #[test]
     fn note_offs_are_recognised() {
         let m1 = |status: u32, vel: u32| {
-            Event::midi(0, [0x2000_0000 | (status << 16) | (60 << 8) | vel, 0, 0, 0])
+            Event::midi(
+                Offset::ZERO,
+                [0x2000_0000 | (status << 16) | (60 << 8) | vel, 0, 0, 0],
+            )
         };
         assert!(m1(0x80, 64).is_note_off());
         assert!(m1(0x90, 0).is_note_off());
         assert!(!m1(0x90, 64).is_note_off());
-        assert!(Event::midi(0, [0x4080_3c00, 0x8000_0000, 0, 0]).is_note_off());
-        assert!(!Event::midi(0, [0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
-        assert!(!Event::ramp(0, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
+        assert!(Event::midi(Offset::ZERO, [0x4080_3c00, 0x8000_0000, 0, 0]).is_note_off());
+        assert!(!Event::midi(Offset::ZERO, [0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
+        assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 }

@@ -89,6 +89,17 @@
 //!   every channel), and its declared tail has elapsed since its inputs went
 //!   quiet. A node never called yet is not quiet.
 //!
+//! # Scheduled commands
+//!
+//! A third ring carries [`Editor::schedule`](crate::Editor::schedule)'s
+//! timestamped commands (see the `command` module, `src/command.rs`). At the
+//! start of each block, after applying commits and before the first op, the
+//! executor pulls them into a preallocated pending list and resolves each
+//! against the block's [`Env`] — so a beat is resolved against the transport
+//! of the block it falls in. What lands this block is merged into its sink's
+//! event input as one more source after the port's own events, in a buffer
+//! sized when applying; a sink with a landing command is never skipped.
+//!
 //! # Flushed events
 //!
 //! When an event delay or event feedback disappears in a recompile and its
@@ -108,9 +119,10 @@ use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_types::{AudioThread, NodeKey, Samples, ScopedNoDenormals, Tail};
+use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
+use crate::command::{overlay_capacity, CommandRx};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
@@ -138,6 +150,30 @@ impl NodeBox {
     pub(crate) fn new(node: Box<dyn Node>) -> Self {
         Self(node)
     }
+
+    /// The unit, out of its box — control side, to re-prepare it. Leaves a
+    /// zero-sized placeholder behind for the box's own drop, which therefore
+    /// frees nothing (a `Box` of a zero-sized type never allocated).
+    pub(crate) fn into_inner(mut self) -> Box<dyn Node> {
+        std::mem::replace(&mut self.0, Box::new(Vacant))
+    }
+}
+
+/// What a [`NodeBox`] holds once its unit has been taken out.
+struct Vacant;
+
+impl Node for Vacant {
+    fn shape(&self) -> crate::node::Shape {
+        crate::node::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+        )
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
 }
 
 impl Deref for NodeBox {
@@ -166,6 +202,12 @@ impl Drop for NodeBox {
 /// everything the executor replaced. Dropping it on the audio thread panics
 /// in a debug build.
 pub(crate) struct Commit {
+    /// The editor's count of commits sent, this one included: a scheduled
+    /// command checked against this commit waits until it is applied.
+    seq: u64,
+    /// A re-prepare's first half: check every unit out and adopt this
+    /// `Prepare` (see `Editor::reprepare`). Carries no plan.
+    suspend: Option<Prepare>,
     plan: Option<Arc<Plan>>,
     delta: Delta,
     incoming: Vec<(UnitIdx, u32, NodeBox)>,
@@ -181,6 +223,7 @@ impl Drop for Commit {
 
 impl Commit {
     pub(crate) fn build(
+        seq: u64,
         plan: Arc<Plan>,
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
@@ -206,6 +249,8 @@ impl Commit {
         // Reserved here so applying moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
         Box::new(Self {
+            seq,
+            suspend: None,
             plan: Some(plan),
             delta,
             incoming,
@@ -214,9 +259,38 @@ impl Commit {
         })
     }
 
+    /// A re-prepare's first half: when applied, every unit leaves the store
+    /// and comes back in this box, and the executor adopts `prepare`.
+    /// `units` is how many the running plan has, reserved here so applying
+    /// moves them in without growing.
+    pub(crate) fn suspend(seq: u64, prepare: Prepare, units: usize) -> Box<Commit> {
+        Box::new(Self {
+            seq,
+            suspend: Some(prepare),
+            plan: None,
+            delta: Delta::default(),
+            incoming: Vec::new(),
+            retired: Vec::with_capacity(units),
+            old_state: None,
+        })
+    }
+
+    /// Whether this box is a re-prepare's first half.
+    pub(crate) fn is_suspend(&self) -> bool {
+        self.suspend.is_some()
+    }
+
     /// The units applying removed, by key.
     pub(crate) fn retired(&self) -> impl Iterator<Item = NodeKey> + '_ {
         self.retired.iter().map(|(k, _)| *k)
+    }
+
+    /// The units applying removed, out of their boxes (control side).
+    pub(crate) fn take_retired(&mut self) -> Vec<(NodeKey, Box<dyn Node>)> {
+        self.retired
+            .drain(..)
+            .map(|(k, b)| (k, b.into_inner()))
+            .collect()
     }
 }
 
@@ -284,6 +358,11 @@ struct State {
     event_fb: Vec<Option<EventFifo>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
+    /// Plan units with a scheduled command landing this block.
+    has_due: Vec<bool>,
+    /// Where a node's scheduled events are merged into its inputs; sized
+    /// when applying so the merge never grows (`command::overlay_capacity`).
+    overlay: Vec<Event>,
 }
 
 impl State {
@@ -297,6 +376,8 @@ impl State {
             event_fb: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
+            has_due: Vec::new(),
+            overlay: Vec::new(),
         }
     }
 }
@@ -313,8 +394,21 @@ pub struct Executor {
     plan: Option<Arc<Plan>>,
     store: Vec<Option<Unit>>,
     state: State,
-    frame: u64,
+    frame: Frame,
     dropped: u64,
+    commands: CommandRx,
+    /// `seq` of the last commit applied.
+    applied: u64,
+    /// Between a re-prepare's two commits: every unit is checked out, and
+    /// blocks render silence.
+    suspended: bool,
+    /// The `Prepare` a pending re-prepare will adopt when its resume commit
+    /// lands. Not before: until then the device may still hand blocks sized
+    /// for the old one (a shrinking `MaxBlock` must not fail them).
+    next_prepare: Option<Prepare>,
+    /// The sample rate changed in a re-prepare: the next rebuild carries no
+    /// time-based state (see `Editor::reprepare`).
+    reset_time: bool,
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -331,6 +425,7 @@ impl Executor {
         cap: usize,
         queue: HeapCons<Box<Commit>>,
         back: HeapProd<Box<Commit>>,
+        commands: CommandRx,
     ) -> Self {
         Self {
             prepare,
@@ -340,12 +435,18 @@ impl Executor {
             plan: None,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
-            frame: 0,
+            frame: Frame::ZERO,
             dropped: 0,
+            commands,
+            applied: 0,
+            suspended: false,
+            next_prepare: None,
+            reset_time: false,
         }
     }
 
-    /// What this executor, and every unit it runs, is prepared for.
+    /// What this executor, and every unit it runs, is prepared for. During a
+    /// re-prepare, the old one until the resume commit lands.
     pub fn prepare(&self) -> &Prepare {
         &self.prepare
     }
@@ -355,8 +456,12 @@ impl Executor {
         self.plan.as_ref()
     }
 
-    /// Frames rendered so far.
-    pub fn frame(&self) -> u64 {
+    /// The graph's clock, which [`Env::frame`] reads: samples at the current
+    /// rate since start. It tracks device time — blocks rendered as silence
+    /// while a re-prepare has the units checked out count — and a rate change
+    /// rescales it (and every pending frame-timed command) to the same
+    /// wall-clock time at the new rate, rounded to the nearest frame.
+    pub fn frame(&self) -> Frame {
         self.frame
     }
 
@@ -365,6 +470,24 @@ impl Executor {
     /// A merge never drops: its slot holds all its inputs.
     pub fn dropped_events(&self) -> u64 {
         self.dropped
+    }
+
+    /// Scheduled commands that were already past due when the executor
+    /// first saw them, and so landed at offset 0 of that block instead of on
+    /// their frame. Never dropped — see [`Editor::schedule`](crate::Editor::schedule).
+    pub fn late_commands(&self) -> u64 {
+        self.commands.late()
+    }
+
+    /// Scheduled commands whose node or event port was gone by the time they
+    /// fell due, so there was nowhere to deliver them.
+    pub fn unrouted_commands(&self) -> u64 {
+        self.commands.unrouted()
+    }
+
+    /// Scheduled commands cancelled before they landed.
+    pub fn cancelled_commands(&self) -> u64 {
+        self.commands.cancelled()
     }
 
     /// Apply every queued commit, in the order the editor sent them, and send
@@ -395,6 +518,42 @@ impl Executor {
     }
 
     fn apply(&mut self, c: &mut Commit) {
+        self.applied = c.seq;
+        if let Some(prepare) = c.suspend {
+            // Check every unit out, into the box, for the editor to
+            // re-prepare on the control thread. The plan and every piece of
+            // delay and feedback state stay where they are, for the resume
+            // commit's rebuild to carry — or, after a rate change, to reset.
+            if let Some(plan) = &self.plan {
+                for u in &plan.units {
+                    if let Some(unit) = self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
+                    {
+                        c.retired.push((u.key, unit.node));
+                    }
+                }
+            }
+            let (old, new) = (
+                self.prepare.sample_rate().get(),
+                prepare.sample_rate().get(),
+            );
+            if old != new {
+                // `Frame` always means samples at the *current* rate since
+                // start. Graph time tracks device time, so the clock and
+                // every pending frame-timed command move to the same
+                // wall-clock time at the new rate.
+                self.reset_time = true;
+                let ratio = new / old;
+                self.frame = crate::command::rescale(self.frame, ratio);
+                self.commands.rescale(ratio, c.seq);
+            }
+            self.next_prepare = Some(prepare);
+            self.suspended = true;
+            return;
+        }
+        if let Some(p) = self.next_prepare.take() {
+            // The resume commit of a re-prepare: its plan is for this.
+            self.prepare = p;
+        }
         let plan = c
             .plan
             .take()
@@ -436,6 +595,8 @@ impl Executor {
 
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
+        self.suspended = false;
+        self.reset_time = false;
         let old_state = std::mem::replace(&mut self.state, new_state);
         c.old_state = Some(old_state);
         self.plan = Some(plan);
@@ -447,6 +608,11 @@ impl Executor {
     fn rebuild(&mut self, plan: &Plan, old_plan: Option<&Plan>) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
+        // After a sample-rate change nothing time-based carries: every ring
+        // and FIFO below starts fresh, and the old event FIFOs, left behind,
+        // are flushed by the pass that flushes vanished delays (see
+        // `Editor::reprepare` for the rule).
+        let carry = !self.reset_time;
         let old = &mut self.state;
 
         // PDC rings and FIFOs, by key.
@@ -465,11 +631,13 @@ impl Executor {
             .map(|d| {
                 let carried = old_delays
                     .get(&d.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.rings.get_mut(i))
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
                     (DelayKey::Event { .. }, Some(Ring::Event(mut f))) => {
                         f.retune(d.len);
+                        f.resize(cap, max_block);
                         Ring::Event(f)
                     }
                     (DelayKey::Event { .. }, _) => {
@@ -500,6 +668,7 @@ impl Executor {
             .map(|f| {
                 let carried = old_afb
                     .get(&f.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.audio_fb.get_mut(i))
                     .and_then(Option::take);
                 Some(carried.unwrap_or_else(|| AudioRing::new(f.key.delay())))
@@ -511,8 +680,13 @@ impl Executor {
             .map(|f| {
                 let carried = old_efb
                     .get(&f.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.event_fb.get_mut(i))
-                    .and_then(Option::take);
+                    .and_then(Option::take)
+                    .map(|mut fifo| {
+                        fifo.resize(cap, max_block);
+                        fifo
+                    });
                 Some(carried.unwrap_or_else(|| EventFifo::sized(f.key.delay(), cap, max_block)))
             })
             .collect();
@@ -558,6 +732,7 @@ impl Executor {
             }
         }
         let mut has_inject = vec![false; plan.units.len()];
+        let flushed_total: usize = flushed.values().map(Vec::len).sum();
         let widest = plan.event_slot_weight.iter().copied().max().unwrap_or(1) as usize;
         let inject = flushed
             .into_iter()
@@ -594,6 +769,8 @@ impl Executor {
             event_fb,
             inject,
             has_inject,
+            has_due: vec![false; plan.units.len()],
+            overlay: Vec::with_capacity(overlay_capacity(plan, cap, flushed_total)),
         }
     }
 
@@ -615,15 +792,38 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        let _rt = AudioThread::enter();
+        let _ftz = ScopedNoDenormals::new();
+        // Before the bound is checked: a queued resume changes it, and the
+        // first longer block may be the one that arrives with it.
+        self.apply_pending();
+        if self.suspended {
+            // Between a re-prepare's two commits the units are on the control
+            // thread: render silence, for whatever block arrives — the device
+            // may be on either side of the change, so no bound applies here.
+            // The graph's own state (rings, FIFOs) stands still, but its
+            // clock tracks device time: the frame counter advances, and the
+            // playhead sees the transport move. A command whose time passes
+            // meanwhile lands late when the units are back.
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
+            self.commands.observe(&Env {
+                frame: self.frame,
+                sample_rate: rate,
+                block_len: Samples(frames),
+                transport: *transport,
+            });
+            self.frame += Samples(frames);
+            return;
+        }
         let max = self.prepare.max_block();
         assert!(
             frames > 0 && frames <= max.get(),
             "block of {frames} frames against a max of {}",
             max.get()
         );
-        let _rt = AudioThread::enter();
-        let _ftz = ScopedNoDenormals::new();
-        self.apply_pending();
         let Self {
             prepare,
             event_cap,
@@ -634,12 +834,17 @@ impl Executor {
             state,
             frame,
             dropped,
+            commands,
+            applied,
+            suspended: _,
+            next_prepare: _,
+            reset_time: _,
         } = self;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
-            *frame += frames as u64;
+            *frame += Samples(frames);
             return;
         };
         let State {
@@ -651,15 +856,18 @@ impl Executor {
             event_fb,
             inject,
             has_inject,
+            has_due,
+            overlay,
         } = state;
         // Slices, not `&mut Vec`s: a slice's pointer and length are locals
         // the op loop can keep in registers across the opaque node calls,
         // where a `Vec` behind a reference is reloaded after every one.
-        let (flags, events, inject, has_inject) = (
+        let (flags, events, inject, has_inject, has_due) = (
             &mut flags[..],
             &mut events[..],
             &mut inject[..],
             &mut has_inject[..],
+            &mut has_due[..],
         );
         let plan: &Plan = plan;
         let cap = *event_cap;
@@ -669,6 +877,7 @@ impl Executor {
             block_len: Samples(frames),
             transport: *transport,
         };
+        commands.gather(&env, plan, *applied, has_due);
 
         // Feedback reads happen before any op: the delay is a whole
         // `MaxBlock`, so nothing this block's captures queue is due yet.
@@ -758,6 +967,9 @@ impl Executor {
                         events,
                         inject,
                         has_inject,
+                        has_due,
+                        overlay,
+                        commands,
                         dropped,
                     };
                     let borrows = &plan.nodes.borrows[..];
@@ -830,17 +1042,18 @@ impl Executor {
                             node_op(u, &head, &mut st, ports, |call, node, st| {
                                 let a = rec.ain.max(rec.aout);
                                 let e = rec.ein.max(rec.eout);
-                                let inject = &*st.inject;
+                                let (inject, overlay) = (&*st.inject, &st.overlay[..]);
+                                let extra = Extra { inject, overlay };
                                 let (arena, events) = (&mut *st.arena, &mut *st.events);
                                 match (a, e) {
                                     (0..=4, 0..=4) => {
-                                        call.run::<4, 4>(node, arena, events, borrows, inject)
+                                        call.run::<4, 4>(node, arena, events, borrows, extra)
                                     }
                                     (0..=16, 0..=4) => {
-                                        call.run::<16, 4>(node, arena, events, borrows, inject)
+                                        call.run::<16, 4>(node, arena, events, borrows, extra)
                                     }
                                     _ => call.run::<MAX_PORTS, MAX_PORTS>(
-                                        node, arena, events, borrows, inject,
+                                        node, arena, events, borrows, extra,
                                     ),
                                 }
                             });
@@ -882,7 +1095,7 @@ impl Executor {
         for f in event_fb.iter_mut().flatten() {
             f.advance(frames);
         }
-        *frame += frames as u64;
+        *frame += Samples(frames);
     }
 }
 
@@ -926,6 +1139,11 @@ struct OpState<'s> {
     events: &'s mut [Vec<Event>],
     inject: &'s mut [Inject],
     has_inject: &'s mut [bool],
+    /// Plan units with a scheduled command landing this block.
+    has_due: &'s mut [bool],
+    /// Where a node's scheduled events are merged into its inputs.
+    overlay: &'s mut Vec<Event>,
+    commands: &'s CommandRx,
     dropped: &'s mut u64,
 }
 
@@ -947,11 +1165,13 @@ fn node_op(
 ) {
     let (rec, frames) = (h.rec, h.frames);
     let unit = rec.unit;
-    // Flushed events only ever go to an event input.
+    // Flushed events and scheduled commands only ever go to an event input.
     let injected = !ein.is_empty() && st.has_inject[unit as usize];
+    let scheduled = !ein.is_empty() && st.has_due[unit as usize];
 
     let (in_silent, in_constant) = in_masks(ain, st.flags);
     let quiet_inputs = !injected
+        && !scheduled
         && in_silent.covers(ain.len())
         && ein.iter().all(|&s| st.events[s as usize].is_empty());
 
@@ -986,7 +1206,7 @@ fn node_op(
         // block's own events, ties to the flushed ones (they are older).
         for inj in st.inject.iter_mut().filter(|i| i.live && i.unit == unit) {
             for e in &mut inj.events {
-                e.offset = e.offset.min(frames as u32 - 1);
+                e.offset = e.offset.clamp_to(frames);
             }
             let slot = ein[inj.port as usize];
             inj.merged.clear();
@@ -999,6 +1219,23 @@ fn node_op(
         }
     }
 
+    // Scheduled commands landing on this node this block: one more source
+    // per port, after everything else, merged into the overlay buffer.
+    let mut views = [(0u16, 0u32, 0u32); MAX_PORTS];
+    let mut n_views = 0;
+    if scheduled {
+        let (inject, events) = (&*st.inject, &*st.events);
+        let base = |port: u16| -> &[Event] {
+            inject
+                .iter()
+                .find(|i| i.live && i.unit == unit && i.port == port)
+                .map_or(&events[ein[port as usize] as usize][..], |i| &i.merged)
+        };
+        let (n, lost) = st.commands.overlay(unit, base, st.overlay, &mut views);
+        n_views = n;
+        *st.dropped += u64::from(lost);
+    }
+
     let call = Call {
         env: h.env,
         max: h.max,
@@ -1008,9 +1245,13 @@ fn node_op(
         constant: in_constant,
         cap: h.cap,
         injected,
+        scheduled: &views[..n_views],
     };
     let (status, drops) = call_node(&call, &mut *u.node, st);
     *st.dropped += drops as u64;
+    if scheduled {
+        st.has_due[unit as usize] = false;
+    }
     if injected {
         for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
             inj.events.clear();
@@ -1048,6 +1289,14 @@ fn direct_op<const I: usize, const O: usize>(
     });
 }
 
+/// Event sources a general node call reads besides its slots: flushed
+/// events (`inject`) and scheduled commands merged in (`overlay`).
+#[derive(Clone, Copy)]
+struct Extra<'s> {
+    inject: &'s [Inject],
+    overlay: &'s [Event],
+}
+
 /// One node call's constants, shared by every borrow form.
 struct Call<'p, 'e> {
     env: &'e Env,
@@ -1059,6 +1308,9 @@ struct Call<'p, 'e> {
     cap: usize,
     /// Whether flushed events wait for this call (see the module docs).
     injected: bool,
+    /// `(port, start, end)` into the overlay buffer: ports whose events this
+    /// block include scheduled commands.
+    scheduled: &'p [(u16, u32, u32)],
 }
 
 impl Call<'_, '_> {
@@ -1125,8 +1377,9 @@ impl Call<'_, '_> {
         arena: &mut Arena,
         events: &mut [Vec<Event>],
         borrows: &[(u32, Role)],
-        inject: &[Inject],
+        extra: Extra<'_>,
     ) -> (Status, u32) {
+        let Extra { inject, overlay } = extra;
         let rec = self.rec;
         let frames = self.frames;
         let (n_in, n_out) = (rec.ain as usize, rec.aout as usize);
@@ -1150,6 +1403,9 @@ impl Call<'_, '_> {
             for inj in inject.iter().filter(|i| i.live && i.unit == rec.unit) {
                 evin[inj.port as usize] = SortedEvents::trusted(&inj.merged, frames);
             }
+        }
+        for &(port, a, b) in self.scheduled {
+            evin[port as usize] = SortedEvents::trusted(&overlay[a as usize..b as usize], frames);
         }
         let drops = Cell::new(0u32);
         let mut evout: [EventWriter<'_>; E] = std::array::from_fn(|_| EventWriter::detached());
@@ -1243,5 +1499,80 @@ fn finish(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tutti_types::{At, ChannelLayout, SampleRate};
+
+    use super::*;
+    use crate::event::{EventKind, Ump};
+
+    /// Counts the events it receives.
+    struct Count(Arc<AtomicUsize>);
+
+    impl Node for Count {
+        fn shape(&self) -> crate::node::Shape {
+            crate::node::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
+            self.0.fetch_add(io.events(0).len(), Ordering::Relaxed);
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// The hold, staged deterministically: the race it guards (the executor
+    /// pulls a command before the commit it was checked against, which only
+    /// a concurrent editor can cause — see `tests/commands.rs` for the
+    /// threaded version) is reproduced by running the executor's command
+    /// pass before it applies the queued commit. The command must wait, not
+    /// be judged against the old plan (where its node does not exist), and
+    /// land once the commit does.
+    ///
+    /// Mutation: drop the `plan_seq > applied` hold in `CommandRx::gather`
+    /// → the command is counted unrouted in the staged pass → fails.
+    #[test]
+    fn a_command_seen_before_its_commit_waits_for_it() {
+        let prepare = Prepare::new(SampleRate(48_000.0), Samples(64));
+        let (mut ed, mut exec) = crate::Editor::new(prepare);
+        let seen = Arc::new(AtomicUsize::new(0));
+        ed.insert(NodeKey(1), "a", Count(Arc::clone(&seen)));
+        ed.commit().expect("commits");
+        exec.apply_pending();
+        ed.collect();
+
+        ed.insert(NodeKey(2), "b", Count(Arc::clone(&seen)));
+        ed.commit().expect("queued, not applied");
+        let to = crate::EventIn {
+            node: NodeKey(2),
+            port: 0,
+        };
+        ed.schedule(At::NextBlock, to, EventKind::Midi(Ump([1, 0, 0, 0])))
+            .expect("checked against the queued commit");
+
+        // The command is pulled first, against the plan still running.
+        let plan = Arc::clone(exec.plan.as_ref().expect("a plan"));
+        let env = Env {
+            frame: exec.frame,
+            sample_rate: prepare.sample_rate(),
+            block_len: Samples(64),
+            transport: Transport::default(),
+        };
+        let mut has_due = vec![false; plan.units.len()];
+        exec.commands
+            .gather(&env, &plan, exec.applied, &mut has_due);
+        assert_eq!(exec.unrouted_commands(), 0, "judged against a stale plan");
+        assert_eq!(ed.commands_outstanding(), 1, "it waits");
+
+        // Then the commit lands, and the command with it.
+        exec.process(64, &Transport::default(), &[], &mut []);
+        assert_eq!(seen.load(Ordering::Relaxed), 1);
+        assert_eq!(ed.commands_outstanding(), 0);
+        assert_eq!(exec.unrouted_commands(), 0);
     }
 }

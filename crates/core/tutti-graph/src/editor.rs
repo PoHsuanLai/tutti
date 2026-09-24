@@ -30,18 +30,17 @@
 //! handed obeys; the plan carries its `Prepare` too, and applying refuses a
 //! plan prepared for anything else.
 //!
-//! # Changing the rate or the maximum block (designed, not built)
+//! # Changing the rate or the maximum block
 //!
-//! A `Prepare` change is a **full recompile with every unit re-prepared**:
-//! latency can depend on the rate (a lookahead is a time — see `Legacy`), so
-//! the shapes, and therefore the plan, change with it. The intended protocol:
-//! the editor sends a commit that retires every unit; on collecting it calls
-//! `prepare` on each returned unit, reads its new shape, recompiles, and sends
-//! the units back in a commit for a *new* executor built for the new
-//! `Prepare` (its arena is sized by `MaxBlock`). Until that exists, change the
-//! rate by building a new editor and executor pair. An offline render must
-//! be prepared with a `MaxBlock` no larger than the graph's shortest feedback
-//! delay (see `tutti_types::graph::FeedbackFrom`); `compile` enforces it.
+//! [`reprepare`](Editor::reprepare): a full recompile with every unit
+//! re-prepared on the control thread, in two commits — the first checks the
+//! units out of the executor (which adopts the new `Prepare`), the second
+//! sends them back re-prepared, with a plan compiled against their new
+//! shapes. Its doc states what happens to delay and feedback state. An
+//! offline render must be prepared with a `MaxBlock` no larger than the
+//! graph's shortest feedback delay (see `tutti_types::graph::FeedbackFrom`);
+//! `compile` enforces it, and `reprepare` refuses such a change before
+//! sending anything.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -50,11 +49,15 @@ use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::NodeKey;
 
+use tutti_types::At;
+
+use crate::command::{command_channel, CommandId, CommandTx, ScheduleError};
 use crate::compile::{compile, CompileError, Shapes};
+use crate::event::EventKind;
 use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
-use crate::node::{IntoNode, Node, Prepare};
-use crate::plan::{Delta, Plan};
-use crate::spec::{EventEdge, GraphInvalid, GraphSpec};
+use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
+use crate::plan::{Delta, Placement, Plan};
+use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +75,21 @@ pub enum CommitError {
     /// [`QUEUE_CAPACITY`] commits are out. Nothing was compiled or sent and
     /// the plan did not advance; retry once the executor has run a block.
     Backpressure,
+    /// A [`reprepare`](Editor::reprepare) is waiting for the executor to
+    /// hand its units back. Nothing was compiled or sent; retry once the
+    /// executor has run a block (the next [`collect`](Editor::collect) or
+    /// `commit` finishes the re-prepare first).
+    Repreparing,
+    /// A re-prepare failed after the units had left the executor — a node
+    /// panicked in [`Node::prepare`], or the re-prepared shapes no longer
+    /// compile (a unit's event resolution coarsened under a marked edge,
+    /// say). The units are gone and the executor is suspended: it renders
+    /// silence, forever, and never panics. Every later call on this editor
+    /// returns this error. **Recovery: build a new editor/executor pair.**
+    Poisoned {
+        /// What went wrong.
+        cause: String,
+    },
 }
 
 impl std::fmt::Display for CommitError {
@@ -81,6 +99,10 @@ impl std::fmt::Display for CommitError {
             Self::Compile(e) => write!(f, "{e}"),
             Self::MissingUnit { node } => write!(f, "node {} has no unit", node.0),
             Self::Backpressure => write!(f, "{QUEUE_CAPACITY} commits in flight"),
+            Self::Repreparing => write!(f, "a re-prepare is waiting for its units"),
+            Self::Poisoned { cause } => {
+                write!(f, "the editor is poisoned ({cause}); build a new pair")
+            }
         }
     }
 }
@@ -91,8 +113,11 @@ impl std::error::Error for CommitError {}
 /// plans sent. See the `editor` module's docs (`src/editor.rs`).
 pub struct Editor {
     channels: Channels,
+    commands: CommandTx,
     /// Commits sent and not yet drained back.
     out: usize,
+    /// Commits sent, ever: the sequence number of the last one.
+    sent: u64,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
@@ -101,6 +126,37 @@ pub struct Editor {
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
     plan: Option<Arc<Plan>>,
+    /// A re-prepare between its two commits.
+    repreparing: Option<Reprepare>,
+    /// Why a re-prepare failed with the units out, if one did.
+    poisoned: Option<String>,
+}
+
+/// A panic payload as text.
+fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a non-string panic".to_string())
+}
+
+/// A re-prepare waiting for the executor to hand its units back: the graph
+/// as it was checked, and the uncommitted units it places, already
+/// re-prepared.
+struct Reprepare {
+    spec: GraphSpec,
+    shapes: Shapes,
+    pending: BTreeMap<NodeKey, Box<dyn Node>>,
+}
+
+/// Write `shape`'s latency and tail into `key`'s spec and shape entry — the
+/// two figures a re-prepare can change (a lookahead is a time).
+fn refresh(key: NodeKey, shape: Shape, spec: &mut GraphSpec, shapes: &mut Shapes) {
+    shapes.insert(key, shape);
+    if let Some(node) = spec.topology.nodes.get_mut(&key) {
+        node.latency = shape.latency.samples();
+        node.tail = shape.tail;
+    }
 }
 
 impl Editor {
@@ -114,17 +170,28 @@ impl Editor {
     /// (the declared event rate the delay FIFOs are sized from).
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, queue, back) = channels();
+        let (commands, command_rx) = command_channel();
         let editor = Self {
             channels,
+            commands,
             out: 0,
+            sent: 0,
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
+            repreparing: None,
+            poisoned: None,
         };
-        (editor, Executor::new(prepare, cap, queue, back))
+        (editor, Executor::new(prepare, cap, queue, back, command_rx))
+    }
+
+    /// What units are prepared for now — after a
+    /// [`reprepare`](Self::reprepare), the new one.
+    pub fn prepare(&self) -> &Prepare {
+        &self.prepare
     }
 
     /// The graph value.
@@ -212,21 +279,248 @@ impl Editor {
         for sources in self.spec.events.values_mut() {
             sources.retain(|e: &EventEdge| e.from().node != key);
         }
+        self.spec
+            .required_resolution
+            .retain(|(at, from), _| at.node != key && from.node != key);
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
     }
 
+    /// `Err(Poisoned)` once a re-prepare has failed with its units out.
+    fn check_poisoned(&self) -> Result<(), CommitError> {
+        match &self.poisoned {
+            Some(cause) => Err(CommitError::Poisoned {
+                cause: cause.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Drain the boxes the executor sent back and free what they retired,
     /// here on the control thread. Returns the retired units' keys.
+    ///
+    /// When the box coming back is a [`reprepare`](Self::reprepare)'s first
+    /// half, this re-prepares the units it carries and sends the second.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         while let Some(done) = self.channels.returned.try_pop() {
+            self.out -= 1;
+            if done.is_suspend() {
+                self.resume(done);
+                continue;
+            }
             keys.extend(done.retired());
             drop(done);
-            self.out -= 1;
         }
         keys
+    }
+
+    /// Change the sample rate or the maximum block of a running graph.
+    ///
+    /// A [`Prepare`] change is a **full recompile with every unit
+    /// re-prepared** — latency can depend on the rate (a lookahead is a
+    /// time), so shapes, and therefore the plan, change with it. It takes two
+    /// commits, because a unit is only ever prepared on the control thread:
+    ///
+    /// 1. This call checks the current spec against `prepare` — validates it
+    ///    and compiles it, so a feedback edge whose delay is shorter than the
+    ///    new `MaxBlock` is [`CompileError::FeedbackTooShort`] naming the
+    ///    edge, **before anything is sent** — re-prepares the uncommitted
+    ///    units, and sends a commit that checks every running unit out of the
+    ///    executor. Until the second commit lands, the executor renders
+    ///    silence for **whatever block arrives** — the device may be on
+    ///    either side of the change, so no block bound applies — and adopts
+    ///    `prepare` only when the second commit lands. Its rings and FIFOs
+    ///    stand still, but its **clock tracks device time**: the frame
+    ///    counter advances by the silent frames, and on a rate change the
+    ///    counter and every pending frame-timed command scheduled before this
+    ///    call are rescaled by `new / old` (nearest frame) to the same
+    ///    wall-clock time — `Frame` always means samples at the current rate
+    ///    since start. A node holding absolute frames of its own rescales
+    ///    them in its `prepare`.
+    /// 2. The next [`collect`](Self::collect) (or `commit`, which collects
+    ///    first) receives the units, calls [`Node::prepare`] on each, reads
+    ///    the new shapes into the spec, recompiles, and sends every unit back
+    ///    with the new plan. Until then `commit` returns
+    ///    [`CommitError::Repreparing`]; edits made meanwhile go into the
+    ///    commit after.
+    ///
+    /// **Delay and feedback state across the change — the rule:**
+    ///
+    /// - **A sample-rate change resets everything time-based.** PDC rings
+    ///   and audio feedback rings start silent (their contents are audio at
+    ///   the old rate); event delays and event feedback do not carry either,
+    ///   and their pending events are **flushed** to their sinks at offset 0
+    ///   of the first block, keeping their spacing, exactly as a vanished
+    ///   delay's are — a note-off is never lost to a rate change.
+    /// - **A `MaxBlock`-only change keeps everything** that is still the same
+    ///   wire: rings keep their most recent `min(old, new)` inputs when a
+    ///   latency changes (as on any recompile), and event FIFOs keep every
+    ///   queued event, re-sized for the new block.
+    ///
+    /// A unit's *own* state is the unit's business: [`Node::prepare`] is
+    /// told the new rate and block, and decides what to reset.
+    ///
+    /// An editor driven through [`package`](Self::package) has no spec of
+    /// its own to recompile; re-prepare one by building a new pair.
+    ///
+    /// # Failure after the units are out
+    ///
+    /// If the second half fails — a node panics in `prepare`, or the
+    /// re-prepared shapes no longer compile (a unit's event resolution
+    /// coarsened under a marked edge, or its ports changed, which breaks the
+    /// [`Node`] contract) — the editor is **poisoned**: the executor stays
+    /// suspended and renders silence, and every later call returns
+    /// [`CommitError::Poisoned`]. Build a new pair to recover. A node that
+    /// panics in the first half (an uncommitted unit) poisons it the same
+    /// way, with nothing sent.
+    pub fn reprepare(&mut self, prepare: Prepare) -> Result<(), CommitError> {
+        self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        if self.out >= QUEUE_CAPACITY {
+            return Err(CommitError::Backpressure);
+        }
+        let valid = self.spec.validate().map_err(CommitError::Invalid)?;
+        let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
+            .map_err(CommitError::Compile)?;
+        let needed = delta
+            .insert
+            .iter()
+            .map(|p| p.key)
+            .chain(delta.replace.iter().map(|(_, new)| new.key));
+        for node in needed {
+            if !self.pending.contains_key(&node) {
+                return Err(CommitError::MissingUnit { node });
+            }
+        }
+
+        // Checked: from here on it goes through — unless a node panics in
+        // `prepare`, which poisons the editor (the uncommitted units are lost
+        // with it; nothing has been sent, so the executor keeps running).
+        let mut pending = std::mem::take(&mut self.pending);
+        let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for (&key, unit) in &mut pending {
+                unit.prepare(&prepare);
+                refresh(key, unit.shape(), &mut self.spec, &mut self.shapes);
+            }
+        }));
+        if let Err(p) = prepared {
+            let cause = format!("a node panicked in prepare: {}", panic_text(p));
+            self.poisoned = Some(cause.clone());
+            return Err(CommitError::Poisoned { cause });
+        }
+        let units = self.plan.as_ref().map_or(0, |p| p.units().len());
+        let suspend = Commit::suspend(self.sent + 1, prepare, units);
+        if self.channels.to_executor.try_push(suspend).is_err() {
+            unreachable!("the queue has a free slot for every credit");
+        }
+        self.sent += 1;
+        self.out += 1;
+        self.prepare = prepare;
+        self.repreparing = Some(Reprepare {
+            spec: self.spec.clone(),
+            shapes: self.shapes.clone(),
+            pending,
+        });
+        Ok(())
+    }
+
+    /// A re-prepare's second half: `done` came back holding every unit the
+    /// running plan had. Re-prepare them, recompile the checked spec, and
+    /// send every unit back.
+    ///
+    /// Nothing here may unwind out of `collect`: the units are out and the
+    /// executor suspended, so a node that panics in `prepare`, or shapes that
+    /// no longer compile, poison the editor instead (see
+    /// [`CommitError::Poisoned`]).
+    fn resume(&mut self, mut done: Box<Commit>) {
+        let returned = done.take_retired();
+        drop(done);
+        let rep = self
+            .repreparing
+            .take()
+            .expect("a suspend box answers a reprepare");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.finish_reprepare(returned, rep)
+        }));
+        match outcome {
+            Ok(Ok((plan, resume, units))) => self.send(plan, resume, units),
+            Ok(Err(e)) => {
+                self.poisoned = Some(format!(
+                    "the re-prepared units' shapes no longer compile against the graph: {e}"
+                ));
+            }
+            Err(p) => {
+                self.poisoned = Some(format!(
+                    "a node panicked while being re-prepared: {}",
+                    panic_text(p)
+                ));
+            }
+        }
+    }
+
+    /// Re-prepare `returned`, recompile the checked spec, and build the
+    /// resume commit's contents.
+    #[allow(clippy::type_complexity)]
+    fn finish_reprepare(
+        &mut self,
+        returned: Vec<(NodeKey, Box<dyn Node>)>,
+        rep: Reprepare,
+    ) -> Result<(Plan, Delta, BTreeMap<NodeKey, Box<dyn Node>>), CompileError> {
+        let Reprepare {
+            mut spec,
+            mut shapes,
+            pending,
+        } = rep;
+        let base = self.plan.clone();
+        let prepare = self.prepare;
+        let mut units: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
+        for (key, mut unit) in returned {
+            // A unit the checked spec removed or regenerated is not coming
+            // back: it is freed here, on the control thread.
+            let survives = spec.topology.nodes.contains_key(&key)
+                && base
+                    .as_ref()
+                    .and_then(|b| b.unit(key))
+                    .is_some_and(|u| u.gen == spec.generation(key));
+            if !survives {
+                continue;
+            }
+            unit.prepare(&prepare);
+            let shape = unit.shape();
+            refresh(key, shape, &mut spec, &mut shapes);
+            // The live spec too, unless the key was edited since.
+            if self.spec.topology.nodes.contains_key(&key)
+                && self.spec.generation(key) == spec.generation(key)
+            {
+                refresh(key, shape, &mut self.spec, &mut self.shapes);
+            }
+            units.insert(key, unit);
+        }
+        units.extend(pending);
+        let valid = spec.validate().expect("reprepare validated this spec");
+        let (plan, delta) = compile(&valid, &shapes, &prepare, base.as_deref())?;
+        // The executor's store is empty: every unit goes back in, at the
+        // index the plan gives it.
+        let resume = Delta {
+            insert: plan
+                .units()
+                .iter()
+                .map(|u| Placement {
+                    key: u.key,
+                    gen: u.gen,
+                    idx: u.idx,
+                })
+                .collect(),
+            retire: Vec::new(),
+            replace: Vec::new(),
+            store_len: delta.store_len,
+        };
+        Ok((plan, resume, units))
     }
 
     /// Validate, compile against the plan sent last, and send the result with
@@ -234,6 +528,10 @@ impl Editor {
     /// nothing — when [`QUEUE_CAPACITY`] commits are out.
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
@@ -275,6 +573,10 @@ impl Editor {
         units: BTreeMap<NodeKey, Box<dyn Node>>,
     ) -> Result<(), CommitError> {
         self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
@@ -282,14 +584,94 @@ impl Editor {
         Ok(())
     }
 
+    /// Deliver `kind` into event input `to` at time `at` — a note, or a
+    /// [`ParamRamp`](crate::ParamRamp) as `EventKind::Ramp` — on its exact
+    /// frame. See the `command` module docs (`src/command.rs`) for the whole
+    /// path; in short:
+    ///
+    /// - **`at` is required.** [`At::NextBlock`] is the untimed case, and it
+    ///   has to be spelled.
+    /// - The port is checked against the plan sent last, and the command is
+    ///   delivered to whichever unit holds that key when it falls due.
+    /// - A frame already past when the executor sees it lands at offset 0 of
+    ///   that block and is counted
+    ///   ([`Executor::late_commands`](crate::Executor::late_commands)) —
+    ///   never dropped. Beats follow a different rule; see below.
+    /// - At most [`COMMAND_CAPACITY`](crate::COMMAND_CAPACITY) commands are
+    ///   outstanding; past that this returns
+    ///   [`ScheduleError::Backpressure`] and sends nothing. A command holds
+    ///   its credit until it lands or is [`cancel`](Self::cancel)led — and a
+    ///   beat-timed one can wait indefinitely (a stopped transport, a beat
+    ///   past the loop end, one a seek jumped over), so cancel what you no
+    ///   longer want.
+    /// - A [`ParamRamp`](crate::ParamRamp) into a node that does not honour
+    ///   offsets sample-accurately is refused
+    ///   ([`ScheduleError::ResolutionTooCoarse`]), as a marked edge would be.
+    ///
+    /// **Frames and beats fall due differently** (doc 013 §6). A frame is
+    /// never dropped: already past, it lands at offset 0 of the next block
+    /// and is counted late. A beat fires when the playhead reaches or crosses
+    /// it by continuous playback — a loop wrap landing at or after it counts
+    /// — and is late only if continuous playback crossed it before the
+    /// command was processed; a beat a seek or loop jumps *over* stays
+    /// pending until reached or cancelled. Pairing (a note-off for every
+    /// note-on) is the caller's job: a note-on that fires and a note-off that
+    /// waits is a stuck note, and `cancel` is how to take the other back.
+    pub fn schedule(
+        &mut self,
+        at: At,
+        to: EventIn,
+        kind: EventKind,
+    ) -> Result<CommandId, ScheduleError> {
+        if self.poisoned.is_some() {
+            return Err(ScheduleError::Poisoned);
+        }
+        let plan = self.plan.as_ref().ok_or(ScheduleError::NoPlan)?;
+        let unit = plan.unit(to.node).filter(|u| to.port < u.shape.event_in);
+        let Some(unit) = unit else {
+            return Err(ScheduleError::NoSuchPort { to });
+        };
+        let sink = unit.shape.event_resolution;
+        if matches!(kind, EventKind::Ramp(_)) && !sink.honours(Resolution::Sample) {
+            return Err(ScheduleError::ResolutionTooCoarse { to, sink });
+        }
+        self.commands.send(self.sent, at, to, kind)
+    }
+
+    /// Take back scheduled command `id`, if it has not landed — freeing its
+    /// credit. A no-op for one that has. Travels on its own ring, so it works
+    /// even with every credit held; refused with `Backpressure` only when
+    /// [`CANCEL_CAPACITY`](crate::CANCEL_CAPACITY) cancels are waiting for
+    /// the executor's next block.
+    pub fn cancel(&mut self, id: CommandId) -> Result<(), ScheduleError> {
+        if self.poisoned.is_some() {
+            return Err(ScheduleError::Poisoned);
+        }
+        self.commands.cancel(id)
+    }
+
+    /// Take back every command scheduled so far that has not landed.
+    pub fn cancel_all(&mut self) -> Result<(), ScheduleError> {
+        if self.poisoned.is_some() {
+            return Err(ScheduleError::Poisoned);
+        }
+        self.commands.cancel_all()
+    }
+
+    /// Scheduled commands sent and not yet delivered.
+    pub fn commands_outstanding(&self) -> usize {
+        self.commands.outstanding() as usize
+    }
+
     /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
     /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
     fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
         let plan = Arc::new(plan);
-        let commit = Commit::build(Arc::clone(&plan), delta, units);
+        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units);
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
         }
+        self.sent += 1;
         self.out += 1;
         self.plan = Some(plan);
     }

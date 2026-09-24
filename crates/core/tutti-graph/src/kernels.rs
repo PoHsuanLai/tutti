@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 use tutti_types::Samples;
 
 use crate::event::Event;
+use crate::time::Offset;
 
 /// An audio delay line of fixed length.
 pub(crate) struct AudioRing {
@@ -175,8 +176,7 @@ impl EventFifo {
     /// A FIFO for a delay of `len`, sized from the declared rate (see the
     /// type docs). Control side: allocates.
     pub(crate) fn sized(len: Samples, cap: usize, max_block: usize) -> Self {
-        let limit = cap.max(1) * (len.get().div_ceil(max_block.max(1)) + 2);
-        let reserve = limit / 4 + 8;
+        let (limit, reserve) = Self::bounds(len.get(), cap, max_block);
         Self {
             q: VecDeque::with_capacity(limit + reserve),
             len: len.get() as u64,
@@ -185,8 +185,28 @@ impl EventFifo {
         }
     }
 
+    /// `(limit, note-off reserve)` for a delay of `len` at the declared rate.
+    fn bounds(len: usize, cap: usize, max_block: usize) -> (usize, usize) {
+        let limit = cap.max(1) * (len.div_ceil(max_block.max(1)) + 2);
+        (limit, limit / 4 + 8)
+    }
+
     pub(crate) fn retune(&mut self, len: Samples) {
         self.len = len.get() as u64;
+    }
+
+    /// Re-derive the limit for the current length at this rate and maximum
+    /// block — after a retune, or a re-prepare that shrank `MaxBlock` (more
+    /// blocks fit in the same delay, so more events may be in flight). Keeps
+    /// every queued event; grows the queue when the new bounds need it, never
+    /// shrinks it. Control side: may allocate.
+    pub(crate) fn resize(&mut self, cap: usize, max_block: usize) {
+        let (limit, reserve) = Self::bounds(self.len as usize, cap, max_block);
+        self.limit = limit;
+        let want = limit + reserve;
+        if self.q.capacity() < want {
+            self.q.reserve_exact(want - self.q.len());
+        }
     }
 
     /// Every event still queued, oldest first.
@@ -200,10 +220,12 @@ impl EventFifo {
     /// keeps its length. Control side (allocates).
     pub(crate) fn flushed(&self) -> Vec<Event> {
         let first = self.q.front().map_or(0, |&(t, _)| t + self.len);
+        // Raw offsets: the spacing, not yet inside any block — the block
+        // that delivers them clamps them (`Offset::clamp_to`).
         self.q
             .iter()
             .map(|&(t, e)| Event {
-                offset: (t + self.len - first).min(u64::from(u32::MAX)) as u32,
+                offset: Offset::raw((t + self.len - first).min(u64::from(u32::MAX)) as u32),
                 ..e
             })
             .collect()
@@ -214,7 +236,7 @@ impl EventFifo {
         let mut dropped = 0;
         let start = self.clock;
         for e in input {
-            let item = (start + e.offset as u64, *e);
+            let item = (start + u64::from(e.offset.get()), *e);
             if self.q.len() < self.limit {
                 self.q.push_back(item);
             } else if !e.is_note_off() {
@@ -248,8 +270,9 @@ impl EventFifo {
                 break;
             }
             self.q.pop_front();
+            // `start <= … < end`: inside this block by the loop condition.
             out.push(Event {
-                offset: due.saturating_sub(start) as u32,
+                offset: Offset::raw(due.saturating_sub(start) as u32),
                 ..e
             });
         }
@@ -314,10 +337,10 @@ mod tests {
     fn fifo_delays_events_across_blocks() {
         let mut f = EventFifo::sized(Samples(6), 8, 8);
         let mut out = Vec::with_capacity(8);
-        f.run(&[Event::midi(2, [7, 0, 0, 0])], &mut out, 8);
+        f.run(&[Event::midi(Offset::raw(2), [7, 0, 0, 0])], &mut out, 8);
         assert!(out.is_empty(), "due at 8, which is the next block");
         f.run(&[], &mut out, 8);
-        assert_eq!(out, vec![Event::midi(0, [7, 0, 0, 0])]);
+        assert_eq!(out, vec![Event::midi(Offset::ZERO, [7, 0, 0, 0])]);
     }
 
     /// A feedback ring read before it is written delays by exactly its
@@ -349,7 +372,7 @@ mod tests {
         // 0x9 (on), note `tag`, velocity 100.
         let status = if off { 0x80 } else { 0x90 };
         Event::midi(
-            offset,
+            Offset::raw(offset),
             [
                 0x2000_0000 | (status << 16) | ((tag & 0x7f) << 8) | 100,
                 0,
@@ -391,7 +414,9 @@ mod tests {
     #[test]
     fn a_full_output_slot_delays_events_rather_than_dropping_them() {
         let mut f = EventFifo::sized(Samples(1), 16, 8);
-        let burst: Vec<Event> = (0..5).map(|i| Event::midi(0, [i, 0, 0, 0])).collect();
+        let burst: Vec<Event> = (0..5)
+            .map(|i| Event::midi(Offset::ZERO, [i, 0, 0, 0]))
+            .collect();
         f.push(&burst);
         let mut out = Vec::with_capacity(2);
         f.pop_due(&mut out, 8);
@@ -402,7 +427,10 @@ mod tests {
             out.clear();
             f.pop_due(&mut out, 8);
             f.advance(8);
-            assert!(out.iter().all(|e| e.offset == 0), "late events land at 0");
+            assert!(
+                out.iter().all(|e| e.offset == Offset::ZERO),
+                "late events land at 0"
+            );
             got.extend(out.iter().copied());
         }
         let tags: Vec<u32> = got

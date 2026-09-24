@@ -593,7 +593,7 @@ impl Node for Synth {
         let n = io.frames();
         let mut next = 0;
         for i in 0..n {
-            while next < evs.len() && evs[next].offset as usize == i {
+            while next < evs.len() && evs[next].offset.index() == i {
                 if evs[next].is_note_off() {
                     self.held = false;
                     self.releasing = Some(self.release);
@@ -641,12 +641,10 @@ impl Node for OneShot {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let start = cx.env.frame;
-        if (start..start + io.frames() as u64).contains(&self.at) {
-            let _ = io.event_out(0).push(tutti_graph::Event::midi(
-                (self.at - start) as u32,
-                self.words,
-            ));
+        if let Some(at) = cx.env.offset_of(tutti_types::Frame(self.at)) {
+            let _ = io
+                .event_out(0)
+                .push(tutti_graph::Event::midi(at, self.words));
         }
         Status::Silent
     }
@@ -781,11 +779,11 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-            if cx.env.frame == 0 {
+            if cx.env.frame == tutti_types::Frame::ZERO {
                 for n in 0..30 {
                     io.event_out(0)
                         .push(tutti_graph::Event::midi(
-                            0,
+                            tutti_graph::Offset::ZERO,
                             [0x2080_0000 | (n << 8), 0, 0, 0],
                         ))
                         .expect("30 fit in 32");

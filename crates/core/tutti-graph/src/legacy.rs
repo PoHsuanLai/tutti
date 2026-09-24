@@ -34,7 +34,7 @@ use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::io::Io;
-use crate::node::{ConstantMask, Cx, Node, Prepare, Shape, SilenceMask, Status};
+use crate::node::{ConstantMask, Cx, Node, Prepare, Resolution, Shape, SilenceMask, Status};
 
 /// An `AudioUnit` running as a [`Node`].
 pub struct Legacy {
@@ -81,6 +81,9 @@ impl Legacy {
         .with_latency(latency)
         .with_tail(unit.tail())
         .with_in_place()
+        // An `AudioUnit` receives no events at all, so it promises nothing
+        // about their timing — and says so, rather than inheriting `Sample`.
+        .with_event_resolution(Resolution::Block)
     }
 
     /// The wrapped unit.

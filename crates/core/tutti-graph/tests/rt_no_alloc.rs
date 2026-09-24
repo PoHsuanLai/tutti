@@ -1,7 +1,8 @@
 //! Regression gate: `Executor::process` never allocates once a plan is
 //! applied — through PDC rings, event delays, event fan-in merges, feedback of
-//! both kinds, in-place aliasing, the silence skip, the `Legacy` adapter, and
-//! block lengths that change every call.
+//! both kinds, in-place aliasing, the silence skip, the `Legacy` adapter,
+//! scheduled commands landing (on time, late, and still waiting), and block
+//! lengths that change every call.
 //!
 //! What this cannot cover, stated rather than implied: `apply` allocates by
 //! design in phase 1 (see `exec.rs`), so it runs outside the gate; and a node
@@ -13,9 +14,11 @@ mod common;
 use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Legacy, Transport};
+use tutti_graph::{
+    Editor, EventEdge, EventIn, EventKind, EventOut, Legacy, ParamRamp, Transport, Ump,
+};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, Samples};
+use tutti_types::{At, Beat, ChannelLayout, Frame, NodeKey, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -36,7 +39,10 @@ fn from(node: u64, port: u16) -> Edge {
 
 /// Mutation: in `Executor::apply`, create the event slots with `Vec::new()`
 /// instead of `Vec::with_capacity(cap)` → the first event a writer accepts
-/// inside the gate grows its slot → aborts.
+/// inside the gate grows its slot → aborts. Mutation: size the command
+/// overlay with `Vec::new()` in `rebuild` → the first scheduled command to
+/// land inside the gate grows it → aborts. Mutation: build the command
+/// channel's pending list with `Vec::new()` → aborts.
 #[test]
 fn process_is_allocation_free_in_steady_state() {
     let (mut ed, mut exec) = Editor::new(prepare(256));
@@ -150,6 +156,28 @@ fn process_is_allocation_free_in_steady_state() {
         "the gate must run through PDC rings"
     );
 
+    // Scheduled commands, landing throughout the gated run: into the
+    // consumer's fan-in port (merged after its two sources) and its feedback
+    // port, on time; one already late; one waiting on a beat the stopped
+    // transport never reaches.
+    let consumer = |port| EventIn {
+        node: NodeKey(4),
+        port,
+    };
+    for k in 0..200u64 {
+        let kind = if k % 3 == 0 {
+            EventKind::Ramp(ParamRamp::foreign(1, 0.5, Samples(16)))
+        } else {
+            EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]))
+        };
+        ed.schedule(
+            At::Frame(Frame(2_000 + k * 700)),
+            consumer((k % 2) as u16),
+            kind,
+        )
+        .expect("under capacity");
+    }
+
     let input = vec![0.25f32; 256];
     let mut l = vec![0.0f32; 256];
     let mut r = vec![0.0f32; 256];
@@ -159,6 +187,20 @@ fn process_is_allocation_free_in_steady_state() {
     for &n in &sizes {
         exec.process(n, &transport, &[&input[..]], &mut [&mut l[..], &mut r[..]]);
     }
+    // After the warm-up, so frame 0 is past: it lands late, inside the gate.
+    ed.schedule(
+        At::Frame(Frame(0)),
+        consumer(0),
+        EventKind::Midi(Ump([0; 4])),
+    )
+    .expect("under capacity");
+    ed.schedule(
+        At::Beat(Beat(4.0)),
+        consumer(0),
+        EventKind::Midi(Ump([0; 4])),
+    )
+    .expect("under capacity");
+    assert_eq!(ed.commands_outstanding(), 202);
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
@@ -168,4 +210,10 @@ fn process_is_allocation_free_in_steady_state() {
     });
     assert_eq!(exec.dropped_events(), 0);
     assert!(l.iter().any(|&x| x != 0.0), "the gate rendered signal");
+    assert_eq!(exec.late_commands(), 1);
+    assert_eq!(
+        ed.commands_outstanding(),
+        1,
+        "every timed command landed inside the gate; the beat still waits"
+    );
 }

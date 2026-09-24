@@ -116,7 +116,8 @@ pub trait Node: Send + 'static {
 
 - `Io`: planar `&[&[f32]]` in / `&mut [&mut [f32]]` out (64-byte aligned, any
   length ≤ `max_block`), `SilenceMask`/`ConstantMask` per side, the node's
-  sorted event slice `&[(u32 offset, Event)]`.
+  sorted event slice (`SortedEvents`, each event at a block-relative
+  `Offset`; see §6).
 - `Cx`: the per-block **`Env`** (transport snapshot, frame, rate) — read once
   per block by the executor from one `RtPublish`, passed by reference. This is
   the `Env` design already written at `tutti-core/src/lib.rs:175-181`,
@@ -275,7 +276,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
-| Transport and clips | `Env.frame: u64`, beat as f64, and the loop-wrap position in `Env`. The click (D8) and sampler placement use the offset inside the block | none by construction |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, and the loop-wrap position in `Env`. The click (D8) and sampler placement use the offset inside the block | none by construction |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -284,39 +285,95 @@ means:
   it (#10). That is right for a user dragging a fader. Automation must never
   take this path: it goes through `ParamRamp` events or audio-rate parameter
   ports.
-- **Untimestamped control-thread commands** (play, stop, seek, "start this
-  clip now") land at the next block boundary. **Phase 2 adds a timestamped
-  command queue** (Firewheel's `EventInstant` shape), so a scheduled start,
-  seek or clip launch lands on its exact frame.
-- **Feedback edges** delay by exactly one `MaxBlock`, as in every DAW.
-  Sample-level feedback belongs inside a node.
+- **Untimed control-thread commands** land at the next block boundary, and
+  are now spelled that way: `At::NextBlock`. **The timestamped command queue
+  exists** (Phase 2, done): `Editor::schedule(At, EventIn, EventKind)`
+  delivers an event or a `ParamRamp` into a node's event input on its exact
+  frame. Transport commands (play, stop, seek, clip launch) take the same
+  `At` when they move into the engine (Phase 2b).
+- **Feedback edges** delay by the delay their edge declares, which must be at
+  least one `MaxBlock`, as in every DAW. Sample-level feedback belongs inside
+  a node.
 
 **In the type system.** Types cannot prove that a node's DSP honours its
 offsets; the contract suite does that. What types can do is make the
 sample-accurate path the only one that compiles for timing, and force every
 place that loses precision to be written out explicitly:
 
-1. **`Offset(u32)` vs `Frame(u64)` (Phase 2).** An `Offset` is valid only
-   within its block and is created checked against the block length. A
-   `Frame` is an absolute timeline position. The only conversion is through
-   `Env` (`env.offset_of(frame) -> Option<Offset>`), so mixing a frame with a
-   block offset (the off-by-a-block bug) does not compile.
+1. **`Offset(u32)` vs `Frame(u64)` (Phase 2) — done.** An `Offset`
+   (`tutti-graph`) is valid only within its block and is created checked
+   against the block length. A `Frame` (`tutti-types`, beside `Samples`) is
+   an absolute timeline position, with its own algebra: `Frame + Samples`,
+   a checked `since`, and no `Frame + Frame`, `Frame - Frame` or
+   `Frame + u64` (compile_fail doctests). The only conversions are through
+   `Env` (`env.offset_of(frame) -> Option<Offset>`,
+   `env.frame_at(offset) -> Frame`), so mixing a frame with a block offset
+   (the off-by-a-block bug) does not compile — a compile_fail doctest on
+   `Offset` pins it. Events, `SortedEvents`, `EventWriter`, the reference
+   interpreter and the executor carry `Offset`; `Env::frame` is a `Frame`.
 2. **Timing precision in the parameter's type (Phase 3).** `Smoothed<U>`
    (block-rate, ramped: for a fader someone drags) vs `SampleAccurate<U>`
    (read as per-sample values for the block, built from `ParamRamp` events or
    an audio-rate port). `ParamKey<U, PerSample>` carries the rate, and a
    `ParamRamp` can only be built from a `PerSample` key, so automating a
    block-rate knob is a compile error.
-3. **Commands must say when (Phase 2).** Control-thread commands take
-   `At::{Frame(Frame), Beat(Beat), NextBlock}`, with no untimed overload.
+3. **Commands must say when (Phase 2) — done for the graph.** Control-thread
+   commands take `At::{Frame(Frame), Beat(Beat), NextBlock}` (`tutti-types`,
+   so the engine's transport commands share it), with no untimed overload.
    `NextBlock` stays available, but it is a visible, greppable choice.
-4. **`io.sub_blocks()` (Phase 2)** yields `(chunk, events_at_chunk_start)`
-   split at event offsets, so a node written against it is sample-accurate by
-   construction. The polysynth hand-rolls this today.
-5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` (Phase 2).**
-   Nodes declare their resolution (SoundFont: `Frames(8)`). The compiler can
-   refuse sample-accurate automation into a `Block` node, and the contract
-   suite checks each node against what it declared.
+   `Editor::schedule` sends a command over its own preallocated SPSC ring,
+   back-pressured by credit like `commit()` (`COMMAND_CAPACITY`
+   outstanding); the executor resolves it against each block's `Env` — a
+   beat against the transport snapshot of the block it falls in — and
+   merges it into the sink's event input as one more source after the
+   port's own. A time is a timeline time, PDC-compensated like an upstream
+   event: a sink with arrival latency `a` gets `At::Frame(F)` at its own
+   frame `F + a` (a beat is resolved to its frame first; `NextBlock` is not
+   shifted). **Frames and beats fall due differently.** A frame already past
+   lands at offset 0 of the next block and is counted (`late_commands`),
+   never dropped. A beat fires when the playhead reaches or crosses it by
+   *continuous playback* (a loop wrap landing at or after it counts); a seek
+   or loop that jumps over it leaves it pending until reached or cancelled,
+   and it is late only if continuous playback crossed it before the command
+   was processed (a block continues the last when its start is within a
+   frame of any advance between the old and new tempo, so a tempo step or
+   ramp inside a block is not a seek) — inside a loop, a beat ahead of the playhead is not
+   "crossed" even if an earlier pass went through it, since this pass
+   reaches it (it waits). Pairing (every note-on's note-off) is the caller's job:
+   `schedule` returns a `CommandId` (tied to its editor/executor pair, so
+   an id kept across a rebuild is refused), and `Editor::cancel` / `cancel_all`
+   (on their own ring, needing no credit) take commands back and free their
+   credit, since a beat-timed command holds it while pending. A ramp into a
+   node coarser than `Sample` is refused at `schedule`. `Frame` always means
+   samples at the current rate since start: the executor's clock tracks
+   device time, and a rate change rescales it and every pending `At::Frame`
+   to the same wall-clock time (nearest frame). Play/stop/seek move to `At`
+   with the engine (Phase 2b).
+4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
+   chunks split at event offsets, allocation-free, so a node written against
+   it is sample-accurate by construction. The polysynth hand-rolls this today.
+5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` (Phase 2) — done.**
+   Nodes declare their resolution (new nodes `Sample`; `Legacy`, which
+   receives no events, `Block`; SoundFont will be `Frames(8)`). An event edge
+   marked with `GraphSpec::require_resolution` into a node that cannot honour
+   it is `CompileError::ResolutionTooCoarse`; unmarked edges never are, so
+   the `ParamRamp` edge is the one to mark. The contract suite (Phase 3)
+   checks each node against what it declared.
+
+**Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
+recompile with every unit re-prepared on the control thread, in two commits
+(units checked out, then sent back re-prepared with a plan compiled against
+their new shapes). A sample-rate change resets time-based state (PDC and
+feedback rings start silent; pending events in event delays are flushed to
+their sinks, not dropped); a `MaxBlock` change keeps ring contents where the
+new lengths allow. A feedback edge shorter than the new `MaxBlock` is a
+`CompileError` naming the edge, before anything is sent. Between the two
+commits the executor renders silence for any block size and adopts the new
+`Prepare` only with the second. **Poisoned editor:** if the second half
+fails with the units out (a node panics in `prepare`, or the re-prepared
+shapes no longer compile), the editor is poisoned: the executor stays
+suspended and renders silence forever without panicking, every later call
+returns `CommitError::Poisoned`, and recovery is a new editor/executor pair.
 
 **Proof.** A contract suite in Phase 3: for every node type and every path
 (direct, behind PDC, through a fan-in, across a recompile, across ragged block
@@ -828,7 +885,7 @@ now. Item 5 was decided when Phase 0 ran: `tutti-io`.
    - **Why f32 buffers are enough:** a 24-bit mantissa is far beyond any
      converter, while f64 buffers double memory bandwidth and halve SIMD lanes.
    - **Where precision does matter**, the graph uses f64:
-     - time and position (`Env.frame: u64`, beat as f64);
+     - time and position (`Env.frame: Frame`, a `u64`; beat as f64);
      - node-internal state and coefficients (low-cutoff IIR filters at high
        rates);
      - summing accumulators;

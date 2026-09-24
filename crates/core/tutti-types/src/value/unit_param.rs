@@ -162,9 +162,166 @@ impl From<UnitParam> for ParamAddr {
     }
 }
 
+/// A [`UnitParam`] that knows the unit its value is in.
+///
+/// `UnitParam` alone is untyped: `Cutoff` and `GainDb` both carry an `f32`,
+/// and nothing stops a caller writing a decibel figure to a cutoff. A
+/// `ParamKey<U>` pins the unit, so a value travelling under a key — an
+/// automation ramp in `tutti-graph`, for one — is built from a `U` and read
+/// back as a `U`, with the `f32` in between never exposed.
+///
+/// The keys exist only for parameters whose unit is not in doubt, as
+/// associated constants on the unit: `ParamKey::<Hz>::CUTOFF`,
+/// `ParamKey::<Db>::THRESHOLD`. There is deliberately **no key** yet for
+/// `DelayTime` ("beats or seconds — unit-defined"), `RoomSize` and `Damping`
+/// (bare `0..1` with no unit type of their own), `StereoSpread` (whether it is
+/// `Spread` or `StereoWidth` is the node's call today), `Pan` (the `Pan` type
+/// is a *measurement*, and a pan control needs its own), and `Mute` (a switch,
+/// not a scalar). Each needs its unit decided first; until then they stay
+/// reachable through [`UnitParam`] and cannot be ramped by key.
+///
+/// ```compile_fail
+/// use tutti_types::{Db, ParamKey};
+/// let _ = ParamKey::<Db>::CUTOFF; // a cutoff is not in decibels
+/// ```
+pub struct ParamKey<U> {
+    id: UnitParam,
+    _unit: core::marker::PhantomData<fn() -> U>,
+}
+
+impl<U> ParamKey<U> {
+    const fn of(id: UnitParam) -> Self {
+        Self {
+            id,
+            _unit: core::marker::PhantomData,
+        }
+    }
+
+    /// The untyped id, for a channel that carries it type-erased.
+    #[inline]
+    pub const fn id(self) -> UnitParam {
+        self.id
+    }
+}
+
+// Written out: the derives would demand `U: Clone`/`Eq`/…, and the float units
+// cannot be `Eq`. The key's identity is its id alone.
+impl<U> Clone for ParamKey<U> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<U> Copy for ParamKey<U> {}
+impl<U> PartialEq for ParamKey<U> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl<U> Eq for ParamKey<U> {}
+impl<U> core::hash::Hash for ParamKey<U> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl<U> core::fmt::Debug for ParamKey<U> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "ParamKey<{}>({:?})",
+            core::any::type_name::<U>(),
+            self.id
+        )
+    }
+}
+
+impl<U> From<ParamKey<U>> for UnitParam {
+    fn from(k: ParamKey<U>) -> Self {
+        k.id
+    }
+}
+
+use super::units::{
+    Amplitude, Cents, CompressionRatio, Db, Depth, Drive, Feedback, Hz, Mix, Seconds, Q,
+};
+
+impl ParamKey<Hz> {
+    /// Filter cutoff / centre frequency.
+    pub const CUTOFF: Self = Self::of(UnitParam::Cutoff);
+    /// Modulation rate.
+    pub const RATE: Self = Self::of(UnitParam::Rate);
+}
+impl ParamKey<Q> {
+    /// Filter Q.
+    pub const Q: Self = Self::of(UnitParam::Q);
+}
+impl ParamKey<Db> {
+    /// Filter / EQ gain.
+    pub const GAIN_DB: Self = Self::of(UnitParam::GainDb);
+    /// Dynamics threshold.
+    pub const THRESHOLD: Self = Self::of(UnitParam::Threshold);
+    /// Limiter ceiling.
+    pub const CEILING: Self = Self::of(UnitParam::Ceiling);
+    /// Compressor make-up gain.
+    pub const MAKEUP: Self = Self::of(UnitParam::Makeup);
+}
+impl ParamKey<Mix> {
+    /// Wet/dry mix.
+    pub const WET: Self = Self::of(UnitParam::Wet);
+}
+impl ParamKey<Feedback> {
+    /// Feedback amount.
+    pub const FEEDBACK: Self = Self::of(UnitParam::Feedback);
+}
+impl ParamKey<Depth> {
+    /// Modulation depth.
+    pub const DEPTH: Self = Self::of(UnitParam::Depth);
+}
+impl ParamKey<CompressionRatio> {
+    /// Compressor ratio.
+    pub const RATIO: Self = Self::of(UnitParam::Ratio);
+}
+impl ParamKey<Seconds> {
+    /// Envelope attack.
+    pub const ATTACK: Self = Self::of(UnitParam::Attack);
+    /// Envelope release.
+    pub const RELEASE: Self = Self::of(UnitParam::Release);
+}
+impl ParamKey<Drive> {
+    /// Drive / saturation amount.
+    pub const DRIVE: Self = Self::of(UnitParam::Drive);
+}
+impl ParamKey<Amplitude> {
+    /// Synth / master volume (linear).
+    pub const VOLUME: Self = Self::of(UnitParam::Volume);
+}
+impl ParamKey<Cents> {
+    /// Unison detune spread.
+    pub const DETUNE: Self = Self::of(UnitParam::Detune);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each typed key names the param its unit belongs to — a key is only as
+    /// good as the pairing, and a swapped pair still compiles.
+    ///
+    /// Mutation: swap the ids of `ParamKey::<Db>::THRESHOLD` and
+    /// `ParamKey::<Db>::CEILING` → fails.
+    #[test]
+    fn typed_keys_name_their_params() {
+        use super::super::units::{Db, Hz, Seconds};
+        assert_eq!(ParamKey::<Hz>::CUTOFF.id(), UnitParam::Cutoff);
+        assert_eq!(ParamKey::<Hz>::RATE.id(), UnitParam::Rate);
+        assert_eq!(ParamKey::<Db>::THRESHOLD.id(), UnitParam::Threshold);
+        assert_eq!(ParamKey::<Db>::CEILING.id(), UnitParam::Ceiling);
+        assert_eq!(ParamKey::<Db>::GAIN_DB.id(), UnitParam::GainDb);
+        assert_eq!(ParamKey::<Db>::MAKEUP.id(), UnitParam::Makeup);
+        assert_eq!(ParamKey::<Seconds>::ATTACK.id(), UnitParam::Attack);
+        assert_eq!(ParamKey::<Seconds>::RELEASE.id(), UnitParam::Release);
+        assert_eq!(UnitParam::from(ParamKey::<Hz>::CUTOFF), UnitParam::Cutoff);
+        assert_ne!(ParamKey::<Hz>::CUTOFF, ParamKey::<Hz>::RATE);
+    }
 
     #[test]
     fn u16_round_trips() {

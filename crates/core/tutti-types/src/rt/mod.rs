@@ -43,20 +43,26 @@
 //! - [`RtPublish`] — a value published from a control thread and read by the
 //!   audio thread, where the read is a *borrow*: the callback never holds an
 //!   owning handle, so retired values are freed by the publisher.
+//! - [`Retire`] — an owning box that must not be dropped on the audio thread,
+//!   checked in debug builds against the [`AudioThread`] marker.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
+pub mod audio_thread;
 mod capped;
 pub mod cell;
 pub mod denormals;
 pub mod event_buf;
 pub mod publish;
+pub mod retire;
 pub mod scratch;
 pub mod vec;
 
+pub use audio_thread::{AudioThread, AudioThreadGuard};
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
 pub use publish::{RtPublish, RtRef};
+pub use retire::Retire;
 pub use scratch::{RtScratch, RtScratchOverflow};
 pub use vec::RtVec;

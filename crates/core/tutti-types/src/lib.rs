@@ -39,17 +39,17 @@ pub mod tail;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtPublish, RtRef, RtScratch,
-    RtScratchOverflow, RtVec, ScopedNoDenormals,
+    AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, Retire, RtEventBuf,
+    RtPublish, RtRef, RtScratch, RtScratchOverflow, RtVec, ScopedNoDenormals,
 };
 
 // Value vocabulary.
 pub use value::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
     CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
-    Feedback, Hz, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan,
-    Param, ParamAddr, Phase, PhaseIncrement, PitchClass, PlaybackRate, Radians, ReadRate,
-    Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
+    Feedback, Hz, Latency, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange,
+    Pan, Param, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlaybackRate, Radians,
+    ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
     StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
 };
 

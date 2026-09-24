@@ -204,3 +204,24 @@ fn seek_lands_on_the_whole_file_load_frames() {
         }
     }
 }
+
+/// `WaveAsset::from_bytes` — the Bevy loader's path, which probes from the
+/// bytes alone with no extension hint — decodes to the same samples as the
+/// path-based load, for every fixture.
+///
+/// Compiled only with `bevy` (the CI "dark features" job runs
+/// `cargo nextest run -p tutti-io --features bevy`), because `WaveAsset` is
+/// the Asset derive and exists only there.
+///
+/// Mutation: have `from_bytes` decode only the first half of its bytes and
+/// every row fails (checked). (A wrong extension hint does not: symphonia
+/// probes the bytes regardless.)
+#[cfg(feature = "bevy")]
+#[test]
+fn from_bytes_decodes_what_load_decodes() {
+    for &(name, want_load, _) in GOLDEN {
+        let bytes = std::fs::read(asset(name)).expect("read fixture");
+        let asset = tutti_io::WaveAsset::from_bytes(&bytes).expect("decode bytes");
+        assert_eq!(wave_digest(&asset), want_load, "{name}: from_bytes digest");
+    }
+}

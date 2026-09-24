@@ -1144,3 +1144,73 @@ fn a_command_id_from_another_pair_is_refused() {
     assert_eq!(got, vec![2], "its own #0 landed; its cancelled #1 did not");
     assert_eq!(new.exec.cancelled_commands(), 1);
 }
+
+/// A deterministic differential case for "a wrap leaves the playhead inside
+/// the loop". One-frame blocks at 120 BPM (1/24 000 beat a block) enter a
+/// tiny loop [4, 4.0005) from 3.9999 and wrap around it; then the transport
+/// seeks to a beat before the loop chosen so that 2 000 wraps plus the last
+/// block's advance would "explain" it exactly. It is a seek. After it, two
+/// beats are scheduled: one the run crossed *before* the seek (3.99995, now
+/// ahead of the playhead again — it must wait), and one crossed after it (it
+/// is late). Both interpreters must agree, and both be right.
+///
+/// Mutation: drop the executor's "inside the loop" guard in
+/// `Env::arrives_at` → the executor keeps its old run, never sees the
+/// post-seek beat as crossed → it disagrees with the reference → fails.
+/// Mutation: drop the reference's guard in `RefPlayhead::observe` → the
+/// reference keeps the pre-seek history and fires 3.99995 as late → fails.
+#[test]
+fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
+    let mut rig = rig();
+    let (start, end) = (4.0, 4.0005);
+    let frame_beat = 1.0 / 24_000.0;
+    let at = |beat: f64| Transport {
+        playing: true,
+        tempo: Bpm(120.0),
+        beat: Beat(beat),
+        looping: Some(tutti_graph::LoopRange {
+            start: Beat(start),
+            end: Beat(end),
+        }),
+    };
+    let step = |b: f64| {
+        let x = b + frame_beat;
+        if b < end && x >= end {
+            start + (x - end) % (end - start)
+        } else {
+            x
+        }
+    };
+    let mut b = 3.9999;
+    for _ in 0..40 {
+        rig.block(1, &at(b));
+        b = step(b);
+    }
+    // The block before the seek, at `b`, inside the loop.
+    assert!((start..end).contains(&b));
+    rig.block(1, &at(b));
+    // Where `end + (seek - start) + 2 000 × 0.0005` — the unwrapped
+    // position after 2 000 more wraps — is exactly one frame on from `b`.
+    let seek = b + frame_beat - end + start - 1.0;
+    assert!(seek < start - 0.5, "a point well before the loop: {seek}");
+    let mut now = seek;
+    for _ in 0..10 {
+        rig.block(1, &at(now));
+        now = step(now);
+    }
+    let ahead_again = tutti_types::At::Beat(Beat(3.99995));
+    let crossed = tutti_types::At::Beat(Beat(seek + 2.5 * frame_beat));
+    for (when, t) in [(ahead_again, 1), (crossed, 2)] {
+        rig.schedule(when, tag(t));
+    }
+    for _ in 0..4 {
+        rig.block(1, &at(now));
+        now = step(now);
+    }
+    let exec: Vec<u32> = rig.exec_log.lock().unwrap().iter().map(|e| e.3).collect();
+    let reference: Vec<u32> = rig.ref_log.lock().unwrap().iter().map(|e| e.3).collect();
+    assert_eq!(exec, reference, "the interpreters agree");
+    assert_eq!(exec, vec![2], "only the beat crossed after the seek fires");
+    assert_eq!(rig.exec.late_commands(), 1);
+    assert_eq!(rig.reference.late_commands(), 1);
+}

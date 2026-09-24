@@ -30,6 +30,7 @@ use tutti_core::Tail;
 use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::buffer::CircularBuffer;
+use crate::ramp::Ramp;
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.
@@ -165,6 +166,10 @@ pub struct ConvolverNode {
     /// interleaved frame. Width-long, allocated at construction; unused by the
     /// other configurations.
     frame: Vec<f32>,
+    /// The `(mix, gain)` the previous block ended on — where this block's
+    /// ramp starts. `None` until the first block and after `reset`, which then
+    /// start on the current values instead of ramping in from nothing.
+    last: Option<(Mix, Amplitude)>,
 }
 
 impl ConvolverNode {
@@ -189,6 +194,7 @@ impl ConvolverNode {
             sample_rate: SampleRate::DEFAULT,
             latency_samples,
             frame: vec![0.0; width],
+            last: None,
         }
     }
 
@@ -325,14 +331,52 @@ impl ConvolverNode {
     }
 
     /// Blend channel `c`'s already-convolved block `out` against its delayed
-    /// dry input `x`, in place. `gain` is an [`Amplitude`] beside a typed
-    /// [`Mix`]; the samples stay raw.
+    /// dry input `x`, in place, with `mix` and `gain` ramped across the block
+    /// (see [`BlendRamp`]). The samples stay raw.
     #[inline]
-    fn blend_channel(dry: &mut DryAlign, x: &[f32], out: &mut [f32], mix: Mix, gain: Amplitude) {
-        for (o, &s) in out.iter_mut().zip(x) {
-            let wet = *o * gain.get();
-            *o = mix.blend(dry.step(s), wet);
+    fn blend_channel(dry: &mut DryAlign, x: &[f32], out: &mut [f32], ramp: &BlendRamp) {
+        if let Some((mix, gain)) = ramp.held() {
+            // Nothing moved: constants in the loop, the pre-ramp arithmetic.
+            for (o, &s) in out.iter_mut().zip(x) {
+                let wet = *o * gain.get();
+                *o = mix.blend(dry.step(s), wet);
+            }
+            return;
         }
+        for (i, (o, &s)) in out.iter_mut().zip(x).enumerate() {
+            let wet = *o * ramp.gain.at(i);
+            *o = Mix(ramp.mix.at(i)).blend(dry.step(s), wet);
+        }
+    }
+
+    /// Read `mix` and `gain` once, and ramp from where the previous block
+    /// ended. Both scale the output directly — a stepped wet gain or blend is a
+    /// click — so a change between blocks glides across the next one and lands
+    /// exactly on the new value (a block of one, `tick`, takes it at once).
+    fn begin_block(&mut self, size: usize) -> BlendRamp {
+        let (mix, gain) = self.params.load();
+        let (from_mix, from_gain) = self.last.unwrap_or((mix, gain));
+        self.last = Some((mix, gain));
+        BlendRamp {
+            mix: Ramp::new(from_mix.get(), mix.get(), size),
+            gain: Ramp::new(from_gain.get(), gain.get(), size),
+            target: (mix, gain),
+        }
+    }
+}
+
+/// A block's `mix` and `gain` ramps.
+struct BlendRamp {
+    mix: Ramp,
+    gain: Ramp,
+    target: (Mix, Amplitude),
+}
+
+impl BlendRamp {
+    /// The held values when neither control moved this block.
+    #[inline]
+    fn held(&self) -> Option<(Mix, Amplitude)> {
+        (self.mix.is_flat() && self.gain.is_flat()).then_some(self.target)
     }
 }
 
@@ -352,6 +396,7 @@ impl AudioUnit for ConvolverNode {
         for d in &mut self.dry {
             d.clear();
         }
+        self.last = None;
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -360,7 +405,8 @@ impl AudioUnit for ConvolverNode {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let (mix, gain) = self.params.load();
+        // A block of one: the ramp lands on the new values at once.
+        let (mix, gain) = self.begin_block(1).target;
         let n = self.width();
         let folded = match self.config {
             IrChannelConfig::MonoToStereo => Some(fold_frame_to_mono(&input[..n])),
@@ -375,10 +421,13 @@ impl AudioUnit for ConvolverNode {
 
     /// Channel-outer over planar slices: each channel's convolver consumes its
     /// whole block in partition-sized runs, then the blend runs over the block.
-    /// `mix` and `gain` are read once, here.
+    /// `mix` and `gain` are read once, here, and ramped if they moved.
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         debug_assert!(size <= MAX_BUFFER_SIZE);
-        let (mix, gain) = self.params.load();
+        if size == 0 {
+            return;
+        }
+        let ramp = self.begin_block(size);
         let n = self.width();
         match self.config {
             IrChannelConfig::Mono | IrChannelConfig::Stereo => {
@@ -386,7 +435,7 @@ impl AudioUnit for ConvolverNode {
                     let x = &input.channel_f32(c)[..size];
                     let out = &mut output.channel_f32_mut(c)[..size];
                     self.convolvers[c].process_block(x, out);
-                    Self::blend_channel(&mut self.dry[c], x, out, mix, gain);
+                    Self::blend_channel(&mut self.dry[c], x, out, &ramp);
                 }
             }
             IrChannelConfig::MonoToStereo => {
@@ -404,7 +453,7 @@ impl AudioUnit for ConvolverNode {
                     let x = &input.channel_f32(c)[..size];
                     let out = &mut output.channel_f32_mut(c)[..size];
                     self.convolvers[c].process_block(&mono[..size], out);
-                    Self::blend_channel(&mut self.dry[c], x, out, mix, gain);
+                    Self::blend_channel(&mut self.dry[c], x, out, &ramp);
                 }
             }
         }
@@ -863,6 +912,41 @@ mod golden {
             let want = render(&mut solo, std::slice::from_ref(&mono));
             for (i, (g, w)) in got[c].iter().zip(&want[0]).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "ch{c} frame {i}: {g} vs {w}");
+            }
+        }
+    }
+
+    /// A mix or wet-gain change made between blocks is read by the next block
+    /// and ramped across it (both scale the output directly, so a step
+    /// clicks), ending exactly on the new value.
+    ///
+    /// Mutation (each run, each fails): ignoring `self.last` in `begin_block`
+    /// (both ramps start on the target); starting only the gain ramp on the
+    /// target; reading the gain ramp one sample late (the block no longer ends
+    /// on the new value).
+    #[test]
+    fn a_mix_or_gain_change_is_read_next_block_and_ramped_across_it() {
+        use crate::test_support::{change_between_blocks, noise};
+        let ir = generate_test_ir(256, 0.2, 48_000.0);
+        let x = noise(21, 64 * 8);
+        let (hist, block) = (&x[..64 * 7], &x[64 * 7..]);
+        let make = || {
+            let mut n = ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64);
+            n.set_sample_rate(SampleRate(48_000.0));
+            n
+        };
+        type Change = fn(&ConvolverNode);
+        let changes: [(&str, Change); 2] =
+            [("mix", |n| n.set_mix(1.0)), ("gain", |n| n.set_gain(4.0))];
+        for (what, change) in changes {
+            let run = change_between_blocks(make, change, &[hist, hist], &[block, block]);
+            run.assert_ramps_in(what);
+            for c in 0..2 {
+                assert_eq!(
+                    run.r[c][63].to_bits(),
+                    run.j[c][63].to_bits(),
+                    "{what}: ch{c}: the block must end exactly on the new value"
+                );
             }
         }
     }

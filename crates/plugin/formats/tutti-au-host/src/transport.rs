@@ -37,8 +37,8 @@
 //!    Every field of [`TransportState`] is a scalar, so this is a set of plain
 //!    atomics rather than a `tutti_types::RtPublish` cell. `RtPublish` exists
 //!    for state too large to pack into an atomic — a routing table, a meter map
-//!    — and its read is a thread-local lookup plus two `SeqCst` loads plus a
-//!    slot store, strictly more work than the handful of `Relaxed` loads here.
+//!    — and its read is a slot CAS, a `SeqCst` fence and a load, plus a slot
+//!    store on release, strictly more work than the handful of `Relaxed` loads here.
 //!    Using it would also be a category error: it hands out an `RtRef` borrow
 //!    whose whole purpose is to keep the audio thread from owning heap state,
 //!    and there is no heap state here to protect.

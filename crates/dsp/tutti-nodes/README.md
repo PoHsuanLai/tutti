@@ -111,8 +111,8 @@ a limitation of `Param`.
 
 `RtPublish` is **not** on this ladder. It exists to move a *deallocation* off the
 audio thread — routing tables, PDC vectors, meter maps. Reaching for it to share
-a 16-byte `Copy` struct pays two `SeqCst` loads, a thread-local lookup and a
-scarce guard slot for none of its benefit.
+a 16-byte `Copy` struct pays a slot CAS, a `SeqCst` fence and one of the cell's
+reader slots for none of its benefit.
 
 ### The failure is silent at three layers, and counted at the fourth
 

@@ -190,8 +190,8 @@ impl MidiPreBlock {
     /// is audible.
     #[inline]
     fn adopt_mpe_request(&self) {
-        // One read per block, never per event: the guard is a thread-local
-        // lookup plus two `SeqCst` loads, far heavier than the atomics beside it.
+        // One read per block, never per event: the guard is a slot CAS, a
+        // `SeqCst` fence and a load, far heavier than the atomics beside it.
         let pending = *self.mpe_request.read();
         let Some(mode) = pending else { return };
         let mut mpe = self.mpe.borrow_mut();

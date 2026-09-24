@@ -430,10 +430,11 @@ jobs:
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why these two crates and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
-  # structural answer there instead. What is left is six sites, and the two
-  # that matter are the pointer arithmetic in `tutti-node`'s planar buffers
-  # (`slice::from_raw_parts` over a fixed stride, in the crate every graph node
-  # processes through) and the aliasing in `tutti-types`' `AudioThreadCell`.
+  # structural answer there instead. What is left is seven sites, and the
+  # three that matter are the pointer arithmetic in `tutti-node`'s planar
+  # buffers (`slice::from_raw_parts` over a fixed stride, in the crate every
+  # graph node processes through), the aliasing in `tutti-types`'
+  # `AudioThreadCell`, and `RtPublish`'s hazard-slot reclamation.
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
   # and because a failure here should read as "a memory-safety claim broke",
@@ -457,5 +458,33 @@ jobs:
       # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover.
+      # `--lib` includes `rt::publish`'s tests: the concurrent-readers stress
+      # test is the one that reports a use-after-free if either `SeqCst` fence
+      # in `RtPublish` goes (a plain x86 run does not — a CAS is already a full
+      # barrier there — which is why this job and the loom one both exist).
       - run: cargo miri test -p tutti-types --lib
       - run: cargo miri test -p tutti-node
+
+  # The loom models: `RtPublish`'s reclamation protocol (run against the
+  # shipped code — its atomics switch to loom's under the flag) and the plugin
+  # shm header's Release/Acquire protocol (a replica, for the reasons in
+  # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
+  # its own target only, never the workspace.
+  #
+  # Release, because loom explores every interleaving in-process and the
+  # `RtPublish` models are exhaustive (no preemption bound): a few minutes
+  # optimized, far longer in debug.
+  loom:
+    name: loom
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg loom
+    steps:
+      - uses: actions/checkout@v4
+      # ALSA headers: neither crate needs them, but cargo resolves the whole
+      # workspace before building a member.
+      - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tutti-types --release --test rt_publish_loom
+      - run: cargo test -p tutti-shm-model --release

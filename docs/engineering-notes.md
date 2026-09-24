@@ -202,9 +202,10 @@ table, a `MeterMap`, a coefficient set — goes through
 **The invariant: the audio thread never holds an owning handle to published
 state.** `read()` returns an `RtRef` — a borrow, `!Send`, lifetime-tied to the
 cell, with no way to get an owning `Arc` back out. `publish()` is control-thread
-only: it blocks until in-flight readers are done with the outgoing value, then
-frees it *there*. (That is `ArcSwap::store`'s behaviour — there is no
-`wait_for_readers` function to grep for.)
+only: it frees every retired value no reader still holds, *there*, and leaves
+one a reader is holding on a retirement list for a later publish (or the cell's
+drop) to free — still on the control side. The reader's `RtRef::drop` only
+clears a slot; there is no path from it to a destructor.
 
 This exists because an owning read (`ArcSwap::load_full`) on the audio thread can
 leave the callback holding the last reference to a retired value and free its
@@ -215,25 +216,39 @@ property with a no-alloc test**; the hazard is a race, and sampling schedules
 cannot exhaust one. That is why the guarantee lives in the return type.
 
 Rules:
-- **Read once per block, never per sample.** The read is a thread-local lookup
-  plus two `SeqCst` loads — far heavier than the atomics beside it.
+- **Read once per block, never per sample.** The read is a slot CAS, a
+  `SeqCst` fence and an `Acquire` load (plus a `Release` store on drop) — far
+  heavier than the atomics beside it. Measured at ~3 ns uncontended, the same
+  as the `ArcSwap::load` it replaced, and ~25 ns against a publisher hammering
+  the cell (arc-swap: ~41 ns) — `benches/rt_publish_read.rs`.
 - **Never park an `RtRef`** in a struct field or hold one across blocks (now a
   compile error rather than a review rule).
-- **Avoid nested reads** — loading a value, then loading another through it.
-  Guards occupy a small number of per-thread fast slots; exceeding them silently
-  drops to a slower writer-coordinating path. (The exact count is `arc-swap`'s
-  internal detail, not a tutti invariant — don't code against a number.)
+- **Avoid nested reads** — several live `RtRef`s into the same cell. Each
+  occupies one of the cell's reader slots; past them a read takes an overflow
+  counter instead, which is just as wait-free and allocation-free for the
+  reader but tells the publisher nothing about *which* value is held, so no
+  publish frees anything while an overflow reader is live. (The slot count is
+  an implementation detail — don't code against a number.)
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
 - Nullable hot-swap trait-object slots (`SharedReader`, `InputSlot`, `Midi::out`)
   stay on `ArcSwapOption`; `RtPublish` doesn't model them. Control-thread-only
   cells (device enumeration in `tutti-midi-hardware`) stay plain.
 
-`RtPublish` wraps `ArcSwap` today. That makes RT deallocation very unlikely and
-bounded, not *impossible* — a guard whose debt a writer settles concurrently
-degrades into an owning reference. Making it structural means an `AtomicPtr` +
-retirement queue inside `RtPublish`, with no call site moving. Keeping that
-option open is much of why the wrapper exists.
+**The guarantee is structural.** `RtPublish` used to wrap `ArcSwap`, which made
+RT deallocation very unlikely and bounded but not *impossible*: a guard whose
+debt a writer settled concurrently degraded into an owning reference, and its
+drop could be the last one. It is now an `AtomicPtr` plus per-cell hazard slots
+and a retirement list the audio thread never touches (doc 013 §4), with no call
+site moving — which is what the wrapper was for. A reader registers (slot CAS,
+or the overflow counter), fences, loads, and announces; a publisher swaps,
+fences, and frees only what no slot announces while the overflow counter is
+zero. The `SeqCst` fence pair is the whole argument, and both halves are
+load-bearing: the loom model (`tutti-types/tests/rt_publish_loom.rs`, run
+against the shipped code, exhaustively) fails with either removed, and so does
+miri on the concurrent stress test. A plain x86 run does not — its CAS is
+already a full barrier — which is why neither check can be replaced by more
+iterations.
 
 ## Two buffer vocabularies — edges vs graph nodes
 

@@ -106,7 +106,8 @@ test-features:
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
 # Miri over the non-FFI unsafe: the pointer arithmetic in `tutti-node`'s planar
-# buffers and the aliasing in `tutti-types`' `AudioThreadCell`. See
+# buffers, the aliasing in `tutti-types`' `AudioThreadCell`, and `RtPublish`'s
+# hazard-slot reclamation. See
 # `docs/design/012-unsafe-policy.md` for why these two and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
 # is out of its reach by construction, and out-of-process hosting is the
@@ -117,6 +118,14 @@ test-features:
 miri:
     cargo +nightly miri test -p tutti-types --lib
     cargo +nightly miri test -p tutti-node
+
+# The loom models: `RtPublish`'s reclamation protocol (against the shipped code)
+# and the plugin shm header protocol (a replica). `--cfg loom` is global, so
+# each runs on its own target. The `RtPublish` models are exhaustive and take a
+# few minutes; `LOOM_MAX_PREEMPTIONS=3` bounds them to under a second.
+loom:
+    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+    RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
 
 check-jack:
     cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings

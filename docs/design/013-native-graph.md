@@ -3,7 +3,8 @@
 Status: **proposal** (2026-09-24). The graph itself has not landed. Work that
 does not need it has: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6), and
-rewrite-order item 3 (#10, see [below](#item-3-landed-10)).
+rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
+`RtPublish` structural fix (#PRNUM).
 
 ## Why
 
@@ -51,7 +52,7 @@ thread-pool, Surge/Vital SIMD).
 | Per-node crossfade on replace | FunDSP `Vertex` | **Yes**, as an explicit delta op |
 | Parallel dataflow: self-resetting atomic activation counters, inline continuation of first ready successor, callback thread is worker 0, spin→park, serial fast path | supernova, Tracktion, Ardour, generic-daw | **Yes, phase 2** |
 | Compile-time coarsening of serial chains into one task | supernova, Faust `-sch` direct activation | **Yes** |
-| Deterministic reclamation over return channels, never drop on push failure | Firewheel, knyst, Kira; basedrop | **Yes** — and fix `RtPublish`'s bounded-not-impossible RT free |
+| Deterministic reclamation over return channels, never drop on push failure | Firewheel, knyst, Kira; basedrop | **Yes** — and fix `RtPublish`'s bounded-not-impossible RT free (**done**, #PRNUM) |
 | Hash-consing identical subgraphs | Elementary | **No** — 31-bit collisions, silent identity change on prop edit; DAW graphs rarely share subtrees |
 | Refcounted run-time buffer pool | Tracktion, web-audio-api-rs `Rc` CoW | No — atomics per buffer; static colouring does it for free |
 | Per-sample `tick` graph / typenum static combinators | FunDSP `An<X>` | **No** for the graph (one production user). Sample-level feedback belongs *inside* a node |
@@ -187,9 +188,15 @@ the interpreter.
   plus one preallocated overflow slot; the control side back-pressures instead.
   (FunDSP's `enqueue(..).is_ok() {}` drops on the audio thread when full; the
   fork's parking allocates past its reserve.)
-- **`RtPublish` gets its structural fix** here: `AtomicPtr` + retirement queue
-  the audio thread never drains, as CLAUDE.md already plans. Same API, no call
-  site moves.
+- **Done (#PRNUM): `RtPublish` got its structural fix**, ahead of the rest of
+  the runtime since it needed none of it: `AtomicPtr` + per-cell hazard slots
+  (with a wait-free overflow counter past them) + a retirement list the audio
+  thread never touches. Same API, no call site moved. The reader cannot free;
+  the loom model `tutti-types/tests/rt_publish_loom.rs` checks that against the
+  shipped code, exhaustively. The read costs the same as the `ArcSwap::load` it
+  replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
+  ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
+  `tutti-types`; the nullable slots elsewhere stay on `ArcSwapOption`.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
   tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is

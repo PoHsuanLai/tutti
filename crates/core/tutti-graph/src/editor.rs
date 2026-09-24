@@ -212,6 +212,9 @@ impl Editor {
         for sources in self.spec.events.values_mut() {
             sources.retain(|e: &EventEdge| e.from().node != key);
         }
+        self.spec
+            .required_resolution
+            .retain(|(at, from), _| at.node != key && from.node != key);
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);

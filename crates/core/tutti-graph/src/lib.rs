@@ -38,6 +38,10 @@
 //!   block by construction.
 //! - **[`Io::sub_blocks`]** — the block split at event offsets, so a node
 //!   written against it is sample-accurate by construction (item 4).
+//! - **[`Resolution`]** — each node declares how finely it honours event
+//!   offsets ([`Shape::event_resolution`]), and an event edge marked with
+//!   [`GraphSpec::require_resolution`] into a node that cannot honour it is
+//!   [`CompileError::ResolutionTooCoarse`] (item 5).
 //! - **[`ParamRamp`]** — built from a typed `ParamKey<U>` and read back as a
 //!   `U`; the raw `f32` in between is private.
 //! - **The commit box and the unit box**, both crate-private — everything

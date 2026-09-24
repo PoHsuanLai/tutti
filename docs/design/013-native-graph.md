@@ -553,7 +553,23 @@ now. Item 5 is decided when that phase runs.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
 2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`
-   through `Net` today.
+   through `Net` today. The industry has not moved to f64 *buffers*.
+   - **Where f64 is used:** plugin I/O is still f32 by default. CLAP negotiates
+     64-bit per port, VST3 has an optional `kSample64`, and AU and AAX are f32.
+     Where f64 shows up, it is a host's internal "64-bit mix engine" or a
+     plugin's internal state.
+   - **Why f32 buffers are enough:** a 24-bit mantissa is far beyond any
+     converter, while f64 buffers double memory bandwidth and halve SIMD lanes.
+   - **Where precision does matter**, the graph uses f64:
+     - time and position (`Env.frame: u64`, beat as f64);
+     - node-internal state and coefficients (low-cutoff IIR filters at high
+       rates);
+     - summing accumulators;
+     - the plugin-boundary conversion (inside the plugin node).
+   - **Kept open for later:** `Io` exposes audio through methods, not public
+     slices, and the audio port kind can later carry a sample format, with the
+     compiler inserting conversion ops at mismatched edges like channel-count
+     coercion. An f64 buffer path is then additive.
 3. **Keep a typed static-combinator layer?** Proposed no (one production
    user). If wanted later, it compiles *into* one `Node`, never into the graph.
 4. **Events as graph ports** (proposed) vs a side channel. Ports make PDC of

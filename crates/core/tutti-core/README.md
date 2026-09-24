@@ -83,8 +83,9 @@ net.check();
 // The backend is the audio thread's half. There is exactly one, and after
 // it exists every frontend edit needs a `commit` to reach it.
 let mut backend = net.backend();
-let (left, right) = backend.get_stereo();
-assert_eq!(left, right);
+let mut frame = [0.0f32; 2];
+backend.tick(&[], &mut frame);
+assert_eq!(frame[0], frame[1]);
 
 net.connect(clock, 0, delay, 0);
 net.commit();

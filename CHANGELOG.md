@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AudioUnit` lost seven derived methods and `footprint` is defaulted.**
+  `get_mono`, `get_stereo`, `filter_mono`, `filter_stereo`, `response`,
+  `response_db` and `display` had no caller outside the fundsp fork; they are
+  `fundsp_tutti::audiounit::AudioUnitExt` now (blanket-implemented, fork
+  preludes only). A caller that ticked a unit through `get_stereo` calls
+  `tick(&[], &mut [0.0; 2])` instead. `footprint` defaults to
+  `size_of_val(self)`, so a new node need not write it; existing overrides are
+  untouched. `ping` and `set_hash` stay on the trait: the fork's `Net` seeds
+  its own generators through them by dynamic dispatch (see the trait docs).
+
 - **File I/O moved from `tutti-core` (the fundsp fork) to `tutti-io`.** Old →
   new: `tutti_core::Wave` → `tutti_io::Wave`, `tutti_core::FileIn` →
   `tutti_io::FileIn`, `tutti_core::{WaveAsset, WaveMetadata, WaveError}` →

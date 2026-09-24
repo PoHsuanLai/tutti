@@ -22,7 +22,7 @@
 use anyhow::bail;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, FromSample, SampleFormat, SizedSample, StreamConfig};
-use fundsp_tutti::prelude::AudioUnit;
+use fundsp_tutti::prelude::{AudioUnit, AudioUnitExt};
 use fundsp_tutti::prelude64::{Shared, adsr_live, midi_hz, shared, triangle, var};
 use midi_msg::{ChannelVoiceMsg, MidiMsg};
 use midir::{Ignore, MidiInput, MidiInputPort};

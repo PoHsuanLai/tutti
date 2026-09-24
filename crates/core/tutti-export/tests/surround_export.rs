@@ -9,7 +9,7 @@
 
 #![cfg(feature = "wav")]
 
-use tutti_core::dsp::{dc, Net};
+use tutti_core::dsp::Net;
 use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig};
 
 /// Render `net` to `path` as float WAV at `layout`, for `secs`.
@@ -37,6 +37,7 @@ fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &st
     )
     .expect("export");
 }
+use tutti_nodes::testing::Const;
 use tutti_spatial::{build_vbap_mix, VbapSource};
 
 /// Build a quad surround graph via the engine's `build_vbap_mix` helper: one
@@ -45,8 +46,8 @@ use tutti_spatial::{build_vbap_mix, VbapSource};
 fn quad_surround_net() -> Net {
     let mut net = Net::new(0, 4);
 
-    let src_front = net.push(Box::new(dc((1.0, 1.0))));
-    let src_rear = net.push(Box::new(dc((1.0, 1.0))));
+    let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
 
     let mix = build_vbap_mix(
         &mut net,
@@ -114,8 +115,8 @@ fn stereo_net_widened_then_exports_four_channels() {
     // Build the surround producer inside a STEREO-output net (like the live one).
     let mut net = Net::new(0, 2);
     assert_eq!(net.outputs(), 2, "starts at device stereo width");
-    let src_front = net.push(Box::new(dc((1.0, 1.0))));
-    let src_rear = net.push(Box::new(dc((1.0, 1.0))));
+    let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::QUAD,
@@ -172,7 +173,7 @@ fn stereo_net_widened_then_exports_four_channels() {
 #[test]
 fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(dc((1.0, 1.0))));
+    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     // A single dead-center source.
     let mix = build_vbap_mix(
         &mut net,
@@ -243,7 +244,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 #[test]
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(dc((1.0, 1.0))));
+    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(6u16),
@@ -298,9 +299,9 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
 /// the right channel. Distinct constant L/R make the drop visible.
 #[test]
 fn stereo_graph_exports_folded_mono_not_left_only() {
-    // dc((0.8, 0.2)): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
+    // Const::frame(&[0.8, 0.2]): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
     let mut net = Net::new(0, 2);
-    let src = net.push(Box::new(dc((0.8, 0.2))));
+    let src = net.push(Box::new(Const::frame(&[0.8, 0.2])));
     net.connect_output(src, 0, 0);
     net.connect_output(src, 1, 1);
 
@@ -326,7 +327,7 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 #[test]
 fn surround_5_1_exports_folded_mono_keeps_center() {
     let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(dc((1.0, 1.0))));
+    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(6u16),
@@ -366,7 +367,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 #[test]
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mut net = Net::new(0, 12);
-    let src = net.push(Box::new(dc((1.0, 1.0))));
+    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(12u16),
@@ -409,7 +410,7 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 #[test]
 fn atmos_7_1_4_downmixes_surround_into_front() {
     let mut net = Net::new(0, 12);
-    let src = net.push(Box::new(dc((1.0, 1.0))));
+    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
     let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(12u16),

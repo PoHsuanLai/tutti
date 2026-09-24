@@ -229,11 +229,14 @@ fn narrate_load(
     // with silence at its input yields silence at its output whether the path
     // works or not. A known DC level in makes the output diagnostic.
     // Stereo DC: `dc` with a 2-channel argument, so the source has a port 1 for
-    // the plugin's right input. A mono `dc(x)` here leaves port 1 unresolvable,
+    // the plugin's right input. A mono `Const::mono(x)` here leaves port 1 unresolvable,
     // which `rebuild` skips — silently, since an unresolvable port is an
     // ordinary not-yet state elsewhere.
     let source = commands
-        .spawn_audio_node(tutti_core::dsp::dc((INPUT_LEVEL, INPUT_LEVEL)))
+        .spawn_audio_node(tutti_nodes::testing::Const::frame(&[
+            INPUT_LEVEL,
+            INPUT_LEVEL,
+        ]))
         .id();
     commands
         .entity(entity)

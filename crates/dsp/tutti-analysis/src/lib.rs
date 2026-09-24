@@ -97,8 +97,8 @@ pub use rustfft::num_complex::Complex as GenericComplex;
 /// newtype to close, unlike the unit types, where a bare `f32` genuinely does
 /// not say whether it means Hz or seconds.
 ///
-/// **Why `rustfft` here** when the rest of the engine uses vendored fundsp's
-/// FFT (`tutti_core::Complex32`): analysis windows are arbitrary-size and
+/// **Why `rustfft` here** when the sampler's time-stretch vocoder uses
+/// `microfft` (`tutti-sampler`'s `stretch::fft`): analysis windows are arbitrary-size and
 /// cold-path, so `rustfft`'s planner and SIMD are the right trade. microfft is
 /// fixed-size and allocation-free, which is what the realtime graph needs and
 /// this crate does not. Both are `num_complex::Complex<f32>` underneath, so

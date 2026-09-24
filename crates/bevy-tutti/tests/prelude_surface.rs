@@ -90,8 +90,8 @@ fn _surface_compiles() {
     fn _payloads(l: &GraphLatency, t: &TransportRes) -> (Samples, Beat, Bpm) {
         (l.0, t.settings.beat(), t.settings.tempo())
     }
-    // The crossfade curve.
-    let _: Fade = Fade::Smooth;
+    // The crossfade curve — the engine's, not the fork's `Fade`.
+    let _: CrossfadeCurve = CrossfadeCurve::EqualAmplitude;
 
     // --- The disk-streaming handle. ---
     //

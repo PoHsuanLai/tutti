@@ -37,9 +37,10 @@
 //!   caller passed, so inside `spawn_audio_node` it selects the fallback for
 //!   every unit — including the ported ones. Measured, not assumed.
 //! - **A `ParamPorts` bound on `spawn_audio_node`.** Impossible: callers spawn
-//!   bare fundsp combinators (`sine_hz`, `lowpass_hz`, `pass() | pass()`), whose
-//!   `An<…>` types are foreign to `tutti-nodes`, and a blanket
-//!   `impl<T> ParamPorts for T` would conflict with the seven concrete impls.
+//!   units from every crate — plugin hosts, sampler voices, the soundfont
+//!   player, the polysynth — whose types are foreign to `tutti-nodes`, and a
+//!   blanket `impl<T> ParamPorts for T` would conflict with the seven concrete
+//!   impls.
 //!
 //! So the declaration is explicit, and the point of this module is that
 //! **forgetting it is loud rather than silent** — see

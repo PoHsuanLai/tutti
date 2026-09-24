@@ -7,7 +7,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
 use tutti_core::{Db, Hz, Param, SampleRate, Q};
 
@@ -245,14 +245,14 @@ impl<F: Real> SvfFilterNode<F> {
     /// resonate at the cutoff, and a band-pass or notch narrows as it rises.
     ///
     /// Coefficients are computed here, but **against the placeholder
-    /// [`DEFAULT_SAMPLE_RATE`]** — a cutoff only means anything relative to
+    /// [`SampleRate::DEFAULT`]** — a cutoff only means anything relative to
     /// Nyquist, and the device rate is not known yet. Call
     /// [`AudioUnit::set_sample_rate`] before the first `process`; it recomputes
     /// them. Skip it at 48 kHz and the corner sits 8.8% high (a 1 kHz low-pass
     /// cuts at 1088 Hz) — a filter that still filters, just not where it was
     /// asked to. See the crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         let frequency = frequency.into();
@@ -262,7 +262,7 @@ impl<F: Real> SvfFilterNode<F> {
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             coeffs: SvfCoefficients::zeroed(),
             integrator: SvfIntegrator::zeroed(),
         };
@@ -506,14 +506,14 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// Speaker placement is the upstream panner's job: this is a per-channel
     /// filter, not a spatial process.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; call
     /// [`AudioUnit::set_sample_rate`] before the first `process` or every
     /// channel's corner sits 8.8% high at 48 kHz. The coefficients are shared,
     /// so the skew is identical across the width — wrong everywhere rather than
     /// unbalanced, which is why widening does not make it any easier to hear.
     /// See the crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
         channels: usize,
@@ -529,7 +529,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             coeffs: SvfCoefficients::zeroed(),
             channels: vec![SvfIntegrator::zeroed(); n],
             mod_cutoff: false,

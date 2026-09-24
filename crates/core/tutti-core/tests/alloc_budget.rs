@@ -37,7 +37,11 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
+mod support;
+
+use support::{Gain, Sine};
+use tutti_core::dsp::Net;
+use tutti_core::Hz;
 use tutti_core::{AudioUnit, Engine, InterleavedMut};
 use tutti_core::{ChannelLayout, MotionFsm, SampleRate, TransportSettings};
 
@@ -87,9 +91,12 @@ fn measure<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
 
 fn graph(nodes: usize) -> Net {
     let mut net = Net::new(0, 2);
-    let mut last = net.push(Box::new(sine_hz::<f32>(440.0)));
+    let mut last = net.push(Box::new(Sine::new(Hz(440.0))));
     for i in 0..nodes {
-        let f = net.push(Box::new(lowpass_hz::<f32>(500.0 + i as f32, 0.7)));
+        // Which node is chained does not matter to a budget on `Net` itself;
+        // it has to be one that takes an input, and `tutti-nodes`' filters are
+        // out of reach from here (see `support`).
+        let f = net.push(Box::new(Gain(0.5 + i as f32 * 1e-3)));
         net.connect(last, 0, f, 0);
         last = f;
     }

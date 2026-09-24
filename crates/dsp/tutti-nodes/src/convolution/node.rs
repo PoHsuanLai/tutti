@@ -7,7 +7,6 @@
 //! Each node composes a [`Convolver`] (DSP engine) with a [`WetDry`]
 //! parameter group (user-facing knobs).
 
-use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
@@ -110,14 +109,14 @@ pub struct ConvolverNode {
     convolver: Convolver,
     dry: DryAlign,
     params: WetDry,
-    /// The rate the host last announced. Seeded at [`DEFAULT_SAMPLE_RATE`] and
+    /// The rate the host last announced. Seeded at [`SampleRate::DEFAULT`] and
     /// updated by `set_sample_rate`, but **never read** — no coefficient here
     /// derives from it, because an FIR convolution's only time constant is the
     /// IR itself. Kept so the node can answer for its rate if a future
     /// resampling path needs to know what it was built against; see the
     /// constructors for why resampling is deliberately not done.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     sample_rate: SampleRate,
     latency_samples: usize,
 }
@@ -142,7 +141,7 @@ impl ConvolverNode {
             dry: DryAlign::new(latency_samples),
             convolver,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             latency_samples,
         }
     }
@@ -159,7 +158,7 @@ impl ConvolverNode {
             dry: DryAlign::new(latency_samples),
             convolver,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             latency_samples,
         }
     }
@@ -300,11 +299,11 @@ impl StereoConvolverNode {
     /// The shared body behind [`mono`](Self::mono), [`stereo`](Self::stereo) and
     /// [`mono_to_stereo`](Self::mono_to_stereo).
     ///
-    /// Seeds the placeholder [`DEFAULT_SAMPLE_RATE`], which `set_sample_rate`
+    /// Seeds the placeholder [`SampleRate::DEFAULT`], which `set_sample_rate`
     /// overwrites without resampling anything — the rate caveat on
     /// [`ConvolverNode::new`] applies to every public constructor here.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     fn build(l: Convolver, r: Convolver, config: IrChannelConfig) -> Self {
         let latency_samples = l.latency();
         // Both convolvers are built with the same block size by every
@@ -318,7 +317,7 @@ impl StereoConvolverNode {
             channels: StereoPair::new(l, r),
             config,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             latency_samples,
         }
     }

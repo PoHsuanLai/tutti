@@ -59,7 +59,8 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 
-use tutti_core::{AudioNode, NodeId};
+use tutti_core::dsp::NodeId;
+use tutti_core::AudioNode;
 use tutti_midi_runtime::MidiInPort;
 
 use crate::graph::AudioGraphRes;

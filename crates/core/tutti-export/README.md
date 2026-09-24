@@ -46,15 +46,16 @@ so forgetting a transport is a compile error rather than a silently silent
 render.
 
 ```rust
-use tutti_core::dsp::{sine_hz, Net};
-use tutti_core::{FrozenClock, SampleRate};
+use tutti_core::dsp::Net;
+use tutti_core::{FrozenClock, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, EncodeConfig, ExportConfig, Flac,
     RenderConfig,
 };
+use tutti_nodes::testing::Osc;
 
 let mut net = Net::new(0, 2);
-let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
 net.pipe_output(tone);
 
 let config = ExportConfig {

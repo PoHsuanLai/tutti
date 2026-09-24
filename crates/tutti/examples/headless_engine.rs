@@ -33,8 +33,10 @@ use std::sync::Arc;
 
 use tutti::core::{AudioTap, Engine, MasterMeter, Transport, TransportClock};
 use tutti::device::{AudioCallbackState, AudioEngine, TuttiDriver};
-use tutti::dsp::{sine_hz, Net};
+use tutti::dsp::Net;
 use tutti::prelude::*;
+use tutti_core::Hz;
+use tutti_nodes::testing::Osc;
 
 fn main() -> tutti::device::Result<()> {
     // 1. The device first: it reports the rate the graph must be built at.
@@ -59,7 +61,9 @@ fn main() -> tutti::device::Result<()> {
         transport.clock_links(),
         sample_rate.get(),
     )));
-    let tone = net.push(Box::new(sine_hz::<f32>(440.0) * 0.2));
+    let tone = net.push(Box::new(
+        Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2)),
+    ));
     net.pipe_output(tone);
 
     // 4-5. The audio thread's half, and the state its callback reads.

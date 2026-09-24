@@ -75,12 +75,12 @@ impl<F: Real> EqBandNode<F> {
     /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf) —
     /// the usual EQ-band types. On the others it is stored and ignored.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, inherited from the
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, inherited from the
     /// [`SvfFilterNode`] inside it: call [`AudioUnit::set_sample_rate`] before
     /// the first `process` or the band's centre sits 8.8% high at 48 kHz. See
     /// the crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         filter_type: SvfType,

@@ -15,7 +15,7 @@
 //! spectral cross-check against librosa lives in `examples/verify_synth.py`;
 //! everything here is self-contained.
 
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{Amplitude, AudioUnit, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
@@ -63,8 +63,8 @@ fn config(osc: OscillatorType) -> SynthConfig {
 
 /// Render `blocks` blocks of the left channel.
 fn render(synth: &mut PolySynth, blocks: usize) -> Vec<f32> {
-    let input = BufferArray::<U2>::new();
-    let mut out_buf = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut out_buf = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
         synth.process(BLOCK, &input.buffer_ref(), &mut out_buf.buffer_mut());
@@ -77,8 +77,8 @@ fn render(synth: &mut PolySynth, blocks: usize) -> Vec<f32> {
 
 /// Render both channels, interleaved-free: `(left, right)`.
 fn render_stereo(synth: &mut PolySynth, blocks: usize) -> (Vec<f32>, Vec<f32>) {
-    let input = BufferArray::<U2>::new();
-    let mut out_buf = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut out_buf = BufferVec::new(2);
     let (mut l, mut r) = (Vec::new(), Vec::new());
     for _ in 0..blocks {
         synth.process(BLOCK, &input.buffer_ref(), &mut out_buf.buffer_mut());

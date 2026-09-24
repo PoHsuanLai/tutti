@@ -210,7 +210,7 @@ jobs:
       # `debug_assert!` is gone and a `#[should_panic]` over one fails.
       # Mirrors `just bench`; adding a bench means adding a line in both.
       - run: |
-          cargo bench -p tutti-core      --bench engine_render  -- --test
+          cargo bench -p tutti-nodes     --bench engine_render  -- --test
           cargo bench -p tutti-cpal      --bench audio_callback -- --test
           cargo bench -p tutti-export    --bench offline_render -- --test
           cargo bench -p tutti-polysynth --bench polysynth      -- --test

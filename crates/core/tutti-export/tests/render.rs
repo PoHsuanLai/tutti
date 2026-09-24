@@ -12,16 +12,16 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::dsp::{dc, reverb_stereo, split, square_hz, U2};
-use tutti_core::{AudioUnit, SampleRate};
+use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,
 };
+use tutti_nodes::testing::{Const, Osc};
 
 fn net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((0.5, 0.5))));
+    let id = n.push(Box::new(Const::frame(&[0.5, 0.5])));
     n.pipe_output(id);
     n
 }
@@ -82,7 +82,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("q.wav");
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(dc(0.5)));
+    let id = n.push(Box::new(Const::mono(0.5)));
     n.pipe_output(id);
     render_to_file(
         n,
@@ -195,7 +195,7 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
@@ -214,7 +214,7 @@ fn cascaded_convolvers_sum_their_tails() {
     let a = vec![0.5f32; 1024];
     let b = vec![0.5f32; 2048];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let first = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
     let second = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
     n.connect(src, 0, first, 0);
@@ -281,7 +281,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
 
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let quiet = n.push(Box::new(Unreporting));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, quiet, 0);
@@ -314,23 +314,88 @@ fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
     assert_eq!(reported.samples(), Some(tutti_types::Samples(0)));
 }
 
+/// A stereo integrator: `y[n] = y[n-1] + x[n]`, per channel.
+///
+/// The smallest node that genuinely never decays — a feedback loop with a gain
+/// of exactly one, the limit of the FDN reverb (fundsp's `reverb_stereo`) this
+/// test used to reach for. The engine ships no node that reports
+/// [`Tail::Unbounded`]: `ConvolverNode`, its reverb, is an FIR and reports a
+/// finite ring-out (the cases above). So the property under test — that
+/// `resolve` spends exactly the caller's cap on a graph that never decays —
+/// needs a node that says so, and this one is honest about it.
+///
+/// [`Tail::Unbounded`]: tutti_types::Tail::Unbounded
+#[derive(Clone, Default)]
+struct Integrator([f32; 2]);
+
+impl AudioUnit for Integrator {
+    fn inputs(&self) -> usize {
+        2
+    }
+    fn outputs(&self) -> usize {
+        2
+    }
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        self.0[0] += input[0];
+        self.0[1] += input[1];
+        output[..2].copy_from_slice(&self.0);
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        input: &tutti_core::BufferRef,
+        output: &mut tutti_core::BufferMut,
+    ) {
+        for i in 0..size {
+            for c in 0..2 {
+                self.0[c] += input.at_f32(c, i);
+                output.set_f32(c, i, self.0[c]);
+            }
+        }
+    }
+    fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
+        input.clone()
+    }
+    fn get_id(&self) -> u64 {
+        tutti_core::mnemonic(b"TSTINTEG")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn tail(&mut self) -> tutti_types::Tail {
+        tutti_types::Tail::Unbounded
+    }
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 /// A graph that never decays resolves to exactly the caller's bound.
 ///
-/// A feedback reverb re-enters its own output, so it has no frame count of its
+/// A feedback loop re-enters its own output, so it has no frame count of its
 /// own — the cap is the whole answer, and it is the caller's choice rather than
 /// a figure the engine invented.
+///
+/// Mutation: `Integrator` reporting `Tail::None` fails the `is_unbounded`
+/// assertion — the graph is then spendable and `resolve` ignores the cap.
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let src = n.push(Box::new(dc((0.5, 0.5))));
-    let rev = n.push(Box::new(reverb_stereo(10.0, 2.0, 0.5)));
+    let src = n.push(Box::new(Const::frame(&[0.5, 0.5])));
+    let rev = n.push(Box::new(Integrator::default()));
     n.connect(src, 0, rev, 0);
     n.connect(src, 1, rev, 1);
     n.pipe_output(rev);
 
     let reported = tutti_export::reported_tail(&n);
     let cap = tutti_types::Samples(384_000);
-    assert!(reported.is_unbounded(), "an FDN never decays on its own");
+    assert!(
+        reported.is_unbounded(),
+        "a unity-gain feedback loop never decays on its own"
+    );
     assert_eq!(reported.samples(), None, "so there is no count to spend");
     assert_eq!(reported.resolve(cap), cap);
 }
@@ -344,7 +409,7 @@ fn resolving_an_unbounded_graph_spends_the_cap() {
 fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(dc(0.5)));
+    let src = n.push(Box::new(Const::mono(0.5)));
     let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
@@ -726,7 +791,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
 
     let d = tempfile::tempdir().unwrap();
     let mut n = tutti_core::dsp::Net::new(0, 6);
-    let id = n.push(Box::new(dc((0.1, 0.2, 0.3, 0.4, 0.5, 0.6))));
+    let id = n.push(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
     n.pipe_output(id);
 
     let mut cfg = config(
@@ -828,7 +893,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 
     let silence = || {
         let mut n = tutti_core::dsp::Net::new(0, 2);
-        let id = n.push(Box::new(dc((0.0, 0.0))));
+        let id = n.push(Box::new(Const::frame(&[0.0, 0.0])));
         n.pipe_output(id);
         n
     };
@@ -873,11 +938,32 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     use tutti_export::{render_normalized_to_file, Normalize};
     use tutti_types::{Db, Interleaved};
 
-    // Hard edges near Nyquist are what SRC overshoots on; a DC constant barely
-    // moves and would hide the bug entirely.
+    // Energy near Nyquist, with its true peak *between* samples, is what SRC
+    // overshoots on; a DC constant barely moves and would hide the bug entirely.
+    //
+    // A sine at a quarter of the 44.1 kHz render rate, started at 0.546 turns.
+    // That is what the fundsp `square_hz(11025.0)` this test used to build
+    // rendered: a band-limited square at fs/4 keeps no harmonic below Nyquist
+    // but its fundamental, and its phase came from the graph's hash — measured,
+    // not assumed. At that phase the samples are ±0.285 and ±0.958 of the peak
+    // (±0.279 / ±0.939 at this amplitude of 0.98).
+    //
+    // The property that matters is where the meter looks. It estimates true
+    // peak on a 4× oversampled grid, one point every 1/16 turn of this tone,
+    // and from 0.546 turns the nearest grid point misses the crest by 0.0165
+    // turns — so the render-rate estimate reads low, and a gain chosen from it
+    // lands high once the resampled file puts samples closer to the crest.
+    // At a start of 1/8 turn the grid lands exactly on the crest, the estimate
+    // is already right, and the test passes with the measure-before-resample
+    // bug put back. So the phase is load-bearing; the amplitude is not, since
+    // peak normalization divides it out.
     let square = || {
         let mut n = tutti_core::dsp::Net::new(0, 2);
-        let id = n.push(Box::new((square_hz(11025.0) * 0.98) >> split::<U2>()));
+        let tone = Osc::sine(Hz(11025.0))
+            .with_phase(tutti_core::Phase(0.546))
+            .with_amplitude(Amplitude(0.98))
+            .with_layout(ChannelLayout::STEREO);
+        let id = n.push(Box::new(tone));
         n.pipe_output(id);
         n
     };
@@ -971,7 +1057,7 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
         // a dropped or duplicated channel is visible.
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
-            let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+            let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
             n.connect_output(id, 0, c);
         }
 
@@ -1026,7 +1112,7 @@ fn an_odd_width_round_trips_through_buffers() {
         let layout = ChannelLayout::from(width);
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
-            let id = n.push(Box::new(dc(0.25)));
+            let id = n.push(Box::new(Const::mono(0.25)));
             n.connect_output(id, 0, c);
         }
 
@@ -1052,7 +1138,7 @@ fn an_odd_width_survives_a_resample() {
     let width = 5u16;
     let mut n = tutti_core::dsp::Net::new(0, width as usize);
     for c in 0..width as usize {
-        let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+        let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
         n.connect_output(id, 0, c);
     }
 

@@ -308,16 +308,14 @@ mod tests {
 
     #[test]
     fn test_process_fills_block_from_beat_input() {
-        use tutti_core::dsp::F32x;
-
         let mut lane = AutomationLaneNode::new(ramp_envelope());
         let block_size = 32;
 
         // Hold the beat at 4.0 for the whole block -> constant 1.0 output.
         let input_buf = beat_ramp(block_size, 4.0, 0.0);
         let input_ref = input_buf.buffer_ref();
-        let mut output_simd = vec![F32x::ZERO; 8];
-        let mut output_buf = BufferMut::new(&mut output_simd);
+        let mut output_vec = BufferVec::new(lane.outputs());
+        let mut output_buf = output_vec.buffer_mut();
 
         lane.process(block_size, &input_ref, &mut output_buf);
 
@@ -332,15 +330,13 @@ mod tests {
 
     #[test]
     fn test_process_updates_last_value() {
-        use tutti_core::dsp::F32x;
-
         let mut lane = AutomationLaneNode::new(ramp_envelope());
         assert_eq!(lane.last_value(), 0.0);
 
         let input_buf = beat_ramp(64, 2.0, 0.0);
         let input_ref = input_buf.buffer_ref();
-        let mut output_simd = vec![F32x::ZERO; 16];
-        let mut output_buf = BufferMut::new(&mut output_simd);
+        let mut output_vec = BufferVec::new(lane.outputs());
+        let mut output_buf = output_vec.buffer_mut();
 
         lane.process(64, &input_ref, &mut output_buf);
 
@@ -355,15 +351,13 @@ mod tests {
     /// following the per-sample beat, rather than being held block-constant.
     #[test]
     fn test_process_per_sample_varies() {
-        use tutti_core::dsp::F32x;
-
         let mut lane = AutomationLaneNode::new(ramp_envelope());
         // 120 BPM at 44.1 kHz.
         let per_sample = (120.0 / 60.0) / 44100.0;
         let input_buf = beat_ramp(32, 0.0, per_sample);
         let input_ref = input_buf.buffer_ref();
-        let mut output_simd = vec![F32x::ZERO; 8];
-        let mut output_buf = BufferMut::new(&mut output_simd);
+        let mut output_vec = BufferVec::new(lane.outputs());
+        let mut output_buf = output_vec.buffer_mut();
 
         lane.process(32, &input_ref, &mut output_buf);
 

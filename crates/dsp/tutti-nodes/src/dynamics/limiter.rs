@@ -9,9 +9,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{
-    dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame,
-};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame};
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
@@ -186,12 +184,12 @@ impl LimiterNode {
     /// [`with_lookahead`](Self::with_lookahead) and the recovery with
     /// [`with_release`](Self::with_release).
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; see
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; see
     /// [`with_channels`](Self::with_channels), which this delegates to, for what
     /// goes wrong if [`AudioUnit::set_sample_rate`] is not called before the
     /// first `process`.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
         Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
@@ -205,7 +203,7 @@ impl LimiterNode {
     /// the image does not shift — the surround generalization of the stereo
     /// design. Parameters are as [`new`](Self::new).
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, and here that
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, and here that
     /// governs an *allocation*: the lookahead ring is sized in samples from the
     /// 5 ms window, and the envelope follower's attack/release coefficients are
     /// derived the same way. Call [`AudioUnit::set_sample_rate`] before the
@@ -218,7 +216,7 @@ impl LimiterNode {
     /// by the same 8.8%. See the crate-level "born at a placeholder rate"
     /// section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
@@ -235,7 +233,7 @@ impl LimiterNode {
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
         // inputs.
-        let lookahead_samples = lookahead_secs.to_samples_ceil(DEFAULT_SAMPLE_RATE).get();
+        let lookahead_samples = lookahead_secs.to_samples_ceil(SampleRate::DEFAULT).get();
 
         Self {
             threshold_db: Param::new(threshold_db.into()),
@@ -250,8 +248,8 @@ impl LimiterNode {
             delayed: vec![0.0; n],
             envelope: 0.0,
             gain_reduction_db: Db::UNITY,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            follower: EnvelopeFollower::new(0.0, 0.1, DEFAULT_SAMPLE_RATE),
+            sample_rate: SampleRate::DEFAULT,
+            follower: EnvelopeFollower::new(0.0, 0.1, SampleRate::DEFAULT),
             mod_ceiling: false,
             mod_threshold: false,
         }
@@ -885,7 +883,7 @@ mod tests {
         let born = lim.ring.lookahead_samples;
         assert_eq!(
             born,
-            LOOKAHEAD.to_samples_ceil(DEFAULT_SAMPLE_RATE).get(),
+            LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
             "construction must size the ring at the placeholder rate"
         );
         let born_secs = born as f32 / device.get() as f32;
@@ -929,7 +927,7 @@ mod tests {
         // accumulates instead of cancelling. Going back and forth pins that the
         // derivation is a pure function of (request, rate).
         for _ in 0..4 {
-            lim.set_sample_rate(DEFAULT_SAMPLE_RATE);
+            lim.set_sample_rate(SampleRate::DEFAULT);
             assert_eq!(
                 lim.ring.lookahead_samples, born,
                 "returning to the original rate must return the original count"

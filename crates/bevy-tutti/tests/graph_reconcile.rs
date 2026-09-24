@@ -29,8 +29,9 @@ mod graph_reconcile {
         GraphDirty, GraphReconcileSystems, SpawnAudioNode,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{sine_hz, Net};
-    use tutti_core::AudioNode;
+    use tutti_core::dsp::Net;
+    use tutti_core::{AudioNode, Hz};
+    use tutti_nodes::testing::Osc;
 
     /// Local probe component: the DAW param components moved out of the engine,
     /// so these pump tests use a self-contained marker to prove the chained
@@ -141,7 +142,7 @@ mod graph_reconcile {
         let mut app = test_app();
         let mut commands_q = app.world_mut().commands();
         commands_q
-            .spawn_audio_node(sine_hz::<f32>(440.0))
+            .spawn_audio_node(Osc::sine(Hz(440.0)))
             .insert(Probe(0.5));
         app.update();
 
@@ -162,7 +163,7 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
+            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
         };
         app.update();
 
@@ -193,7 +194,7 @@ mod graph_reconcile {
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
+            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
         };
         app.update();
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
@@ -245,7 +246,7 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
+            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
         };
         app.update();
 
@@ -259,7 +260,7 @@ mod graph_reconcile {
         // Replace with a different oscillator — same NodeId, new unit.
         {
             let mut c = app.world_mut().commands();
-            crossfade_audio_node(&mut c, entity, Box::new(sine_hz::<f32>(220.0)));
+            crossfade_audio_node(&mut c, entity, Box::new(Osc::sine(Hz(220.0))));
         }
         app.update();
 

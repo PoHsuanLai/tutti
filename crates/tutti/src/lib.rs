@@ -70,12 +70,20 @@ pub use tutti_types as types;
 /// Planar block buffers and the routing/contract arithmetic.
 pub use tutti_node as node;
 
-/// FunDSP's graph and node library, forwarded from `tutti_core::dsp`.
+/// The graph runtime a headless host builds on: `Net`, and the `NodeId` /
+/// `Source` a wiring call names an endpoint with.
+///
+/// Three names, not `tutti_core::dsp` whole. That module also carries the
+/// fundsp combinators `tutti-polysynth` still builds its sub-voice from; they
+/// are the fork's, not the engine's vocabulary, and a consumer that wants a
+/// stimulus or a filter has `nodes` (`nodes::testing` for the former).
 ///
 /// `Net` stays a name you spell out — `tutti::dsp::Net` — rather than joining
 /// the prelude, for the reason `tutti_core`'s own prelude gives for excluding
 /// it.
-pub use tutti_core::dsp;
+pub mod dsp {
+    pub use tutti_core::dsp::{Net, NodeId, Source};
+}
 
 /// The DSP node library: LFOs, dynamics, convolution, automation.
 pub use tutti_nodes as nodes;
@@ -165,7 +173,7 @@ pub mod prelude {
         beat_from_ports, ClickState, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent,
         MotionState, Then, BEAT_PORTS,
     };
-    pub use tutti_core::Fade;
+    pub use tutti_core::CrossfadeCurve;
 
     /// The device handle and its enumeration record. `bevy-tutti` surfaces
     /// both at *its* root; a headless host needs them at least as much.

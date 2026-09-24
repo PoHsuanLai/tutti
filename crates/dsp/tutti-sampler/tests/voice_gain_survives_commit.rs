@@ -108,7 +108,7 @@ fn flat_wave(len: usize) -> Arc<Wave> {
 /// `Net::new` alone has no backend and applies settings in place, which would
 /// make every assertion here pass for the wrong reason — the hazard is entirely
 /// about what happens to a *frontend* clone.
-fn net_with_voice() -> (Net, Box<dyn AudioUnit>, tutti_core::NodeId) {
+fn net_with_voice() -> (Net, Box<dyn AudioUnit>, tutti_core::dsp::NodeId) {
     let mut source = MemorySource::new(flat_wave(4_096));
     // The clock is mandatory, not decoration — see `RollingTransport`. The
     // default window starts at beat 0 and runs to the end of the source, so a

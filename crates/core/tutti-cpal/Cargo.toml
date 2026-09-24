@@ -54,6 +54,9 @@ ringbuf = { version = "0.4", optional = true }
 assert_no_alloc = { version = "1", default-features = false }
 parking_lot = "0.12"
 criterion.workspace = true
+# Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
+# graphs. No cycle: `tutti-nodes` names nothing above `tutti-core`.
+tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }
 
 [[bench]]
 name = "audio_callback"

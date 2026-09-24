@@ -9,8 +9,9 @@
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
 
-use tutti_core::dsp::{pass, Net, Source};
+use tutti_core::dsp::{Net, Source};
 use tutti_core::{latency, AudioUnit, BufferVec, SampleRate, Signal, SignalFrame};
+use tutti_nodes::testing::Through;
 use tutti_nodes::{ChorusNode, DelayLineNode, FlangerNode, StereoDelayLineNode};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -188,7 +189,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     chorus.set_sample_rate(SR);
     let echo = net.add(echo);
     let chorus = net.add(chorus);
-    let dry = net.add(pass());
+    let dry = net.add(Through::mono());
     net.set_source(echo, 0, Source::Global(0));
     net.set_source(chorus, 0, Source::Global(0));
     net.set_source(chorus, 1, Source::Global(0));
@@ -208,6 +209,41 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
         before,
         "compensate spliced a delay into the graph"
     );
+}
+
+/// A summing bus does not hide the latency of what feeds it.
+///
+/// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and its
+/// `route` answered `Latency(0)` whatever arrived. A lookahead limiter summed
+/// with a dry path then read as a zero-latency graph, and `reported_latency`
+/// (which is this `latency()`) pre-rolled an export by nothing. The bus now
+/// carries its latest input, so the graph reports the limiter's lookahead.
+///
+/// Mutation: reverting the bus's `route` to `Latency(0)` fails the first
+/// assertion; taking the `min` of its inputs fails it too (the dry path is 0).
+#[test]
+fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
+    use tutti_core::{ChannelLayout, Db};
+    use tutti_nodes::{ChannelSumNode, LimiterNode};
+
+    let mut net = Net::new(1, 1);
+    let lim = net.add(LimiterNode::with_channels(
+        ChannelLayout::MONO,
+        Db(-1.0),
+        Db(-0.3),
+    ));
+    let dry = net.add(Through::mono());
+    let sum = net.add(ChannelSumNode::new(2, ChannelLayout::MONO));
+    net.set_source(lim, 0, Source::Global(0));
+    net.set_source(dry, 0, Source::Global(0));
+    net.set_source(sum, 0, Source::Local(lim, 0));
+    net.set_source(sum, 1, Source::Local(dry, 0));
+    net.set_output_source(0, Source::Local(sum, 0));
+    net.set_sample_rate(SR);
+
+    let lookahead = net.node_mut(lim).latency().expect("the limiter reports");
+    assert!(lookahead > 0.0, "a lookahead limiter has latency");
+    assert_eq!(net.latency(), Some(lookahead));
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +383,7 @@ mod convolver {
         let conv = net.add(conv);
         let echo_a = net.add(echo_a);
         let echo_b = net.add(echo_b);
-        let dry = net.add(pass());
+        let dry = net.add(Through::mono());
         net.set_source(conv, 0, Source::Global(0));
         net.set_source(echo_a, 0, Source::Local(conv, 0));
         net.set_source(echo_b, 0, Source::Global(0));

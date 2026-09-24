@@ -7,7 +7,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
 use tutti_core::{Drive, Hz, Param, Resonance, SampleRate};
 
@@ -136,7 +136,7 @@ impl<F: Real> LadderFilterNode<F> {
     /// `resonance` is clamped to `0.0..=1.0`; `0.0` gives no emphasis at the
     /// cutoff and values near `1.0` approach self-oscillation.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**: the coefficients
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: the coefficients
     /// computed here are relative to Nyquist, which is not known until the
     /// device is open. Call [`AudioUnit::set_sample_rate`] before the first
     /// `process`; it recomputes them. Skip it at 48 kHz and the corner sits
@@ -144,7 +144,7 @@ impl<F: Real> LadderFilterNode<F> {
     /// the audible half, since the emphasis is what the ear tracks. See the
     /// crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         ladder_type: LadderType,
@@ -158,7 +158,7 @@ impl<F: Real> LadderFilterNode<F> {
             frequency: Param::new(frequency),
             resonance: Param::new(resonance),
             drive: Param::new(Drive::UNITY),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             state: LadderState::zeroed(),
         };
         node.update_coefficients(frequency, resonance);

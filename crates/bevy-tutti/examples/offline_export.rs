@@ -18,11 +18,14 @@ use bevy_ecs::prelude::*;
 
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::{lowpass_hz, pass, saw_hz, Net};
+use tutti_core::dsp::Net;
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
+use tutti_core::{Hz, Q};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Normalize, RenderConfig,
 };
+use tutti_nodes::testing::{Osc, Through};
+use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::Db;
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -66,15 +69,19 @@ fn main() {
 struct Remaining(usize);
 
 fn build_chain(mut commands: Commands) {
-    let osc = commands.spawn_audio_node(saw_hz(110.0)).id();
+    let osc = commands.spawn_audio_node(Osc::saw(Hz(110.0))).id();
 
     let filter = commands
-        .spawn_audio_node(lowpass_hz(800.0, 1.0))
+        .spawn_audio_node(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(800.0),
+            Q(1.0),
+        ))
         .insert(PortSources::from(osc))
         .id();
 
     let out = commands
-        .spawn_audio_node(pass() | pass())
+        .spawn_audio_node(Through::new(ChannelLayout::STEREO))
         .insert(
             PortSources::silent()
                 .with(

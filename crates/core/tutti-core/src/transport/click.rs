@@ -594,7 +594,7 @@ mod tests {
     use super::super::clock::split_beat;
     use super::super::{beats_per_sample, ClockLinks, TransportClock};
     use super::*;
-    use crate::dsp::{BufferArray, U2};
+    use crate::BufferVec;
     use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
 
     /// Drive the real `Transport` rather than a mock: the click node needs
@@ -623,9 +623,9 @@ mod tests {
     }
 
     /// The beat ports for one block, holding `beat` on every frame.
-    fn constant_beat(beat: Beat) -> BufferArray<U2> {
+    fn constant_beat(beat: Beat) -> BufferVec {
         let (whole, frac) = split_beat(beat);
-        let mut ports = BufferArray::<U2>::new();
+        let mut ports = BufferVec::new(2);
         for i in 0..crate::MAX_BUFFER_SIZE {
             ports.set_f32(0, i, whole);
             ports.set_f32(1, i, frac);
@@ -875,7 +875,7 @@ mod tests {
         ])));
 
         // Frame `i` carries beat `2 + i/100`, so the change at 2.5 is frame 50.
-        let mut ports = BufferArray::<U2>::new();
+        let mut ports = BufferVec::new(2);
         for i in 0..crate::MAX_BUFFER_SIZE {
             let (whole, frac) = split_beat(Beat(2.0 + i as f64 / 100.0));
             ports.set_f32(0, i, whole);
@@ -885,7 +885,7 @@ mod tests {
         node.last_click_onset = Some(Beat(2.0));
         node.click_pos = node.click_normal.len();
 
-        let mut out = BufferArray::<U2>::new();
+        let mut out = BufferVec::new(2);
         node.process(64, &ports.buffer_ref(), &mut out.buffer_mut());
 
         assert_eq!(
@@ -914,7 +914,7 @@ mod tests {
 
         // Frame `i` of a block starting at `start` carries beat `start + i/100`.
         let block_at = |start: f64| {
-            let mut ports = BufferArray::<U2>::new();
+            let mut ports = BufferVec::new(2);
             for i in 0..crate::MAX_BUFFER_SIZE {
                 let (whole, frac) = split_beat(Beat(start + i as f64 / 100.0));
                 ports.set_f32(0, i, whole);
@@ -922,7 +922,7 @@ mod tests {
             }
             ports
         };
-        let mut out = BufferArray::<U2>::new();
+        let mut out = BufferVec::new(2);
 
         // 4/4 (the default): 2.00..2.10 all belong to the quarter at 2.0.
         node.process(10, &block_at(2.0).buffer_ref(), &mut out.buffer_mut());
@@ -978,7 +978,7 @@ mod tests {
         // 44.1 kHz at 120 BPM is 1/22050 beat per frame, so starting 20 frames
         // before beat 2 puts that onset at frame 20 of the block.
         let mut clock = clock_at(120.0, 2.0 - 20.0 / 22_050.0, 44_100.0);
-        let mut beats = BufferArray::<U2>::new();
+        let mut beats = BufferVec::new(2);
         const N: usize = 64;
         clock.process(N, &BufferRef::new(&[]), &mut beats.buffer_mut());
 
@@ -989,7 +989,7 @@ mod tests {
         block_node.click_pos = block_node.click_normal.len();
         let mut tick_node = block_node.clone();
 
-        let mut buffer = BufferArray::<U2>::new();
+        let mut buffer = BufferVec::new(2);
         block_node.process(N, &beats.buffer_ref(), &mut buffer.buffer_mut());
         assert!(
             (0..N).any(|i| buffer.at_f32(0, i) != 0.0),
@@ -1067,9 +1067,9 @@ mod tests {
             let mut clock = clock_at(BPM, START, SR);
             let mut left = Vec::new();
             while left.len() < expected + 2 * block {
-                let mut beats = BufferArray::<U2>::new();
+                let mut beats = BufferVec::new(2);
                 clock.process(block, &BufferRef::new(&[]), &mut beats.buffer_mut());
-                let mut out = BufferArray::<U2>::new();
+                let mut out = BufferVec::new(2);
                 node.process(block, &beats.buffer_ref(), &mut out.buffer_mut());
                 left.extend((0..block).map(|i| out.at_f32(0, i)));
             }
@@ -1149,7 +1149,7 @@ mod tests {
         // out now that it reads the beat per frame.
         for block in 0..8 {
             let beats = constant_beat(Beat(f64::from(block) * 0.5));
-            let mut buffer = BufferArray::<U2>::new();
+            let mut buffer = BufferVec::new(2);
             node.process(64, &beats.buffer_ref(), &mut buffer.buffer_mut());
             for i in 0..64 {
                 rendered.push(buffer.at_f32(0, i));

@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! use tutti_analysis::{measure_loudness, LoudnessConfig};
-//! use tutti_core::dsp::{dc, sine_hz, Net};
+//! use tutti_core::dsp::Net;
 //! use tutti_core::{FrozenClock, SampleRate};
 //! use tutti_export::{render_to_buffers, render_to_file, AudioFormat, ...};
 //! use tutti_types::{Db, Interleaved};
@@ -28,18 +28,22 @@
 
 use tutti::analysis::{measure_loudness, LoudnessConfig};
 use tutti::core::FrozenClock;
-use tutti::dsp::{dc, sine_hz, Net};
+use tutti::dsp::Net;
 use tutti::export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, EncodeConfig, ExportConfig,
     RenderConfig,
 };
 use tutti::prelude::*;
+use tutti_core::Hz;
+use tutti_nodes::testing::{Const, Osc};
 
 /// A 440 Hz tone at −12 dBFS, in stereo.
 fn tone() -> Net {
     let mut net = Net::new(0, 2);
     let id = net.push(Box::new(
-        (sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)) * 0.25,
+        Osc::sine(Hz(440.0))
+            .with_amplitude(Amplitude(0.25))
+            .with_layout(ChannelLayout::STEREO),
     ));
     net.pipe_output(id);
     net
@@ -48,7 +52,7 @@ fn tone() -> Net {
 /// A mono graph, to show the channel fold.
 fn mono_tone() -> Net {
     let mut net = Net::new(0, 1);
-    let id = net.push(Box::new(dc(0.5)));
+    let id = net.push(Box::new(Const::mono(0.5)));
     net.pipe_output(id);
     net
 }

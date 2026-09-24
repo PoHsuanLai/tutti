@@ -370,9 +370,12 @@ impl AudioEngine {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
+    use tutti_core::dsp::Net;
     use tutti_core::Engine;
     use tutti_core::{Beat, BeatDuration, MotionEvent, Transport, TransportClock};
+    use tutti_core::{Hz, Q};
+    use tutti_nodes::testing::Osc;
+    use tutti_nodes::{SvfFilterNode, SvfType};
 
     /// Build an engine + transport pair whose graph actually renders.
     ///
@@ -393,8 +396,12 @@ mod tests {
         let clock = TransportClock::new(transport.clock_links(), sample_rate);
         net.push(Box::new(clock));
 
-        let source = net.push(Box::new(sine_hz::<f32>(220.0)));
-        let filter = net.push(Box::new(lowpass_hz::<f32>(2_000.0, 0.7)));
+        let source = net.push(Box::new(Osc::sine(Hz(220.0))));
+        let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(2_000.0),
+            Q(0.7),
+        )));
         net.connect(source, 0, filter, 0);
         // `pipe_output` fans the filter's single output across both device
         // channels, so every output edge is a real `Port::Local` rather than the

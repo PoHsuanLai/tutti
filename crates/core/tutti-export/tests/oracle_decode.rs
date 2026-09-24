@@ -48,11 +48,14 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use tutti_core::dsp::{dc, sine_hz, split, U2};
+
+use tutti_core::Amplitude;
+use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig,
 };
+use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.25;
@@ -60,7 +63,7 @@ const DUR: f64 = 0.25;
 /// A graph emitting the constant `level` on both channels.
 fn dc_net(level: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(dc((level, level))));
+    let id = n.push(Box::new(Const::frame(&[level, level])));
     n.pipe_output(id);
     n
 }
@@ -68,7 +71,11 @@ fn dc_net(level: f32) -> tutti_core::dsp::Net {
 /// A graph emitting a `freq` Hz sine on both channels.
 fn sine_net(freq: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new((sine_hz::<f32>(freq) * 0.5) >> split::<U2>()));
+    let id = n.push(Box::new(
+        Osc::sine(Hz(freq))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
+    ));
     n.pipe_output(id);
     n
 }

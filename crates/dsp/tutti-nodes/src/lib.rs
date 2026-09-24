@@ -28,7 +28,7 @@
 //!
 //! # Rate-dependent nodes are born at a placeholder rate (MANDATORY)
 //!
-//! > A node whose constructor doc says it **starts at [`DEFAULT_SAMPLE_RATE`]**
+//! > A node whose constructor doc says it **starts at [`SampleRate::DEFAULT`]**
 //! > is *not* ready to run. Call [`AudioUnit::set_sample_rate`] with the real
 //! > device rate before the first `process`, or the node renders **silently
 //! > wrong-rate audio**.
@@ -38,7 +38,7 @@
 //! [`Hz`] against Nyquist, envelope attack/release coefficients, LFO phase
 //! increments. None can be computed until the rate is known, and the rate is a
 //! property of the *device*, not of the code — so these constructors seed
-//! [`DEFAULT_SAMPLE_RATE`] and are corrected afterwards.
+//! [`SampleRate::DEFAULT`] and are corrected afterwards.
 //!
 //! **The failure is neither a panic nor silence.** At 48 kHz an uncorrected
 //! node is off by the 44100/48000 ratio — every delay time and filter cutoff
@@ -70,7 +70,7 @@
 //!
 //! [`AudioUnit::set`]: tutti_core::AudioUnit::set
 //! [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
-//! [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+//! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 #![doc = include_str!("../README.md")]
 
 // NOTE: this crate has no fallible operation and therefore no `Error` type.
@@ -171,6 +171,19 @@ pub use convolution::{
     generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
     ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
 };
+
+// Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a
+// test, example or bench wires a graph out of. They replace the fundsp
+// one-liners (`dc`, `sine_hz`, `pass`, `split`, `sink`, …) that
+// `tutti_core::dsp` used to forward for the same job.
+//
+// Behind the `testing` feature, not `cfg(test)`: the consumers are *other*
+// crates' tests, which a `cfg(test)` module is invisible to. The feature keeps
+// it out of the production API — a crate turns it on from its
+// `[dev-dependencies]` only, the pattern `tutti-sampler`'s `test-support`
+// set. This crate reaches its own through a self dev-dependency.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 // No `///` here on purpose: a doc comment on a `pub mod` line shadows the
 // module's own `//!` and re-resolves its intra-doc links in this scope, which

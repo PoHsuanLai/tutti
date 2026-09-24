@@ -63,7 +63,7 @@ pub use value::{SampleRate, Samples, Tail};
 // for the ~200 sites that name `Float`, `Frame` or `MAX_BUFFER_SIZE`.
 pub use num::{
     convert, full_simd_items, full_simd_items_s, simd_items, simd_items_s, F32x, F64x, Float,
-    Frame, I32x, I64x, Int, Num, Real, Sample, Size, U32x, DEFAULT_SR, F32, F64, MAX_BUFFER_LOG,
+    Frame, I32x, I64x, Int, Num, Real, Sample, Size, U32x, F32, F64, MAX_BUFFER_LOG,
     MAX_BUFFER_SIZE, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S,
 };
 

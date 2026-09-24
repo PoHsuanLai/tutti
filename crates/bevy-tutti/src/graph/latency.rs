@@ -42,11 +42,13 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::{sine_hz, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_core::Hz;
+//! use tutti_nodes::testing::Osc;
 //!
 //! /// A host system that edits the graph itself.
 //! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
-//!     graph.0.add(sine_hz::<f32>(440.0));
+//!     graph.0.add(Osc::sine(Hz(440.0)));
 //!     // Say so, or the compensation pass skips the frame entirely.
 //!     dirty.0 = true;
 //! }
@@ -175,8 +177,10 @@ pub fn compensate_graph(
 mod tests {
     use super::*;
     use tutti_core::dsp::Net;
-    use tutti_core::dsp::{dc, limiter};
-    use tutti_core::Source;
+    use tutti_core::dsp::Source;
+    use tutti_core::{ChannelLayout, Db};
+    use tutti_nodes::testing::Const;
+    use tutti_nodes::LimiterNode;
 
     /// App with the graph resource + dirty flag, but no reconcile pipeline —
     /// enough to drive the compensation system directly.
@@ -194,16 +198,28 @@ mod tests {
     }
 
     /// ch0 through a limiter, ch1 dry — ch1's source must pre-roll to match.
+    ///
+    /// The limiter is the engine's own `LimiterNode`, whose lookahead is what
+    /// it reports as latency — so the plan is exercised on the latency-bearing
+    /// node the engine ships, not on fundsp's.
     fn skewed_graph() -> (Net, Samples) {
         let mut graph = Net::with_backend(2);
-        let a = graph.add(dc(1.0));
-        let eff = graph.add(limiter(0.01, 0.01));
-        let b = graph.add(dc(1.0));
+        let a = graph.add(Const::mono(1.0));
+        let eff = graph.add(LimiterNode::with_channels(
+            ChannelLayout::MONO,
+            Db(-1.0),
+            Db(-0.3),
+        ));
+        let b = graph.add(Const::mono(1.0));
         graph.connect(a, 0, eff, 0);
         graph.set_output_source(0, Source::Local(eff, 0));
         graph.set_output_source(1, Source::Local(b, 0));
 
         let lat = tutti_core::LatencyGraph::latency(&graph, eff);
+        // Every test built on this graph compares against `lat`; if the
+        // limiter ever reported no latency they would all agree on zero and
+        // pass while testing nothing.
+        assert!(lat.get() > 0, "LimiterNode must report its lookahead");
         (graph, lat)
     }
 
@@ -252,7 +268,7 @@ mod tests {
     #[test]
     fn a_graph_with_no_latency_reports_none() {
         let mut graph = Net::with_backend(2);
-        let a = graph.add(dc(1.0));
+        let a = graph.add(Const::mono(1.0));
         graph.set_output_source(0, Source::Local(a, 0));
         graph.set_output_source(1, Source::Local(a, 0));
 

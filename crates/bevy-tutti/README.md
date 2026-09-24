@@ -13,6 +13,8 @@ Bevy plugin for the [Tutti](https://github.com/PoHsuanLai/tutti) audio engine. E
 ```rust
 use bevy::prelude::*;
 use bevy_tutti::*;
+use tutti_core::Hz;
+use tutti_nodes::testing::Osc;
 
 fn main() {
     App::new()
@@ -24,7 +26,7 @@ fn main() {
 
 fn setup(mut commands: Commands) {
     // A node is spawned unwired; the resource declares what feeds the master.
-    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
     commands.insert_resource(MasterSources::mono_from(osc));
 }
 ```
@@ -55,13 +57,14 @@ Bevy resource — take only what you need:
 ```rust
 use bevy::prelude::*;
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::sine_hz;
+use tutti_core::Hz;
+use tutti_nodes::testing::Osc;
 use tutti_core::transport::MotionEvent;
 
 fn control(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
     transport.settings.set_tempo(128.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
-    let id = graph.0.add(sine_hz::<f32>(440.0));
+    let id = graph.0.add(Osc::sine(Hz(440.0)));
     graph.0.commit();
 }
 ```
@@ -76,12 +79,13 @@ translates component edits into graph operations and coalesces a single
 ```rust
 use bevy::prelude::*;
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::sine_hz;
+use tutti_core::Hz;
+use tutti_nodes::testing::Osc;
 
 fn setup(mut commands: Commands) {
     // `spawn_audio_node` adds an *unwired* node — it renders nothing until
     // something declares it as a source.
-    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
     commands.insert_resource(MasterSources::from(osc));
 }
 ```

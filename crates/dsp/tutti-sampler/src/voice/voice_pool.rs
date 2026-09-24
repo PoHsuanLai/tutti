@@ -37,8 +37,8 @@ use tutti_core::{
 mod tests {
     use super::*;
     use crate::voice::memory_source::MemorySourceConfig;
-    use tutti_core::dsp::{BufferArray, U2};
     use tutti_core::Bpm;
+    use tutti_core::BufferVec;
 
     use crate::test_transport::MockTransport;
 
@@ -485,8 +485,8 @@ mod tests {
                 })
                 .expect("the command queue has room in a test");
 
-            let ib = BufferArray::<U2>::new();
-            let mut ob = BufferArray::<U2>::new();
+            let ib = BufferVec::new(2);
+            let mut ob = BufferVec::new(2);
             let mut out = Vec::with_capacity(BLOCK * BLOCKS);
             for _ in 0..BLOCKS {
                 pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
@@ -591,8 +591,8 @@ mod tests {
                 })
                 .expect("the command queue has room in a test");
 
-            let ib = BufferArray::<U2>::new();
-            let mut ob = BufferArray::<U2>::new();
+            let ib = BufferVec::new(2);
+            let mut ob = BufferVec::new(2);
             for _ in 0..BLOCKS {
                 pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
                 transport.advance(BLOCK as i64, 44_100.0);

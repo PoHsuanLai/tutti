@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline, Wave};
+use tutti_nodes::testing::Const;
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode,
     VoicePool, VoiceSource,
@@ -240,10 +241,8 @@ fn a_bare_memory_source_node_is_rebound_too() {
 /// and every impl must tolerate.
 #[test]
 fn pure_dsp_and_foreign_contexts_are_no_ops() {
-    use tutti_core::dsp::dc;
-
     let mut net = tutti_core::dsp::Net::new(0, 1);
-    let id = net.push(Box::new(dc(0.5)));
+    let id = net.push(Box::new(Const::mono(0.5)));
     net.pipe_output(id);
 
     let offline = MockTransport::new(false) as Arc<dyn Timeline>;

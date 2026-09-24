@@ -35,9 +35,6 @@ impl<T, A: ArrayLength + Sync + Send + Clone> Size<T> for A {}
 /// between `AudioNode` instances.
 pub type Frame<T, Size> = NumericArray<T, Size>;
 
-/// Default sample rate is 44.1 kHz, in raw `f64` for math sites.
-pub const DEFAULT_SR: f64 = 44_100.0;
-
 /// Binary logarithm of maximum buffer size.
 pub const MAX_BUFFER_LOG: usize = 6;
 

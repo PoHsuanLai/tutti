@@ -13,10 +13,12 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::{sine_hz, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_core::Hz;
+//! use tutti_nodes::testing::Osc;
 //!
 //! fn build_chain(mut commands: Commands) {
-//!     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+//!     let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
 //!     // Wiring is *declared*, never called: the resource names what feeds each
 //!     // global output channel, so two nodes cannot both claim the master.
 //!     commands.insert_resource(MasterSources::mono_from(osc));
@@ -73,7 +75,7 @@
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
-//!     let id = graph.0.add(tutti_core::dsp::sine_hz::<f32>(440.0));
+//!     let id = graph.0.add(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
 //!     graph.0.commit();
 //!     let _ = id;
 //! }
@@ -199,7 +201,7 @@ pub mod prelude {
 
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;
-    pub use tutti_core::Fade;
+    pub use tutti_core::CrossfadeCurve;
 
     pub use tutti_core::transport::{
         beat_from_ports, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,

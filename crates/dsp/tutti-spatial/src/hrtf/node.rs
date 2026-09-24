@@ -392,12 +392,13 @@ mod tests {
     #[test]
     fn pdc_compensates_the_other_path_by_the_binaural_latency() {
         use crate::hrtf::panner::LATENCY;
-        use tutti_core::dsp::{pass, Net, Source};
+        use tutti_core::dsp::{Net, Source};
         use tutti_core::latency;
+        use tutti_nodes::testing::Through;
 
         let mut net = Net::new(1, 3);
         let hrtf = net.add(make_node());
-        let dry = net.add(pass());
+        let dry = net.add(Through::mono());
         net.set_source(hrtf, 0, Source::Global(0));
         net.set_source(hrtf, 1, Source::Global(0));
         net.set_source(dry, 0, Source::Global(0));

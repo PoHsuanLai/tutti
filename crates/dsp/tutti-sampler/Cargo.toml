@@ -53,6 +53,12 @@ tutti-analysis = { path = "../tutti-analysis", default-features = false }
 # gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
 
+# The vocoder's fixed-size, allocation-free FFT (`stretch::fft`). Same versions
+# and features `fundsp-tutti` carries, so the tree still resolves one copy of
+# each and the transform is the one it always was.
+microfft = { version = "0.6.0", features = ["size-32768"] }
+num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
+
 tracing = "0.1"
 thiserror = "2"
 
@@ -87,6 +93,9 @@ criterion.workspace = true
 # coverage it does not have, and one that silently does not run is the same
 # claim with fewer clues.
 tutti-sampler = { path = ".", features = ["test-support"] }
+# Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
+# nothing above `tutti-core`.
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

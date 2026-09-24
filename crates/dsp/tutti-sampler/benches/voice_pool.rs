@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline, Wave};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
@@ -120,8 +120,8 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> VoicePool {
 
     // Apply the queued commands and let any analysis window settle before the
     // measurement starts.
-    let ib = BufferArray::<U2>::new();
-    let mut ob = BufferArray::<U2>::new();
+    let ib = BufferVec::new(2);
+    let mut ob = BufferVec::new(2);
     for _ in 0..64 {
         pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
     }
@@ -129,8 +129,8 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> VoicePool {
 }
 
 fn drive(pool: &mut VoicePool) {
-    let ib = BufferArray::<U2>::new();
-    let mut ob = BufferArray::<U2>::new();
+    let ib = BufferVec::new(2);
+    let mut ob = BufferVec::new(2);
     pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
     black_box(ob.buffer_ref().at_f32(0, 0));
 }

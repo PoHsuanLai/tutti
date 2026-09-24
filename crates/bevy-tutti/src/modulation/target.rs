@@ -41,8 +41,12 @@ use crate::modulation::components::ParamRange;
 
 /// One node type's resolver: given the graph and a node, hand back an
 /// accumulator for `param` if this node is a `T` that exposes it.
-type ResolveFn =
-    fn(&AudioGraphRes, tutti_core::NodeId, ParamAddr, &ParamRange) -> Option<Arc<dyn ModTarget>>;
+type ResolveFn = fn(
+    &AudioGraphRes,
+    tutti_core::dsp::NodeId,
+    ParamAddr,
+    &ParamRange,
+) -> Option<Arc<dyn ModTarget>>;
 
 /// The node types this app can modulate, plus any sinks it supplies directly.
 ///
@@ -123,7 +127,7 @@ impl ModTargetRegistry {
     fn resolve(
         &self,
         graph: &AudioGraphRes,
-        node: tutti_core::NodeId,
+        node: tutti_core::dsp::NodeId,
         param: ParamAddr,
         range: &ParamRange,
     ) -> Option<Arc<dyn ModTarget>> {

@@ -17,7 +17,7 @@ use tutti::prelude::*;
 #[test]
 fn one_import_renders_a_block() {
     let mut net = tutti::dsp::Net::new(0, 2);
-    let tone = net.push(Box::new(tutti::dsp::sine_hz::<f32>(440.0)));
+    let tone = net.push(Box::new(tutti::nodes::testing::Osc::sine(Hz(440.0))));
     net.pipe_output(tone);
 
     let engine = tutti::core::Engine::new(
@@ -56,8 +56,8 @@ fn the_measurement_vocabulary_arrives_and_converts() {
 fn the_dsp_library_and_the_node_contract_are_reachable() {
     // A `tutti-nodes` unit, built and driven through `tutti::` alone.
     let _lfo = tutti::nodes::Lfo::default();
-    // The planar block buffers, from `tutti-node` via `tutti::dsp`.
-    let buf = tutti::dsp::BufferArray::<tutti::dsp::U2>::new();
+    // The planar block buffers: `tutti-node`'s, at the engine root.
+    let buf: tutti::core::BufferVec = tutti::core::BufferVec::new(2);
     assert_eq!(buf.buffer_ref().channels(), 2);
 }
 
@@ -66,7 +66,7 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
 #[test]
 fn a_graph_bounces_to_buffers_through_the_facade() {
     let mut net = tutti::dsp::Net::new(0, 2);
-    let node = net.push(Box::new(tutti::dsp::dc((0.5, 0.5))));
+    let node = net.push(Box::new(tutti::nodes::testing::Const::frame(&[0.5, 0.5])));
     net.pipe_output(node);
 
     let cfg = tutti::export::ExportConfig {

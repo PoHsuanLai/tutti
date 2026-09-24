@@ -51,9 +51,9 @@
 // the contract without the fork now has a crate to name; a consumer that does
 // not care keeps `fundsp_tutti::Float` working.
 pub use tutti_node::{
-    DEFAULT_SR, F32, F32x, F64, F64x, Float, Frame, I32x, I64x, Int, MAX_BUFFER_LOG,
-    MAX_BUFFER_SIZE, Num, Real, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S, Sample, Size, U32x,
-    convert, full_simd_items, full_simd_items_s, simd_items, simd_items_s,
+    F32, F32x, F64, F64x, Float, Frame, I32x, I64x, Int, MAX_BUFFER_LOG, MAX_BUFFER_SIZE, Num,
+    Real, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S, Sample, Size, U32x, convert, full_simd_items,
+    full_simd_items_s, simd_items, simd_items_s,
 };
 
 // The tower's own `use` list, kept here because every module in this crate
@@ -69,8 +69,15 @@ use wide::{f32x8, f64x4};
 #[doc(inline)]
 pub use params::SampleRate;
 
-/// Default sample rate as a typed [`SampleRate`].
-pub const DEFAULT_SAMPLE_RATE: SampleRate = SampleRate(DEFAULT_SR);
+/// Default sample rate as a typed [`SampleRate`] — an alias of the engine's one
+/// placeholder rate, [`SampleRate::DEFAULT`], kept so this crate's own nodes
+/// compile unchanged. Nothing outside the fork names it.
+pub const DEFAULT_SAMPLE_RATE: SampleRate = SampleRate::DEFAULT;
+
+/// [`DEFAULT_SAMPLE_RATE`] as a raw `f64`, for the fork's coefficient math.
+/// It used to be `tutti-node`'s own constant; it is now derived here, so the
+/// engine has one default rate rather than two that happen to agree.
+pub const DEFAULT_SR: f64 = SampleRate::DEFAULT.0;
 
 pub mod adsr;
 pub mod audionode;

@@ -22,10 +22,12 @@
 
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tutti_core::dsp::{dc, lowpass_hz, sine_hz, Net};
-use tutti_core::{AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate};
+use tutti_core::dsp::Net;
+use tutti_core::{AudioTap, ChannelLayout, Engine, Hz, MasterMeter, SampleRate, Q};
 use tutti_core::{MotionEvent, Transport, TransportClock};
 use tutti_cpal::{AudioCallbackState, OutputSpec};
+use tutti_nodes::testing::{Const, Osc};
+use tutti_nodes::{SvfFilterNode, SvfType};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -52,8 +54,12 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
         transport.clock_links(),
         SAMPLE_RATE,
     )));
-    let source = net.push(Box::new(sine_hz::<f32>(220.0)));
-    let filter = net.push(Box::new(lowpass_hz::<f32>(2_000.0, 0.7)));
+    let source = net.push(Box::new(Osc::sine(Hz(220.0))));
+    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
+        SvfType::LowPass,
+        Hz(2_000.0),
+        Q(0.7),
+    )));
     net.connect(source, 0, filter, 0);
     net.pipe_output(filter);
 
@@ -78,7 +84,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
 /// matrix assertable.
 pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
     let mut net = Net::new(0, outputs);
-    let node = net.push(Box::new(dc(level)));
+    let node = net.push(Box::new(Const::mono(level)));
     for ch in 0..outputs {
         net.pipe_output(node);
         let _ = ch;
@@ -109,7 +115,7 @@ pub fn dc_on_channel(
     outputs: usize,
 ) -> (Arc<AudioCallbackState>, tutti_core::TapCons) {
     let mut net = Net::new(0, outputs);
-    let node = net.push(Box::new(dc(level)));
+    let node = net.push(Box::new(Const::mono(level)));
     net.connect_output(node, 0, channel);
     let backend = net.backend();
     keep(net);

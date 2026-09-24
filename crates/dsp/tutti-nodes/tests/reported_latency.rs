@@ -9,8 +9,9 @@
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
 
-use tutti_core::dsp::{pass, Net, Source};
+use tutti_core::dsp::{Net, Source};
 use tutti_core::{latency, AudioUnit, BufferVec, SampleRate, Signal, SignalFrame};
+use tutti_nodes::testing::Through;
 use tutti_nodes::{ChorusNode, DelayLineNode, FlangerNode, StereoDelayLineNode};
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -188,7 +189,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     chorus.set_sample_rate(SR);
     let echo = net.add(echo);
     let chorus = net.add(chorus);
-    let dry = net.add(pass());
+    let dry = net.add(Through::mono());
     net.set_source(echo, 0, Source::Global(0));
     net.set_source(chorus, 0, Source::Global(0));
     net.set_source(chorus, 1, Source::Global(0));
@@ -347,7 +348,7 @@ mod convolver {
         let conv = net.add(conv);
         let echo_a = net.add(echo_a);
         let echo_b = net.add(echo_b);
-        let dry = net.add(pass());
+        let dry = net.add(Through::mono());
         net.set_source(conv, 0, Source::Global(0));
         net.set_source(echo_a, 0, Source::Local(conv, 0));
         net.set_source(echo_b, 0, Source::Global(0));

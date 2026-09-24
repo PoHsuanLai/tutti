@@ -72,6 +72,16 @@ pub enum Kind {
     /// `Status::Bypass` over `width` channels, accepting in-place channels —
     /// the executor must then leave the aliased output as it is.
     ThruInPlace { width: usize },
+    /// `width` in-place audio channels scaled by a gain its event inputs
+    /// steer, and every output event port forwarding one input port. Audio
+    /// and events in one node, at any width: it reaches the executor's
+    /// general borrow path in every bucket, with or without in-place
+    /// channels.
+    Mixed {
+        width: usize,
+        events_in: u16,
+        events_out: u16,
+    },
     /// A spec-driven node for the ported shapes: `dc`/`gain`/`sum`/`fan`
     /// behaviour with a *declared* latency and tail it does not realise.
     Spec {
@@ -151,6 +161,14 @@ impl Node for TestNode {
             Kind::EnvProbe => Shape::audio(ch(0), ch(1)),
             Kind::Thru { width } => Shape::audio(ch(width), ch(width)),
             Kind::ThruInPlace { width } => Shape::audio(ch(width), ch(width)).with_in_place(),
+            Kind::Mixed {
+                width,
+                events_in,
+                events_out,
+            } => Shape::audio(ch(width), ch(width))
+                .with_events(events_in, events_out)
+                .with_tail(Tail::Unbounded)
+                .with_in_place(),
             Kind::Spec {
                 ins,
                 outs,
@@ -290,6 +308,36 @@ impl Node for TestNode {
                 Status::Modified
             }
             Kind::Thru { .. } | Kind::ThruInPlace { .. } => Status::Bypass,
+            Kind::Mixed {
+                width,
+                events_in,
+                events_out,
+            } => {
+                // The gain follows every event on every port, in port order
+                // (order-sensitive, like `Consumer`), and stays positive so
+                // silence stays `+0.0`.
+                for p in 0..events_in as usize {
+                    for e in io.events(p) {
+                        if let EventKind::Midi(Ump(w)) = e.kind {
+                            self.state = 0.5 * self.state + ((w[0] % 7) as f32 + p as f32) * 0.125;
+                        }
+                    }
+                }
+                let gain = 1.0 + self.state;
+                for c in 0..width {
+                    let g = gain * (c + 1) as f32;
+                    io.channel(c).map(|x| x * g);
+                }
+                if events_in > 0 {
+                    for q in 0..events_out as usize {
+                        let from = io.events(q % events_in as usize);
+                        for &e in from {
+                            let _ = io.event_out(q).push(e);
+                        }
+                    }
+                }
+                Status::Modified
+            }
             Kind::Spec {
                 behaviour,
                 outs,

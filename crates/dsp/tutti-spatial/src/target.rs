@@ -96,6 +96,20 @@ impl AngleSmoother {
             .seed_at(Elevation::new_clamped(elevation.get()).get());
     }
 
+    /// Where the ramp currently is — the pair the last [`step`](Self::step)
+    /// returned (or the seeded position), without advancing.
+    ///
+    /// A block-rate consumer needs this as the *start* of a block: the VBAP
+    /// panner solves once per block and ramps from the gains here to the gains
+    /// at the block's last frame.
+    #[inline]
+    pub(crate) fn current(&self) -> (Azimuth, Elevation) {
+        (
+            Azimuth(self.azimuth.value()),
+            Elevation(self.elevation.value()),
+        )
+    }
+
     /// Advance one step toward the target and return the smoothed pair.
     #[inline]
     pub(crate) fn step(&mut self, azimuth: Azimuth, elevation: Elevation) -> (Azimuth, Elevation) {

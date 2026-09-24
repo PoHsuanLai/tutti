@@ -11,14 +11,15 @@
 //! use tutti_core::dsp::{Net, Source};
 //! use tutti_core::{ChannelLayout, Hz, Q};
 //! use tutti_nodes::testing::Osc;
-//! use tutti_nodes::{StereoSvfFilterNode, SvfType};
+//! use tutti_nodes::{SvfFilterNode, SvfType};
 //!
 //! fn build(mut commands: Commands) {
 //!     // Stereo throughout, so `MasterSources::from` has two output ports to take.
 //!     let tone = Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO);
 //!     let osc = commands.spawn_audio_node(tone).id();
 //!     let filt = commands
-//!         .spawn_audio_node(StereoSvfFilterNode::<f64>::new(
+//!         .spawn_audio_node(SvfFilterNode::<f64>::with_channels(
+//!             ChannelLayout::STEREO,
 //!             SvfType::LowPass,
 //!             Hz(1000.0),
 //!             Q(1.0),

@@ -40,15 +40,52 @@ fn convolver_process_is_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn stereo_convolver_process_is_allocation_free() {
-    use tutti_nodes::{generate_test_ir, StereoConvolverNode};
+    use tutti_nodes::{generate_test_ir, ConvolverNode};
 
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
-    let mut node = StereoConvolverNode::stereo(&ir_l, &ir_r, 512);
+    let mut node = ConvolverNode::stereo(&ir_l, &ir_r, 512);
     node.set_sample_rate(tutti_core::SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(2);
     let mut output_vec = BufferVec::new(2);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+/// The fold path is the one with scratch: a width-long frame buffer and a
+/// block-long mono buffer. Both must be pre-sized (the frame) or on the stack
+/// (the mono block), never grown in `process`. Six channels, so the fold does
+/// real work rather than the stereo average.
+///
+/// Mutation: building the mono block as a `vec!` inside `process` fails the
+/// no-alloc gate.
+#[cfg(feature = "convolution")]
+#[test]
+fn folded_six_channel_convolver_process_is_allocation_free() {
+    use tutti_nodes::{generate_test_ir, ConvolverNode};
+
+    let irs: Vec<Vec<f32>> = (0..6)
+        .map(|c| generate_test_ir(1024, 0.2 + 0.05 * c as f32, 48_000.0))
+        .collect();
+    let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
+    let mut node = ConvolverNode::folded(&refs, 256);
+    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+
+    let input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
 
     for _ in 0..16 {
         let input = input_vec.buffer_ref();

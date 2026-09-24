@@ -734,16 +734,16 @@ mod param_port_tests {
     ///
     /// # Mutation
     ///
-    /// Deleting the two `StereoSvfFilterNode` arms from the old `try_kinds!`
-    /// list is what the bug *was*, and this test fails under it: the map is
+    /// Deleting the two filter arms (then `StereoSvfFilterNode`) from the old
+    /// `try_kinds!` list is what the bug *was*, and this test fails under it: the map is
     /// built from the node's own `ParamPorts` impl, so there is no list left to
     /// omit a type from. Making `ParamPortMap::of` return `Self::default()`
     /// fails it the same way — that is the same defect expressed in the new
     /// code's terms.
     #[test]
     fn a_filters_cutoff_resolves_to_an_audio_rate_port() {
-        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-            2,
+        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::SvfType::LowPass,
             tutti_types::Hz(1000.0),
             tutti_types::Q(0.707),
@@ -766,8 +766,8 @@ mod param_port_tests {
     /// a blanket "yes".
     #[test]
     fn a_param_the_node_does_not_port_resolves_to_none() {
-        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-            2,
+        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::SvfType::LowPass,
             tutti_types::Hz(1000.0),
             tutti_types::Q(0.707),
@@ -788,8 +788,8 @@ mod param_port_tests {
     /// port collapses the two again and fails this.
     #[test]
     fn a_missing_declaration_is_distinguishable_from_a_declared_absence() {
-        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-            2,
+        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::SvfType::LowPass,
             tutti_types::Hz(1000.0),
             tutti_types::Q(0.707),

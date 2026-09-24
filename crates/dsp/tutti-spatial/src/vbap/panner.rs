@@ -3,15 +3,13 @@ use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::RtScratch;
-use tutti_core::{
-    fold_frame_to_mono, ArcDegrees, Azimuth, Elevation, SampleRate, Spread, StereoWidth,
-};
+use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Spread, StereoWidth};
 use vbap::VBAPanner;
 
 use crate::AngleSmoother;
 
 /// Maximum number of speakers supported (Atmos 7.1.4).
-const MAX_SPEAKERS: usize = 12;
+pub(crate) const MAX_SPEAKERS: usize = 12;
 
 /// How many times [`VbapPanner::solve_gains`] may retreat a source's elevation
 /// toward the horizontal plane before giving up.
@@ -46,12 +44,11 @@ pub(crate) struct VbapPanner {
     /// cannot.
     has_rear_speakers: bool,
     /// Pre-allocated scratch used by [`VBAPanner::compute_gains_into`].
-    /// Sized to the layout's speaker count on construction; reused per
-    /// sample so the RT path never allocates.
-    gains_scratch_a: RtScratch<f64>,
-    /// Second scratch buffer for the stereo-width branch, which needs
-    /// two gain sets (one per virtual source).
-    gains_scratch_b: RtScratch<f64>,
+    /// Sized to the layout's speaker count on construction; reused per solve
+    /// so the RT path never allocates. One buffer serves both virtual sources
+    /// of the stereo-width branch: each solve is copied out into an f32
+    /// array before the next one starts.
+    gains_scratch: RtScratch<f64>,
 }
 
 impl VbapPanner {
@@ -66,8 +63,7 @@ impl VbapPanner {
             smoother: AngleSmoother::new(sample_rate),
             spread: Spread::POINT,
             has_rear_speakers,
-            gains_scratch_a: RtScratch::new(speaker_count),
-            gains_scratch_b: RtScratch::new(speaker_count),
+            gains_scratch: RtScratch::new(speaker_count),
         }
     }
 
@@ -296,158 +292,135 @@ impl VbapPanner {
         }
     }
 
-    pub(crate) fn compute_gains(&mut self) -> (usize, [f32; MAX_SPEAKERS]) {
-        let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
-        let target_elevation = self.elevation_target.load(Ordering::Acquire);
-
-        let (smoothed_azimuth, smoothed_elevation) = self
-            .smoother
-            .step(Azimuth(target_azimuth), Elevation(target_elevation));
-
+    /// Unit-energy gains for one source at `(azimuth, elevation)`, spread
+    /// applied. Entries past the layout's speaker count are zero.
+    fn source_gains(&mut self, azimuth: Azimuth, elevation: Elevation) -> [f32; MAX_SPEAKERS] {
         // RT invariant: `solve_gains` must reach `compute_gains_into`, not
         // `compute_gains`. The latter allocates a fresh `Vec<f64>` per call
         // (and is `#[deprecated]` in vbap 0.1.2). Backstop:
         // `tutti-spatial/tests/rt_no_alloc.rs::vbap_panner_stereo_process_is_allocation_free`.
-        let speaker_count = self.gains_scratch_a.capacity();
+        let speaker_count = self.gains_scratch.capacity();
         // `solve_gains` takes its two inputs explicitly rather than `&self`:
         // the scratch is borrowed mutably out of this same struct, so a
         // `&self` receiver would not co-exist with it.
         let (panner, has_rear) = (&self.panner, self.has_rear_speakers);
-        let scratch = self.gains_scratch_a.active(speaker_count);
-        Self::solve_gains(
-            panner,
-            has_rear,
-            smoothed_azimuth,
-            smoothed_elevation,
-            scratch,
-        );
+        let scratch = self.gains_scratch.active(speaker_count);
+        Self::solve_gains(panner, has_rear, azimuth, elevation, scratch);
 
         let count = speaker_count.min(MAX_SPEAKERS);
         let mut gains = [0.0f32; MAX_SPEAKERS];
         for (i, &g) in scratch.iter().enumerate().take(count) {
             gains[i] = g as f32;
         }
-
         self.apply_spread(&mut gains, count);
-        (count, gains)
+        gains
     }
 
-    pub(crate) fn process_mono_into(&mut self, sample: f32, output: &mut [f32]) {
-        let (count, gains) = self.compute_gains();
-        for (out, &gain) in output.iter_mut().zip(&gains[..count]) {
-            *out = sample * gain;
-        }
-    }
-
-    /// Pan a stereo frame, spreading the two channels into two virtual sources
-    /// one `width`-scaled offset either side of the bearing.
+    /// The gains for one frame at the smoothed position `(azimuth, elevation)`.
     ///
-    /// # Spread applies here, and used not to
+    /// `width < 0.001` folds the pair to mono and pans one source; otherwise
+    /// the two channels become two virtual sources one `width`-scaled offset
+    /// either side of the bearing.
     ///
-    /// The `width > 0` branch called the upstream solver directly and never
-    /// reached [`apply_spread`](Self::apply_spread), so a spread set on a node
-    /// fed any non-zero width silently did nothing — a parameter the inspector
-    /// shows, the document saves and the engine ignores, with no error anywhere.
-    /// It is applied now, once per virtual source.
+    /// # Spread applies to both virtual sources, and used not to
     ///
-    /// That is the correct reading of the two controls rather than a
-    /// convenience: `width` and `spread` are orthogonal. Width says how far
-    /// apart the two virtual sources sit; spread says how far each one is
-    /// smeared across the speaker field. Neither is a special case of the other,
-    /// so neither may suppress the other — which is what the old code did, in
-    /// one direction only. Covered by
-    /// `tests/vbap_energy_sweep.rs::spread_reaches_the_stereo_width_path`.
-    ///
-    /// The `width < 0.001` branch folds to mono and delegates to
-    /// [`process_mono_into`](Self::process_mono_into), which reaches
-    /// `apply_spread` the ordinary way; that half was always correct.
-    pub(crate) fn process_stereo_into(
+    /// The `width > 0` branch once called the upstream solver directly and
+    /// never reached [`apply_spread`](Self::apply_spread), so a spread set on a
+    /// node fed any non-zero width silently did nothing — a parameter the
+    /// inspector shows, the document saves and the engine ignores. `width` and
+    /// `spread` are orthogonal: width says how far apart the two virtual
+    /// sources sit, spread how far each one is smeared across the speaker
+    /// field, so neither may suppress the other. Both go through
+    /// [`source_gains`](Self::source_gains), which also gives each virtual
+    /// source unit energy on its own — without that, the width branch would
+    /// reintroduce exactly the rear-arc silence the mono branch no longer has.
+    /// Covered by `tests/vbap_energy_sweep.rs::spread_reaches_the_stereo_width_path`.
+    fn frame_gains(
         &mut self,
-        left: f32,
-        right: f32,
+        azimuth: Azimuth,
+        elevation: Elevation,
         width: StereoWidth,
-        output: &mut [f32],
-    ) {
-        // `left`/`right` stay bare — they are audio samples, not measurements.
+    ) -> BlockGains {
         // Unwrapped once: the angle offset below scales the scalar.
         let width = width.get().max(0.0);
-
         if width < 0.001 {
-            // The engine's one fold rather than a local `* 0.5`: identical at
-            // width 2 (`fold_frame_to_mono`'s stereo arm IS the average), but it
-            // is the same constant this crate's other folds use, in one place.
-            let mono = fold_frame_to_mono(&[left, right]);
-            self.process_mono_into(mono, output);
-            return;
+            return BlockGains {
+                mono: true,
+                a: self.source_gains(azimuth, elevation),
+                b: [0.0; MAX_SPEAKERS],
+            };
         }
-
-        let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
-        let target_elevation = self.elevation_target.load(Ordering::Acquire);
-
-        let (smoothed_azimuth, smoothed_elevation) = self
-            .smoother
-            .step(Azimuth(target_azimuth), Elevation(target_elevation));
-
         // The two virtual sources sit one offset either side of the bearing.
         // `rotate_by`, not `+`: the sum crosses the seam. At azimuth 170 with
         // full width the left source is at 185, which *is* -175 — the same
         // wraparound `set_position` normalizes on store, re-introduced here by
-        // adding to the already-wrapped value. Doing it on the raw `f32` was
-        // the escape the omitted `Azimuth + ArcDegrees` exists to prevent, and
-        // the "types stop at the trigonometry" note below covers only `elev`.
+        // adding to the already-wrapped value.
         let angle_offset = ArcDegrees(15.0 * width);
-        let azimuth_a = smoothed_azimuth.rotate_by(angle_offset);
-        let azimuth_b = smoothed_azimuth.rotate_by(-angle_offset);
-
-        // Two pre-allocated scratch buffers — one for each virtual source.
-        // Both go through `solve_gains`, so each virtual source carries unit
-        // energy on its own; without that, the width branch would reintroduce
-        // exactly the rear-arc silence the mono branch no longer has.
-        let count_a = self.gains_scratch_a.capacity();
-        let count_b = self.gains_scratch_b.capacity();
-        let (panner, has_rear) = (&self.panner, self.has_rear_speakers);
-
-        let scratch_a = self.gains_scratch_a.active(count_a);
-        Self::solve_gains(panner, has_rear, azimuth_a, smoothed_elevation, scratch_a);
-        let scratch_b = self.gains_scratch_b.active(count_b);
-        Self::solve_gains(panner, has_rear, azimuth_b, smoothed_elevation, scratch_b);
-
-        // Spread applies here too. It used not to: this branch called the
-        // upstream solver directly and never reached `apply_spread`, so setting
-        // a spread on a node fed a stereo pair at any non-zero width silently
-        // did nothing — a parameter the inspector shows, the document saves and
-        // the engine ignores. Spread and width are orthogonal controls (width
-        // separates the two virtual sources, spread smears each one across the
-        // speaker field), so the fix is to apply spread to each source rather
-        // than to let one control suppress the other.
-        let count = count_a.min(MAX_SPEAKERS);
-        let mut gains_a = [0.0f32; MAX_SPEAKERS];
-        let mut gains_b = [0.0f32; MAX_SPEAKERS];
-        for (i, &g) in self
-            .gains_scratch_a
-            .active_ref(count_a)
-            .iter()
-            .enumerate()
-            .take(count)
-        {
-            gains_a[i] = g as f32;
+        BlockGains {
+            mono: false,
+            a: self.source_gains(azimuth.rotate_by(angle_offset), elevation),
+            b: self.source_gains(azimuth.rotate_by(-angle_offset), elevation),
         }
-        for (i, &g) in self
-            .gains_scratch_b
-            .active_ref(count_b)
-            .iter()
-            .enumerate()
-            .take(count)
-        {
-            gains_b[i] = g as f32;
-        }
-        self.apply_spread(&mut gains_a, count);
-        self.apply_spread(&mut gains_b, count);
+    }
 
-        for (i, out) in output.iter_mut().enumerate() {
-            let gain_l = gains_a.get(i).copied().unwrap_or(0.0);
-            let gain_r = gains_b.get(i).copied().unwrap_or(0.0);
-            *out = left * gain_l + right * gain_r;
+    /// The gains at the smoother's **current** position, without advancing
+    /// it — the starting point of the first ramp after a construction, clone
+    /// or reset.
+    pub(crate) fn gains_now(&mut self, width: StereoWidth) -> BlockGains {
+        let (azimuth, elevation) = self.smoother.current();
+        self.frame_gains(azimuth, elevation, width)
+    }
+
+    /// Advance the de-zipper `frames` steps and solve the gains **once**, at
+    /// the block's last frame.
+    ///
+    /// The smoother still steps once per frame, exactly as when the gains were
+    /// solved per frame, so the 50 ms ramp keeps its timing and the returned
+    /// set is bit-for-bit the one the per-frame solver produced at that frame.
+    /// What changed is only that the frames in between are no longer solved:
+    /// the node ramps linearly towards this set instead (design doc 013,
+    /// "`VbapPannerNode` `process`" — two VBAP solves per frame was the
+    /// largest per-node waste it found).
+    ///
+    /// The target atomics are read once here. The per-frame path read them
+    /// every frame, but they are written once per block (by the node's
+    /// `sync_position`), so every frame saw the same value.
+    pub(crate) fn solve_block(&mut self, width: StereoWidth, frames: usize) -> BlockGains {
+        let target_azimuth = Azimuth(self.azimuth_target.load(Ordering::Acquire));
+        let target_elevation = Elevation(self.elevation_target.load(Ordering::Acquire));
+        let mut smoothed = self.smoother.current();
+        for _ in 0..frames {
+            smoothed = self.smoother.step(target_azimuth, target_elevation);
+        }
+        self.frame_gains(smoothed.0, smoothed.1, width)
+    }
+}
+
+/// One frame's speaker gains, as the start or end point of a block's ramp.
+///
+/// `mono` records which branch produced them: a mono set is one gain vector
+/// (`a`) applied to the folded pair, a stereo set is two — `a` for the left
+/// virtual source, `b` for the right. Entries past the speaker count are zero.
+#[derive(Clone, Copy)]
+pub(crate) struct BlockGains {
+    pub(crate) mono: bool,
+    pub(crate) a: [f32; MAX_SPEAKERS],
+    pub(crate) b: [f32; MAX_SPEAKERS],
+}
+
+impl BlockGains {
+    /// Speaker `s`'s gains as a (left, right) pair, whatever the branch.
+    ///
+    /// A mono set weighs each channel by half its gain — `fold(l, r) * g` is
+    /// `l * g/2 + r * g/2` up to rounding — which is what lets a ramp cross
+    /// from one branch to the other without a step.
+    #[inline]
+    pub(crate) fn pair(&self, s: usize) -> (f32, f32) {
+        if self.mono {
+            let half = self.a[s] * 0.5;
+            (half, half)
+        } else {
+            (self.a[s], self.b[s])
         }
     }
 }

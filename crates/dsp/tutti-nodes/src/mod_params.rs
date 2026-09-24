@@ -20,11 +20,10 @@ use tutti_core::{ParamAddr, UnitParam};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 #[cfg(feature = "convolution")]
-use crate::StereoConvolverNode;
+use crate::ConvolverNode;
 use crate::{
-    BrickwallLimiterNode, ChorusNode, CompressorNode, DistortionNode, EqBandNode, FlangerNode,
-    GateNode, LimiterNode, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
-    StereoSvfFilterNode,
+    BrickwallLimiterNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode, GateNode,
+    LadderFilterNode, LimiterNode, ModDelayNode, PhaserNode, SvfFilterNode,
 };
 
 /// Wrap a param's shared atomic in an [`AtomicTarget`] over `[min, max]`.
@@ -48,7 +47,7 @@ fn as_unit(param: ParamAddr) -> Option<UnitParam> {
     }
 }
 
-impl<F: Real> ModParams for StereoSvfFilterNode<F> {
+impl<F: Real> ModParams for SvfFilterNode<F> {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -66,7 +65,7 @@ impl<F: Real> ModParams for StereoSvfFilterNode<F> {
     }
 }
 
-impl<F: Real> ModParams for StereoLadderFilterNode<F> {
+impl<F: Real> ModParams for LadderFilterNode<F> {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -84,7 +83,7 @@ impl<F: Real> ModParams for StereoLadderFilterNode<F> {
     }
 }
 
-impl ModParams for StereoDelayLineNode {
+impl ModParams for DelayLineNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -95,7 +94,7 @@ impl ModParams for StereoDelayLineNode {
         let atomic = match as_unit(p)? {
             // Left/primary delay time; the stereo pair moves together for a
             // single `DelayTime` mod (per-channel offsets are a separate concern).
-            UnitParam::DelayTime => self.delay_time_l(),
+            UnitParam::DelayTime => self.delay_time(),
             UnitParam::Feedback => self.feedback(),
             UnitParam::Wet => self.mix(),
             _ => return None,
@@ -193,7 +192,7 @@ impl ModParams for BrickwallLimiterNode {
     }
 }
 
-impl ModParams for ChorusNode {
+impl ModParams for ModDelayNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -212,26 +211,7 @@ impl ModParams for ChorusNode {
     }
 }
 
-impl ModParams for FlangerNode {
-    fn mod_target(
-        &self,
-        p: ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn ModTarget>> {
-        let atomic = match as_unit(p)? {
-            UnitParam::Rate => self.rate(),
-            UnitParam::Depth => self.depth(),
-            UnitParam::Feedback => self.feedback(),
-            UnitParam::Wet => self.mix(),
-            _ => return None,
-        };
-        atomic_target(atomic, base, min, max)
-    }
-}
-
-impl ModParams for StereoPhaserNode {
+impl ModParams for PhaserNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -269,7 +249,7 @@ impl<F: Real> ModParams for EqBandNode<F> {
 }
 
 #[cfg(feature = "convolution")]
-impl ModParams for StereoConvolverNode {
+impl ModParams for ConvolverNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -300,7 +280,12 @@ mod tests {
 
     #[test]
     fn filter_cutoff_is_modulatable_and_moves_the_atomic() {
-        let node = StereoSvfFilterNode::<f32>::new(crate::SvfType::LowPass, 1000.0, 0.7);
+        let node = SvfFilterNode::<f32>::with_channels(
+            tutti_core::ChannelLayout::STEREO,
+            crate::SvfType::LowPass,
+            1000.0,
+            0.7,
+        );
         let atomic = node.frequency(); // the node reads this per-sample
         let target = node
             .mod_target(unit(UnitParam::Cutoff), 1000.0, 20.0, 20000.0)
@@ -318,7 +303,12 @@ mod tests {
 
     #[test]
     fn unmodulatable_param_returns_none() {
-        let node = StereoSvfFilterNode::<f32>::new(crate::SvfType::LowPass, 1000.0, 0.7);
+        let node = SvfFilterNode::<f32>::with_channels(
+            tutti_core::ChannelLayout::STEREO,
+            crate::SvfType::LowPass,
+            1000.0,
+            0.7,
+        );
         // SVF has no Drive param.
         assert!(node
             .mod_target(unit(UnitParam::Drive), 0.0, 0.0, 1.0)
@@ -329,7 +319,12 @@ mod tests {
     fn native_node_ignores_a_foreign_id() {
         // A native node speaks UnitParam only — a ParamAddr::Id (a plugin's own
         // numbering) is not its vocabulary, so it returns None.
-        let node = StereoSvfFilterNode::<f32>::new(crate::SvfType::LowPass, 1000.0, 0.7);
+        let node = SvfFilterNode::<f32>::with_channels(
+            tutti_core::ChannelLayout::STEREO,
+            crate::SvfType::LowPass,
+            1000.0,
+            0.7,
+        );
         assert!(node
             .mod_target(ParamAddr::Id(0), 1000.0, 20.0, 20000.0)
             .is_none());
@@ -340,7 +335,12 @@ mod tests {
 
     #[test]
     fn ladder_maps_q_to_resonance_and_has_drive() {
-        let node = StereoLadderFilterNode::<f32>::new(LadderType::LP24, 800.0, 0.5);
+        let node = LadderFilterNode::<f32>::with_channels(
+            tutti_core::ChannelLayout::STEREO,
+            LadderType::LP24,
+            800.0,
+            0.5,
+        );
         assert!(node
             .mod_target(unit(UnitParam::Cutoff), 800.0, 20.0, 20000.0)
             .is_some());
@@ -361,7 +361,12 @@ mod tests {
         use tutti_mod::{Lfo, LfoShape, ModMatrix, SourceRate};
 
         // A real filter node. The node reads `frequency()` per sample.
-        let filter = StereoSvfFilterNode::<f32>::new(crate::SvfType::LowPass, 1000.0, 0.7);
+        let filter = SvfFilterNode::<f32>::with_channels(
+            tutti_core::ChannelLayout::STEREO,
+            crate::SvfType::LowPass,
+            1000.0,
+            0.7,
+        );
         let cutoff_atomic = filter.frequency();
 
         // Ask the node for its cutoff target and hand it to the matrix.
@@ -406,7 +411,7 @@ mod tests {
 
     #[test]
     fn chorus_rate_is_modulatable_and_moves_the_atomic() {
-        let node = ChorusNode::new();
+        let node = ModDelayNode::chorus(tutti_core::ChannelLayout::STEREO);
         let rate_atomic = node.rate();
         let base = rate_atomic.load(core::sync::atomic::Ordering::Acquire);
         let target = node
@@ -432,7 +437,7 @@ mod tests {
     fn convolver_only_exposes_wet() {
         // Room size is baked into the IR; only Wet is control-rate modulatable.
         // A minimal unit IR is fine — we only probe the param surface, not audio.
-        let node = StereoConvolverNode::mono(&[1.0], 64);
+        let node = ConvolverNode::shared_ir(2usize, &[1.0], 64);
         assert!(node
             .mod_target(unit(UnitParam::Wet), 0.5, 0.0, 1.0)
             .is_some());

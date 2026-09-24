@@ -1,15 +1,15 @@
-//! Phaser — a swept all-pass chain, mono and stereo.
+//! Phaser — a swept all-pass chain, of any width.
 //!
 //! The one modulation effect here with no delay line: it notches by phase
 //! cancellation, which is why its notches are fewer and unevenly spaced
 //! compared with a flanger's.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use tutti_core::{Arc, AtomicF32, MAX_BUFFER_SIZE};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::shared::{LfoDrive, LinearModMix};
-use tutti_core::{Depth, Feedback, Hz, Mix, SampleRate};
+use crate::ramp::{self, Ramp};
+use tutti_core::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
 
@@ -41,32 +41,27 @@ impl FrequencyRange {
     }
 }
 
-#[derive(Clone)]
-struct AllPassStage {
-    x1: f32,
-    y1: f32,
+/// The block's depth / feedback / mix — where the next block's ramps start.
+#[derive(Clone, Copy)]
+struct PhaserControls {
+    depth: f32,
+    fb: f32,
+    mix: f32,
 }
 
-impl AllPassStage {
-    fn new() -> Self {
-        Self { x1: 0.0, y1: 0.0 }
-    }
-
-    #[inline]
-    fn process(&mut self, input: f32, coefficient: f32) -> f32 {
-        let y = coefficient * (input - self.y1) + self.x1;
-        self.x1 = input;
-        self.y1 = y;
-        y
-    }
-
-    fn reset(&mut self) {
-        self.x1 = 0.0;
-        self.y1 = 0.0;
-    }
+/// One first-order all-pass coefficient for a sweep position.
+///
+/// `tan` of the normalised centre, folded into the all-pass form. This is the
+/// per-sample `tan` the old node paid (twice, per channel); it is now solved
+/// only at the control points — every 16 samples and a block's last sample —
+/// and interpolated between.
+#[inline]
+fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
+    let w = core::f32::consts::PI * sweep_hz / sr;
+    (w.tan() - 1.0) / (w.tan() + 1.0)
 }
 
-/// Mono phaser effect. 1-in, 1-out.
+/// Phaser of any width: `N` audio inputs, `N` outputs.
 ///
 /// A chain of all-pass stages whose centre frequency an internal LFO sweeps
 /// across a configured frequency range. Each stage passes every frequency at
@@ -77,17 +72,60 @@ impl AllPassStage {
 /// line, so its notches are unevenly spaced and fewer — the reason a phaser
 /// sounds hollower and less metallic than a flanger. Stage count sets how many
 /// notches there are; feedback deepens them.
+///
+/// This used to be a mono `PhaserNode` and a `StereoPhaserNode` built from two
+/// of them, each running its own LFO and solving its own coefficient (with two
+/// `tan`s) every sample. Now one LFO serves every channel, the coefficient is
+/// solved at control points and interpolated, and the all-pass state is
+/// stored stage-major across channels, so a stage runs over every channel in
+/// one inner loop.
+///
+/// Every channel sweeps in step by default — the old stereo phaser's
+/// behaviour, which widens nothing by itself.
+/// [`with_phase_offsets`](Self::with_phase_offsets) staggers them.
+///
+/// Rate, [`Depth`], [`Feedback`] and [`Mix`] are live params read **once per
+/// block**; depth, feedback and mix ramp across the block when they moved.
+/// `tick` is a block of one.
 pub struct PhaserNode {
-    stages: Vec<AllPassStage>,
+    /// All-pass stages per channel, `2..=12`.
+    stages: usize,
+    /// Audio width.
+    width: usize,
+    /// Stage input history, stage-major: `x1[s * width + c]`.
+    x1: Vec<f32>,
+    /// Stage output history, stage-major: `y1[s * width + c]`.
+    y1: Vec<f32>,
+    /// Each channel's last chain output, fed back into its input.
+    feedback_sample: Vec<f32>,
+    /// Per-channel LFO phase offset.
+    phase_offsets: Vec<PhaseIncrement>,
+    /// The coefficient each channel's last rendered sample ran at — where the
+    /// next block's interpolation starts.
+    last_coeff: Vec<f32>,
+    /// Per-sample, per-channel coefficients for the block, sample-major
+    /// (`coeffs[i * width + c]`). Scratch sized at construction for
+    /// [`MAX_BUFFER_SIZE`] samples.
+    coeffs: Vec<f32>,
+    /// The running signal through the chain, one lane per channel. Scratch.
+    lane: Vec<f32>,
     lfo: LfoDrive,
     mix: LinearModMix,
-    feedback_sample: f32,
     sample_rate: SampleRate,
+    /// The sweep range in effect: `authored_max_hz` clamped to this rate's
+    /// ceiling.
     range: FrequencyRange,
+    /// The sweep top as it was asked for, before the rate's ceiling clamped
+    /// it. Kept so a rate that rises again restores it — clamping `range`
+    /// in place would ratchet the top down for good after one low rate.
+    authored_max_hz: Hz,
+    /// `None` until the first block (and after `reset`).
+    last: Option<PhaserControls>,
 }
 
 impl PhaserNode {
-    /// Builds a phaser with `stages` all-pass sections, clamped to `2..=12`.
+    /// A mono phaser (1 in, 1 out) with `stages` all-pass sections, clamped to
+    /// `2..=12`.
     ///
     /// Stages come in pairs — each pair produces one notch — so 4 gives the
     /// classic two-notch phaser and higher counts thicken the effect. Defaults:
@@ -105,16 +143,49 @@ impl PhaserNode {
     /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(stages: usize) -> Self {
-        let n = stages.clamp(2, MAX_STAGES);
+        Self::with_channels(ChannelLayout::MONO, stages)
+    }
+
+    /// A phaser `channels` wide (clamped to at least 1) with `stages` all-pass
+    /// sections per channel. Every control is shared; each channel keeps its
+    /// own all-pass state, so the channels phase identically without bleeding
+    /// into each other. Otherwise as [`new`](Self::new).
+    pub fn with_channels(channels: impl Into<ChannelLayout>, stages: usize) -> Self {
+        let width = usize::from(channels.into().count()).max(1);
+        let stages = stages.clamp(2, MAX_STAGES);
         Self {
-            stages: (0..n).map(|_| AllPassStage::new()).collect(),
-            // Mono phaser: single LFO, no stereo offset.
-            lfo: LfoDrive::new(0.3, 0.0),
+            stages,
+            width,
+            x1: vec![0.0; stages * width],
+            y1: vec![0.0; stages * width],
+            feedback_sample: vec![0.0; width],
+            phase_offsets: vec![PhaseIncrement(0.0); width],
+            last_coeff: vec![0.0; width],
+            coeffs: vec![0.0; MAX_BUFFER_SIZE * width],
+            lane: vec![0.0; width],
+            lfo: LfoDrive::new(0.3),
             mix: LinearModMix::new(0.5, 0.5, 0.5),
-            feedback_sample: 0.0,
             sample_rate: SampleRate::DEFAULT,
             range: FrequencyRange::new(200.0, 4000.0),
+            authored_max_hz: Hz(4000.0),
+            last: None,
         }
+    }
+
+    /// Staggers the channels' sweeps: channel `c` runs `offsets[c]` cycles
+    /// ahead of the shared LFO (wrapped). All-zero is the default; `[0.0,
+    /// 0.25]` on a stereo phaser sweeps the sides a quarter-cycle apart, which
+    /// is what widens it.
+    ///
+    /// # Panics
+    ///
+    /// If `offsets.len()` is not the node's width — a build-time shape error.
+    pub fn with_phase_offsets(mut self, offsets: &[PhaseIncrement]) -> Self {
+        assert_eq!(offsets.len(), self.width, "one phase offset per channel");
+        for (o, &new) in self.phase_offsets.iter_mut().zip(offsets) {
+            *o = PhaseIncrement(Phase::START.advance(new).get());
+        }
+        self
     }
 
     /// The shared LFO rate cell in [`Hz`] — how fast the notches sweep.
@@ -184,7 +255,8 @@ impl PhaserNode {
     /// `&mut self`, so it cannot reach a node already live in the graph.
     pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
         self.range.min_hz = Hz(min_hz.into().get().max(20.0));
-        self.range.max_hz = max_hz.into().min(self.range_ceiling());
+        self.authored_max_hz = max_hz.into();
+        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
     }
 
     /// The highest all-pass centre this rate allows.
@@ -196,65 +268,136 @@ impl PhaserNode {
         self.sample_rate.nyquist_scaled(0.90)
     }
 
-    #[inline]
-    fn process_sample(&mut self, input: f32) -> f32 {
+    /// The one render kernel behind `tick` and `process`. `size` is at most
+    /// [`MAX_BUFFER_SIZE`], which `AudioUnit::process` guarantees.
+    fn render(
+        &mut self,
+        size: usize,
+        x: impl Fn(usize, usize) -> f32,
+        mut y: impl FnMut(usize, usize, f32),
+    ) {
+        debug_assert!(size <= MAX_BUFFER_SIZE);
+        let w = self.width;
+        // Every control is read here, once, for the whole block.
         let (depth, fb, mix) = self.mix.load();
+        let target = PhaserControls {
+            depth,
+            fb,
+            mix: mix.get(),
+        };
+        let primed = self.last.is_some();
+        let from = self.last.unwrap_or(target);
+        let depth_r = Ramp::new(from.depth, target.depth, size);
+        let fb_r = Ramp::new(from.fb, target.fb, size);
+        let mix_r = Ramp::new(from.mix, target.mix, size);
+
+        let mut phases = [Phase::START; MAX_BUFFER_SIZE];
+        self.lfo.fill_block(self.sample_rate, &mut phases[..size]);
+
         // Narrowed once for the all-pass coefficients below.
         let sr = self.sample_rate.get() as f32;
+        let (min_hz, max_hz) = (self.range.min_hz.get(), self.range.max_hz.get());
+        let coeff_at = |i: usize, offset: PhaseIncrement| -> f32 {
+            let lfo_raw = phases[i].offset_by(offset).to_radians().get().sin();
+            let lfo = lfo_raw * 0.5 + 0.5;
+            let sweep = min_hz + (max_hz - min_hz) * lfo * depth_r.at(i);
+            allpass_coeff(sweep, sr)
+        };
 
-        // Phaser uses only the L channel of the LFO (mono effect).
-        let (lfo_raw, _) = self.lfo.eval();
-        let lfo = lfo_raw * 0.5 + 0.5;
-        let min_hz = self.range.min_hz.get();
-        let max_hz = self.range.max_hz.get();
-        let sweep = min_hz + (max_hz - min_hz) * lfo * depth;
-
-        let w = core::f32::consts::PI * sweep / sr;
-        let coeff = (w.tan() - 1.0) / (w.tan() + 1.0);
-
-        let mut sample = input + self.feedback_sample * fb;
-
-        for stage in self.stages.iter_mut() {
-            sample = stage.process(sample, coeff);
+        // The coefficient table, solved at the control points and interpolated
+        // between. A channel whose offset equals the previous one's copies it.
+        for c in 0..w {
+            let offset = self.phase_offsets[c];
+            if c > 0 && offset == self.phase_offsets[c - 1] {
+                for i in 0..size {
+                    self.coeffs[i * w + c] = self.coeffs[i * w + c - 1];
+                }
+                self.last_coeff[c] = self.last_coeff[c - 1];
+                continue;
+            }
+            let mut prev = if primed {
+                self.last_coeff[c]
+            } else {
+                coeff_at(0, offset)
+            };
+            for (start, end) in ramp::segments(size, !primed) {
+                let next = coeff_at(end - 1, offset);
+                let seg = Ramp::new(prev, next, end - start);
+                for i in start..end {
+                    self.coeffs[i * w + c] = seg.at(i - start);
+                }
+                prev = next;
+            }
+            self.last_coeff[c] = prev;
         }
 
-        self.feedback_sample = sample;
-        self.lfo.advance(self.sample_rate);
-
-        mix.blend(input, sample)
+        // Sample-outer; each stage runs across every channel in one inner loop.
+        for i in 0..size {
+            let fb = fb_r.at(i);
+            let mix = Mix(mix_r.at(i));
+            let coeffs = &self.coeffs[i * w..(i + 1) * w];
+            for c in 0..w {
+                self.lane[c] = x(c, i) + self.feedback_sample[c] * fb;
+            }
+            for s in 0..self.stages {
+                let x1 = &mut self.x1[s * w..(s + 1) * w];
+                let y1 = &mut self.y1[s * w..(s + 1) * w];
+                for c in 0..w {
+                    let input = self.lane[c];
+                    let out = coeffs[c] * (input - y1[c]) + x1[c];
+                    x1[c] = input;
+                    y1[c] = out;
+                    self.lane[c] = out;
+                }
+            }
+            for c in 0..w {
+                self.feedback_sample[c] = self.lane[c];
+                y(c, i, mix.blend(x(c, i), self.lane[c]));
+            }
+        }
+        self.last = Some(target);
     }
 }
 
 impl AudioUnit for PhaserNode {
     fn inputs(&self) -> usize {
-        1
+        self.width
     }
     fn outputs(&self) -> usize {
-        1
+        self.width
     }
 
     fn reset(&mut self) {
-        for stage in &mut self.stages {
-            stage.reset();
-        }
+        self.x1.fill(0.0);
+        self.y1.fill(0.0);
+        self.feedback_sample.fill(0.0);
         self.lfo.reset_phase();
-        self.feedback_sample = 0.0;
+        self.last = None;
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate;
-        self.range.max_hz = self.range.max_hz.min(self.range_ceiling());
+        // Re-clamped from what was asked for, not from the last clamp, so a
+        // rate that rises again restores the authored top.
+        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
+        // The interpolation start was solved at the old rate.
+        self.last = None;
     }
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = self.process_sample(input[0]);
+        self.render(1, |c, _| input[c], |c, _, v| output[c] = v);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, self.process_sample(input.at_f32(0, i)));
+        if size == 0 {
+            return;
         }
+        self.render(
+            size,
+            |c, i| input.at_f32(c, i),
+            |c, i, v| output.set_f32(c, i, v),
+        );
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {
@@ -270,7 +413,11 @@ impl AudioUnit for PhaserNode {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PHASER_ID
+        if self.width == 1 {
+            crate::node_id::PHASER_ID
+        } else {
+            crate::node_id::PHASER_ID ^ 0xDA02
+        }
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -281,171 +428,37 @@ impl AudioUnit for PhaserNode {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, input.at(0));
+        let mut out = SignalFrame::new(self.width);
+        for c in 0..self.width {
+            out.set(c, input.at(c));
+        }
         out
     }
 
     fn footprint(&self) -> usize {
         core::mem::size_of::<Self>()
+            + (self.x1.len() + self.y1.len() + self.coeffs.len()) * core::mem::size_of::<f32>()
     }
 }
 
 impl Clone for PhaserNode {
     fn clone(&self) -> Self {
         Self {
-            stages: self.stages.clone(),
+            stages: self.stages,
+            width: self.width,
+            x1: self.x1.clone(),
+            y1: self.y1.clone(),
+            feedback_sample: self.feedback_sample.clone(),
+            phase_offsets: self.phase_offsets.clone(),
+            last_coeff: self.last_coeff.clone(),
+            coeffs: self.coeffs.clone(),
+            lane: self.lane.clone(),
             lfo: self.lfo.clone(),
             mix: self.mix.clone(),
-            feedback_sample: self.feedback_sample,
             sample_rate: self.sample_rate,
             range: self.range,
-        }
-    }
-}
-
-/// Stereo phaser: two [`PhaserNode`]s sharing one set of parameter handles.
-/// 2-in, 2-out.
-///
-/// The two channels share every control and each keeps its own all-pass state,
-/// so they phase identically without bleeding into each other. There is no L/R
-/// phase offset here — unlike chorus and flanger, the two sides sweep in step,
-/// so this widens nothing by itself.
-pub struct StereoPhaserNode {
-    left: PhaserNode,
-    right: PhaserNode,
-}
-
-impl StereoPhaserNode {
-    /// Builds a stereo phaser with `stages` all-pass sections per channel,
-    /// clamped to `2..=12`.
-    ///
-    /// Both channels are built from one node, so they start with identical
-    /// parameters and shared cells. Defaults are [`PhaserNode::new`]'s.
-    pub fn new(stages: usize) -> Self {
-        let left = PhaserNode::new(stages);
-        let right = left.clone();
-        Self { left, right }
-    }
-
-    /// The shared LFO rate cell in [`Hz`], governing both channels.
-    pub fn rate(&self) -> Arc<AtomicF32> {
-        self.left.rate()
-    }
-
-    /// The shared [`Depth`] cell (`0.0..=1.0`), governing both channels.
-    pub fn depth(&self) -> Arc<AtomicF32> {
-        self.left.depth()
-    }
-
-    /// The shared [`Feedback`] cell, governing both channels.
-    pub fn feedback(&self) -> Arc<AtomicF32> {
-        self.left.feedback()
-    }
-
-    /// The shared wet/dry [`Mix`] cell, governing both channels.
-    pub fn mix(&self) -> Arc<AtomicF32> {
-        self.left.mix()
-    }
-
-    /// Sets the LFO rate in [`Hz`] for both channels, floored at 0.01 Hz.
-    pub fn set_rate(&self, hz: impl Into<Hz>) {
-        self.left.set_rate(hz);
-    }
-
-    /// Sets the sweep [`Depth`] for both channels, clamped to the unit range.
-    pub fn set_depth(&self, d: impl Into<Depth>) {
-        self.left.set_depth(d);
-    }
-
-    /// Sets the [`Feedback`] for both channels, clamped to the stable range.
-    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
-        self.left.set_feedback(fb);
-    }
-
-    /// Sets the wet/dry [`Mix`] for both channels, clamped to `0.0..=1.0`.
-    pub fn set_mix(&self, mix: impl Into<Mix>) {
-        self.left.set_mix(mix);
-    }
-}
-
-impl AudioUnit for StereoPhaserNode {
-    fn inputs(&self) -> usize {
-        2
-    }
-    fn outputs(&self) -> usize {
-        2
-    }
-
-    fn reset(&mut self) {
-        self.left.reset();
-        self.right.reset();
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.left.set_sample_rate(sample_rate);
-        self.right.set_sample_rate(sample_rate);
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.left.tick(&input[0..1], &mut output[0..1]);
-        self.right.tick(&input[1..2], &mut output[1..2]);
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            let l_in = input.at_f32(0, i);
-            let r_in = input.at_f32(1, i);
-            let mut l_out = [0.0f32];
-            let mut r_out = [0.0f32];
-            self.left.tick(&[l_in], &mut l_out);
-            self.right.tick(&[r_in], &mut r_out);
-            output.set_f32(0, i, l_out[0]);
-            output.set_f32(1, i, r_out[0]);
-        }
-    }
-
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Rate => self.set_rate(value),
-                tutti_core::UnitParam::Depth => self.set_depth(value),
-                tutti_core::UnitParam::Feedback => self.set_feedback(value),
-                tutti_core::UnitParam::Wet => self.set_mix(value),
-                _ => {}
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::PHASER_ID ^ 0xDA02
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(2);
-        out.set(0, input.at(0));
-        out.set(1, input.at(1));
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-    }
-}
-
-impl Clone for StereoPhaserNode {
-    fn clone(&self) -> Self {
-        Self {
-            left: self.left.clone(),
-            right: self.right.clone(),
+            authored_max_hz: self.authored_max_hz,
+            last: self.last,
         }
     }
 }
@@ -535,9 +548,100 @@ mod tests {
     #[test]
     fn test_phaser_clamp_stages() {
         let phaser = PhaserNode::new(1);
-        assert_eq!(phaser.stages.len(), 2);
+        assert_eq!(phaser.stages, 2);
 
         let phaser = PhaserNode::new(20);
-        assert_eq!(phaser.stages.len(), MAX_STAGES);
+        assert_eq!(phaser.stages, MAX_STAGES);
+    }
+
+    // ── Per-block reads and width ────────────────────────────────────────────
+
+    fn phaser_48k(channels: usize) -> PhaserNode {
+        let mut n = PhaserNode::with_channels(channels, 6);
+        n.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        n
+    }
+
+    /// A mix change made between blocks fades across the next block.
+    ///
+    /// Mutation: `Ramp::new(target.mix, target.mix, size)` (a jump) fails.
+    #[test]
+    fn a_mix_change_fades_across_the_next_block() {
+        use crate::test_support::{change_between_blocks, noise};
+        let x = noise(13, 128);
+        let run = change_between_blocks(
+            || phaser_48k(2),
+            |n| n.set_mix(1.0),
+            &[&x[..64], &x[..64]],
+            &[&x[64..], &x[64..]],
+        );
+        run.assert_ramps_in("phaser mix");
+    }
+
+    /// Six channels with the default (zero) offsets: each is the mono phaser on
+    /// its own input, bit for bit — one LFO and one coefficient table serve all
+    /// six, and the stage-major state keeps them apart.
+    ///
+    /// Mutation: reading lane 0's input history (`x1[0]`) for every channel
+    /// fails.
+    #[test]
+    fn six_channels_are_six_mono_phasers() {
+        use crate::test_support::{noise, process_block};
+        let inputs: Vec<Vec<f32>> = (0..6).map(|c| noise(c + 30, 64)).collect();
+        let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
+        let mut wide = phaser_48k(6);
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            out = process_block(&mut wide, &refs);
+        }
+        for (c, input) in inputs.iter().enumerate() {
+            let mut mono = phaser_48k(1);
+            let mut want = Vec::new();
+            for _ in 0..4 {
+                want = process_block(&mut mono, &[&input[..]]);
+            }
+            assert_eq!(want[0], out[c], "channel {c}");
+        }
+    }
+
+    /// Per-channel phase offsets stagger the sweep: a quarter-cycle offset
+    /// changes the channel, a full-cycle one is no offset at all.
+    ///
+    /// Mutation: ignoring the offset in `coeff_at` fails the first assertion.
+    #[test]
+    fn phase_offsets_stagger_the_channels() {
+        use crate::test_support::{noise, process_block};
+        let x = noise(14, 64);
+        let mut node = PhaserNode::with_channels(3usize, 4).with_phase_offsets(&[
+            PhaseIncrement(0.0),
+            PhaseIncrement(0.25),
+            PhaseIncrement(1.0),
+        ]);
+        node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        node.set_rate(5.0);
+        let mut out = Vec::new();
+        for _ in 0..8 {
+            out = process_block(&mut node, &[&x, &x, &x]);
+        }
+        assert_ne!(out[0], out[1], "a quarter-cycle offset sweeps elsewhere");
+        assert_eq!(out[0], out[2], "a full-cycle offset wraps to none");
+    }
+
+    /// A low rate clamps the sweep top to its ceiling; a higher rate after it
+    /// restores what was asked for.
+    ///
+    /// Mutation: re-clamping from `self.range.max_hz` (the old in-place clamp)
+    /// leaves the top at 3600 Hz after the rate rises and fails.
+    #[test]
+    fn a_rising_rate_restores_the_authored_sweep_top() {
+        let mut phaser = PhaserNode::new(4);
+        phaser.set_sample_rate(tutti_core::SampleRate(8_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
+        phaser.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(4_000.0));
+        phaser.set_frequency_range(300.0, 30_000.0);
+        assert_eq!(phaser.range.max_hz, Hz(21_600.0));
+        phaser.set_sample_rate(tutti_core::SampleRate(96_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(30_000.0));
     }
 }

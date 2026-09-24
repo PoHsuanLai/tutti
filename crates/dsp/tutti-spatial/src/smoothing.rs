@@ -67,13 +67,22 @@ impl ExponentialSmoother {
         next
     }
 
+    /// The running value, in whichever space the caller steps it in (see
+    /// [`seed_at`](Self::seed_at) for why it is a bare `f32`). Already
+    /// wrapped when stepped with [`process_angle`](Self::process_angle).
+    #[inline]
+    pub fn value(&self) -> f32 {
+        self.value
+    }
+
     /// Seed the running value directly, discarding whatever ramp was in
     /// flight.
     ///
     /// This is the whole of a smoother's runtime state, so seeding it at the
     /// current target is what "has not processed any data" means here — see
-    /// [`AngleSmoother::reset_to_target`]. Seeding at `0.0` instead would leave
-    /// the next block ramping in from front-centre.
+    /// [`AngleSmoother::reset_to_target`](crate::AngleSmoother::reset_to_target).
+    /// Seeding at `0.0` instead would leave the next block ramping in from
+    /// front-centre.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
     /// degrees of bearing under [`process_angle`](Self::process_angle), degrees

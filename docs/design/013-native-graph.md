@@ -1,6 +1,8 @@
 # A native audio graph, and the road off fundsp
 
-Status: **proposal** (2026-09-24). Research + scope only; nothing here has landed.
+Status: **proposal** (2026-09-24). The graph itself has not landed. Work that
+does not need it has: the D1–D3 latency fixes (#3), Phase 0b (#6), and
+rewrite-order item 3 (#10, see [below](#item-3-landed-10)).
 
 ## Why
 
@@ -532,13 +534,71 @@ vocoder retirement channel for voices the pool removes.
 |---|---|---|---|
 | 1 | **Latency defects D1–D3, plus D5, D7, D8** | These are bugs, and small | No |
 | 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
-| 3 | **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
+| 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion** | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. **Decide events fan-in first** | Yes |
 | 6 | **Compiler-owned param modulation** | Deletes the 3 param-mod node types and most of `audio_rate.rs` | Yes |
 | 7 | **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
 | 9 | Remaining mechanical ports, then delete `Legacy` | | Yes |
+
+#### Item 3 landed (#10)
+
+**What landed.** Everything below is still an `impl AudioUnit`.
+
+- **Merged nodes.** Width is chosen at construction from a `ChannelLayout`.
+  There is one coefficient solve per node, shared across channels, and state
+  is kept per channel:
+  - `SvfFilterNode`
+  - `LadderFilterNode`
+  - `DelayLineNode`, whose width-2 cross-feed became an explicit N×N
+    routing matrix
+  - `ModDelayNode` with `ModDelayConfig::{CHORUS, FLANGER}`, replacing
+    `ChorusNode` and `FlangerNode`, with per-channel LFO phase offsets
+  - `PhaserNode`
+  - `ConvolverNode`, which keeps `IrChannelConfig` generalised to N channels
+
+  Seven types are gone.
+- **Per-block reads (`tutti-nodes/src/ramp.rs`).** Every control is read once
+  per block.
+  - A control that moved ramps linearly across the next block and lands
+    exactly on its new value, so `tick` (a block of one) still matches the
+    old per-sample read.
+  - Moving filter cutoff/Q, swept cutoff ports and the phaser's all-pass
+    coefficient are re-solved every 16 samples and interpolated in between;
+    the old path paid a `tan` per sample.
+  - LFOs fill a block buffer of phases.
+  - Compressor/Gate hold their detector controls for the block and ramp
+    makeup/range.
+  - VBAP solves its gains once per block and ramps them. The ramp is a chord,
+    not constant-power. That is documented on the node, and a larger
+    native-graph block must revisit it.
+- **Non-finite control values.** A NaN or ±∞ written to a raw control cell
+  reads as unchanged, so it never reaches a coefficient solve or recursive
+  state.
+- **Equivalence.** Proven bit-identical against the old types on every held
+  configuration they supported, then pinned as goldens.
+- **CPU.** Bench tables are in #10. Examples: VBAP about 8× faster, a swept
+  SVF 2.6–4× faster, and nothing slower than the twins.
+
+**Deferred.**
+
+- **IR stored once as `Arc<[f32]>`.** fft-convolver owns each channel's
+  transformed IR, so sharing waits on `Fork` (item 8). `shared_ir` clones one
+  convolver, so the IR is transformed only once.
+- **`copy_within` fast path** for integer delays.
+- **Filter type switchable live via `Controls`.** Needs the native `Controls`.
+  `set_filter_type` is still `&mut self`.
+- **Buffers allocated in `prepare`.** The delay rings are an example; there is
+  no `prepare` before the node contract.
+- **`BusStripNode`.** It is in this item's list but was outside #10's slice.
+- **A `tanh` approximation for the ladder.** The engine has none, and `tanh`
+  now dominates the ladder's cost. Adding one changes the sound, so it is a
+  separate decision.
+- **SoA across channels (4 stages × N lanes).** Measured 26% slower than
+  per-channel state without explicit SIMD. The code documents this and runs
+  channels side by side in groups of up to 8 instead; SoA is revisited with
+  Phase 6's SIMD work.
 
 **Testing note.** The `process_matches_tick`-style tests lose their oracle
 when `tick` goes. Replace it with the reference interpreter run at block size

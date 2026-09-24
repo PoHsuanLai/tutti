@@ -13,8 +13,7 @@ use tutti_core::dsp::Net;
 use tutti_core::AudioUnit as _;
 use tutti_core::Ordering;
 use tutti_nodes::{
-    AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind, StereoSvfFilterNode,
-    SvfType,
+    AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind, SvfFilterNode, SvfType,
 };
 use tutti_types::{Hz, UnitParam, Q};
 
@@ -141,8 +140,8 @@ fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
     );
 
     // An SVF carries two modulatable params, so it pays twice.
-    let svf = StereoSvfFilterNode::<f32>::with_param_inputs(
-        2,
+    let svf = SvfFilterNode::<f32>::with_param_inputs(
+        tutti_core::ChannelLayout::STEREO,
         SvfType::LowPass,
         Hz(1000.0),
         Q(0.7),

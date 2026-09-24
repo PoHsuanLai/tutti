@@ -155,8 +155,8 @@ impl ParamPortMap {
 /// use bevy_tutti::graph::{DeclareParamPorts, InsertAudioNode};
 ///
 /// fn spawn_filter(mut commands: Commands) {
-///     let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-///         2,
+///     let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
+///         tutti_types::ChannelLayout::STEREO,
 ///         tutti_nodes::SvfType::LowPass,
 ///         tutti_types::Hz(1000.0),
 ///         tutti_types::Q(0.707),
@@ -196,8 +196,8 @@ mod tests {
     /// shipped bug's shape (a ported node answering "no ports").
     #[test]
     fn a_ported_filter_declares_its_ports_and_a_plain_one_does_not() {
-        let ported = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-            2,
+        let ported = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::SvfType::LowPass,
             tutti_types::Hz(1000.0),
             tutti_types::Q(0.707),
@@ -217,7 +217,8 @@ mod tests {
             "an SVF exposes no Drive port"
         );
 
-        let plain = tutti_nodes::StereoSvfFilterNode::<f32>::new(
+        let plain = tutti_nodes::SvfFilterNode::<f32>::with_channels(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::SvfType::LowPass,
             tutti_types::Hz(1000.0),
             tutti_types::Q(0.707),
@@ -235,8 +236,8 @@ mod tests {
     /// the expected value is read back from the node rather than written here.
     #[test]
     fn the_map_agrees_with_the_node_for_every_param() {
-        let unit = tutti_nodes::StereoLadderFilterNode::<f32>::with_param_inputs(
-            2,
+        let unit = tutti_nodes::LadderFilterNode::<f32>::with_param_inputs(
+            tutti_types::ChannelLayout::STEREO,
             tutti_nodes::LadderType::LP24,
             tutti_types::Hz(1000.0),
             tutti_types::Resonance(0.5),

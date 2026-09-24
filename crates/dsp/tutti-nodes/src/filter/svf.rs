@@ -1,18 +1,24 @@
 //! State-variable filter — the crate's general-purpose filter.
 //!
 //! One coefficient computation serves eight responses ([`SvfType`]), so
-//! switching type is as cheap as any parameter change. Mono, and a width-native
-//! variant that shares coefficients across channels while keeping per-channel
-//! integrator state.
+//! switching type is as cheap as any parameter change. One width-generic node,
+//! [`SvfFilterNode`]: the coefficients are shared across channels and only the
+//! integrator state is per channel.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
-use tutti_core::{Db, Hz, Param, SampleRate, Q};
+use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Q};
+
+use crate::ramp::{self, LastGood, Ramp};
 
 /// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
+///
+/// The thresholds alone would not keep a NaN out (`|NaN - last| > eps` is
+/// false, so a NaN is held off only until another control moves); the cells
+/// are read through `LastGood`, which does.
 const FREQ_EPS: f32 = 0.01;
 const Q_EPS: f32 = 0.0001;
 const GAIN_EPS: f32 = 0.01;
@@ -125,12 +131,12 @@ pub fn compute_svf_coeffs(
     }
 }
 
-/// Parameter-derived filter coefficients, plus the last-seen parameter values
-/// that gate recomputation.
+/// Parameter-derived filter coefficients, plus the parameter values they were
+/// solved at — which is what gates recomputation and where a block ramp starts.
 ///
-/// Shared across channels in the multi-channel variants — the params are one
-/// linked control surface, so widening replicates only `SvfIntegrator`.
-#[derive(Clone)]
+/// One set serves every channel: the params are one linked control surface, so
+/// widening replicates only the integrator state.
+#[derive(Clone, Copy, PartialEq)]
 struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
@@ -144,81 +150,94 @@ struct SvfCoefficients<F: Real> {
 }
 
 impl<F: Real> SvfCoefficients<F> {
-    fn zeroed() -> Self {
-        let zero = F::from_f64(0.0);
+    fn solve(filter_type: SvfType, freq: Hz, q: Q, gain_db: Db, sample_rate: SampleRate) -> Self {
+        let c = compute_svf_coeffs(filter_type, freq, q, gain_db, sample_rate);
         Self {
-            a1: zero,
-            a2: zero,
-            a3: zero,
-            m0: zero,
-            m1: zero,
-            m2: zero,
-            last_freq: Hz(-1.0),
-            last_q: Q(-1.0),
-            last_gain_db: Db(f32::NAN),
+            a1: F::from_f64(c.a1),
+            a2: F::from_f64(c.a2),
+            a3: F::from_f64(c.a3),
+            m0: F::from_f64(c.m0),
+            m1: F::from_f64(c.m1),
+            m2: F::from_f64(c.m2),
+            last_freq: freq,
+            last_q: q,
+            last_gain_db: gain_db,
         }
     }
 
+    /// Marks the set stale, so the next read solves at its target outright
+    /// rather than ramping from parameters that no longer mean anything (a new
+    /// sample rate, a new response type).
     fn invalidate(&mut self) {
         self.last_freq = Hz(-1.0);
     }
 
-    fn store(&mut self, c: SvfCoeffs, freq: Hz, q: Q, gain_db: Db) {
-        self.a1 = F::from_f64(c.a1);
-        self.a2 = F::from_f64(c.a2);
-        self.a3 = F::from_f64(c.a3);
-        self.m0 = F::from_f64(c.m0);
-        self.m1 = F::from_f64(c.m1);
-        self.m2 = F::from_f64(c.m2);
-        self.last_freq = freq;
-        self.last_q = q;
-        self.last_gain_db = gain_db;
+    fn is_invalid(&self) -> bool {
+        self.last_freq.get() < 0.0
     }
-}
 
-/// Per-channel SVF integrator state. Stereo and multi-channel variants
-/// hold one of these per channel; coefficients are shared.
-#[derive(Clone)]
-struct SvfIntegrator<F: Real> {
-    ic1eq: F,
-    ic2eq: F,
-}
+    /// Whether `(freq, q, gain_db)` moved past the epsilons since this set was
+    /// solved. A held value costs nothing.
+    #[inline]
+    fn moved(&self, freq: Hz, q: Q, gain_db: Db) -> bool {
+        (freq.get() - self.last_freq.get()).abs() > FREQ_EPS
+            || (q.get() - self.last_q.get()).abs() > Q_EPS
+            || (gain_db.get() - self.last_gain_db.get()).abs() > GAIN_EPS
+    }
 
-impl<F: Real> SvfIntegrator<F> {
-    fn zeroed() -> Self {
-        let zero = F::from_f64(0.0);
+    /// Linear blend toward `to` by `t` in `0..=1`. The parameters it was solved
+    /// at are not blended — an interpolated set is only ever used for one
+    /// sample and never stored.
+    #[inline]
+    fn lerp(&self, to: &Self, t: F) -> Self {
         Self {
-            ic1eq: zero,
-            ic2eq: zero,
+            a1: self.a1 + (to.a1 - self.a1) * t,
+            a2: self.a2 + (to.a2 - self.a2) * t,
+            a3: self.a3 + (to.a3 - self.a3) * t,
+            m0: self.m0 + (to.m0 - self.m0) * t,
+            m1: self.m1 + (to.m1 - self.m1) * t,
+            m2: self.m2 + (to.m2 - self.m2) * t,
+            ..*to
         }
     }
-
-    fn reset_z(&mut self) {
-        let zero = F::from_f64(0.0);
-        self.ic1eq = zero;
-        self.ic2eq = zero;
-    }
-
-    /// Single-sample tick using the supplied coefficients.
-    #[inline]
-    fn tick(&mut self, coeffs: &SvfCoefficients<F>, v0: F) -> F {
-        let two = F::from_f64(2.0);
-        let v3 = v0 - self.ic2eq;
-        let v1 = coeffs.a1 * self.ic1eq + coeffs.a2 * v3;
-        let v2 = self.ic2eq + coeffs.a2 * self.ic1eq + coeffs.a3 * v3;
-        self.ic1eq = two * v1 - self.ic1eq;
-        self.ic2eq = two * v2 - self.ic2eq;
-        coeffs.m0 * v0 + coeffs.m1 * v1 + coeffs.m2 * v2
-    }
 }
 
-/// Mono state-variable filter: 1 input, 1 output.
+/// One channel's integrator step (Cytomic/Zavalishin TPT form) over its two
+/// state words `[ic1eq, ic2eq]`.
+///
+/// The pair is kept together per channel (array-of-structures), not split into
+/// one array per word: the two updates are symmetric and their loads and
+/// stores stay adjacent. Measured, splitting them cost 26% at width 6 — the
+/// across-channel layout design doc 013 sketched only pays once a
+/// channel-inner loop is explicitly vectorised, which this one is not.
+#[inline(always)]
+fn svf_step<F: Real>(c: &SvfCoefficients<F>, s: &mut [F; 2], v0: F) -> F {
+    let two = F::from_f64(2.0);
+    let [ic1eq, ic2eq] = *s;
+    let v3 = v0 - ic2eq;
+    let v1 = c.a1 * ic1eq + c.a2 * v3;
+    let v2 = ic2eq + c.a2 * ic1eq + c.a3 * v3;
+    *s = [two * v1 - ic1eq, two * v2 - ic2eq];
+    c.m0 * v0 + c.m1 * v1 + c.m2 * v2
+}
+
+/// State-variable filter of any width: `N` audio inputs, `N` outputs, one
+/// coefficient set shared across the channels and one integrator pair per
+/// channel.
+///
+/// This used to be two types — a mono `SvfFilterNode` and a
+/// `StereoSvfFilterNode` that was already `N`-wide despite its name (a leftover
+/// of the extraction). They ran the same integrator; the merge keeps the mono
+/// arithmetic bit-for-bit at width 1 and the old wide arithmetic at every other
+/// width.
 ///
 /// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
-/// clones. All three are read **once per block** and the coefficients are
-/// recomputed only when one moves past a small epsilon, so a held value costs
-/// nothing. For sample-accurate cutoff modulation use
-/// [`StereoSvfFilterNode`]'s param-input ports.
+/// clones, read **once per block**. A held value costs nothing — the
+/// coefficients are solved only when one moves past a small epsilon. A value
+/// that *did* move is ramped across the block: the coefficients are re-solved
+/// every 16 samples along a linear parameter ramp and interpolated between
+/// solves, so an automated cutoff glides rather than stepping at block edges.
+/// `tick` is a block of one, so it applies a change on the very next sample.
 ///
 /// Gain applies only to [`Bell`](SvfType::Bell),
 /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf); the
@@ -227,19 +246,41 @@ impl<F: Real> SvfIntegrator<F> {
 /// `F` is the internal state precision. It defaults to `f64` for accuracy at
 /// low cutoffs, where an `f32` integrator loses resolution in the feedback
 /// path; `SvfFilterNode::<f32>::new(…)` trades that for CPU.
+///
+/// # Port layout
+///
+/// `N` audio inputs, then *optional param-input ports* (see
+/// [`Self::with_param_inputs`]): a cutoff port in [`Hz`], then a [`Q`] port,
+/// each present only if its `mod_*` flag was set. A present port **overrides**
+/// the corresponding atomic. It is sampled at the solve points — every 16
+/// samples and at the block's last sample — with the coefficients interpolated
+/// between them, instead of a `tan` per sample. Without ports the filter is a
+/// plain `N`-in/`N`-out node with zero added cost, which is the common case.
 pub struct SvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
     q: Param<Q>,
     gain_db: Param<Db>,
     sample_rate: SampleRate,
+    /// The coefficients the last rendered sample ran at.
     coeffs: SvfCoefficients<F>,
-    integrator: SvfIntegrator<F>,
+    /// Integrator state `[ic1eq, ic2eq]`, one pair per channel; `len()` is the
+    /// audio width. Built at construction — never resized in `tick`/`process`
+    /// (RT no-alloc).
+    state: Vec<[F; 2]>,
+    /// The last finite cutoff / Q / gain the cells held: a non-finite write
+    /// reads as unchanged, so it never reaches the solve (see [`LastGood`]).
+    good: [LastGood; 3],
+    /// When true, a cutoff param-input port follows the audio inputs.
+    mod_cutoff: bool,
+    /// When true, a Q param-input port follows the cutoff port (or the audio
+    /// inputs if `mod_cutoff` is false).
+    mod_q: bool,
 }
 
 impl<F: Real> SvfFilterNode<F> {
-    /// Builds a filter of `filter_type` at `frequency` cutoff and resonance
-    /// `q`, with 0 dB gain.
+    /// A mono filter (1 in, 1 out) of `filter_type` at `frequency` cutoff and
+    /// resonance `q`, with 0 dB gain.
     ///
     /// `q` around `0.707` is the flattest (Butterworth) response; higher values
     /// resonate at the cutoff, and a band-pass or notch narrows as it rises.
@@ -255,249 +296,10 @@ impl<F: Real> SvfFilterNode<F> {
     /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
-        let frequency = frequency.into();
-        let q = q.into();
-        let mut node = Self {
-            filter_type,
-            frequency: Param::new(frequency),
-            q: Param::new(q),
-            gain_db: Param::new(Db(0.0)),
-            sample_rate: SampleRate::DEFAULT,
-            coeffs: SvfCoefficients::zeroed(),
-            integrator: SvfIntegrator::zeroed(),
-        };
-        node.update_coefficients(frequency, q, Db(0.0));
-        node
+        Self::with_channels(ChannelLayout::MONO, filter_type, frequency, q)
     }
 
-    /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
-    /// immediately.
-    ///
-    /// Only [`Bell`](SvfType::Bell), [`LowShelf`](SvfType::LowShelf) and
-    /// [`HighShelf`](SvfType::HighShelf) read it; on the other types it is
-    /// stored and ignored. Positive boosts, negative cuts, `0.0` is flat.
-    pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
-        let db = db.into();
-        self.gain_db = Param::new(db);
-        self.update_coefficients(self.frequency.load(), self.q.load(), db);
-        self
-    }
-
-    /// The shared cutoff cell in [`Hz`], for driving cutoff from a modulator.
-    ///
-    /// Read once per block. Writing the raw cell bypasses the 1 Hz floor
-    /// [`set_frequency`](Self::set_frequency) applies; the coefficient
-    /// computation clamps to `1.0..=0.998 * Nyquist` regardless, since `tan`
-    /// diverges at Nyquist. Shared across clones.
-    pub fn frequency(&self) -> Arc<AtomicF32> {
-        self.frequency.as_atomic()
-    }
-
-    /// The shared resonance cell in [`Q`].
-    ///
-    /// Read once per block. Writing the raw cell bypasses
-    /// [`set_q`](Self::set_q)'s clamp; the coefficient computation floors the
-    /// value at `0.01` to avoid a division blow-up. Shared across clones.
-    pub fn q(&self) -> Arc<AtomicF32> {
-        self.q.as_atomic()
-    }
-
-    /// The shared shelf/bell gain cell in [`Db`]. Inert on the non-gain filter
-    /// types.
-    pub fn gain_db(&self) -> Arc<AtomicF32> {
-        self.gain_db.as_atomic()
-    }
-
-    /// Sets the cutoff in [`Hz`], floored at 1 Hz.
-    ///
-    /// The upper bound is applied when coefficients are computed, at `0.998` of
-    /// Nyquist — so this accepts a higher value and the filter tops out there.
-    pub fn set_frequency(&self, hz: impl Into<Hz>) {
-        self.frequency.store(Hz(hz.into().get().max(1.0)));
-    }
-
-    /// Sets the resonance [`Q`], clamped to the type's valid range.
-    ///
-    /// `0.707` is the flattest response; higher resonates at the cutoff.
-    pub fn set_q(&self, q: impl Into<Q>) {
-        self.q.store(Q::new_clamped(q.into().get()));
-    }
-
-    /// Sets the shelf/bell gain in [`Db`]. Inert on the non-gain filter types.
-    pub fn set_gain_db(&self, db: impl Into<Db>) {
-        self.gain_db.store(db.into());
-    }
-
-    /// Switches the filter response, forcing a coefficient recompute on the
-    /// next sample.
-    ///
-    /// `&mut self`, so this cannot reach a node already live in the graph —
-    /// the response is a structural choice, not an automatable parameter.
-    /// Integrator state is deliberately kept, so the switch is continuous
-    /// rather than a click.
-    pub fn set_filter_type(&mut self, filter_type: SvfType) {
-        self.filter_type = filter_type;
-        self.coeffs.invalidate();
-    }
-
-    fn update_coefficients(&mut self, freq: Hz, q: Q, gain_db: Db) {
-        let c = compute_svf_coeffs(self.filter_type, freq, q, gain_db, self.sample_rate);
-        self.coeffs.store(c, freq, q, gain_db);
-    }
-
-    #[inline]
-    fn maybe_update(&mut self) {
-        let freq = self.frequency.load();
-        let q = self.q.load();
-        let gain_db = self.gain_db.load();
-        if (freq.get() - self.coeffs.last_freq.get()).abs() > FREQ_EPS
-            || (q.get() - self.coeffs.last_q.get()).abs() > Q_EPS
-            || (gain_db.get() - self.coeffs.last_gain_db.get()).abs() > GAIN_EPS
-        {
-            self.update_coefficients(freq, q, gain_db);
-        }
-    }
-
-    #[inline]
-    fn process_one(&mut self, v0: F) -> F {
-        self.integrator.tick(&self.coeffs, v0)
-    }
-}
-
-impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
-    fn inputs(&self) -> usize {
-        1
-    }
-
-    fn outputs(&self) -> usize {
-        1
-    }
-
-    fn reset(&mut self) {
-        self.integrator.reset_z();
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        self.coeffs.invalidate();
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.maybe_update();
-        output[0] = self.process_one(F::from_f32(input[0])).to_f32();
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.maybe_update();
-        for i in 0..size {
-            let v0 = F::from_f32(input.at_f32(0, i));
-            output.set_f32(0, i, self.process_one(v0).to_f32());
-        }
-    }
-
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Cutoff => self.set_frequency(value),
-                tutti_core::UnitParam::Q => self.set_q(value),
-                tutti_core::UnitParam::GainDb => self.set_gain_db(value),
-                _ => {}
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::SVF_FILTER_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, input.at(0).filter(0.0, |z| z));
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-    }
-}
-
-impl<F: Real> Clone for SvfFilterNode<F> {
-    fn clone(&self) -> Self {
-        Self {
-            filter_type: self.filter_type,
-            frequency: self.frequency.handle(),
-            q: self.q.handle(),
-            gain_db: self.gain_db.handle(),
-            sample_rate: self.sample_rate,
-            coeffs: self.coeffs.clone(),
-            integrator: self.integrator.clone(),
-        }
-    }
-}
-
-// =============================================================================
-// Stereo variant — 2-in / 2-out, shared coefficients, per-channel integrators.
-// =============================================================================
-
-/// Stereo state-variable filter. 2 inputs, 2 outputs.
-///
-/// Same params as [`SvfFilterNode`] (frequency / Q / gain), shared
-/// across L and R; each channel maintains its own integrator state.
-/// Coefficient recomputation happens once per parameter change, not
-/// once per channel.
-///
-/// # Port layout
-///
-/// The default filter is 2-in / 2-out (stereo audio on ports 0/1). For
-/// audio-rate parameter modulation it can grow *optional param-input ports*
-/// after the audio inputs (see [`Self::with_param_inputs`]): a cutoff port in
-/// [`Hz`], then a [`Q`] port, each present only if its `mod_*` flag was set.
-///
-/// A present param-input port **overrides** the corresponding atomic per
-/// sample, forcing a coefficient recompute that sample — the block-rate skip
-/// only applies to the unmodulated parameters, so a modulated filter is
-/// materially more expensive. When neither flag is set the filter is a plain
-/// 2-in/2-out node with zero added cost, which is the common case.
-pub struct StereoSvfFilterNode<F: Real = f64> {
-    filter_type: SvfType,
-    frequency: Param<Hz>,
-    q: Param<Q>,
-    gain_db: Param<Db>,
-    sample_rate: SampleRate,
-    coeffs: SvfCoefficients<F>,
-    /// Per-channel integrator state; `channels.len()` == audio width. The
-    /// coefficients above are channel-shared (one linked control surface), so
-    /// widening only replicates the integrator state, not the params. Built at
-    /// construction — never resized in `tick`/`process` (RT no-alloc).
-    channels: Vec<SvfIntegrator<F>>,
-    /// When true, a cutoff param-input port follows the audio inputs and
-    /// overrides the `frequency` atomic per sample.
-    mod_cutoff: bool,
-    /// When true, a Q param-input port follows the cutoff port (or the audio
-    /// inputs if `mod_cutoff` is false) and overrides the `q` atomic per sample.
-    mod_q: bool,
-}
-
-impl<F: Real> StereoSvfFilterNode<F> {
-    /// Builds a stereo (width-2) filter with no param-input ports.
-    ///
-    /// Shorthand for [`with_channels(2, …)`](Self::with_channels). The two
-    /// channels share one coefficient set and keep independent integrator
-    /// state, so they filter identically without bleeding into each other.
-    pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
-        Self::with_channels(2, filter_type, frequency, q)
-    }
-
-    /// An `n`-channel filter (clamped to at least 1).
+    /// A filter `channels` wide (clamped to at least 1).
     ///
     /// The coefficients are channel-shared — one linked control surface across
     /// all channels — and only the per-channel integrator state is replicated,
@@ -506,44 +308,45 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// Speaker placement is the upstream panner's job: this is a per-channel
     /// filter, not a spatial process.
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; call
-    /// [`AudioUnit::set_sample_rate`] before the first `process` or every
-    /// channel's corner sits 8.8% high at 48 kHz. The coefficients are shared,
-    /// so the skew is identical across the width — wrong everywhere rather than
-    /// unbalanced, which is why widening does not make it any easier to hear.
-    /// See the crate-level "born at a placeholder rate" section.
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, as [`new`](Self::new)
+    /// does. The coefficients are shared, so an uncorrected rate skews every
+    /// channel identically — wrong everywhere rather than unbalanced, which is
+    /// why widening does not make it any easier to hear.
     ///
     /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
         filter_type: SvfType,
         frequency: impl Into<Hz>,
         q: impl Into<Q>,
     ) -> Self {
         let frequency = frequency.into();
         let q = q.into();
-        let n = channels.max(1);
-        let mut node = Self {
+        let n = usize::from(channels.into().count()).max(1);
+        let zero = F::from_f64(0.0);
+        Self {
             filter_type,
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
             sample_rate: SampleRate::DEFAULT,
-            coeffs: SvfCoefficients::zeroed(),
-            channels: vec![SvfIntegrator::zeroed(); n],
+            coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
+            state: vec![[zero; 2]; n],
+            good: [
+                LastGood::new(frequency.get()),
+                LastGood::new(q.get()),
+                LastGood::new(0.0),
+            ],
             mod_cutoff: false,
             mod_q: false,
-        };
-        node.update_coefficients(frequency, q, Db(0.0));
-        node
+        }
     }
 
     /// A filter with optional audio-rate param-input ports. `mod_cutoff` /
     /// `mod_q` add a cutoff / Q param-input port after the audio inputs
-    /// (cutoff first), each overriding its atomic per sample when present. The
-    /// atomics still hold the base (they feed the upstream param-sum's base
-    /// port), so the UI handle path is unchanged.
+    /// (cutoff first), each overriding its atomic when present. The atomics
+    /// still hold the base (they feed the upstream param-sum's base port), so
+    /// the UI handle path is unchanged.
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the filter is, the `mod_*` flags say which params it reads at audio rate.
@@ -556,7 +359,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
     /// never assume an index.
     pub fn with_param_inputs(
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
         filter_type: SvfType,
         frequency: impl Into<Hz>,
         q: impl Into<Q>,
@@ -572,7 +375,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// Audio channel width (`inputs()` audio ports == `outputs()`).
     #[inline]
     fn width(&self) -> usize {
-        self.channels.len()
+        self.state.len()
     }
 
     /// Input-port index of the cutoff param input, if present (right after the
@@ -595,22 +398,42 @@ impl<F: Real> StereoSvfFilterNode<F> {
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
-        self.update_coefficients(self.frequency.load(), self.q.load(), db);
+        self.good[2] = LastGood::new(db.get());
+        self.coeffs = SvfCoefficients::solve(
+            self.filter_type,
+            self.frequency.load(),
+            self.q.load(),
+            db,
+            self.sample_rate,
+        );
         self
     }
 
     /// The shared cutoff cell in [`Hz`], applied to every channel alike.
     ///
-    /// **A present cutoff param-input port overrides this per sample**; without
-    /// one it is read once per block. Shared across clones.
+    /// Read once per block. Writing the raw cell bypasses the 1 Hz floor
+    /// [`set_frequency`](Self::set_frequency) applies; the coefficient
+    /// computation clamps to `1.0..=0.998 * Nyquist` regardless, since `tan`
+    /// diverges at Nyquist. **A present cutoff param-input port overrides
+    /// it.** Shared across clones.
+    ///
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
 
     /// The shared resonance cell in [`Q`], applied to every channel alike.
     ///
-    /// **A present Q param-input port overrides this per sample**; without one
-    /// it is read once per block. Shared across clones.
+    /// Read once per block. Writing the raw cell bypasses
+    /// [`set_q`](Self::set_q)'s clamp; the coefficient computation floors the
+    /// value at `0.01` to avoid a division blow-up. **A present Q param-input
+    /// port overrides it.** Shared across clones.
+    ///
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.q.as_atomic()
     }
@@ -619,12 +442,18 @@ impl<F: Real> StereoSvfFilterNode<F> {
     ///
     /// Always read from the atomic — there is no gain param-input port. Inert
     /// on the non-gain filter types.
+    ///
+    /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
+    /// filter keeps the last finite value, so it never reaches the coefficient
+    /// solve or the filter state, and the next finite write takes effect.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.gain_db.as_atomic()
     }
 
     /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
     ///
+    /// The upper bound is applied when coefficients are computed, at `0.998` of
+    /// Nyquist — so this accepts a higher value and the filter tops out there.
     /// When a cutoff param-input port is present this sets the *base* the port
     /// overrides, not what the filter runs at.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
@@ -633,8 +462,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
 
     /// Sets the resonance [`Q`] for every channel, clamped to the valid range.
     ///
-    /// When a Q param-input port is present this sets the *base* the port
-    /// overrides.
+    /// `0.707` is the flattest response; higher resonates at the cutoff.
     pub fn set_q(&self, q: impl Into<Q>) {
         self.q.store(Q::new_clamped(q.into().get()));
     }
@@ -645,45 +473,135 @@ impl<F: Real> StereoSvfFilterNode<F> {
     }
 
     /// Switches the filter response for every channel, forcing a coefficient
-    /// recompute on the next sample.
+    /// solve on the next sample.
     ///
-    /// `&mut self`, so it cannot reach a node already live in the graph.
-    /// Integrator state is kept, so the switch is continuous rather than a
-    /// click.
+    /// `&mut self`, so this cannot reach a node already live in the graph —
+    /// the response is a structural choice, not an automatable parameter.
+    /// Integrator state is deliberately kept, so the switch is continuous
+    /// rather than a click.
     pub fn set_filter_type(&mut self, filter_type: SvfType) {
         self.filter_type = filter_type;
         self.coeffs.invalidate();
     }
 
-    fn update_coefficients(&mut self, freq: Hz, q: Q, gain_db: Db) {
-        let c = compute_svf_coeffs(self.filter_type, freq, q, gain_db, self.sample_rate);
-        self.coeffs.store(c, freq, q, gain_db);
+    /// Read the three control cells, once, with non-finite values held off.
+    #[inline]
+    fn read_controls(&mut self) -> (Hz, Q, Db) {
+        (
+            Hz(self.good[0].read(self.frequency.load().get())),
+            Q(self.good[1].read(self.q.load().get())),
+            Db(self.good[2].read(self.gain_db.load().get())),
+        )
     }
 
+    /// Solve at `(freq, q, gain_db)` unless the current set is already there.
     #[inline]
-    fn maybe_update(&mut self) {
-        let freq = self.frequency.load();
-        let q = self.q.load();
-        self.maybe_update_modulated(freq, q);
-    }
-
-    /// Recompute coefficients only when freq/Q/gain moved past a small epsilon,
-    /// so a held value doesn't recompute every sample. Shared by the atomic
-    /// ([`Self::maybe_update`]) and audio-rate modulation paths; gain always
-    /// comes from its atomic.
-    #[inline]
-    fn maybe_update_modulated(&mut self, freq: Hz, q: Q) {
-        let gain_db = self.gain_db.load();
-        if (freq.get() - self.coeffs.last_freq.get()).abs() > FREQ_EPS
-            || (q.get() - self.coeffs.last_q.get()).abs() > Q_EPS
-            || (gain_db.get() - self.coeffs.last_gain_db.get()).abs() > GAIN_EPS
-        {
-            self.update_coefficients(freq, q, gain_db);
+    fn solve_toward(
+        &self,
+        from: &SvfCoefficients<F>,
+        freq: Hz,
+        q: Q,
+        gain_db: Db,
+    ) -> SvfCoefficients<F> {
+        if from.is_invalid() || from.moved(freq, q, gain_db) {
+            SvfCoefficients::solve(self.filter_type, freq, q, gain_db, self.sample_rate)
+        } else {
+            *from
         }
+    }
+
+    /// Render with the current coefficients held for the whole block.
+    ///
+    /// The channels go through in groups of up to `ramp::LANES`, sample-inner, with
+    /// the group's integrators in registers. A recursive filter is
+    /// latency-bound on one channel — each sample waits for the last — so
+    /// running one channel at a time (measured: 2.7× slower at width 6) wastes
+    /// the independent chains the other channels offer; a group interleaves
+    /// them while still reading and writing planar slices.
+    fn run_held(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        let w = self.width();
+        let mut first = 0;
+        while first < w {
+            let n = ramp::lane_group(w - first);
+            match n {
+                8 => self.held_group::<8>(first, size, input, output),
+                7 => self.held_group::<7>(first, size, input, output),
+                6 => self.held_group::<6>(first, size, input, output),
+                5 => self.held_group::<5>(first, size, input, output),
+                4 => self.held_group::<4>(first, size, input, output),
+                3 => self.held_group::<3>(first, size, input, output),
+                2 => self.held_group::<2>(first, size, input, output),
+                _ => self.held_group::<1>(first, size, input, output),
+            }
+            first += n;
+        }
+    }
+
+    #[inline]
+    fn held_group<const N: usize>(
+        &mut self,
+        first: usize,
+        size: usize,
+        input: &BufferRef,
+        output: &mut BufferMut,
+    ) {
+        let c = self.coeffs;
+        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.channel_f32(first + k)[..size]);
+        let ys: [&mut [f32]; N] =
+            core::array::from_fn(|k| &mut output.channel_f32_mut(first + k)[..size]);
+        let mut st: [[F; 2]; N] = core::array::from_fn(|k| self.state[first + k]);
+        for i in 0..size {
+            for k in 0..N {
+                ys[k][i] = svf_step(&c, &mut st[k], F::from_f32(xs[k][i])).to_f32();
+            }
+        }
+        self.state[first..first + N].copy_from_slice(&st);
+    }
+
+    /// Render with the parameters moving inside the block. `param_at(i)` is the
+    /// `(cutoff, Q, gain)` at sample `i`; it is only asked at the solve points —
+    /// each segment's last sample — and the coefficients are interpolated
+    /// linearly between consecutive solves. The last sample of each segment runs
+    /// at its solved set exactly, so a segment of one sample (`tick`) is the
+    /// per-sample solve it replaces.
+    fn run_swept(
+        &mut self,
+        size: usize,
+        input: &BufferRef,
+        output: &mut BufferMut,
+        param_at: impl Fn(usize) -> (Hz, Q, Db),
+    ) {
+        let width = self.width();
+        let mut prev = self.coeffs;
+        let unprimed = prev.is_invalid();
+        if unprimed {
+            // Nothing meaningful to ramp from — solve at the first sample.
+            let (f, q, g) = param_at(0);
+            prev = SvfCoefficients::solve(self.filter_type, f, q, g, self.sample_rate);
+        }
+        for (start, end) in ramp::segments(size, unprimed) {
+            let (f, q, g) = param_at(end - 1);
+            let next = self.solve_toward(&prev, f, q, g);
+            let n = F::from_f64((end - start) as f64);
+            for i in start..end {
+                let k = if next == prev || i + 1 == end {
+                    next
+                } else {
+                    prev.lerp(&next, F::from_f64((i - start + 1) as f64) / n)
+                };
+                for ch in 0..width {
+                    let x = F::from_f32(input.at_f32(ch, i));
+                    let y = svf_step(&k, &mut self.state[ch], x);
+                    output.set_f32(ch, i, y.to_f32());
+                }
+            }
+            prev = next;
+        }
+        self.coeffs = prev;
     }
 }
 
-impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
+impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     fn inputs(&self) -> usize {
         self.width() + self.mod_cutoff as usize + self.mod_q as usize
     }
@@ -693,9 +611,8 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn reset(&mut self) {
-        for ch in &mut self.channels {
-            ch.reset_z();
-        }
+        let zero = F::from_f64(0.0);
+        self.state.fill([zero; 2]);
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -705,47 +622,62 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // Effective cutoff/Q: a present param-input port overrides the atomic
-        // (the atomic carries the base, fed upstream into the param sum).
-        match (self.cutoff_port(), self.q_port()) {
-            (None, None) => self.maybe_update(),
-            (cp, qp) => {
-                let freq = cp.map_or_else(|| self.frequency.load(), |p| Hz(input[p].max(1.0)));
-                let q = qp.map_or_else(|| self.q.load(), |p| Q(input[p].max(0.01)));
-                self.maybe_update_modulated(freq, q);
-            }
-        }
-        // Per-channel integrator, channel-shared coeffs.
-        for (c, ch) in self.channels.iter_mut().enumerate() {
-            output[c] = ch.tick(&self.coeffs, F::from_f32(input[c])).to_f32();
+        // A block of one: read every control once, solve at it if it moved.
+        // A port's `max` floor also maps a NaN sample to the floor.
+        let (base_freq, base_q, gain_db) = self.read_controls();
+        let freq = self
+            .cutoff_port()
+            .map_or(base_freq, |p| Hz(input[p].max(1.0)));
+        let q = self.q_port().map_or(base_q, |p| Q(input[p].max(0.01)));
+        self.coeffs = self.solve_toward(&self.coeffs, freq, q, gain_db);
+        let c = self.coeffs;
+        for ch in 0..self.width() {
+            output[ch] = svf_step(&c, &mut self.state[ch], F::from_f32(input[ch])).to_f32();
         }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let cutoff_port = self.cutoff_port();
-        let q_port = self.q_port();
-        // Fast path: no param ports — one block-rate coeff update.
-        if cutoff_port.is_none() && q_port.is_none() {
-            self.maybe_update();
-            for i in 0..size {
-                for (c, ch) in self.channels.iter_mut().enumerate() {
-                    let x = F::from_f32(input.at_f32(c, i));
-                    output.set_f32(c, i, ch.tick(&self.coeffs, x).to_f32());
-                }
-            }
+        if size == 0 {
             return;
         }
-        // Modulated path: read the active port(s) per sample and recompute the
-        // (channel-shared) coeffs before ticking every channel.
-        let base_freq = self.frequency.load();
-        let base_q = self.q.load();
-        for i in 0..size {
-            let freq = cutoff_port.map_or(base_freq, |p| Hz(input.at_f32(p, i).max(1.0)));
-            let q = q_port.map_or(base_q, |p| Q(input.at_f32(p, i).max(0.01)));
-            self.maybe_update_modulated(freq, q);
-            for (c, ch) in self.channels.iter_mut().enumerate() {
-                let x = F::from_f32(input.at_f32(c, i));
-                output.set_f32(c, i, ch.tick(&self.coeffs, x).to_f32());
+        // Every control is read here, once, for the whole block. A port's
+        // `max` floor maps a NaN sample to the floor, and ±∞ is clamped by the
+        // solve, so only the cells need holding off.
+        let (base_freq, base_q, gain_db) = self.read_controls();
+        match (self.cutoff_port(), self.q_port()) {
+            (None, None) => {
+                if self.coeffs.is_invalid() {
+                    // A new rate or response type: solve at the target outright.
+                    self.coeffs = SvfCoefficients::solve(
+                        self.filter_type,
+                        base_freq,
+                        base_q,
+                        gain_db,
+                        self.sample_rate,
+                    );
+                }
+                if !self.coeffs.moved(base_freq, base_q, gain_db) {
+                    self.run_held(size, input, output);
+                    return;
+                }
+                // Moved since the last block: glide there across this one.
+                let fr = Ramp::new(self.coeffs.last_freq.get(), base_freq.get(), size);
+                let qr = Ramp::new(self.coeffs.last_q.get(), base_q.get(), size);
+                let gr = Ramp::new(self.coeffs.last_gain_db.get(), gain_db.get(), size);
+                self.run_swept(size, input, output, |i| {
+                    (Hz(fr.at(i)), Q(qr.at(i)), Db(gr.at(i)))
+                });
+            }
+            (cp, qp) => {
+                let cutoff = cp.map(|p| input.channel_f32(p));
+                let res = qp.map(|p| input.channel_f32(p));
+                self.run_swept(size, input, output, |i| {
+                    (
+                        cutoff.map_or(base_freq, |s| Hz(s[i].max(1.0))),
+                        res.map_or(base_q, |s| Q(s[i].max(0.01))),
+                        gain_db,
+                    )
+                });
             }
         }
     }
@@ -762,8 +694,15 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        // Distinct from mono SVF — same family, different shape.
-        crate::node_id::SVF_FILTER_ID ^ 0xDA02
+        // Keyed on the audio width, not `inputs()`: param ports are not a
+        // channel, so a mono filter with a cutoff port is still the mono shape.
+        // Width 1 keeps the id it always had, every other width the one the
+        // wide twin carried. Only the render hash reads it.
+        if self.width() == 1 {
+            crate::node_id::SVF_FILTER_ID
+        } else {
+            crate::node_id::SVF_FILTER_ID ^ 0xDA02
+        }
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -783,11 +722,11 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+        core::mem::size_of::<Self>() + 2 * self.width() * core::mem::size_of::<F>()
     }
 }
 
-impl<F: Real> Clone for StereoSvfFilterNode<F> {
+impl<F: Real> Clone for SvfFilterNode<F> {
     fn clone(&self) -> Self {
         Self {
             filter_type: self.filter_type,
@@ -795,8 +734,9 @@ impl<F: Real> Clone for StereoSvfFilterNode<F> {
             q: self.q.handle(),
             gain_db: self.gain_db.handle(),
             sample_rate: self.sample_rate,
-            coeffs: self.coeffs.clone(),
-            channels: self.channels.clone(),
+            coeffs: self.coeffs,
+            state: self.state.clone(),
+            good: self.good,
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
         }
@@ -954,7 +894,12 @@ mod tests {
         // and lands in the same atomic the bespoke setter writes.
         use tutti_core::unit_param;
         use tutti_core::{AudioUnit, UnitParam};
-        let mut node = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let mut node = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         node.set(unit_param::setting(UnitParam::Cutoff, 5000.0));
         node.set(unit_param::setting(UnitParam::Q, 2.5));
         assert!(
@@ -1062,7 +1007,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Stereo SVF
+    // Stereo width
     // =========================================================================
 
     fn process_stereo(node: &mut dyn AudioUnit, l: &[f32], r: &[f32]) -> (Vec<f32>, Vec<f32>) {
@@ -1085,7 +1030,12 @@ mod tests {
         let mut mono = SvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
         mono.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut stereo = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let mut stereo = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         stereo.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let signal = generate_sine(440.0, 44100.0, 2048);
@@ -1107,7 +1057,12 @@ mod tests {
     #[test]
     fn test_stereo_svf_per_channel_independence() {
         // Different signals on L vs R should not bleed across channels.
-        let mut stereo = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let mut stereo = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         stereo.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let l_in = generate_sine(200.0, 44100.0, 2048);
@@ -1125,7 +1080,12 @@ mod tests {
 
     #[test]
     fn test_stereo_svf_reset_clears_both_channels() {
-        let mut stereo = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let mut stereo = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         stereo.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let signal = generate_sine(100.0, 44100.0, 200);
@@ -1158,25 +1118,8 @@ mod tests {
     }
 
     #[test]
-    fn with_channels_2_is_bit_identical_to_new() {
-        // The stereo fast path must be preserved exactly.
-        let mut a = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1200.0, 0.8);
-        a.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let mut b = StereoSvfFilterNode::<f64>::with_channels(2, SvfType::LowPass, 1200.0, 0.8);
-        b.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        let sig = generate_sine(440.0, 44100.0, 1024);
-        let (al, ar) = process_stereo(&mut a, &sig, &sig);
-        let (bl, br) = process_stereo(&mut b, &sig, &sig);
-        for i in 0..sig.len() {
-            assert_eq!(al[i].to_bits(), bl[i].to_bits(), "L bit-diff at {i}");
-            assert_eq!(ar[i].to_bits(), br[i].to_bits(), "R bit-diff at {i}");
-        }
-    }
-
-    #[test]
     fn with_channels_reports_arity() {
-        let f = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::HighPass, 800.0, 0.707);
+        let f = SvfFilterNode::<f64>::with_channels(6usize, SvfType::HighPass, 800.0, 0.707);
         assert_eq!(f.inputs(), 6);
         assert_eq!(f.outputs(), 6);
     }
@@ -1187,8 +1130,7 @@ mod tests {
         // coeffs, and carry only its own input (no cross-channel bleed).
         let mut mono = SvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
         mono.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let mut wide =
-            StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 1000.0, 0.707);
+        let mut wide = SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.707);
         wide.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         // Drive only channel 4; the rest are silent.
@@ -1215,14 +1157,19 @@ mod tests {
     #[test]
     fn stereo_svf_param_port_arity_and_indices() {
         // Plain constructor: no ports, audio arity untouched.
-        let d = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let d = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         assert_eq!(d.inputs(), 2);
         assert_eq!(d.outputs(), 2);
         assert_eq!(d.cutoff_port(), None);
         assert_eq!(d.q_port(), None);
         // cutoff only → port 2.
-        let c = StereoSvfFilterNode::<f64>::with_param_inputs(
-            2,
+        let c = SvfFilterNode::<f64>::with_param_inputs(
+            ChannelLayout::STEREO,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1233,8 +1180,8 @@ mod tests {
         assert_eq!(c.cutoff_port(), Some(2));
         assert_eq!(c.q_port(), None);
         // Q only → port 2 (no cutoff port before it).
-        let q = StereoSvfFilterNode::<f64>::with_param_inputs(
-            2,
+        let q = SvfFilterNode::<f64>::with_param_inputs(
+            ChannelLayout::STEREO,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1245,8 +1192,8 @@ mod tests {
         assert_eq!(q.cutoff_port(), None);
         assert_eq!(q.q_port(), Some(2));
         // both → cutoff at 2, Q at 3.
-        let b = StereoSvfFilterNode::<f64>::with_param_inputs(
-            2,
+        let b = SvfFilterNode::<f64>::with_param_inputs(
+            ChannelLayout::STEREO,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1268,8 +1215,8 @@ mod tests {
             .collect();
 
         let run = |cutoff: f32| -> f32 {
-            let mut f = StereoSvfFilterNode::<f64>::with_param_inputs(
-                2,
+            let mut f = SvfFilterNode::<f64>::with_param_inputs(
+                ChannelLayout::STEREO,
                 SvfType::LowPass,
                 200.0,
                 0.707,
@@ -1303,12 +1250,17 @@ mod tests {
         // modulated path is a faithful superset.
         let signal = generate_sine(440.0, 44100.0, 1024);
 
-        let mut plain = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        let mut plain = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            SvfType::LowPass,
+            1000.0,
+            0.707,
+        );
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
         let (plain_l, _) = process_stereo(&mut plain, &signal, &signal);
 
-        let mut modn = StereoSvfFilterNode::<f64>::with_param_inputs(
-            2,
+        let mut modn = SvfFilterNode::<f64>::with_param_inputs(
+            ChannelLayout::STEREO,
             SvfType::LowPass,
             1000.0,
             0.707,
@@ -1340,8 +1292,8 @@ mod tests {
     /// assertion is what catches it.
     #[test]
     fn a_modulated_filter_is_as_wide_as_it_was_asked_for() {
-        let f = StereoSvfFilterNode::<f64>::with_param_inputs(
-            6,
+        let f = SvfFilterNode::<f64>::with_param_inputs(
+            6usize,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1367,10 +1319,10 @@ mod tests {
     /// still report 6 outputs.
     #[test]
     fn a_modulated_filter_ticks_identically_to_its_unmodulated_twin() {
-        let mut plain = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 1000.0, 0.7);
+        let mut plain = SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.7);
         // Both flags off — the same filter, built through the other path.
-        let mut ported = StereoSvfFilterNode::<f64>::with_param_inputs(
-            6,
+        let mut ported = SvfFilterNode::<f64>::with_param_inputs(
+            6usize,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1386,5 +1338,82 @@ mod tests {
             ported.tick(&frame, &mut b);
             assert_eq!(a, b, "the two construction paths diverged at sample {i}");
         }
+    }
+
+    // ── Per-block reads ──────────────────────────────────────────────────────
+
+    /// A cutoff change made between blocks is read by the next block and
+    /// ramped across it, and that block ends solved exactly at the new cutoff.
+    ///
+    /// (A write *during* a block cannot be staged in a single-threaded test —
+    /// the control thread writes between callbacks — so "between blocks" is the
+    /// observable form of "not before the next block".)
+    ///
+    /// Mutation: solving straight at the target and rendering the block held
+    /// (a jump) fails `assert_ramps_in`; dropping the `self.coeffs = prev`
+    /// that stores the block's final solve fails the coefficient check.
+    #[test]
+    fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
+        use crate::test_support::{change_between_blocks, noise};
+        let x = noise(3, 128);
+        let run = change_between_blocks(
+            || {
+                let mut n = SvfFilterNode::<f64>::with_channels(
+                    ChannelLayout::STEREO,
+                    SvfType::LowPass,
+                    400.0,
+                    0.707,
+                );
+                n.set_sample_rate(tutti_core::SampleRate(48_000.0));
+                n
+            },
+            |n| n.set_frequency(6_000.0),
+            &[&x[..64], &x[..64]],
+            &[&x[64..], &x[64..]],
+        );
+        run.assert_ramps_in("svf cutoff");
+        assert!(
+            run.ramped.coeffs == run.jumped.coeffs,
+            "the block must end solved at the new cutoff"
+        );
+    }
+
+    /// A NaN in a raw cell never reaches the filter state — not even in the
+    /// block where another control moves and forces a re-solve, which is the
+    /// case a threshold comparison alone lets through. The filter keeps
+    /// running at the last good cutoff, and picks up the next finite write.
+    ///
+    /// Mutation: reading the cutoff cell raw in `read_controls` (no
+    /// `LastGood`) fails the second assertion — the NaN reaches the solve and
+    /// the output goes NaN for good.
+    #[test]
+    fn a_nan_in_a_raw_cell_never_reaches_the_state() {
+        use crate::test_support::{noise, process_block};
+        let x = noise(31, 64);
+        let mut f = SvfFilterNode::<f64>::new(SvfType::LowPass, 800.0, 0.7);
+        f.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        process_block(&mut f, &[&x]);
+        f.frequency()
+            .store(f32::NAN, std::sync::atomic::Ordering::Release);
+        let held = process_block(&mut f, &[&x]);
+        assert!(held[0].iter().all(|s| s.is_finite()), "a NaN alone");
+        f.set_q(3.0);
+        let moved = process_block(&mut f, &[&x]);
+        assert!(
+            moved[0].iter().all(|s| s.is_finite()),
+            "a NaN with another control moving in the same block"
+        );
+        assert_eq!(
+            f.coeffs.last_freq,
+            Hz(800.0),
+            "held at the last good cutoff"
+        );
+        f.set_frequency(2_000.0);
+        process_block(&mut f, &[&x]);
+        assert_eq!(
+            f.coeffs.last_freq,
+            Hz(2_000.0),
+            "and back on a finite write"
+        );
     }
 }

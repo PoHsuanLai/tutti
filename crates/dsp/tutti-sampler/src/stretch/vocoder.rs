@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use super::buffers::{OverlapAdd, SampleFifo};
+use super::fft::{inverse_fft, real_fft, Complex32};
 #[allow(
     unused_imports,
     reason = "`Bank` is referenced only by the intra-doc link on `Unit::clone` below; rustdoc needs the name in scope to resolve it"
 )]
 use super::Bank;
 use tutti_analysis::StftGeometry;
-use tutti_core::{inverse_fft, real_fft, Complex32, Radians};
+use tutti_core::Radians;
 
 /// One channel of phase-vocoder state.
 ///

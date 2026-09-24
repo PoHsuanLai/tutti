@@ -282,8 +282,6 @@ pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 // that had a caller. They are `tutti_node`'s to add back if one appears.
 pub use tutti_node::{Real, Sample, F32, F64};
 
-pub use fundsp::fft::{inverse_fft, real_fft};
-pub use fundsp::math::Complex32;
 pub use fundsp::prelude::{shared, Shared};
 // `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
 // lives in fundsp's `read` module, which only exists once a codec is on. Gating

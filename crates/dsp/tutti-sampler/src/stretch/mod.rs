@@ -239,9 +239,8 @@ impl Bank {
 /// Two invariants hold for every instance, and both are enforced in `new`
 /// rather than argued about at the use site:
 ///
-/// - **A power of two between 2 and 32768**, because
-///   [`real_fft`](tutti_core::real_fft) dispatches on exactly those lengths and
-///   panics otherwise.
+/// - **A power of two between 4 and 32768**, because `real_fft` (the private
+///   `fft` module) dispatches on exactly those lengths and panics otherwise.
 /// - **Divisible by 4**, so [`hop`](Self::hop) is `size / 4` exactly — 75%
 ///   overlap, the minimum Hann² constant-overlap-add requires. Any power of two
 ///   ≥ 4 satisfies this; it is stated because the hop, not the window, is what
@@ -314,6 +313,7 @@ impl std::fmt::Display for FftSize {
 // the phase-vocoder DSP over it, and `unit` is the public filter that owns one
 // vocoder per channel.
 mod buffers;
+mod fft;
 mod unit;
 mod vocoder;
 

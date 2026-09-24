@@ -240,4 +240,50 @@ mod tests {
             }
         }
     }
+
+    /// The id follows the audio width, never the port count: a mono node with
+    /// param ports is still the mono shape, and a stereo one the wide shape.
+    ///
+    /// Mutation: keying `get_id` on `self.inputs() == 1` (which counts the
+    /// ports) fails every "mono, ported" case.
+    #[test]
+    fn get_id_follows_the_audio_width_not_the_port_count() {
+        use crate::node_id::{
+            DELAY_LINE_ID, LADDER_FILTER_ID, STEREO_DELAY_LINE_ID, SVF_FILTER_ID,
+        };
+        for (w, ported) in [(1usize, false), (1, true), (2, false), (2, true)] {
+            let layout = ChannelLayout::from(w);
+            let svf = SvfFilterNode::<f64>::with_param_inputs(
+                layout,
+                SvfType::LowPass,
+                1e3,
+                0.7,
+                ported,
+                ported,
+            );
+            let ladder = LadderFilterNode::<f64>::with_param_inputs(
+                layout,
+                LadderType::LP24,
+                1e3,
+                0.3,
+                ported,
+                ported,
+                ported,
+            );
+            let delay = DelayLineNode::with_param_inputs(layout, 0.1, 0.01, 0.3, ported, ported);
+            let mono = w == 1;
+            let what = format!("width {w}, ported {ported}");
+            assert_eq!(svf.get_id() == SVF_FILTER_ID, mono, "svf {what}");
+            assert_eq!(ladder.get_id() == LADDER_FILTER_ID, mono, "ladder {what}");
+            assert_eq!(
+                delay.get_id(),
+                if mono {
+                    DELAY_LINE_ID
+                } else {
+                    STEREO_DELAY_LINE_ID
+                },
+                "delay {what}"
+            );
+        }
+    }
 }

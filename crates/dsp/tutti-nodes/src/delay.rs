@@ -393,14 +393,20 @@ impl DelayLineNode {
     ///
     /// # Panics
     ///
-    /// If `matrix.len()` is not `N²` — a build-time shape error, never an
-    /// audio-thread one.
+    /// If `matrix.len()` is not `N²`, or any entry is not finite — build-time
+    /// errors, never audio-thread ones. A NaN or infinite weight would survive
+    /// the row scaling (`inf / inf` is NaN) and poison the loop it feeds
+    /// forever, so it is refused here rather than rendered.
     pub fn with_cross_feedback_matrix(mut self, matrix: &[f32]) -> Self {
         let n = self.width();
         assert_eq!(
             matrix.len(),
             n * n,
             "a {n}-channel delay takes a {n}x{n} cross-feedback matrix"
+        );
+        assert!(
+            matrix.iter().all(|w| w.is_finite()),
+            "cross-feedback weights must be finite: {matrix:?}"
         );
         for (row_out, row_in) in self.cross_routing.chunks_mut(n).zip(matrix.chunks(n)) {
             let sum: f32 = row_in.iter().map(|w| w.abs()).sum();
@@ -793,7 +799,9 @@ impl AudioUnit for DelayLineNode {
     }
 
     fn get_id(&self) -> u64 {
-        if self.inputs() == 1 {
+        // Keyed on the audio width, not `inputs()`: param ports are not a
+        // channel, so a mono delay with a feedback port is still mono.
+        if self.width() == 1 {
             crate::node_id::DELAY_LINE_ID
         } else {
             crate::node_id::STEREO_DELAY_LINE_ID
@@ -1350,5 +1358,16 @@ mod tests {
             peak.is_finite() && peak < 4.0,
             "the loop ran away: peak {peak}"
         );
+    }
+
+    /// A non-finite routing weight is refused at build time.
+    ///
+    /// Mutation: dropping the finiteness assert lets this build (the node
+    /// would then render NaN forever) and fails the `should_panic`.
+    #[test]
+    #[should_panic(expected = "must be finite")]
+    fn a_non_finite_cross_feedback_weight_is_refused() {
+        let _ = DelayLineNode::with_channels(ChannelLayout::STEREO, 0.1, 0.01, 0.3)
+            .with_cross_feedback_matrix(&[0.0, f32::NAN, 1.0, 0.0]);
     }
 }

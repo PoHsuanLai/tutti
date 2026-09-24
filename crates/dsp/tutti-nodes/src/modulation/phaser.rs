@@ -112,7 +112,13 @@ pub struct PhaserNode {
     lfo: LfoDrive,
     mix: LinearModMix,
     sample_rate: SampleRate,
+    /// The sweep range in effect: `authored_max_hz` clamped to this rate's
+    /// ceiling.
     range: FrequencyRange,
+    /// The sweep top as it was asked for, before the rate's ceiling clamped
+    /// it. Kept so a rate that rises again restores it — clamping `range`
+    /// in place would ratchet the top down for good after one low rate.
+    authored_max_hz: Hz,
     /// `None` until the first block (and after `reset`).
     last: Option<PhaserControls>,
 }
@@ -161,6 +167,7 @@ impl PhaserNode {
             mix: LinearModMix::new(0.5, 0.5, 0.5),
             sample_rate: SampleRate::DEFAULT,
             range: FrequencyRange::new(200.0, 4000.0),
+            authored_max_hz: Hz(4000.0),
             last: None,
         }
     }
@@ -248,7 +255,8 @@ impl PhaserNode {
     /// `&mut self`, so it cannot reach a node already live in the graph.
     pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
         self.range.min_hz = Hz(min_hz.into().get().max(20.0));
-        self.range.max_hz = max_hz.into().min(self.range_ceiling());
+        self.authored_max_hz = max_hz.into();
+        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
     }
 
     /// The highest all-pass centre this rate allows.
@@ -369,7 +377,9 @@ impl AudioUnit for PhaserNode {
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate;
-        self.range.max_hz = self.range.max_hz.min(self.range_ceiling());
+        // Re-clamped from what was asked for, not from the last clamp, so a
+        // rate that rises again restores the authored top.
+        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
         // The interpolation start was solved at the old rate.
         self.last = None;
     }
@@ -447,6 +457,7 @@ impl Clone for PhaserNode {
             mix: self.mix.clone(),
             sample_rate: self.sample_rate,
             range: self.range,
+            authored_max_hz: self.authored_max_hz,
             last: self.last,
         }
     }
@@ -614,5 +625,23 @@ mod tests {
         }
         assert_ne!(out[0], out[1], "a quarter-cycle offset sweeps elsewhere");
         assert_eq!(out[0], out[2], "a full-cycle offset wraps to none");
+    }
+
+    /// A low rate clamps the sweep top to its ceiling; a higher rate after it
+    /// restores what was asked for.
+    ///
+    /// Mutation: re-clamping from `self.range.max_hz` (the old in-place clamp)
+    /// leaves the top at 3600 Hz after the rate rises and fails.
+    #[test]
+    fn a_rising_rate_restores_the_authored_sweep_top() {
+        let mut phaser = PhaserNode::new(4);
+        phaser.set_sample_rate(tutti_core::SampleRate(8_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
+        phaser.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(4_000.0));
+        phaser.set_frequency_range(300.0, 30_000.0);
+        assert_eq!(phaser.range.max_hz, Hz(21_600.0));
+        phaser.set_sample_rate(tutti_core::SampleRate(96_000.0));
+        assert_eq!(phaser.range.max_hz, Hz(30_000.0));
     }
 }

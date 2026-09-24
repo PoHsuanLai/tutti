@@ -57,6 +57,17 @@ use crate::SpatialTarget;
 /// `VbapPanner::solve_gains` and
 /// `tests/vbap_energy_sweep.rs`.
 ///
+/// **The law holds at block edges, not strictly inside a moving block.** The
+/// gains are solved once per block, at its last frame, and ramped *linearly*
+/// from the previous block's solve — a chord between two unit-energy vectors,
+/// not the arc between them — so while the source moves, the frames inside a
+/// block sit slightly below unit energy (by `1 - cos(Δ/2)` for a gain vector
+/// turning through `Δ` in one block; a 64-frame block at the 50 ms de-zipper
+/// keeps `Δ` to a few degrees, a dip of well under 0.1 dB). A held source is
+/// exact everywhere. A native-graph block larger than 64 frames widens `Δ`
+/// and so deepens the dip: whoever grows the block must revisit this — ramp
+/// in sub-blocks, or renormalise the ramped vector.
+///
 /// Note that LFE is not one of the gains: the panner never feeds it
 /// ([`build_vbap_mix`](super::build_vbap_mix) sends it a separate low-passed
 /// feed), so it reads zero and is outside the law above.
@@ -109,6 +120,11 @@ impl Clone for VbapPannerNode {
         let spread = self.spread.load();
         new_panner.set_position(azimuth, elevation);
         new_panner.set_spread(spread);
+        // The fresh panner's smoother is built at 48 kHz; without this a clone
+        // of a 96 kHz node ran its 50 ms de-zipper in 25 ms until someone
+        // called `set_sample_rate` again — which an offline render forked from
+        // a live graph never does.
+        new_panner.set_sample_rate(self.sample_rate);
 
         Self {
             panner: new_panner,
@@ -724,5 +740,26 @@ mod tests {
             "the original did not see the clone's width: {}",
             panner.width().get()
         );
+    }
+
+    /// A clone keeps the original's sample rate, so its de-zipper ramp runs at
+    /// the same speed: two fresh nodes at 96 kHz — the original and its clone —
+    /// sweep to a new bearing identically.
+    ///
+    /// Mutation: dropping `new_panner.set_sample_rate(self.sample_rate)` from
+    /// `Clone` leaves the clone's smoother at 48 kHz (the ramp twice as fast)
+    /// and fails.
+    #[test]
+    fn a_clone_ramps_at_the_originals_sample_rate() {
+        let mut original = VbapPannerNode::stereo().unwrap();
+        original.set_sample_rate(SampleRate(96_000.0));
+        let mut clone = original.clone();
+        original.set_position(Azimuth(60.0), Elevation::LEVEL);
+        let (mut a, mut b) = ([0.0f32; 2], [0.0f32; 2]);
+        for i in 0..2_000 {
+            original.tick(&[1.0, 1.0], &mut a);
+            clone.tick(&[1.0, 1.0], &mut b);
+            assert_eq!(a, b, "frame {i}: the clone's ramp diverged");
+        }
     }
 }

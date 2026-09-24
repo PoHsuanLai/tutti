@@ -15,6 +15,10 @@ use crate::ramp::{self, Ramp};
 
 /// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
+///
+/// A NaN compares as *unchanged* against every threshold (`|NaN - last| > eps`
+/// is false), so a NaN written to a raw cell is held off only until another
+/// control moves — see the raw-cell accessors' docs.
 const FREQ_EPS: f32 = 0.01;
 const Q_EPS: f32 = 0.0001;
 const GAIN_EPS: f32 = 0.01;
@@ -403,6 +407,13 @@ impl<F: Real> SvfFilterNode<F> {
     /// computation clamps to `1.0..=0.998 * Nyquist` regardless, since `tan`
     /// diverges at Nyquist. **A present cutoff param-input port overrides
     /// it.** Shared across clones.
+    ///
+    /// **Write a finite value.** A NaN compares as *unchanged* against the
+    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
+    /// ignored and the filter holds its last coefficients. But if another
+    /// control moves in the same block, the NaN reaches the coefficient solve
+    /// and poisons the filter state until `reset`. The setters cannot store a
+    /// NaN cutoff (`max` drops it); the raw cell can.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
@@ -413,6 +424,13 @@ impl<F: Real> SvfFilterNode<F> {
     /// [`set_q`](Self::set_q)'s clamp; the coefficient computation floors the
     /// value at `0.01` to avoid a division blow-up. **A present Q param-input
     /// port overrides it.** Shared across clones.
+    ///
+    /// **Write a finite value.** A NaN compares as *unchanged* against the
+    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
+    /// ignored and the filter holds its last coefficients. But if another
+    /// control moves in the same block, the NaN reaches the coefficient solve
+    /// and poisons the filter state until `reset`. The setters cannot store a
+    /// NaN cutoff (`max` drops it); the raw cell can.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.q.as_atomic()
     }
@@ -421,6 +439,13 @@ impl<F: Real> SvfFilterNode<F> {
     ///
     /// Always read from the atomic — there is no gain param-input port. Inert
     /// on the non-gain filter types.
+    ///
+    /// **Write a finite value.** A NaN compares as *unchanged* against the
+    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
+    /// ignored and the filter holds its last coefficients. But if another
+    /// control moves in the same block, the NaN reaches the coefficient solve
+    /// and poisons the filter state until `reset`. The setters cannot store a
+    /// NaN cutoff (`max` drops it); the raw cell can.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.gain_db.as_atomic()
     }
@@ -660,9 +685,11 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        // The mono shape keeps the mono id it always had; every other shape the
-        // one the wide twin carried. Only the render hash reads it.
-        if self.inputs() == 1 {
+        // Keyed on the audio width, not `inputs()`: param ports are not a
+        // channel, so a mono filter with a cutoff port is still the mono shape.
+        // Width 1 keeps the id it always had, every other width the one the
+        // wide twin carried. Only the render hash reads it.
+        if self.width() == 1 {
             crate::node_id::SVF_FILTER_ID
         } else {
             crate::node_id::SVF_FILTER_ID ^ 0xDA02
@@ -1338,6 +1365,35 @@ mod tests {
         assert!(
             run.ramped.coeffs == run.jumped.coeffs,
             "the block must end solved at the new cutoff"
+        );
+    }
+
+    /// Pins what the raw-cell docs say about a NaN: alone it is held off (the
+    /// filter renders on at its last coefficients); once another control
+    /// moves, it reaches the solve and the output goes non-finite.
+    ///
+    /// This documents a hazard rather than guarding one — the cells are the
+    /// modulation fast path and are not sanitised per block. Mutation: making
+    /// `moved` report a change on NaN (`!(|d| <= eps)`) fails the first half.
+    #[test]
+    fn a_nan_in_a_raw_cell_is_held_off_until_another_control_moves() {
+        use crate::test_support::{noise, process_block};
+        let x = noise(31, 64);
+        let mut f = SvfFilterNode::<f64>::new(SvfType::LowPass, 800.0, 0.7);
+        f.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        process_block(&mut f, &[&x]);
+        f.frequency()
+            .store(f32::NAN, std::sync::atomic::Ordering::Release);
+        let held = process_block(&mut f, &[&x]);
+        assert!(
+            held[0].iter().all(|s| s.is_finite()),
+            "a NaN alone is held off"
+        );
+        f.set_q(3.0);
+        let moved = process_block(&mut f, &[&x]);
+        assert!(
+            moved[0].iter().any(|s| !s.is_finite()),
+            "with another control moving, the NaN reaches the solve"
         );
     }
 }

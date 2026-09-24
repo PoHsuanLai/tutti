@@ -18,6 +18,10 @@ use crate::ramp::{self, Ramp};
 
 /// Below these deltas a freq/resonance change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
+///
+/// A NaN compares as *unchanged* against every threshold (`|NaN - last| > eps`
+/// is false), so a NaN written to a raw cell is held off only until another
+/// control moves — see the raw-cell accessors' docs.
 const FREQ_EPS: f32 = 0.01;
 const RES_EPS: f32 = 0.0001;
 
@@ -337,6 +341,13 @@ impl<F: Real> LadderFilterNode<F> {
     /// Read once per block; the coefficient computation clamps to
     /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. **A present
     /// cutoff param-input port overrides it.** Shared across clones.
+    ///
+    /// **Write a finite value.** A NaN compares as *unchanged* against the
+    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
+    /// ignored and the filter holds its last coefficients. But if another
+    /// control moves in the same block, the NaN reaches the coefficient solve
+    /// and poisons the filter state until `reset`. The setters cannot store a
+    /// NaN cutoff (`max` drops it); the raw cell can.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
@@ -347,6 +358,13 @@ impl<F: Real> LadderFilterNode<F> {
     /// self-oscillation. The computation clamps to that range regardless of
     /// what is written here. Read once per block. **A present Q param-input
     /// port overrides it.**
+    ///
+    /// **Write a finite value.** A NaN compares as *unchanged* against the
+    /// recompute threshold (`|NaN - last| > eps` is false), so on its own it is
+    /// ignored and the filter holds its last coefficients. But if another
+    /// control moves in the same block, the NaN reaches the coefficient solve
+    /// and poisons the filter state until `reset`. The setters cannot store a
+    /// NaN cutoff (`max` drops it); the raw cell can.
     pub fn resonance(&self) -> Arc<AtomicF32> {
         self.resonance.as_atomic()
     }
@@ -632,8 +650,10 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        // The mono shape keeps the mono id; every other shape the wide twin's.
-        if self.inputs() == 1 {
+        // Keyed on the audio width, not `inputs()` (param ports are not a
+        // channel): width 1 keeps the mono id, every other width the wide
+        // twin's.
+        if self.width() == 1 {
             crate::node_id::LADDER_FILTER_ID
         } else {
             crate::node_id::LADDER_FILTER_ID ^ 0xDA02

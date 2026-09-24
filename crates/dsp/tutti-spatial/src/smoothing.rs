@@ -80,8 +80,9 @@ impl ExponentialSmoother {
     ///
     /// This is the whole of a smoother's runtime state, so seeding it at the
     /// current target is what "has not processed any data" means here — see
-    /// [`AngleSmoother::reset_to_target`]. Seeding at `0.0` instead would leave
-    /// the next block ramping in from front-centre.
+    /// [`AngleSmoother::reset_to_target`](crate::AngleSmoother::reset_to_target).
+    /// Seeding at `0.0` instead would leave the next block ramping in from
+    /// front-centre.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
     /// degrees of bearing under [`process_angle`](Self::process_angle), degrees

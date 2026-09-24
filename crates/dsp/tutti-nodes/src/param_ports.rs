@@ -20,8 +20,8 @@ use tutti_core::Real;
 use tutti_core::UnitParam;
 
 use crate::{
-    CompressorNode, DistortionNode, GateNode, LimiterNode, StereoDelayLineNode,
-    StereoLadderFilterNode, StereoSvfFilterNode,
+    CompressorNode, DelayLineNode, DistortionNode, GateNode, LadderFilterNode, LimiterNode,
+    SvfFilterNode,
 };
 
 /// A node that may expose audio-rate input ports for its scalar parameters.
@@ -49,7 +49,7 @@ pub trait ParamPorts {
     fn param_port(&self, param: UnitParam) -> Option<usize>;
 }
 
-impl<F: Real> ParamPorts for StereoSvfFilterNode<F> {
+impl<F: Real> ParamPorts for SvfFilterNode<F> {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Cutoff => self.cutoff_port(),
@@ -59,7 +59,7 @@ impl<F: Real> ParamPorts for StereoSvfFilterNode<F> {
     }
 }
 
-impl<F: Real> ParamPorts for StereoLadderFilterNode<F> {
+impl<F: Real> ParamPorts for LadderFilterNode<F> {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Cutoff => self.cutoff_port(),
@@ -70,7 +70,7 @@ impl<F: Real> ParamPorts for StereoLadderFilterNode<F> {
     }
 }
 
-impl ParamPorts for StereoDelayLineNode {
+impl ParamPorts for DelayLineNode {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Feedback => self.feedback_port(),

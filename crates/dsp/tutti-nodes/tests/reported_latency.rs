@@ -10,9 +10,10 @@
 //! whose DSP drifted away from it.
 
 use tutti_core::dsp::{Net, Source};
+use tutti_core::ChannelLayout;
 use tutti_core::{latency, AudioUnit, BufferVec, SampleRate, Signal, SignalFrame};
 use tutti_nodes::testing::Through;
-use tutti_nodes::{ChorusNode, DelayLineNode, FlangerNode, StereoDelayLineNode};
+use tutti_nodes::{DelayLineNode, ModDelayNode};
 
 const SR: SampleRate = SampleRate(48_000.0);
 /// `BufferVec`'s block length.
@@ -104,10 +105,10 @@ fn delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
 }
 
 /// Mutation: restoring `input.at(c).delay(d)` in
-/// `StereoDelayLineNode::route` fails the `latency()` assertion.
+/// the width-2 `DelayLineNode::route` fails the `latency()` assertion.
 #[test]
 fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
-    let mut node = StereoDelayLineNode::new(1.0_f32, 0.25_f32, 0.5_f32, 0.0_f32);
+    let mut node = DelayLineNode::stereo(1.0_f32, 0.25_f32, 0.5_f32, 0.0_f32);
     node.set_sample_rate(SR);
     node.set_mix(0.5_f32);
 
@@ -127,20 +128,20 @@ fn stereo_delay_line_reports_zero_latency_and_its_dry_path_is_immediate() {
     );
 }
 
-/// Chorus and flanger share `ModulatedDelay`; their base delay is the sound.
+/// Chorus and flanger are one `ModDelayNode`; their base delay is the sound.
 ///
 /// Mutation: restoring `.delay(delay_samples)` in either `route` fails the
 /// matching `latency()` assertion (about 480 samples for the chorus's 10 ms);
 /// restoring it on one channel only fails the per-output assertion, which
 /// `latency()`'s minimum cannot see.
 /// Mutation: blending the delayed signal as the dry half in
-/// `ModulatedDelay::process_sample` fails the frame-0 assertion.
+/// `ModDelayNode::render` fails the frame-0 assertion.
 #[test]
 fn chorus_and_flanger_report_zero_latency_and_their_dry_path_is_immediate() {
-    let mut chorus = ChorusNode::new();
+    let mut chorus = ModDelayNode::chorus(ChannelLayout::STEREO);
     chorus.set_sample_rate(SR);
     chorus.set_mix(0.5_f32);
-    let mut flanger = FlangerNode::new();
+    let mut flanger = ModDelayNode::flanger(ChannelLayout::STEREO);
     flanger.set_sample_rate(SR);
     flanger.set_mix(0.5_f32);
 
@@ -185,7 +186,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     let mut echo = DelayLineNode::new(1.0_f32, 0.5_f32, 0.3_f32);
     echo.set_sample_rate(SR);
     echo.set_mix(0.5_f32);
-    let mut chorus = ChorusNode::new();
+    let mut chorus = ModDelayNode::chorus(ChannelLayout::STEREO);
     chorus.set_sample_rate(SR);
     let echo = net.add(echo);
     let chorus = net.add(chorus);

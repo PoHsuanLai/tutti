@@ -1,11 +1,4 @@
-//! Shared modulated-delay core for chorus and flanger.
-//!
-//! The two effects are structurally identical: two delay lines modulated by
-//! an LFO with some feedback and a wet/dry mix. They differ only in three
-//! numeric constants (base delay, max delay, L/R phase offset) and in their
-//! factory defaults — captured in [`ModulatedDelayConfig`].
-
-use crate::delay::{DelayLine, InterpolationMode, StereoPair};
+use super::delay::{DelayLine, InterpolationMode, StereoPair};
 use tutti_core::{Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds};
 
 use super::shared::{LfoDrive, TimeModMix};

@@ -8,13 +8,14 @@ mixing and automation.
 `AudioUnit` implementations, plus the `set(UnitParam)` surface a host drives them
 through. Every node here goes into a `Net`, gets wired, and renders.
 
-- **Filters** — `SvfFilterNode`, `LadderFilterNode`, `EqBandNode`, and their
-  stereo pairs.
-- **Delay** — `DelayLineNode`, `StereoDelayLineNode`, over the inner `DelayLine`.
+- **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
+  coefficient solve shared across the channels) and `EqBandNode`.
+- **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
+  matrix), over the inner `DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
   `LimiterNode`.
-- **Modulation effects** — `ChorusNode`, `FlangerNode`, `PhaserNode`,
-  `StereoPhaserNode`.
+- **Modulation effects** — `ModDelayNode` (chorus and flanger are its two
+  `ModDelayConfig` presets) and `PhaserNode`, both any width.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the per-sample
   adapter over a pure `tutti_mod::Modulator`.

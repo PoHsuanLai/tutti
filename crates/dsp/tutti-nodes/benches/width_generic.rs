@@ -17,10 +17,9 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::{AudioUnit, BufferVec, SampleRate};
+use tutti_core::{AudioUnit, BufferVec, ChannelLayout, SampleRate};
 use tutti_nodes::{
-    ChorusNode, LadderType, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
-    StereoSvfFilterNode, SvfType,
+    DelayLineNode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
 
 const BLOCK: usize = 64;
@@ -72,11 +71,16 @@ fn run(
 
 fn svf(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = StereoSvfFilterNode::<f64>::with_channels(w, SvfType::LowPass, 1_000.0, 0.707);
+        let node = SvfFilterNode::<f64>::with_channels(
+            ChannelLayout::from(w),
+            SvfType::LowPass,
+            1_000.0,
+            0.707,
+        );
         run(c, "svf", w, Box::new(node), noise_block(w));
 
-        let node = StereoSvfFilterNode::<f64>::with_param_inputs(
-            w,
+        let node = SvfFilterNode::<f64>::with_param_inputs(
+            ChannelLayout::from(w),
             SvfType::LowPass,
             1_000.0,
             0.707,
@@ -91,30 +95,45 @@ fn svf(c: &mut Criterion) {
 
 fn ladder(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = StereoLadderFilterNode::<f64>::with_channels(w, LadderType::LP24, 1_000.0, 0.5);
+        let node = LadderFilterNode::<f64>::with_channels(
+            ChannelLayout::from(w),
+            LadderType::LP24,
+            1_000.0,
+            0.5,
+        );
         run(c, "ladder", w, Box::new(node), noise_block(w));
     }
 }
 
 fn delay(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = StereoDelayLineNode::with_channels(w, 1.0, 0.25, 0.4);
+        let node = DelayLineNode::with_channels(ChannelLayout::from(w), 1.0, 0.25, 0.4);
         run(c, "delay", w, Box::new(node), noise_block(w));
     }
 }
 
 fn mod_delay(c: &mut Criterion) {
-    run(c, "chorus", 2, Box::new(ChorusNode::new()), noise_block(2));
+    for w in [2usize, 6] {
+        run(
+            c,
+            "chorus",
+            w,
+            Box::new(ModDelayNode::chorus(ChannelLayout::from(w))),
+            noise_block(w),
+        );
+    }
 }
 
 fn phaser(c: &mut Criterion) {
-    run(
-        c,
-        "phaser",
-        2,
-        Box::new(StereoPhaserNode::new(6)),
-        noise_block(2),
-    );
+    for w in [2usize, 6] {
+        run(
+            c,
+            "phaser",
+            w,
+            Box::new(PhaserNode::with_channels(ChannelLayout::from(w), 6)),
+            noise_block(w),
+        );
+    }
 }
 
 criterion_group!(benches, svf, ladder, delay, mod_delay, phaser);

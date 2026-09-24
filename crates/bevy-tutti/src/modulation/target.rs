@@ -2,7 +2,7 @@
 //!
 //! This is the one step the adapter cannot do generically, and the reason is
 //! worth stating: [`ModParams`] is implemented on concrete
-//! node types (`Compressor`, `ChorusNode`, `PolySynth`, …), and reaching one
+//! node types (`Compressor`, `ModDelayNode`, `PolySynth`, …), and reaching one
 //! through the graph needs [`node_as::<T>`](tutti_core::dsp::Net::node_as) —
 //! which takes a concrete `T`. There is no `&dyn ModParams` to recover from a
 //! `&dyn AudioUnit`, so no amount of Bevy plumbing can dispatch it.
@@ -24,7 +24,7 @@
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
 //!     .register::<tutti_nodes::CompressorNode>()
-//!     .register::<tutti_nodes::ChorusNode>();
+//!     .register::<tutti_nodes::ModDelayNode>();
 //! ```
 
 use bevy_ecs::prelude::*;

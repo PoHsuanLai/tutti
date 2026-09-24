@@ -60,10 +60,9 @@
 //!
 //! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
 //! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`] — are exempt and say
-//! nothing, because a wrong rate has nothing to skew. That is also why
-//! [`ChorusNode`] and [`FlangerNode`] can still implement [`Default`] while
-//! being rate-dependent: the placeholder is what makes a no-argument
-//! constructor representable at all.
+//! nothing, because a wrong rate has nothing to skew. The placeholder is also
+//! what makes a rate-free constructor representable at all:
+//! [`ModDelayNode::chorus`] takes only a width, yet builds delay lines.
 //!
 //! The quick start, the mechanism table, the full silent-failure ladder and the
 //! features are in the crate README, included below.
@@ -78,6 +77,15 @@
 // `tutti-spatial` with the panners.
 
 mod node_id;
+
+// Per-block control reads and the ramps that keep them from stepping.
+mod ramp;
+
+// The pre-merge mono/stereo twins, compiled only for the side-by-side tests.
+#[cfg(test)]
+mod legacy;
+#[cfg(test)]
+mod test_support;
 
 pub use tutti_core::{
     Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
@@ -101,7 +109,7 @@ mod lfo;
 pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
 mod delay;
-pub use delay::{DelayLine, DelayLineNode, InterpolationMode, StereoDelayLineNode, StereoPair};
+pub use delay::{DelayLine, DelayLineNode, InterpolationMode, StereoPair};
 
 mod distortion;
 pub use distortion::{DistortionNode, ShapeKind};
@@ -109,8 +117,7 @@ pub use distortion::{DistortionNode, ShapeKind};
 mod filter;
 pub use filter::{
     compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
-    LadderFilterNode, LadderType, StereoLadderFilterNode, StereoSvfFilterNode, SvfCoeffs,
-    SvfFilterNode, SvfType,
+    LadderFilterNode, LadderType, SvfCoeffs, SvfFilterNode, SvfType,
 };
 
 mod dynamics;
@@ -162,7 +169,7 @@ pub use strip::BusStripNode;
 // arrow points geometry → DSP and nothing here names it.
 
 mod modulation;
-pub use modulation::{ChorusNode, FlangerNode, PhaserNode, StereoPhaserNode};
+pub use modulation::{ModDelayConfig, ModDelayNode, PhaserNode};
 
 #[cfg(feature = "convolution")]
 mod convolution;

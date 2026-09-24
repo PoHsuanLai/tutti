@@ -15,8 +15,11 @@
 //! [`frames`](Io::frames) long and that `frames` is at most the
 //! [`MaxBlock`] the node was prepared with. A node therefore never clamps.
 
-use crate::event::{EventWriter, SortedEvents};
+use tutti_types::Samples;
+
+use crate::event::{EventWriter, SortedEvents, SubBlocks};
 use crate::node::{ConstantMask, InPlaceMask, MaxBlock, SilenceMask};
+use crate::time::Offset;
 
 /// What a port carries.
 ///
@@ -232,6 +235,37 @@ impl<'a> Io<'a> {
     /// The writer for event output port `p`.
     pub fn event_out(&mut self, p: usize) -> &mut EventWriter<'a> {
         &mut self.events_out[p]
+    }
+
+    /// The block split at event input port `p`'s offsets: `(range, events)`
+    /// chunks that tile the block, each carrying exactly the events at its
+    /// first frame (see [`SubBlocks`]).
+    ///
+    /// The shape a sample-accurate node is written in — apply the chunk's
+    /// events, then render its range — so honouring offsets is the loop's
+    /// structure rather than a check the node has to remember. Borrows the
+    /// events, not the `Io`, so the loop body can write the outputs:
+    ///
+    /// ```
+    /// use tutti_graph::{Io, EventKind};
+    /// fn render(mut io: Io<'_>, level: &mut f32) {
+    ///     for (range, events) in io.sub_blocks(0) {
+    ///         for e in events {
+    ///             if let EventKind::Midi(_) = e.kind {
+    ///                 *level = 1.0 - *level; // toggle on every event
+    ///             }
+    ///         }
+    ///         io.output(0)[range].fill(*level);
+    ///     }
+    /// }
+    /// ```
+    pub fn sub_blocks(&self, p: usize) -> SubBlocks<'a> {
+        self.events_in[p].sub_blocks(self.frames)
+    }
+
+    /// Frame `index` of this block as an [`Offset`], when it is inside it.
+    pub fn offset(&self, index: usize) -> Option<Offset> {
+        Offset::new(index, Samples(self.frames))
     }
 }
 

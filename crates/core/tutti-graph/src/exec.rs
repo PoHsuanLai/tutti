@@ -108,7 +108,7 @@ use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_types::{AudioThread, NodeKey, Samples, ScopedNoDenormals, Tail};
+use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
@@ -313,7 +313,7 @@ pub struct Executor {
     plan: Option<Arc<Plan>>,
     store: Vec<Option<Unit>>,
     state: State,
-    frame: u64,
+    frame: Frame,
     dropped: u64,
 }
 
@@ -340,7 +340,7 @@ impl Executor {
             plan: None,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
-            frame: 0,
+            frame: Frame::ZERO,
             dropped: 0,
         }
     }
@@ -356,7 +356,7 @@ impl Executor {
     }
 
     /// Frames rendered so far.
-    pub fn frame(&self) -> u64 {
+    pub fn frame(&self) -> Frame {
         self.frame
     }
 
@@ -639,7 +639,7 @@ impl Executor {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
-            *frame += frames as u64;
+            *frame += Samples(frames);
             return;
         };
         let State {
@@ -882,7 +882,7 @@ impl Executor {
         for f in event_fb.iter_mut().flatten() {
             f.advance(frames);
         }
-        *frame += frames as u64;
+        *frame += Samples(frames);
     }
 }
 
@@ -986,7 +986,7 @@ fn node_op(
         // block's own events, ties to the flushed ones (they are older).
         for inj in st.inject.iter_mut().filter(|i| i.live && i.unit == unit) {
             for e in &mut inj.events {
-                e.offset = e.offset.min(frames as u32 - 1);
+                e.offset = e.offset.clamp_to(frames);
             }
             let slot = ein[inj.port as usize];
             inj.merged.clear();

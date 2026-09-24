@@ -45,18 +45,14 @@ impl Node for Emitter {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let start = cx.env.frame;
         if self.stop.load(Ordering::Relaxed) {
             return Status::Silent;
         }
-        for i in 0..io.frames() as u64 {
-            let f = start + i;
+        for at in cx.env.offsets() {
+            let f = cx.env.frame_at(at).get();
             if f % self.period == u64::from(self.id) % self.period {
                 io.event_out(0)
-                    .push(Event::midi(
-                        i as u32,
-                        [self.id, f as u32, (f >> 32) as u32, 0],
-                    ))
+                    .push(Event::midi(at, [self.id, f as u32, (f >> 32) as u32, 0]))
                     .expect("capacity is sized for the test's rate");
                 self.ledger.lock().unwrap().push((self.id, f));
             }
@@ -87,7 +83,7 @@ impl Node for Recorder {
                     panic!("only MIDI is sent")
                 };
                 let emitted = u64::from(w[1]) | (u64::from(w[2]) << 32);
-                inbox.push((p as u16, w[0], emitted, cx.env.frame + u64::from(e.offset)));
+                inbox.push((p as u16, w[0], emitted, cx.env.frame_at(e.offset).get()));
             }
         }
         Status::Silent
@@ -515,14 +511,14 @@ impl Node for Clock {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let start = cx.env.frame;
+        let start = cx.env.frame.get();
         for (i, o) in io.output(0).iter_mut().enumerate() {
             *o = (start + i as u64) as f32;
         }
-        for i in 0..io.frames() {
-            let f = start + i as u64;
+        for at in cx.env.offsets() {
+            let f = cx.env.frame_at(at).get();
             io.event_out(0)
-                .push(Event::midi(i as u32, [0, f as u32, 0, 0]))
+                .push(Event::midi(at, [0, f as u32, 0, 0]))
                 .expect("one per frame fits");
         }
         Status::Modified
@@ -546,12 +542,10 @@ impl Node for Tap {
             let EventKind::Midi(Ump(w)) = e.kind else {
                 unreachable!()
             };
-            self.0.lock().unwrap().push((
-                0,
-                0,
-                u64::from(w[1]),
-                cx.env.frame + u64::from(e.offset),
-            ));
+            self.0
+                .lock()
+                .unwrap()
+                .push((0, 0, u64::from(w[1]), cx.env.frame_at(e.offset).get()));
         }
         io.channel(0).map(|x| x);
         Status::Modified

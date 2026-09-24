@@ -29,8 +29,15 @@
 //! - **[`MaxBlock`]** — obtainable only from [`Prepare`]; every [`Io`] is at
 //!   most that long, enforced where `Io` is built, so a node never clamps
 //!   (defect D4).
+//! - **[`Offset`] vs [`Frame`](tutti_types::Frame)** — an event carries a
+//!   position *inside its block*, which is a different type from an absolute
+//!   frame; the two convert only through the block's [`Env`]
+//!   ([`offset_of`](Env::offset_of), [`frame_at`](Env::frame_at)), so the
+//!   off-by-a-block bug does not compile (doc 013 §6, item 1).
 //! - **[`SortedEvents`]** — an event slice that is sorted and inside the
 //!   block by construction.
+//! - **[`Io::sub_blocks`]** — the block split at event offsets, so a node
+//!   written against it is sample-accurate by construction (item 4).
 //! - **[`ParamRamp`]** — built from a typed `ParamKey<U>` and read back as a
 //!   `U`; the raw `f32` in between is private.
 //! - **The commit box and the unit box**, both crate-private — everything
@@ -59,9 +66,9 @@
 //! node is handed is planar `f32`. `f64` is expected in three places, all
 //! outside the graph's buffers: **inside nodes** (filter state and
 //! coefficients, oscillator phase — a node converts at its edge), **time**
-//! ([`Env::frame`] is a `u64` count and the transport position a
-//! [`Beat`](tutti_types::Beat), which is `f64`; only the block-relative event
-//! offset is `u32`), and **the plugin boundary** (a plugin that processes in
+//! ([`Env::frame`] is a `u64` [`Frame`](tutti_types::Frame) and the transport
+//! position a [`Beat`](tutti_types::Beat), which is `f64`; only the
+//! block-relative [`Offset`] is `u32`), and **the plugin boundary** (a plugin that processes in
 //! double converts inside its node). If `f64` buffers are ever wanted between
 //! nodes, they come in as a port *format* on [`PortKind::Audio`], with the
 //! compiler inserting a conversion op at an edge whose ends disagree — which
@@ -117,18 +124,20 @@ mod node;
 mod plan;
 mod reference;
 mod spec;
+mod time;
 
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
 pub use editor::{CommitError, Editor};
 pub use event::{
-    Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents, Ump,
+    Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
+    SubBlocks, Ump,
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{
-    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Scratch,
-    Shape, SilenceMask, Status, Transport, MAX_PORTS,
+    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
+    Scratch, Shape, SilenceMask, Status, Transport, MAX_PORTS,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,
@@ -136,6 +145,7 @@ pub use plan::{
 };
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
+pub use time::{Due, Offset};
 
 /// Check `plan` against its op DAG: no slot shared by ops that may run
 /// concurrently, every read of the value it was meant to read, feedback read

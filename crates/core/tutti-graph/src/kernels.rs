@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 use tutti_types::Samples;
 
 use crate::event::Event;
+use crate::time::Offset;
 
 /// An audio delay line of fixed length.
 pub(crate) struct AudioRing {
@@ -200,10 +201,12 @@ impl EventFifo {
     /// keeps its length. Control side (allocates).
     pub(crate) fn flushed(&self) -> Vec<Event> {
         let first = self.q.front().map_or(0, |&(t, _)| t + self.len);
+        // Raw offsets: the spacing, not yet inside any block — the block
+        // that delivers them clamps them (`Offset::clamp_to`).
         self.q
             .iter()
             .map(|&(t, e)| Event {
-                offset: (t + self.len - first).min(u64::from(u32::MAX)) as u32,
+                offset: Offset::raw((t + self.len - first).min(u64::from(u32::MAX)) as u32),
                 ..e
             })
             .collect()
@@ -214,7 +217,7 @@ impl EventFifo {
         let mut dropped = 0;
         let start = self.clock;
         for e in input {
-            let item = (start + e.offset as u64, *e);
+            let item = (start + u64::from(e.offset.get()), *e);
             if self.q.len() < self.limit {
                 self.q.push_back(item);
             } else if !e.is_note_off() {
@@ -248,8 +251,9 @@ impl EventFifo {
                 break;
             }
             self.q.pop_front();
+            // `start <= … < end`: inside this block by the loop condition.
             out.push(Event {
-                offset: due.saturating_sub(start) as u32,
+                offset: Offset::raw(due.saturating_sub(start) as u32),
                 ..e
             });
         }
@@ -314,10 +318,10 @@ mod tests {
     fn fifo_delays_events_across_blocks() {
         let mut f = EventFifo::sized(Samples(6), 8, 8);
         let mut out = Vec::with_capacity(8);
-        f.run(&[Event::midi(2, [7, 0, 0, 0])], &mut out, 8);
+        f.run(&[Event::midi(Offset::raw(2), [7, 0, 0, 0])], &mut out, 8);
         assert!(out.is_empty(), "due at 8, which is the next block");
         f.run(&[], &mut out, 8);
-        assert_eq!(out, vec![Event::midi(0, [7, 0, 0, 0])]);
+        assert_eq!(out, vec![Event::midi(Offset::ZERO, [7, 0, 0, 0])]);
     }
 
     /// A feedback ring read before it is written delays by exactly its
@@ -349,7 +353,7 @@ mod tests {
         // 0x9 (on), note `tag`, velocity 100.
         let status = if off { 0x80 } else { 0x90 };
         Event::midi(
-            offset,
+            Offset::raw(offset),
             [
                 0x2000_0000 | (status << 16) | ((tag & 0x7f) << 8) | 100,
                 0,
@@ -391,7 +395,9 @@ mod tests {
     #[test]
     fn a_full_output_slot_delays_events_rather_than_dropping_them() {
         let mut f = EventFifo::sized(Samples(1), 16, 8);
-        let burst: Vec<Event> = (0..5).map(|i| Event::midi(0, [i, 0, 0, 0])).collect();
+        let burst: Vec<Event> = (0..5)
+            .map(|i| Event::midi(Offset::ZERO, [i, 0, 0, 0]))
+            .collect();
         f.push(&burst);
         let mut out = Vec::with_capacity(2);
         f.pop_due(&mut out, 8);
@@ -402,7 +408,10 @@ mod tests {
             out.clear();
             f.pop_due(&mut out, 8);
             f.advance(8);
-            assert!(out.iter().all(|e| e.offset == 0), "late events land at 0");
+            assert!(
+                out.iter().all(|e| e.offset == Offset::ZERO),
+                "late events land at 0"
+            );
             got.extend(out.iter().copied());
         }
         let tags: Vec<u32> = got

@@ -49,7 +49,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey, Samples, ScopedNoDenormals};
+use tutti_types::{Frame, Latency, NodeKey, Samples, ScopedNoDenormals};
 
 use crate::event::{Event, EventWriter, SortedEvents};
 use crate::io::Io;
@@ -58,6 +58,7 @@ use crate::node::{
 };
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
+use crate::time::Offset;
 
 struct RefFifo {
     pending: Vec<(u64, Event)>,
@@ -77,7 +78,7 @@ pub struct Reference {
     fb_audio: BTreeMap<(OutPort, u32, Samples), VecDeque<f32>>,
     fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
-    frame: u64,
+    frame: Frame,
 }
 
 impl Reference {
@@ -94,7 +95,7 @@ impl Reference {
             fb_audio: BTreeMap::new(),
             fb_event: BTreeMap::new(),
             inject: BTreeMap::new(),
-            frame: 0,
+            frame: Frame::ZERO,
         }
     }
 
@@ -332,7 +333,7 @@ impl Reference {
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
-            self.frame += frames as u64;
+            self.frame += Samples(frames);
             return;
         };
         let t = graph.topology();
@@ -409,11 +410,14 @@ impl Reference {
         }
         for ((_, from, _, _), f) in self.fb_event.iter_mut() {
             let start = f.clock;
-            f.pending
-                .extend(events[from].iter().map(|e| (start + e.offset as u64, *e)));
+            f.pending.extend(
+                events[from]
+                    .iter()
+                    .map(|e| (start + u64::from(e.offset.get()), *e)),
+            );
             f.clock += frames as u64;
         }
-        self.frame += frames as u64;
+        self.frame += Samples(frames);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -456,7 +460,7 @@ impl Reference {
             // Flushed events first: they are older than anything this block.
             let mut all: Vec<Event> = self.inject.remove(&at).unwrap_or_default();
             for e in &mut all {
-                e.offset = e.offset.min(frames as u32 - 1);
+                e.offset = e.offset.clamp_to(frames);
             }
             for e in graph.events().get(&at).map(Vec::as_slice).unwrap_or(&[]) {
                 match *e {
@@ -571,7 +575,7 @@ fn relative(f: &RefFifo) -> Vec<Event> {
     f.pending
         .iter()
         .map(|&(t, e)| Event {
-            offset: (t - first).min(u64::from(u32::MAX)) as u32,
+            offset: Offset::raw((t - first).min(u64::from(u32::MAX)) as u32),
             ..e
         })
         .collect()
@@ -590,7 +594,7 @@ fn fifo_due(f: &mut RefFifo, frames: usize) -> Vec<Event> {
     f.pending
         .drain(..due)
         .map(|(t, e)| Event {
-            offset: (t + f.len).saturating_sub(start) as u32,
+            offset: Offset::raw((t + f.len).saturating_sub(start) as u32),
             ..e
         })
         .collect()
@@ -599,8 +603,11 @@ fn fifo_due(f: &mut RefFifo, frames: usize) -> Vec<Event> {
 fn fifo_run(f: &mut RefFifo, input: &[Event], frames: usize) -> Vec<Event> {
     let start = f.clock;
     let end = start + frames as u64;
-    f.pending
-        .extend(input.iter().map(|e| (start + e.offset as u64, *e)));
+    f.pending.extend(
+        input
+            .iter()
+            .map(|e| (start + u64::from(e.offset.get()), *e)),
+    );
     let due = f
         .pending
         .iter()
@@ -610,7 +617,7 @@ fn fifo_run(f: &mut RefFifo, input: &[Event], frames: usize) -> Vec<Event> {
         .pending
         .drain(..due)
         .map(|(t, e)| Event {
-            offset: (t + f.len).saturating_sub(start) as u32,
+            offset: Offset::raw((t + f.len).saturating_sub(start) as u32),
             ..e
         })
         .collect();

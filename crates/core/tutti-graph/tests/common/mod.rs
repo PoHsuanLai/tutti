@@ -18,7 +18,7 @@ use tutti_graph::{
     compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
     Shapes, Status, Transport, Ump, ValidGraph,
 };
-use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 
 pub const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -107,7 +107,7 @@ pub struct TestNode {
     prev: f32,
     count: f32,
     state: f32,
-    pending: VecDeque<(u64, Event)>,
+    pending: VecDeque<(Frame, Event)>,
     calls: Arc<AtomicUsize>,
 }
 
@@ -235,13 +235,10 @@ impl Node for TestNode {
                 Status::Modified
             }
             Kind::Emitter { period, phase } => {
-                let start = cx.env.frame;
-                for i in 0..n as u64 {
-                    let f = start + i;
+                for at in cx.env.offsets() {
+                    let f = cx.env.frame_at(at).get();
                     if (f + phase).is_multiple_of(period) {
-                        let _ = io
-                            .event_out(0)
-                            .push(Event::midi(i as u32, [f as u32, 0, 0, 0]));
+                        let _ = io.event_out(0).push(Event::midi(at, [f as u32, 0, 0, 0]));
                         self.count += 1.0;
                     }
                 }
@@ -255,7 +252,7 @@ impl Node for TestNode {
                 for i in 0..n {
                     for (p, h) in heads.iter_mut().enumerate().take(inputs as usize) {
                         let evs = io.events(p);
-                        while *h < evs.len() && evs[*h].offset as usize == i {
+                        while *h < evs.len() && evs[*h].offset.index() == i {
                             if let EventKind::Midi(Ump(w)) = evs[*h].kind {
                                 self.state = 0.5 * self.state + (w[0] % 97) as f32 + p as f32;
                             }
@@ -267,7 +264,6 @@ impl Node for TestNode {
                 Status::Modified
             }
             Kind::EventLag { latency } => {
-                let start = cx.env.frame;
                 for e in io.events(0) {
                     // Word 1 counts hops. Forwarding at most `MAX_HOPS`
                     // times bounds how far an event feedback loop can
@@ -285,17 +281,17 @@ impl Node for TestNode {
                     w[1] += 1;
                     let fwd = Event::midi(e.offset, w);
                     self.pending
-                        .push_back((start + e.offset as u64 + latency as u64, fwd));
+                        .push_back((cx.env.frame_at(e.offset) + Samples(latency), fwd));
                 }
                 while let Some(&(due, e)) = self.pending.front() {
-                    if due >= start + n as u64 {
+                    // Queued in due order, never behind the block: the first
+                    // one not in this block is after it.
+                    let Some(offset) = cx.env.offset_of(due) else {
+                        debug_assert!(due >= cx.env.end(), "an EventLag fell behind");
                         break;
-                    }
+                    };
                     self.pending.pop_front();
-                    let _ = io.event_out(0).push(Event {
-                        offset: (due - start) as u32,
-                        ..e
-                    });
+                    let _ = io.event_out(0).push(Event { offset, ..e });
                 }
                 Status::Modified
             }
@@ -303,7 +299,7 @@ impl Node for TestNode {
                 let base =
                     cx.arrival.samples().get() as f32 + cx.env.transport.tempo.get() as f32 * 1e-3;
                 for (i, o) in io.output(0).iter_mut().enumerate() {
-                    *o = ((cx.env.frame + i as u64) % 1000) as f32 * 1e-3 + base;
+                    *o = ((cx.env.frame.get() + i as u64) % 1000) as f32 * 1e-3 + base;
                 }
                 Status::Modified
             }

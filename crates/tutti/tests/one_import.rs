@@ -56,8 +56,8 @@ fn the_measurement_vocabulary_arrives_and_converts() {
 fn the_dsp_library_and_the_node_contract_are_reachable() {
     // A `tutti-nodes` unit, built and driven through `tutti::` alone.
     let _lfo = tutti::nodes::Lfo::default();
-    // The planar block buffers, from `tutti-node` via `tutti::dsp`.
-    let buf = tutti::dsp::BufferArray::<tutti::dsp::U2>::new();
+    // The planar block buffers: `tutti-node`'s, at the engine root.
+    let buf: tutti::core::BufferVec = tutti::core::BufferVec::new(2);
     assert_eq!(buf.buffer_ref().channels(), 2);
 }
 

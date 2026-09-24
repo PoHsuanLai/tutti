@@ -485,7 +485,8 @@ mod plugin_crash_unwire {
     use bevy_tutti::midi::{MidiBusRes, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
-    use tutti_core::{AudioNode, NodeId};
+    use tutti_core::dsp::NodeId;
+    use tutti_core::AudioNode;
     use tutti_midi_types::MidiUnitId;
     use tutti_polysynth::{PolySynth, SynthConfig};
 

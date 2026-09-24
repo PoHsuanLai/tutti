@@ -28,8 +28,9 @@
 use std::sync::Arc;
 
 use tutti_core::dsp::Net;
+use tutti_core::dsp::NodeId;
 use tutti_core::Signal;
-use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail};
+use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame, Tail};
 use tutti_mod::{shape, CurveType, Polarity};
 
 /// LUT resolution for [`ParamShaperNode`]. 256 points + linear interpolation is

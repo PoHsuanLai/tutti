@@ -52,7 +52,7 @@ mod graph_wire {
         app.world_mut().spawn(AudioNode(id)).id()
     }
 
-    fn node_id(app: &App, entity: Entity) -> tutti_core::NodeId {
+    fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
         app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 
@@ -605,7 +605,7 @@ mod param_port_wire {
         app.world_mut().spawn(AudioNode(id)).id()
     }
 
-    fn node_id(app: &App, entity: Entity) -> tutti_core::NodeId {
+    fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
         app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 

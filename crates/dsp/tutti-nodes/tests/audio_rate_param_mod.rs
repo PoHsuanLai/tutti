@@ -23,9 +23,9 @@ use tutti_types::{Depth, UnitParam};
 /// proof the extraction preserved behaviour.
 fn wire_param_mod(
     net: &mut Net,
-    target: tutti_core::NodeId,
+    target: tutti_core::dsp::NodeId,
     port: usize,
-    source: tutti_core::NodeId,
+    source: tutti_core::dsp::NodeId,
     authored: f32,
     range: (f32, f32),
     depth: Depth,
@@ -51,7 +51,7 @@ fn wire_param_mod(
 
 /// A constant source standing in for an LFO, so the test asserts on arithmetic
 /// rather than on a waveform's phase.
-fn constant(net: &mut Net, v: f32) -> tutti_core::NodeId {
+fn constant(net: &mut Net, v: f32) -> tutti_core::dsp::NodeId {
     let unit = AtomicSourceNode::new(v);
     net.push(Box::new(unit))
 }

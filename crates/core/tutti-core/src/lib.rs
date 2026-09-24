@@ -243,18 +243,15 @@ pub mod dsp {
     //
     // `BufferArray<N>` is the stack-allocated planar block a caller renders a
     // node into — `BufferRef`/`BufferMut` (the contract's, at the crate root)
-    // are *views*, and something has to own the storage. `U1`/`U2`/`U6` are its
-    // width. They are `typenum`'s and reach here through the fork's re-export;
-    // a runtime width is `ChannelLayout`, so these appear only where the width
-    // is a property of the code, which is a test rendering a known-width node.
-    pub use fundsp::buffer::BufferArray;
-    pub use fundsp::prelude::{U1, U2, U6};
-
-    // ── SIMD ────────────────────────────────────────────────────────────────
+    // are *views*, and something has to own the storage. `U2` is its width, a
+    // `typenum` reaching here through the fork's re-export.
     //
-    // `F32x` is the fork's SIMD lane type. `tutti-nodes`' automation lane is the
-    // only consumer: it evaluates a curve eight samples at a time.
-    pub use fundsp::F32x;
+    // Transitional. Everything that can take a runtime width now renders into
+    // `BufferVec` (the contract's, at the crate root) instead. What still names
+    // these is `transport::click`'s tests and `tutti-polysynth`'s tests, bench
+    // and example — the polysynth is mid-rewrite, and the pair goes with it.
+    pub use fundsp::buffer::BufferArray;
+    pub use fundsp::prelude::U2;
 }
 
 // ── The node contract, from the crate that defines it ───────────────────────
@@ -287,7 +284,6 @@ pub use tutti_node::{Real, Sample, F32, F64};
 
 pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
-pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, Shared};
 // `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
 // lives in fundsp's `read` module, which only exists once a codec is on. Gating
@@ -351,7 +347,8 @@ pub use node::AudioNode;
 pub mod prelude {
     pub use tutti_types::prelude::*;
 
-    pub use crate::{AudioNode, AudioUnit, BufferMut, BufferRef, NodeId, SignalFrame};
+    pub use crate::dsp::NodeId;
+    pub use crate::{AudioNode, AudioUnit, BufferMut, BufferRef, SignalFrame};
     pub use crate::{AudioTap, MasterMeter, MeterReading, TapBusy};
     pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
     pub use crate::{MotionEvent, Timeline, Transport, TransportState};

@@ -18,7 +18,7 @@ use tutti_types::UnitParam;
 /// Render one sample of `dist` fed a constant, reporting the output.
 /// Saturation is monotonic in drive, so the output is a proxy for "what drive
 /// did the node actually use".
-fn render(net: &mut Net, target: tutti_core::NodeId) -> f32 {
+fn render(net: &mut Net, target: tutti_core::dsp::NodeId) -> f32 {
     net.pipe_output(target);
     net.check();
     let mut out = [0.0f32; 2];

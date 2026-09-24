@@ -549,7 +549,7 @@ mod io_graph_composition {
         (MicMonitorNode::new(ring), prod)
     }
 
-    fn node_id(app: &App, entity: Entity) -> tutti_core::NodeId {
+    fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
         app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 

@@ -398,7 +398,7 @@ pub fn apply(
 fn live_ids(
     graph: &AudioGraphRes,
     nodes: &Query<(Entity, &AudioNode)>,
-) -> BTreeMap<NodeKey, tutti_core::NodeId> {
+) -> BTreeMap<NodeKey, tutti_core::dsp::NodeId> {
     nodes
         .iter()
         .filter(|(_, n)| graph.0.contains(n.0))
@@ -415,7 +415,7 @@ fn live_ids(
 /// it, since the declaration would not have changed.
 fn lower(
     source: Source,
-    ids: &BTreeMap<NodeKey, tutti_core::NodeId>,
+    ids: &BTreeMap<NodeKey, tutti_core::dsp::NodeId>,
 ) -> Option<tutti_core::dsp::Source> {
     use tutti_core::dsp::Source as NetSource;
     Some(match source {
@@ -549,7 +549,7 @@ fn is_pdc_delay(graph: &AudioGraphRes, source: tutti_core::dsp::Source) -> bool 
 /// impls rather than being re-derived: both `AudioUnit` methods take
 /// `&mut self`, so a `&Net` cannot call them, and those impls are the one place
 /// the clone-to-probe is already written down.
-fn spec_of(graph: &AudioGraphRes, node: tutti_core::NodeId) -> NodeSpec {
+fn spec_of(graph: &AudioGraphRes, node: tutti_core::dsp::NodeId) -> NodeSpec {
     use tutti_types::latency::LatencyGraph as _;
     use tutti_types::tail::TailGraph as _;
 

@@ -22,7 +22,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::{BufferArray, U1, U2};
+use tutti_core::BufferVec;
 use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,
@@ -93,8 +93,8 @@ impl Timeline for Clock {
 
 /// Drive a unit for `blocks` blocks, returning channel 0.
 fn render(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<f32> {
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
         unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
@@ -148,8 +148,8 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
 
 /// Render a placed pool, advancing its clock once per block.
 fn render_placed(pool: &mut VoicePool, clock: &Clock, blocks: usize) -> Vec<f32> {
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
         pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
@@ -540,8 +540,8 @@ fn reverse_and_loop_work_at_mono_width() {
     source.trigger_at(SamplePosition(200.0));
     source.play();
 
-    let input = BufferArray::<U1>::new();
-    let mut output = BufferArray::<U1>::new();
+    let input = BufferVec::new(1);
+    let mut output = BufferVec::new(1);
     for _ in 0..50 {
         source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
         let b = output.buffer_ref();

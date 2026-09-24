@@ -24,7 +24,7 @@ use tutti_nodes::testing::{Const, Sink};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so
 /// `clone_isolated` succeeds.
-fn graph_with_one_node() -> (AudioGraphRes, tutti_core::NodeId) {
+fn graph_with_one_node() -> (AudioGraphRes, tutti_core::dsp::NodeId) {
     let mut net = tutti_core::dsp::Net::with_backend(2);
     let id = net.master(Const::mono(0.5));
     (AudioGraphRes(net), id)

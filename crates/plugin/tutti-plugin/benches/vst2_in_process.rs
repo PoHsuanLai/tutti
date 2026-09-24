@@ -29,8 +29,8 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::AudioUnit;
+use tutti_core::BufferVec;
 use tutti_plugin::in_process_vst2;
 
 // The bench target gets dev-dependencies and the build script's env, so the
@@ -49,8 +49,8 @@ fn unit() -> Box<dyn AudioUnit> {
 }
 
 fn drive(unit: &mut dyn AudioUnit) {
-    let ib = BufferArray::<U2>::new();
-    let mut ob = BufferArray::<U2>::new();
+    let ib = BufferVec::new(2);
+    let mut ob = BufferVec::new(2);
     unit.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
     black_box(ob.buffer_ref().at_f32(0, 0));
 }

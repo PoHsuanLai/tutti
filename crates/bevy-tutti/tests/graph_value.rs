@@ -46,7 +46,7 @@ fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Ent
     app.world_mut().spawn(AudioNode(id)).id()
 }
 
-fn node_id(app: &App, entity: Entity) -> tutti_core::NodeId {
+fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
     app.world().get::<AudioNode>(entity).expect("AudioNode").0
 }
 

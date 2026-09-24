@@ -47,7 +47,7 @@ use tutti_types::{Db, Hz, Q};
 /// `Net::new` alone has no backend and applies settings in place, which would
 /// make every assertion below pass for the wrong reason — the whole hazard is
 /// what happens when a *frontend* clone is mutated.
-fn net_with_band() -> (Net, Box<dyn AudioUnit>, tutti_core::NodeId) {
+fn net_with_band() -> (Net, Box<dyn AudioUnit>, tutti_core::dsp::NodeId) {
     // TWO inputs, and the band wired to them: a net with no input renders
     // silence, which would make every render comparison below compare 0.0 to
     // 0.0 and pass regardless. (It did, on the first attempt.)

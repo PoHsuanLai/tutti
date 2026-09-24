@@ -177,7 +177,7 @@ pub fn compensate_graph(
 mod tests {
     use super::*;
     use tutti_core::dsp::Net;
-    use tutti_core::Source;
+    use tutti_core::dsp::Source;
     use tutti_core::{ChannelLayout, Db};
     use tutti_nodes::testing::Const;
     use tutti_nodes::LimiterNode;

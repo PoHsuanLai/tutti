@@ -53,7 +53,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{
     AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave,
 };
@@ -282,8 +282,8 @@ fn load_wave(path: &Path) -> Arc<Wave> {
 /// downward and makes every case fail. That trap is documented in
 /// `examples/README.md` and it cost a full debugging session there.
 fn render(unit: &mut dyn AudioUnit, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {
@@ -314,8 +314,8 @@ fn render_streamed(
     clock: &Clock,
     blocks: usize,
 ) -> Vec<(f32, f32)> {
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {

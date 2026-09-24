@@ -26,7 +26,7 @@ const BLOCKS: usize = 20_000;
 /// A chain of `n` distortions, each either plain or ported-with-base-chain.
 fn build(n: usize, with_chains: bool) -> Net {
     let mut net = Net::new(2, 2);
-    let mut prev: Option<tutti_core::NodeId> = None;
+    let mut prev: Option<tutti_core::dsp::NodeId> = None;
 
     for _ in 0..n {
         let id = if with_chains {

@@ -31,7 +31,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
 use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
@@ -117,8 +117,8 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
 
 /// Render a placed pool, advancing its clock once per block. Returns channel 0.
 fn render_placed(pool: &mut VoicePool, clock: &Clock, blocks: usize) -> Vec<f32> {
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
         pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
@@ -294,8 +294,8 @@ fn gain_scales_every_channel_equally() {
         },
     );
 
-    let input = BufferArray::<U2>::new();
-    let mut output = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut output = BufferVec::new(2);
     let want = (LEVEL * 0.4) as f64;
 
     // Skip one block, then check both channels of every frame.
@@ -335,8 +335,8 @@ fn a_bare_memory_source_applies_its_own_gain() {
         source.trigger_at(SamplePosition(0.0));
         source.play();
 
-        let input = BufferArray::<U2>::new();
-        let mut output = BufferArray::<U2>::new();
+        let input = BufferVec::new(2);
+        let mut output = BufferVec::new(2);
         source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
 
         let b = output.buffer_ref();

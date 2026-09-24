@@ -8,7 +8,8 @@
 //! need it too.
 
 use tutti_core::dsp::Net;
-use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
+use tutti_core::dsp::NodeId;
+use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, Q};
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
 
 use super::error::Result;

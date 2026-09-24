@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline, Wave};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
@@ -122,8 +122,8 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The
     // mistake is invisible in any single case, so only the control can say "the
     // harness is wrong, not the engine".
-    let ib = BufferArray::<U2>::new();
-    let mut ob = BufferArray::<U2>::new();
+    let ib = BufferVec::new(2);
+    let mut ob = BufferVec::new(2);
     let mut out = Vec::with_capacity(FRAMES * 2);
     let mut rendered = 0usize;
     while rendered < FRAMES {

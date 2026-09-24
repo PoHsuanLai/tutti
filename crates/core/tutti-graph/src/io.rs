@@ -72,6 +72,13 @@ pub enum Channel<'s> {
 
 impl Channel<'_> {
     /// Apply `f` sample by sample, whichever form this is.
+    ///
+    /// `#[inline]` is load-bearing: without it the loop is compiled apart
+    /// from the node's closure, whose captured state (a filter's two
+    /// integrators, say) then lives behind pointers, and every sample pays a
+    /// store and a reload on the recurrence. That measured 1.5× slower than
+    /// the same arithmetic in fundsp on a chain of SVFs.
+    #[inline]
     pub fn map(self, mut f: impl FnMut(f32) -> f32) {
         match self {
             Channel::Split { input, output } => {

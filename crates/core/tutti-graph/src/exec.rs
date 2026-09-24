@@ -55,6 +55,18 @@
 //! pending (see `tests/rt_no_alloc.rs`) and hands every node the **whole
 //! block** and its sorted events.
 //!
+//! **A node op is one record.** The compiler lowers each `Op::Node` into a
+//! `NodeRec` (`plan.rs`): store index, generation, arrival, tail, the port
+//! slots, the buffer borrow requests **already sorted**, and a `Form` that
+//! picks the borrow. The verifier checks each record against its op, so a
+//! call does one indexed load where it used to do six, and
+//! never sorts. The commonest shapes — at most one audio input and one
+//! audio output, or the stereo shapes 0→2, 1→2, 2→1 and 2→2, all with no
+//! event ports — borrow their slots directly, and their whole call path is
+//! specialised so the per-port loops fold away. An
+//! event-free node of any width builds no event table. Per slot, what is
+//! known about the block (silent, constant) is one flags byte.
+//!
 //! **It does not split blocks at a loop wrap.** The whole-block promise is
 //! what keeps an out-of-process plugin's declared latency constant, so a
 //! transport that loops inside a block is reported through
@@ -98,7 +110,7 @@ use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_types::{AudioThread, NodeKey, Samples, ScopedNoDenormals, Tail};
 
-use crate::arena::{borrow_disjoint, Arena, Role};
+use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
@@ -106,7 +118,7 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
     MAX_PORTS,
 };
-use crate::plan::{DelayKey, Delta, FeedbackKey, Op, Plan, UnitIdx};
+use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::spec::EventIn;
 
 /// Events one event slot holds per block, unless configured otherwise.
@@ -262,8 +274,10 @@ struct Inject {
 /// whole, so the old one is freed on the control side.
 struct State {
     arena: Arena,
-    silent: Vec<bool>,
-    constant: Vec<bool>,
+    /// Per audio slot, what is known about its block: [`SILENT`] and
+    /// [`CONSTANT`] bits. One byte per slot, so a node's input masks are
+    /// built with a load and two shifts per channel.
+    flags: Vec<u8>,
     events: Vec<Vec<Event>>,
     rings: Vec<Option<Ring>>,
     audio_fb: Vec<Option<AudioRing>>,
@@ -276,8 +290,7 @@ impl State {
     fn empty(max_block: usize) -> Self {
         Self {
             arena: Arena::new(1, max_block),
-            silent: vec![true],
-            constant: vec![true],
+            flags: vec![SILENT | CONSTANT],
             events: Vec::new(),
             rings: Vec::new(),
             audio_fb: Vec::new(),
@@ -566,14 +579,9 @@ impl Executor {
 
         State {
             arena: Arena::new(plan.audio_slots as usize, max_block),
-            silent: {
-                let mut v = vec![false; plan.audio_slots as usize];
-                v[0] = true;
-                v
-            },
-            constant: {
-                let mut v = vec![false; plan.audio_slots as usize];
-                v[0] = true;
+            flags: {
+                let mut v = vec![0u8; plan.audio_slots as usize];
+                v[0] = SILENT | CONSTANT;
                 v
             },
             events: plan
@@ -636,8 +644,7 @@ impl Executor {
         };
         let State {
             arena,
-            silent,
-            constant,
+            flags,
             events,
             rings,
             audio_fb,
@@ -645,6 +652,16 @@ impl Executor {
             inject,
             has_inject,
         } = state;
+        // Slices, not `&mut Vec`s: a slice's pointer and length are locals
+        // the op loop can keep in registers across the opaque node calls,
+        // where a `Vec` behind a reference is reloaded after every one.
+        let (flags, events, inject, has_inject) = (
+            &mut flags[..],
+            &mut events[..],
+            &mut inject[..],
+            &mut has_inject[..],
+        );
+        let plan: &Plan = plan;
         let cap = *event_cap;
         let env = Env {
             frame: *frame,
@@ -658,8 +675,7 @@ impl Executor {
         for (f, spec) in audio_fb.iter().zip(&plan.audio_feedback) {
             let ring = f.as_ref().expect("built by apply");
             let is_silent = ring.peek_oldest(arena.slot_mut(spec.slot, frames));
-            silent[spec.slot as usize] = is_silent;
-            constant[spec.slot as usize] = is_silent;
+            flags[spec.slot as usize] = flag(is_silent, is_silent);
         }
         for (f, spec) in event_fb.iter_mut().zip(&plan.event_feedback) {
             let fifo = f.as_mut().expect("built by apply");
@@ -674,22 +690,20 @@ impl Executor {
                     arena
                         .slot_mut(dst, frames)
                         .copy_from_slice(&inputs[channel as usize][..frames]);
-                    silent[dst as usize] = false;
-                    constant[dst as usize] = false;
+                    flags[dst as usize] = 0;
                 }
                 Op::Delay { delay, src, dst } => {
                     let Some(Ring::Audio(ring)) = &mut rings[delay as usize] else {
                         unreachable!("audio delay on an event ring")
                     };
-                    let src_silent = silent[src as usize];
+                    let src_silent = flags[src as usize] & SILENT != 0;
                     let out_silent = if src == dst {
                         ring.run_in_place(arena.slot_mut(dst, frames), src_silent)
                     } else {
                         let (s, d) = arena.pair(src, dst, frames);
                         ring.run(s, d, src_silent)
                     };
-                    silent[dst as usize] = out_silent;
-                    constant[dst as usize] = out_silent;
+                    flags[dst as usize] = flag(out_silent, out_silent);
                 }
                 Op::EventDelay { delay, src, dst } => {
                     let Some(Ring::Event(fifo)) = &mut rings[delay as usize] else {
@@ -722,132 +736,116 @@ impl Executor {
                     let room = output.capacity();
                     *dropped += merge_into(&ins[..list.len()], output, room) as u64;
                 }
-                Op::Node {
-                    unit,
-                    audio_in,
-                    audio_out,
-                    event_in,
-                    event_out,
-                    in_place,
-                } => {
-                    let pu = &plan.units[unit as usize];
-                    let u = store[pu.idx.0 as usize]
+                Op::Node { unit, .. } => {
+                    // One record per node op, lowered at compile time and
+                    // checked by the verifier: store index, generation,
+                    // arrival, tail, port slots and presorted borrows.
+                    let rec = &plan.nodes.recs[unit as usize];
+                    let u = store[rec.store as usize]
                         .as_mut()
                         .expect("the delta placed every unit the plan runs");
-                    debug_assert_eq!(u.gen, pu.gen, "unit generation matches the plan");
-                    let ain = &plan.audio_list[audio_in.range()];
-                    let aout = &plan.audio_list[audio_out.range()];
-                    let ein = &plan.event_list[event_in.range()];
-                    let eout = &plan.event_list[event_out.range()];
-                    let injected = has_inject[unit as usize];
-
-                    let mut in_silent = SilenceMask::NONE;
-                    let mut in_constant = ConstantMask::NONE;
-                    for (c, &s) in ain.iter().enumerate() {
-                        if silent[s as usize] {
-                            in_silent = in_silent.with(c);
-                        }
-                        if constant[s as usize] {
-                            in_constant = in_constant.with(c);
-                        }
-                    }
-                    let quiet_inputs = !injected
-                        && in_silent.covers(ain.len())
-                        && ein.iter().all(|&s| events[s as usize].is_empty());
-
-                    // See the module docs: a node with event inputs parks only
-                    // on its own say-so (`Status::Idle`); one without parks
-                    // when its inputs, its last output and its tail agree.
-                    let skip = quiet_inputs
-                        && if ein.is_empty() {
-                            !ain.is_empty() && u.last_quiet && tail_elapsed(pu.shape.tail, u.quiet)
-                        } else {
-                            u.last_idle
-                        };
-                    u.quiet = if quiet_inputs {
-                        u.quiet.saturating_add(frames as u64)
-                    } else {
-                        0
+                    debug_assert_eq!(u.gen, rec.gen, "unit generation matches the plan");
+                    let head = Head {
+                        rec,
+                        frames,
+                        max,
+                        cap,
+                        env: &env,
                     };
-                    if skip {
-                        for &s in aout {
-                            arena.slot_mut(s, frames).fill(0.0);
-                            silent[s as usize] = true;
-                            constant[s as usize] = true;
-                        }
-                        for &s in eout {
-                            events[s as usize].clear();
-                        }
-                        continue;
-                    }
-
-                    if injected {
-                        // Flushed events keep their spacing where it fits in
-                        // this block; what does not is clamped to its last
-                        // frame. Merged with this block's own events, ties
-                        // to the flushed ones (they are older).
-                        for inj in inject.iter_mut().filter(|i| i.live && i.unit == unit) {
-                            for e in &mut inj.events {
-                                e.offset = e.offset.min(frames as u32 - 1);
-                            }
-                            let slot = ein[inj.port as usize];
-                            inj.merged.clear();
-                            let cap_total = inj.merged.capacity();
-                            merge_into(
-                                &[&inj.events, &events[slot as usize]],
-                                &mut inj.merged,
-                                cap_total,
+                    let mut st = OpState {
+                        arena,
+                        flags,
+                        events,
+                        inject,
+                        has_inject,
+                        dropped,
+                    };
+                    let borrows = &plan.nodes.borrows[..];
+                    // Each arm hands `node_op` its port slots. For the three
+                    // direct forms they are literal one-element arrays, so
+                    // once `node_op` is inlined every per-port loop in it —
+                    // masks, skip, finish — folds to straight-line code.
+                    match rec.form {
+                        Form::Source { out } => {
+                            node_op(
+                                u,
+                                &head,
+                                &mut st,
+                                [&[], &[out], &[], &[]],
+                                |call, node, st| {
+                                    let mut outs = [st.arena.slot_mut(out, frames)];
+                                    (call.process(node, &[], &mut outs), 0)
+                                },
                             );
                         }
-                    }
-
-                    let call = NodeCall {
-                        cx: Cx {
-                            env: &env,
-                            arrival: pu.arrival,
-                        },
-                        max,
-                        frames,
-                        ain,
-                        aout,
-                        ein,
-                        eout,
-                        in_place,
-                        silent: in_silent,
-                        constant: in_constant,
-                        cap,
-                        unit,
-                        inject: if injected { inject.as_slice() } else { &[] },
-                    };
-                    let node: &mut dyn Node = &mut *u.node;
-                    // Port tables are stack arrays; pick the smallest bucket
-                    // that fits so a two-port node does not initialise 128
-                    // entries per call. Audio buckets count inputs + outputs
-                    // (the borrow requests share one table), event buckets
-                    // likewise.
-                    let a = ain.len() + aout.len();
-                    let e = ein.len() + eout.len();
-                    let (status, drops) = match (a, e) {
-                        (0..=4, 0) => call.run::<4, 0>(node, arena, events),
-                        (0..=4, 1..=4) => call.run::<4, 4>(node, arena, events),
-                        (0..=16, 0) => call.run::<16, 0>(node, arena, events),
-                        (0..=16, 1..=4) => call.run::<16, 4>(node, arena, events),
-                        _ => call.run::<{ 2 * MAX_PORTS }, { 2 * MAX_PORTS }>(node, arena, events),
-                    };
-                    *dropped += drops as u64;
-                    if injected {
-                        for inj in inject.iter_mut().filter(|i| i.unit == unit) {
-                            inj.events.clear();
-                            inj.merged.clear();
-                            inj.live = false;
+                        Form::Split { input, out } => node_op(
+                            u,
+                            &head,
+                            &mut st,
+                            [&[input], &[out], &[], &[]],
+                            |call, node, st| {
+                                let (i, o) = st.arena.pair(input, out, frames);
+                                (call.process(node, &[i], &mut [o]), 0)
+                            },
+                        ),
+                        Form::InPlace { slot } => node_op(
+                            u,
+                            &head,
+                            &mut st,
+                            [&[slot], &[slot], &[], &[]],
+                            |call, node, st| {
+                                let mut outs = [st.arena.slot_mut(slot, frames)];
+                                (call.process(node, &[&[]], &mut outs), 0)
+                            },
+                        ),
+                        // The stereo shapes: fixed widths, so `direct_op`
+                        // gets the same straight-line call path.
+                        Form::Direct(d) => {
+                            let slots = &plan.nodes.slots[..];
+                            match (d.ins, d.outs) {
+                                (0, 2) => direct_op::<0, 2>(u, &head, &mut st, &d, slots),
+                                (1, 2) => direct_op::<1, 2>(u, &head, &mut st, &d, slots),
+                                (2, 1) => direct_op::<2, 1>(u, &head, &mut st, &d, slots),
+                                (2, 2) => direct_op::<2, 2>(u, &head, &mut st, &d, slots),
+                                _ => unreachable!("rule 7 admits only `Direct::SHAPES`"),
+                            }
                         }
-                        has_inject[unit as usize] = false;
+                        // Port tables are stack arrays; pick the smallest
+                        // bucket that fits so a two-port node does not
+                        // initialise 64 entries per call. An event-free node
+                        // builds no event table at all, whatever its width.
+                        Form::Audio => {
+                            let ports = rec.ports(&plan.nodes.slots);
+                            node_op(u, &head, &mut st, ports, |call, node, st| {
+                                let status = match rec.ain.max(rec.aout) {
+                                    0..=4 => call.run_audio::<4>(node, st.arena, borrows),
+                                    5..=16 => call.run_audio::<16>(node, st.arena, borrows),
+                                    _ => call.run_audio::<MAX_PORTS>(node, st.arena, borrows),
+                                };
+                                (status, 0)
+                            });
+                        }
+                        Form::General => {
+                            let ports = rec.ports(&plan.nodes.slots);
+                            node_op(u, &head, &mut st, ports, |call, node, st| {
+                                let a = rec.ain.max(rec.aout);
+                                let e = rec.ein.max(rec.eout);
+                                let inject = &*st.inject;
+                                let (arena, events) = (&mut *st.arena, &mut *st.events);
+                                match (a, e) {
+                                    (0..=4, 0..=4) => {
+                                        call.run::<4, 4>(node, arena, events, borrows, inject)
+                                    }
+                                    (0..=16, 0..=4) => {
+                                        call.run::<16, 4>(node, arena, events, borrows, inject)
+                                    }
+                                    _ => call.run::<MAX_PORTS, MAX_PORTS>(
+                                        node, arena, events, borrows, inject,
+                                    ),
+                                }
+                            });
+                        }
                     }
-
-                    u.last_idle = status == Status::Idle;
-                    finish(status, frames, ain, aout, in_place, arena, silent, constant);
-                    u.last_quiet = aout.iter().all(|&s| silent[s as usize])
-                        && eout.iter().all(|&s| events[s as usize].is_empty());
                 }
                 Op::Output {
                     channel,
@@ -861,7 +859,7 @@ impl Executor {
                             let Some(Ring::Audio(ring)) = &mut rings[d as usize] else {
                                 unreachable!("output delay on an event ring")
                             };
-                            ring.run(s, out, silent[src as usize]);
+                            ring.run(s, out, flags[src as usize] & SILENT != 0);
                         }
                         None => out.copy_from_slice(s),
                     }
@@ -870,7 +868,7 @@ impl Executor {
                     let ring = audio_fb[feedback as usize]
                         .as_mut()
                         .expect("built by apply");
-                    ring.push(arena.slot(src, frames), silent[src as usize]);
+                    ring.push(arena.slot(src, frames), flags[src as usize] & SILENT != 0);
                 }
                 Op::EventCapture { feedback, src } => {
                     let fifo = event_fb[feedback as usize]
@@ -888,79 +886,274 @@ impl Executor {
     }
 }
 
-/// One node call's inputs, gathered so the port tables can be sized by a
-/// const bucket (`run::<A, E>`) instead of always by `MAX_PORTS`.
-struct NodeCall<'p, 'e> {
-    cx: Cx<'e>,
+/// Per audio slot: every sample of the block is exact `0.0`.
+const SILENT: u8 = 1;
+/// Per audio slot: the block holds one value throughout.
+const CONSTANT: u8 = 2;
+
+#[inline]
+fn flag(silent: bool, constant: bool) -> u8 {
+    (silent as u8 * SILENT) | (constant as u8 * CONSTANT)
+}
+
+/// A node's input masks from its input slots' flags: one load and two
+/// shifts per channel. Channels past 63 are never set (the masks are 64
+/// wide, and `compile` refuses a wider node anyway).
+#[inline]
+fn in_masks(ain: &[u32], flags: &[u8]) -> (SilenceMask, ConstantMask) {
+    let (mut silent, mut constant) = (0u64, 0u64);
+    for (c, &s) in (0..64u32).zip(ain) {
+        let f = u64::from(flags[s as usize]);
+        silent |= (f & u64::from(SILENT)) << c;
+        constant |= ((f & u64::from(CONSTANT)) >> 1) << c;
+    }
+    (SilenceMask(silent), ConstantMask(constant))
+}
+
+/// A node op's constants: its record and the block's.
+struct Head<'p, 'e> {
+    rec: &'p NodeRec,
+    frames: usize,
+    max: MaxBlock,
+    cap: usize,
+    env: &'e Env,
+}
+
+/// What a node op may write besides its own unit.
+struct OpState<'s> {
+    arena: &'s mut Arena,
+    flags: &'s mut [u8],
+    events: &'s mut [Vec<Event>],
+    inject: &'s mut [Inject],
+    has_inject: &'s mut [bool],
+    dropped: &'s mut u64,
+}
+
+/// Run one node op: the silence skip, flushed-event injection, the call
+/// itself (`call_node` borrows the buffers its [`Form`] names and runs the
+/// node), and the status bookkeeping.
+///
+/// `#[inline(always)]` so each [`Form`] gets its own copy: the direct forms
+/// pass literal one-element port arrays, and every per-port loop here then
+/// folds to straight-line code. That, and not the borrow alone, is most of
+/// what the direct forms save.
+#[inline(always)]
+fn node_op(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &mut OpState<'_>,
+    [ain, aout, ein, eout]: [&[u32]; 4],
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_>) -> (Status, u32),
+) {
+    let (rec, frames) = (h.rec, h.frames);
+    let unit = rec.unit;
+    // Flushed events only ever go to an event input.
+    let injected = !ein.is_empty() && st.has_inject[unit as usize];
+
+    let (in_silent, in_constant) = in_masks(ain, st.flags);
+    let quiet_inputs = !injected
+        && in_silent.covers(ain.len())
+        && ein.iter().all(|&s| st.events[s as usize].is_empty());
+
+    // See the module docs: a node with event inputs parks only on its own
+    // say-so (`Status::Idle`); one without parks when its inputs, its last
+    // output and its tail agree.
+    let skip = quiet_inputs
+        && if ein.is_empty() {
+            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.tail, u.quiet)
+        } else {
+            u.last_idle
+        };
+    u.quiet = if quiet_inputs {
+        u.quiet.saturating_add(frames as u64)
+    } else {
+        0
+    };
+    if skip {
+        for &s in aout {
+            st.arena.slot_mut(s, frames).fill(0.0);
+            st.flags[s as usize] = SILENT | CONSTANT;
+        }
+        for &s in eout {
+            st.events[s as usize].clear();
+        }
+        return;
+    }
+
+    if injected {
+        // Flushed events keep their spacing where it fits in this block;
+        // what does not is clamped to its last frame. Merged with this
+        // block's own events, ties to the flushed ones (they are older).
+        for inj in st.inject.iter_mut().filter(|i| i.live && i.unit == unit) {
+            for e in &mut inj.events {
+                e.offset = e.offset.min(frames as u32 - 1);
+            }
+            let slot = ein[inj.port as usize];
+            inj.merged.clear();
+            let cap_total = inj.merged.capacity();
+            merge_into(
+                &[&inj.events, &st.events[slot as usize]],
+                &mut inj.merged,
+                cap_total,
+            );
+        }
+    }
+
+    let call = Call {
+        env: h.env,
+        max: h.max,
+        frames,
+        rec,
+        silent: in_silent,
+        constant: in_constant,
+        cap: h.cap,
+        injected,
+    };
+    let (status, drops) = call_node(&call, &mut *u.node, st);
+    *st.dropped += drops as u64;
+    if injected {
+        for inj in st.inject.iter_mut().filter(|i| i.unit == unit) {
+            inj.events.clear();
+            inj.merged.clear();
+            inj.live = false;
+        }
+        st.has_inject[unit as usize] = false;
+    }
+
+    u.last_idle = status == Status::Idle;
+    finish(status, frames, ain, aout, rec.in_place, st.arena, st.flags);
+    u.last_quiet = aout.iter().all(|&s| st.flags[s as usize] & SILENT != 0)
+        && eout.iter().all(|&s| st.events[s as usize].is_empty());
+}
+
+/// A [`Form::Direct`] node op with `I` inputs and `O` outputs: its port
+/// slots as fixed-size arrays, so `node_op`'s per-port loops fold as they do
+/// for the one-channel forms, and its buffers borrowed by
+/// [`Arena::direct`].
+#[inline(always)]
+fn direct_op<const I: usize, const O: usize>(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &mut OpState<'_>,
+    d: &Direct,
+    slots: &[u32],
+) {
+    let [ain, aout, _, _] = h.rec.ports(slots);
+    let ain: &[u32; I] = ain.try_into().expect("a direct record's input count");
+    let aout: &[u32; O] = aout.try_into().expect("a direct record's output count");
+    let frames = h.frames;
+    node_op(u, h, st, [ain, aout, &[], &[]], |call, node, st| {
+        let (ins, mut outs) = st.arena.direct::<I, O>(frames, d);
+        (call.process(node, &ins, &mut outs), 0)
+    });
+}
+
+/// One node call's constants, shared by every borrow form.
+struct Call<'p, 'e> {
+    env: &'e Env,
     max: MaxBlock,
     frames: usize,
-    ain: &'p [u32],
-    aout: &'p [u32],
-    ein: &'p [u32],
-    eout: &'p [u32],
-    in_place: InPlaceMask,
+    rec: &'p NodeRec,
     silent: SilenceMask,
     constant: ConstantMask,
     cap: usize,
-    unit: u32,
-    inject: &'p [Inject],
+    /// Whether flushed events wait for this call (see the module docs).
+    injected: bool,
 }
 
-impl NodeCall<'_, '_> {
-    /// Borrow the node's buffers out of the arenas and run it. `A` must hold
-    /// `ain.len() + aout.len()` entries and `E` the event ports likewise.
-    /// Returns the node's status and how many events its writers refused.
+impl Call<'_, '_> {
+    /// Run an event-free node on buffers already borrowed.
+    #[inline]
+    fn process<'a>(
+        &self,
+        node: &mut dyn Node,
+        ins: &'a [&'a [f32]],
+        outs: &'a mut [&'a mut [f32]],
+    ) -> Status {
+        let io = Io::new(
+            self.max,
+            self.frames,
+            ins,
+            outs,
+            self.silent,
+            self.constant,
+            self.rec.in_place,
+            &[],
+            &mut [],
+        );
+        node.process(&self.cx(), io)
+    }
+
+    /// Built at the call, not kept in `Call`: the node takes it by
+    /// reference, so whatever holds it is spilled to the stack.
+    #[inline]
+    fn cx(&self) -> Cx<'_> {
+        Cx {
+            env: self.env,
+            arrival: self.rec.arrival,
+        }
+    }
+
+    /// Borrow an event-free node's audio buffers by its presorted requests
+    /// (`borrows` is the plan's whole list; the record names its run) and
+    /// run it. `A` must hold the wider of its two sides.
+    fn run_audio<const A: usize>(
+        &self,
+        node: &mut dyn Node,
+        arena: &mut Arena,
+        borrows: &[(u32, Role)],
+    ) -> Status {
+        let (n_in, n_out) = (self.rec.ain as usize, self.rec.aout as usize);
+        debug_assert!(n_in <= A && n_out <= A);
+        let mut ins: [&[f32]; A] = [&[]; A];
+        let mut outs: [&mut [f32]; A] = std::array::from_fn(|_| &mut [][..]);
+        arena.borrow(
+            self.frames,
+            &borrows[self.rec.borrows.range()],
+            &mut ins,
+            &mut outs,
+        );
+        self.process(node, &ins[..n_in], &mut outs[..n_out])
+    }
+
+    /// Borrow a node's audio and event buffers and run it. `A` must hold the
+    /// wider audio side and `E` the wider event side. Returns the node's
+    /// status and how many events its writers refused.
     fn run<const A: usize, const E: usize>(
         &self,
         node: &mut dyn Node,
         arena: &mut Arena,
         events: &mut [Vec<Event>],
+        borrows: &[(u32, Role)],
+        inject: &[Inject],
     ) -> (Status, u32) {
-        let (frames, ain, aout, ein, eout) =
-            (self.frames, self.ain, self.aout, self.ein, self.eout);
-        debug_assert!(ain.len() + aout.len() <= A && ein.len() + eout.len() <= E);
+        let rec = self.rec;
+        let frames = self.frames;
+        let (n_in, n_out) = (rec.ain as usize, rec.aout as usize);
+        let (e_in, e_out) = (rec.ein as usize, rec.eout as usize);
+        debug_assert!(n_in.max(n_out) <= A && e_in.max(e_out) <= E);
 
-        let mut reqs = [(0u32, Role::Read(0)); A];
-        let mut n = 0;
-        for (c, &s) in ain.iter().enumerate() {
-            if !self.in_place.get(c) {
-                reqs[n] = (s, Role::Read(c as u8));
-                n += 1;
-            }
-        }
-        for (c, &s) in aout.iter().enumerate() {
-            reqs[n] = (s, Role::Write(c as u8));
-            n += 1;
-        }
         let mut ins: [&[f32]; A] = [&[]; A];
         let mut outs: [&mut [f32]; A] = std::array::from_fn(|_| &mut [][..]);
-        arena.borrow(frames, &mut reqs[..n], &mut ins, &mut outs);
+        arena.borrow(frames, &borrows[rec.borrows.range()], &mut ins, &mut outs);
 
-        let mut ereqs = [(0u32, Role::Read(0)); E];
-        let mut n = 0;
-        for (c, &s) in ein.iter().enumerate() {
-            ereqs[n] = (s, Role::Read(c as u8));
-            n += 1;
-        }
-        for (c, &s) in eout.iter().enumerate() {
-            ereqs[n] = (s, Role::Write(c as u8));
-            n += 1;
-        }
         let mut evin: [SortedEvents<'_>; E] = [SortedEvents::EMPTY; E];
         let mut evout_bufs: [Option<&mut Vec<Event>>; E] = std::array::from_fn(|_| None);
-        borrow_disjoint(
+        borrow_sorted(
             events,
             1,
-            &mut ereqs[..n],
+            &borrows[rec.event_borrows.range()],
             |port, v| evin[port as usize] = SortedEvents::trusted(&v[0], frames),
             |port, v| evout_bufs[port as usize] = Some(&mut v[0]),
         );
-        for inj in self.inject.iter().filter(|i| i.live && i.unit == self.unit) {
-            evin[inj.port as usize] = SortedEvents::trusted(&inj.merged, frames);
+        if self.injected {
+            for inj in inject.iter().filter(|i| i.live && i.unit == rec.unit) {
+                evin[inj.port as usize] = SortedEvents::trusted(&inj.merged, frames);
+            }
         }
         let drops = Cell::new(0u32);
         let mut evout: [EventWriter<'_>; E] = std::array::from_fn(|_| EventWriter::detached());
-        for (w, b) in evout.iter_mut().zip(evout_bufs.iter_mut()).take(eout.len()) {
+        for (w, b) in evout.iter_mut().zip(evout_bufs.iter_mut()).take(e_out) {
             let b = b.take().expect("event output borrowed");
             b.clear();
             *w = EventWriter::new(b, self.cap, frames as u32, &drops);
@@ -968,15 +1161,15 @@ impl NodeCall<'_, '_> {
         let io = Io::new(
             self.max,
             frames,
-            &ins[..ain.len()],
-            &mut outs[..aout.len()],
+            &ins[..n_in],
+            &mut outs[..n_out],
             self.silent,
             self.constant,
-            self.in_place,
-            &evin[..ein.len()],
-            &mut evout[..eout.len()],
+            rec.in_place,
+            &evin[..e_in],
+            &mut evout[..e_out],
         );
-        let status = node.process(&self.cx, io);
+        let status = node.process(&self.cx(), io);
         (status, drops.get())
     }
 }
@@ -996,8 +1189,8 @@ fn event_pair(events: &mut [Vec<Event>], src: u32, dst: u32) -> (&[Event], &mut 
     (input, output.expect("dst borrowed"))
 }
 
-/// Apply a node's [`Status`] to its output slots and their masks.
-#[allow(clippy::too_many_arguments)]
+/// Apply a node's [`Status`] to its output slots and their flags.
+#[inline(always)]
 fn finish(
     status: Status,
     frames: usize,
@@ -1005,14 +1198,12 @@ fn finish(
     aout: &[u32],
     in_place: InPlaceMask,
     arena: &mut Arena,
-    silent: &mut [bool],
-    constant: &mut [bool],
+    flags: &mut [u8],
 ) {
     match status {
         Status::Modified => {
             for &s in aout {
-                silent[s as usize] = false;
-                constant[s as usize] = false;
+                flags[s as usize] = 0;
             }
         }
         Status::Masked {
@@ -1020,15 +1211,13 @@ fn finish(
             constant: cm,
         } => {
             for (c, &s) in aout.iter().enumerate() {
-                silent[s as usize] = sm.get(c);
-                constant[s as usize] = cm.get(c) || sm.get(c);
+                flags[s as usize] = flag(sm.get(c), cm.get(c) || sm.get(c));
             }
         }
         Status::Silent | Status::Idle => {
             for &s in aout {
                 arena.slot_mut(s, frames).fill(0.0);
-                silent[s as usize] = true;
-                constant[s as usize] = true;
+                flags[s as usize] = SILENT | CONSTANT;
             }
         }
         Status::Constant => {
@@ -1036,8 +1225,7 @@ fn finish(
                 let buf = arena.slot_mut(s, frames);
                 let v = buf[0];
                 buf.fill(v);
-                silent[s as usize] = v == 0.0 && v.is_sign_positive();
-                constant[s as usize] = true;
+                flags[s as usize] = flag(v == 0.0 && v.is_sign_positive(), true);
             }
         }
         Status::Bypass => {
@@ -1046,13 +1234,11 @@ fn finish(
                     Some(_) if in_place.get(c) => {}
                     Some(&i) => {
                         arena.copy_slot(i, s);
-                        silent[s as usize] = silent[i as usize];
-                        constant[s as usize] = constant[i as usize];
+                        flags[s as usize] = flags[i as usize];
                     }
                     None => {
                         arena.slot_mut(s, frames).fill(0.0);
-                        silent[s as usize] = true;
-                        constant[s as usize] = true;
+                        flags[s as usize] = SILENT | CONSTANT;
                     }
                 }
             }

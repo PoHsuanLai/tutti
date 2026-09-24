@@ -472,6 +472,110 @@ silence. `Engine` takes the new runtime instead of `NetBackend`
 (`engine.rs:52`). Benchmark against `docs/benchmarks.md`'s graph-render table
 before flipping anything.
 
+#### Executor overhead (measured)
+
+The serial executor's fixed cost per node call, cut in
+`feat/graph-phase2-exec-perf`. Measured with `tutti-graph`'s `graph_render`
+bench (criterion medians, Ryzen 9 7950X) and callgrind; `perf` is not
+available on the build box.
+
+**What changed.** The compiler lowers each node op into one record
+(`NodeRec`): store index, generation, arrival, tail, the port slots, and the
+buffer borrow requests **sorted at compile time**. The verifier checks the
+record is exactly the lowering of its op (rule 7), so the executor runs
+what was verified, still with no `unsafe`. A call now does one lookup where
+it did six, and never sorts. The common shape (at most one audio input, one
+audio output, no event ports) borrows its slots directly, and its whole call
+path is specialised so the per-port loops fold away. An event-free node of
+any width skips the event tables, so a 64-in sum no longer initialises 128
+event writers. Silent/constant flags are one byte per slot. Separately,
+`Channel::map` was not `#[inline]`, which made a native SVF written with it
+1.5× slower than the same arithmetic in fundsp.
+
+**Per-node fixed cost** (a chain of nodes that do no work; the slope
+between 1 and 128 nodes). The graph rows are a mono node aliased in place,
+so they time the `InPlace` form, the cheapest path:
+
+| | instructions / node | ns / node, 64-frame block | ns / node, 512-frame block |
+|---|---|---|---|
+| `Net` (per 64-frame chunk) | ~75 | 3.8 | 30 (8 chunks) |
+| graph, native node, before | ~486 | 22.1 | 21.7 |
+| graph, native node, after | ~125 | 5.3 | 5.4 |
+
+**By borrow form** (after; native no-op nodes at 64 frames, `overhead_form`
+bench):
+
+| form | shape | instructions / node | ns / node |
+|---|---|---|---|
+| `InPlace` | 1 channel, in place | ~125 | 5.3 |
+| `Split` | 1 channel, two slots | ~172 | 8.5 |
+| `Direct` | 2 channels, in place | ~265 (was ~473 on `Audio`) | 11.4 (was 17.7) |
+| `Direct` | 2 channels, two slots each | ~320 | 13.6 |
+| `Audio` | 3 channels, in place | — | 21.5 |
+| `General` | 1 channel in place + 1 event input | ~533 | 32.3 |
+
+**Stereo has a direct form.** A stereo node, the commonest real shape, used
+to take the `Audio` walk. About 160 of its ~473 instructions were
+`borrow_sorted` itself: the group scan, the closures, and a checked
+`split_at_mut` and cast per request. `Form::Direct` covers the shapes 0→2,
+1→2, 2→1 and 2→2 with no events. The compiler stores the node's distinct
+slots, ascending, and what each one is (an output channel, or a read). The
+executor peels them off in one pass (`Arena::direct`). The ports are
+fixed-size arrays, so the call path folds like the one-channel forms.
+Rule 7 checks the slot table against the op independently. A stereo node
+now costs about 2× a mono one, roughly the same per channel. Wider
+event-free nodes, and everything with event ports, still take the walk.
+The `General` form adds the event tables on top of it, and is the next
+target if event-heavy graphs matter.
+
+**Target missed at 64 frames.** Per 64-frame block the executor is still
+about 1.4× `Net`'s per-node cost when the node does no work. Most of the
+remaining ~125 instructions (the `InPlace` form) are the contract, not the executor: building
+the `Io` (twelve words), the 24-byte `Status` coming back through memory,
+and the silence bookkeeping `Net` does not have (input masks, the skip
+decision, output flags). Getting under `Net` would need a leaner `Io` or
+`unsafe` slot access. Both were left alone, because `Io` is being reworked
+for typed time. From 128 frames up the executor is cheaper per node than
+`Net`, because `Net` pays its cost once per 64-frame chunk.
+
+**Shapes** (µs; `graph` = the same `AudioUnit`s through `Legacy`, `native` =
+nodes written against `Io` with the same arithmetic):
+
+| shape | frames | net | graph before → after | native before → after |
+|---|---|---|---|---|
+| 8-filter chain | 64 | 1.84 | 2.18 → 2.02 | 3.09 → 2.10 |
+| 8-filter chain | 512 | 14.8 | 15.6 → 15.4 | 23.2 → 17.0 |
+| 128-filter chain | 64 | 27.3 | 32.6 → 30.9 | 43.3 → 27.6 |
+| 128-filter chain | 512 | 219 | 233 → 230 | 326 → 228 |
+| 64-wide fan + sum | 64 | 14.5 | 18.0 → 16.6 | 23.5 → 16.3 |
+| 64-wide fan + sum | 512 | 114 | 125 → 120 | 168 → 122 |
+| 128 no-op nodes | 64 | 0.50 | 4.90 → 2.81 | 2.87 → 0.70 |
+| 128 no-op nodes | 512 | 3.94 | 13.2 → 10.7 | 2.86 → 0.74 |
+
+(`graph` no-op rows pay `Legacy`'s copy in and out. "Before" native rows
+include the `Channel::map` slowdown. The native sine uses `f32::sin`, so
+single-node rows are dominated by the source.)
+
+**Sub-blocking chunkable runs: measured, not built.** The idea was to let a
+node declare itself chunkable, and run a run of consecutive chunkable nodes
+in 64–128-frame passes inside a large block. The upper bound of the gain is
+rendering 512 frames as eight 64-frame blocks. On this box that is **3%
+faster** for deep chains (128- and 512-filter chains), **even** for the
+8-filter chain, and **7% slower** for the 64-wide fan, because each pass
+pays the per-node cost again. A mixed result that small does not justify
+what it costs:
+
+- a node-facing opt-in (a `Shape` field or a trait method);
+- a split of the event slices at chunk boundaries with rebased offsets;
+- per-chunk `Env` (`frame`, `block_len`, and the transport beat, which has
+  to be advanced by tempo);
+- merging per-chunk `Status` masks (a constant chunk followed by a different
+  constant is not constant);
+- an exception to the whole-block promise the executor documents.
+
+Revisit it with the parallel executor in Phase 6. There, cache-sized
+passes pay back differently.
+
 ### Phase 3 — flip the adapter
 
 - `bevy-tutti`: `LiveGraph` diff emits a `Delta` via `compile`; delete

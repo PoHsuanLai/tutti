@@ -146,7 +146,7 @@ crate implementing `ModParams` needs no separate `tutti-mod` dependency.
 `default = []`.
 
 - `convolution` — FFT convolution reverb over a partitioned IR (`Convolver`,
-  `ConvolverNode`, `StereoConvolverNode`). Pulls `fft-convolver`.
+  `ConvolverNode` at any width, with `IrChannelConfig`). Pulls `fft-convolver`.
 
 There is no `bevy` feature, and no `spatial` / `hrtf` — see above.
 

@@ -20,7 +20,7 @@ use tutti_core::{ParamAddr, UnitParam};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 #[cfg(feature = "convolution")]
-use crate::StereoConvolverNode;
+use crate::ConvolverNode;
 use crate::{
     BrickwallLimiterNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode, GateNode,
     LadderFilterNode, LimiterNode, ModDelayNode, PhaserNode, SvfFilterNode,
@@ -249,7 +249,7 @@ impl<F: Real> ModParams for EqBandNode<F> {
 }
 
 #[cfg(feature = "convolution")]
-impl ModParams for StereoConvolverNode {
+impl ModParams for ConvolverNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -437,7 +437,7 @@ mod tests {
     fn convolver_only_exposes_wet() {
         // Room size is baked into the IR; only Wet is control-rate modulatable.
         // A minimal unit IR is fine — we only probe the param surface, not audio.
-        let node = StereoConvolverNode::mono(&[1.0], 64);
+        let node = ConvolverNode::shared_ir(2usize, &[1.0], 64);
         assert!(node
             .mod_target(unit(UnitParam::Wet), 0.5, 0.0, 1.0)
             .is_some());

@@ -258,7 +258,7 @@ fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
 mod convolver {
     use super::*;
     use tutti_core::Samples;
-    use tutti_nodes::{ConvolverNode, StereoConvolverNode};
+    use tutti_nodes::ConvolverNode;
 
     /// With a unit-impulse IR the wet path is a pure delay of the reported latency.
     /// So at *every* mix the output must be one impulse, at exactly that latency,
@@ -293,21 +293,30 @@ mod convolver {
         }
     }
 
-    /// The stereo node in all three channel configs: each channel's dry input is
+    /// The wide node in all three channel configs, at width 2 (the old stereo
+    /// node's three constructors) and width 6: each channel's dry input is
     /// delayed by the same latency as its wet path.
     ///
-    /// Mutation: replacing `self.dry.r.step(in_r)` with the undelayed `in_r`
-    /// fails on ch1 (two onsets at mix 0.5), which the per-channel loop names.
+    /// Mutation: blending the undelayed input instead of `dry.step(s)` in
+    /// `ConvolverNode::blend_channel` fails every channel (two onsets at mix
+    /// 0.5), which the per-channel loop names.
     #[test]
     fn stereo_convolver_dry_and_wet_leave_together_at_the_reported_latency() {
-        type Build = fn() -> StereoConvolverNode;
-        let builds: [(&str, Build); 3] = [
-            ("mono", || StereoConvolverNode::mono(&[1.0], 128)),
-            ("stereo", || {
-                StereoConvolverNode::stereo(&[1.0], &[1.0], 128)
-            }),
+        type Build = fn() -> ConvolverNode;
+        let builds: [(&str, Build); 6] = [
+            ("mono", || ConvolverNode::shared_ir(2usize, &[1.0], 128)),
+            ("stereo", || ConvolverNode::stereo(&[1.0], &[1.0], 128)),
             ("mono_to_stereo", || {
-                StereoConvolverNode::mono_to_stereo(&[1.0], &[1.0], 128)
+                ConvolverNode::mono_to_stereo(&[1.0], &[1.0], 128)
+            }),
+            ("shared x6", || {
+                ConvolverNode::shared_ir(6usize, &[1.0], 128)
+            }),
+            ("per_channel x6", || {
+                ConvolverNode::per_channel(&[&[1.0_f32][..]; 6], 128)
+            }),
+            ("folded x6", || {
+                ConvolverNode::folded(&[&[1.0_f32][..]; 6], 128)
             }),
         ];
         for (name, build) in builds {
@@ -317,7 +326,11 @@ mod convolver {
                 node.set_mix(mix);
                 let latency = node.latency_samples().0;
                 assert_eq!(node.latency(), Some(latency as f64), "{name} mix {mix}");
-                assert_eq!(output_latencies(&mut node), vec![Some(latency as f64); 2]);
+                let width = node.outputs();
+                assert_eq!(
+                    output_latencies(&mut node),
+                    vec![Some(latency as f64); width]
+                );
 
                 let out = impulse_response(&mut node, latency * 3);
                 for (c, ch) in out.iter().enumerate() {

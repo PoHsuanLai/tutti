@@ -163,7 +163,7 @@ impl Convolver {
     /// sample. A run ends at the partition boundary, which is where the FFT has
     /// to fire before the next sample's output exists.
     ///
-    /// The run arithmetic leans on one invariant of [`FftPartitionState`]: once
+    /// The run arithmetic leans on one invariant of `FftPartitionState`: once
     /// the first partition has drained, the output cursor and the input fill
     /// advance in lockstep, so a run that fits in the input block also fits in
     /// the output block. Before that first drain the cursor sits at

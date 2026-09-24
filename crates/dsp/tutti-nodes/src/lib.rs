@@ -176,7 +176,7 @@ mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
     generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
-    ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
+    ConvolverNode, IrChannelConfig, WetDry,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

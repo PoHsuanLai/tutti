@@ -91,8 +91,8 @@ net.tick(&[], &mut out);
 
 ## Constraint: what is fixed at construction, and what is not
 
-The DSP chain each voice runs is assembled once from the oscillator, filter and
-envelope, so **those three need a new synth to change** — there is no setter for
+The voice bank every voice renders in is built once for the oscillator, filter
+and envelope, so **those three need a new synth to change** — there is no setter for
 them, and swapping one means building a `PolySynth` and replacing the node.
 
 What does have a live setter: unison detune, stereo spread and sub-voice count,

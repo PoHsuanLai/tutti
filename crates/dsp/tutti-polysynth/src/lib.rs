@@ -54,3 +54,6 @@ mod polysynth;
 pub use polysynth::PolySynth;
 
 mod synth_voice;
+
+mod bank;
+mod kernel;

@@ -37,6 +37,14 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
 
+# The SVF and ladder coefficient functions. The voice bank runs those two
+# filters' topologies across SIMD lanes and derives its coefficients from the
+# same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
+
+# `f32x8` lanes for the voice bank. The same crate and version line `tutti-node`
+# already builds on, so this adds nothing to the tree.
+wide = { version = "1.6", default-features = false }
 
 # Error handling
 thiserror = "2"

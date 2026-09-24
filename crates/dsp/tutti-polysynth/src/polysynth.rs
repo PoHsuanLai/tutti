@@ -7,10 +7,17 @@
 //! that routes a per-note message to exactly one voice lives here because only
 //! this module holds both the note-id map and the voices.
 //!
-//! Both render paths are real-time: `tick` for one sample, `process` for a
-//! block split at MIDI event boundaries so events land on the right frame.
-//! Neither allocates.
+//! Both render paths are real-time and share one renderer: `process` splits
+//! its block at MIDI event boundaries so events land on the right frame, and
+//! `tick` is the same renderer run for a single frame. Neither allocates.
+//!
+//! The renderer works in control steps of at most `CONTROL_BLOCK` frames:
+//! each step the voices (and any glide) write their lane targets into the
+//! voice bank, and the bank renders the step, ramping every lane to its
+//! targets sample by sample. The mix of one step lives in the bank, so no
+//! scratch is sized to a block — any block length renders every frame.
 
+use crate::bank::{VoiceBank, CONTROL_BLOCK};
 use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
@@ -40,7 +47,8 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
     bits as f32 / (1u16 << 9) as f32
 }
 
-/// Polyphonic synthesizer combining tutti-polysynth building blocks with FunDSP.
+/// Polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
+/// SIMD voice bank.
 ///
 /// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
 /// owns a lock-free MIDI inbox; callers push events via [`PolySynth::midi_sender`].
@@ -53,6 +61,8 @@ pub struct PolySynth {
     config: SynthConfig,
     allocator: VoiceAllocator,
     voices: Vec<SynthVoice>,
+    /// Every sub-voice's oscillator, filter and envelope state, in SIMD lanes.
+    bank: VoiceBank,
     portamento: Option<Portamento>,
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
@@ -63,7 +73,6 @@ pub struct PolySynth {
     /// clone/isolate sharing semantics all three obey.
     midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
-    mix_buffer: [f32; 2],
     /// Voices that finished this block, collected during the render loop and
     /// drained after it.
     ///
@@ -118,12 +127,10 @@ impl PolySynth {
             .as_ref()
             .map_or(1, |u| usize::from(u.voice_count));
 
-        let mut voices = Vec::with_capacity(config.max_voices);
-        for _ in 0..config.max_voices {
-            let mut voice = SynthVoice::from_config(&config, unison_count);
-            voice.set_sample_rate(config.sample_rate);
-            voices.push(voice);
-        }
+        let voices = (0..config.max_voices)
+            .map(|_| SynthVoice::from_config(&config, unison_count))
+            .collect();
+        let bank = Self::build_bank(&config, unison_count);
 
         let portamento = config
             .portamento
@@ -136,15 +143,26 @@ impl PolySynth {
             config,
             allocator,
             voices,
+            bank,
             portamento,
             unison,
             pitch_bend: 0.0,
             master_volume,
             midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); 256],
-            mix_buffer: [0.0; 2],
             finished_indices: Vec::with_capacity(max_voices),
         })
+    }
+
+    fn build_bank(config: &SynthConfig, unison_count: usize) -> VoiceBank {
+        VoiceBank::new(
+            config.oscillator,
+            &config.filter,
+            &config.envelope,
+            config.sample_rate,
+            config.max_voices,
+            unison_count,
+        )
     }
 
     /// This synth's MIDI input endpoint — routing address, push mailbox, and the
@@ -319,18 +337,16 @@ impl PolySynth {
 
     /// Set the number of stacked sub-voices per note, clamped to 1..=16.
     ///
-    /// **Allocates** when the count grows: each voice builds the extra DSP
-    /// chains, and each new chain is run for 100 warm-up ticks. Call it from
-    /// the control thread, never the audio thread.
+    /// **Allocates**: the voice bank is rebuilt at the new width (sounding
+    /// sub-voices keep their state). Call it from the control thread, never the
+    /// audio thread.
     ///
     /// No-op without unison.
     pub fn set_unison_voice_count(&mut self, count: u8) {
         if let Some(unison) = &mut self.unison {
             unison.set_voice_count(count);
             let new_count = unison.voice_count();
-            for voice in &mut self.voices {
-                voice.resize_unison(new_count);
-            }
+            self.resize_unison(new_count);
         }
     }
 
@@ -341,9 +357,14 @@ impl PolySynth {
         if let Some(unison) = &mut self.unison {
             unison.set_config(config);
             let new_count = unison.voice_count();
-            for voice in &mut self.voices {
-                voice.resize_unison(new_count);
-            }
+            self.resize_unison(new_count);
+        }
+    }
+
+    fn resize_unison(&mut self, count: usize) {
+        self.bank.resize_stride(count);
+        for voice in &mut self.voices {
+            voice.resize_unison(count);
         }
     }
 
@@ -528,13 +549,20 @@ impl PolySynth {
                 base_freq * bend_multiplier
             };
 
+            if !is_legato {
+                // New start phases for the stack, read by the voice's next
+                // control step when it (re)starts its lanes.
+                if let Some(unison) = &mut self.unison {
+                    unison.randomize_phases();
+                }
+            }
             let voice = &mut self.voices[slot_index];
             voice.set_velocity_mod(vel_norm);
             if is_legato {
-                voice.set_pitch(target_freq, self.unison.as_ref());
+                voice.set_pitch(target_freq);
                 voice.update_legato(note, channel);
             } else {
-                voice.note_on(note, channel, vel_norm, target_freq, self.unison.as_mut());
+                voice.note_on(note, channel, vel_norm, target_freq);
             }
         }
     }
@@ -595,11 +623,8 @@ impl PolySynth {
     /// then offsets from this. Only the addressed voice is retuned.
     fn set_voice_tuning(&mut self, id: NoteId, fractional_note: f32) {
         let freq = self.config.tuning.fractional_note_to_freq(fractional_note);
-        // Borrow `voices` and `unison` disjointly (can't hold a `&self.unison`
-        // across the `&mut self` in `with_voice_for_id`).
         if let Some(i) = self.voice_index_for_id(id) {
-            let unison = self.unison.as_ref();
-            self.voices[i].set_tuning_freq(freq, unison);
+            self.voices[i].set_tuning_freq(freq);
         }
     }
 
@@ -673,10 +698,12 @@ impl PolySynth {
                 self.apply_pitch_bend();
             }
             cc::ALL_SOUND_OFF => {
-                self.voices
-                    .iter_mut()
-                    .filter(|v| v.channel() == channel)
-                    .for_each(|v| v.reset());
+                for (i, voice) in self.voices.iter_mut().enumerate() {
+                    if voice.channel() == channel {
+                        voice.reset();
+                        self.bank.kill_voice(i);
+                    }
+                }
                 self.allocator.all_sound_off(channel);
             }
             cc::ALL_NOTES_OFF => {
@@ -712,13 +739,12 @@ impl PolySynth {
         // shape applying to the bend interval itself.
         let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
         let tuning = &self.config.tuning;
-        let unison = self.unison.as_ref();
         self.voices
             .iter_mut()
             .filter(|v| v.is_active())
             .for_each(|voice| {
                 let base_freq = tuning.fractional_note_to_freq(f32::from(voice.note()));
-                voice.set_pitch(base_freq * bend_multiplier, unison);
+                voice.set_pitch(base_freq * bend_multiplier);
             });
     }
 
@@ -742,6 +768,165 @@ impl PolySynth {
             self.allocator.voice_finished(voice_id);
         }
     }
+
+    /// One control step: advance any glide by `frames`, then have every
+    /// sounding voice write its lane targets.
+    ///
+    /// The glide is ticked per frame and the voices are aimed at where it will
+    /// be at the *end* of the step; the bank ramps each lane there sample by
+    /// sample. So a glide moves the pitch every frame in `process` as it does
+    /// in `tick`. The block path used to tick the glide `block_len` times and
+    /// then render the whole sub-block at the final pitch: a staircase, one
+    /// step per MIDI sub-block, that `tick` never produced.
+    fn control_step(&mut self, frames: usize) {
+        if let Some(ref mut porta) = self.portamento {
+            if porta.is_gliding() {
+                let mut freq = porta.current();
+                for _ in 0..frames {
+                    freq = porta.tick();
+                }
+                // Hoisted: neither operand changes inside a step (MIDI is
+                // handled between steps).
+                let bend_multiplier =
+                    (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
+                for voice in self.voices.iter_mut().filter(|v| v.is_active()) {
+                    voice.set_pitch(freq * bend_multiplier);
+                }
+            }
+        }
+
+        let unison = self.unison.as_ref();
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            if voice.is_active() {
+                voice.drive(&mut self.bank, i, frames, unison);
+            }
+        }
+    }
+
+    /// Render `frames` frames with no MIDI inside them, handing each frame to
+    /// `emit` as `(start + offset, left, right)` scaled by `volume`.
+    ///
+    /// Works in control steps of at most [`CONTROL_BLOCK`] frames, so it
+    /// renders every frame of any `frames` with no scratch sized to a block.
+    ///
+    /// The steps sit on a fixed grid of [`CONTROL_BLOCK`] frames measured from
+    /// the block start, cut additionally at each MIDI event. So where the
+    /// control points fall does not depend on where events split the block —
+    /// and for any host block that is a multiple of the grid, not on the block
+    /// size either: one 512-frame block renders sample-identically to eight
+    /// 64-frame ones.
+    fn render_span(
+        &mut self,
+        start: usize,
+        frames: usize,
+        volume: f32,
+        emit: &mut impl FnMut(usize, f32, f32),
+    ) {
+        let mut done = 0;
+        while done < frames {
+            let to_grid = CONTROL_BLOCK - (start + done) % CONTROL_BLOCK;
+            let n = (frames - done).min(to_grid);
+            self.control_step(n);
+            let (left, right) = self.bank.render(n);
+            for (i, (&l, &r)) in left.iter().zip(right).enumerate() {
+                emit(start + done + i, l * volume, r * volume);
+            }
+            done += n;
+        }
+        self.retire_finished_voices();
+        self.allocator.advance_time(frames as u64);
+    }
+
+    /// Report each sounding voice's level to the allocator and free the ones
+    /// whose release has run out.
+    fn retire_finished_voices(&mut self) {
+        self.finished_indices.clear();
+        for (i, voice) in self.voices.iter_mut().enumerate() {
+            if !voice.is_active() {
+                continue;
+            }
+            let level = voice.output_level(&self.bank, i);
+            voice.set_envelope_level(level);
+            self.allocator.update_envelope_level(i, level);
+            if voice.is_finished(&self.bank, i) {
+                voice.deactivate();
+                self.finished_indices.push(i);
+            }
+        }
+
+        // Index rather than `mem::take`: `take` would swap in a fresh `Vec` and
+        // free the outgoing one here, on the audio thread, then re-allocate it
+        // next span. (`drain` would not borrow-check: `mark_voice_finished`
+        // takes `&mut self`.) `clear()` above resets the length each span.
+        for i in 0..self.finished_indices.len() {
+            let slot_index = self.finished_indices[i];
+            self.mark_voice_finished(slot_index);
+        }
+    }
+
+    /// Render `size` frames, applying the first `midi_count` entries of the
+    /// (sorted) `midi_buffer` at their frame offsets.
+    ///
+    /// The block is split at each event so the event lands on its frame, and
+    /// the pieces go to [`render_span`](Self::render_span). Nothing here is
+    /// bounded by a block size: this used to mix into `[f32; MAX_BUFFER_SIZE]`
+    /// stack arrays and clamp `size` to them, which in a release build silently
+    /// rendered only the first 64 frames of a longer block.
+    fn render_events(
+        &mut self,
+        size: usize,
+        midi_count: usize,
+        volume: f32,
+        emit: &mut impl FnMut(usize, f32, f32),
+    ) {
+        let mut block_start = 0;
+        let mut event_idx = 0;
+
+        while block_start < size {
+            let block_end = if event_idx < midi_count {
+                let next_offset = (self.midi_buffer[event_idx].frame_offset as usize).min(size);
+                if next_offset <= block_start {
+                    let event = self.midi_buffer[event_idx];
+                    self.process_midi_event(&event);
+                    event_idx += 1;
+                    continue;
+                }
+                next_offset
+            } else {
+                size
+            };
+
+            self.render_span(block_start, block_end - block_start, volume, emit);
+            block_start = block_end;
+        }
+
+        while event_idx < midi_count {
+            let event = self.midi_buffer[event_idx];
+            self.process_midi_event(&event);
+            event_idx += 1;
+        }
+    }
+
+    /// Render `left.len()` frames into planar slices, MIDI included — the
+    /// block path without `BufferMut`'s 64-frame channel stride, so a test can
+    /// hand it a block of any length.
+    #[cfg(test)]
+    pub(crate) fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+        assert_eq!(left.len(), right.len());
+        let size = left.len();
+        if size == 0 {
+            return;
+        }
+        if let Some(unison) = &mut self.unison {
+            unison.sync_from_atomics();
+        }
+        let midi_count = self.poll_midi_events_sorted(size);
+        let volume = self.master_volume.load().get();
+        self.render_events(size, midi_count, volume, &mut |i, l, r| {
+            left[i] = l;
+            right[i] = r;
+        });
+    }
 }
 
 impl AudioUnit for PolySynth {
@@ -749,6 +934,7 @@ impl AudioUnit for PolySynth {
         for voice in &mut self.voices {
             voice.reset();
         }
+        self.bank.reset();
         self.allocator.reset();
         if let Some(ref mut porta) = self.portamento {
             porta.reset(440.0);
@@ -769,15 +955,13 @@ impl AudioUnit for PolySynth {
     ///    mints a fresh private mailbox + source cell (nothing holds this new
     ///    sender, so the port stays permanently empty).
     ///
-    /// 2. **Per-voice `Shared` params** — every voice (and its
-    ///    sub-voices) holds `gate`/`pitch`/`filter_cutoff`/`filter_resonance` as
-    ///    `Shared` (`Arc<AtomicU32>`), which `#[derive(Clone)]` aliases. The
-    ///    voice's `tick` *writes* these every sample (envelope→filter, pitch
-    ///    glide), so a worker ticking the clone would stomp the atomics the live
-    ///    voice reads into its output → continuous garbage. Fixed by rebuilding
-    ///    the voice set from config: `from_config` mints fresh `Shared`s, and a
-    ///    clean, inactive voice set is exactly the correct event-free render
-    ///    state. The allocator is reset to agree the slots are free.
+    /// 2. **Sounding voices.** Voice state is plain data — the per-sub-voice
+    ///    `Shared` atomics a clone used to alias are gone with the fundsp chain
+    ///    that read them — but a clone still carries the live synth's sounding
+    ///    notes, which an offline render must not replay. The voices and the
+    ///    bank are reset to a clean, inactive set, which is exactly the correct
+    ///    event-free render state, and the allocator is reset to agree the
+    ///    slots are free.
     ///
     /// After `isolate()` the synth reads nothing from, and writes nothing into,
     /// the live world — it renders silence until its own (now-empty) inbox feeds
@@ -788,25 +972,16 @@ impl AudioUnit for PolySynth {
         // can't disturb the live clip). See [`MidiInPort::isolate`].
         self.midi.isolate();
 
-        // Rebuild voices with fresh `Shared` atomics (see #2 above).
-        let unison_count = self
-            .config
-            .unison
-            .as_ref()
-            .map_or(1, |u| usize::from(u.voice_count));
-        self.voices.clear();
-        for _ in 0..self.config.max_voices {
-            let mut voice = SynthVoice::from_config(&self.config, unison_count);
-            voice.set_sample_rate(self.config.sample_rate);
-            self.voices.push(voice);
+        // A clean, inactive voice set (see #2 above).
+        for voice in &mut self.voices {
+            voice.reset();
         }
+        self.bank.reset();
         self.allocator.reset();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        for voice in &mut self.voices {
-            voice.set_sample_rate(sample_rate);
-        }
+        self.bank.set_sample_rate(sample_rate);
         if let Some(ref mut porta) = self.portamento {
             porta.set_sample_rate(sample_rate);
         }
@@ -820,61 +995,15 @@ impl AudioUnit for PolySynth {
             unison.sync_from_atomics();
         }
 
-        if let Some(ref mut porta) = self.portamento {
-            if porta.is_gliding() {
-                let porta_freq = porta.tick().get();
-                let bend_multiplier =
-                    (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
-                let freq = porta_freq * bend_multiplier;
-                let unison_ref = self.unison.as_ref();
-                for voice in &mut self.voices {
-                    if voice.is_active() {
-                        voice.set_pitch(freq, unison_ref);
-                    }
-                }
-            }
-        }
-
-        self.mix_buffer = [0.0, 0.0];
-        self.finished_indices.clear();
-
-        for (i, voice) in self.voices.iter_mut().enumerate() {
-            if voice.is_active() {
-                let (left, right) = voice.tick_stereo(self.unison.as_ref());
-
-                let level = left.abs().max(right.abs());
-                voice.set_envelope_level(level);
-                self.allocator.update_envelope_level(i, level);
-
-                if voice.gate_value() == 0.0 && level < 0.0001 {
-                    voice.deactivate();
-                    self.finished_indices.push(i);
-                }
-
-                self.mix_buffer[0] += left;
-                self.mix_buffer[1] += right;
-            }
-        }
-
-        // Index rather than `mem::take`. `take` swaps in a fresh `SmallVec` and
-        // drops the outgoing one, so if the collection had spilled it would be
-        // freed *here*, on the audio thread, and re-allocated next block — a
-        // recurring cost, not a warm-up. The `max_voices` ceiling makes that
-        // spill unreachable today; this keeps the drain itself allocation-free
-        // so raising the constant cannot silently re-arm it.
-        // (`drain` would not borrow-check: `mark_voice_finished` takes `&mut
-        // self`.) `clear()` above resets the length each block.
-        for i in 0..self.finished_indices.len() {
-            let slot_index = self.finished_indices[i];
-            self.mark_voice_finished(slot_index);
-        }
-
-        self.allocator.advance_time(1);
-
+        // The block renderer, one frame long: `tick` and `process` share every
+        // line of DSP, so they cannot drift apart.
         let volume = self.master_volume.load().get();
-        output[0] = self.mix_buffer[0] * volume;
+        let mut frame = [0.0f32; 2];
+        self.render_span(0, 1, volume, &mut |_, l, r| frame = [l, r]);
+
+        output[0] = frame[0];
         if output.len() > 1 {
-            output[1] = self.mix_buffer[1] * volume;
+            output[1] = frame[1];
         }
     }
 
@@ -892,111 +1021,27 @@ impl AudioUnit for PolySynth {
         let midi_count = self.poll_midi_events_sorted(size);
         let stereo = ChannelLayout::from(output.channels()).is_multi();
 
-        // Sized to fundsp's block ceiling, not a bare `64`. Every `Buffer`
-        // channel holds exactly `MAX_BUFFER_SIZE` samples, so a `size` past it
-        // could not have come from a real `Buffer` — but the mix buffers below are
-        // indexed by *absolute* position (`block_start..block_end`, up to `size`),
-        // so an over-long `size` from a direct `process` call would index past
-        // them. Clamped rather than trusted: the debug assert catches the contract
-        // breach in tests, and release renders the first `MAX_BUFFER_SIZE` frames
-        // instead of panicking on the audio thread.
+        // The renderer has no block ceiling; `BufferMut` does. Each of its
+        // channels holds exactly `MAX_BUFFER_SIZE` frames — frame 64 of channel
+        // 0 *is* frame 0 of channel 1 — so a larger `size` cannot have come
+        // from a well-formed buffer, and the debug assert catches that contract
+        // breach in tests. In release the synth still renders all `size`
+        // frames, so its clock and every MIDI offset stay where the host put
+        // them, and writes the frames the buffer can hold.
         debug_assert!(
             size <= MAX_BUFFER_SIZE,
-            "process size {size} exceeds fundsp's MAX_BUFFER_SIZE ({MAX_BUFFER_SIZE}); \
-             mix buffers are sized to that ceiling"
+            "process size {size} exceeds the BufferMut channel stride ({MAX_BUFFER_SIZE})"
         );
-        let size = size.min(MAX_BUFFER_SIZE);
-
-        let mut mix_left = [0.0f32; MAX_BUFFER_SIZE];
-        let mut mix_right = [0.0f32; MAX_BUFFER_SIZE];
-
-        let mut block_start = 0;
-        let mut event_idx = 0;
-
-        while block_start < size {
-            let block_end = if event_idx < midi_count {
-                let next_offset = (self.midi_buffer[event_idx].frame_offset as usize).min(size);
-                if next_offset <= block_start {
-                    let event = self.midi_buffer[event_idx];
-                    self.process_midi_event(&event);
-                    event_idx += 1;
-                    continue;
-                }
-                next_offset
-            } else {
-                size
-            };
-
-            let block_len = block_end - block_start;
-
-            if let Some(ref mut porta) = self.portamento {
-                if porta.is_gliding() {
-                    // Hoisted: neither operand changes inside a block (MIDI is
-                    // handled at block boundaries), so this was recomputing an
-                    // unchanging `powf` on every sample.
-                    let bend_multiplier =
-                        (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
-                    for _ in 0..block_len {
-                        let porta_freq = porta.tick().get();
-                        let freq = porta_freq * bend_multiplier;
-                        let unison_ref = self.unison.as_ref();
-                        for voice in &mut self.voices {
-                            if voice.is_active() {
-                                voice.set_pitch(freq, unison_ref);
-                            }
-                        }
-                    }
-                }
-            }
-
-            mix_left[block_start..block_end].fill(0.0);
-            mix_right[block_start..block_end].fill(0.0);
-
-            self.finished_indices.clear();
-
-            for (i, voice) in self.voices.iter_mut().enumerate() {
-                if voice.is_active() {
-                    let peak = voice.process_block_stereo(
-                        self.unison.as_ref(),
-                        &mut mix_left,
-                        &mut mix_right,
-                        block_start,
-                        block_len,
-                    );
-
-                    voice.set_envelope_level(peak);
-                    self.allocator.update_envelope_level(i, peak);
-
-                    if voice.gate_value() == 0.0 && peak < 0.0001 {
-                        voice.deactivate();
-                        self.finished_indices.push(i);
-                    }
-                }
-            }
-
-            // Index rather than `mem::take` — see the matching drain in `tick`.
-            for i in 0..self.finished_indices.len() {
-                let slot_index = self.finished_indices[i];
-                self.mark_voice_finished(slot_index);
-            }
-
-            self.allocator.advance_time(block_len as u64);
-            block_start = block_end;
-        }
-
-        while event_idx < midi_count {
-            let event = self.midi_buffer[event_idx];
-            self.process_midi_event(&event);
-            event_idx += 1;
-        }
 
         let volume = self.master_volume.load().get();
-        for i in 0..size {
-            output.set_f32(0, i, mix_left[i] * volume);
-            if stereo {
-                output.set_f32(1, i, mix_right[i] * volume);
+        self.render_events(size, midi_count, volume, &mut |i, l, r| {
+            if i < MAX_BUFFER_SIZE {
+                output.set_f32(0, i, l);
+                if stereo {
+                    output.set_f32(1, i, r);
+                }
             }
-        }
+        });
     }
 
     fn inputs(&self) -> usize {
@@ -1048,14 +1093,9 @@ impl AudioUnit for PolySynth {
 
     fn footprint(&self) -> usize {
         core::mem::size_of::<Self>()
-            + self.voices.iter().map(|v| v.footprint()).sum::<usize>()
+            + self.voices.capacity() * core::mem::size_of::<SynthVoice>()
+            + self.bank.footprint()
             + self.midi_buffer.capacity() * core::mem::size_of::<MidiEvent>()
-    }
-
-    fn allocate(&mut self) {
-        for voice in &mut self.voices {
-            voice.allocate();
-        }
     }
 }
 
@@ -1109,13 +1149,13 @@ impl Clone for PolySynth {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
             voices: self.voices.clone(),
+            bank: self.bank.clone(),
             portamento: self.portamento.clone(),
             unison: self.unison.clone(),
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
             midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); 256],
-            mix_buffer: [0.0; 2],
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }
@@ -1141,12 +1181,12 @@ mod tests {
 
     /// A full-ceiling block renders every frame it was asked for.
     ///
-    /// The mix buffers are `[f32; MAX_BUFFER_SIZE]` indexed by absolute position,
-    /// so `size == MAX_BUFFER_SIZE` is the exact boundary where an off-by-one in
-    /// the sizing would index past them. The over-size case (`size >` the ceiling)
-    /// is a contract breach guarded by a `debug_assert`, so it is deliberately not
-    /// exercised here — a test build would abort on the assert rather than reach
-    /// the release clamp behind it.
+    /// `size == MAX_BUFFER_SIZE` is the largest block `BufferMut` can carry —
+    /// each channel is exactly that many frames — so this is the boundary where
+    /// an off-by-one in writing the output would show. Blocks longer than that
+    /// cannot be expressed through `process`; the renderer behind it handles
+    /// any length, which `a_long_block_renders_every_frame_like_short_blocks`
+    /// covers.
     #[test]
     fn a_full_ceiling_block_renders_every_frame() {
         use tutti_core::BufferVec;
@@ -1342,13 +1382,14 @@ mod tests {
         );
     }
 
-    /// Regression: the deeper half of the same bug. `SynthVoice` holds its
-    /// `gate`/`pitch`/`filter_*` as `Shared` (`Arc<AtomicU32>`), which `clone()`
-    /// aliases — and the voice *writes* them every tick. So a worker ticking the
-    /// render clone would stomp the atomics the live voice reads into its output,
-    /// even with the MIDI inbox already severed. `isolate()` must rebuild the
-    /// voices with fresh `Shared`s. Prove the clone's voice params are unaliased:
-    /// driving the clone's voice leaves the live voice's gate untouched.
+    /// Regression: the deeper half of the same bug. `SynthVoice` used to hold
+    /// its `gate`/`pitch`/`filter_*` as `Shared` (`Arc<AtomicU32>`), which
+    /// `clone()` aliases — and the voice *wrote* them every tick. So a worker
+    /// ticking the render clone would stomp the atomics the live voice reads
+    /// into its output, even with the MIDI inbox already severed. The voice
+    /// bank made those plain fields, so the property is now structural; this
+    /// keeps it pinned. Driving the clone's voice must leave the live voice's
+    /// gate untouched.
     #[test]
     fn isolate_unaliases_voice_shared_params() {
         let mut live = synth(SynthConfig {
@@ -1581,41 +1622,51 @@ mod tests {
         assert!(synth.unison.is_none());
     }
 
+    /// One sub-voice's chain — oscillator, envelope, gains — is silent while
+    /// its gate is closed and sounds once it opens.
+    ///
+    /// This drove fundsp's `var(&pitch) >> (saw() * (var(&gate) >>
+    /// adsr_live(..)))` until that chain was replaced by the voice bank; the
+    /// claim is the same, made of the chain the synth now runs.
+    ///
+    /// *Mutation:* dropping `gate_on`'s `enter(Attack)` (so the gate never
+    /// opens the envelope) fails the second half.
     #[test]
     fn test_basic_dsp_chain() {
-        use tutti_core::dsp::{adsr_live, saw, var};
-        use tutti_core::AudioUnit;
+        use crate::bank::VoiceBank;
+        use tutti_core::Phase;
 
-        let pitch = tutti_core::shared(440.0);
-        let gate = tutti_core::shared(0.0);
+        let mut bank = VoiceBank::new(
+            OscillatorType::Saw,
+            &FilterType::None,
+            &EnvelopeConfig::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
+            tutti_core::SampleRate(44100.0),
+            1,
+            1,
+        );
+        bank.set_pitch(0, Hz(440.0));
+        bank.set_gains(0, 1.0, 1.0);
+        bank.snap(0);
+        bank.start(0, Phase(0.3));
 
-        let mut osc: Box<dyn AudioUnit> = Box::new(var(&pitch) >> saw());
-        osc.set_sample_rate(tutti_core::SampleRate(44100.0));
+        // Gate closed: the oscillator runs, the envelope holds it at zero.
+        let mut closed = 0.0f32;
+        for _ in 0..32 {
+            bank.mark_live(0);
+            let (l, _) = bank.render(16);
+            closed = l.iter().fold(closed, |a, s| a.max(s.abs()));
+        }
+        assert_eq!(closed, 0.0, "a closed gate must be exact silence");
 
-        let mut out = [0.0f32; 1];
-        osc.tick(&[], &mut out);
-        assert!(out[0] != 0.0, "Oscillator should produce output");
-
-        let mut chain: Box<dyn AudioUnit> =
-            Box::new(var(&pitch) >> (saw() * (var(&gate) >> adsr_live(0.001, 0.1, 0.8, 0.1))));
-        chain.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        // Process one sample with gate=0 to initialize envelope
-        let mut out2 = [0.0f32; 1];
-        chain.tick(&[], &mut out2);
-
-        // Trigger gate
-        gate.set(1.0);
-
-        // EnvelopeIn samples at 2ms intervals (about 88 samples at 44100Hz)
-        // So more samples must be processed to see the envelope respond
+        bank.gate_on(0);
         let mut max_out = 0.0f32;
-        for _ in 0..500 {
-            chain.tick(&[], &mut out2);
-            max_out = max_out.max(out2[0].abs());
+        for _ in 0..32 {
+            bank.mark_live(0);
+            let (l, _) = bank.render(16);
+            max_out = l.iter().fold(max_out, |a, s| a.max(s.abs()));
         }
         assert!(
-            max_out > 0.0001,
+            max_out > 0.1,
             "Chain should produce output after triggering gate, max={}",
             max_out
         );
@@ -3166,6 +3217,211 @@ mod tests {
                 < 0.01,
             "per-note state survived being disabled — it would snap back into \
              effect on the next enable"
+        );
+    }
+
+    /// A block far longer than `MAX_BUFFER_SIZE` renders every frame, with
+    /// MIDI landing inside it past frame 64 — and is sample-identical to the
+    /// same audio rendered as eight 64-frame blocks.
+    ///
+    /// This is design doc 013's D4: the block path mixed into
+    /// `[f32; MAX_BUFFER_SIZE]` stack arrays and clamped `size` to them, so in
+    /// release a 512-frame block rendered 64 frames and silence. The renderer
+    /// now has no block-sized scratch at all; the identity with short blocks is
+    /// what shows the long block is not merely non-silent but *right* —
+    /// control steps, glides and event offsets all land where they would have.
+    ///
+    /// *Mutation:* clamping `size` to `MAX_BUFFER_SIZE` at the top of
+    /// `render_events` fails this (frame 64 onward goes silent and the event at
+    /// 200 is never reached in the long block).
+    #[test]
+    fn a_long_block_renders_every_frame_like_short_blocks() {
+        let config = || SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 4,
+            oscillator: OscillatorType::Saw,
+            filter: FilterType::Svf {
+                cutoff: Hz(3_000.0),
+                q: tutti_core::Q(1.0),
+                mode: crate::SvfMode::Lowpass,
+            },
+            portamento: Some(PortamentoConfig {
+                mode: PortamentoMode::Always,
+                curve: PortamentoCurve::Linear,
+                time: Seconds(0.004),
+                constant_time: true,
+            }),
+            ..Default::default()
+        };
+
+        // One 512-frame block: a note at 0, a second note at 200 (gliding in),
+        // the first released at 300.
+        let mut long = synth(config());
+        queue_midi(
+            &long,
+            &[
+                ev_note_on(0, 60, 100),
+                ev_note_on(0, 67, 100).with_frame_offset(200),
+                ev_note_off(0, 60).with_frame_offset(300),
+            ],
+        );
+        let (mut l_long, mut r_long) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+        long.render_planar(&mut l_long, &mut r_long);
+
+        // The same events, rebased into eight 64-frame blocks.
+        let mut short = synth(config());
+        let (mut l_short, mut r_short) = (Vec::new(), Vec::new());
+        for block in 0..8 {
+            match block {
+                0 => queue_midi(&short, &[ev_note_on(0, 60, 100)]),
+                3 => queue_midi(&short, &[ev_note_on(0, 67, 100).with_frame_offset(8)]),
+                4 => queue_midi(&short, &[ev_note_off(0, 60).with_frame_offset(44)]),
+                _ => {}
+            }
+            let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+            short.render_planar(&mut l, &mut r);
+            l_short.extend_from_slice(&l);
+            r_short.extend_from_slice(&r);
+        }
+
+        let tail_peak = l_long[448..].iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(
+            tail_peak > 0.01,
+            "the last 64 frames of the long block are silent"
+        );
+        assert_eq!(
+            l_long, l_short,
+            "left: one 512-frame block differs from eight 64-frame blocks"
+        );
+        assert_eq!(
+            r_long, r_short,
+            "right: one 512-frame block differs from eight 64-frame blocks"
+        );
+        assert_eq!(long.active_voice_count(), short.active_voice_count());
+    }
+
+    /// Sub-voices added under a held note sound at once, without waiting for
+    /// the next note-on.
+    ///
+    /// Growing unison from 1 to 3 at full spread moves the existing sub-voice
+    /// hard left and adds two more, centre and hard right. If the added lanes
+    /// started idle the right channel would go silent until the key was struck
+    /// again.
+    ///
+    /// *Mutation:* leaving the added lanes as allocated (idle) in
+    /// `VoiceBank::resize_stride` fails this.
+    #[test]
+    fn unison_grown_under_a_held_note_sounds_immediately() {
+        let mut synth = synth(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 2,
+            oscillator: OscillatorType::Saw,
+            unison: Some(UnisonConfig {
+                voice_count: 1,
+                detune_cents: tutti_core::Cents(12.0),
+                stereo_spread: Spread(1.0),
+                phase_randomize: false,
+            }),
+            ..Default::default()
+        });
+        queue_midi(&synth, &[ev_note_on(0, 57, 100)]);
+        let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+        for _ in 0..16 {
+            synth.render_planar(&mut l, &mut r);
+        }
+
+        synth.set_unison_voice_count(3);
+        let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        for _ in 0..8 {
+            synth.render_planar(&mut l, &mut r);
+            left.extend_from_slice(&l);
+            right.extend_from_slice(&r);
+        }
+        assert!(rms(&left) > 0.05, "the held note went quiet on resize");
+        assert!(
+            rms(&right) > 0.5 * rms(&left),
+            "the added sub-voices are silent: left rms {}, right rms {}",
+            rms(&left),
+            rms(&right)
+        );
+    }
+
+    /// A portamento glide sounds the same through `process` as through `tick`.
+    ///
+    /// This is design doc 013's D5. `tick` has always glided per sample, but
+    /// `process` ticked the glide `block_len` times and then rendered the whole
+    /// MIDI sub-block at the final pitch: a staircase, one step per block,
+    /// always ahead of the true glide. The phase error that leaves accumulates
+    /// over the glide, so the two paths' *waveforms* drift apart even though
+    /// their pitch at any block boundary agrees. Now both run the same
+    /// renderer, and inside a control step the pitch ramps per sample.
+    ///
+    /// Not asserted bit-identical: `tick` takes a control step every sample and
+    /// `process` every 16, and between them the pitch ramps linearly rather
+    /// than along the glide's exponential curve.
+    ///
+    /// *Mutation:* rendering each control step at its target pitch (zeroing
+    /// `inc_step` and loading `inc_target` at the top of `render_group`) fails
+    /// this at 0.33 against a 0.0056 tolerance; the correct renderer measures
+    /// 0.0018.
+    #[test]
+    fn process_and_tick_agree_through_a_glide() {
+        let config = || SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 1,
+            voice_mode: VoiceMode::Mono,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig::new(
+                Seconds(0.001),
+                Seconds(0.0),
+                Amplitude(1.0),
+                Seconds(0.1),
+            ),
+            portamento: Some(PortamentoConfig {
+                mode: PortamentoMode::Always,
+                curve: PortamentoCurve::Linear,
+                time: Seconds(0.05),
+                constant_time: true,
+            }),
+            ..Default::default()
+        };
+        const BLOCKS: usize = 60;
+
+        let mut ticked = synth(config());
+        let mut blocked = synth(config());
+        let mut via_tick = Vec::new();
+        let mut via_process = Vec::new();
+        for block in 0..BLOCKS {
+            let events: &[MidiEvent] = match block {
+                0 => &[ev_note_on(0, 48, 100)],
+                // Three octaves up over 50 ms, well after the attack.
+                10 => &[ev_note_on(0, 84, 100)],
+                _ => &[],
+            };
+            queue_midi(&ticked, events);
+            queue_midi(&blocked, events);
+
+            let mut frame = [0.0f32; 2];
+            for _ in 0..64 {
+                ticked.tick(&[], &mut frame);
+                via_tick.push(frame[0]);
+            }
+            let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+            blocked.render_planar(&mut l, &mut r);
+            via_process.extend_from_slice(&l);
+        }
+
+        let glide = 10 * 64..BLOCKS * 64;
+        let worst = glide
+            .clone()
+            .map(|i| (via_tick[i] - via_process[i]).abs())
+            .fold(0.0f32, f32::max);
+        let level = via_tick[glide].iter().fold(0.0f32, |a, s| a.max(s.abs()));
+        assert!(level > 0.1, "the glide is inaudible");
+        assert!(
+            worst < 0.01 * level,
+            "tick and process diverge by {worst} (level {level}) during the glide"
         );
     }
 }

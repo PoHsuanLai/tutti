@@ -2,7 +2,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, SignalFrame};
 use tutti_types::ChannelLayout;
 
 use super::envelope::EnvelopeFollower;
@@ -27,12 +27,12 @@ pub(super) struct CompressorCore {
 
 impl CompressorCore {
     /// Builds the shared core. The follower is seeded at the placeholder
-    /// [`DEFAULT_SAMPLE_RATE`]; `CompressorNode::set_sample_rate` retunes it
+    /// [`SampleRate::DEFAULT`]; `CompressorNode::set_sample_rate` retunes it
     /// from `timing`, which is why the times are kept as [`Seconds`] rather
     /// than only as coefficients — the seconds are the recoverable form, the
     /// coefficients are not.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     pub fn new(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -49,7 +49,7 @@ impl CompressorCore {
             timing: AttackRelease::new(attack, release),
             makeup_db: Param::new(Db(0.0)),
             envelope: 0.0,
-            follower: EnvelopeFollower::new(attack, release, DEFAULT_SAMPLE_RATE),
+            follower: EnvelopeFollower::new(attack, release, SampleRate::DEFAULT),
         }
     }
 
@@ -157,7 +157,7 @@ impl CompressorNode {
     /// Knee is hard and makeup is 0 dB; add them with
     /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup).
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**: `attack` and
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: `attack` and
     /// `release` become one-pole coefficients, a conversion from [`Seconds`]
     /// into a per-sample decay that needs the device rate. Call
     /// [`AudioUnit::set_sample_rate`] before the first `process`; it recomputes
@@ -171,7 +171,7 @@ impl CompressorNode {
     /// [`with_channels`](Self::with_channels) and inherits this. See the
     /// crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn mono(
         threshold_db: impl Into<Db>,

@@ -6,7 +6,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::shared::{LfoDrive, LinearModMix};
 use tutti_core::{Depth, Feedback, Hz, Mix, SampleRate};
@@ -94,7 +94,7 @@ impl PhaserNode {
     /// 0.3 Hz rate, half depth, 0.5 feedback, 50/50 [`Mix`], sweeping
     /// 200–4000 Hz.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; call
     /// [`AudioUnit::set_sample_rate`] before the first `process`. Two things
     /// skew together if it is missed at 48 kHz: the all-pass corner frequencies
     /// (so the notches sit 8.8% high) and the LFO's per-sample phase increment
@@ -102,7 +102,7 @@ impl PhaserNode {
     /// which is why nothing catches it. See the crate-level "born at a
     /// placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(stages: usize) -> Self {
         let n = stages.clamp(2, MAX_STAGES);
@@ -112,7 +112,7 @@ impl PhaserNode {
             lfo: LfoDrive::new(0.3, 0.0),
             mix: LinearModMix::new(0.5, 0.5, 0.5),
             feedback_sample: 0.0,
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             range: FrequencyRange::new(200.0, 4000.0),
         }
     }

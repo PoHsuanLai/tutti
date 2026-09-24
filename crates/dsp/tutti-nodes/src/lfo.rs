@@ -18,10 +18,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{
-    beat_from_ports, dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame,
-    BEAT_PORTS,
-};
+use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS};
 
 use tutti_core::{BeatDuration, Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
 
@@ -128,12 +125,12 @@ impl ModulatorNode<Lfo> {
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, as
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, as
     /// [`with_modulator`](Self::with_modulator) explains — call
     /// [`AudioUnit::set_sample_rate`] before the first `process` or the LFO
     /// cycles 8.8% slow at 48 kHz.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(shape: LfoShape) -> Self {
         Self::with_modulator(Lfo::new(shape))
@@ -151,7 +148,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// [`with_beat_sync`](Self::with_beat_sync).
     ///
     /// It takes no *sample* rate either, and that one is not a choice: the node
-    /// **starts at the placeholder [`DEFAULT_SAMPLE_RATE`]** and must be given
+    /// **starts at the placeholder [`SampleRate::DEFAULT`]** and must be given
     /// the device rate through [`AudioUnit::set_sample_rate`] before the first
     /// `process`. The two are separate quantities that meet in one place — the
     /// per-sample phase increment is the modulation rate divided by the sample
@@ -161,7 +158,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// supposed to lock to. See the crate-level "born at a placeholder rate"
     /// section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_modulator(modulator: M) -> Self {
         Self {
@@ -172,7 +169,7 @@ impl<M: Modulator> ModulatorNode<M> {
             depth: Param::new(Depth::FULL),
             phase_offset: Param::new(PhaseIncrement(0.0)),
             phase: Phase::START,
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
         }
     }
 

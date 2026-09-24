@@ -1607,6 +1607,22 @@ impl SampleRate {
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
 
+    /// The placeholder rate a node is born at, before a host hands it the
+    /// device's through `AudioUnit::set_sample_rate`.
+    ///
+    /// The engine's **one** such constant. There used to be two — the fork's
+    /// typed `DEFAULT_SAMPLE_RATE` and `tutti-node`'s raw `DEFAULT_SR: f64` —
+    /// that agreed only because both happened to say 44.1 kHz. Every node that
+    /// has not been given a rate must start from the *same* one, or a graph
+    /// built before the device opens is inconsistent with itself, so the value
+    /// has one owner and it is the unit's.
+    ///
+    /// 44.1 kHz rather than 48 kHz: it is what every node and the fork have
+    /// always seeded, and moving it would shift every rate-dependent default
+    /// (a filter's coefficients before `set_sample_rate`) for no gain — the
+    /// placeholder is corrected before the first real block either way.
+    pub const DEFAULT: Self = Self::SR_44K1;
+
     /// The Nyquist frequency: the highest representable at this rate.
     ///
     /// Returns [`Hz`] because the result is a *signal* frequency — something to

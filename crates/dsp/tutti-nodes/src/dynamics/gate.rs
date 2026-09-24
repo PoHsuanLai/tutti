@@ -2,7 +2,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, SignalFrame};
 use tutti_types::ChannelLayout;
 
 use super::envelope::GateEnvelopeFollower;
@@ -26,12 +26,12 @@ pub(super) struct GateCore {
 
 impl GateCore {
     /// Builds the shared core. The follower is seeded at the placeholder
-    /// [`DEFAULT_SAMPLE_RATE`]; `GateNode::set_sample_rate` retunes it from
+    /// [`SampleRate::DEFAULT`]; `GateNode::set_sample_rate` retunes it from
     /// `timing` and `hold`, which is why those are kept as [`Seconds`] rather
     /// than only as coefficients and a sample count — the seconds are the
     /// recoverable form, the derived values are not.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     pub fn new(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -48,7 +48,7 @@ impl GateCore {
             hold: Param::new(hold),
             range_db: Param::new(Db(-80.0)),
             envelope: 0.0,
-            follower: GateEnvelopeFollower::new(attack, hold, release, DEFAULT_SAMPLE_RATE),
+            follower: GateEnvelopeFollower::new(attack, hold, release, SampleRate::DEFAULT),
         }
     }
 
@@ -143,7 +143,7 @@ impl GateNode {
     ///
     /// The closed floor is −80 dB; set it with [`with_range`](Self::with_range).
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**: `attack` and
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: `attack` and
     /// `release` become one-pole coefficients and `hold` becomes an integer
     /// sample *count*, all three conversions from [`Seconds`] that need the
     /// device rate. Call [`AudioUnit::set_sample_rate`] before the first
@@ -159,7 +159,7 @@ impl GateNode {
     /// [`with_channels`](Self::with_channels) and inherits this. See the
     /// crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn mono(
         threshold_db: impl Into<Db>,

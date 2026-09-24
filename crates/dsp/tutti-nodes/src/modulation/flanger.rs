@@ -31,7 +31,7 @@ impl FlangerNode {
     ///
     /// Allocates its delay lines, so build before the node goes live.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; call
     /// [`AudioUnit::set_sample_rate`] before the first `process`, which rebuilds
     /// the lines (and so reallocates). Skip it at 48 kHz and the 2 ms sweep
     /// covers 8.8% less delay at 8.8% below the configured 0.5 Hz. A flanger is
@@ -44,7 +44,7 @@ impl FlangerNode {
     /// than a mandatory argument. See the crate-level "born at a placeholder
     /// rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new() -> Self {
         Self {

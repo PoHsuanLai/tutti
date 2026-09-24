@@ -6,7 +6,6 @@
 //! factory defaults — captured in [`ModulatedDelayConfig`].
 
 use crate::delay::{DelayLine, InterpolationMode, StereoPair};
-use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
 use tutti_core::{Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds};
 
 use super::shared::{LfoDrive, TimeModMix};
@@ -57,7 +56,7 @@ impl ModulatedDelay {
     /// Builds the shared core: two delay lines sized for `config.max_delay`,
     /// an LFO at `rate_hz` and the wet/feedback/mix surface.
     ///
-    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, and both
+    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, and both
     /// rate-dependent quantities skew together if
     /// [`set_sample_rate`](Self::set_sample_rate) is not called before the first
     /// process: the lines are *allocated* in samples from `max_delay`, and the
@@ -67,7 +66,7 @@ impl ModulatedDelay {
     /// nothing reports it. `set_sample_rate` rebuilds both lines and so
     /// reallocates. See the crate-level "born at a placeholder rate" section.
     ///
-    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
     pub fn new(
         config: ModulatedDelayConfig,
         rate_hz: impl Into<Hz>,
@@ -77,12 +76,12 @@ impl ModulatedDelay {
     ) -> Self {
         Self {
             delays: StereoPair::new(
-                DelayLine::from_seconds(config.max_delay, DEFAULT_SAMPLE_RATE),
-                DelayLine::from_seconds(config.max_delay, DEFAULT_SAMPLE_RATE),
+                DelayLine::from_seconds(config.max_delay, SampleRate::DEFAULT),
+                DelayLine::from_seconds(config.max_delay, SampleRate::DEFAULT),
             ),
             lfo: LfoDrive::new(rate_hz, config.lr_phase_offset),
             mix: TimeModMix::new(depth_secs, feedback, mix),
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            sample_rate: SampleRate::DEFAULT,
             config,
         }
     }

@@ -194,15 +194,9 @@ pub mod dsp {
     // host reaches it to *drive* the engine rather than to build a graph.
     pub use fundsp::net::{Net, NodeId, Source};
 
-    // ── The default rate a node starts life at ──────────────────────────────
-    //
-    // A `SampleRate` (the `tutti-types` unit), so it is a value and not a
-    // vocabulary. It is here because a node that has not yet been handed a rate
-    // by `set_sample_rate` still has to have coefficients, and every such node
-    // must start from the *same* placeholder or a graph built before the device
-    // opens is inconsistent with itself. `tutti-nodes` names it at 14 sites for
-    // exactly that reason.
-    pub use fundsp::DEFAULT_SAMPLE_RATE;
+    // The default rate a node starts life at is NOT here: it is
+    // `SampleRate::DEFAULT`, the unit's own constant, which the fork's
+    // `DEFAULT_SAMPLE_RATE` now aliases rather than defining a second value.
 
     // ── Combinators, for the one sanctioned sub-graph builder ───────────────
     //

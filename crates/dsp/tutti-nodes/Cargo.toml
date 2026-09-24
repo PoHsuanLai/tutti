@@ -76,6 +76,10 @@ criterion.workspace = true
 name = "engine_render"
 harness = false
 
+[[bench]]
+name = "width_generic"
+harness = false
+
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the
 # feature-gated half of the public API missing.

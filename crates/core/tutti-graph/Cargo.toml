@@ -1,0 +1,42 @@
+[package]
+name = "tutti-graph"
+version = "0.0.1"
+edition = "2021"
+description = "The native audio graph for the Tutti engine — a pure Topology→Plan compiler, a serial plan executor and the reference interpreter it is checked against"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "real-time", "dsp"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# No `bevy` feature: nothing here is a component. The adapter that will drive
+# this crate derives what it needs on its own side.
+default = []
+
+[dependencies]
+# The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
+# tail vocabulary — design doc 013's layer 1.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+# `AudioUnit` + `BufferVec`, for the `Legacy` adapter only. The edge goes away
+# with the adapter in doc 013's Phase 4.
+tutti-node = { version = "0.0.1", path = "../tutti-node" }
+# Safe casts between the 64-byte-aligned arena lines and the `f32` slices a
+# node is handed. This is what keeps the executor free of `unsafe`: alignment
+# comes from the element type, the reinterpretation from a checked `Pod` cast,
+# and the disjoint borrows from `split_at_mut`. See `src/arena.rs`.
+bytemuck = { version = "1.16", features = ["derive"] }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+criterion.workspace = true
+proptest = "1.9.0"
+# The bench's other side: the fork's `Net`, rendering the same nodes. Dev-only —
+# the graph must not link the runtime it replaces.
+fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false }
+
+[[bench]]
+name = "graph_render"
+harness = false

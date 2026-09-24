@@ -45,13 +45,15 @@ use dyn_clone::DynClone;
 /// engine node carries them (design doc 013, Phase 0).
 ///
 /// `ping` and `set_hash` stay, although no engine node overrides either and
-/// both are inert for every engine node. The fork's `Net` calls `ping` through
-/// `Box<dyn AudioUnit>` on every `determine_order`, and that dynamic call is
-/// the only way a fundsp generator held in a `Net` as an `An<X>` (its noise
-/// sources and oscillators) receives its pseudorandom seed through `set_hash`.
-/// A free function cannot recurse through a trait object into an `An<X>`, so
-/// moving them out of the trait would silently unseed those fork nodes. They
-/// go with `Net` in Phase 5.
+/// both are inert for every engine node. Two fork call sites dispatch them
+/// through a trait object: `Net` calls `ping` through `Box<dyn AudioUnit>` on
+/// every `determine_order`, and the fork's `SlotBackend::ping` (`slot.rs`) calls
+/// `set_hash` directly on its current, next and latest `Box<dyn AudioUnit>`
+/// units. Those dynamic calls are the only way a fundsp generator held as an
+/// `An<X>` (its noise sources and oscillators) receives its pseudorandom seed.
+/// A free function cannot reach an `An<X>` through a trait object, so moving
+/// them out of the trait would silently unseed those fork nodes. They go with
+/// `Net` in Phase 5.
 ///
 /// The [`latency`](Self::latency) example is `ignore`d here and executed in the
 /// fork: it builds its subjects with `fundsp_tutti::prelude64` constructors,

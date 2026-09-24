@@ -9,12 +9,12 @@
 use std::sync::Arc;
 use tutti_core::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
 
-const MAX_UNISON_VOICES: usize = 16;
+pub(crate) const MAX_UNISON_VOICES: usize = 16;
 
 /// Stacked, detuned copies of a single note — the "supersaw" thickener.
 ///
 /// Every field here multiplies the cost of *each* voice: a synth with
-/// `max_voices: 8` and `voice_count: 7` runs 56 oscillator chains. The
+/// `max_voices: 8` and `voice_count: 7` runs 56 oscillator lanes. The
 /// sub-voices are summed to a constant-power total, so raising
 /// [`voice_count`](Self::voice_count) thickens the tone without raising the
 /// level.
@@ -143,10 +143,13 @@ impl UnisonEngine {
             let freq_ratio = (detune_semitones * position).to_pitch_ratio();
             let pan = Pan(position * self.config.stereo_spread.get());
 
+            // The phase offset is kept: it is the last `randomize_phases`
+            // draw, not a function of detune or spread, and a detune moving
+            // under modulation must not wipe it.
             self.voices[i] = UnisonVoiceParams {
                 freq_ratio,
                 pan,
-                phase_offset: Phase::START,
+                phase_offset: self.voices[i].phase_offset,
                 amplitude,
             };
         }
@@ -156,9 +159,18 @@ impl UnisonEngine {
         }
     }
 
-    pub fn randomize_phases(&mut self) {
+    /// Draw a fresh set of start phases, one per sub-voice, into the
+    /// params table, and return them.
+    ///
+    /// Every call is a new draw, so each voice that starts calls this for its
+    /// own stack: two notes of a chord struck together get different phases.
+    /// Without `phase_randomize` every phase is [`Phase::START`].
+    pub fn randomize_phases(&mut self) -> &[UnisonVoiceParams] {
         if !self.config.phase_randomize {
-            return;
+            for v in &mut self.voices {
+                v.phase_offset = Phase::START;
+            }
+            return self.all_params();
         }
 
         let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
@@ -170,6 +182,7 @@ impl UnisonEngine {
 
             self.voices[i].phase_offset = Phase((self.rng_state as f32) / (u32::MAX as f32));
         }
+        self.all_params()
     }
 
     #[inline]
@@ -373,5 +386,35 @@ mod tests {
         let unison = UnisonEngine::new(config);
 
         assert_eq!(unison.voice_count(), MAX_UNISON_VOICES);
+    }
+
+    /// Recomputing detune/spread keeps the drawn phases.
+    ///
+    /// `sync_from_atomics` recomputes whenever a modulated detune or spread
+    /// moves, and in `tick` that runs after MIDI is polled — so a recompute
+    /// that reset the phases wiped the note-on's draw before anything used it.
+    ///
+    /// *Mutation:* `phase_offset: Phase::START` in `recompute_params` fails
+    /// this.
+    #[test]
+    fn recompute_keeps_the_drawn_phases() {
+        let mut unison = UnisonEngine::new(UnisonConfig {
+            voice_count: 4,
+            phase_randomize: true,
+            ..Default::default()
+        });
+        unison.seed_rng(7);
+        let drawn: Vec<f32> = unison
+            .randomize_phases()
+            .iter()
+            .map(|p| p.phase_offset.get())
+            .collect();
+        unison.set_detune(Cents(25.0));
+        let kept: Vec<f32> = unison
+            .all_params()
+            .iter()
+            .map(|p| p.phase_offset.get())
+            .collect();
+        assert_eq!(drawn, kept, "a detune change wiped the drawn phases");
     }
 }

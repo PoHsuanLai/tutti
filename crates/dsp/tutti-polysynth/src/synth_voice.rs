@@ -1,55 +1,41 @@
-//! One sounding note: the oscillator/filter/envelope chain, its per-note MPE
-//! state, and the per-sample modulation applied to both.
+//! One sounding note's *control* state: what it is playing, its per-note MPE
+//! expression, and the modulation that turns both into per-lane targets.
 //!
 //! Separate from `crate::voice` because that module decides *which* slot a note
-//! gets and this one decides what the slot sounds like — allocation is pure
-//! bookkeeping over slot indices, while everything here touches DSP. A voice
-//! holds one chain per unison sub-voice, each with its own pitch cell but
-//! sharing the voice's gate, cutoff and resonance cells.
+//! gets and this one decides what the slot sounds like. Separate from
+//! `crate::bank` because this holds no DSP state at all: the oscillator, filter
+//! and envelope of every sub-voice live in the bank's SIMD lanes, and a
+//! [`SynthVoice`] reaches them only through [`SynthVoice::drive`], once per
+//! control step.
 //!
-//! `tick_stereo` runs per sample on the audio thread and must not allocate.
-//! The two places that do allocate — building a chain in `from_config` and
-//! growing the sub-voice set in `resize_unison` — are control-thread only.
+//! That split is what the fundsp operator-DSL chain this replaced could not
+//! make. Each sub-voice used to be an opaque `Box<dyn AudioUnit>` reading its
+//! pitch, gate, cutoff and resonance out of four `Shared` atomics every sample
+//! — atomics shared between clones, which is why `isolate` had to rebuild every
+//! voice. Here those are plain fields, derived at the point of use each control
+//! step; nothing a clone could alias.
 //!
-//! # The one sanctioned combinator site in the engine
-//!
-//! [`build_sub_voice_dsp`] is the last production use of fundsp's operator DSL
-//! (`>>` serial, `|` stack, `*` product) anywhere in Tutti, and the whole
-//! combinator group in [`tutti_core::dsp`] exists for it. That module's docs
-//! name this function as the exception; this is the other half of that claim.
-//!
-//! **The reason is that the chain's *shape* is data, not code.** A sub-voice is
-//! an oscillator (five kinds) crossed with a filter (four kinds, three of them
-//! parameterized by mode), chosen at note-on from a `SynthConfig` the user
-//! edits, and rebuilt whenever that config changes. Written as a
-//! [`Topology`](tutti_core::Topology) it would be twenty node-and-edge
-//! constructions returning the same twenty shapes; written as one `impl
-//! AudioUnit` it would be a hand-rolled twenty-arm state machine over
-//! oscillator phase, filter state and envelope stage. The combinators express
-//! it as one `match` per axis, and fundsp's own generators supply the DSP.
-//!
-//! **What it costs, and why that is acceptable here.** The result is an opaque
-//! `Box<dyn AudioUnit>` — the value layer cannot see inside it, so a sub-voice
-//! chain is one node to `Topology`, `latency::plan` and `tail::graph_tail`. That
-//! is the right granularity for this object: a voice is allocated and freed as a
-//! unit, never rewired, and its internals are not addressable by anything
-//! outside this file. A combinator expression whose parts a *host* had to
-//! address would be the wrong call, which is the line for any future site.
-//!
-//! New DSP that is not this should be a `Topology` or an `impl AudioUnit`.
+//! Nothing here allocates. The gate edges `note_on`/`note_off` record are
+//! applied to the lanes by the next `drive`, which the render calls before the
+//! first frame after the MIDI event that caused them — so an edge still lands
+//! on the event's frame.
 
-use crate::{FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
-use crate::{MpeVoiceState, UnisonEngine};
-use tutti_core::dsp::{
-    adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
-    sine, triangle, var,
-};
-use tutti_core::{Amplitude, AudioUnit, Depth, Hz, Pan, Phase, PhaseIncrement, Semitones, Shared};
+use crate::bank::VoiceBank;
+use crate::unison::MAX_UNISON_VOICES;
+use crate::{FilterModConfig, FilterType, SynthConfig};
+use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
+use tutti_core::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
 
-#[derive(Clone)]
-struct SubVoice {
-    pitch: Shared,
-    dsp: Box<dyn AudioUnit>,
+/// A gate edge waiting for the next control step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateEdge {
+    None,
+    /// Note-on. `fresh` when the voice was silent, so its oscillators may be
+    /// reset to their start phases without a click.
+    On {
+        fresh: bool,
+    },
+    Off,
 }
 
 #[derive(Clone)]
@@ -57,23 +43,38 @@ pub(crate) struct SynthVoice {
     note: u8,
     channel: u8,
     velocity: f32,
-    gate: Shared,
-    filter_cutoff: Shared,
+    gate: bool,
+    edge: GateEdge,
+    /// Jump the lanes' pitch and filter to their targets at the next control
+    /// step instead of ramping — set by a note-on, so a new note does not
+    /// glide in from the previous one's pitch. A glide is portamento's job.
+    snap_tone: bool,
+    /// Jump the lanes' output gains too. Only for a voice starting from
+    /// silence: a stolen or retriggered voice is still sounding, and stepping
+    /// its gain from the old velocity to the new one is a click, so it ramps.
+    snap_gain: bool,
+    /// Each sub-voice's start phase for the next fresh start, drawn per voice
+    /// at its note-on. Held here rather than read from the shared unison table
+    /// at start time, where the notes of a chord would all read the last draw.
+    start_phases: [Phase; MAX_UNISON_VOICES],
+    /// The pitch the voice sounds before per-note bend and unison detune: the
+    /// note (or its tuning override) under the global bend and any glide.
+    pitch: Hz,
     /// The authored corner frequency; every modulation source multiplies it.
     base_filter_cutoff: Hz,
-    filter_resonance: Shared,
-    /// Bare `f32` on purpose: holds the Moog `Resonance` or the SVF `Q`,
-    /// whichever filter is configured — see the merge note in `from_config`.
-    base_filter_resonance: f32,
+    /// The authored ladder resonance. Only the ladder reads a resonance per
+    /// lane: the SVF's `Q` is fixed for the synth, so CC71 reaches only
+    /// [`FilterType::Moog`], as it always has.
+    base_filter_resonance: Resonance,
     mod_wheel_value: f32,
     velocity_mod_value: f32,
     /// Normalized CC74 (Brightness) position, `0..1` centered at `0.5` — a
     /// controller value, not a frequency. Mapped onto `base_filter_cutoff` as
-    /// a `4^(v - 0.5)` factor in `update_modulated_filter`.
+    /// a `4^(v - 0.5)` factor in `modulated_cutoff`.
     cc_cutoff_value: f32,
     /// Normalized CC71 (Resonance) position, `0..1` with `0.0` inactive — a
     /// controller value, not a `Resonance`. Blends `base_filter_resonance`
-    /// toward the 0.95 ceiling in `update_modulated_filter`.
+    /// toward the 0.95 ceiling in `modulated_resonance`.
     cc_resonance_value: f32,
     filter_mod: FilterModConfig,
     lfo_phase: Phase,
@@ -83,9 +84,7 @@ pub(crate) struct SynthVoice {
     mpe_enabled: bool,
     mpe_pitch_bend_range: Semitones,
     base_note_freq: Hz,
-    sub_voices: Vec<SubVoice>,
-    config: SynthConfig,
-    sample_rate: tutti_core::SampleRate,
+    sub_voices: usize,
 }
 
 impl SynthVoice {
@@ -104,19 +103,47 @@ impl SynthVoice {
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }
+    /// `1.0` while the key (or a pedal) holds the gate open, `0.0` after.
     pub(crate) fn gate_value(&self) -> f32 {
-        self.gate.value()
+        if self.gate {
+            1.0
+        } else {
+            0.0
+        }
     }
     #[cfg(test)]
     pub fn mpe_state(&self) -> &MpeVoiceState {
         &self.mpe
     }
 
+    /// The voice's amplitude right now: its envelope times its gain. What the
+    /// allocator compares when it steals the quietest voice.
+    pub(crate) fn output_level(&self, bank: &VoiceBank, index: usize) -> f32 {
+        bank.envelope(bank.lane(index, 0)).get() * self.voice_gain()
+    }
+
+    /// Whether this voice is silent, so a note-on would start it fresh.
+    pub(crate) fn is_fresh(&self) -> bool {
+        !self.active
+    }
+
+    /// Take the start phases for this voice's next fresh start.
+    pub(crate) fn set_start_phases(&mut self, params: &[UnisonVoiceParams]) {
+        for (slot, p) in self.start_phases.iter_mut().zip(params) {
+            *slot = p.phase_offset;
+        }
+    }
     pub(crate) fn set_envelope_level(&mut self, level: f32) {
         self.envelope_level = level;
     }
     pub(crate) fn deactivate(&mut self) {
         self.active = false;
+    }
+
+    /// Whether the voice has finished: gate closed, no edge pending, and the
+    /// envelope's release run out on its lanes.
+    pub(crate) fn is_finished(&self, bank: &VoiceBank, index: usize) -> bool {
+        !self.gate && self.edge == GateEdge::None && bank.is_idle(bank.lane(index, 0))
     }
 
     /// Update note and channel for legato retrigger (without re-gating).
@@ -126,51 +153,23 @@ impl SynthVoice {
     }
 
     pub(crate) fn from_config(config: &SynthConfig, unison_count: usize) -> Self {
-        let gate = tutti_core::shared(0.0);
-        let base_filter_cutoff = match &config.filter {
-            FilterType::Moog { cutoff, .. } => *cutoff,
-            FilterType::Svf { cutoff, .. } => *cutoff,
-            FilterType::None => Hz(20000.0),
+        let (base_filter_cutoff, base_filter_resonance) = match config.filter {
+            FilterType::Moog { cutoff, resonance } => (cutoff, resonance),
+            FilterType::Svf { cutoff, .. } => (cutoff, Resonance::NONE),
+            FilterType::None => (Hz(20000.0), Resonance::NONE),
         };
-        let filter_cutoff = tutti_core::shared(base_filter_cutoff.get());
-
-        // The one place `Resonance` and `Q` deliberately merge: both feed a
-        // single `Shared` so the modulation path has one resonance handle
-        // regardless of which filter is running. They are unwrapped rather
-        // than converted because there is no meaningful conversion between
-        // them — the scalar is re-typed at the node that consumes it.
-        let base_filter_resonance = match &config.filter {
-            FilterType::Moog { resonance, .. } => resonance.get(),
-            FilterType::Svf { q, .. } => q.get(),
-            FilterType::None => 0.0,
-        };
-        let filter_resonance = tutti_core::shared(base_filter_resonance);
-
-        let count = unison_count.max(1);
-        let mut sub_voices = Vec::with_capacity(count);
-        for _ in 0..count {
-            let pitch = tutti_core::shared(440.0);
-            let mut dsp =
-                build_sub_voice_dsp(config, &pitch, &gate, &filter_cutoff, &filter_resonance);
-            dsp.set_sample_rate(config.sample_rate);
-
-            let num_outputs = dsp.outputs();
-            let mut init_buf = [0.0f32; 2];
-            for _ in 0..100 {
-                dsp.tick(&[], &mut init_buf[..num_outputs]);
-            }
-
-            sub_voices.push(SubVoice { pitch, dsp });
-        }
 
         Self {
             note: 0,
             channel: 0,
             velocity: 0.0,
-            gate,
-            filter_cutoff,
+            gate: false,
+            edge: GateEdge::None,
+            snap_tone: false,
+            snap_gain: false,
+            start_phases: [Phase::START; MAX_UNISON_VOICES],
+            pitch: Hz(440.0),
             base_filter_cutoff,
-            filter_resonance,
             base_filter_resonance,
             mod_wheel_value: 0.0,
             velocity_mod_value: 1.0,
@@ -184,9 +183,7 @@ impl SynthVoice {
             mpe_enabled: config.mpe_enabled,
             mpe_pitch_bend_range: config.mpe_pitch_bend_range,
             base_note_freq: Hz(440.0),
-            sub_voices,
-            config: config.clone(),
-            sample_rate: config.sample_rate,
+            sub_voices: unison_count.max(1),
         }
     }
 
@@ -196,56 +193,46 @@ impl SynthVoice {
         channel: u8,
         velocity: f32,
         base_freq: impl Into<Hz>,
-        unison: Option<&mut UnisonEngine>,
     ) {
         let base_freq = base_freq.into();
+        let fresh = !self.active;
         self.note = note;
         self.channel = channel;
         self.velocity = velocity;
-        self.gate.set(1.0);
+        self.gate = true;
+        self.edge = GateEdge::On { fresh };
+        self.snap_tone = true;
+        self.snap_gain = fresh;
         self.active = true;
         self.lfo_phase = Phase::START;
         self.base_note_freq = base_freq;
+        self.pitch = base_freq;
         self.mpe.reset();
-
-        if let Some(unison) = unison {
-            unison.randomize_phases();
-            for (i, sub) in self.sub_voices.iter_mut().enumerate() {
-                let params = unison.voice_params(i);
-                sub.pitch.set(base_freq.get() * params.freq_ratio);
-            }
-        } else {
-            for sub in &mut self.sub_voices {
-                sub.pitch.set(base_freq.get());
-            }
-        }
     }
 
     pub(crate) fn note_off(&mut self) {
-        self.gate.set(0.0);
+        self.gate = false;
+        self.edge = GateEdge::Off;
     }
 
-    pub(crate) fn set_pitch(&mut self, base_freq: impl Into<Hz>, unison: Option<&UnisonEngine>) {
-        let base_freq = base_freq.into().get();
-        if let Some(unison) = unison {
-            for (i, sub) in self.sub_voices.iter_mut().enumerate() {
-                let params = unison.voice_params(i);
-                sub.pitch.set(base_freq * params.freq_ratio);
-            }
-        } else {
-            for sub in &mut self.sub_voices {
-                sub.pitch.set(base_freq);
-            }
-        }
+    /// Retune the voice. Takes effect at the next control step, ramped across
+    /// it, so a bend or glide moves the pitch every sample.
+    pub(crate) fn set_pitch(&mut self, freq: impl Into<Hz>) {
+        self.pitch = freq.into();
     }
 
+    /// Return the voice to its just-built state. The caller silences its lanes
+    /// (`VoiceBank::kill`); this resets only the control state.
     pub(crate) fn reset(&mut self) {
         self.note = 0;
         self.channel = 0;
         self.velocity = 0.0;
         self.envelope_level = 0.0;
         self.active = false;
-        self.gate.set(0.0);
+        self.gate = false;
+        self.edge = GateEdge::None;
+        self.snap_tone = false;
+        self.snap_gain = false;
         self.mod_wheel_value = 0.0;
         self.velocity_mod_value = 1.0;
         self.cc_cutoff_value = 0.5;
@@ -253,149 +240,157 @@ impl SynthVoice {
         self.lfo_phase = Phase::START;
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
-        self.filter_cutoff.set(self.base_filter_cutoff.get());
-        self.filter_resonance.set(self.base_filter_resonance);
-        for sub in &mut self.sub_voices {
-            sub.dsp.reset();
-        }
+        self.pitch = Hz(440.0);
     }
 
     #[cfg(test)]
     pub fn sub_voice_count(&self) -> usize {
-        self.sub_voices.len()
+        self.sub_voices
     }
 
-    /// The frequency the first sub-voice is actually sounding — *post*-bend,
-    /// unlike [`base_note_freq`](Self::base_note_freq), which `set_pitch` does
-    /// not touch. The only way to observe what a bend did to a sounding note.
-    #[cfg(test)]
+    /// The frequency the voice sounds at before unison detune — *post*-bend,
+    /// unlike [`base_note_freq`](Self::base_note_freq). The first sub-voice
+    /// sounds exactly this without unison.
     pub(crate) fn sounding_freq(&self) -> Hz {
-        Hz(self.sub_voices[0].pitch.value())
+        if self.mpe_enabled && self.mpe.pitch_bend_semitones.get().abs() > 0.001 {
+            Hz(self.pitch.get() * self.mpe.pitch_bend_semitones.to_pitch_ratio())
+        } else {
+            self.pitch
+        }
     }
 
-    pub(crate) fn process_block_stereo(
+    /// Write this voice's targets into its lanes for the next `frames` frames,
+    /// applying any pending gate edge first. `index` is the voice's slot.
+    ///
+    /// The per-control-step replacement for the per-sample `tick_stereo` the
+    /// fundsp chain had: modulation is evaluated here, once, and the bank ramps
+    /// the lanes to it.
+    pub(crate) fn drive(
         &mut self,
+        bank: &mut VoiceBank,
+        index: usize,
+        frames: usize,
         unison: Option<&UnisonEngine>,
-        left: &mut [f32],
-        right: &mut [f32],
-        offset: usize,
-        count: usize,
-    ) -> f32 {
-        let mut peak = 0.0f32;
-        for i in 0..count {
-            let (l, r) = self.tick_stereo(unison);
-            left[offset + i] += l;
-            right[offset + i] += r;
-            peak = peak.max(l.abs().max(r.abs()));
+    ) {
+        let edge = core::mem::replace(&mut self.edge, GateEdge::None);
+        for sub in 0..self.sub_voices {
+            let lane = bank.lane(index, sub);
+            match edge {
+                GateEdge::On { fresh } => {
+                    if fresh {
+                        bank.start(lane, self.start_phases[sub.min(MAX_UNISON_VOICES - 1)]);
+                    }
+                    bank.gate_on(lane);
+                }
+                GateEdge::Off => bank.gate_off(lane),
+                GateEdge::None => {}
+            }
         }
-        peak
+
+        let cutoff = self.modulated_cutoff(frames, bank.sample_rate());
+        let resonance = self.modulated_resonance();
+        let freq = self.sounding_freq().get();
+        let gain = self.voice_gain();
+
+        // One coefficient computation for the whole stack: the sub-voices
+        // share the voice's cutoff.
+        bank.set_filter(bank.lane(index, 0), self.sub_voices, cutoff, resonance);
+
+        for sub in 0..self.sub_voices {
+            let lane = bank.lane(index, sub);
+            let (ratio, pan, amplitude) = match unison {
+                Some(u) => {
+                    let p = u.voice_params(sub);
+                    (p.freq_ratio, p.pan, p.amplitude)
+                }
+                None => (1.0, Pan::CENTER, Amplitude::UNITY),
+            };
+            bank.set_pitch(lane, Hz(freq * ratio));
+            // Constant-power pan law, then the unison voice's own gain and the
+            // voice's. Evaluated per control step, not per sample.
+            let (pan, g) = (pan.get(), amplitude.get() * gain);
+            bank.set_gains(
+                lane,
+                Amplitude(((1.0 - pan) * 0.5).sqrt() * g),
+                Amplitude(((1.0 + pan) * 0.5).sqrt() * g),
+            );
+            if self.snap_tone {
+                bank.snap_tone(lane);
+            }
+            if self.snap_gain {
+                bank.snap_gain(lane);
+            }
+            bank.mark_live(lane);
+        }
+        self.snap_tone = false;
+        self.snap_gain = false;
     }
 
-    pub(crate) fn tick_stereo(&mut self, unison: Option<&UnisonEngine>) -> (f32, f32) {
-        self.update_modulated_filter();
-        self.apply_mpe_modulation(unison);
-
-        let mut left = 0.0f32;
-        let mut right = 0.0f32;
-        let mut out_buf = [0.0f32; 2];
-
-        for (i, sub) in self.sub_voices.iter_mut().enumerate() {
-            let num_outputs = sub.dsp.outputs();
-            out_buf[0] = 0.0;
-            out_buf[1] = 0.0;
-            sub.dsp.tick(&[], &mut out_buf[..num_outputs]);
-
-            let (pan_pos, amplitude) = if let Some(u) = unison {
-                let p = u.voice_params(i);
-                (p.pan, p.amplitude)
-            } else {
-                (Pan::CENTER, Amplitude::UNITY)
-            };
-
-            // Constant-power pan law, then the unison voice's own gain.
-            let (pan_pos, amplitude) = (pan_pos.get(), amplitude.get());
-            let left_gain = ((1.0 - pan_pos) * 0.5).sqrt() * amplitude;
-            let right_gain = ((1.0 + pan_pos) * 0.5).sqrt() * amplitude;
-            let mono_sample = out_buf[0];
-            left += mono_sample * left_gain;
-            right += mono_sample * right_gain;
-        }
-
+    /// Velocity, MPE pressure and per-note gain, combined.
+    fn voice_gain(&self) -> f32 {
         let (pressure_gain, note_gain) = if self.mpe_enabled {
             (1.0 + self.mpe.pressure * 0.5, self.mpe.gain.get())
         } else {
             (1.0, 1.0)
         };
-
-        let voice_gain = self.velocity * pressure_gain * note_gain;
-        (left * voice_gain, right * voice_gain)
+        self.velocity * pressure_gain * note_gain
     }
 
-    fn update_modulated_filter(&mut self) {
+    /// The cutoff every modulation source leaves, advancing the filter LFO by
+    /// `frames`.
+    ///
+    /// All sources multiply the base and compound, as [`FilterModConfig`]
+    /// documents. MPE slide compounds with them too: it used to *overwrite*
+    /// the cutoff the others had computed, and — because nothing recomputed the
+    /// cutoff once every source was idle — a slide that returned to center left
+    /// the filter wherever the slide last put it.
+    fn modulated_cutoff(&mut self, frames: usize, sample_rate: tutti_core::SampleRate) -> Hz {
         let fm = &self.filter_mod;
-        let has_filter_mod = fm.mod_wheel_depth > Depth(0.0)
-            || fm.velocity_depth > Depth(0.0)
-            || fm.lfo_depth > Depth(0.0);
-        let has_cc_cutoff = self.cc_cutoff_value != 0.5;
-        let has_cc_resonance = self.cc_resonance_value != 0.0;
+        let mut cutoff = self.base_filter_cutoff.get();
 
-        if !has_filter_mod && !has_cc_cutoff && !has_cc_resonance {
-            return;
+        // `cutoff` is a bare `f32` multiplier chain, so each depth comes off its
+        // type at the multiply rather than the struct carrying bare floats for
+        // the arithmetic's sake.
+        if fm.mod_wheel_depth > Depth(0.0) {
+            cutoff *= 1.0 + self.mod_wheel_value * fm.mod_wheel_depth.get();
         }
 
-        if has_filter_mod || has_cc_cutoff {
-            let mut cutoff = self.base_filter_cutoff.get();
-
-            // `cutoff` is a bare `f32` multiplier chain feeding a fundsp shared
-            // cell, so each depth comes off its type at the multiply rather
-            // than the struct carrying bare floats for the arithmetic's sake.
-            if fm.mod_wheel_depth > Depth(0.0) {
-                cutoff *= 1.0 + self.mod_wheel_value * fm.mod_wheel_depth.get();
-            }
-
-            if fm.velocity_depth > Depth(0.0) {
-                let vel_mult = 1.0 - fm.velocity_depth.get() * 0.5
-                    + self.velocity_mod_value * fm.velocity_depth.get() * 0.5;
-                cutoff *= vel_mult;
-            }
-
-            if fm.lfo_depth > Depth(0.0) && fm.lfo_rate > Hz(0.0) {
-                // The named converter, which computes the step without
-                // narrowing the rate to f32 first.
-                //
-                // `advance` rather than `% 1.0`: the remainder operator keeps
-                // the dividend's sign, so it is not a wrap for a negative
-                // phase. The `lfo_rate > 0.0` guard above makes that
-                // unreachable today, which is exactly how it would survive
-                // until the first reverse LFO.
-                let phase_inc = PhaseIncrement::per_sample(fm.lfo_rate, self.sample_rate);
-                self.lfo_phase = self.lfo_phase.advance(phase_inc);
-
-                let lfo_val = self.lfo_phase.to_radians().sin();
-                cutoff *= 1.0 + lfo_val * fm.lfo_depth.get() * 0.5;
-            }
-
-            if has_cc_cutoff {
-                let factor = (4.0_f32).powf(self.cc_cutoff_value - 0.5);
-                cutoff *= factor;
-            }
-
-            self.filter_cutoff.set(cutoff);
+        if fm.velocity_depth > Depth(0.0) {
+            let vel_mult = 1.0 - fm.velocity_depth.get() * 0.5
+                + self.velocity_mod_value * fm.velocity_depth.get() * 0.5;
+            cutoff *= vel_mult;
         }
 
-        if has_cc_resonance {
-            let base_res = self.base_filter_resonance;
-            let max_res = 0.95;
-            let res = base_res + self.cc_resonance_value * (max_res - base_res);
-            self.filter_resonance.set(res);
+        if fm.lfo_depth > Depth(0.0) && fm.lfo_rate > Hz(0.0) {
+            // `advance` rather than `% 1.0`: the remainder operator keeps the
+            // dividend's sign, so it is not a wrap for a negative phase.
+            let step = PhaseIncrement::per_sample(fm.lfo_rate, sample_rate) * frames as f32;
+            self.lfo_phase = self.lfo_phase.advance(step);
+            let lfo_val = self.lfo_phase.to_radians().sin();
+            cutoff *= 1.0 + lfo_val * fm.lfo_depth.get() * 0.5;
         }
+
+        if self.cc_cutoff_value != 0.5 {
+            cutoff *= (4.0_f32).powf(self.cc_cutoff_value - 0.5);
+        }
+
+        // Slide modulates the cutoff around its center.
+        if self.mpe_enabled && (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
+            cutoff *= (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
+        }
+
+        Hz(cutoff)
     }
 
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        for sub in &mut self.sub_voices {
-            sub.dsp.set_sample_rate(sample_rate);
+    /// The ladder resonance after CC71, which blends the base toward a 0.95
+    /// ceiling.
+    fn modulated_resonance(&self) -> Resonance {
+        if self.cc_resonance_value == 0.0 {
+            return self.base_filter_resonance;
         }
+        let base = self.base_filter_resonance.get();
+        let max_res = 0.95;
+        Resonance(base + self.cc_resonance_value * (max_res - base))
     }
 
     pub(crate) fn set_mod_wheel(&mut self, value: f32) {
@@ -472,6 +467,8 @@ impl SynthVoice {
     /// Test-only: production code asks [`PolySynth::mpe_enabled`], which reads
     /// the config the voices are built from. This observes that a runtime toggle
     /// actually reached an already-sounding voice.
+    ///
+    /// [`PolySynth::mpe_enabled`]: crate::PolySynth::mpe_enabled
     #[cfg(test)]
     pub(crate) fn mpe_enabled(&self) -> bool {
         self.mpe_enabled
@@ -502,155 +499,20 @@ impl SynthVoice {
     /// `freq` is the sounding pitch. This updates `base_note_freq` so per-note /
     /// channel pitch bend correctly acts as an **offset from** the overridden
     /// pitch (per the spec), and drives the oscillators to it immediately.
-    pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>, unison: Option<&UnisonEngine>) {
+    pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>) {
         let freq = freq.into();
         self.base_note_freq = freq;
-        self.set_pitch(freq, unison);
+        self.set_pitch(freq);
     }
 
-    fn apply_mpe_modulation(&mut self, unison: Option<&UnisonEngine>) {
-        if !self.mpe_enabled {
-            return;
-        }
-
-        let pitch_bend_semitones = self.mpe.pitch_bend_semitones;
-        if pitch_bend_semitones.get().abs() > 0.001 {
-            let multiplier = pitch_bend_semitones.to_pitch_ratio();
-            let freq = self.base_note_freq.get() * multiplier;
-            if let Some(u) = unison {
-                for (i, sub) in self.sub_voices.iter_mut().enumerate() {
-                    let params = u.voice_params(i);
-                    sub.pitch.set(freq * params.freq_ratio);
-                }
-            } else {
-                for sub in &mut self.sub_voices {
-                    sub.pitch.set(freq);
-                }
-            }
-        }
-
-        // Slide modulates filter cutoff around its center; skip only when the
-        // slide is at center (no timbre shift), leaving the base cutoff intact.
-        if (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
-            let factor = (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
-            self.filter_cutoff
-                .set(self.base_filter_cutoff.get() * factor);
-        }
-    }
-
+    /// Change the number of unison sub-voices this voice drives. The lanes are
+    /// resized by the bank (`VoiceBank::resize_stride`), which starts a new
+    /// sub-voice as a copy of the first; this records the count and snaps the
+    /// lanes' pitch at the next control step, so the copy takes its own
+    /// detuned pitch at once. Gains ramp to the new pans: the lanes are
+    /// sounding.
     pub(crate) fn resize_unison(&mut self, new_count: usize) {
-        let new_count = new_count.max(1);
-        let current_count = self.sub_voices.len();
-
-        if new_count == current_count {
-            return;
-        }
-
-        if new_count > current_count {
-            for _ in current_count..new_count {
-                let pitch = tutti_core::shared(440.0);
-                let mut dsp = build_sub_voice_dsp(
-                    &self.config,
-                    &pitch,
-                    &self.gate,
-                    &self.filter_cutoff,
-                    &self.filter_resonance,
-                );
-                dsp.set_sample_rate(self.sample_rate);
-
-                let num_outputs = dsp.outputs();
-                let mut init_buf = [0.0f32; 2];
-                for _ in 0..100 {
-                    dsp.tick(&[], &mut init_buf[..num_outputs]);
-                }
-
-                self.sub_voices.push(SubVoice { pitch, dsp });
-            }
-        } else {
-            self.sub_voices.truncate(new_count);
-        }
-    }
-
-    pub(crate) fn footprint(&self) -> usize {
-        self.sub_voices.iter().map(|s| s.dsp.footprint()).sum()
-    }
-
-    pub(crate) fn allocate(&mut self) {
-        for sub in &mut self.sub_voices {
-            sub.dsp.allocate();
-        }
-    }
-}
-
-fn build_sub_voice_dsp(
-    config: &SynthConfig,
-    pitch: &Shared,
-    gate: &Shared,
-    filter_cutoff: &Shared,
-    filter_resonance: &Shared,
-) -> Box<dyn AudioUnit> {
-    let env = &config.envelope;
-    // Where the types stop: fundsp's `adsr_live` takes four bare `f32`s, so the
-    // units come off once here rather than at each of the three calls below.
-    let (attack, decay, sustain, release) = (
-        env.attack.get(),
-        env.decay.get(),
-        env.sustain.get(),
-        env.release.get(),
-    );
-
-    macro_rules! with_filter {
-        ($osc:expr) => {
-            match &config.filter {
-                FilterType::None => {
-                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
-                    Box::new($osc * envelope) as Box<dyn AudioUnit>
-                }
-                FilterType::Moog { .. } => {
-                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
-                    Box::new(
-                        ($osc | var(filter_cutoff) | var(filter_resonance))
-                            >> moog::<f32>()
-                            >> (envelope * pass()),
-                    )
-                }
-                FilterType::Svf { q, mode, .. } => {
-                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
-                    match mode {
-                        SvfMode::Lowpass => Box::new(
-                            ($osc | var(filter_cutoff))
-                                >> lowpass_q::<f32>(q.get())
-                                >> (envelope * pass()),
-                        ),
-                        SvfMode::Highpass => Box::new(
-                            ($osc | var(filter_cutoff))
-                                >> highpass_q::<f32>(q.get())
-                                >> (envelope * pass()),
-                        ),
-                        SvfMode::Bandpass => Box::new(
-                            ($osc | var(filter_cutoff))
-                                >> bandpass_q::<f32>(q.get())
-                                >> (envelope * pass()),
-                        ),
-                        SvfMode::Notch => Box::new(
-                            ($osc | var(filter_cutoff))
-                                >> notch_q::<f32>(q.get())
-                                >> (envelope * pass()),
-                        ),
-                    }
-                }
-            }
-        };
-    }
-
-    match &config.oscillator {
-        OscillatorType::Sine => with_filter!(var(pitch) >> sine::<f32>()),
-        OscillatorType::Saw => with_filter!(var(pitch) >> saw()),
-        OscillatorType::Square { pulse_width } => {
-            let pw = *pulse_width;
-            with_filter!((var(pitch) | dc(pw)) >> poly_pulse::<f32>())
-        }
-        OscillatorType::Triangle => with_filter!(var(pitch) >> triangle()),
-        OscillatorType::Noise => with_filter!(pink::<f32>()),
+        self.sub_voices = new_count.max(1);
+        self.snap_tone = true;
     }
 }

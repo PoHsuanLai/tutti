@@ -9,9 +9,10 @@ use tutti_core::{Amplitude, Depth, Hz, Resonance, Seconds, Semitones, Q};
 
 /// The waveform every sub-voice of every voice generates.
 ///
-/// One oscillator per synth, chosen at construction: the config is read when
-/// each voice's DSP chain is built, so changing it needs a new
-/// [`PolySynth`](crate::PolySynth). All variants except [`Noise`](Self::Noise)
+/// One oscillator per synth, chosen at construction: the voice bank is built
+/// for it, so changing it needs a new [`PolySynth`](crate::PolySynth). The
+/// pitched waveforms are band-limited (PolyBLEP / PolyBLAMP), so a high note
+/// does not fold its harmonics back below Nyquist as inharmonic partials. All variants except [`Noise`](Self::Noise)
 /// track the voice's pitch; `Noise` ignores it entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OscillatorType {
@@ -25,15 +26,15 @@ pub enum OscillatorType {
     Square {
         /// Duty cycle as a fraction of the period. `0.5` is a true square
         /// (odd harmonics only); values either side thin the tone toward a
-        /// nasal pulse. Passed straight to fundsp's `poly_pulse`, and fixed
-        /// for the life of the synth — it is baked into the DSP chain at
-        /// voice-build time rather than read per sample.
+        /// nasal pulse. Clamped to `0.0..=1.0` and fixed for the life of the
+        /// synth — it is baked into the voice bank at construction rather than
+        /// read per sample.
         pulse_width: f32,
     },
     /// Triangle — odd harmonics rolling off steeply, a mellow alternative to
     /// [`Square`](Self::Square).
     Triangle,
-    /// Pink noise. Pitch-free: the voice's pitch cell is still driven but no
+    /// Pink noise. Pitch-free: the voice's pitch is still tracked but no
     /// oscillator reads it, so note number only selects which voice sounds.
     /// `Display` renders this as "Pink Noise".
     Noise,
@@ -57,10 +58,10 @@ pub enum SvfMode {
 
 /// Which filter each voice runs, and its settings.
 ///
-/// Chosen at construction and baked into every voice's DSP chain, so the
-/// *variant* cannot change on a live synth. The cutoff and resonance within it
-/// can: both are held in shared cells the modulation path writes, which is what
-/// [`FilterModConfig`], CC74 and MPE slide move.
+/// Chosen at construction and baked into the voice bank, so the *variant*
+/// cannot change on a live synth. The cutoff and resonance within it can: each
+/// voice re-derives them from these base values every control step, which is
+/// what [`FilterModConfig`], CC74, CC71 and MPE slide move.
 ///
 /// # The two variants carry different resonance types deliberately
 ///
@@ -89,16 +90,16 @@ pub enum FilterType {
         /// Filter [`Q`]. Around 0.707 is maximally flat; higher values put a
         /// resonant peak at cutoff and narrow the band of the band tabs.
         ///
-        /// Unlike `cutoff`, this one is **fixed for the life of the voice** —
-        /// it is passed by value into the SVF node when the chain is built, so
+        /// Unlike `cutoff`, this one is **fixed for the life of the synth** —
+        /// the SVF's output mix depends on it and is shared by every voice, so
         /// resonance modulation (CC71) reaches only [`Moog`](Self::Moog).
         q: Q,
         /// Which response is tapped.
         mode: SvfMode,
     },
     /// No filter: the oscillator goes straight to the amplitude envelope. The
-    /// default. Voices still expose a cutoff cell (parked at 20 kHz) so the
-    /// modulation path has somewhere to write, but nothing reads it.
+    /// default. Voices still compute a cutoff (from a base parked at 20 kHz),
+    /// but nothing reads it.
     #[default]
     None,
 }
@@ -140,8 +141,14 @@ impl fmt::Display for FilterType {
 ///
 /// One envelope per synth, shared in shape by all voices; each voice runs its
 /// own instance, retriggered by note-on and released by note-off. The values
-/// are read once when a voice's DSP chain is built, so changing them needs a
-/// new [`PolySynth`](crate::PolySynth).
+/// are read once when the voice bank is built, so changing them needs a new
+/// [`PolySynth`](crate::PolySynth).
+///
+/// Every stage is a straight line and sample-accurate. A note-off releases
+/// from whatever level the envelope has reached, taking exactly
+/// [`release`](Self::release) to reach silence; a note-on that retriggers a
+/// still-sounding voice attacks from its current level rather than restarting
+/// from zero, so a fast re-strike does not click.
 ///
 /// [`release`](Self::release) is the one field with a consequence outside the
 /// sound: [`PolySynth`](crate::PolySynth)'s `tail()` reports it as the node's
@@ -227,7 +234,8 @@ impl EnvelopeConfig {
 /// skipped, which is the default and costs nothing per sample. Each voice runs
 /// its own LFO phase, so the sweep is not synchronised across a chord.
 ///
-/// Evaluated once per sample, on the audio thread, inside the voice tick.
+/// Evaluated once per control step (at most 16 frames apart), on the audio
+/// thread; the filter coefficients are ramped per sample between steps.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FilterModConfig {
     /// How far the mod wheel (CC1) opens the filter, as a [`Depth`] in 0.0..1.0.
@@ -260,8 +268,8 @@ pub struct FilterModConfig {
 ///
 /// # Most of this is construction-only
 ///
-/// The synth keeps the config and reads parts of it per block, but the DSP
-/// chain each voice runs is assembled once from
+/// The synth keeps the config and reads parts of it per block, but the voice
+/// bank every voice renders in is built once from
 /// [`oscillator`](Self::oscillator), [`filter`](Self::filter) and
 /// [`envelope`](Self::envelope). Changing those three needs a new synth. The
 /// fields that *are* live afterwards have setters on `PolySynth`: unison detune
@@ -305,7 +313,7 @@ pub struct SynthConfig {
     /// `Some`.
     pub portamento: Option<PortamentoConfig>,
     /// Detuned stacked sub-voices per note, or `None` for one oscillator per
-    /// voice. `Some` allocates that many sub-voice DSP chains *per voice*, so
+    /// voice. `Some` allocates that many sub-voice lanes *per voice*, so
     /// the real oscillator count is `max_voices * voice_count`. As with
     /// portamento, a synth built with `None` has no unison engine to configure
     /// later.

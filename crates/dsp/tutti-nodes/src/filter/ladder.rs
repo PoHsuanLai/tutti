@@ -36,6 +36,38 @@ pub enum LadderType {
     HP24,
 }
 
+/// The ladder's two coefficients, computed from its parameters.
+///
+/// Public for the same reason as [`SvfCoeffs`](crate::SvfCoeffs): a voice
+/// engine running this topology across SIMD lanes derives its coefficients
+/// from this function rather than a copy of it. The recurrence they feed is
+/// [`LadderFilterNode`]'s: `u = tanh(x - k*s3)`, then four one-pole stages each
+/// `v = g1*(in - s); lp = v + s; s = lp + v` with `g1 = g / (1 + g)`.
+#[derive(Debug, Clone, Copy)]
+pub struct LadderCoeffs {
+    /// Prewarped integrator gain, `tan(pi * fc / sr)`.
+    pub g: f64,
+    /// Feedback gain, `4 * resonance`. At `4` the ladder self-oscillates.
+    pub k: f64,
+}
+
+/// Compute ladder coefficients (pure function, no state).
+///
+/// The cutoff is clamped to `1.0..=0.998 * Nyquist`, since `tan` diverges at
+/// Nyquist itself, and the resonance to `0.0..=1.0`.
+pub fn compute_ladder_coeffs(
+    freq: impl Into<Hz>,
+    resonance: impl Into<Resonance>,
+    sample_rate: impl Into<SampleRate>,
+) -> LadderCoeffs {
+    let (freq, resonance, sample_rate) = (freq.into(), resonance.into(), sample_rate.into());
+    let fc = f64::from(freq.get()).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
+    LadderCoeffs {
+        g: (core::f64::consts::PI * fc / sample_rate.get()).tan(),
+        k: 4.0 * f64::from(resonance.get().clamp(0.0, 1.0)),
+    }
+}
+
 /// Runtime DSP state for a ladder filter instance — the four stage
 /// integrators plus the coefficient cache. Split out so the struct proper
 /// reads as a bag of typed parameters.
@@ -182,11 +214,9 @@ impl<F: Real> LadderFilterNode<F> {
     }
 
     fn update_coefficients(&mut self, freq: Hz, resonance: Resonance) {
-        // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
-        let fc = f64::from(freq.get())
-            .clamp(1.0, f64::from(self.sample_rate.nyquist_scaled(0.998).get()));
-        self.state.g = F::from_f64((core::f64::consts::PI * fc / self.sample_rate.get()).tan());
-        self.state.k = F::from_f64(4.0 * f64::from(resonance.get().clamp(0.0, 1.0)));
+        let c = compute_ladder_coeffs(freq, resonance, self.sample_rate);
+        self.state.g = F::from_f64(c.g);
+        self.state.k = F::from_f64(c.k);
         self.state.last_freq = freq;
         self.state.last_res = resonance;
     }

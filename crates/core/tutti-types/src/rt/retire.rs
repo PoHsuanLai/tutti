@@ -60,7 +60,7 @@ use core::ops::Deref;
 use super::audio_thread::AudioThread;
 
 /// An owning box that must not be dropped on the audio thread. See the
-/// [module docs](self).
+/// `rt::retire` module docs (`src/rt/retire.rs`).
 #[must_use = "a Retire must travel back to the control thread to be reclaimed"]
 pub struct Retire<T: ?Sized> {
     inner: Option<Box<T>>,

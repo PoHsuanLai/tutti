@@ -17,7 +17,7 @@ thread_local! {
     static DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// The audio-thread marker. See the [module docs](self).
+/// The audio-thread marker. See the `rt::audio_thread` module docs (`src/rt/audio_thread.rs`).
 pub struct AudioThread;
 
 /// Marks the current thread as running audio until dropped. Nestable.

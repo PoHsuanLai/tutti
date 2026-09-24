@@ -122,10 +122,9 @@ impl PolySynth {
         let allocator = VoiceAllocator::new(allocator_config);
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
-        let unison_count = config
-            .unison
-            .as_ref()
-            .map_or(1, |u| usize::from(u.voice_count));
+        // The engine's clamped count, not the config's raw one: the voices and
+        // the bank must agree with the sub-voice params the engine produces.
+        let unison_count = unison.as_ref().map_or(1, UnisonEngine::voice_count);
 
         let voices = (0..config.max_voices)
             .map(|_| SynthVoice::from_config(&config, unison_count))
@@ -549,14 +548,14 @@ impl PolySynth {
                 base_freq * bend_multiplier
             };
 
-            if !is_legato {
-                // New start phases for the stack, read by the voice's next
-                // control step when it (re)starts its lanes.
+            let voice = &mut self.voices[slot_index];
+            if !is_legato && voice.is_fresh() {
+                // A fresh draw for this voice alone, held by the voice: the
+                // notes of a chord each get their own stack of phases.
                 if let Some(unison) = &mut self.unison {
-                    unison.randomize_phases();
+                    voice.set_start_phases(unison.randomize_phases());
                 }
             }
-            let voice = &mut self.voices[slot_index];
             voice.set_velocity_mod(vel_norm);
             if is_legato {
                 voice.set_pitch(target_freq);
@@ -691,7 +690,9 @@ impl PolySynth {
             cc::RESET_ALL => {
                 for v in &mut self.voices {
                     v.set_mod_wheel(0.0);
-                    v.set_cc_cutoff(0.0);
+                    // Centre, not zero: CC74 maps to a `4^(v - 0.5)` cutoff
+                    // factor, so 0.0 would halve every voice's cutoff.
+                    v.set_cc_cutoff(0.5);
                     v.set_filter_resonance(0.0);
                 }
                 self.pitch_bend = 0.0;
@@ -1645,8 +1646,8 @@ mod tests {
             1,
         );
         bank.set_pitch(0, Hz(440.0));
-        bank.set_gains(0, 1.0, 1.0);
-        bank.snap(0);
+        bank.set_gains(0, Amplitude::UNITY, Amplitude::UNITY);
+        bank.snap_gain(0);
         bank.start(0, Phase(0.3));
 
         // Gate closed: the oscillator runs, the envelope holds it at zero.
@@ -3422,6 +3423,190 @@ mod tests {
         assert!(
             worst < 0.01 * level,
             "tick and process diverge by {worst} (level {level}) during the glide"
+        );
+    }
+
+    /// Each note of a chord struck together gets its own stack of random
+    /// start phases, and the lanes really start on them.
+    ///
+    /// The phases used to live in the shared unison table, drawn once per
+    /// note-on and read when each voice started — so every note of a chord
+    /// read the last draw and all stacks started identically, the transient
+    /// spike `phase_randomize` exists to avoid, summed across the chord.
+    ///
+    /// Both notes are the same pitch (on two channels) with no detune, so all
+    /// six lanes run at one increment and their phases after the first block
+    /// differ exactly as their start phases did.
+    ///
+    /// *Mutation:* starting lanes from the shared table again
+    /// (`unison.voice_params(sub).phase_offset` in `drive`) fails this.
+    #[test]
+    fn a_chord_gets_a_distinct_phase_stack_per_voice() {
+        let mut synth = synth(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 2,
+            oscillator: OscillatorType::Saw,
+            unison: Some(UnisonConfig {
+                voice_count: 3,
+                detune_cents: tutti_core::Cents(0.0),
+                stereo_spread: Spread(0.0),
+                phase_randomize: true,
+            }),
+            ..Default::default()
+        });
+        synth.seed_unison_rng(99);
+        queue_midi(&synth, &[ev_note_on(0, 60, 100), ev_note_on(1, 60, 100)]);
+        let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+        synth.render_planar(&mut l, &mut r);
+
+        let phases: Vec<Vec<f32>> = (0..2)
+            .map(|v| {
+                (0..3)
+                    .map(|s| synth.bank.phase(synth.bank.lane(v, s)))
+                    .collect()
+            })
+            .collect();
+        assert!(
+            synth.voices.iter().all(|v| v.is_active()),
+            "both notes should be sounding"
+        );
+        assert_ne!(
+            phases[0], phases[1],
+            "both voices of the chord started in phase: {phases:?}"
+        );
+        for stack in &phases {
+            assert!(
+                stack.windows(2).all(|w| (w[0] - w[1]).abs() > 1e-4),
+                "a stack's sub-voices share a phase: {stack:?}"
+            );
+        }
+    }
+
+    /// A stolen voice changes level without a click.
+    ///
+    /// The new note's velocity differs from the old one's. The voice is still
+    /// sounding, so its gain must ramp to the new level; stepping it in one
+    /// sample puts a discontinuity of `x * (g_old - g_new)` in the output.
+    ///
+    /// The steal is timed to land near a peak of a 110 Hz sine, where that step
+    /// is largest: the steady sine moves at most `2π·110/48000 ≈ 0.014` of its
+    /// peak per sample, and the step would be about 0.7 of it.
+    ///
+    /// *Mutations, each run:* snapping gains on every note-on (`snap_gain =
+    /// true` rather than `fresh` in `note_on`) fails this; so does replacing the
+    /// gain glide with a jump to the target, which is what a ramp across the
+    /// control step amounts to in `tick` (one frame per step).
+    #[test]
+    fn a_steal_at_a_different_velocity_does_not_click() {
+        let mut synth = synth(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 1,
+            allocation_strategy: crate::AllocationStrategy::Oldest,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig::new(
+                Seconds(0.001),
+                Seconds(0.0),
+                Amplitude(1.0),
+                Seconds(0.1),
+            ),
+            ..Default::default()
+        });
+        queue_midi(&synth, &[ev_note_on(0, 45, 127)]);
+        let mut frame = [0.0f32; 2];
+        let mut peak = 0.0f32;
+        for _ in 0..4800 {
+            synth.tick(&[], &mut frame);
+            peak = peak.max(frame[0].abs());
+        }
+        // Advance to near a peak, then steal on another channel at low velocity.
+        let mut prev = frame[0];
+        while frame[0].abs() < 0.8 * peak {
+            synth.tick(&[], &mut frame);
+            prev = frame[0];
+        }
+        queue_midi(&synth, &[ev_note_on(1, 45, 20)]);
+        let mut worst = 0.0f32;
+        for _ in 0..256 {
+            synth.tick(&[], &mut frame);
+            worst = worst.max((frame[0] - prev).abs());
+            prev = frame[0];
+        }
+        assert_eq!(
+            synth.active_voice_count(),
+            1,
+            "the steal should reuse the one voice"
+        );
+        assert!(
+            worst < 0.2 * peak,
+            "the steal stepped the output by {worst} (peak {peak})"
+        );
+    }
+
+    /// Reset All Controllers returns CC74 to its centre, leaving the cutoff
+    /// where the patch put it.
+    ///
+    /// It used to set the CC74 position to 0.0, which the `4^(v - 0.5)` map
+    /// reads as half the cutoff.
+    ///
+    /// *Mutation:* `set_cc_cutoff(0.0)` in the `RESET_ALL` arm fails this.
+    #[test]
+    fn reset_all_controllers_leaves_the_cutoff_alone() {
+        let config = || SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 1,
+            oscillator: OscillatorType::Saw,
+            filter: FilterType::Svf {
+                cutoff: Hz(600.0),
+                q: tutti_core::Q(0.707),
+                mode: crate::SvfMode::Lowpass,
+            },
+            ..Default::default()
+        };
+        let render = |reset: bool| {
+            let mut s = synth(config());
+            let mut events = vec![ev_note_on(0, 45, 100)];
+            if reset {
+                events.push(ev_cc(0, cc::RESET_ALL, 0));
+            }
+            queue_midi(&s, &events);
+            let (mut l, mut r) = ([0.0f32; 64], [0.0f32; 64]);
+            let mut out = Vec::new();
+            for _ in 0..60 {
+                s.render_planar(&mut l, &mut r);
+                out.extend_from_slice(&l);
+            }
+            out
+        };
+        let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
+        let (plain, reset) = (render(false), render(true));
+        let (a, b) = (rms(&plain[1024..]), rms(&reset[1024..]));
+        assert!(
+            (a - b).abs() / a < 0.01,
+            "Reset All Controllers moved the level from {a} to {b}"
+        );
+    }
+
+    /// The voices and the bank use the engine's clamped unison count, not the
+    /// config's raw one.
+    ///
+    /// *Mutation:* sizing from `u.voice_count` (the raw config value) in
+    /// `PolySynth::new` fails this.
+    #[test]
+    fn an_oversized_unison_count_is_clamped_everywhere() {
+        let synth = synth(SynthConfig {
+            max_voices: 2,
+            unison: Some(UnisonConfig {
+                voice_count: 40,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(synth.unison_voice_count(), 16);
+        assert_eq!(synth.voices[0].sub_voice_count(), 16);
+        assert_eq!(
+            synth.bank.lane(1, 0),
+            16,
+            "the bank's stride disagrees with the engine"
         );
     }
 }

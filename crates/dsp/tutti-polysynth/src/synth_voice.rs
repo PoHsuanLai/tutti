@@ -21,8 +21,9 @@
 //! on the event's frame.
 
 use crate::bank::VoiceBank;
+use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
-use crate::{MpeVoiceState, UnisonEngine};
+use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
 use tutti_core::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
 
 /// A gate edge waiting for the next control step.
@@ -44,10 +45,18 @@ pub(crate) struct SynthVoice {
     velocity: f32,
     gate: bool,
     edge: GateEdge,
-    /// Jump the lanes to their targets at the next control step instead of
-    /// ramping — set by a note-on, so a new note does not glide in from the
-    /// previous one's pitch. A glide is portamento's job.
-    snap: bool,
+    /// Jump the lanes' pitch and filter to their targets at the next control
+    /// step instead of ramping — set by a note-on, so a new note does not
+    /// glide in from the previous one's pitch. A glide is portamento's job.
+    snap_tone: bool,
+    /// Jump the lanes' output gains too. Only for a voice starting from
+    /// silence: a stolen or retriggered voice is still sounding, and stepping
+    /// its gain from the old velocity to the new one is a click, so it ramps.
+    snap_gain: bool,
+    /// Each sub-voice's start phase for the next fresh start, drawn per voice
+    /// at its note-on. Held here rather than read from the shared unison table
+    /// at start time, where the notes of a chord would all read the last draw.
+    start_phases: [Phase; MAX_UNISON_VOICES],
     /// The pitch the voice sounds before per-note bend and unison detune: the
     /// note (or its tuning override) under the global bend and any glide.
     pitch: Hz,
@@ -110,7 +119,19 @@ impl SynthVoice {
     /// The voice's amplitude right now: its envelope times its gain. What the
     /// allocator compares when it steals the quietest voice.
     pub(crate) fn output_level(&self, bank: &VoiceBank, index: usize) -> f32 {
-        bank.envelope(bank.lane(index, 0)) * self.voice_gain()
+        bank.envelope(bank.lane(index, 0)).get() * self.voice_gain()
+    }
+
+    /// Whether this voice is silent, so a note-on would start it fresh.
+    pub(crate) fn is_fresh(&self) -> bool {
+        !self.active
+    }
+
+    /// Take the start phases for this voice's next fresh start.
+    pub(crate) fn set_start_phases(&mut self, params: &[UnisonVoiceParams]) {
+        for (slot, p) in self.start_phases.iter_mut().zip(params) {
+            *slot = p.phase_offset;
+        }
     }
     pub(crate) fn set_envelope_level(&mut self, level: f32) {
         self.envelope_level = level;
@@ -144,7 +165,9 @@ impl SynthVoice {
             velocity: 0.0,
             gate: false,
             edge: GateEdge::None,
-            snap: false,
+            snap_tone: false,
+            snap_gain: false,
+            start_phases: [Phase::START; MAX_UNISON_VOICES],
             pitch: Hz(440.0),
             base_filter_cutoff,
             base_filter_resonance,
@@ -178,7 +201,8 @@ impl SynthVoice {
         self.velocity = velocity;
         self.gate = true;
         self.edge = GateEdge::On { fresh };
-        self.snap = true;
+        self.snap_tone = true;
+        self.snap_gain = fresh;
         self.active = true;
         self.lfo_phase = Phase::START;
         self.base_note_freq = base_freq;
@@ -207,7 +231,8 @@ impl SynthVoice {
         self.active = false;
         self.gate = false;
         self.edge = GateEdge::None;
-        self.snap = false;
+        self.snap_tone = false;
+        self.snap_gain = false;
         self.mod_wheel_value = 0.0;
         self.velocity_mod_value = 1.0;
         self.cc_cutoff_value = 0.5;
@@ -253,9 +278,7 @@ impl SynthVoice {
             match edge {
                 GateEdge::On { fresh } => {
                     if fresh {
-                        let phase =
-                            unison.map_or(Phase::START, |u| u.voice_params(sub).phase_offset);
-                        bank.start(lane, phase);
+                        bank.start(lane, self.start_phases[sub.min(MAX_UNISON_VOICES - 1)]);
                     }
                     bank.gate_on(lane);
                 }
@@ -269,6 +292,10 @@ impl SynthVoice {
         let freq = self.sounding_freq().get();
         let gain = self.voice_gain();
 
+        // One coefficient computation for the whole stack: the sub-voices
+        // share the voice's cutoff.
+        bank.set_filter(bank.lane(index, 0), self.sub_voices, cutoff, resonance);
+
         for sub in 0..self.sub_voices {
             let lane = bank.lane(index, sub);
             let (ratio, pan, amplitude) = match unison {
@@ -279,21 +306,24 @@ impl SynthVoice {
                 None => (1.0, Pan::CENTER, Amplitude::UNITY),
             };
             bank.set_pitch(lane, Hz(freq * ratio));
-            bank.set_filter(lane, cutoff, resonance);
             // Constant-power pan law, then the unison voice's own gain and the
             // voice's. Evaluated per control step, not per sample.
             let (pan, g) = (pan.get(), amplitude.get() * gain);
             bank.set_gains(
                 lane,
-                ((1.0 - pan) * 0.5).sqrt() * g,
-                ((1.0 + pan) * 0.5).sqrt() * g,
+                Amplitude(((1.0 - pan) * 0.5).sqrt() * g),
+                Amplitude(((1.0 + pan) * 0.5).sqrt() * g),
             );
-            if self.snap {
-                bank.snap(lane);
+            if self.snap_tone {
+                bank.snap_tone(lane);
+            }
+            if self.snap_gain {
+                bank.snap_gain(lane);
             }
             bank.mark_live(lane);
         }
-        self.snap = false;
+        self.snap_tone = false;
+        self.snap_gain = false;
     }
 
     /// Velocity, MPE pressure and per-note gain, combined.
@@ -478,10 +508,11 @@ impl SynthVoice {
     /// Change the number of unison sub-voices this voice drives. The lanes are
     /// resized by the bank (`VoiceBank::resize_stride`), which starts a new
     /// sub-voice as a copy of the first; this records the count and snaps the
-    /// lanes to their targets at the next control step, so the copy takes its
-    /// own detuned pitch and pan at once instead of ramping in from the first's.
+    /// lanes' pitch at the next control step, so the copy takes its own
+    /// detuned pitch at once. Gains ramp to the new pans: the lanes are
+    /// sounding.
     pub(crate) fn resize_unison(&mut self, new_count: usize) {
         self.sub_voices = new_count.max(1);
-        self.snap = true;
+        self.snap_tone = true;
     }
 }

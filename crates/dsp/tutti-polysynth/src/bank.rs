@@ -34,7 +34,7 @@
 
 use crate::kernel::{self, V};
 use crate::{EnvelopeConfig, FilterType, OscillatorType, SvfMode};
-use tutti_core::{Db, Hz, Phase, PhaseIncrement, Resonance, SampleRate, Q};
+use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Q};
 use tutti_nodes::{compute_ladder_coeffs, compute_svf_coeffs, SvfType};
 use wide::u32x8;
 
@@ -82,8 +82,15 @@ struct EnvShape {
 
 impl EnvShape {
     fn new(env: &EnvelopeConfig, sample_rate: SampleRate) -> Self {
+        // Where the types stop: these are per-sample slopes and a frame count
+        // used as a divisor inside the SIMD loop, not quantities any unit
+        // covers. `Seconds`/`Amplitude` come off here, once.
         let frames = |s: tutti_core::Seconds| s.to_samples(sample_rate).get().max(1) as f32;
-        let sustain = env.sustain.get().max(0.0);
+        // Clamped to unity: the attack peaks at 1.0 and decay runs from there
+        // to sustain. A sustain above 1.0 would make "decay" a rise, and a
+        // retrigger from a held level above 1.0 would drop the note to the
+        // attack peak — a click. Level above unity is the voice gain's job.
+        let sustain = env.sustain.get().clamp(0.0, 1.0);
         Self {
             attack_step: 1.0 / frames(env.attack),
             decay_step: (sustain - 1.0) / frames(env.decay),
@@ -149,6 +156,9 @@ enum Filter {
     Ladder,
 }
 
+/// The narrowest pulse the oscillator renders, as a fraction of the cycle.
+const MIN_PULSE_WIDTH: f32 = 0.01;
+
 const OSC_SINE: u8 = 0;
 const OSC_SAW: u8 = 1;
 const OSC_PULSE: u8 = 2;
@@ -165,10 +175,17 @@ pub(crate) struct VoiceBank {
     filter: Filter,
     env_config: EnvelopeConfig,
     shape: EnvShape,
+    /// Per-sample one-pole coefficient the output gains glide with.
+    gain_glide: f32,
     sample_rate: SampleRate,
     /// Sub-voices per voice: lane stride between consecutive voices.
     stride: usize,
     voices: usize,
+    /// Next noise seed to hand out. Every lane array allocation draws fresh
+    /// seeds from here, so a lane added by a unison resize never starts on a
+    /// seed another lane already holds — seeding by lane index did, since a
+    /// surviving sub-voice keeps its old stream after moving to a new index.
+    next_seed: u32,
 
     // Oscillator.
     phase: Vec<V>,
@@ -192,6 +209,10 @@ pub(crate) struct VoiceBank {
     stage: Vec<EnvStage>,
 
     // Output gains (pan law × unison gain × voice gain), current and target.
+    // Unlike pitch and cutoff these glide by a one-pole at a fixed time
+    // constant rather than ramping across the control step: `tick` takes a
+    // control step every frame, so a step-long ramp there would be a one-sample
+    // jump — a click on every velocity or pressure change.
     gain: Vec<[V; 2]>,
     gain_target: Vec<[V; 2]>,
 
@@ -216,8 +237,11 @@ impl VoiceBank {
         let osc = match oscillator {
             OscillatorType::Sine => Osc::Sine,
             OscillatorType::Saw => Osc::Saw,
+            // Clamped short of both ends: at 0 or 1 the two edges coincide and
+            // their PolyBLEP corrections overlap into a spike rather than
+            // cancelling, and the "pulse" is DC.
             OscillatorType::Square { pulse_width } => Osc::Pulse {
-                width: pulse_width.clamp(0.0, 1.0),
+                width: pulse_width.clamp(MIN_PULSE_WIDTH, 1.0 - MIN_PULSE_WIDTH),
             },
             OscillatorType::Triangle => Osc::Triangle,
             OscillatorType::Noise => Osc::Noise,
@@ -247,9 +271,11 @@ impl VoiceBank {
             filter,
             env_config: *envelope,
             shape: EnvShape::new(envelope, sample_rate),
+            gain_glide: gain_glide(sample_rate),
             sample_rate,
             stride: stride.max(1),
             voices,
+            next_seed: 1,
             phase: Vec::new(),
             inc: Vec::new(),
             inc_target: Vec::new(),
@@ -291,13 +317,11 @@ impl VoiceBank {
         self.inc_target = vec![zero; groups];
         // Distinct nonzero seeds per lane: xorshift cannot leave zero, and two
         // lanes with one seed would play the same noise in both ears.
+        let mut seeds = (self.next_seed..).map(seed_from);
         self.rng = (0..groups)
-            .map(|g| {
-                u32x8::new(core::array::from_fn(|k| {
-                    (((g * kernel::LANES + k) as u32).wrapping_add(1)).wrapping_mul(0x9E37_79B9) | 1
-                }))
-            })
+            .map(|_| u32x8::new(core::array::from_fn(|_| seeds.next().unwrap_or(1))))
             .collect();
+        self.next_seed = self.next_seed.wrapping_add(lanes as u32);
         self.pink = vec![[zero; 3]; groups];
         self.z = vec![[zero; 4]; groups];
         self.coef = vec![[zero; 3]; groups];
@@ -389,6 +413,7 @@ impl VoiceBank {
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         self.shape = EnvShape::new(&self.env_config, sample_rate);
+        self.gain_glide = gain_glide(sample_rate);
         // The SVF's output mix depends on the tap and `Q`, not the rate, so
         // only the per-lane coefficients need recomputing.
         self.cutoff_seen.fill(f32::NAN);
@@ -436,17 +461,23 @@ impl VoiceBank {
         );
     }
 
-    /// Aim the lane's filter at `cutoff` (and, for the ladder, `resonance`).
-    /// Recomputes the coefficients only when either moved past its epsilon.
-    pub(crate) fn set_filter(&mut self, lane: usize, cutoff: Hz, resonance: Resonance) {
+    /// Aim the filters of `lanes` consecutive lanes from `first` — one voice's
+    /// sub-voices, which share a cutoff — at `cutoff` (and, for the ladder,
+    /// `resonance`). Computes the coefficients once for all of them, and only
+    /// when either value moved past its epsilon.
+    pub(crate) fn set_filter(
+        &mut self,
+        first: usize,
+        lanes: usize,
+        cutoff: Hz,
+        resonance: Resonance,
+    ) {
         let (c, r) = (cutoff.get(), resonance.get());
-        let unchanged = (c - self.cutoff_seen[lane]).abs() <= FREQ_EPS
-            && (r - self.res_seen[lane]).abs() <= RES_EPS;
+        let unchanged = (c - self.cutoff_seen[first]).abs() <= FREQ_EPS
+            && (r - self.res_seen[first]).abs() <= RES_EPS;
         if unchanged {
             return;
         }
-        self.cutoff_seen[lane] = c;
-        self.res_seen[lane] = r;
         let coef = match self.filter {
             Filter::None => return,
             Filter::Svf { ty, q, .. } => {
@@ -458,23 +489,28 @@ impl VoiceBank {
                 [(l.g / (1.0 + l.g)) as f32, l.k as f32, 0.0]
             }
         };
-        let (g, k) = split(lane);
-        for (i, c) in coef.into_iter().enumerate() {
-            self.coef_target[g][i].as_mut_array()[k] = c;
+        for lane in first..first + lanes {
+            self.cutoff_seen[lane] = c;
+            self.res_seen[lane] = r;
+            let (g, k) = split(lane);
+            for (i, c) in coef.into_iter().enumerate() {
+                self.coef_target[g][i].as_mut_array()[k] = c;
+            }
         }
     }
 
     /// Set the lane's left and right output gains.
-    pub(crate) fn set_gains(&mut self, lane: usize, left: f32, right: f32) {
+    pub(crate) fn set_gains(&mut self, lane: usize, left: Amplitude, right: Amplitude) {
         let (g, k) = split(lane);
-        self.gain_target[g][0].as_mut_array()[k] = left;
-        self.gain_target[g][1].as_mut_array()[k] = right;
+        self.gain_target[g][0].as_mut_array()[k] = left.get();
+        self.gain_target[g][1].as_mut_array()[k] = right.get();
     }
 
-    /// Jump the lane's ramped values straight to their targets, so a new note
-    /// starts on its own pitch, cutoff and gain rather than gliding in from the
-    /// previous note's.
-    pub(crate) fn snap(&mut self, lane: usize) {
+    /// Jump the lane's pitch and filter straight to their targets, so a new
+    /// note starts on its own pitch and cutoff rather than gliding in from the
+    /// previous note's. Changes the waveform's slope, never its value, so it
+    /// cannot click.
+    pub(crate) fn snap_tone(&mut self, lane: usize) {
         let (g, k) = split(lane);
         let inc = self.inc_target[g].as_array()[k];
         self.inc[g].as_mut_array()[k] = inc;
@@ -482,6 +518,14 @@ impl VoiceBank {
             let c = self.coef_target[g][i].as_array()[k];
             self.coef[g][i].as_mut_array()[k] = c;
         }
+    }
+
+    /// Jump the lane's output gains straight to their targets.
+    ///
+    /// Only for a silent lane: on a sounding one this is a step in the output
+    /// — a click — which is why a stolen voice ramps its gain instead.
+    pub(crate) fn snap_gain(&mut self, lane: usize) {
+        let (g, k) = split(lane);
         for i in 0..2 {
             let c = self.gain_target[g][i].as_array()[k];
             self.gain[g][i].as_mut_array()[k] = c;
@@ -520,8 +564,8 @@ impl VoiceBank {
     pub(crate) fn kill(&mut self, lane: usize) {
         self.enter_at(lane, EnvStage::Idle, 0.0);
         self.start(lane, Phase::START);
-        self.set_gains(lane, 0.0, 0.0);
-        self.snap(lane);
+        self.set_gains(lane, Amplitude::SILENT, Amplitude::SILENT);
+        self.snap_gain(lane);
     }
 
     /// [`kill`](Self::kill) every sub-voice of voice `voice`.
@@ -557,10 +601,23 @@ impl VoiceBank {
         self.stage[lane] == EnvStage::Idle
     }
 
-    /// The lane's envelope level, `0.0..=1.0` for a sustain within that range.
-    pub(crate) fn envelope(&self, lane: usize) -> f32 {
+    /// The lane's envelope level, `0.0..=1.0`.
+    pub(crate) fn envelope(&self, lane: usize) -> Amplitude {
         let (g, k) = split(lane);
-        self.env[g].as_array()[k]
+        Amplitude(self.env[g].as_array()[k])
+    }
+
+    /// The lane's oscillator phase. Observability for tests.
+    #[cfg(test)]
+    pub(crate) fn phase(&self, lane: usize) -> f32 {
+        let (g, k) = split(lane);
+        self.phase[g].as_array()[k]
+    }
+
+    /// Each lane's current noise-generator state. Observability for tests.
+    #[cfg(test)]
+    pub(crate) fn noise_states(&self) -> Vec<u32> {
+        self.rng.iter().flat_map(|g| g.to_array()).collect()
     }
 
     pub(crate) fn footprint(&self) -> usize {
@@ -668,8 +725,7 @@ impl VoiceBank {
 
         let [mut gain_l, mut gain_r] = self.gain[g];
         let [gain_l_target, gain_r_target] = self.gain_target[g];
-        let gain_l_step = (gain_l_target - gain_l) * ramp;
-        let gain_r_step = (gain_r_target - gain_r) * ramp;
+        let glide = V::splat(self.gain_glide);
 
         let two = V::splat(2.0);
         for frame in acc.iter_mut().take(n) {
@@ -729,8 +785,8 @@ impl VoiceBank {
                 (slope, target) = self.advance_envelopes(g, env, slope, target, reached);
             }
 
-            gain_l += gain_l_step;
-            gain_r += gain_r_step;
+            gain_l = (gain_l_target - gain_l).mul_add(glide, gain_l);
+            gain_r = (gain_r_target - gain_r).mul_add(glide, gain_r);
             let out = y * env;
             frame[0] += out * gain_l;
             frame[1] += out * gain_r;
@@ -747,7 +803,7 @@ impl VoiceBank {
         self.env[g] = env;
         self.env_slope[g] = slope;
         self.env_target[g] = target;
-        self.gain[g] = [gain_l_target, gain_r_target];
+        self.gain[g] = [gain_l, gain_r];
     }
 
     /// Move every lane in `reached` on to its next envelope stage.
@@ -773,6 +829,31 @@ impl VoiceBank {
             target[k] = t;
         }
         (V::new(slope), V::new(target))
+    }
+}
+
+/// Time constant of the output-gain glide. Half a millisecond settles a
+/// velocity change to 1% in about 2.3 ms — inaudible as a fade, long enough
+/// that no single sample steps by more than 4% of the change at 48 kHz.
+const GAIN_GLIDE: Seconds = Seconds(0.0005);
+
+/// Per-sample one-pole coefficient for [`GAIN_GLIDE`] at `sample_rate`.
+fn gain_glide(sample_rate: SampleRate) -> f32 {
+    let tau_frames = f64::from(GAIN_GLIDE.get()) * sample_rate.get();
+    (1.0 - (-1.0 / tau_frames.max(1.0)).exp()) as f32
+}
+
+/// The `n`th noise seed: a bijective mix (odd multiply, xorshift) of the
+/// counter, so distinct counters give distinct seeds, forced nonzero.
+fn seed_from(n: u32) -> u32 {
+    let mut x = n.wrapping_mul(0x9E37_79B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x85EB_CA6B);
+    x ^= x >> 13;
+    if x == 0 {
+        0x6D2B_79F5
+    } else {
+        x
     }
 }
 
@@ -813,9 +894,10 @@ mod tests {
     /// Start `lane` sounding at `freq` with unity gains, as a note-on would.
     fn start(bank: &mut VoiceBank, lane: usize, freq: Hz, cutoff: Hz, res: Resonance) {
         bank.set_pitch(lane, freq);
-        bank.set_filter(lane, cutoff, res);
-        bank.set_gains(lane, 1.0, 1.0);
-        bank.snap(lane);
+        bank.set_filter(lane, 1, cutoff, res);
+        bank.set_gains(lane, Amplitude::UNITY, Amplitude::UNITY);
+        bank.snap_tone(lane);
+        bank.snap_gain(lane);
         bank.start(lane, Phase::START);
         bank.gate_on(lane);
     }
@@ -840,7 +922,7 @@ mod tests {
             .map(|_| {
                 bank.mark_live(lane);
                 bank.render(1);
-                bank.envelope(lane)
+                bank.envelope(lane).get()
             })
             .collect()
     }
@@ -919,7 +1001,7 @@ mod tests {
 
         // 150 samples into a 480-sample attack.
         let _ = envelope_trace(&mut b, 0, 150);
-        let at_release = b.envelope(0);
+        let at_release = b.envelope(0).get();
         assert!((at_release - 150.0 / 480.0).abs() < 0.01);
         b.gate_off(0);
         let release = envelope_trace(&mut b, 0, 1500);
@@ -939,7 +1021,7 @@ mod tests {
         let _ = envelope_trace(&mut b, 0, 2000);
         b.gate_off(0);
         let _ = envelope_trace(&mut b, 0, 720);
-        let before = b.envelope(0);
+        let before = b.envelope(0).get();
         b.gate_on(0);
         // From 0.25 the attack needs 360 samples to peak; stop short of it.
         let attack = envelope_trace(&mut b, 0, 300);
@@ -1112,5 +1194,84 @@ mod tests {
             "the ramp ended at {} rather than the target {to}",
             steps[CONTROL_BLOCK - 1]
         );
+    }
+
+    /// No two lanes share a noise stream after the unison width changes.
+    ///
+    /// The case that broke: noise, two voices, stride 1 → 2 with voice 1 never
+    /// sounding. Voice 1's sub-voice moves from lane 1 to lane 2 carrying its
+    /// untouched seed, and voice 0's new sub-voice lands on lane 1 — which,
+    /// seeded by lane index, got that same seed. Two lanes, one noise.
+    ///
+    /// *Mutations, each run:* restarting the seed counter at every allocation
+    /// (`(1..).map(seed_from)`, i.e. seeding by lane index) fails this; so does
+    /// letting an added lane keep the stream it was copied from.
+    #[test]
+    fn unison_resizes_never_duplicate_a_noise_stream() {
+        let mut b = VoiceBank::new(
+            OscillatorType::Noise,
+            &FilterType::None,
+            &flat(),
+            sr(),
+            2,
+            1,
+        );
+        for stride in [2, 1, 3, 2, 5] {
+            b.resize_stride(stride);
+            let states = &b.noise_states()[..2 * stride];
+            for (i, a) in states.iter().enumerate() {
+                for (j, c) in states.iter().enumerate().skip(i + 1) {
+                    assert_ne!(
+                        a, c,
+                        "stride {stride}: lanes {i} and {j} share a noise stream"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A sustain above unity is clamped, so a retrigger at sustain never drops
+    /// the level: the attack peaks at 1.0 and would otherwise hand decay a
+    /// level below where the note was held.
+    ///
+    /// *Mutation:* removing the `clamp(0.0, 1.0)` on `sustain` in
+    /// `EnvShape::new` fails this (the retrigger falls from 1.5 to 1.0).
+    #[test]
+    fn a_retrigger_at_a_boosted_sustain_does_not_drop() {
+        let env = EnvelopeConfig::new(Seconds(0.001), Seconds(0.001), Amplitude(1.5), Seconds(0.1));
+        let mut b = bank(OscillatorType::Sine, FilterType::None, env);
+        start(&mut b, 0, Hz(440.0), Hz(20_000.0), Resonance::NONE);
+        let held = envelope_trace(&mut b, 0, 500);
+        let before = *held.last().unwrap();
+        b.gate_on(0);
+        let after = envelope_trace(&mut b, 0, 100);
+        assert!(
+            after.iter().all(|&e| e >= before),
+            "retrigger dropped the level from {before} to {:?}",
+            after.iter().cloned().fold(f32::INFINITY, f32::min)
+        );
+        assert!(
+            before <= 1.0,
+            "the held level {before} exceeds the clamped sustain"
+        );
+    }
+
+    /// A pulse width of 0 still renders a pulse, not DC.
+    ///
+    /// *Mutation:* clamping the width to `0.0..=1.0` instead of
+    /// `MIN_PULSE_WIDTH..` fails this: both edges coincide, their corrections
+    /// cancel, and the output is a constant −1.
+    #[test]
+    fn a_zero_pulse_width_still_oscillates() {
+        let mut b = bank(
+            OscillatorType::Square { pulse_width: 0.0 },
+            FilterType::None,
+            flat(),
+        );
+        start(&mut b, 0, Hz(220.0), Hz(20_000.0), Resonance::NONE);
+        let out = render(&mut b, &[0], 4800, CONTROL_BLOCK);
+        let mean = out.iter().sum::<f32>() / out.len() as f32;
+        let ac = (out.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / out.len() as f32).sqrt();
+        assert!(ac > 0.05, "a zero-width pulse rendered DC (AC rms {ac})");
     }
 }

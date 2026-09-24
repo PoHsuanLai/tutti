@@ -81,9 +81,7 @@ mod node_id;
 // Per-block control reads and the ramps that keep them from stepping.
 mod ramp;
 
-// The pre-merge mono/stereo twins, compiled only for the side-by-side tests.
-#[cfg(test)]
-mod legacy;
+// Rendering helpers for the width-generic nodes' unit tests.
 #[cfg(test)]
 mod test_support;
 
@@ -109,7 +107,7 @@ mod lfo;
 pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
 mod delay;
-pub use delay::{DelayLine, DelayLineNode, InterpolationMode, StereoPair};
+pub use delay::{DelayLine, DelayLineNode, InterpolationMode};
 
 mod distortion;
 pub use distortion::{DistortionNode, ShapeKind};

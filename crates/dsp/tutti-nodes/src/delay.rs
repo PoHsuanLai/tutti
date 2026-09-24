@@ -814,24 +814,6 @@ impl Clone for DelayLineNode {
     }
 }
 
-/// A left/right pair of `T`. Trivial helper, but removes `_l`/`_r` field
-/// duplication across stereo DSP nodes.
-#[derive(Debug, Clone)]
-pub struct StereoPair<T> {
-    /// The left-channel value.
-    pub l: T,
-    /// The right-channel value.
-    pub r: T,
-}
-
-impl<T> StereoPair<T> {
-    /// Pairs `l` and `r` in channel order.
-    #[inline]
-    pub const fn new(l: T, r: T) -> Self {
-        Self { l, r }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

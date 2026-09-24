@@ -21,8 +21,10 @@
 /// coefficients linearly between solves costs a quarter of a 64-frame block's
 /// `tan`s. 16 samples is 0.33 ms at 48 kHz — far below the rate any musical
 /// sweep moves at, so the interpolation error is a small fraction of the change
-/// between two solves (pinned by the per-node sweep tests against the per-sample
-/// reference).
+/// between two solves. Measured against the per-sample solve when the twins
+/// were merged: 3e-5 worst on a 200 Hz → 8 kHz cutoff sweep in 85 ms (4.6e-4
+/// at 64 samples; exactly 0 at 1), 3.5e-6 on a 2 Hz phaser. The `*_swept`
+/// goldens in `tests/width_generic_golden.rs` pin the result.
 pub(crate) const COEFF_INTERVAL: usize = 16;
 
 /// A linear ramp from `from` to `to` over `n` samples.

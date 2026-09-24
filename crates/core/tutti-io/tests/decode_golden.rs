@@ -71,7 +71,8 @@ fn stream_digest(name: &str) -> (u64, usize) {
     (h.0, frames)
 }
 
-/// `(file, load digest, streamed digest)`.
+/// `(file, load digest, streamed digest)`. The lossy rows are asserted only
+/// where they were recorded; see [`bit_portable`].
 ///
 /// Recorded from the fundsp fork's decoder (`fundsp::read` / `fundsp::stream`,
 /// reached as `tutti_core::{Wave, FileIn}`) before the decoder moved to this
@@ -97,10 +98,26 @@ const GOLDEN: &[(&str, u64, u64)] = &[
     ("stereo.ogg", 0x40a6b908a599a73c, 0x833652fd27bdc9c9),
 ];
 
-#[test]
-fn decoded_samples_match_the_golden_digests() {
+/// Whether a fixture's golden digest holds on every platform.
+///
+/// **Lossless decodes are portable; lossy ones are not.** PCM and FLAC decode
+/// integers and scale them to `f32` — exact IEEE arithmetic, identical
+/// everywhere. The MP3 and Vorbis decoders build their windows, IMDCT twiddles
+/// and (Vorbis) floor curves from `sin`/`cos`/`tan`/`exp`/`powf`
+/// (`symphonia-bundle-mp3`'s `hybrid_synthesis.rs`/`synthesis.rs`/`stereo.rs`,
+/// `symphonia-core`'s `dsp::mdct`, `symphonia-codec-vorbis`'s `window.rs` and
+/// `floor.rs`). Those are libm quality-of-implementation, not IEEE
+/// correctly-rounded, and differ in the last ulp between the platform libms —
+/// the same reason `render_is_bit_identical_to_the_audionode_era` is gated off
+/// MSVC. The MP3 digest did differ on macOS CI. The Ogg one happened to match
+/// there, which is luck rather than a property, so it is gated too.
+fn bit_portable(name: &str) -> bool {
+    !(name.ends_with(".mp3") || name.ends_with(".ogg"))
+}
+
+fn check_digests(rows: impl Iterator<Item = &'static (&'static str, u64, u64)>) {
     let mut failures = Vec::new();
-    for &(name, want_load, want_stream) in GOLDEN {
+    for &(name, want_load, want_stream) in rows {
         let w = Wave::load(asset(name)).expect("load");
         let got_load = wave_digest(&w);
         let (got_stream, frames) = stream_digest(name);
@@ -117,6 +134,109 @@ fn decoded_samples_match_the_golden_digests() {
         "digest mismatch:\n{}",
         failures.join("\n")
     );
+}
+
+/// The lossless rows, bit for bit, on every platform.
+#[test]
+fn decoded_samples_match_the_golden_digests() {
+    check_digests(GOLDEN.iter().filter(|r| bit_portable(r.0)));
+}
+
+/// The lossy rows, bit for bit, on the target they were recorded on: Linux
+/// x86_64 (glibc's libm). Elsewhere the platform libm may round the decoder's
+/// trig differently in the last ulp (see [`bit_portable`]), so the portable
+/// guard for these files is `decoded_levels_match_on_every_platform`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn lossy_decodes_match_the_golden_digests_where_recorded() {
+    check_digests(GOLDEN.iter().filter(|r| !bit_portable(r.0)));
+}
+
+/// `(file, channels, frames, per-channel (RMS, peak))` of `Wave::load`,
+/// recorded on Linux x86_64.
+const LEVELS: &[(&str, usize, usize, &[(f64, f64)])] = &[
+    (
+        "stereo_s16.wav",
+        2,
+        11025,
+        &[(0.380794707, 0.699768066), (0.333542624, 0.649963379)],
+    ),
+    (
+        "stereo_s24.wav",
+        2,
+        11025,
+        &[(0.380794746, 0.699767232), (0.333542693, 0.649975181)],
+    ),
+    ("mono_48k.wav", 1, 9600, &[(0.424264137, 0.600006104)]),
+    (
+        "surround_51.wav",
+        6,
+        4410,
+        &[
+            (0.070711370, 0.100006104),
+            (0.141422299, 0.200012207),
+            (0.212133152, 0.299987793),
+            (0.035354544, 0.049987793),
+            (0.282842225, 0.399993896),
+            (0.353554930, 0.500000000),
+        ],
+    ),
+    (
+        "stereo.flac",
+        2,
+        11025,
+        &[(0.380794746, 0.699767232), (0.333542693, 0.649975181)],
+    ),
+    (
+        "stereo.mp3",
+        2,
+        12672,
+        &[(0.337157817, 0.669130385), (0.295668269, 0.633588970)],
+    ),
+    (
+        "stereo.ogg",
+        2,
+        11840,
+        &[(0.370645079, 0.729985654), (0.324173438, 0.660415709)],
+    ),
+];
+
+/// The portable guard: on **every** platform, each fixture decodes to the
+/// recorded width and frame count, and each channel's RMS and peak are within
+/// `1e-5` relative of the recorded values. A last-ulp libm difference moves
+/// these by ~1e-7; a real regression — a missing packet, a swapped or dropped
+/// channel, a gain error of 0.01 dB — moves them far past 1e-5. This is what
+/// catches a lossy-decode regression where the bit-exact digest is not
+/// asserted.
+///
+/// Mutations (checked), each in the decode loop every container shares:
+/// swapping channels by index fails on RMS; dropping each packet's last frame
+/// fails on frame count; scaling every decoded sample by 1.0001 fails on RMS.
+#[test]
+fn decoded_levels_match_on_every_platform() {
+    const REL: f64 = 1e-5;
+    let close = |got: f64, want: f64| (got - want).abs() <= REL * want.abs();
+    for &(name, channels, frames, levels) in LEVELS {
+        let w = Wave::load(asset(name)).expect("load");
+        assert_eq!(w.channels(), channels, "{name}: channels");
+        assert_eq!(w.len(), frames, "{name}: frames");
+        for (c, &(rms, peak)) in levels.iter().enumerate() {
+            let ch = w.channel(c);
+            let got_rms = (ch.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>()
+                / ch.len() as f64)
+                .sqrt();
+            let got_peak = ch.iter().fold(0.0f64, |m, &s| m.max(f64::from(s).abs()));
+            assert!(
+                close(got_rms, rms),
+                "{name}: channel {c} RMS {got_rms} vs {rms}"
+            );
+            assert!(
+                close(got_peak, peak),
+                "{name}: channel {c} peak {got_peak} vs {peak}"
+            );
+        }
+    }
+    assert_eq!(LEVELS.len(), GOLDEN.len(), "every fixture has a level row");
 }
 
 /// Streaming a file from the start yields every frame the whole-file load
@@ -278,9 +398,12 @@ fn seek_lands_on_the_whole_file_load_frames() {
 #[cfg(feature = "bevy")]
 #[test]
 fn from_bytes_decodes_what_load_decodes() {
-    for &(name, want_load, _) in GOLDEN {
+    // Against this platform's own `Wave::load`, not the recorded golden: both
+    // sides run the same decoder here, so this is bit-exact everywhere.
+    for &(name, _, _) in GOLDEN {
+        let want = wave_digest(&Wave::load(asset(name)).expect("load"));
         let bytes = std::fs::read(asset(name)).expect("read fixture");
         let asset = tutti_io::WaveAsset::from_bytes(&bytes).expect("decode bytes");
-        assert_eq!(wave_digest(&asset), want_load, "{name}: from_bytes digest");
+        assert_eq!(wave_digest(&asset), want, "{name}: from_bytes digest");
     }
 }

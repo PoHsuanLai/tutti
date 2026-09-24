@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   they are `tutti::io::…`, gated on a new `io` feature that every codec
   feature and `audio-io` imply. Decoded samples are bit-identical
   (`tutti-io/tests/decode_golden.rs` pins them against fixtures in
-  `assets/audio/`).
+  `assets/audio/`: bit-exact digests for WAV and FLAC on every platform and for
+  MP3 and Ogg on Linux x86_64, where they were recorded, since those decoders'
+  trig is libm-dependent; frame counts and per-channel levels everywhere).
 
   Features moved with them. `tutti-core` has no `wav`/`flac`/`mp3`/`ogg` or
   `bevy_asset` features any more; name `tutti-io/wav` etc., and

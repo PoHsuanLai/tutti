@@ -18,7 +18,9 @@
 //!
 //! Slot 0 is never written. A feedback slot is filled by the executor before
 //! the first op of each block, from the feedback's delay state, and is never
-//! written by an op. Coloured slots are shared between values whose lifetimes
+//! written by an op. Event slots hold [`Plan::event_slot_weight`] times the
+//! executor's per-slot event capacity: a merge's output holds as many events
+//! as all its inputs together, so a merge can never drop one. Coloured slots are shared between values whose lifetimes
 //! cannot overlap under *any* schedule that respects the op DAG — see
 //! `compile`'s colouring pass.
 //!
@@ -33,11 +35,12 @@
 //!   of an event delay whose key disappears are flushed to the sink at offset
 //!   0 of the next block if the sink survives (a dropped note-off is a stuck
 //!   note), and dropped with it otherwise.
-//! - **A feedback edge** is a delay of exactly the prepared `MaxBlock` frames
-//!   (see [`FeedbackKey`]). Audio feedback is keyed by the source port *and
-//!   its unit generation*, so a replaced unit's last output does not feed the
-//!   new loop. Event feedback is keyed per edge (sink, source, generation),
-//!   and a disappearing key flushes like a PDC event delay.
+//! - **A feedback edge** delays by exactly the `delay` its edge declares (see
+//!   [`FeedbackKey`]). Audio feedback is keyed by the source port, *its unit
+//!   generation* and the delay, so a replaced unit's last output does not
+//!   feed the new loop and a changed delay starts a fresh ring. Event
+//!   feedback is keyed per edge (sink, source, generation, delay), and a
+//!   disappearing key flushes like a PDC event delay.
 
 use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples};
@@ -116,11 +119,12 @@ pub struct DelaySpec {
 
 /// Which feedback delay a slot is read from.
 ///
-/// **A feedback edge delays by exactly the prepared `MaxBlock` frames**,
-/// whatever length the current block is: a fixed-length ring for audio, a
-/// FIFO for events. That is Web Audio's fixed-quantum rule, and unlike "last
-/// block's buffer" it stays well defined when blocks are ragged — nothing is
-/// lost or repeated when the block size changes.
+/// **A feedback edge delays by exactly the `delay` its edge declares**,
+/// whatever length the current block is: a ring of that length for audio, a
+/// FIFO for events. The delay is part of the graph, not of the runtime, so a
+/// bounce prepared at a larger `MaxBlock` loops exactly like live playback —
+/// and `compile` refuses a delay shorter than the `MaxBlock` it is compiling
+/// for, because a block cannot read samples it has not yet produced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FeedbackKey {
     /// An audio output port of a unit generation. Shared by every reader.
@@ -129,6 +133,8 @@ pub enum FeedbackKey {
         from: OutPort,
         /// The source unit's generation.
         gen: u32,
+        /// The edge's delay.
+        delay: Samples,
     },
     /// One event feedback edge.
     Event {
@@ -138,7 +144,18 @@ pub enum FeedbackKey {
         from: EventOut,
         /// The source unit's generation.
         gen: u32,
+        /// The edge's delay.
+        delay: Samples,
     },
+}
+
+impl FeedbackKey {
+    /// The delay this feedback applies.
+    pub const fn delay(&self) -> Samples {
+        match *self {
+            Self::Audio { delay, .. } | Self::Event { delay, .. } => delay,
+        }
+    }
 }
 
 /// One feedback slot.
@@ -307,6 +324,7 @@ pub struct Plan {
     pub(crate) task_activation: Vec<u32>,
     pub(crate) audio_slots: u32,
     pub(crate) event_slots: u32,
+    pub(crate) event_slot_weight: Vec<u32>,
     pub(crate) audio_feedback: Vec<FeedbackSpec>,
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
@@ -385,6 +403,11 @@ impl Plan {
             PortKind::Audio => self.audio_slots,
             PortKind::Event => self.event_slots,
         }
+    }
+
+    /// How many event capacities each event slot holds (see the module docs).
+    pub fn event_slot_weight(&self) -> &[u32] {
+        &self.event_slot_weight
     }
 
     /// Feedback slots of `kind`.

@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tutti_types::graph::{Invalid, Valid};
-use tutti_types::{NodeKey, Topology};
+use tutti_types::{NodeKey, Samples, Topology};
 
 /// An event **input** port of a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -46,19 +46,29 @@ pub struct EventOut {
 pub enum EventEdge {
     /// This block's events from the named port.
     Direct(EventOut),
-    /// The named port's events delayed by exactly the prepared `MaxBlock`
-    /// frames — a declared cycle, exactly as
-    /// `tutti_types::graph::Edge::Feedback` is for audio (see
-    /// [`FeedbackKey`](crate::FeedbackKey) for the rule).
-    Feedback(EventOut),
+    /// The named port's events delayed by exactly `delay` frames — a
+    /// declared cycle, exactly as `tutti_types::graph::FeedbackFrom` is for
+    /// audio, with the same rule: the delay belongs to the edge, and must be
+    /// at least the interpreter's maximum block (see `FeedbackFrom`).
+    Feedback {
+        /// The source port.
+        from: EventOut,
+        /// How far back, in frames.
+        delay: Samples,
+    },
 }
 
 impl EventEdge {
     /// The port the events leave from.
     pub const fn from(self) -> EventOut {
         match self {
-            Self::Direct(p) | Self::Feedback(p) => p,
+            Self::Direct(p) | Self::Feedback { from: p, .. } => p,
         }
+    }
+
+    /// A feedback edge from `from`, delayed by `delay` frames.
+    pub const fn feedback(from: EventOut, delay: Samples) -> Self {
+        Self::Feedback { from, delay }
     }
 }
 

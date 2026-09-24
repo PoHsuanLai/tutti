@@ -189,10 +189,24 @@ impl EventFifo {
         self.len = len.get() as u64;
     }
 
-    /// Every event still queued, oldest first — for a flush when the delay
-    /// itself goes away.
+    /// Every event still queued, oldest first.
+    #[cfg(test)]
     pub(crate) fn pending(&self) -> impl Iterator<Item = Event> + '_ {
         self.q.iter().map(|&(_, e)| e)
+    }
+
+    /// The queued events for a flush, when the delay itself goes away: each
+    /// at its due time relative to the earliest, so a note-on/note-off pair
+    /// keeps its length. Control side (allocates).
+    pub(crate) fn flushed(&self) -> Vec<Event> {
+        let first = self.q.front().map_or(0, |&(t, _)| t + self.len);
+        self.q
+            .iter()
+            .map(|&(t, e)| Event {
+                offset: (t + self.len - first).min(u64::from(u32::MAX)) as u32,
+                ..e
+            })
+            .collect()
     }
 
     /// Queue this block's `input`. Returns how many were dropped.
@@ -208,7 +222,11 @@ impl EventFifo {
             } else if self.q.len() < self.q.capacity() {
                 self.q.push_back(item);
             } else if let Some(i) = self.q.iter().position(|(_, x)| !x.is_note_off()) {
-                // `remove` shifts in place; it never reallocates.
+                // `remove` shifts in place and never reallocates, but it is
+                // O(n) in the queue length, as is the `position` scan. That
+                // is paid only on overflow — the rate the FIFO was sized for
+                // has already been exceeded — so it buys note-off safety at
+                // the one moment it is needed, not every block.
                 self.q.remove(i);
                 self.q.push_back(item);
                 dropped += 1;

@@ -310,8 +310,17 @@ pub enum Status {
         /// Channels that hold one value throughout.
         constant: ConstantMask,
     },
-    /// The node wrote nothing; every output is silence. The executor zeroes.
+    /// The node wrote nothing; this block's output is silence. The executor
+    /// zeroes. Says nothing about the *next* block: a synth in a delayed
+    /// attack, or a sample with leading silence under a held note, is
+    /// `Silent` and still busy.
     Silent,
+    /// As [`Silent`](Self::Silent), and the node has **no pending internal
+    /// activity**: park it until an input arrives. The only status that lets
+    /// the executor skip a node with event inputs (see `Executor`'s silence
+    /// skip); a node that returns it must produce silence for as long as its
+    /// inputs stay quiet.
+    Idle,
     /// The node wrote only **sample 0** of each output; each is that value
     /// throughout. The executor fills the rest.
     Constant,

@@ -34,7 +34,7 @@ use common::{bits, input_signal, Kind, Pair};
 use proptest::prelude::*;
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, Topology};
+use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
 
 use tutti_graph::Node;
 
@@ -160,8 +160,10 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
         } else if roll < 80 {
             Some(Edge::Direct(Source::Zero))
         } else if roll < 90 {
+            // Feedback delays of at least a block, sometimes longer.
+            let delay = Samples(MAX_BLOCK + 17 * rng.below(3) as usize);
             rng.pick(&any)
-                .map(|from| Edge::Feedback(FeedbackFrom { from }))
+                .map(|from| Edge::Feedback(FeedbackFrom::new(from, delay)))
         } else {
             None
         };
@@ -193,7 +195,8 @@ fn wire_node(desc: &mut Desc, j: usize, rng: &mut Rng) {
             let e = if hub || rng.chance(85) {
                 rng.pick(&direct_ev).map(EventEdge::Direct)
             } else {
-                rng.pick(&any_ev).map(EventEdge::Feedback)
+                let delay = Samples(MAX_BLOCK + 17 * rng.below(3) as usize);
+                rng.pick(&any_ev).map(|f| EventEdge::feedback(f, delay))
             };
             if let Some(e) = e {
                 if seen.insert(e.from()) {
@@ -290,7 +293,7 @@ fn mutate(desc: &Desc, rng: &mut Rng) -> Desc {
         t.nodes.remove(&victim);
         t.edges.retain(|at, e| {
             let from = match *e {
-                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p }) => {
+                Edge::Direct(Source::Node(p)) | Edge::Feedback(FeedbackFrom { from: p, .. }) => {
                     Some(p.node)
                 }
                 Edge::Direct(_) => None,
@@ -715,9 +718,10 @@ fn an_unrelated_edit_does_not_disturb_the_running_graph() {
     t.edges.insert(InPort { node: mix, port: 1 }, src(c));
     t.edges.insert(
         InPort { node: mix, port: 2 },
-        Edge::Feedback(FeedbackFrom {
-            from: OutPort { node: c, port: 0 },
-        }),
+        Edge::Feedback(FeedbackFrom::one_block(
+            OutPort { node: c, port: 0 },
+            Samples(MAX_BLOCK),
+        )),
     );
     t.outputs = vec![Source::Node(OutPort { node: mix, port: 0 })];
     let before = GraphSpec::new(t.clone());

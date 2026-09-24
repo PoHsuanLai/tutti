@@ -3,7 +3,7 @@
 //!
 //! Doc 013 §4, phase-1 form. The *shape* is phase 2's: units exist exactly
 //! once, in the executor's store; a commit carries only the units that change
-//! plus the new plan, inside a [`Retire`] box; [`Executor::apply`] swaps
+//! plus the new plan, inside a [`CommitBox`]; [`Executor::apply`] swaps
 //! pointers and hands **the same box** back holding everything it replaced —
 //! the previous plan, the retired units, and the previous arena, event slots
 //! and delay state — so nothing it replaced is freed on its side. `apply` and
@@ -13,7 +13,12 @@
 //!
 //! What phase 1 does not do yet is put a thread boundary in the middle: here
 //! `apply` runs on the caller's thread and *allocates* (it builds the new
-//! arena and delay state). Phase 2 moves that half to the control side, ships
+//! arena and delay state). **The marker's coverage of `apply` is therefore
+//! partial**: what it replaces goes back in the box, but `apply` also frees
+//! transient allocations of its own — the key maps it builds to carry state
+//! across, a ring's old buffer on a retune, the flush lists — which are plain
+//! `Vec`s and `BTreeMap`s the marker does not see. Moving that work to the
+//! control side, so `apply` only swaps pointers, is Phase 2. Phase 2 moves that half to the control side, ships
 //! the prepared state in the commit, and delivers the box over an SPSC ring
 //! whose return push cannot fail because the control side holds at most
 //! [`MAX_IN_FLIGHT`](crate::MAX_IN_FLIGHT) commits (`Editor` enforces it
@@ -35,23 +40,39 @@
 //!
 //! # The silence skip
 //!
-//! A node is not called — its outputs are written as silence — only when all
-//! three hold:
+//! A node is not called — its outputs are written as silence — only when its
+//! audio inputs are flagged silent, its event inputs are empty, and:
 //!
-//! 1. its audio inputs are flagged silent and its event inputs are empty;
-//! 2. its **previous call left it quiet**: every audio output flagged silent
-//!    and no event written (a node never called yet is not quiet);
-//! 3. its declared tail has elapsed since its inputs went quiet.
+//! - **for a node with event inputs**, its previous call returned
+//!   [`Status::Idle`]: "silent, and nothing pending — park me until input".
+//!   Only the node knows whether it is idle. A synth in a delayed attack, or
+//!   a sampler playing leading silence under a held note, has quiet inputs
+//!   and a silent output and is still busy; it returns `Silent`, and is
+//!   called every block.
+//! - **for a node without event inputs**, its previous call left every audio
+//!   output flagged silent (it returned `Silent`, `Idle`, or masks covering
+//!   every channel), and its declared tail has elapsed since its inputs went
+//!   quiet. A node never called yet is not quiet.
 //!
-//! (2) is what keeps a held note sounding: a synth fed one note-on has quiet
-//! inputs for as long as the note is held, and quiet inputs are not an idle
-//! node.
+//! # Flushed events
+//!
+//! When an event delay or event feedback disappears in a recompile and its
+//! sink survives, its pending events are delivered on the sink's next call:
+//! each flush keeps its events' relative spacing, shifted so the earliest
+//! lands at offset 0, so a note-on/note-off pair keeps its length; only what
+//! falls past that block's end is clamped to its last frame. Flushed events
+//! sort ahead of the block's own on ties. They can reach a **replaced** unit
+//! at that sink — a note-off for a note-on its predecessor saw — which a
+//! unit must tolerate (a note-off for a note that is not sounding is a
+//! no-op in MIDI).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
-use tutti_types::{AudioThread, Guarded, NodeKey, Retire, Samples, ScopedNoDenormals, Tail};
+use tutti_types::{AudioThread, NodeKey, Samples, ScopedNoDenormals, Tail};
 
 use crate::arena::{borrow_disjoint, Arena, Role};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
@@ -67,62 +88,133 @@ use crate::spec::EventIn;
 /// Events one event slot holds per block, unless configured otherwise.
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
-// `&mut dyn Node` cannot be used to free the unit: an unsized value cannot be
-// assigned, swapped or taken out of in safe Rust.
-impl Guarded for dyn Node {}
+/// A unit, owned. Crate-private, so the only code that can replace or drop
+/// the box is this crate's; its drop is checked against the audio-thread
+/// marker. (`tutti_types::Retire` is the generic, move-only form; this crate
+/// must *run* its units, so it keeps a box it can hand `&mut` out of.)
+pub(crate) struct NodeBox(Box<dyn Node>);
 
-/// A plan and the unit changes that go with it — the box the control side
-/// sends the audio side, and gets back.
-///
-/// Before [`Executor::apply`] it holds the new plan and the incoming units;
-/// after, everything the executor replaced. Either way it is freed on the
-/// control side (see [`Editor::reclaim`](crate::Editor::reclaim)); dropping it
-/// on the audio thread panics in a debug build.
-#[must_use = "a commit must be applied, and the box it returns reclaimed"]
-pub struct Commit {
-    pub(crate) editor: u64,
-    pub(crate) applied: bool,
-    plan: Option<Arc<Plan>>,
-    delta: Delta,
-    incoming: Vec<(UnitIdx, u32, Retire<dyn Node>)>,
-    retired: Vec<(NodeKey, Retire<dyn Node>)>,
-    old_state: Option<State>,
+impl NodeBox {
+    pub(crate) fn new(node: Box<dyn Node>) -> Self {
+        Self(node)
+    }
+
+    /// Give the unit back, on the control side.
+    pub(crate) fn into_inner(mut self) -> Box<dyn Node> {
+        AudioThread::check_not_current("a unit reclaimed");
+        // Swap in a placeholder so `Drop` has nothing to check.
+        std::mem::replace(&mut self.0, Box::new(Parked))
+    }
 }
 
-// Every field is private to this crate, and `Commit`'s own drop is checked,
-// so `&mut Commit` cannot free anything unnoticed on the audio thread.
-impl Guarded for Commit {}
+impl Deref for NodeBox {
+    type Target = dyn Node;
+    fn deref(&self) -> &(dyn Node + 'static) {
+        &*self.0
+    }
+}
+
+impl DerefMut for NodeBox {
+    fn deref_mut(&mut self) -> &mut (dyn Node + 'static) {
+        &mut *self.0
+    }
+}
+
+impl Drop for NodeBox {
+    fn drop(&mut self) {
+        AudioThread::check_not_current("a unit");
+    }
+}
+
+/// A zero-sized stand-in left behind by [`NodeBox::into_inner`]; boxing it
+/// does not allocate, so neither does dropping it.
+struct Parked;
+
+impl Node for Parked {
+    fn shape(&self) -> crate::node::Shape {
+        crate::node::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+        )
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Idle
+    }
+    fn reset(&mut self) {}
+}
+
+/// What an editor and its executor share: the credit count, what the
+/// executor last applied, and the units of commits dropped unapplied.
+pub(crate) struct Link {
+    pub(crate) in_flight: AtomicUsize,
+    /// Plan id the executor runs; 0 before the first apply.
+    pub(crate) applied: AtomicU64,
+    /// Set when a commit is dropped without being applied; the editor rolls
+    /// back on its next commit.
+    pub(crate) rolled_back: AtomicBool,
+    /// `(key, generation, unit)` from commits dropped unapplied — control
+    /// thread only (a commit's drop is checked off the audio thread).
+    pub(crate) returned: Mutex<Vec<(NodeKey, u32, Box<dyn Node>)>>,
+}
+
+impl Link {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            in_flight: AtomicUsize::new(0),
+            applied: AtomicU64::new(0),
+            rolled_back: AtomicBool::new(false),
+            returned: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+/// A plan and the unit changes that go with it — what travels inside a
+/// [`CommitBox`] to the executor and back.
+///
+/// Before [`Executor::apply`] it holds the new plan and the incoming units;
+/// after, everything the executor replaced. Dropping it on the audio thread
+/// panics in a debug build. Dropping it anywhere returns its credit to the
+/// editor; dropping it *unapplied* also hands its units back to the editor
+/// and makes the editor roll back to the plan the executor really runs.
+pub struct Commit {
+    pub(crate) link: Arc<Link>,
+    pub(crate) applied: bool,
+    /// The plan this commit installs, and the one it was compiled against.
+    pub(crate) plan_id: u64,
+    pub(crate) base_id: u64,
+    plan: Option<Arc<Plan>>,
+    delta: Delta,
+    incoming: Vec<(NodeKey, UnitIdx, u32, NodeBox)>,
+    retired: Vec<(NodeKey, NodeBox)>,
+    old_state: Option<State>,
+}
 
 impl Drop for Commit {
     fn drop(&mut self) {
         AudioThread::check_not_current("Commit");
+        if !self.applied && !self.incoming.is_empty() {
+            let mut back = self.link.returned.lock().unwrap_or_else(|e| e.into_inner());
+            for (key, _, gen, unit) in self.incoming.drain(..) {
+                back.push((key, gen, unit.into_inner()));
+            }
+        }
+        if !self.applied {
+            self.link.rolled_back.store(true, Ordering::Release);
+        }
+        self.link.in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
 impl Commit {
-    /// Assemble a commit from a compiled plan, its delta, and one prepared unit
-    /// for every placement the delta inserts or replaces. Control side.
-    ///
-    /// A commit built here belongs to no [`Editor`](crate::Editor); the usual
-    /// path is [`Editor::commit`](crate::Editor::commit).
-    ///
-    /// # Panics
-    ///
-    /// If `units` does not supply exactly the inserted and replaced keys.
-    pub fn new(
-        plan: Plan,
-        delta: Delta,
-        units: BTreeMap<NodeKey, Box<dyn Node>>,
-    ) -> Retire<Commit> {
-        Self::for_editor(0, plan, delta, units)
-    }
-
-    pub(crate) fn for_editor(
-        editor: u64,
+    pub(crate) fn build(
+        link: &Arc<Link>,
+        plan_id: u64,
+        base_id: u64,
         plan: Plan,
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
-    ) -> Retire<Commit> {
+    ) -> CommitBox {
         let wanted = delta
             .insert
             .iter()
@@ -133,7 +225,7 @@ impl Commit {
                 let unit = units
                     .remove(&p.key)
                     .unwrap_or_else(|| panic!("no unit supplied for node {}", p.key.0));
-                (p.idx, p.gen, Retire::from_box(unit))
+                (p.key, p.idx, p.gen, NodeBox::new(unit))
             })
             .collect();
         assert!(
@@ -143,15 +235,18 @@ impl Commit {
         );
         // Reserved here so `apply` moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
-        Retire::new(Self {
-            editor,
+        link.in_flight.fetch_add(1, Ordering::AcqRel);
+        CommitBox(Box::new(Self {
+            link: Arc::clone(link),
             applied: false,
+            plan_id,
+            base_id,
             plan: Some(Arc::new(plan)),
             delta,
             incoming,
             retired,
             old_state: None,
-        })
+        }))
     }
 
     /// The plan this box carries: the new one before `apply`, the previous
@@ -176,14 +271,42 @@ impl Commit {
     }
 }
 
+/// The box a [`Commit`] travels in: made by an [`Editor`](crate::Editor),
+/// installed by that editor's [`Executor`], and reclaimed by the editor.
+///
+/// Read-only outside this crate (it derefs to `&Commit`, never `&mut`), so
+/// nothing but the executor can take units out of it, and nothing can
+/// replace its contents: the only way to free a commit is to drop the box,
+/// and that drop is checked against the audio-thread marker.
+#[must_use = "a commit must be applied, and the box it returns reclaimed"]
+pub struct CommitBox(Box<Commit>);
+
+impl Deref for CommitBox {
+    type Target = Commit;
+    fn deref(&self) -> &Commit {
+        &self.0
+    }
+}
+
+impl CommitBox {
+    fn get(&mut self) -> &mut Commit {
+        &mut self.0
+    }
+}
+
+// No `DerefMut` for `CommitBox`: it would let a caller outside this crate
+// replace the commit wholesale. `get` above is private.
+
 struct Unit {
     gen: u32,
-    node: Retire<dyn Node>,
+    node: NodeBox,
     /// Consecutive frames of fully silent input, saturating.
     quiet: u64,
     /// Whether the last call (or skip) left every output silent and wrote no
-    /// event. See the module docs on the silence skip.
+    /// event.
     last_quiet: bool,
+    /// Whether the last call returned [`Status::Idle`].
+    last_idle: bool,
 }
 
 enum Ring {
@@ -192,11 +315,14 @@ enum Ring {
 }
 
 /// Events flushed from a delay that went away, waiting for their sink's next
-/// call. `events` is sized so the sink's own slot events fit after them.
+/// call, at their offsets relative to the earliest (see the module docs).
 struct Inject {
     unit: u32,
     port: u16,
     events: Vec<Event>,
+    /// Where `events` and the sink's own slot events are merged, sized at
+    /// `apply` so the merge never grows.
+    merged: Vec<Event>,
     live: bool,
 }
 
@@ -232,11 +358,14 @@ impl State {
 }
 
 /// The serial plan executor. Built with its [`Editor`](crate::Editor) by
-/// [`Editor::new`](crate::Editor::new), so the two share one [`Prepare`].
+/// [`Editor::new`](crate::Editor::new): the two share one [`Prepare`] and
+/// one link, and the executor installs only that editor's commits.
 pub struct Executor {
     prepare: Prepare,
     event_cap: usize,
+    link: Arc<Link>,
     plan: Option<Arc<Plan>>,
+    plan_id: u64,
     store: Vec<Option<Unit>>,
     state: State,
     frame: u64,
@@ -252,11 +381,13 @@ fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
 }
 
 impl Executor {
-    pub(crate) fn new(prepare: Prepare, cap: usize) -> Self {
+    pub(crate) fn new(prepare: Prepare, cap: usize, link: Arc<Link>) -> Self {
         Self {
             prepare,
             event_cap: cap,
+            link,
             plan: None,
+            plan_id: 0,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
             frame: 0,
@@ -279,9 +410,9 @@ impl Executor {
         self.frame
     }
 
-    /// Events refused so far: writer overflow, merge overflow, and delay or
-    /// feedback FIFO overflow (which never drops a note-off while anything
-    /// else can go).
+    /// Events refused so far: writer overflow, and delay or feedback FIFO
+    /// overflow (which never drops a note-off while anything else can go).
+    /// A merge never drops: its slot holds all its inputs.
     pub fn dropped_events(&self) -> u64 {
         self.dropped
     }
@@ -290,18 +421,29 @@ impl Executor {
     ///
     /// Delay rings, feedback state and units carry over by key (see
     /// [`DelayKey`] and [`FeedbackKey`]). An event delay or event feedback
-    /// whose key disappears flushes its pending events to its sink, at offset
-    /// 0 of the next block, when the sink survives.
+    /// whose key disappears flushes its pending events to its sink when the
+    /// sink survives — see the module docs for where they land.
+    ///
+    /// A commit compiled against a plan this executor is not running (an
+    /// earlier commit was dropped before it was applied) is handed back
+    /// **unapplied**; dropping it makes the editor roll back and recompile.
     ///
     /// # Panics
     ///
-    /// If the commit was already applied, or its plan was compiled for a
-    /// different [`Prepare`] than this executor's.
+    /// If the commit belongs to another editor, was already applied, or its
+    /// plan was compiled for a different [`Prepare`].
     #[must_use = "the returned box holds the replaced state; reclaim it on the control side"]
-    pub fn apply(&mut self, mut commit: Retire<Commit>) -> Retire<Commit> {
+    pub fn apply(&mut self, mut commit: CommitBox) -> CommitBox {
         let _rt = AudioThread::enter();
-        let c = commit.get_mut();
+        let c = commit.get();
+        assert!(
+            Arc::ptr_eq(&c.link, &self.link),
+            "a commit from another editor: its credit and its units are that editor's"
+        );
         assert!(!c.applied, "a commit is applied once");
+        if c.base_id != self.plan_id {
+            return commit;
+        }
         let plan = c
             .plan
             .take()
@@ -329,7 +471,7 @@ impl Executor {
         if self.store.len() < c.delta.store_len as usize {
             self.store.resize_with(c.delta.store_len as usize, || None);
         }
-        for (idx, gen, node) in c.incoming.drain(..) {
+        for (_, idx, gen, node) in c.incoming.drain(..) {
             let slot = &mut self.store[idx.0 as usize];
             debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
             *slot = Some(Unit {
@@ -337,6 +479,7 @@ impl Executor {
                 node,
                 quiet: 0,
                 last_quiet: false,
+                last_idle: false,
             });
         }
 
@@ -345,6 +488,8 @@ impl Executor {
         let old_state = std::mem::replace(&mut self.state, new_state);
         c.old_state = Some(old_state);
         self.plan = Some(plan);
+        self.plan_id = c.plan_id;
+        self.link.applied.store(c.plan_id, Ordering::Release);
         c.plan = old_plan;
         c.applied = true;
         commit
@@ -392,7 +537,7 @@ impl Executor {
             })
             .collect();
 
-        // Feedback delays, by key: exactly `MaxBlock` long.
+        // Feedback delays, by key: exactly the edge's delay long.
         let old_fb = |kind: &[crate::plan::FeedbackSpec]| -> BTreeMap<FeedbackKey, usize> {
             kind.iter().enumerate().map(|(i, f)| (f.key, i)).collect()
         };
@@ -410,7 +555,7 @@ impl Executor {
                     .get(&f.key)
                     .and_then(|&i| old.audio_fb.get_mut(i))
                     .and_then(Option::take);
-                Some(carried.unwrap_or_else(|| AudioRing::new(Samples(max_block))))
+                Some(carried.unwrap_or_else(|| AudioRing::new(f.key.delay())))
             })
             .collect();
         let event_fb = plan
@@ -421,9 +566,7 @@ impl Executor {
                     .get(&f.key)
                     .and_then(|&i| old.event_fb.get_mut(i))
                     .and_then(Option::take);
-                Some(
-                    carried.unwrap_or_else(|| EventFifo::sized(Samples(max_block), cap, max_block)),
-                )
+                Some(carried.unwrap_or_else(|| EventFifo::sized(f.key.delay(), cap, max_block)))
             })
             .collect();
 
@@ -435,12 +578,9 @@ impl Executor {
             (at.port < plan.units[u].shape.event_in).then_some(u as u32)
         };
         let mut flushed: BTreeMap<(u32, u16), Vec<Event>> = BTreeMap::new();
-        let mut take_into = |at: EventIn, events: &mut dyn Iterator<Item = Event>| {
+        let mut take_into = |at: EventIn, events: Vec<Event>| {
             if let Some(u) = sink_of(at) {
-                flushed
-                    .entry((u, at.port))
-                    .or_default()
-                    .extend(events.map(|e| Event { offset: 0, ..e }));
+                flushed.entry((u, at.port)).or_default().extend(events);
             }
         };
         if let Some(op) = old_plan {
@@ -449,7 +589,7 @@ impl Executor {
                     node: op.units[inj.unit as usize].key,
                     port: inj.port,
                 };
-                take_into(at, &mut inj.events.iter().copied());
+                take_into(at, inj.events.clone());
             }
             let mut gone: Vec<(DelayKey, usize)> = old_delays
                 .iter()
@@ -461,25 +601,30 @@ impl Executor {
                 if let (DelayKey::Event { at, .. }, Some(Some(Ring::Event(f)))) =
                     (k, old.rings.get(i))
                 {
-                    take_into(at, &mut f.pending());
+                    take_into(at, f.flushed());
                 }
             }
             for (k, &i) in &old_efb {
                 if let (FeedbackKey::Event { at, .. }, Some(Some(f))) = (k, old.event_fb.get(i)) {
-                    take_into(*at, &mut f.pending());
+                    take_into(*at, f.flushed());
                 }
             }
         }
         let mut has_inject = vec![false; plan.units.len()];
+        let widest = plan.event_slot_weight.iter().copied().max().unwrap_or(1) as usize;
         let inject = flushed
             .into_iter()
             .map(|((unit, port), mut events)| {
                 has_inject[unit as usize] = true;
-                events.reserve(cap);
+                // Several flushes into one sink: one sorted list, ties in
+                // flush order (stable).
+                events.sort_by_key(|e| e.offset);
+                let merged = Vec::with_capacity(events.len() + cap * widest);
                 Inject {
                     unit,
                     port,
                     events,
+                    merged,
                     live: true,
                 }
             })
@@ -497,8 +642,10 @@ impl Executor {
                 v[0] = true;
                 v
             },
-            events: (0..plan.event_slots)
-                .map(|_| Vec::with_capacity(cap))
+            events: plan
+                .event_slot_weight
+                .iter()
+                .map(|&w| Vec::with_capacity(cap * w.max(1) as usize))
                 .collect(),
             rings,
             audio_fb,
@@ -536,7 +683,9 @@ impl Executor {
         let Self {
             prepare,
             event_cap,
+            link: _,
             plan,
+            plan_id: _,
             store,
             state,
             frame,
@@ -632,7 +781,10 @@ impl Executor {
                     );
                     let output = output.expect("dst borrowed");
                     output.clear();
-                    *dropped += merge_into(&ins[..list.len()], output, cap) as u64;
+                    // The slot holds all its inputs (`event_slot_weight`), so
+                    // this never drops; counted anyway, in case it ever does.
+                    let room = output.capacity();
+                    *dropped += merge_into(&ins[..list.len()], output, room) as u64;
                 }
                 Op::Node {
                     unit,
@@ -667,10 +819,15 @@ impl Executor {
                         && in_silent.covers(ain.len())
                         && ein.iter().all(|&s| events[s as usize].is_empty());
 
-                    let skip = (!ain.is_empty() || !ein.is_empty())
-                        && quiet_inputs
-                        && u.last_quiet
-                        && tail_elapsed(pu.shape.tail, u.quiet);
+                    // See the module docs: a node with event inputs parks only
+                    // on its own say-so (`Status::Idle`); one without parks
+                    // when its inputs, its last output and its tail agree.
+                    let skip = quiet_inputs
+                        && if ein.is_empty() {
+                            !ain.is_empty() && u.last_quiet && tail_elapsed(pu.shape.tail, u.quiet)
+                        } else {
+                            u.last_idle
+                        };
                     u.quiet = if quiet_inputs {
                         u.quiet.saturating_add(frames as u64)
                     } else {
@@ -689,11 +846,22 @@ impl Executor {
                     }
 
                     if injected {
-                        // Flushed events first (they are older), then this
-                        // block's; both sorted, so the result is.
+                        // Flushed events keep their spacing where it fits in
+                        // this block; what does not is clamped to its last
+                        // frame. Merged with this block's own events, ties
+                        // to the flushed ones (they are older).
                         for inj in inject.iter_mut().filter(|i| i.live && i.unit == unit) {
+                            for e in &mut inj.events {
+                                e.offset = e.offset.min(frames as u32 - 1);
+                            }
                             let slot = ein[inj.port as usize];
-                            inj.events.extend_from_slice(&events[slot as usize]);
+                            inj.merged.clear();
+                            let cap_total = inj.merged.capacity();
+                            merge_into(
+                                &[&inj.events, &events[slot as usize]],
+                                &mut inj.merged,
+                                cap_total,
+                            );
                         }
                     }
 
@@ -715,7 +883,7 @@ impl Executor {
                         unit,
                         inject: if injected { inject.as_slice() } else { &[] },
                     };
-                    let node = u.node.get_mut();
+                    let node: &mut dyn Node = &mut *u.node;
                     // Port tables are stack arrays; pick the smallest bucket
                     // that fits so a two-port node does not initialise 128
                     // entries per call. Audio buckets count inputs + outputs
@@ -734,11 +902,13 @@ impl Executor {
                     if injected {
                         for inj in inject.iter_mut().filter(|i| i.unit == unit) {
                             inj.events.clear();
+                            inj.merged.clear();
                             inj.live = false;
                         }
                         has_inject[unit as usize] = false;
                     }
 
+                    u.last_idle = status == Status::Idle;
                     finish(status, frames, ain, aout, in_place, arena, silent, constant);
                     u.last_quiet = aout.iter().all(|&s| silent[s as usize])
                         && eout.iter().all(|&s| events[s as usize].is_empty());
@@ -850,7 +1020,7 @@ impl NodeCall<'_, '_> {
             |port, v| evout_bufs[port as usize] = Some(&mut v[0]),
         );
         for inj in self.inject.iter().filter(|i| i.live && i.unit == self.unit) {
-            evin[inj.port as usize] = SortedEvents::trusted(&inj.events, frames);
+            evin[inj.port as usize] = SortedEvents::trusted(&inj.merged, frames);
         }
         let drops = Cell::new(0u32);
         let mut evout: [EventWriter<'_>; E] = std::array::from_fn(|_| EventWriter::detached());
@@ -918,7 +1088,7 @@ fn finish(
                 constant[s as usize] = cm.get(c) || sm.get(c);
             }
         }
-        Status::Silent => {
+        Status::Silent | Status::Idle => {
             for &s in aout {
                 arena.slot_mut(s, frames).fill(0.0);
                 silent[s as usize] = true;

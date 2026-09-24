@@ -34,7 +34,7 @@ use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::io::Io;
-use crate::node::{Cx, Node, Prepare, Shape, Status};
+use crate::node::{ConstantMask, Cx, Node, Prepare, Shape, SilenceMask, Status};
 
 /// An `AudioUnit` running as a [`Node`].
 pub struct Legacy {
@@ -119,7 +119,23 @@ impl Node for Legacy {
             }
             start += len;
         }
-        Status::Modified
+        // Report silence the unit produced, so the executor can skip it
+        // (it has no event inputs, so its tail decides — see `Executor`).
+        // One scan of what was just written; cheap next to the unit.
+        let mut silent = SilenceMask::NONE;
+        for c in 0..outs {
+            if io
+                .output(c)
+                .iter()
+                .all(|&x| x == 0.0 && x.is_sign_positive())
+            {
+                silent = silent.with(c);
+            }
+        }
+        Status::Masked {
+            silent,
+            constant: ConstantMask(silent.0),
+        }
     }
 
     fn reset(&mut self) {

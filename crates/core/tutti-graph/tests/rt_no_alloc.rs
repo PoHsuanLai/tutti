@@ -15,7 +15,7 @@ use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Legacy, Transport};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey};
+use tutti_types::{ChannelLayout, NodeKey, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -112,7 +112,7 @@ fn process_is_allocation_free_in_steady_state() {
             node: NodeKey(4),
             port: 1,
         },
-        EventEdge::Feedback(ev(3, 0)),
+        EventEdge::feedback(ev(3, 0), Samples(256)),
     );
     let t = &mut spec.topology;
     t.edges.insert(at(5, 0), Edge::Direct(Source::Global(0)));
@@ -121,12 +121,13 @@ fn process_is_allocation_free_in_steady_state() {
     t.edges.insert(at(7, 1), from(6, 0));
     t.edges.insert(
         at(7, 2),
-        Edge::Feedback(FeedbackFrom {
-            from: OutPort {
+        Edge::Feedback(FeedbackFrom::one_block(
+            OutPort {
                 node: NodeKey(9),
                 port: 0,
             },
-        }),
+            Samples(256),
+        )),
     );
     t.edges.insert(at(8, 0), from(7, 0));
     t.edges.insert(at(9, 0), from(8, 0));

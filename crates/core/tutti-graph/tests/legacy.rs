@@ -178,3 +178,99 @@ fn legacy_declares_the_units_latency_and_tail() {
     assert_ne!(shape.tail, Tail::Unknown, "and this one does report one");
     assert!(shape.in_place);
 }
+
+/// Halves its input, reports `Tail::None`, and counts `process` calls.
+#[derive(Clone)]
+struct Half(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl AudioUnit for Half {
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        output[0] = input[0] * 0.5;
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        input: &tutti_node::buffer::BufferRef,
+        output: &mut tutti_node::buffer::BufferMut,
+    ) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let src = input.channel_f32(0);
+        for (o, &i) in output.channel_f32_mut(0)[..size]
+            .iter_mut()
+            .zip(&src[..size])
+        {
+            *o = i * 0.5;
+        }
+    }
+    fn inputs(&self) -> usize {
+        1
+    }
+    fn outputs(&self) -> usize {
+        1
+    }
+    fn route(
+        &mut self,
+        _input: &tutti_node::signal::SignalFrame,
+        _frequency: f64,
+    ) -> tutti_node::signal::SignalFrame {
+        let mut out = tutti_node::signal::SignalFrame::new(1);
+        out.set(0, tutti_node::signal::Signal::Latency(0.0));
+        out
+    }
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+    fn get_id(&self) -> u64 {
+        0x4841_4c46
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        0
+    }
+}
+
+/// `Legacy` reports the silence its unit produced, so an `AudioUnit` that
+/// declares a tail is skipped on silent input again — the skip needs the last
+/// output flagged silent, and a `Legacy` that always said `Modified` was
+/// never skipped.
+///
+/// Mutation: return `Status::Modified` from `Legacy::process` instead of the
+/// scanned mask → the unit runs every block → fails.
+#[test]
+fn legacy_reports_silence_so_a_silent_unit_is_skipped() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    let key = NodeKey(1);
+    ed.insert(
+        key,
+        "half",
+        Legacy::new(Half(std::sync::Arc::clone(&calls))),
+    );
+    ed.spec_mut()
+        .topology
+        .edges
+        .insert(InPort { node: key, port: 0 }, Edge::Direct(Source::Zero));
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let done = exec.apply(ed.commit().unwrap());
+    ed.reclaim(done).expect("applied");
+    let mut out = vec![0.0f32; 64];
+    for _ in 0..10 {
+        exec.process(
+            64,
+            &Transport::default(),
+            &[&[0.0; 64]],
+            &mut [&mut out[..]],
+        );
+    }
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "called once, found silent, then skipped"
+    );
+}

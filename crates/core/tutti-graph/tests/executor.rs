@@ -13,7 +13,7 @@ use tutti_graph::{
     Transport, MAX_IN_FLIGHT,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Retire, Samples, Tail};
+use tutti_types::{Amplitude, ChannelLayout, NodeKey, Param, Samples, Tail};
 
 const SRC: NodeKey = NodeKey(1);
 const FX: NodeKey = NodeKey(2);
@@ -243,7 +243,7 @@ fn masked_status_reaches_the_next_nodes_mask() {
 #[test]
 #[cfg(debug_assertions)]
 fn freeing_a_retire_inside_process_panics_in_debug() {
-    struct Freer(Option<Retire<Vec<f32>>>);
+    struct Freer(Option<tutti_types::Retire<Vec<f32>>>);
     impl Node for Freer {
         fn shape(&self) -> Shape {
             Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
@@ -257,7 +257,11 @@ fn freeing_a_retire_inside_process_panics_in_debug() {
         fn reset(&mut self) {}
     }
     let (mut ed, mut exec) = Editor::new(prepare(16));
-    ed.insert(SRC, "freer", Freer(Some(Retire::new(vec![0.0; 8]))));
+    ed.insert(
+        SRC,
+        "freer",
+        Freer(Some(tutti_types::Retire::new(vec![0.0; 8]))),
+    );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
     let done = exec.apply(ed.commit().unwrap());
     ed.reclaim(done).expect("our own applied box");
@@ -419,14 +423,33 @@ fn reinserting_a_key_replaces_its_unit() {
     assert_eq!(render(&mut exec, 8, 1)[0][0], 5.0);
 }
 
-/// A synth: a note-on starts a constant output, a note-off starts a linear
-/// release of `release` frames, then `Status::Silent`. Its tail is the
-/// release — true after a note-off, and not a promise about a held note.
+/// A synth: a note-on starts a constant output after `attack_delay` frames
+/// of silence, a note-off starts a linear release of `release` frames. It is
+/// honest about the difference the executor cares about: silent *while a
+/// note is held* is `Status::Silent` (busy); silent with nothing held and
+/// nothing releasing is `Status::Idle` (park me).
 struct Synth {
     release: usize,
+    attack_delay: usize,
     level: f32,
+    held: bool,
+    wait: usize,
     releasing: Option<usize>,
     calls: Arc<AtomicUsize>,
+}
+
+impl Synth {
+    fn new(release: usize, attack_delay: usize, calls: &Arc<AtomicUsize>) -> Self {
+        Self {
+            release,
+            attack_delay,
+            level: 0.0,
+            held: false,
+            wait: 0,
+            releasing: None,
+            calls: Arc::clone(calls),
+        }
+    }
 }
 
 impl Node for Synth {
@@ -444,23 +467,35 @@ impl Node for Synth {
         for i in 0..n {
             while next < evs.len() && evs[next].offset as usize == i {
                 if evs[next].is_note_off() {
+                    self.held = false;
                     self.releasing = Some(self.release);
                 } else {
-                    self.level = 1.0;
+                    self.held = true;
+                    self.wait = self.attack_delay;
                     self.releasing = None;
                 }
                 next += 1;
             }
-            if let Some(left) = self.releasing.as_mut() {
-                self.level = *left as f32 / self.release as f32;
+            if self.held {
+                if self.wait > 0 {
+                    self.wait -= 1;
+                    self.level = 0.0;
+                } else {
+                    self.level = 1.0;
+                }
+            } else if let Some(left) = self.releasing.as_mut() {
                 *left = left.saturating_sub(1);
+                self.level = *left as f32 / self.release as f32;
+                if *left == 0 {
+                    self.releasing = None;
+                }
             }
             io.output(0)[i] = self.level;
         }
-        if self.level == 0.0 {
-            Status::Silent
-        } else {
-            Status::Modified
+        match (self.level == 0.0, self.held || self.releasing.is_some()) {
+            (true, false) => Status::Idle,
+            (true, true) => Status::Silent,
+            (false, _) => Status::Modified,
         }
     }
     fn reset(&mut self) {}
@@ -490,68 +525,17 @@ impl Node for OneShot {
     fn reset(&mut self) {}
 }
 
-/// R1: a held note on a finite-tail synth keeps sounding — its event input is
+/// A held note on a finite-tail synth keeps sounding — its event input is
 /// quiet for as long as the note is held, and that is not an idle node — and
-/// once released and silent it is skipped.
+/// once released and `Idle` it is skipped.
 ///
-/// Mutation: drop `u.last_quiet &&` from the skip condition in
-/// `Executor::process` → the synth is skipped `release` frames after the
-/// note-on and the held note goes silent → fails.
+/// Mutation: for nodes with event inputs, skip on `last_quiet` + tail (the
+/// audio-node rule) instead of `last_idle` → the held note's synth is skipped
+/// once its tail has run under quiet inputs → silent held note → fails.
 #[test]
 fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
-    let (on, off, synth) = (NodeKey(1), NodeKey(2), NodeKey(3));
     let calls = Arc::new(AtomicUsize::new(0));
-    let (mut ed, mut exec) = Editor::new(prepare(32));
-    ed.insert(
-        on,
-        "on",
-        OneShot {
-            at: 5,
-            words: [0x2090_3c64, 0, 0, 0],
-        },
-    );
-    ed.insert(
-        off,
-        "off",
-        OneShot {
-            at: 1000,
-            words: [0x2080_3c00, 0, 0, 0],
-        },
-    );
-    ed.insert(
-        synth,
-        "synth",
-        Synth {
-            release: 40,
-            level: 0.0,
-            releasing: None,
-            calls: Arc::clone(&calls),
-        },
-    );
-    let spec = ed.spec_mut();
-    for from in [on, off] {
-        spec.connect_events(
-            tutti_graph::EventIn {
-                node: synth,
-                port: 0,
-            },
-            tutti_graph::EventEdge::Direct(tutti_graph::EventOut {
-                node: from,
-                port: 0,
-            }),
-        );
-    }
-    spec.topology.outputs = vec![Source::Node(OutPort {
-        node: synth,
-        port: 0,
-    })];
-    let done = exec.apply(ed.commit().unwrap());
-    ed.reclaim(done).expect("our own applied box");
-
-    let mut out = Vec::new();
-    for _ in 0..60 {
-        out.extend(render(&mut exec, 32, 1).remove(0));
-    }
+    let out = run_synth(Synth::new(40, 0, &calls), 5, 1000, 60);
     assert!(
         out[6..1000].iter().all(|&x| x == 1.0),
         "the held note sounds from the note-on to the note-off"
@@ -562,11 +546,71 @@ fn a_held_note_keeps_sounding_and_a_released_one_is_skipped() {
     assert!(total >= while_held, "called on every held block");
     assert!(
         total < 60,
-        "and skipped once released and silent ({total} calls of 60 blocks)"
+        "and skipped once released and idle ({total} calls of 60 blocks)"
     );
 }
 
-fn one_node_commit(ed: &mut Editor) -> Retire<tutti_graph::Commit> {
+/// "An honest `Silent` means parked forever" (review): a synth whose attack
+/// starts 200 frames after its note-on is silent, with quiet inputs, well past
+/// its 40-frame tail — and must still be called, because it is not idle.
+///
+/// Mutation: treat `Status::Silent` like `Status::Idle` for the skip (set
+/// `last_idle` for either) → the synth is parked during the delay and the
+/// note never sounds → fails.
+#[test]
+fn a_silent_but_busy_node_is_not_parked() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let out = run_synth(Synth::new(40, 200, &calls), 5, 1000, 40);
+    assert!(out[5..205].iter().all(|&x| x == 0.0), "the delayed attack");
+    assert!(
+        out[206..1000].iter().all(|&x| x == 1.0),
+        "then the note sounds"
+    );
+}
+
+/// Drive `synth` with a note-on at `on` and a note-off at `off` for `blocks`
+/// blocks of 32.
+fn run_synth(synth: Synth, on_at: u64, off_at: u64, blocks: usize) -> Vec<f32> {
+    let (on, off, key) = (NodeKey(1), NodeKey(2), NodeKey(3));
+    let (mut ed, mut exec) = Editor::new(prepare(32));
+    ed.insert(
+        on,
+        "on",
+        OneShot {
+            at: on_at,
+            words: [0x2090_3c64, 0, 0, 0],
+        },
+    );
+    ed.insert(
+        off,
+        "off",
+        OneShot {
+            at: off_at,
+            words: [0x2080_3c00, 0, 0, 0],
+        },
+    );
+    ed.insert(key, "synth", synth);
+    let spec = ed.spec_mut();
+    for from in [on, off] {
+        spec.connect_events(
+            tutti_graph::EventIn { node: key, port: 0 },
+            tutti_graph::EventEdge::Direct(tutti_graph::EventOut {
+                node: from,
+                port: 0,
+            }),
+        );
+    }
+    spec.topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let done = exec.apply(ed.commit().unwrap());
+    ed.reclaim(done).expect("our own applied box");
+    let mut out = Vec::new();
+    for _ in 0..blocks {
+        out.extend(render(&mut exec, 32, 1).remove(0));
+    }
+    out
+}
+
+fn one_node_commit(ed: &mut Editor) -> tutti_graph::CommitBox {
     ed.insert(
         SRC,
         "c",
@@ -579,26 +623,59 @@ fn one_node_commit(ed: &mut Editor) -> Retire<tutti_graph::Commit> {
     ed.commit().expect("commits")
 }
 
-/// R2: a plan compiled for another `Prepare` is refused at `apply` — the
-/// units in it were prepared for a `MaxBlock` this executor does not keep.
+/// A plan compiled for another `Prepare` is refused at `apply` — the units in
+/// it were prepared for a `MaxBlock` this executor does not keep.
 ///
 /// Mutation: delete the `assert_eq!(plan.prepare, self.prepare)` in
 /// `Executor::apply` → the foreign plan installs → fails.
 #[test]
 #[should_panic(expected = "another Prepare")]
 fn apply_refuses_a_plan_for_another_prepare() {
-    let (mut ed, _) = Editor::new(prepare(128));
-    let (_, mut exec) = Editor::new(prepare(64));
-    let commit = one_node_commit(&mut ed);
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(
+        SRC,
+        "c",
+        TestNode::new(Kind::Const {
+            value: 1.0,
+            width: 1,
+        }),
+    );
+    let valid = ed.spec().validate().unwrap();
+    let (plan, delta) = tutti_graph::compile(&valid, ed.shapes(), &prepare(128), None).unwrap();
+    let units = common::units_for(
+        &[(
+            SRC,
+            Kind::Const {
+                value: 1.0,
+                width: 1,
+            },
+        )]
+        .into(),
+        [SRC],
+    );
+    let commit = ed.package(plan, delta, units);
     drop(exec.apply(commit));
 }
 
-/// R4: a box goes back only to the editor that sent it, and only once
-/// applied; an unapplied one is handed back to be applied.
+/// An executor installs only its own editor's commits: another editor's box,
+/// even with the same `Prepare`, is refused before anything moves.
 ///
-/// Mutation: drop the token comparison in `Editor::reclaim` → the foreign
-/// box is accepted and the other editor's credit restored → fails. Drop the
-/// `applied` check → the unapplied box is accepted → fails.
+/// Mutation: delete the link comparison in `Executor::apply` → the foreign
+/// commit installs → fails.
+#[test]
+#[should_panic(expected = "another editor")]
+fn apply_refuses_another_editors_commit() {
+    let (mut ed, _) = Editor::new(prepare(16));
+    let (_, mut exec) = Editor::new(prepare(16));
+    drop(exec.apply(one_node_commit(&mut ed)));
+}
+
+/// A box goes back only to the editor that sent it, and only once applied;
+/// an unapplied one is handed back to be applied.
+///
+/// Mutation: drop the link comparison in `Editor::reclaim` → the foreign
+/// box is accepted → fails. Drop the `applied` check → the unapplied box is
+/// accepted → fails.
 #[test]
 fn reclaim_checks_the_editor_and_that_the_box_was_applied() {
     let (mut ed, mut exec) = Editor::new(prepare(16));
@@ -609,7 +686,11 @@ fn reclaim_checks_the_editor_and_that_the_box_was_applied() {
         Err(tutti_graph::ReclaimError::NotApplied(c)) => c,
         other => panic!("expected NotApplied, got {other:?}"),
     };
-    assert_eq!(ed.in_flight(), 1, "the credit stays spent until applied");
+    assert_eq!(
+        ed.in_flight(),
+        1,
+        "the credit stays spent until the box goes"
+    );
     let done = exec.apply(commit);
     let done = match other.reclaim(done) {
         Err(tutti_graph::ReclaimError::ForeignEditor(c)) => c,
@@ -619,10 +700,8 @@ fn reclaim_checks_the_editor_and_that_the_box_was_applied() {
     assert_eq!(ed.in_flight(), 0);
 }
 
-/// R3: the box `apply` returns holds the previous plan (and with it the
-/// previous arena and delay state), so the executor frees none of it; and
-/// `apply` runs marked as the audio thread, so a commit dropped inside it
-/// would panic in debug builds.
+/// Review R3: the box `apply` returns holds the previous plan (and with it the
+/// previous arena and delay state), so the executor frees none of it.
 ///
 /// Mutation: in `apply`, leave `c.plan` empty instead of storing the old plan
 /// → the returned box has no plan → fails.
@@ -652,33 +731,159 @@ fn apply_returns_what_it_replaced() {
     ed.reclaim(done).unwrap();
 }
 
-/// A `Commit` replaced in place on the audio thread — the one way to free it
-/// there once `Retire` has no `DerefMut` — panics in a debug build: its own
-/// `Drop` checks the marker.
+/// A commit dropped on the audio thread panics in a debug build: the only
+/// way to free one is to drop its box, and that drop checks the marker.
 ///
 /// Mutation: delete `AudioThread::check_not_current("Commit")` from
-/// `Commit::drop` → the replacement is silent → fails.
+/// `Commit::drop` → the drop is silent → fails.
 #[test]
 #[cfg(debug_assertions)]
 fn a_commit_dropped_on_the_audio_thread_panics() {
     let (mut ed, _exec) = Editor::new(prepare(16));
-    let mut a = one_node_commit(&mut ed);
+    let a = one_node_commit(&mut ed);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _rt = tutti_types::AudioThread::enter();
+        drop(a);
+    }));
+    let msg = caught.expect_err("the drop panics");
+    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("Commit dropped on the audio thread"), "{msg}");
+}
+
+/// Review: an explicit `drop(commit)` must not wedge the editor. Two commits
+/// are dropped unapplied; the credits come back, their units return to the
+/// editor, the editor rebases on what the executor really runs, and later
+/// commits apply and render correctly. A commit compiled against a plan the
+/// executor never ran is handed back unapplied rather than installed.
+///
+/// Mutation: in `Commit::drop`, skip `in_flight.fetch_sub` → the third
+/// commit hits `Backpressure` → fails. Skip handing the units back → the
+/// recovery commit reports `MissingUnit` → fails. Skip the rollback in
+/// `Editor::recover` (keep the dropped plan as the base) → the recovery
+/// commit's delta assumes units the executor never received → it is refused
+/// as stale → fails.
+#[test]
+fn dropped_commits_do_not_wedge_the_editor() {
+    let (mut ed, mut exec) = Editor::new(prepare(8));
+    // One applied commit, so there is a real base to roll back to.
+    let done = exec.apply(one_node_commit(&mut ed));
+    ed.reclaim(done).unwrap();
+    assert_eq!(render(&mut exec, 8, 1)[0][0], 1.0);
+
+    // Two more, both dropped before the executor sees them.
     ed.insert(
         FX,
-        "c",
-        TestNode::new(Kind::Const {
-            value: 1.0,
+        "gain",
+        TestNode::new(Kind::Gain {
+            gain: 0.5,
             width: 1,
         }),
     );
-    let b = ed.commit().expect("a second credit is free");
-    let b = b.reclaim(); // on the control thread: fine
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let _rt = tutti_types::AudioThread::enter();
-        *a.get_mut() = *b; // drops the old Commit here
-        drop(a.reclaim());
-    }));
-    let msg = caught.expect_err("the replacement panics");
-    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(msg.contains("Commit dropped on the audio thread"), "{msg}");
+    ed.spec_mut().topology.edges.insert(
+        InPort { node: FX, port: 0 },
+        Edge::Direct(Source::Node(OutPort { node: SRC, port: 0 })),
+    );
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
+    let c1 = ed.commit().expect("a credit is free");
+    ed.insert(
+        SRC,
+        "c",
+        TestNode::new(Kind::Const {
+            value: 4.0,
+            width: 1,
+        }),
+    );
+    let c2 = ed.commit().expect("the second credit");
+    assert_eq!(ed.in_flight(), 2);
+    assert_eq!(ed.commit().err(), Some(CommitError::Backpressure));
+    // A commit built on c1 — which never ran — is refused as stale.
+    let stale = exec.apply(c2);
+    assert!(
+        !stale.is_applied(),
+        "compiled against a plan the executor never ran"
+    );
+    drop(stale);
+    drop(c1);
+    assert_eq!(ed.in_flight(), 0, "both credits came back");
+    assert_eq!(
+        render(&mut exec, 8, 1)[0][0],
+        1.0,
+        "the executor never changed"
+    );
+
+    // The editor recovers: same spec, units back, rebased — and it applies.
+    let done = exec.apply(ed.commit().expect("recovers"));
+    assert!(done.is_applied());
+    ed.reclaim(done).unwrap();
+    assert_eq!(
+        render(&mut exec, 8, 1)[0][0],
+        2.0,
+        "const 4 through gain 0.5: both dropped edits landed"
+    );
+}
+
+/// Review: a merge used to drop past one slot's capacity with no note-off
+/// exception. The probe: capacity 32, two sources each sending 30 note-offs
+/// on one frame into one port — 60 must arrive, none dropped.
+///
+/// Mutation: size merged slots at one capacity (all `event_slot_weight` 1)
+/// → 28 note-offs are lost → fails.
+#[test]
+fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
+    struct Offs;
+    impl Node for Offs {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            if cx.env.frame == 0 {
+                for n in 0..30 {
+                    io.event_out(0)
+                        .push(tutti_graph::Event::midi(
+                            0,
+                            [0x2080_0000 | (n << 8), 0, 0, 0],
+                        ))
+                        .expect("30 fit in 32");
+                }
+            }
+            Status::Idle
+        }
+        fn reset(&mut self) {}
+    }
+    struct Count(Arc<AtomicUsize>);
+    impl Node for Count {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
+            let offs = io.events(0).iter().filter(|e| e.is_note_off()).count();
+            self.0.fetch_add(offs, Ordering::Relaxed);
+            Status::Idle
+        }
+        fn reset(&mut self) {}
+    }
+    let seen = Arc::new(AtomicUsize::new(0));
+    let (mut ed, mut exec) = Editor::with_event_capacity(prepare(8), 32);
+    ed.insert(NodeKey(1), "a", Offs);
+    ed.insert(NodeKey(2), "b", Offs);
+    ed.insert(NodeKey(3), "count", Count(Arc::clone(&seen)));
+    for from in [1, 2] {
+        ed.spec_mut().connect_events(
+            tutti_graph::EventIn {
+                node: NodeKey(3),
+                port: 0,
+            },
+            tutti_graph::EventEdge::Direct(tutti_graph::EventOut {
+                node: NodeKey(from),
+                port: 0,
+            }),
+        );
+    }
+    let done = exec.apply(ed.commit().unwrap());
+    ed.reclaim(done).unwrap();
+    render(&mut exec, 8, 0);
+    assert_eq!(seen.load(Ordering::Relaxed), 60);
+    assert_eq!(exec.dropped_events(), 0);
 }

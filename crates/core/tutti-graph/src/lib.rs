@@ -15,7 +15,7 @@
 //!  ValidGraph          proof in the type
 //!      │ compile(&ValidGraph, &Shapes, prev) -> (Plan, Delta)      pure, control thread
 //!  Plan (SoA)          ops, slots, CSR DAG, delay + feedback tables
-//!      │ Retire<Commit> { plan, delta, units }  ⇄  back with retirees   phase 2: SPSC
+//!      │ CommitBox { plan, delta, units }  ⇄  back with retirees        phase 2: SPSC
 //!  Executor            unit store + arena, serial walk of the ops
 //! ```
 //!
@@ -33,9 +33,16 @@
 //!   block by construction.
 //! - **[`ParamRamp`]** — built from a typed `ParamKey<U>` and read back as a
 //!   `U`; the raw `f32` in between is private.
-//! - **[`Retire`](tutti_types::Retire)** — everything that crosses to the
-//!   executor (the commit box, every unit) is freed on the control side; a
-//!   drop inside [`Executor::process`] panics in debug builds.
+//! - **[`CommitBox`]** and the crate-private unit box — everything that
+//!   crosses to the executor is freed on the control side; a drop inside
+//!   [`Executor::process`] or [`Executor::apply`] panics in debug builds.
+//!   Their `&mut` never leaves this crate, which is what seals them
+//!   (`tutti_types::Retire` is the generic, move-only form of the same
+//!   guard). Dropping a box returns its credit; dropping one unapplied rolls
+//!   the editor back.
+//! - **`FeedbackFrom::delay`** — a feedback loop's length is part of the
+//!   graph, so a bounce at a larger `MaxBlock` loops like playback; a delay
+//!   shorter than `MaxBlock` is [`CompileError::FeedbackTooShort`].
 //!
 //! # Whole blocks, and loop wraps
 //!
@@ -116,7 +123,7 @@ pub use editor::{CommitError, Editor, ReclaimError, MAX_IN_FLIGHT};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents, Ump,
 };
-pub use exec::{Commit, Executor, DEFAULT_EVENT_CAPACITY};
+pub use exec::{Commit, CommitBox, Executor, DEFAULT_EVENT_CAPACITY};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{

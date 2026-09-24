@@ -8,7 +8,7 @@
 //!   against a ledger kept by the emitters themselves.
 //! - **Wide fan-in** (B1): 65 and 200 sources into one event port compile to
 //!   a merge tree and deliver in `(offset, source order)`.
-//! - **Feedback is exactly `MaxBlock` frames** (S2), audio and events, under
+//! - **Feedback delays by its declared delay** at any `MaxBlock`, audio and events, under
 //!   block sizes that change and are ragged.
 
 mod common;
@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use common::prepare;
 use proptest::prelude::*;
 use tutti_graph::{
-    compile, Commit, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor,
-    GraphSpec, Io, Node, Prepare, Reference, Shape, Shapes, Status, Transport, Ump,
+    compile, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io,
+    Node, Prepare, Reference, Shape, Shapes, Status, Transport, Ump,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail, Topology};
@@ -174,7 +174,7 @@ fn spec_of(ph: &Phase, emitters: &[(u32, u64)]) -> (GraphSpec, Shapes) {
             g.connect_events(
                 at,
                 if fb {
-                    EventEdge::Feedback(from)
+                    EventEdge::feedback(from, Samples(MAX + 5))
                 } else {
                     EventEdge::Direct(from)
                 },
@@ -230,9 +230,8 @@ fn run(
     let inbox: Inbox = Arc::default();
     let stop = Arc::new(AtomicBool::new(false));
     let prep = prepare(MAX);
-    let (_ed, mut exec): (Editor, Executor) = Editor::with_event_capacity(prep, CAP);
+    let (mut ed, mut exec): (Editor, Executor) = Editor::with_event_capacity(prep, CAP);
     let mut reference = Reference::new(prep);
-    let mut prev = None;
     let mut phase_of: Vec<(usize, u32, u64)> = Vec::new();
     let transport = Transport::default();
     let mut all = phases.to_vec();
@@ -244,7 +243,8 @@ fn run(
         let (g, shapes) = spec_of(ph, emitters);
         let valid = g.validate().expect("valid");
         if executor {
-            let (plan, delta) = compile(&valid, &shapes, &prep, prev.as_ref()).expect("compiles");
+            let (plan, delta) =
+                compile(&valid, &shapes, &prep, ed.base().map(|p| &**p)).expect("compiles");
             let placed: BTreeSet<NodeKey> = delta
                 .insert
                 .iter()
@@ -253,8 +253,8 @@ fn run(
                 .collect();
             let mut units = units_of(ph, emitters, &ledger, &inbox, &stop);
             units.retain(|k, _| placed.contains(k));
-            prev = Some(plan.clone());
-            drop(exec.apply(Commit::new(plan, delta, units)));
+            let done = exec.apply(ed.package(plan, delta, units));
+            ed.reclaim(done).expect("applied");
         } else {
             reference.set_graph(&valid, units_of(ph, emitters, &ledger, &inbox, &stop));
         }
@@ -485,8 +485,9 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
                 inbox: Arc::clone(&inbox),
             }),
         );
-        let (_ed, mut exec) = Editor::with_event_capacity(prep, 4096);
-        drop(exec.apply(Commit::new(plan, delta, units)));
+        let (mut ed, mut exec) = Editor::with_event_capacity(prep, 4096);
+        let done = exec.apply(ed.package(plan, delta, units));
+        ed.reclaim(done).expect("applied");
         exec.process(MAX, &Transport::default(), &[], &mut []);
         let got: Vec<u32> = inbox
             .lock()
@@ -556,19 +557,24 @@ impl Node for Tap {
     fn reset(&mut self) {}
 }
 
-/// S2: a feedback edge delays by exactly `MaxBlock` frames — audio and
-/// events — when the block size changes (64 then 30) and when it is ragged.
-/// Nothing is lost, nothing repeats.
+/// A feedback edge delays by exactly the `delay` its edge declares — audio
+/// and events — whatever the block sizes and **whatever `MaxBlock` the
+/// interpreter was prepared with**: a bounce prepared at a larger block loops
+/// exactly like live playback. Nothing is lost or repeated when the block
+/// size changes or is ragged.
 ///
 /// Mutation: in `AudioRing::peek_oldest`, read the newest samples → wrong
-/// delay → fails. Mutation: capture audio feedback as "last block's buffer"
-/// (the old rule) → samples are lost when the block shrinks → fails.
+/// delay → fails. Mutation: size the executor's feedback ring from
+/// `MaxBlock` instead of the key's delay (the previous rule) → the two
+/// preparations disagree → fails.
 #[test]
-fn feedback_delays_by_exactly_max_block_under_changing_blocks() {
+fn feedback_delays_by_its_declared_delay_at_any_max_block() {
+    const DELAY: usize = 96;
     let (clock, tap) = (NodeKey(1), NodeKey(2));
-    for schedule in [
-        vec![64, 64, 30, 30, 30, 64, 1, 7, 64],
-        vec![1, 2, 3, 5, 8, 13, 21, 34, 55, 64, 17, 9],
+    for (max, schedule) in [
+        (64, vec![64, 64, 30, 30, 30, 64, 1, 7, 64, 64]),
+        (64, vec![1, 2, 3, 5, 8, 13, 21, 34, 55, 64, 17, 9, 64, 64]),
+        (96, vec![96, 96, 50, 96, 3, 96, 96]),
     ] {
         for executor in [true, false] {
             let inbox: Inbox = Arc::default();
@@ -583,25 +589,29 @@ fn feedback_delays_by_exactly_max_block_under_changing_blocks() {
             );
             t.edges.insert(
                 InPort { node: tap, port: 0 },
-                Edge::Feedback(FeedbackFrom {
-                    from: OutPort {
+                Edge::Feedback(FeedbackFrom::new(
+                    OutPort {
                         node: clock,
                         port: 0,
                     },
-                }),
+                    Samples(DELAY),
+                )),
             );
             t.outputs = vec![Source::Node(OutPort { node: tap, port: 0 })];
             let mut g = GraphSpec::new(t);
             g.connect_events(
                 EventIn { node: tap, port: 0 },
-                EventEdge::Feedback(EventOut {
-                    node: clock,
-                    port: 0,
-                }),
+                EventEdge::feedback(
+                    EventOut {
+                        node: clock,
+                        port: 0,
+                    },
+                    Samples(DELAY),
+                ),
             );
             let valid = g.validate().unwrap();
             let shapes: Shapes = [(clock, cs), (tap, ts)].into();
-            let prep = prepare(64);
+            let prep = prepare(max);
             let units = || -> BTreeMap<NodeKey, Box<dyn Node>> {
                 [
                     (clock, Box::new(Clock) as Box<dyn Node>),
@@ -609,11 +619,12 @@ fn feedback_delays_by_exactly_max_block_under_changing_blocks() {
                 ]
                 .into()
             };
-            let (_ed, mut exec) = Editor::with_event_capacity(prep, 256);
+            let (mut ed, mut exec) = Editor::with_event_capacity(prep, 256);
             let mut reference = Reference::new(prep);
             if executor {
                 let (plan, delta) = compile(&valid, &shapes, &prep, None).unwrap();
-                drop(exec.apply(Commit::new(plan, delta, units())));
+                let done = exec.apply(ed.package(plan, delta, units()));
+                ed.reclaim(done).expect("applied");
             } else {
                 reference.set_graph(&valid, units());
             }
@@ -629,21 +640,224 @@ fn feedback_delays_by_exactly_max_block_under_changing_blocks() {
             }
             let total = audio.len();
             let want: Vec<f32> = (0..total)
-                .map(|i| if i < 64 { 0.0 } else { (i - 64) as f32 })
+                .map(|i| if i < DELAY { 0.0 } else { (i - DELAY) as f32 })
                 .collect();
             assert_eq!(
                 audio, want,
-                "audio, schedule {schedule:?}, executor {executor}"
+                "audio, max {max}, {schedule:?}, executor {executor}"
             );
             let got = inbox.lock().unwrap().clone();
-            let want_ev: Vec<(u64, u64)> = (0..(total as u64).saturating_sub(64))
-                .map(|f| (f, f + 64))
+            let want_ev: Vec<(u64, u64)> = (0..(total as u64).saturating_sub(DELAY as u64))
+                .map(|f| (f, f + DELAY as u64))
                 .collect();
             let got_ev: Vec<(u64, u64)> = got.iter().map(|&(_, _, e, d)| (e, d)).collect();
             assert_eq!(
                 got_ev, want_ev,
-                "events, schedule {schedule:?}, executor {executor}"
+                "events, max {max}, {schedule:?}, executor {executor}"
             );
         }
     }
+}
+
+/// A feedback delay shorter than the maximum block is refused, by name: a
+/// block cannot read samples it has not produced, and shortening the loop to
+/// fit would make the bounce sound unlike playback.
+///
+/// Mutation: delete the `f.delay < max_block` check in `compile` → compiles
+/// (and the ring is too short to read a whole block from) → fails.
+#[test]
+fn a_feedback_delay_shorter_than_max_block_is_refused() {
+    let (clock, tap) = (NodeKey(1), NodeKey(2));
+    let mut t = Topology::default();
+    let cs = Clock.shape();
+    let ts = Tap(Arc::default()).shape();
+    t.nodes
+        .insert(clock, NodeSpec::new("c", cs.audio_in, cs.audio_out));
+    t.nodes.insert(
+        tap,
+        NodeSpec::new("t", ts.audio_in, ts.audio_out).with_tail(Tail::Unknown),
+    );
+    t.edges.insert(
+        InPort { node: tap, port: 0 },
+        Edge::Feedback(FeedbackFrom::new(
+            OutPort {
+                node: clock,
+                port: 0,
+            },
+            Samples(96),
+        )),
+    );
+    let valid = GraphSpec::new(t).validate().unwrap();
+    let shapes: Shapes = [(clock, cs), (tap, ts)].into();
+    assert!(compile(&valid, &shapes, &prepare(96), None).is_ok());
+    assert_eq!(
+        compile(&valid, &shapes, &prepare(128), None).err(),
+        Some(tutti_graph::CompileError::FeedbackTooShort {
+            edge: tutti_graph::CycleEdge::Audio(InPort { node: tap, port: 0 }),
+            delay: Samples(96),
+            max_block: Samples(128),
+        })
+    );
+}
+
+/// B1 against the reference: a 150-wide fan-in, sources firing on shared and
+/// distinct frames, delivers exactly what the reference's
+/// concatenate-and-stable-sort delivers.
+///
+/// Mutation: in `merge_tree`, merge the runs in reverse order → fails.
+#[test]
+fn wide_fan_in_matches_the_reference() {
+    let width = 150usize;
+    let mut t = Topology::default();
+    let mut shapes = Shapes::new();
+    for i in 0..width {
+        let s = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+        t.nodes.insert(
+            NodeKey(i as u64),
+            NodeSpec::new("e", s.audio_in, s.audio_out),
+        );
+        shapes.insert(NodeKey(i as u64), s);
+    }
+    let rs = Shape::audio(ChannelLayout::MONO, ChannelLayout::EMPTY).with_events(1, 0);
+    t.nodes
+        .insert(REC, NodeSpec::new("r", rs.audio_in, rs.audio_out));
+    shapes.insert(REC, rs);
+    let mut g = GraphSpec::new(t);
+    for i in (0..width).rev() {
+        g.connect_events(
+            EventIn { node: REC, port: 0 },
+            EventEdge::Direct(EventOut {
+                node: NodeKey(i as u64),
+                port: 0,
+            }),
+        );
+    }
+    let valid = g.validate().unwrap();
+    let prep = prepare(MAX);
+    let run = |executor: bool| {
+        let ledger: Ledger = Arc::default();
+        let inbox: Inbox = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut units: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
+        for i in 0..width {
+            units.insert(
+                NodeKey(i as u64),
+                Box::new(Emitter {
+                    id: i as u32,
+                    period: 4 + (i as u64 % 3),
+                    ledger: Arc::clone(&ledger),
+                    stop: Arc::clone(&stop),
+                }),
+            );
+        }
+        units.insert(
+            REC,
+            Box::new(Recorder {
+                ports: 1,
+                inbox: Arc::clone(&inbox),
+            }),
+        );
+        let (mut ed, mut exec) = Editor::with_event_capacity(prep, 4096);
+        let mut reference = Reference::new(prep);
+        if executor {
+            let (plan, delta) = compile(&valid, &shapes, &prep, None).unwrap();
+            let done = exec.apply(ed.package(plan, delta, units));
+            ed.reclaim(done).expect("applied");
+        } else {
+            reference.set_graph(&valid, units);
+        }
+        for n in [MAX, 7, MAX, 1, 20] {
+            if executor {
+                exec.process(n, &Transport::default(), &[], &mut []);
+            } else {
+                reference.process(n, &Transport::default(), &[], &mut []);
+            }
+        }
+        let got = inbox.lock().unwrap().clone();
+        got
+    };
+    let (a, b) = (run(true), run(false));
+    assert!(a.len() > width, "the sources fired");
+    assert_eq!(a, b);
+}
+
+/// A flush keeps its events' spacing: a vanished 40-frame delay holding
+/// events 4 frames apart delivers them 4 frames apart in the next block —
+/// a note-on/note-off pair keeps its length instead of collapsing to zero —
+/// and only what falls past the block end is clamped to its last frame.
+///
+/// Mutation: make `EventFifo::flushed` put every event at offset 0 (the old
+/// rule) → the spacing collapses → fails.
+#[test]
+fn a_flush_keeps_the_events_spacing() {
+    let emitters = vec![(1u32, 4u64)];
+    let base = Phase {
+        lag: 40,
+        lag_gen: 0,
+        emitter_gen: vec![0],
+        edges: vec![vec![(0, false)], vec![], vec![]],
+        blocks: vec![32; 3],
+    };
+    let zero = Phase {
+        lag: 0,
+        lag_gen: 1,
+        ..base.clone()
+    };
+    let (_, got) = run(&[base, zero], &emitters, true);
+    let switch = 96u64;
+    let flushed: Vec<(u64, u64)> = got
+        .iter()
+        .filter(|&&(_, _, f, at)| f < switch && at >= switch && at < switch + 32)
+        .map(|&(_, _, f, at)| (f, at))
+        .collect();
+    assert!(
+        flushed.len() >= 4,
+        "several events were in flight: {flushed:?}"
+    );
+    let spaced: Vec<&(u64, u64)> = flushed
+        .iter()
+        .filter(|&&(_, at)| at < switch + 31)
+        .collect();
+    for w in spaced.windows(2) {
+        assert_eq!(
+            w[1].1 - w[0].1,
+            w[1].0 - w[0].0,
+            "flushed events keep their spacing: {flushed:?}"
+        );
+    }
+    assert_eq!(spaced[0].1, switch, "the earliest lands at offset 0");
+}
+
+/// Two flushes into one sink interleave by their spacing, the same way in
+/// both interpreters — including when one-frame blocks clamp them all to
+/// offset 0, where only the order is left to disagree about. (The
+/// conservation property compares sets; this compares order.)
+///
+/// Mutation: in `Reference::set_graph`, drop the sort after appending a
+/// flush → the reference delivers one FIFO's events, then the other's →
+/// fails.
+#[test]
+fn two_flushes_into_one_sink_interleave_identically() {
+    let emitters = vec![(1u32, 10u64), (2u32, 10u64)];
+    let fed = Phase {
+        lag: 0,
+        lag_gen: 0,
+        emitter_gen: vec![0, 0],
+        edges: vec![vec![(0, true), (1, true)], vec![], vec![]],
+        blocks: vec![32; 6],
+    };
+    let cut = Phase {
+        edges: vec![vec![], vec![], vec![]],
+        blocks: vec![1; 40],
+        ..fed.clone()
+    };
+    let phases = [fed, cut];
+    let (_, a) = run(&phases, &emitters, true);
+    let (_, b) = run(&phases, &emitters, false);
+    let ids: Vec<u32> = a.iter().filter(|e| e.3 >= 192).map(|e| e.1).collect();
+    assert!(
+        ids.windows(2).any(|w| w[0] != w[1]),
+        "the flushed events interleave: {ids:?}"
+    );
+    assert_eq!(a, b);
 }

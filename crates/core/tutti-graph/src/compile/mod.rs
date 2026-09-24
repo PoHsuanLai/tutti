@@ -13,7 +13,7 @@
 //! 2. **SCC** ([`order::scc`]) over direct audio + event dependencies. A cycle
 //!    not broken by a feedback edge is [`CompileError::Cycle`], naming the
 //!    edges. A feedback edge becomes a read of a slot the executor fills from
-//!    the edge's `MaxBlock`-long delay before the block, and a `Capture` op
+//!    the edge's own delay state before the block, and a `Capture` op
 //!    that feeds the delay, so the op DAG stays acyclic.
 //! 3. **Order** ([`order::kahn`]) — one deterministic topological sort.
 //! 4. **Latency solve** — `arrival = max(departures)`, `departure = arrival +
@@ -51,7 +51,7 @@ pub(crate) mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
@@ -85,6 +85,18 @@ pub enum CycleEdge {
 /// Why a [`ValidGraph`] could not be compiled against these shapes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompileError {
+    /// A feedback edge's delay is shorter than the `MaxBlock` being compiled
+    /// for: a block cannot read samples it has not produced yet. For an
+    /// offline render, prepare with a smaller maximum block — never shorten
+    /// the loop, or the bounce would not sound like playback.
+    FeedbackTooShort {
+        /// The edge, named by its sink.
+        edge: CycleEdge,
+        /// Its declared delay.
+        delay: Samples,
+        /// The maximum block being compiled for.
+        max_block: Samples,
+    },
     /// No shape was supplied for a node.
     MissingShape {
         /// The node.
@@ -143,6 +155,14 @@ pub enum CompileError {
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::FeedbackTooShort {
+                edge,
+                delay,
+                max_block,
+            } => write!(
+                f,
+                "feedback edge {edge:?} delays {delay} frames, less than the maximum block {max_block}"
+            ),
             Self::MissingShape { node } => write!(f, "no shape for node {}", node.0),
             Self::WidthMismatch {
                 node,
@@ -388,6 +408,33 @@ pub fn compile(
         }
     }
 
+    // Feedback delays: at least one block, or a read would need the future.
+    let max_block = prepare.max_block().samples();
+    for (&at, e) in &topology.edges {
+        if let Edge::Feedback(f) = *e {
+            if f.delay < max_block {
+                return Err(CompileError::FeedbackTooShort {
+                    edge: CycleEdge::Audio(at),
+                    delay: f.delay,
+                    max_block,
+                });
+            }
+        }
+    }
+    for (&at, sources) in graph.events() {
+        for e in sources {
+            if let EventEdge::Feedback { from, delay } = *e {
+                if delay < max_block {
+                    return Err(CompileError::FeedbackTooShort {
+                        edge: CycleEdge::Event { at, from },
+                        delay,
+                        max_block,
+                    });
+                }
+            }
+        }
+    }
+
     // ---- 2. cycles --------------------------------------------------------
     // Direct dependencies, with multiplicity (for Kahn) and labelled (for the
     // error).
@@ -461,20 +508,22 @@ pub fn compile(
     let compensation: Vec<Samples> = channel_arrivals.iter().map(|&a| a.gap_to(total)).collect();
 
     // ---- 5. emit ----------------------------------------------------------
-    let audio_fb_key = |from: OutPort| FeedbackKey::Audio {
-        from,
-        gen: graph.generation(from.node),
+    let audio_fb_key = |f: FeedbackFrom| FeedbackKey::Audio {
+        from: f.from,
+        gen: graph.generation(f.from.node),
+        delay: f.delay,
     };
-    let event_fb_key = |at: EventIn, from: EventOut| FeedbackKey::Event {
+    let event_fb_key = |at: EventIn, from: EventOut, delay: Samples| FeedbackKey::Event {
         at,
         from,
         gen: graph.generation(from.node),
+        delay,
     };
     let audio_fb: Vec<FeedbackKey> = topology
         .edges
         .values()
         .filter_map(|e| match *e {
-            Edge::Feedback(f) => Some(audio_fb_key(f.from)),
+            Edge::Feedback(f) => Some(audio_fb_key(f)),
             _ => None,
         })
         .collect::<BTreeSet<_>>()
@@ -485,11 +534,11 @@ pub fn compile(
         .iter()
         .flat_map(|(&at, sources)| {
             sources.iter().filter_map(move |e| match *e {
-                EventEdge::Feedback(from) => Some((at, from)),
+                EventEdge::Feedback { from, delay } => Some((at, from, delay)),
                 EventEdge::Direct(_) => None,
             })
         })
-        .map(|(at, from)| event_fb_key(at, from))
+        .map(|(at, from, delay)| event_fb_key(at, from, delay))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -574,7 +623,7 @@ pub fn compile(
                         ARef::Val(dv)
                     }
                 }
-                Some(Edge::Feedback(f)) => ARef::Fb(fb_index(audio_fb_key(f.from), &audio_fb)),
+                Some(Edge::Feedback(f)) => ARef::Fb(fb_index(audio_fb_key(*f), &audio_fb)),
             };
             ain.push(r);
         }
@@ -587,8 +636,8 @@ pub fn compile(
             let mut refs: Vec<ERef> = Vec::with_capacity(sources.len());
             for e in sources {
                 refs.push(match *e {
-                    EventEdge::Feedback(from) => {
-                        ERef::Fb(fb_index(event_fb_key(at, from), &event_fb))
+                    EventEdge::Feedback { from, delay } => {
+                        ERef::Fb(fb_index(event_fb_key(at, from, delay), &event_fb))
                     }
                     EventEdge::Direct(from) => {
                         let v = event_out_val[&from];
@@ -752,6 +801,30 @@ pub fn compile(
     let event_colour = colour::colour(&em.event, &reach, &BTreeMap::new());
     let aslot = |v: u32| audio_fixed + audio_colour.slot[v as usize];
     let eslot = |v: u32| event_fixed + event_colour.slot[v as usize];
+
+    // Event slot capacities, in units of the executor's per-slot capacity: a
+    // node output or a delay output holds one; a merge holds all its inputs
+    // together, so it can never drop an event (a note-off least of all).
+    let mut value_weight = vec![1u32; em.event.len()];
+    for pre in &em.pre {
+        if let Pre::EventMerge { srcs, dst } = pre {
+            value_weight[*dst as usize] = srcs
+                .iter()
+                .map(|r| match *r {
+                    ERef::Val(v) => value_weight[v as usize],
+                    ERef::Fb(_) => 1,
+                    ERef::Empty => 0,
+                })
+                .sum::<u32>()
+                .max(1);
+        }
+    }
+    let mut event_slot_weight = vec![1u32; (event_fixed + event_colour.count) as usize];
+    event_slot_weight[EMPTY_SLOT as usize] = 0;
+    for (v, &w) in value_weight.iter().enumerate() {
+        let s = eslot(v as u32) as usize;
+        event_slot_weight[s] = event_slot_weight[s].max(w);
+    }
     let aref_slot = |r: ARef| match r {
         ARef::Val(v) => aslot(v),
         ARef::Zero => ZERO_SLOT,
@@ -944,6 +1017,7 @@ pub fn compile(
         task_activation,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
+        event_slot_weight,
         audio_feedback: audio_fb
             .iter()
             .enumerate()

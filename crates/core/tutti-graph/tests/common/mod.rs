@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tutti_graph::{
-    compile, Commit, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference,
-    Shape, Shapes, Status, Transport, Ump, ValidGraph,
+    compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
+    Shapes, Status, Transport, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
 
@@ -355,6 +355,7 @@ pub fn units_for(
 
 /// The executor and the reference, driven together.
 pub struct Pair {
+    pub editor: Editor,
     pub exec: Executor,
     pub reference: Reference,
     pub plan: Option<Plan>,
@@ -365,11 +366,11 @@ pub struct Pair {
 
 impl Pair {
     pub fn new(max_block: usize) -> Self {
-        // The editor is not used: the harness compiles itself, to hand the
-        // same spec to both interpreters. It is still the only way to build
-        // an executor.
-        let (_editor, exec) = Editor::with_event_capacity(prepare(max_block), EVENT_CAPACITY);
+        // The harness compiles itself, to hand the same spec to both
+        // interpreters, and ships the plan through `Editor::package`.
+        let (editor, exec) = Editor::with_event_capacity(prepare(max_block), EVENT_CAPACITY);
         Self {
+            editor,
             exec,
             reference: Reference::new(prepare(max_block)),
             plan: None,
@@ -397,10 +398,10 @@ impl Pair {
         self.plan = Some(plan.clone());
         // Back on the control side, where the box and what it retired are
         // freed.
-        let done = self
-            .exec
-            .apply(Commit::new(plan, delta, units_for(kinds, placed)));
-        drop(done);
+        let commit = self.editor.package(plan, delta, units_for(kinds, placed));
+        let done = self.exec.apply(commit);
+        assert!(done.is_applied(), "the harness never drops a commit");
+        self.editor.reclaim(done).expect("our own applied box");
 
         // The reference decides for itself what is new, from generations; give
         // it a fresh unit for every key it might need.

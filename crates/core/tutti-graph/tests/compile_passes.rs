@@ -531,12 +531,13 @@ fn an_event_self_loop_is_a_cycle() {
 fn feedback_edges_break_cycles() {
     let mut g = two_node_spec();
     edge(&mut g.topology, at(B, 0), out(A, 0));
-    g.topology
-        .edges
-        .insert(at(A, 0), Edge::Feedback(FeedbackFrom { from: out(B, 0) }));
+    g.topology.edges.insert(
+        at(A, 0),
+        Edge::Feedback(FeedbackFrom::one_block(out(B, 0), Samples(PREP))),
+    );
     g.connect_events(
         EventIn { node: A, port: 0 },
-        EventEdge::Feedback(EventOut { node: B, port: 0 }),
+        EventEdge::feedback(EventOut { node: B, port: 0 }, Samples(PREP)),
     );
     let valid = g.validate().expect("feedback breaks the cycle");
     let (plan, _) =

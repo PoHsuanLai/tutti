@@ -24,17 +24,21 @@
 //! - An event delay keeps its pending events with their input times and
 //!   reschedules them on a retune, delivering at offset 0 anything already
 //!   past due. **When its key disappears its pending events are flushed** to
-//!   the sink at offset 0 of the sink's next call, ahead of that block's own
-//!   events, if the sink survives; with the sink, they go. Flushes into one
-//!   sink queue in this order: undelivered earlier flushes, event delays in
-//!   key order, event feedback in key order.
+//!   the sink's next call if the sink survives (with the sink, they go):
+//!   each flushed delay keeps its events' spacing, shifted so its earliest
+//!   lands at offset 0, and anything that falls past the block is clamped to
+//!   its last frame. They sort ahead of that block's own events on ties.
+//!   Flushes into one sink queue in this order: undelivered earlier flushes,
+//!   event delays in key order, event feedback in key order. A flushed event
+//!   can reach a *replaced* unit at that sink — a note-off whose note-on the
+//!   old unit saw — which a unit must tolerate.
 //! - **A global input is delayed** to its node's arrival like any other
 //!   merge-point source.
-//! - **A feedback edge delays by exactly `MaxBlock` frames**, whatever the
-//!   current block length (see [`FeedbackKey`]): audio keeps the last
-//!   `MaxBlock` samples of its source port per (port, unit generation);
-//!   events keep a FIFO per (sink, source, generation), flushed like a delay
-//!   when the key disappears.
+//! - **A feedback edge delays by exactly the `delay` its edge declares**,
+//!   whatever the current block length (see [`FeedbackKey`]): audio keeps the
+//!   last `delay` samples of its source port per (port, unit generation,
+//!   delay); events keep a FIFO per (sink, source, generation, delay),
+//!   flushed like a delay when the key disappears.
 //! - Blocks run under a flush-to-zero guard, as the executor's do, so the two
 //!   agree about denormals too.
 //!
@@ -70,8 +74,8 @@ pub struct Reference {
     delays: BTreeMap<DelayKey, Samples>,
     audio_lines: BTreeMap<DelayKey, VecDeque<f32>>,
     event_lines: BTreeMap<DelayKey, RefFifo>,
-    fb_audio: BTreeMap<(OutPort, u32), VecDeque<f32>>,
-    fb_event: BTreeMap<(EventIn, EventOut, u32), RefFifo>,
+    fb_audio: BTreeMap<(OutPort, u32, Samples), VecDeque<f32>>,
+    fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
     frame: u64,
 }
@@ -225,12 +229,14 @@ impl Reference {
                 .get(&at.node)
                 .is_some_and(|(_, u)| at.port < u.shape().event_in)
         };
-        let fb_event_keys: BTreeSet<(EventIn, EventOut, u32)> = graph
+        let fb_event_keys: BTreeSet<(EventIn, EventOut, u32, Samples)> = graph
             .events()
             .iter()
             .flat_map(|(&at, v)| {
                 v.iter().filter_map(move |e| match *e {
-                    EventEdge::Feedback(from) => Some((at, from, graph.generation(from.node))),
+                    EventEdge::Feedback { from, delay } => {
+                        Some((at, from, graph.generation(from.node), delay))
+                    }
                     EventEdge::Direct(_) => None,
                 })
             })
@@ -239,22 +245,23 @@ impl Reference {
         inject.retain(|at, _| survives(at));
         let mut flush = |at: EventIn, pending: Vec<Event>| {
             if survives(&at) {
-                inject
-                    .entry(at)
-                    .or_default()
-                    .extend(pending.into_iter().map(|e| Event { offset: 0, ..e }));
+                // Kept in spacing order (stable: flush order on ties) before
+                // any clamping, which would erase it.
+                let list = inject.entry(at).or_default();
+                list.extend(pending);
+                list.sort_by_key(|e| e.offset);
             }
         };
         for (k, f) in &self.event_lines {
             if let DelayKey::Event { at, .. } = *k {
                 if !delays.contains_key(k) {
-                    flush(at, f.pending.iter().map(|&(_, e)| e).collect());
+                    flush(at, relative(f));
                 }
             }
         }
         for (k, f) in &self.fb_event {
             if !fb_event_keys.contains(k) {
-                flush(k.0, f.pending.iter().map(|&(_, e)| e).collect());
+                flush(k.0, relative(f));
             }
         }
         self.inject = inject;
@@ -285,12 +292,11 @@ impl Reference {
             }
         }
 
-        let l = self.prepare.max_block().get();
-        let audio_fb: BTreeSet<(OutPort, u32)> = t
+        let audio_fb: BTreeSet<(OutPort, u32, Samples)> = t
             .edges
             .values()
             .filter_map(|e| match e {
-                Edge::Feedback(f) => Some((f.from, graph.generation(f.from.node))),
+                Edge::Feedback(f) => Some((f.from, graph.generation(f.from.node), f.delay)),
                 _ => None,
             })
             .collect();
@@ -298,13 +304,13 @@ impl Reference {
         for k in audio_fb {
             self.fb_audio
                 .entry(k)
-                .or_insert_with(|| VecDeque::from(vec![0.0; l]));
+                .or_insert_with(|| VecDeque::from(vec![0.0; k.2.get()]));
         }
         self.fb_event.retain(|k, _| fb_event_keys.contains(k));
         for k in fb_event_keys {
             self.fb_event.entry(k).or_insert(RefFifo {
                 pending: Vec::new(),
-                len: l as u64,
+                len: k.3.get() as u64,
                 clock: 0,
             });
         }
@@ -356,7 +362,7 @@ impl Reference {
                 if at.node == k {
                     v.extend(sources.iter().filter_map(|e| match e {
                         EventEdge::Direct(f) => Some(f.node),
-                        EventEdge::Feedback(_) => None,
+                        EventEdge::Feedback { .. } => None,
                     }));
                 }
             }
@@ -395,13 +401,13 @@ impl Reference {
         }
 
         // Feed the feedback delays with this block, after every read of them.
-        for ((from, _), line) in self.fb_audio.iter_mut() {
+        for ((from, _, _), line) in self.fb_audio.iter_mut() {
             for &x in &audio[from] {
                 line.push_back(x);
                 line.pop_front();
             }
         }
-        for ((_, from, _), f) in self.fb_event.iter_mut() {
+        for ((_, from, _, _), f) in self.fb_event.iter_mut() {
             let start = f.clock;
             f.pending
                 .extend(events[from].iter().map(|e| (start + e.offset as u64, *e)));
@@ -432,7 +438,7 @@ impl Reference {
                 Some(Edge::Direct(Source::Global(g))) => inputs[*g as usize][..frames].to_vec(),
                 Some(Edge::Direct(Source::Node(p))) => audio[p].clone(),
                 Some(Edge::Feedback(f)) => {
-                    let line = &self.fb_audio[&(f.from, graph.generation(f.from.node))];
+                    let line = &self.fb_audio[&(f.from, graph.generation(f.from.node), f.delay)];
                     line.iter().take(frames).copied().collect()
                 }
             };
@@ -449,6 +455,9 @@ impl Reference {
             let at = EventIn { node: key, port };
             // Flushed events first: they are older than anything this block.
             let mut all: Vec<Event> = self.inject.remove(&at).unwrap_or_default();
+            for e in &mut all {
+                e.offset = e.offset.min(frames as u32 - 1);
+            }
             for e in graph.events().get(&at).map(Vec::as_slice).unwrap_or(&[]) {
                 match *e {
                     EventEdge::Direct(from) => {
@@ -458,10 +467,10 @@ impl Reference {
                             None => all.extend(src),
                         }
                     }
-                    EventEdge::Feedback(from) => {
+                    EventEdge::Feedback { from, delay } => {
                         let f = self
                             .fb_event
-                            .get_mut(&(at, from, graph.generation(from.node)))
+                            .get_mut(&(at, from, graph.generation(from.node), delay))
                             .expect("built by set_graph");
                         all.extend(fifo_due(f, frames));
                     }
@@ -510,7 +519,7 @@ impl Reference {
         };
         match status {
             Status::Modified | Status::Masked { .. } => {}
-            Status::Silent => outs.iter_mut().for_each(|o| o.fill(0.0)),
+            Status::Silent | Status::Idle => outs.iter_mut().for_each(|o| o.fill(0.0)),
             Status::Constant => outs.iter_mut().for_each(|o| {
                 let v = o[0];
                 o.fill(v);
@@ -551,6 +560,21 @@ fn delay_line(line: &mut VecDeque<f32>, buf: &mut [f32]) {
         line.push_back(*x);
         *x = line.pop_front().expect("line is non-empty");
     }
+}
+
+/// A vanished FIFO's events for a flush: due times relative to the
+/// earliest, so their spacing survives.
+fn relative(f: &RefFifo) -> Vec<Event> {
+    let Some(&(first, _)) = f.pending.first() else {
+        return Vec::new();
+    };
+    f.pending
+        .iter()
+        .map(|&(t, e)| Event {
+            offset: (t - first).min(u64::from(u32::MAX)) as u32,
+            ..e
+        })
+        .collect()
 }
 
 /// Take what falls due in the block starting at the FIFO's clock, without

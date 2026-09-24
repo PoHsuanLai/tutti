@@ -431,6 +431,47 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
             unit_uses[u]
         )));
     }
+    // A merge's slot holds all its inputs, or it could drop a note-off. The
+    // need is derived from the *values* each merge reads (a slot can be
+    // shared with a heavier value, so slot weights would overstate it): one
+    // capacity per node or delay output, the sum for a merge.
+    let fixed = 1 + plan.event_feedback.len() as u32;
+    let mut op_weight = vec![1u32; plan.ops.len()];
+    for (m, op) in plan.ops.iter().enumerate() {
+        if let Op::EventMerge { srcs, dst } = *op {
+            let mut need = 0u32;
+            for &s in &plan.event_list[srcs.range()] {
+                need += if s == EMPTY_SLOT {
+                    0
+                } else if s < fixed {
+                    1
+                } else {
+                    let v = plan
+                        .event_values
+                        .iter()
+                        .find(|v| {
+                            v.slot == s
+                                && plan.value_readers[v.readers.range()].contains(&(m as u32))
+                        })
+                        .ok_or_else(|| {
+                            VerifyError(format!("merge op {m} reads event slot {s} of no value"))
+                        })?;
+                    op_weight[v.writer as usize]
+                };
+            }
+            op_weight[m] = need.max(1);
+            let have = plan
+                .event_slot_weight
+                .get(dst as usize)
+                .copied()
+                .unwrap_or(0);
+            if have < need {
+                return Err(VerifyError(format!(
+                    "merge into event slot {dst} holds {have} capacities, its inputs {need}"
+                )));
+            }
+        }
+    }
     let mut idx: Vec<u32> = plan.units.iter().map(|u| u.idx.0).collect();
     idx.sort_unstable();
     if idx.windows(2).any(|w| w[0] == w[1]) {
@@ -710,5 +751,58 @@ mod tests {
         let idx = bad.units[0].idx;
         bad.units[1].idx = idx;
         assert!(verify(&bad).unwrap_err().0.contains("store index"));
+    }
+
+    /// A merge whose slot is smaller than its inputs together is refused —
+    /// it could drop a note-off.
+    ///
+    /// Mutation: delete the `have < need` check → the shrunken slot passes →
+    /// fails.
+    #[test]
+    fn the_verifier_rejects_a_merge_slot_too_small() {
+        use crate::spec::{EventEdge, EventIn, EventOut};
+        let mut t = Topology::default();
+        let mut shapes = Shapes::new();
+        let src = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+        let sink = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0);
+        for (k, s) in [(1, src), (2, src), (3, sink)] {
+            t.nodes
+                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
+            shapes.insert(NodeKey(k), s);
+        }
+        let mut g = GraphSpec::new(t);
+        for k in [1, 2] {
+            g.connect_events(
+                EventIn {
+                    node: NodeKey(3),
+                    port: 0,
+                },
+                EventEdge::Direct(EventOut {
+                    node: NodeKey(k),
+                    port: 0,
+                }),
+            );
+        }
+        let prep =
+            crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
+        let good = compile(&g.validate().unwrap(), &shapes, &prep, None)
+            .unwrap()
+            .0;
+        verify(&good).expect("sound");
+        let dst = good
+            .ops
+            .iter()
+            .find_map(|op| match *op {
+                Op::EventMerge { dst, .. } => Some(dst),
+                _ => None,
+            })
+            .expect("a merge");
+        assert_eq!(
+            good.event_slot_weight[dst as usize], 2,
+            "two inputs, two capacities"
+        );
+        let mut bad = good.clone();
+        bad.event_slot_weight[dst as usize] = 1;
+        assert!(verify(&bad).unwrap_err().0.contains("capacities"));
     }
 }

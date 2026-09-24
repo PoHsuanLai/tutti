@@ -194,8 +194,24 @@ the interpreter.
   the node's job (PolySynth already does it, SoundFont is limited to 8 frames
   by rustysynth). An out-of-process plugin must get whole blocks, or its
   declared one-block pipeline latency stops being constant and PDC goes wrong.
-  The only thing the executor splits is the transport, at a loop wrap, so each
-  chunk has a linear beat map.
+  **The executor never splits a block, not even at a loop wrap** (decided in
+  the #12 review): splitting would break the whole-block promise to plugins.
+  `Env`/`Transport` carries the wrap position instead, and a node that cares
+  handles the wrap itself.
+- **Silence skip**: a node is skipped only when its inputs are quiet, its
+  *previous call* reported every output silent, and its tail has elapsed.
+  Quiet event inputs do not make a node idle: a held note on a finite-tail
+  synth keeps sounding.
+- **Feedback edges delay by exactly `MaxBlock` frames**, through an audio ring
+  and an event FIFO, independent of the current block length. Ragged blocks
+  therefore lose nothing.
+- **Delay rings are keyed by (sink port, source port).** A rewire starts a
+  fresh ring, so a disconnected source's past is never played. Pending
+  *events* of a vanished delay are flushed to the surviving sink at offset 0,
+  so a note-off is never lost. Feedback keys include the unit generation.
+- **Global inputs are aligned like any other source** at a merge point with a
+  latent path. `tutti_types::latency::plan` (the fundsp side) does not do
+  this; the difference goes away when `Net` does (Phase 5).
 - **Env and PDC**: today the beat travels as an audio signal, so PDC delays it
   along with everything else. Once it comes from `Env`, `Cx` has to carry each
   node's compiled **arrival latency** so the node reads the transport at its
@@ -247,6 +263,64 @@ the race. Every type below exists because the audit found the bug it prevents.
 are settled, and `Valid` is the proof at the right level. A safe
 `NodeHandle<T>` downcast: `Controls` returned at insert removes the need to
 downcast at all, which is better than making downcasting safe.
+
+### 6. The sample-accuracy contract
+
+Everything musical that happens during playback is sample-accurate. That
+means:
+
+| What | How | Where it can fall short |
+|---|---|---|
+| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
+| PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
+| Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
+| Transport and clips | `Env.frame: u64`, beat as f64, and the loop-wrap position in `Env`. The click (D8) and sampler placement use the offset inside the block | none by construction |
+| Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
+
+**Not sample-accurate, by design, and never to be used for timing:**
+
+- **Atomic controls (`Param<U>`)** are read once per block and ramped across
+  it (#10). That is right for a user dragging a fader. Automation must never
+  take this path: it goes through `ParamRamp` events or audio-rate parameter
+  ports.
+- **Untimestamped control-thread commands** (play, stop, seek, "start this
+  clip now") land at the next block boundary. **Phase 2 adds a timestamped
+  command queue** (Firewheel's `EventInstant` shape), so a scheduled start,
+  seek or clip launch lands on its exact frame.
+- **Feedback edges** delay by exactly one `MaxBlock`, as in every DAW.
+  Sample-level feedback belongs inside a node.
+
+**In the type system.** Types cannot prove that a node's DSP honours its
+offsets; the contract suite does that. What types can do is make the
+sample-accurate path the only one that compiles for timing, and force every
+place that loses precision to be written out explicitly:
+
+1. **`Offset(u32)` vs `Frame(u64)` (Phase 2).** An `Offset` is valid only
+   within its block and is created checked against the block length. A
+   `Frame` is an absolute timeline position. The only conversion is through
+   `Env` (`env.offset_of(frame) -> Option<Offset>`), so mixing a frame with a
+   block offset (the off-by-a-block bug) does not compile.
+2. **Timing precision in the parameter's type (Phase 3).** `Smoothed<U>`
+   (block-rate, ramped: for a fader someone drags) vs `SampleAccurate<U>`
+   (read as per-sample values for the block, built from `ParamRamp` events or
+   an audio-rate port). `ParamKey<U, PerSample>` carries the rate, and a
+   `ParamRamp` can only be built from a `PerSample` key, so automating a
+   block-rate knob is a compile error.
+3. **Commands must say when (Phase 2).** Control-thread commands take
+   `At::{Frame(Frame), Beat(Beat), NextBlock}`, with no untimed overload.
+   `NextBlock` stays available, but it is a visible, greppable choice.
+4. **`io.sub_blocks()` (Phase 2)** yields `(chunk, events_at_chunk_start)`
+   split at event offsets, so a node written against it is sample-accurate by
+   construction. The polysynth hand-rolls this today.
+5. **`Shape::event_resolution: Resolution::{Sample, Frames(n), Block}` (Phase 2).**
+   Nodes declare their resolution (SoundFont: `Frames(8)`). The compiler can
+   refuse sample-accurate automation into a `Block` node, and the contract
+   suite checks each node against what it declared.
+
+**Proof.** A contract suite in Phase 3: for every node type and every path
+(direct, behind PDC, through a fan-in, across a recompile, across ragged block
+sizes), an event at offset `k` produces output at exactly frame
+`k + latency`. It is mutation-tested per path.
 
 ### SIMD and DOD, concretely
 

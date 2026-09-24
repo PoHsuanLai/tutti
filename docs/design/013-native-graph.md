@@ -1,7 +1,8 @@
 # A native audio graph, and the road off fundsp
 
 Status: **proposal** (2026-09-24). The graph itself has not landed. Work that
-does not need it has: the D1–D3 latency fixes (#3), Phase 0b (#6), and
+does not need it has: the D1–D3 latency fixes (#3), Phase 0 (#14, see
+[below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6), and
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)).
 
 ## Why

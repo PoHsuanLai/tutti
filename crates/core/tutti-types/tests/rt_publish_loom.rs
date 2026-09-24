@@ -8,8 +8,9 @@
 //! Under `--cfg loom`, `rt/publish.rs` builds its atomics, fences and mutex
 //! from `loom` (see its `sync` module), so every interleaving and weak-memory
 //! reordering loom explores below is one the real `read`/`publish`/`drop` can
-//! take. `READER_SLOTS` is 2 under the flag, so three nested reads reach the
-//! overflow path.
+//! take. Under the flag `READER_SLOTS` is 2 and `EPOCHS` is 3, so three
+//! concurrent reads reach the overflow path and a few publishes reuse an
+//! epoch.
 //!
 //! # What each model asserts
 //!
@@ -39,23 +40,35 @@
 //!
 //! # Mutation record
 //!
-//! Each of these was applied to `rt/publish.rs`, and the model failed:
+//! Each of these was applied to `rt/publish.rs`, and the model failed (run
+//! with `LOOM_MAX_PREEMPTIONS=3`; the failing models are named):
 //!
-//! - either `fence(SeqCst)` removed (the reader's or the publisher's) → a
-//!   causality violation in all four models: the free races the read;
-//! - the reader's `current.load(Acquire)` weakened to `Relaxed` → a causality
-//!   violation in all four;
-//! - `RtRef::drop`'s slot `store(FREE, Release)` weakened to `Relaxed` → the
-//!   drop's `with_mut` races the read (every model with a slot reader);
-//! - its overflow `fetch_sub(Release)` weakened to `Relaxed` →
-//!   `nested_reads_overflow` alone fails, as it is the only model that
-//!   overflows;
-//! - the overflow early return in `take_unprotected` deleted →
-//!   `nested_reads_overflow` frees under a live overflow read;
-//! - the slot check in `take_unprotected` removed (free everything retired) →
-//!   causality violations (the run aborts on the first);
-//! - `RtRef::drop` made to reclaim (both branches) → "reader thread freed
-//!   value N" in all four.
+//! - the reader's `fence(SeqCst)` removed, or the publisher's → causality
+//!   violations in every model with a slot read racing a publish (all but
+//!   `overflow_while_another_reader_holds_the_slots`, whose slots are taken
+//!   before any publish);
+//! - the slot path's `current.load(Acquire)` weakened to `Relaxed` →
+//!   `one_reader_two_publishes`, `two_readers_one_publish`,
+//!   `two_publishers_and_a_reader`, `xthread_overflow`;
+//! - the overflow path's `current.load(Acquire)`, or its registering
+//!   `fetch_add(Acquire)`, weakened to `Relaxed` → the three overflow models;
+//! - the seal's wait on `loaded` deleted →
+//!   `overflow_while_another_reader_holds_the_slots` (the only model with three
+//!   publishes against three epochs, which that case needs);
+//! - the overflow exit's `fetch_add(Release)` weakened to `Relaxed` →
+//!   `overflow_while_another_reader_holds_the_slots`;
+//! - the slot drop's `store(FREE, Release)` weakened to `Relaxed` →
+//!   `two_publishers_and_a_reader`;
+//! - a sealed epoch made to pin nothing → `nested_reads_overflow`,
+//!   `overflow_while_another_reader_holds_the_slots`;
+//! - the slot check in `take_unprotected` removed → causality violations;
+//! - `RtRef::drop` made to reclaim → "reader thread freed value N", all six.
+//!
+//! One mutation survives, by construction: weakening the overflow reader's
+//! `loaded` increment from `Release` to `Relaxed`. Breaking it needs the
+//! pointer load to read a value published *after* the seal saw the increment — load
+//! buffering — and loom does not explore load buffering. That ordering rests
+//! on the argument in `publish.rs`'s module docs alone.
 
 #![cfg(loom)]
 
@@ -271,5 +284,94 @@ fn two_publishers_and_a_reader() {
         let reader = reader.join().unwrap();
         drop(std::sync::Arc::into_inner(cell).unwrap());
         tracker.assert_all_freed_off(&[reader]);
+    });
+}
+
+/// Overflow across threads: one reader holds a slot while another takes two
+/// reads, so with two slots one of the three lands on the overflow path — which
+/// one depends on the interleaving, and loom tries them all. Two publishes, so
+/// an epoch is sealed and (with two epochs) reopened while readers are live.
+#[test]
+fn xthread_overflow() {
+    model(|| {
+        let tracker = Tracker::new(3);
+        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+
+        let single = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                cell.read().check();
+                thread::current().id()
+            })
+        };
+        let double = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                let a = cell.read();
+                let b = cell.read();
+                a.check();
+                b.check();
+                drop((a, b));
+                thread::current().id()
+            })
+        };
+
+        cell.publish(tracker.make(1));
+        cell.publish(tracker.make(2));
+
+        let readers = [single.join().unwrap(), double.join().unwrap()];
+        drop(std::sync::Arc::into_inner(cell).unwrap());
+        tracker.assert_all_freed_off(&readers);
+    });
+}
+
+/// An overflow reader on one thread while another thread holds both slots:
+/// the overflow read is forced, and its epoch must pin what it loaded while the
+/// slot holders keep an older value alive. Three publishes against three
+/// epochs: the only model in which an epoch sealed under a reader that has
+/// registered but not yet loaded is followed by *another* epoch being opened
+/// and sealed empty — the case the seal's wait on `loaded` exists for, since
+/// the reader can then load a value only that second epoch covered.
+#[test]
+fn overflow_while_another_reader_holds_the_slots() {
+    model(|| {
+        let tracker = Tracker::new(4);
+        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+
+        let (taken_tx, taken_rx) = loom::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = loom::sync::mpsc::channel::<()>();
+        let holder = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                let a = cell.read();
+                let b = cell.read();
+                taken_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                a.check();
+                b.check();
+                drop((a, b));
+                thread::current().id()
+            })
+        };
+        // Both slots are taken before the overflow reader starts, so its read
+        // is certainly an overflow read.
+        taken_rx.recv().unwrap();
+        let overflow = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                cell.read().check();
+                thread::current().id()
+            })
+        };
+
+        cell.publish(tracker.make(1));
+        cell.publish(tracker.make(2));
+        cell.publish(tracker.make(3));
+        let overflow = overflow.join().unwrap();
+        release_tx.send(()).unwrap();
+
+        let readers = [holder.join().unwrap(), overflow];
+        drop(std::sync::Arc::into_inner(cell).unwrap());
+        tracker.assert_all_freed_off(&readers);
     });
 }

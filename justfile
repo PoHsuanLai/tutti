@@ -117,6 +117,7 @@ test-features:
 # and miri has no x86 SSE intrinsics.
 miri:
     cargo +nightly miri test -p tutti-types --lib
+    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
     cargo +nightly miri test -p tutti-node
 
 # The loom models: `RtPublish`'s reclamation protocol (against the shipped code)

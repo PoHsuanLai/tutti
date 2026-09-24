@@ -21,51 +21,121 @@
 //! # The protocol
 //!
 //! The cell holds one `AtomicPtr` to the current value (an `Arc` turned into a
-//! raw pointer, so the cell owns one strong count), a small fixed array of
-//! **reader slots**, an **overflow counter**, and a mutex-guarded **retirement
-//! list** only the publishing side touches.
+//! raw pointer, so the cell owns one strong count), a fixed array of **reader
+//! slots**, a fixed array of **overflow epochs**, and a mutex-guarded
+//! **control** block (the retirement list and the epoch bookkeeping) that only
+//! the publishing side touches. Every published value carries a sequence
+//! number, assigned under the mutex.
 //!
-//! A read:
+//! ## The slot path — what a read normally takes
 //!
-//! 1. claims a free slot with one CAS per slot tried (`FREE → CLAIMED`), or —
-//!    if every slot is taken — increments the overflow counter;
-//! 2. issues a `SeqCst` fence;
-//! 3. loads the current pointer (`Acquire`, pairing with the publisher's swap,
+//! 1. claim a free slot with one CAS per slot tried (`FREE → CLAIMED`);
+//! 2. `fence(SeqCst)`;
+//! 3. load the current pointer (`Acquire`, pairing with the publisher's swap,
 //!    so the value is seen fully built);
-//! 4. announces that pointer's address in its slot.
+//! 4. announce that pointer's address in the slot.
 //!
-//! Dropping the [`RtRef`] stores `FREE` back into the slot (or decrements the
-//! counter) with `Release`. That is the reader's entire involvement: it never
-//! touches a refcount, never takes the lock, never frees, and never loops. The
-//! read is **wait-free** — at most `READER_SLOTS` CASes plus one `fetch_add`.
+//! Dropping the [`RtRef`] stores `FREE` with `Release`.
 //!
-//! A publish, under the retirement lock:
+//! ## The overflow path — when every slot is taken
 //!
-//! 1. swaps the new pointer in and pushes the old one onto the retirement list;
-//! 2. issues a `SeqCst` fence;
-//! 3. if the overflow counter is non-zero, stops: an overflow reader has not
-//!    said which value it holds, so every retired value stays retired;
-//! 4. otherwise reads every slot — spinning, on *this* thread, past a slot
-//!    that is mid-read (`CLAIMED`) until its reader announces — and frees every
-//!    retired value whose address no slot holds, after dropping the lock.
+//! A read that finds no free slot registers in the **current overflow epoch**
+//! instead, with one `fetch_add` on the word that names the epoch (so learning
+//! the epoch and registering in it are one atomic step — there is no window in
+//! which a reader has read a stale epoch but not yet registered). It then loads
+//! the current pointer (`Acquire`) and bumps that epoch's `loaded` counter
+//! (`Release`). Dropping the [`RtRef`] bumps the epoch's `exited` counter
+//! (`Release`).
 //!
-//! The two fences are what make step 4 sound. If the publisher's fence comes
-//! first in the single total order of `SeqCst` fences, the reader's load in
-//! step 3 sees the swap, so it cannot pick up a value that is already retired;
-//! if the reader's fence comes first, the publisher's slot read sees `CLAIMED`
-//! or the announced address, so it keeps that value. There is no third case.
+//! An overflow reader never says which value it holds, but its epoch bounds
+//! it: an epoch pins the contiguous run of sequence numbers that were current
+//! from the moment it became current until the publisher *sealed* it. That is
+//! what keeps a stuck overflow reader — more than the slot count of overlapping
+//! readers, or an `RtRef` passed to `mem::forget` — from stalling reclamation
+//! forever: it pins its own epoch's run, a couple of values, and nothing else.
+//!
+//! ## What a reader does not do
+//!
+//! Either way, the reader never touches a refcount, never takes the lock, never
+//! frees, and never loops: at most `READER_SLOTS` CASes, or one `fetch_add`
+//! plus one more. The read is **wait-free** and **allocation-free**.
+//!
+//! ## A publish, under the control lock
+//!
+//! 1. reserve room in the retirement list (the only allocation, done before
+//!    anything changes, so a panic there leaves the cell untouched);
+//! 2. swap the new pointer in (`AcqRel`) and retire the old one with its
+//!    sequence number;
+//! 3. `fence(SeqCst)`;
+//! 4. **advance the overflow epoch**, if an epoch slot is free: open it
+//!    (starting at the new value's sequence number), swap it into the epoch
+//!    word — which returns how many readers registered in the outgoing epoch —
+//!    and seal the outgoing epoch once all of those readers have loaded
+//!    (spinning on the control thread; each is a few instructions from done).
+//!    The sealed epoch pins `[its start, the new value]`;
+//! 5. read every reader slot, spinning past one that is `CLAIMED` (a reader
+//!    between claim and announce), and free — after dropping the lock — every
+//!    retired value that no slot announces and no live epoch pins. The current
+//!    epoch is always live and pins everything from its start on; a sealed
+//!    epoch is live until its `exited` count reaches its registrations.
 //!
 //! A retired value a reader still holds is **not** waited for — a publish that
 //! waited on a held read would deadlock a thread that reads and then publishes.
 //! It stays on the list and is freed by a later publish, or when the cell drops.
 //! Either way the free runs on the control side.
+//!
+//! # Why it is sound
+//!
+//! The argument is in C++20's terms (Rust's atomics model), and each step names
+//! the rule it rests on.
+//!
+//! - **Slot path.** The reader's claim is sequenced before its fence `Fr`, and
+//!   its pointer load after; the publisher's swap is sequenced before its fence
+//!   `Fp`, and its slot read after. `SeqCst` fences are totally ordered
+//!   ([atomics.order]/4). If `Fp` precedes `Fr`, the reader's load sees the
+//!   swap or later, so it cannot pick up the value being retired. If `Fr`
+//!   precedes `Fp`, the publisher's slot read sees the claim or a later value
+//!   of that slot ([atomics.order]/4's fence-to-fence clause) — `CLAIMED`, which
+//!   it waits out, or the announced address, which it keeps. A slot seen `FREE`
+//!   after a read was released with `Release` and read with `Acquire`, so that
+//!   reader's accesses happen before the free.
+//! - **Slot reuse.** Reader B's claim CAS reads reader A's `Release` store of
+//!   `FREE`. That CAS is `Relaxed`, but B's `SeqCst` fence right after it acts
+//!   as an acquire fence for that read and as a release fence for what B does
+//!   next, so A's use of the slot happens before B's, and the publisher can
+//!   never see the two readers' announcements interleaved out of order.
+//! - **Overflow path.** No fence is needed. A reader's registration is an RMW
+//!   on the epoch word, and every RMW continues the release sequence headed by
+//!   the publisher's swap that opened the epoch ([intro.races]/5), so the
+//!   `Acquire` registration synchronizes with that swap: the reader's pointer
+//!   load sees the value that opened its epoch or a later one. The publisher's
+//!   swap that closes the epoch reads the last registration in the word's
+//!   modification order, so its count is exact. Each reader's `Release`
+//!   increment of `loaded` after its pointer load, read by the publisher's
+//!   `Acquire` spin, puts every epoch reader's load before the seal — which is
+//!   why a sealed epoch's upper bound covers what its readers hold. `exited` is
+//!   the same pairing for the free.
+//!
+//! loom checks this against the shipped code (see the model's docs). Its
+//! `SeqCst` fences are *stronger* than C++'s — it gives them a total order that
+//! also constrains surrounding accesses — so a passing model supports the
+//! argument above rather than replacing it; miri's weak-memory emulation over
+//! the stress test is the second, independent check.
+//!
+//! # Where a free can still happen
+//!
+//! The cell *itself* owns the current value and the retired list. Dropping the
+//! last `Arc<RtPublish<_>>` frees them on whichever thread drops it — so an
+//! audio node that owns the last handle to a cell will free on the audio
+//! thread. Keep a control-side handle alive for as long as a node might hold
+//! one, which is what every engine call site does.
 
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use sync::{fence, spin_loop, AtomicPtr, AtomicUsize, Mutex, Ordering};
+use sync::{backoff, fence, AtomicPtr, AtomicUsize, Mutex, Ordering};
 
 /// The atomics the protocol runs on: `std`'s in a real build, `loom`'s under
 /// `--cfg loom`, so the model in `tests/rt_publish_loom.rs` checks *this* code
@@ -76,16 +146,30 @@ use sync::{fence, spin_loop, AtomicPtr, AtomicUsize, Mutex, Ordering};
 mod sync {
     #[cfg(loom)]
     pub(super) use loom::{
-        hint::spin_loop,
         sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering},
         sync::Mutex,
     };
     #[cfg(not(loom))]
     pub(super) use std::{
-        hint::spin_loop,
         sync::atomic::{fence, AtomicPtr, AtomicUsize, Ordering},
         sync::Mutex,
     };
+
+    /// One step of a control-thread wait on a reader that is a few
+    /// instructions from done. Spins briefly, then yields: a low-priority
+    /// reader descheduled mid-read must get the CPU back, or a `SCHED_FIFO`
+    /// publisher spinning on it would livelock.
+    pub(super) fn backoff(spins: &mut u32) {
+        *spins = spins.saturating_add(1);
+        #[cfg(loom)]
+        loom::thread::yield_now();
+        #[cfg(not(loom))]
+        if *spins < 64 {
+            std::hint::spin_loop();
+        } else {
+            std::thread::yield_now();
+        }
+    }
 }
 
 /// How many readers can hold an [`RtRef`] into one cell at once before the
@@ -101,6 +185,31 @@ const READER_SLOTS: usize = 8;
 #[cfg(loom)]
 const READER_SLOTS: usize = 2;
 
+/// How many overflow epochs a cell cycles through. One is current; the others
+/// are sealed epochs waiting for their readers to leave, or free. With four, a
+/// permanently stuck overflow reader (a forgotten `RtRef`) occupies one and the
+/// rest keep cycling. Under loom it is three: the fewest at which the seal's
+/// wait on `loaded` matters (with two, the other epoch is always current and
+/// pins everything newer), so the model can catch its removal.
+#[cfg(not(loom))]
+const EPOCHS: usize = 4;
+#[cfg(loom)]
+const EPOCHS: usize = 3;
+
+/// The epoch word packs the current epoch's index into its low bits and the
+/// number of readers registered in that epoch above them.
+const EPOCH_BITS: u32 = 2;
+const EPOCH_MASK: usize = (1 << EPOCH_BITS) - 1;
+const _: () = assert!(EPOCHS <= 1 << EPOCH_BITS);
+/// Registration counts wrap in the word's upper bits; `loaded` and `exited`
+/// are compared against them in the same width.
+const COUNT_MASK: usize = usize::MAX >> EPOCH_BITS;
+
+/// A retired list this long means reclamation has stalled — every epoch pinned
+/// by stuck readers, or a slot parked for thousands of publishes. Nothing is
+/// unsound at that point, but memory is leaking, so debug builds say so.
+const RETIRED_LEAK_THRESHOLD: usize = 1024;
+
 /// Slot value: no reader.
 const FREE: usize = 0;
 /// Slot value: a reader has claimed the slot but not yet announced what it
@@ -110,14 +219,44 @@ const FREE: usize = 0;
 /// or 1.
 const CLAIMED: usize = 1;
 
-/// [`RtRef::slot`] for a reader on the overflow counter rather than a slot.
-const OVERFLOW: usize = usize::MAX;
-
 /// The slots, on their own cache line: readers write them, and keeping them
 /// off the line holding `current` means a read does not invalidate the pointer
 /// every other reader is about to load.
 #[repr(align(64))]
 struct Slots([AtomicUsize; READER_SLOTS]);
+
+/// The reader-visible half of one overflow epoch.
+struct EpochCounters {
+    /// Registrants that have finished loading the pointer.
+    loaded: AtomicUsize,
+    /// Registrants whose `RtRef` has dropped.
+    exited: AtomicUsize,
+}
+
+/// The publisher-private half of one overflow epoch.
+#[derive(Clone, Copy)]
+enum EpochState {
+    /// Nobody registered here since it was last reset; reusable.
+    Free,
+    /// The epoch readers register in now. Pins every value from `start` on.
+    Current { start: u64 },
+    /// Closed to new readers. `registered` readers took it; they may hold any
+    /// value in `start..=end`.
+    Sealed {
+        start: u64,
+        end: u64,
+        registered: usize,
+    },
+}
+
+/// Everything only the publisher touches.
+struct Control<T> {
+    /// Values swapped out but possibly still held, with their sequence number.
+    retired: Vec<(Arc<T>, u64)>,
+    /// The current value's sequence number.
+    seq: u64,
+    epochs: [EpochState; EPOCHS],
+}
 
 /// A value published from a control thread and read by the audio thread.
 ///
@@ -130,16 +269,17 @@ struct Slots([AtomicUsize; READER_SLOTS]);
 /// never frees it.**
 ///
 /// [`read`](Self::read) hands back an [`RtRef`], which is a *borrow*. Dropping
-/// it clears a reader slot; it does not decrement an `Arc` the way an owning
-/// handle would, and there is no code on that path that could run a
-/// destructor. That matters because the audio thread is the one place a
+/// it clears a reader slot or bumps a counter; it does not decrement an `Arc`
+/// the way an owning handle would, and there is no code on that path that could
+/// run a destructor. That matters because the audio thread is the one place a
 /// deallocation must not happen: if the callback held the last reference to a
 /// retired value, it would run `free` on its `Vec`s inside the block.
 ///
 /// Retired values are freed by [`publish`](Self::publish), on the publishing
 /// thread — or, when a reader still holds one at that moment, by a later
 /// publish or by the cell's own drop. The cost is real, but it always lands
-/// where blocking is allowed.
+/// where blocking is allowed. (The one exception is dropping the cell itself:
+/// see the module docs on who should own the last handle.)
 ///
 /// This is structural, not probabilistic. The previous implementation wrapped
 /// `arc_swap::ArcSwap`, whose guard could degrade into an owning reference when
@@ -161,25 +301,25 @@ struct Slots([AtomicUsize; READER_SLOTS]);
 ///
 /// Each live [`RtRef`] into a cell occupies one of that cell's reader slots.
 /// Holding more than the slot count at once (nested reads of the *same* cell,
-/// or many threads reading together) is safe: the extra readers take an
-/// overflow counter instead, which is just as wait-free and allocation-free.
-/// What it costs is reclamation, not the reader: while any overflow reader is
-/// live, a publish frees nothing and leaves every retired value for the next
-/// publish. Prefer one read per block, passed down.
+/// or many threads reading together) is safe: the extra readers take the
+/// overflow path, which is just as wait-free and allocation-free. What it costs
+/// is precision in reclamation: an overflow reader pins every value that was
+/// current during its epoch (usually one or two), not just the one it holds.
+/// Prefer one read per block, passed down.
 pub struct RtPublish<T> {
     /// The current value, from [`Arc::into_raw`]. The cell owns that one strong
     /// count; [`Drop`] gives it back.
     current: AtomicPtr<T>,
-    /// Live readers that found no free slot. Non-zero means "some reader holds
-    /// *some* value, unknown which", so nothing retired may be freed.
-    overflow: AtomicUsize,
+    /// The current overflow epoch's index (low bits) and registration count.
+    epoch_word: AtomicUsize,
+    /// Per-epoch counters overflow readers bump.
+    epochs: [EpochCounters; EPOCHS],
     /// Per-reader hazard slots: `FREE`, `CLAIMED`, or the address of the value
     /// the reader holds.
     slots: Slots,
-    /// Values swapped out but possibly still held by a reader. Touched only by
-    /// `publish` and `Drop`, never by a reader — that is the whole design.
-    /// The mutex also serializes concurrent publishers.
-    retired: Mutex<Vec<Arc<T>>>,
+    /// Touched only by `publish` and `Drop`, never by a reader — that is the
+    /// whole design. The mutex also serializes concurrent publishers.
+    control: Mutex<Control<T>>,
     /// The cell owns `Arc<T>`s through a raw pointer; this gives it `Arc<T>`'s
     /// auto traits (`Send + Sync` exactly when `T: Send + Sync`) and drop-check
     /// behaviour, so no `unsafe impl` is needed.
@@ -200,13 +340,24 @@ impl<T> RtPublish<T> {
     /// unaffected, and the value is freed wherever its *last* `Arc` drops —
     /// which is never a reader, since readers do not hold one.
     pub fn from_arc(value: Arc<T>) -> Self {
+        let mut epochs = [EpochState::Free; EPOCHS];
+        // Epoch 0 is current from the start, pinning the initial value (0) on.
+        epochs[0] = EpochState::Current { start: 0 };
         Self {
             current: AtomicPtr::new(Arc::into_raw(value).cast_mut()),
-            overflow: AtomicUsize::new(0),
+            epoch_word: AtomicUsize::new(0),
+            epochs: std::array::from_fn(|_| EpochCounters {
+                loaded: AtomicUsize::new(0),
+                exited: AtomicUsize::new(0),
+            }),
             slots: Slots(std::array::from_fn(|_| AtomicUsize::new(FREE))),
-            // No capacity reserved: the list is only ever touched on the
-            // control side, where growing it is allowed.
-            retired: Mutex::new(Vec::new()),
+            control: Mutex::new(Control {
+                // No capacity reserved: the list is only ever touched on the
+                // control side, where growing it is allowed.
+                retired: Vec::new(),
+                seq: 0,
+                epochs,
+            }),
             _owns: PhantomData,
         }
     }
@@ -219,59 +370,82 @@ impl<T> RtPublish<T> {
     /// until the next [`publish`](Self::publish) after it is dropped.
     #[inline]
     pub fn read(&self) -> RtRef<'_, T> {
-        // Step 1: register. One CAS per slot tried, never a retry of the same
-        // slot, so this is bounded by READER_SLOTS whatever else is running.
-        // `Relaxed` is enough: the fence below orders this store against the
-        // publisher's slot scan, and the slot carries no data to acquire.
-        let slot = self
-            .slots
-            .0
-            .iter()
-            .position(|s| {
-                s.compare_exchange(FREE, CLAIMED, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            })
-            .unwrap_or_else(|| {
-                self.overflow.fetch_add(1, Ordering::Relaxed);
-                OVERFLOW
-            });
+        // One CAS per slot tried, never a retry of the same slot, so this is
+        // bounded by READER_SLOTS whatever else is running. `Relaxed` is
+        // enough: the fence below orders the claim against the publisher's
+        // slot scan (see "Slot reuse" in the module docs).
+        let slot = self.slots.0.iter().position(|s| {
+            s.compare_exchange(FREE, CLAIMED, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        });
+        let Some(slot) = slot else {
+            return self.read_overflow();
+        };
 
-        // Step 2: the reader half of the Dekker pair (see the module docs).
-        // Without it, the load below may be satisfied before the claim above
-        // is visible, and a publisher can scan an apparently empty slot,
-        // free the value, and hand this reader a dangling pointer.
+        // The reader half of the fence pair. Without it, the load below may be
+        // satisfied before the claim is visible, and a publisher can scan an
+        // apparently empty slot, free the value, and hand this reader a
+        // dangling pointer.
         fence(Ordering::SeqCst);
 
-        // Step 3: `Acquire` pairs with the publisher's `AcqRel` swap, so the
-        // pointee is fully constructed from this thread's point of view.
+        // `Acquire` pairs with the publisher's `AcqRel` swap, so the pointee is
+        // fully constructed from this thread's point of view.
         let ptr = self.current.load(Ordering::Acquire);
 
-        // Step 4: announce. `Relaxed`: the publisher only compares the address.
-        // What it needs ordered — our reads of the value before its free — is
-        // carried by the `Release` in `RtRef::drop`.
-        if slot != OVERFLOW {
-            self.slots.0[slot].store(ptr.addr(), Ordering::Relaxed);
-        }
+        // Announce. `Relaxed`: the publisher only compares the address. What it
+        // needs ordered — our reads of the value before its free — is carried
+        // by the `Release` in `RtRef::drop`.
+        self.slots.0[slot].store(ptr.addr(), Ordering::Relaxed);
 
         RtRef {
             cell: self,
-            // `current` is only ever set from `Arc::into_raw`, which is never
-            // null.
-            value: NonNull::new(ptr).expect("RtPublish::current is never null"),
-            slot,
+            value: Self::non_null(ptr),
+            held: Held::Slot(slot),
             _not_send: PhantomData,
         }
     }
 
+    /// Every slot is taken: register in the current overflow epoch instead.
+    #[cold]
+    fn read_overflow(&self) -> RtRef<'_, T> {
+        // Learning the epoch and registering in it are one RMW, so there is no
+        // stale-epoch window. `Acquire` synchronizes with the swap that opened
+        // this epoch (every RMW continues its release sequence), so the load
+        // below sees the value the epoch started at, or a later one.
+        let word = self
+            .epoch_word
+            .fetch_add(1 << EPOCH_BITS, Ordering::Acquire);
+        let epoch = word & EPOCH_MASK;
+        let ptr = self.current.load(Ordering::Acquire);
+        // `Release`: our load happens before the publisher's seal reads this,
+        // so the sealed range covers whatever we just loaded. (Weakening this
+        // to `Relaxed` would let the load read a value published after the
+        // seal — load buffering, which loom does not explore, so the model
+        // cannot catch that mutation. This ordering is held by the argument
+        // in the module docs alone.)
+        self.epochs[epoch].loaded.fetch_add(1, Ordering::Release);
+        RtRef {
+            cell: self,
+            value: Self::non_null(ptr),
+            held: Held::Epoch(epoch),
+            _not_send: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn non_null(ptr: *mut T) -> NonNull<T> {
+        // `current` is only ever set from `Arc::into_raw`, which is never null.
+        NonNull::new(ptr).expect("RtPublish::current is never null")
+    }
+
     /// Publish a new value. **Control-thread only.**
     ///
-    /// Swaps the value in, then frees every retired value no reader still
-    /// holds — including the outgoing one, if nobody is reading it. It may
-    /// spin briefly on a reader caught between claiming a slot and announcing
-    /// what it read (a handful of instructions on the reader's side), and it
-    /// takes a mutex that serializes publishers. Both costs — the wait and the
-    /// free — belong to the caller, which is the entire point: neither reaches
-    /// the callback.
+    /// Swaps the value in, then frees every retired value no reader can still
+    /// hold — including the outgoing one, if nobody is reading it. It may spin
+    /// briefly on a reader caught mid-read (a handful of instructions on the
+    /// reader's side; the spin backs off to `yield_now`), and it takes a mutex
+    /// that serializes publishers. Both costs — the wait and the free — belong
+    /// to the caller, which is the entire point: neither reaches the callback.
     ///
     /// A retired value that a reader *is* holding is not waited for; it stays
     /// retired and is freed by the next publish after the reader lets go, or
@@ -281,89 +455,193 @@ impl<T> RtPublish<T> {
     /// inside it, defeating the type.
     pub fn publish(&self, value: Arc<T>) {
         let freeable = {
-            // A poisoned lock means a publisher panicked, which can only have
-            // happened in `Vec::push`'s allocation — the list is still a valid
-            // list of owned `Arc`s, so carrying on is correct.
-            let mut retired = self
-                .retired
+            // Nothing below can panic between changing shared state and making
+            // the control block consistent again: the only allocations (the
+            // two `reserve`s) happen before the swap and before anything is
+            // moved out of `retired`. So a poisoned lock — a panic in a
+            // `reserve`, or in a previous publisher's `T::drop`, which runs
+            // outside the lock anyway — still guards a consistent block, and
+            // carrying on is correct.
+            let mut control = self
+                .control
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let control = &mut *control;
 
-            let new = Arc::into_raw(value).cast_mut();
-            // `Release` publishes the new value's contents to readers'
-            // `Acquire` load; `Acquire` makes the outgoing value's contents
+            // Step 1. If this panics, nothing has changed; `value` is dropped
+            // on this thread by the unwind, and no reader has seen it.
+            control.retired.reserve(1);
+            let mut freeable = Vec::with_capacity(control.retired.len() + 1);
+
+            // Step 2. `Release` publishes the new value's contents to readers'
+            // `Acquire` loads; `Acquire` makes the outgoing value's contents
             // ours before we drop it.
-            let old = self.current.swap(new, Ordering::AcqRel);
+            let old_seq = control.seq;
+            control.seq += 1;
+            let old = self
+                .current
+                .swap(Arc::into_raw(value).cast_mut(), Ordering::AcqRel);
             // SAFETY: `old` came out of `current`, which only ever holds a
             // pointer from `Arc::into_raw` whose strong count the cell owns.
-            // The swap removed it from `current`, so this is the one place
-            // that count is reclaimed — no other path can see `old` in
-            // `current` again.
-            retired.push(unsafe { Arc::from_raw(old) });
+            // The swap removed it from `current`, so this is the one place that
+            // count is reclaimed. The push cannot allocate (reserved above).
+            control
+                .retired
+                .push((unsafe { Arc::from_raw(old) }, old_seq));
 
-            self.take_unprotected(&mut retired)
+            // Step 3: the publisher half of the slot fence pair.
+            fence(Ordering::SeqCst);
+
+            // Step 4.
+            self.advance_epoch(control);
+
+            // Step 5.
+            self.take_unprotected(control, &mut freeable);
+
+            debug_assert!(
+                control.retired.len() < RETIRED_LEAK_THRESHOLD,
+                "RtPublish: {} retired values are still pinned — a reader \
+                 parked across thousands of publishes, or every overflow epoch \
+                 held by a forgotten RtRef",
+                control.retired.len()
+            );
+            freeable
         };
         // Freed outside the lock: `T::drop` is arbitrary code, and one that
         // published to this cell (or panicked) must not do it under our mutex.
         drop(freeable);
     }
 
-    /// The publisher half of the protocol: remove from `retired` every value
-    /// no reader can still be holding, and hand them back to be dropped.
-    fn take_unprotected(&self, retired: &mut Vec<Arc<T>>) -> Vec<Arc<T>> {
-        // The publisher half of the Dekker pair: orders the swap in `publish`
-        // before the slot and counter reads below.
-        fence(Ordering::SeqCst);
+    /// Open a free epoch and seal the current one, if a free epoch exists.
+    ///
+    /// If none does — every other epoch still has readers in it — the current
+    /// epoch stays open and keeps pinning everything from its start, until a
+    /// later publish finds one free.
+    fn advance_epoch(&self, control: &mut Control<T>) {
+        let free = (0..EPOCHS).find(|&k| match control.epochs[k] {
+            EpochState::Free => true,
+            EpochState::Current { .. } => false,
+            EpochState::Sealed { registered, .. } => {
+                // `Acquire` pairs with each reader's `Release` exit.
+                let exited = self.epochs[k].exited.load(Ordering::Acquire);
+                exited & COUNT_MASK == registered
+            }
+        });
+        let Some(next) = free else { return };
 
-        // `Acquire` pairs with the `Release` decrement in `RtRef::drop`, so a
-        // finished overflow reader's reads happen-before our free.
-        if self.overflow.load(Ordering::Acquire) != 0 {
-            return Vec::new();
+        // Every registrant of `next` has exited, and nobody can register in it
+        // until the swap below names it, so the counters can be reset. The
+        // swap's `Release` orders these stores before any new registrant's
+        // increments.
+        self.epochs[next].loaded.store(0, Ordering::Relaxed);
+        self.epochs[next].exited.store(0, Ordering::Relaxed);
+        control.epochs[next] = EpochState::Current { start: control.seq };
+
+        let word = self.epoch_word.swap(next, Ordering::AcqRel);
+        let closing = word & EPOCH_MASK;
+        let registered = word >> EPOCH_BITS;
+        let EpochState::Current { start } = control.epochs[closing] else {
+            unreachable!("the epoch word always names the current epoch");
+        };
+
+        // Wait for the closing epoch's readers to finish loading, so the seal
+        // bounds what they can hold. Each is past its registration and a load
+        // away from done.
+        let mut spins = 0;
+        while self.epochs[closing].loaded.load(Ordering::Acquire) & COUNT_MASK != registered {
+            backoff(&mut spins);
         }
+        // They loaded a value no newer than the one just published.
+        control.epochs[closing] = EpochState::Sealed {
+            start,
+            end: control.seq,
+            registered,
+        };
+    }
 
+    /// Move into `freeable` every retired value no reader can still be holding.
+    /// `freeable` has room for all of `retired`, so this neither allocates nor
+    /// drops — nothing here can unwind with a value half-removed.
+    fn take_unprotected(&self, control: &mut Control<T>, freeable: &mut Vec<Arc<T>>) {
         let mut held = [FREE; READER_SLOTS];
         for (held, slot) in held.iter_mut().zip(&self.slots.0) {
             // `Acquire`, pairing with `RtRef::drop`'s `Release`: a slot seen
             // `FREE` after a read means that reader's accesses are done.
             let mut seen = slot.load(Ordering::Acquire);
             // A reader between claim and announce. It is running a fence and
-            // a load, not waiting on anything, so this terminates as soon as
-            // it is scheduled — and the spinning is on the control thread.
+            // a load, not waiting on anything, so this ends as soon as it is
+            // scheduled — and the waiting is on the control thread.
+            let mut spins = 0;
             while seen == CLAIMED {
-                spin_loop();
+                backoff(&mut spins);
                 seen = slot.load(Ordering::Acquire);
             }
             *held = seen;
         }
 
-        let (keep, free): (Vec<_>, Vec<_>) = retired
-            .drain(..)
-            .partition(|arc| held.contains(&Arc::as_ptr(arc).addr()));
-        *retired = keep;
-        free
+        let pinned_by_epoch = |seq: u64| {
+            (0..EPOCHS).any(|k| match control.epochs[k] {
+                EpochState::Free => false,
+                EpochState::Current { start } => seq >= start,
+                EpochState::Sealed {
+                    start,
+                    end,
+                    registered,
+                } => {
+                    (start..=end).contains(&seq)
+                        && self.epochs[k].exited.load(Ordering::Acquire) & COUNT_MASK != registered
+                }
+            })
+        };
+
+        let mut i = 0;
+        while i < control.retired.len() {
+            let (arc, seq) = &control.retired[i];
+            if held.contains(&Arc::as_ptr(arc).addr()) || pinned_by_epoch(*seq) {
+                i += 1;
+            } else {
+                // Order-preserving, so values are freed oldest first. `remove`
+                // cannot panic for an in-range index, and `push` cannot
+                // allocate: `freeable` was sized for the whole list.
+                freeable.push(control.retired.remove(i).0);
+            }
+        }
     }
 
     /// How many readers currently hold an [`RtRef`] on the overflow path.
     #[cfg(all(test, not(loom)))]
     fn overflow_readers(&self) -> usize {
-        self.overflow.load(Ordering::SeqCst)
+        let control = self.control.lock().unwrap();
+        (0..EPOCHS)
+            .map(|k| {
+                let exited = self.epochs[k].exited.load(Ordering::SeqCst);
+                match control.epochs[k] {
+                    EpochState::Free => 0,
+                    EpochState::Current { .. } => {
+                        (self.epoch_word.load(Ordering::SeqCst) >> EPOCH_BITS) - exited
+                    }
+                    EpochState::Sealed { registered, .. } => registered - exited,
+                }
+            })
+            .sum()
     }
 
     /// How many swapped-out values are still waiting to be freed.
     #[cfg(all(test, not(loom)))]
     fn retired_len(&self) -> usize {
-        self.retired
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
+        self.control.lock().unwrap().retired.len()
     }
 }
 
 impl<T> Drop for RtPublish<T> {
     fn drop(&mut self) {
         // `&mut self` means no `RtRef` is alive (each borrows the cell), so
-        // nothing is protected and everything can go.
-        let current = self.current.load(Ordering::Acquire);
+        // nothing is protected, everything can go, and no atomic access is
+        // needed.
+        #[cfg(not(loom))]
+        let current = *self.current.get_mut();
+        #[cfg(loom)]
+        let current = self.current.with_mut(|p| *p);
         // SAFETY: as in `publish` — `current` holds a pointer from
         // `Arc::into_raw` whose count the cell owns, and the cell is being
         // destroyed, so nothing will read `current` again.
@@ -384,6 +662,13 @@ impl<T: std::fmt::Debug> std::fmt::Debug for RtPublish<T> {
     }
 }
 
+/// Which registration an [`RtRef`] must undo.
+#[derive(Clone, Copy)]
+enum Held {
+    Slot(usize),
+    Epoch(usize),
+}
+
 /// A borrow of the value inside an [`RtPublish`], valid for as long as it is
 /// held.
 ///
@@ -393,14 +678,14 @@ impl<T: std::fmt::Debug> std::fmt::Debug for RtPublish<T> {
 /// would otherwise have to catch, is a compile error instead.
 ///
 /// There is no way to get an owning `Arc` back out. That is not an oversight.
-/// Dropping one clears a reader slot and does nothing else: it cannot free.
+/// Dropping one clears a slot or bumps a counter and does nothing else: it
+/// cannot free.
 pub struct RtRef<'a, T> {
     cell: &'a RtPublish<T>,
-    /// The value this reader announced. Kept alive by that announcement, not
-    /// by a refcount.
+    /// The value this reader loaded. Kept alive by its registration, not by a
+    /// refcount.
     value: NonNull<T>,
-    /// Index into `cell.slots`, or [`OVERFLOW`].
-    slot: usize,
+    held: Held,
     /// `*const ()` is neither `Send` nor `Sync`, which is what pins the guard
     /// to the thread that took it. (`NonNull` alone would do the same; this
     /// says so on purpose rather than by accident of representation.)
@@ -412,14 +697,16 @@ impl<T> Deref for RtRef<'_, T> {
 
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: `value` was read from `current` after this reader registered
-        // (slot claim or overflow increment, then the `SeqCst` fence), and the
-        // registration stays in place until `drop`. A publisher frees a
-        // retired value only after its own fence finds no slot announcing it
-        // and a zero overflow count; the fence pair guarantees it cannot miss
-        // this registration while also having retired a value this reader
-        // loaded. The `Acquire` load makes the pointee's construction visible.
-        // The borrow is tied to `&self`, which cannot outlive the registration.
+        // SAFETY: `value` was loaded from `current` after this reader
+        // registered, and the registration stays in place until `drop`. On the
+        // slot path, a publisher frees a retired value only after its fence
+        // finds no slot announcing it, and the fence pair means it cannot miss
+        // this slot while having retired the value this reader loaded. On the
+        // overflow path, the reader's epoch stays live until `drop`, and a
+        // live epoch pins every value its readers can have loaded (module
+        // docs, "Why it is sound"). The `Acquire` load makes the pointee's
+        // construction visible. The borrow is tied to `&self`, which cannot
+        // outlive the registration.
         unsafe { self.value.as_ref() }
     }
 }
@@ -428,12 +715,15 @@ impl<T> Drop for RtRef<'_, T> {
     #[inline]
     fn drop(&mut self) {
         // `Release`: every read this thread made through the ref happens-before
-        // a publisher's `Acquire` of the cleared slot or decremented counter,
-        // and therefore before the free. Nothing here can run a destructor.
-        if self.slot == OVERFLOW {
-            self.cell.overflow.fetch_sub(1, Ordering::Release);
-        } else {
-            self.cell.slots.0[self.slot].store(FREE, Ordering::Release);
+        // a publisher's `Acquire` of the cleared slot or the exit count, and
+        // therefore before the free. Nothing here can run a destructor.
+        match self.held {
+            Held::Slot(slot) => self.cell.slots.0[slot].store(FREE, Ordering::Release),
+            Held::Epoch(epoch) => {
+                self.cell.epochs[epoch]
+                    .exited
+                    .fetch_add(1, Ordering::Release);
+            }
         }
     }
 }
@@ -639,9 +929,10 @@ mod tests {
     /// The overflow readers hold a value *no slot announces* (the slots all
     /// hold the older one), so the only thing keeping it alive is the counter.
     ///
-    /// Mutation: in `take_unprotected`, delete the overflow-count early
-    /// return. The second publish then frees value 1 while the overflow
-    /// readers still hold it, and `sites` is non-empty at the first check.
+    /// Mutation: in `take_unprotected`'s `pinned_by_epoch`, make a `Sealed`
+    /// epoch pin nothing. The second publish then frees value 1 while the
+    /// overflow readers still hold it, and `sites` is non-empty at the first
+    /// check.
     #[test]
     fn nested_reads_past_the_slot_count_overflow_safely() {
         let sites = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -663,7 +954,7 @@ mod tests {
         cell.publish(Arc::new(make(2)));
         assert!(
             sites.lock().unwrap().is_empty(),
-            "overflow readers hold an unknown value, so nothing may be freed"
+            "value 1 is pinned by the overflow readers' sealed epoch"
         );
         // A read taken now sees the newest value even while older ones are
         // held (on the overflow path too — every slot is still taken).
@@ -697,6 +988,106 @@ mod tests {
         let r = cell.read();
         assert_eq!(r.id, 4);
         assert_eq!(cell.overflow_readers(), 0);
+    }
+
+    /// An overflow `RtRef` passed to `mem::forget` never exits its epoch, so
+    /// the values that were current during that epoch stay pinned forever —
+    /// but only those. Publishing on regardless keeps the retired list at a
+    /// constant size, rather than leaking one value per publish.
+    ///
+    /// Mutation: make `advance_epoch` return before opening a new epoch (the
+    /// old single-counter design, where overflow stalled all reclamation).
+    /// The current epoch then pins every retired value, and the bound fails
+    /// within the first few publishes.
+    #[test]
+    fn a_forgotten_overflow_ref_does_not_stall_reclamation() {
+        let sites = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let make = |id| DropSite {
+            id,
+            sites: sites.clone(),
+        };
+        let cell = RtPublish::new(make(0));
+
+        let in_slots: Vec<_> = (0..READER_SLOTS).map(|_| cell.read()).collect();
+        let forgotten = cell.read();
+        assert_eq!(cell.overflow_readers(), 1);
+        std::mem::forget(forgotten);
+        drop(in_slots);
+
+        for id in 1..=200 {
+            cell.publish(Arc::new(make(id)));
+            assert!(
+                cell.retired_len() <= 2,
+                "publish {id}: {} retired — reclamation stalled",
+                cell.retired_len()
+            );
+        }
+        // The forgotten reader's epoch pins the values current while it was
+        // open: 0 (read) and 1 (published before the seal). Everything else
+        // went.
+        let mut freed: Vec<_> = sites.lock().unwrap().iter().map(|&(id, _)| id).collect();
+        freed.sort_unstable();
+        assert_eq!(freed, (2..200).collect::<Vec<_>>());
+        assert_eq!(cell.overflow_readers(), 1, "still registered, forever");
+    }
+
+    /// The same bound with the overflow reader genuinely live — slots all
+    /// held, one more reader past them — across many publishes, and the held
+    /// reads keep their values throughout.
+    ///
+    /// Mutation: as above (never advance the epoch). The list grows by one
+    /// per publish and the bound fails within the first few publishes.
+    #[test]
+    fn a_live_overflow_reader_keeps_the_retired_list_bounded() {
+        let cell = RtPublish::new(0u32);
+        let in_slots: Vec<_> = (0..READER_SLOTS).map(|_| cell.read()).collect();
+        let over = cell.read();
+        for v in 1..=200u32 {
+            cell.publish(Arc::new(v));
+            assert!(
+                cell.retired_len() <= 2,
+                "publish {v}: {}",
+                cell.retired_len()
+            );
+            assert_eq!(*over, 0);
+            assert!(in_slots.iter().all(|r| **r == 0));
+            // A fresh read (overflow too — every slot is taken) sees the news.
+            assert_eq!(*cell.read(), v);
+        }
+    }
+
+    /// A retired value's destructor runs *after* the control lock is
+    /// released, so a destructor that panics neither poisons the lock nor
+    /// leaves the retired list half-updated; the cell keeps working.
+    ///
+    /// (The other panic site the lock guards against, a failed `reserve`,
+    /// cannot be provoked here without an allocator that fails on demand; it
+    /// happens before the swap, which is what makes it harmless.)
+    ///
+    /// Mutation: move `drop(freeable)` inside the locked block in `publish`.
+    /// The panic then unwinds through the guard and the lock is poisoned.
+    #[test]
+    fn a_panicking_destructor_does_not_poison_the_cell() {
+        struct Bomb(bool);
+        impl Drop for Bomb {
+            fn drop(&mut self) {
+                if self.0 {
+                    panic!("boom");
+                }
+            }
+        }
+
+        let cell = RtPublish::new(Bomb(true));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cell.publish(Arc::new(Bomb(false)));
+        }));
+        assert!(result.is_err(), "the retired value's drop panicked");
+        assert!(!cell.control.is_poisoned());
+        assert_eq!(cell.retired_len(), 0, "it left the list before it ran");
+
+        cell.publish(Arc::new(Bomb(false)));
+        assert!(!cell.read().0);
+        assert_eq!(cell.retired_len(), 0);
     }
 
     /// A reader holding a *slot* protects exactly its own value: a publish
@@ -744,8 +1135,10 @@ mod tests {
     /// generation has been dropped exactly once, and never on a reader thread.
     ///
     /// Mutations: remove either `SeqCst` fence — miri's weak-memory emulation
-    /// then reports a use-after-free (the plain run rarely does on x86, whose
-    /// CAS is already a full barrier; this is why the model check exists).
+    /// then reports a data race on the freed value, on some seeds (16 seeds,
+    /// as the CI step runs, catch both; one seed alone can miss). The plain
+    /// run does not on x86, whose CAS is already a full barrier; this is why
+    /// the loom model exists.
     /// Remove the slot check in `take_unprotected` — readers see poisoned
     /// vectors and the whole-value assertion fails in the plain run.
     #[test]

@@ -458,11 +458,15 @@ jobs:
       # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover.
-      # `--lib` includes `rt::publish`'s tests: the concurrent-readers stress
-      # test is the one that reports a use-after-free if either `SeqCst` fence
-      # in `RtPublish` goes (a plain x86 run does not — a CAS is already a full
-      # barrier there — which is why this job and the loom one both exist).
       - run: cargo miri test -p tutti-types --lib
+      # `rt::publish` again over 16 scheduling seeds: its concurrent-readers
+      # stress test reports a race on a freed value if either `SeqCst` fence in
+      # `RtPublish` goes, but only on some seeds — the default one alone missed
+      # it. (A plain x86 run never does — a CAS is already a full barrier
+      # there — which is why this job and the loom one both exist.)
+      - run: cargo miri test -p tutti-types --lib rt::publish
+        env:
+          MIRIFLAGS: -Zmiri-many-seeds=0..16
       - run: cargo miri test -p tutti-node
 
   # The loom models: `RtPublish`'s reclamation protocol (run against the

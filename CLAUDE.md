@@ -144,11 +144,13 @@ Non-scalar state handed to the audio thread goes through
 - **The audio thread never holds an owning handle to published state, and
   never frees it.** `read()` returns a `!Send` borrow and is wait-free;
   `publish()` is control-thread only and frees retired values there. This is
-  structural (hazard slots + a retirement list only the publisher touches),
+  structural (hazard slots, overflow epochs, and a retirement list only the
+  publisher touches),
   and the loom model `tutti-types/tests/rt_publish_loom.rs` checks it.
 - Read once per block, never per sample. Never park an `RtRef` across blocks
   (a parked one delays the free of what it holds). Avoid nested reads: past
-  the cell's slot count they stay safe but stall reclamation.
+  the cell's slot count they stay safe but pin every value current during
+  their overflow epoch, not just the one they hold.
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.

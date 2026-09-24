@@ -224,11 +224,13 @@ Rules:
 - **Never park an `RtRef`** in a struct field or hold one across blocks (now a
   compile error rather than a review rule).
 - **Avoid nested reads** — several live `RtRef`s into the same cell. Each
-  occupies one of the cell's reader slots; past them a read takes an overflow
-  counter instead, which is just as wait-free and allocation-free for the
-  reader but tells the publisher nothing about *which* value is held, so no
-  publish frees anything while an overflow reader is live. (The slot count is
-  an implementation detail — don't code against a number.)
+  occupies one of the cell's reader slots; past them a read registers in an
+  overflow *epoch* instead, which is just as wait-free and allocation-free for
+  the reader but tells the publisher only which run of values was current
+  while the epoch was open, so it pins that whole run (usually one or two
+  values). A forgotten overflow `RtRef` pins its run forever and nothing else;
+  the retired list stays bounded. (The slot and epoch counts are
+  implementation details — don't code against a number.)
 - **Never `publish` from the audio thread** — it stalls the callback *and* frees
   inside it.
 - Nullable hot-swap trait-object slots (`SharedReader`, `InputSlot`, `Midi::out`)
@@ -238,13 +240,15 @@ Rules:
 **The guarantee is structural.** `RtPublish` used to wrap `ArcSwap`, which made
 RT deallocation very unlikely and bounded but not *impossible*: a guard whose
 debt a writer settled concurrently degraded into an owning reference, and its
-drop could be the last one. It is now an `AtomicPtr` plus per-cell hazard slots
-and a retirement list the audio thread never touches (doc 013 §4), with no call
-site moving — which is what the wrapper was for. A reader registers (slot CAS,
-or the overflow counter), fences, loads, and announces; a publisher swaps,
-fences, and frees only what no slot announces while the overflow counter is
-zero. The `SeqCst` fence pair is the whole argument, and both halves are
-load-bearing: the loom model (`tutti-types/tests/rt_publish_loom.rs`, run
+drop could be the last one. It is now an `AtomicPtr` plus per-cell hazard slots,
+overflow epochs, and a retirement list the audio thread never touches (doc 013
+§4), with no call site moving — which is what the wrapper was for. A reader
+claims a slot, fences, loads, and announces (or, with every slot taken,
+registers in the current epoch with one RMW and loads); a publisher swaps,
+fences, advances the epoch, and frees only what no slot announces and no live
+epoch pins. The soundness argument, in C++20 terms, is in `rt/publish.rs`'s
+module docs. On the slot path the `SeqCst` fence pair is the whole argument,
+and both halves are load-bearing: the loom model (`tutti-types/tests/rt_publish_loom.rs`, run
 against the shipped code, exhaustively) fails with either removed, and so does
 miri on the concurrent stress test. A plain x86 run does not — its CAS is
 already a full barrier — which is why neither check can be replaced by more

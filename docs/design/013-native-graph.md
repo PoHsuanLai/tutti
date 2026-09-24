@@ -190,8 +190,9 @@ the interpreter.
   fork's parking allocates past its reserve.)
 - **Done (#15): `RtPublish` got its structural fix**, ahead of the rest of
   the runtime since it needed none of it: `AtomicPtr` + per-cell hazard slots
-  (with a wait-free overflow counter past them) + a retirement list the audio
-  thread never touches. Same API, no call site moved. The reader cannot free;
+  (with wait-free overflow epochs past them, so a stuck overflow reader pins
+  only its epoch's values) + a retirement list the audio thread never
+  touches. Same API, no call site moved. The reader cannot free;
   the loom model `tutti-types/tests/rt_publish_loom.rs` checks that against the
   shipped code, exhaustively. The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
@@ -684,6 +685,15 @@ Parallel executor + coarsening + cost model; SoA voices in polysynth/sampler;
 same-kind sibling batching; `clap.thread-pool`; then (optional) REAPER-style
 anticipative partition for nodes with no live-input dependency, with export as
 its degenerate case.
+
+`RtPublish` under the parallel executor: its eight reader slots per cell share
+one cache line, so many worker cores reading the same cell every block will
+bounce that line between them, and past eight concurrent readers the rest take
+the overflow epochs (safe and bounded, but coarser reclamation). If profiling
+shows it, the fix is per-thread slots (one line per worker, indexed by worker
+id) inside `RtPublish` — another change with no call site moving. Better still
+is the design in §4: the executor reads the plan cell once per block and hands
+workers a reference, so only one reader touches the cell at all.
 
 ## Per-node rewrite plan
 

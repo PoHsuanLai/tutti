@@ -1217,3 +1217,129 @@ fn every_borrow_form_matches_the_reference() {
         run(&mut pair, &schedule(which, 7, 300), &mut frame);
     }
 }
+
+/// The executor and the reference built from one random graph through an
+/// `Editor` (not `package`), so `Editor::reprepare` has a spec to recompile.
+struct EditorPair {
+    editor: tutti_graph::Editor,
+    exec: tutti_graph::Executor,
+    reference: tutti_graph::Reference,
+    inputs: usize,
+    outputs: usize,
+}
+
+impl EditorPair {
+    fn new(desc: &Desc, prepare: tutti_graph::Prepare) -> Self {
+        let (mut editor, mut exec) =
+            tutti_graph::Editor::with_event_capacity(prepare, common::EVENT_CAPACITY);
+        for (&k, kind) in &desc.kinds {
+            editor.insert(k, "test", common::TestNode::new(kind.clone()));
+        }
+        let spec = editor.spec_mut();
+        spec.topology.edges = desc.spec.topology.edges.clone();
+        spec.topology.outputs = desc.spec.topology.outputs.clone();
+        spec.topology.inputs = desc.spec.topology.inputs;
+        spec.events = desc.spec.events.clone();
+        editor.commit().expect("a generated graph commits");
+        exec.apply_pending();
+        editor.collect();
+        let mut reference = tutti_graph::Reference::new(prepare);
+        reference.set_graph(
+            &editor.spec().validate().expect("valid"),
+            common::units_for(&desc.kinds, desc.kinds.keys().copied()),
+        );
+        Self {
+            editor,
+            exec,
+            reference,
+            inputs: desc.spec.topology.inputs.count() as usize,
+            outputs: desc.spec.topology.outputs.len(),
+        }
+    }
+
+    fn reprepare(&mut self, prepare: tutti_graph::Prepare) {
+        self.editor.reprepare(prepare).expect("reprepares");
+        self.exec.apply_pending();
+        self.editor.collect();
+        self.exec.apply_pending();
+        self.editor.collect();
+        self.reference.reprepare(prepare);
+    }
+
+    fn run(&mut self, blocks: &[usize], frame: &mut u64) {
+        let transport = tutti_graph::Transport {
+            playing: true,
+            ..tutti_graph::Transport::default()
+        };
+        for &n in blocks {
+            let input = input_signal(*frame, n);
+            let chans: Vec<Vec<f32>> = (0..self.inputs.max(1))
+                .map(|c| input.iter().map(|x| x * 0.5f32.powi(c as i32)).collect())
+                .collect();
+            let ins: Vec<&[f32]> = chans.iter().map(Vec::as_slice).collect();
+            let mut a = vec![vec![0.0f32; n]; self.outputs];
+            let mut b = vec![vec![0.0f32; n]; self.outputs];
+            {
+                let mut outs: Vec<&mut [f32]> = a.iter_mut().map(Vec::as_mut_slice).collect();
+                self.exec.process(n, &transport, &ins, &mut outs);
+            }
+            {
+                let mut outs: Vec<&mut [f32]> = b.iter_mut().map(Vec::as_mut_slice).collect();
+                self.reference.process(n, &transport, &ins, &mut outs);
+            }
+            assert_eq!(self.exec.dropped_events(), 0, "the executor dropped events");
+            assert_eq!(
+                bits(&a),
+                bits(&b),
+                "executor and reference diverge in the block at frame {frame} ({n} frames)"
+            );
+            *frame += n as u64;
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+    /// Across a re-prepare — a new sample rate, a new `MaxBlock`, or both —
+    /// the executor (two commits through the editor, units re-prepared on the
+    /// control side) and the reference (one step, with the reset rule written
+    /// out independently) still agree bit for bit, block schedules ragged on
+    /// both sides of the change.
+    ///
+    /// Mutation: in `Executor::rebuild`, carry state across a rate change
+    /// (`carry = true`) → the first graph with a PDC ring or feedback
+    /// diverges after a rate change. Mutation: in `Reference::set_graph`,
+    /// keep the audio lines on a reset → diverges the same way from the
+    /// other side. Mutation: in `Executor::apply`, drop the `reset_time`
+    /// flag on suspend → diverges.
+    #[test]
+    fn reprepare_matches_the_reference(seed in any::<u64>(), which in 0usize..5, to in 0usize..6) {
+        let desc = random_graph(seed);
+        let mut pair = EditorPair::new(&desc, common::prepare(MAX_BLOCK));
+        let mut frame = 0;
+        let blocks = schedule(which, seed, 400);
+        let (first, rest) = blocks.split_at(blocks.len() / 2);
+        pair.run(first, &mut frame);
+        // Rates and blocks: same rate, new block; new rate, same block;
+        // both. Every block stays ≤ the generator's feedback delays.
+        let (rate, max) = [
+            (48_000.0, 64),
+            (48_000.0, 100),
+            (96_000.0, MAX_BLOCK),
+            (44_100.0, 32),
+            (96_000.0, 64),
+            (48_000.0, MAX_BLOCK),
+        ][to];
+        let p = tutti_graph::Prepare::new(tutti_types::SampleRate(rate), Samples(max));
+        pair.reprepare(p);
+        let rest: Vec<usize> = rest
+            .iter()
+            .flat_map(|&n| {
+                // Re-cut the remaining blocks to fit the new maximum.
+                (0..n.div_ceil(max)).map(move |i| (n - i * max).min(max))
+            })
+            .collect();
+        pair.run(&rest, &mut frame);
+    }
+}

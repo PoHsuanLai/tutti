@@ -176,8 +176,7 @@ impl EventFifo {
     /// A FIFO for a delay of `len`, sized from the declared rate (see the
     /// type docs). Control side: allocates.
     pub(crate) fn sized(len: Samples, cap: usize, max_block: usize) -> Self {
-        let limit = cap.max(1) * (len.get().div_ceil(max_block.max(1)) + 2);
-        let reserve = limit / 4 + 8;
+        let (limit, reserve) = Self::bounds(len.get(), cap, max_block);
         Self {
             q: VecDeque::with_capacity(limit + reserve),
             len: len.get() as u64,
@@ -186,8 +185,28 @@ impl EventFifo {
         }
     }
 
+    /// `(limit, note-off reserve)` for a delay of `len` at the declared rate.
+    fn bounds(len: usize, cap: usize, max_block: usize) -> (usize, usize) {
+        let limit = cap.max(1) * (len.div_ceil(max_block.max(1)) + 2);
+        (limit, limit / 4 + 8)
+    }
+
     pub(crate) fn retune(&mut self, len: Samples) {
         self.len = len.get() as u64;
+    }
+
+    /// Re-derive the limit for the current length at this rate and maximum
+    /// block — after a retune, or a re-prepare that shrank `MaxBlock` (more
+    /// blocks fit in the same delay, so more events may be in flight). Keeps
+    /// every queued event; grows the queue when the new bounds need it, never
+    /// shrinks it. Control side: may allocate.
+    pub(crate) fn resize(&mut self, cap: usize, max_block: usize) {
+        let (limit, reserve) = Self::bounds(self.len as usize, cap, max_block);
+        self.limit = limit;
+        let want = limit + reserve;
+        if self.q.capacity() < want {
+            self.q.reserve_exact(want - self.q.len());
+        }
     }
 
     /// Every event still queued, oldest first.

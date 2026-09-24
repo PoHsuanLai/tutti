@@ -150,6 +150,30 @@ impl NodeBox {
     pub(crate) fn new(node: Box<dyn Node>) -> Self {
         Self(node)
     }
+
+    /// The unit, out of its box — control side, to re-prepare it. Leaves a
+    /// zero-sized placeholder behind for the box's own drop, which therefore
+    /// frees nothing (a `Box` of a zero-sized type never allocated).
+    pub(crate) fn into_inner(mut self) -> Box<dyn Node> {
+        std::mem::replace(&mut self.0, Box::new(Vacant))
+    }
+}
+
+/// What a [`NodeBox`] holds once its unit has been taken out.
+struct Vacant;
+
+impl Node for Vacant {
+    fn shape(&self) -> crate::node::Shape {
+        crate::node::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+        )
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
 }
 
 impl Deref for NodeBox {
@@ -181,6 +205,9 @@ pub(crate) struct Commit {
     /// The editor's count of commits sent, this one included: a scheduled
     /// command checked against this commit waits until it is applied.
     seq: u64,
+    /// A re-prepare's first half: check every unit out and adopt this
+    /// `Prepare` (see `Editor::reprepare`). Carries no plan.
+    suspend: Option<Prepare>,
     plan: Option<Arc<Plan>>,
     delta: Delta,
     incoming: Vec<(UnitIdx, u32, NodeBox)>,
@@ -223,6 +250,7 @@ impl Commit {
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
         Box::new(Self {
             seq,
+            suspend: None,
             plan: Some(plan),
             delta,
             incoming,
@@ -231,9 +259,38 @@ impl Commit {
         })
     }
 
+    /// A re-prepare's first half: when applied, every unit leaves the store
+    /// and comes back in this box, and the executor adopts `prepare`.
+    /// `units` is how many the running plan has, reserved here so applying
+    /// moves them in without growing.
+    pub(crate) fn suspend(seq: u64, prepare: Prepare, units: usize) -> Box<Commit> {
+        Box::new(Self {
+            seq,
+            suspend: Some(prepare),
+            plan: None,
+            delta: Delta::default(),
+            incoming: Vec::new(),
+            retired: Vec::with_capacity(units),
+            old_state: None,
+        })
+    }
+
+    /// Whether this box is a re-prepare's first half.
+    pub(crate) fn is_suspend(&self) -> bool {
+        self.suspend.is_some()
+    }
+
     /// The units applying removed, by key.
     pub(crate) fn retired(&self) -> impl Iterator<Item = NodeKey> + '_ {
         self.retired.iter().map(|(k, _)| *k)
+    }
+
+    /// The units applying removed, out of their boxes (control side).
+    pub(crate) fn take_retired(&mut self) -> Vec<(NodeKey, Box<dyn Node>)> {
+        self.retired
+            .drain(..)
+            .map(|(k, b)| (k, b.into_inner()))
+            .collect()
     }
 }
 
@@ -342,6 +399,12 @@ pub struct Executor {
     commands: CommandRx,
     /// `seq` of the last commit applied.
     applied: u64,
+    /// Between a re-prepare's two commits: every unit is checked out, and
+    /// blocks render silence.
+    suspended: bool,
+    /// The sample rate changed in a re-prepare: the next rebuild carries no
+    /// time-based state (see `Editor::reprepare`).
+    reset_time: bool,
 }
 
 fn tail_elapsed(tail: Tail, quiet: u64) -> bool {
@@ -372,6 +435,8 @@ impl Executor {
             dropped: 0,
             commands,
             applied: 0,
+            suspended: false,
+            reset_time: false,
         }
     }
 
@@ -385,7 +450,9 @@ impl Executor {
         self.plan.as_ref()
     }
 
-    /// Frames rendered so far.
+    /// Frames the graph has rendered so far — its clock, which
+    /// [`Env::frame`] reads. Blocks rendered as silence while a re-prepare
+    /// has the units checked out do not count: the graph is paused then.
     pub fn frame(&self) -> Frame {
         self.frame
     }
@@ -438,6 +505,25 @@ impl Executor {
     }
 
     fn apply(&mut self, c: &mut Commit) {
+        self.applied = c.seq;
+        if let Some(prepare) = c.suspend {
+            // Check every unit out, into the box, for the editor to
+            // re-prepare on the control thread. The plan and every piece of
+            // delay and feedback state stay where they are, for the resume
+            // commit's rebuild to carry — or, after a rate change, to reset.
+            if let Some(plan) = &self.plan {
+                for u in &plan.units {
+                    if let Some(unit) = self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
+                    {
+                        c.retired.push((u.key, unit.node));
+                    }
+                }
+            }
+            self.reset_time |= prepare.sample_rate() != self.prepare.sample_rate();
+            self.prepare = prepare;
+            self.suspended = true;
+            return;
+        }
         let plan = c
             .plan
             .take()
@@ -477,9 +563,10 @@ impl Executor {
             });
         }
 
-        self.applied = c.seq;
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
+        self.suspended = false;
+        self.reset_time = false;
         let old_state = std::mem::replace(&mut self.state, new_state);
         c.old_state = Some(old_state);
         self.plan = Some(plan);
@@ -491,6 +578,11 @@ impl Executor {
     fn rebuild(&mut self, plan: &Plan, old_plan: Option<&Plan>) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
+        // After a sample-rate change nothing time-based carries: every ring
+        // and FIFO below starts fresh, and the old event FIFOs, left behind,
+        // are flushed by the pass that flushes vanished delays (see
+        // `Editor::reprepare` for the rule).
+        let carry = !self.reset_time;
         let old = &mut self.state;
 
         // PDC rings and FIFOs, by key.
@@ -509,11 +601,13 @@ impl Executor {
             .map(|d| {
                 let carried = old_delays
                     .get(&d.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.rings.get_mut(i))
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
                     (DelayKey::Event { .. }, Some(Ring::Event(mut f))) => {
                         f.retune(d.len);
+                        f.resize(cap, max_block);
                         Ring::Event(f)
                     }
                     (DelayKey::Event { .. }, _) => {
@@ -544,6 +638,7 @@ impl Executor {
             .map(|f| {
                 let carried = old_afb
                     .get(&f.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.audio_fb.get_mut(i))
                     .and_then(Option::take);
                 Some(carried.unwrap_or_else(|| AudioRing::new(f.key.delay())))
@@ -555,8 +650,13 @@ impl Executor {
             .map(|f| {
                 let carried = old_efb
                     .get(&f.key)
+                    .filter(|_| carry)
                     .and_then(|&i| old.event_fb.get_mut(i))
-                    .and_then(Option::take);
+                    .and_then(Option::take)
+                    .map(|mut fifo| {
+                        fifo.resize(cap, max_block);
+                        fifo
+                    });
                 Some(carried.unwrap_or_else(|| EventFifo::sized(f.key.delay(), cap, max_block)))
             })
             .collect();
@@ -662,15 +762,28 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        let _rt = AudioThread::enter();
+        let _ftz = ScopedNoDenormals::new();
+        // Before the bound is checked: a queued re-prepare changes it, and
+        // the first longer block may be the one that arrives with it.
+        self.apply_pending();
         let max = self.prepare.max_block();
         assert!(
             frames > 0 && frames <= max.get(),
             "block of {frames} frames against a max of {}",
             max.get()
         );
-        let _rt = AudioThread::enter();
-        let _ftz = ScopedNoDenormals::new();
-        self.apply_pending();
+        if self.suspended {
+            // Between a re-prepare's two commits the units are on the control
+            // thread: render silence. The graph is *paused*, clock included:
+            // rings, FIFOs, pending commands and the frame counter all stand
+            // still, so when the units come back every node sees its time
+            // continue from where it stopped rather than jump.
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            return;
+        }
         let Self {
             prepare,
             event_cap,
@@ -683,6 +796,8 @@ impl Executor {
             dropped,
             commands,
             applied,
+            suspended: _,
+            reset_time: _,
         } = self;
         let Some(plan) = plan.as_ref() else {
             for o in outputs.iter_mut() {

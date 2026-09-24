@@ -84,6 +84,9 @@ pub struct Reference {
     landing: BTreeMap<EventIn, Vec<Event>>,
     late: u64,
     unrouted: u64,
+    /// Set by a rate change; the next `set_graph` carries no time-based
+    /// state.
+    reset_time: bool,
     frame: Frame,
 }
 
@@ -105,6 +108,7 @@ impl Reference {
             landing: BTreeMap::new(),
             late: 0,
             unrouted: 0,
+            reset_time: false,
             frame: Frame::ZERO,
         }
     }
@@ -115,6 +119,40 @@ impl Reference {
     /// when it falls due is counted unrouted.
     pub fn schedule(&mut self, at: At, to: EventIn, kind: EventKind) {
         self.scheduled.push((at, to, kind));
+    }
+
+    /// Switch to `prepare`, as `Editor::reprepare` does, in one step: every
+    /// unit is re-prepared, the delays are re-derived from the new shapes,
+    /// and — the rule written out a second time, independently — a
+    /// sample-rate change starts every audio delay and audio feedback line
+    /// silent and flushes every event delay and event feedback FIFO to its
+    /// sink, while a `MaxBlock`-only change keeps them all (retuned by key,
+    /// like any recompile).
+    ///
+    /// # Panics
+    ///
+    /// If the graph has a feedback edge shorter than the new `MaxBlock` —
+    /// `Editor::reprepare` refuses that before it starts, and the reference
+    /// is only ever driven alongside it.
+    pub fn reprepare(&mut self, prepare: Prepare) {
+        if prepare.sample_rate() != self.prepare.sample_rate() {
+            self.reset_time = true;
+        }
+        self.prepare = prepare;
+        for (_, unit) in self.units.values_mut() {
+            unit.prepare(&prepare);
+        }
+        if let Some(graph) = self.graph.clone() {
+            for (&at, e) in &graph.topology().edges {
+                if let tutti_types::graph::Edge::Feedback(f) = e {
+                    assert!(
+                        f.delay >= prepare.max_block().samples(),
+                        "feedback into {at:?} is shorter than the new maximum block"
+                    );
+                }
+            }
+            self.set_graph(&graph, BTreeMap::new());
+        }
     }
 
     /// Scheduled commands that landed late (see `Executor::late_commands`).
@@ -281,19 +319,28 @@ impl Reference {
                 list.sort_by_key(|e| e.offset);
             }
         };
+        // After a rate change nothing time-based survives, so every event
+        // line and event feedback FIFO is flushed as if it had vanished.
+        let reset = std::mem::take(&mut self.reset_time);
         for (k, f) in &self.event_lines {
             if let DelayKey::Event { at, .. } = *k {
-                if !delays.contains_key(k) {
+                if reset || !delays.contains_key(k) {
                     flush(at, relative(f));
                 }
             }
         }
         for (k, f) in &self.fb_event {
-            if !fb_event_keys.contains(k) {
+            if reset || !fb_event_keys.contains(k) {
                 flush(k.0, relative(f));
             }
         }
         self.inject = inject;
+        if reset {
+            self.audio_lines.clear();
+            self.event_lines.clear();
+            self.fb_audio.clear();
+            self.fb_event.clear();
+        }
 
         // Delay state: keep by key (retuned), drop the rest, start new ones
         // silent.

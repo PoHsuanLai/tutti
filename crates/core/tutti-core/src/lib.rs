@@ -129,24 +129,24 @@ pub mod dsp {
     //!
     //! This used to be `pub use fundsp::prelude::*`, which made the wall one of
     //! *dependency direction* and not of surface area: a consumer could not name
-    //! `fundsp`, but it could reach anything the prelude exports. It is now an
-    //! explicit list of **19** symbols, every one of which has a caller. Anything
-    //! not named below is unreachable outside this crate, and adding a symbol is
-    //! a decision someone makes rather than a side effect of the prelude
-    //! growing. The groups are the argument for why each is here.
+    //! `fundsp`, but it could reach anything the prelude exports. It then became
+    //! an explicit list of 44 symbols, and design doc 013's Phase 0b took it to
+    //! **three**: the graph runtime, `Net`, `NodeId` and `Source`. Nothing else
+    //! of the fork is reachable outside this crate, and adding a symbol is a
+    //! decision someone makes rather than a side effect of the prelude growing.
     //!
-    //! It was 44 until design doc 013's Phase 0b removed every name the engine
-    //! already does better: the test stimulus (`sine_hz`, `dc`-as-a-stimulus,
-    //! `pass`, `split`, `sink`, …) is `tutti_nodes::testing`; the filters,
-    //! limiter, panner, summing bus and reverb are `tutti-nodes`' own nodes;
-    //! the distortion curves are `tutti_nodes::ShapeKind::apply`; the default
-    //! rate is `SampleRate::DEFAULT`; `F32x` and the `U1`/`U6` arities gave way
-    //! to `BufferVec`. (The crate root lost the fork's `Fade`, now
-    //! [`CrossfadeCurve`](crate::CrossfadeCurve), its FFT, now the sampler's
-    //! own, and its second copy of `NodeId`/`Source` in the same pass.)
-    //! What remains is the runtime (`Net`, `NodeId`, `Source`) and what
-    //! `tutti-polysynth` still builds from until its voice-engine rewrite —
-    //! after which the runtime is all this module holds.
+    //! Where each removed name went: the test stimulus (`sine_hz`, `dc`,
+    //! `pass`, `split`, `sink`, …) is `tutti_nodes::testing` (behind that
+    //! crate's `testing` feature); the filters, limiter, panner, summing bus and
+    //! reverb are `tutti-nodes`' own nodes; the distortion curves are
+    //! `tutti_nodes::ShapeKind::apply`; the default rate is
+    //! `SampleRate::DEFAULT`; `F32x`, `BufferArray` and the `U*` arities gave
+    //! way to `BufferVec`; and the operator-DSL combinators the polysynth's
+    //! sub-voice was built from went with that sub-voice, when `tutti-polysynth`
+    //! moved to its own SoA voice bank. (The crate root lost the fork's `Fade`,
+    //! now [`CrossfadeCurve`](crate::CrossfadeCurve), its FFT, now the
+    //! sampler's own, its `Shared`/`shared`, and its second copy of
+    //! `NodeId`/`Source` in the same pass.)
     //!
     //! **Prefer a Tutti name where one exists.** The node contract is
     //! `tutti-node`'s and is re-exported at the crate root, so a node writes
@@ -213,57 +213,14 @@ pub mod dsp {
     // host reaches it to *drive* the engine rather than to build a graph.
     pub use fundsp::net::{Net, NodeId, Source};
 
-    // The default rate a node starts life at is NOT here: it is
-    // `SampleRate::DEFAULT`, the unit's own constant, which the fork's
-    // `DEFAULT_SAMPLE_RATE` now aliases rather than defining a second value.
-
-    // ── Combinators, for the one sanctioned sub-graph builder ───────────────
-    //
-    // fundsp's operator DSL (`>>` serial, `|` stack, `*` product), plus the
-    // generators and filters those expressions are built out of. This is the
-    // group to be suspicious of: it is a *second* way to describe a graph,
-    // parallel to `Topology`, and one that produces an opaque
-    // `Box<dyn AudioUnit>` the value layer cannot see inside.
-    //
-    // **One production site is sanctioned**, and it says why in its own docs:
-    // `tutti_polysynth::synth_voice::build_sub_voice_dsp`, whose chain shape is
-    // chosen by a `SynthConfig` match and rebuilt per note-on. A second would
-    // need an argument; the default answer for new work is a `Topology`, or an
-    // `impl AudioUnit`.
-    //
-    // That site, and the polysynth's own tests, are the only callers left:
-    // every name here is one `build_sub_voice_dsp` uses, and the list goes when
-    // the polysynth's voice engine is rewritten. Tests and examples that need
-    // a stimulus build it from `tutti_nodes::testing` (`Const`, `Osc`,
-    // `Through`, `Split`, `Sink`), and a fan-in is `tutti_nodes::ChannelSumNode`,
-    // which sums — fundsp's `join` AVERAGES, so a PDC test summing two aligned
-    // arrivals of one impulse would read the same as either arriving alone.
-    //
-    // `An<X>` — the `AudioNode`→`AudioUnit` bridge — is deliberately NOT
-    // exported. Nothing outside the fork implements `AudioNode` any more, so the
-    // only way to reach `An` is through these constructors' return types, where
-    // it never has to be named. Re-adding it would re-open the door to writing a
-    // node against the typenum-arity trait; write `impl AudioUnit` instead.
-    pub use fundsp::prelude::{
-        adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse,
-        saw, sine, triangle, var,
-    };
-    // The waveshaping curves are NOT here: they are `tutti_nodes::ShapeKind::apply`,
-    // six one-line formulas the distortion node owns outright.
-
-    // ── Block-buffer scratch, and the type-level arities that size it ───────
-    //
-    // `BufferArray<N>` is the stack-allocated planar block a caller renders a
-    // node into — `BufferRef`/`BufferMut` (the contract's, at the crate root)
-    // are *views*, and something has to own the storage. `U2` is its width, a
-    // `typenum` reaching here through the fork's re-export.
-    //
-    // Transitional. Everything that can take a runtime width now renders into
-    // `BufferVec` (the contract's, at the crate root) instead. What still names
-    // these is `transport::click`'s tests and `tutti-polysynth`'s tests, bench
-    // and example — the polysynth is mid-rewrite, and the pair goes with it.
-    pub use fundsp::buffer::BufferArray;
-    pub use fundsp::prelude::U2;
+    // Deliberately absent, because the engine owns better: the operator-DSL
+    // combinators (a second, opaque way to describe a graph beside `Topology`;
+    // its last production user, the polysynth sub-voice, is gone), the default
+    // rate (`SampleRate::DEFAULT`), the waveshaping curves
+    // (`tutti_nodes::ShapeKind::apply`), and fixed-width block scratch
+    // (`BufferVec` at the crate root takes its width at runtime). `An<X>`, the
+    // `AudioNode` → `AudioUnit` bridge, stays unexported too: write
+    // `impl AudioUnit` instead.
 }
 
 // ── The node contract, from the crate that defines it ───────────────────────
@@ -294,7 +251,6 @@ pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 // that had a caller. They are `tutti_node`'s to add back if one appears.
 pub use tutti_node::{Real, Sample, F32, F64};
 
-pub use fundsp::prelude::{shared, Shared};
 // `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
 // lives in fundsp's `read` module, which only exists once a codec is on. Gating
 // on either alone breaks the other combination.

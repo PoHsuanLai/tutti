@@ -19,10 +19,10 @@
 //! numbers in `docs/benchmarks.md` were taken and the scaling is linear —
 //! extend it if you need a figure past there, rather than extrapolating.
 //!
-//! **The block size is fixed at 64 frames.** `BufferArray<U2>` is
+//! **The block size is fixed at 64 frames.** `BufferVec` is
 //! `MAX_BUFFER_SIZE` frames wide and `MAX_BUFFER_SIZE` is 64, so there is no
 //! 512-frame case to measure — an earlier draft had one and it reported the
-//! 64-frame cost under a 512-frame label. Block size is `tutti-core`'s axis,
+//! 64-frame cost under a 512-frame label. Block size is `engine_render`'s axis,
 //! where the graph really does render longer segments; here it is a constant.
 //!
 //! `voices/unison` matters more than it looks: unison *multiplies* the voice
@@ -30,7 +30,7 @@
 //! comfortably carries 16 notes may not carry 4 with a wide unison.
 //!
 //! Criterion is the right instrument here for the reason
-//! `tutti-core/benches/engine_render.rs` sets out: steady-state,
+//! `tutti-nodes/benches/engine_render.rs` sets out: steady-state,
 //! fixed-working-set, allocation-free per block. The envelope is flat so the
 //! measured region is a stationary sustain rather than a decaying attack —
 //! the same reason `examples/render_synth_cases.rs` uses one.
@@ -38,7 +38,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{Amplitude, AudioUnit, Hz, Resonance, Seconds, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
@@ -48,7 +48,7 @@ use tutti_polysynth::{
 };
 
 const SR: f64 = 48_000.0;
-/// `BufferArray<U2>` is `MAX_BUFFER_SIZE` frames wide, and that is 64. A
+/// `BufferVec` is `MAX_BUFFER_SIZE` frames wide, and that is 64. A
 /// synth block cannot be longer, so this is a constant rather than an axis.
 const BLOCK: usize = 64;
 
@@ -96,8 +96,8 @@ fn held(cfg: SynthConfig, n: usize) -> PolySynth {
     synth.midi_sender().queue(&events);
 
     // Run past the attack so the benchmark measures sustain.
-    let input = BufferArray::<U2>::new();
-    let mut buf = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut buf = BufferVec::new(2);
     for _ in 0..64 {
         synth.process(64, &input.buffer_ref(), &mut buf.buffer_mut());
     }
@@ -105,8 +105,8 @@ fn held(cfg: SynthConfig, n: usize) -> PolySynth {
 }
 
 fn drive(synth: &mut PolySynth, frames: usize) {
-    let input = BufferArray::<U2>::new();
-    let mut buf = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut buf = BufferVec::new(2);
     synth.process(frames, &input.buffer_ref(), &mut buf.buffer_mut());
     black_box(buf.buffer_ref().at_f32(0, 0));
 }

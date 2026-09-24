@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use tutti_core::dsp::{BufferArray, U2};
+use tutti_core::BufferVec;
 use tutti_core::{Amplitude, AudioUnit, Hz, Seconds, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
@@ -57,8 +57,8 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
         .collect();
     synth.midi_sender().queue(&events);
 
-    let input = BufferArray::<U2>::new();
-    let mut buf = BufferArray::<U2>::new();
+    let input = BufferVec::new(2);
+    let mut buf = BufferVec::new(2);
     let (mut l, mut r) = (Vec::new(), Vec::new());
     for _ in 0..BLOCKS {
         synth.process(BLOCK, &input.buffer_ref(), &mut buf.buffer_mut());

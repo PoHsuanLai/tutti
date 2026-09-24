@@ -507,18 +507,26 @@ bench):
 
 | form | shape | instructions / node | ns / node |
 |---|---|---|---|
-| `InPlace` | 1 channel, in place | ~125 | 5.2 |
-| `Split` | 1 channel, two slots | ~172 | 8.8 |
-| `Audio` | 2 channels, in place | ~473 | 17.7 |
-| `General` | 1 channel in place + 1 event input | ~533 | 33.4 |
+| `InPlace` | 1 channel, in place | ~125 | 5.3 |
+| `Split` | 1 channel, two slots | ~172 | 8.5 |
+| `Direct` | 2 channels, in place | ~265 (was ~473 on `Audio`) | 11.4 (was 17.7) |
+| `Direct` | 2 channels, two slots each | ~320 | 13.6 |
+| `Audio` | 3 channels, in place | — | 21.5 |
+| `General` | 1 channel in place + 1 event input | ~533 | 32.3 |
 
-**The walk forms are the next target.** A stereo node, the commonest real
-shape, takes the `Audio` walk, and pays about 3× the direct forms. About
-160 of its instructions are `borrow_sorted` itself: the group scan, the
-closures, and a checked `split_at_mut` and cast per request. The rest is
-the stack tables and the per-port loops, which do not fold at a runtime
-width. A two-channel direct form, or a leaner walk, is the obvious next
-cut. The `General` form adds the event tables on top of that.
+**Stereo has a direct form.** A stereo node, the commonest real shape, used
+to take the `Audio` walk. About 160 of its ~473 instructions were
+`borrow_sorted` itself: the group scan, the closures, and a checked
+`split_at_mut` and cast per request. `Form::Direct` covers the shapes 0→2,
+1→2, 2→1 and 2→2 with no events. The compiler stores the node's distinct
+slots, ascending, and what each one is (an output channel, or a read). The
+executor peels them off in one pass (`Arena::direct`). The ports are
+fixed-size arrays, so the call path folds like the one-channel forms.
+Rule 7 checks the slot table against the op independently. A stereo node
+now costs about 2× a mono one, roughly the same per channel. Wider
+event-free nodes, and everything with event ports, still take the walk.
+The `General` form adds the event tables on top of it, and is the next
+target if event-heavy graphs matter.
 
 **Target missed at 64 frames.** Per 64-frame block the executor is still
 about 1.4× `Net`'s per-node cost when the node does no work. Most of the

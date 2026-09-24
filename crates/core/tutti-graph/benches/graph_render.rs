@@ -19,8 +19,8 @@
 //! node that returns `Status::Modified` on its in-place channel; the same
 //! empty unit behind `Legacy`, which still copies). The per-node figure is the
 //! slope between `n = 1` and `n = 128`. `overhead_form/<form>` does the same
-//! for each of the executor's borrow forms (native nodes only): the in-place
-//! and split direct forms, the audio walk and the general walk.
+//! for each of the executor's borrow forms (native nodes only): the
+//! one-channel and stereo direct forms, the audio walk and the general walk.
 //!
 //! The shapes mirror `tutti-nodes/benches/engine_render.rs`: `nodes/<depth>`
 //! (a chain of filters off one source) and `block_size/<frames>` (a fixed
@@ -603,13 +603,15 @@ fn form_executor(n: usize, nop: impl Fn() -> FormNop) -> Executor {
 
 /// The fixed per-node cost of each borrow form, at 64 frames: the slope
 /// between 1 and 128 nodes, as in `overhead`. `in-place` is the `overhead`
-/// group's native row; `split` is one channel in two slots; `audio` is two
-/// in-place channels (the presorted borrow walk); `general` is one in-place
-/// channel plus an unconnected event input (the walk with event tables).
+/// group's native row; `split` is one channel in two slots; `stereo` and
+/// `stereo-split` are two channels in place and in two slots each (the
+/// stereo direct form); `audio` is three in-place channels (the presorted
+/// borrow walk); `general` is one in-place channel plus an unconnected event
+/// input (the walk with event tables).
 fn bench_overhead_forms(c: &mut Criterion) {
     let mut g = c.benchmark_group("overhead_form");
     let frames = 64;
-    let forms: [(&str, fn() -> FormNop); 4] = [
+    let forms: [(&str, fn() -> FormNop); 6] = [
         ("in-place", || FormNop {
             width: 1,
             in_place: true,
@@ -620,8 +622,18 @@ fn bench_overhead_forms(c: &mut Criterion) {
             in_place: false,
             events: 0,
         }),
-        ("audio", || FormNop {
+        ("stereo", || FormNop {
             width: 2,
+            in_place: true,
+            events: 0,
+        }),
+        ("stereo-split", || FormNop {
+            width: 2,
+            in_place: false,
+            events: 0,
+        }),
+        ("audio", || FormNop {
+            width: 3,
             in_place: true,
             events: 0,
         }),
@@ -639,7 +651,7 @@ fn bench_overhead_forms(c: &mut Criterion) {
             let width = nop().width as usize;
             g.bench_function(BenchmarkId::new(name, format!("{n}-nodes/{frames}")), |b| {
                 b.iter(|| {
-                    let ins: [&[f32]; 2] = [&input[..frames], &input[..frames]];
+                    let ins: [&[f32]; 3] = [&input[..frames], &input[..frames], &input[..frames]];
                     exec.process(
                         frames,
                         &Transport::default(),

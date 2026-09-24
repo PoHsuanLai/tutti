@@ -19,8 +19,9 @@ use std::sync::Arc;
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
     AudioUnit, Beat, BeatDuration, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition,
-    SampleRate, StretchFactor, Timeline, Wave,
+    SampleRate, StretchFactor, Timeline,
 };
+use tutti_io::Wave;
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
     Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoicePool,

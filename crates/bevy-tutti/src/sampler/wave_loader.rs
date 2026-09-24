@@ -7,7 +7,7 @@
 
 use bevy_asset::{io::Reader, AssetLoader, LoadContext};
 use bevy_reflect::TypePath;
-use tutti_core::WaveAsset;
+use tutti_io::WaveAsset;
 
 /// In-memory loader for [`WaveAsset`]. Reads the entire payload, then
 /// delegates to [`WaveAsset::from_bytes`].
@@ -26,7 +26,7 @@ pub enum WaveAssetLoaderError {
     Io(#[from] std::io::Error),
     /// The bytes were read but are not a wave this decoder accepts.
     #[error(transparent)]
-    Decode(#[from] tutti_core::WaveError),
+    Decode(#[from] tutti_io::WaveError),
 }
 
 impl AssetLoader for WaveAssetLoader {

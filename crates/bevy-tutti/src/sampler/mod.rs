@@ -12,8 +12,13 @@ use bevy_app::{App, Plugin};
 use bevy_asset::AssetApp;
 use bevy_ecs::prelude::*;
 
-use tutti_core::WaveAsset;
 use tutti_sampler::DiskStreamer;
+
+// What `SpawnVoice` / `memory_voice` take and what the `.wav` loader hands out,
+// re-exported so a Bevy host playing a clip needs no direct `tutti-io`
+// dependency. (`sampler` enables `tutti-io/bevy`, so `WaveAsset` always exists
+// here.)
+pub use tutti_io::{Wave, WaveAsset};
 
 pub mod voice;
 pub mod wave_loader;

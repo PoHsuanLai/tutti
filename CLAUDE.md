@@ -94,7 +94,7 @@ crates/
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
-                 tutti-node (node contract), tutti-cpal (device), tutti-io (live I/O edge)
+                 tutti-node (node contract), tutti-cpal (device), tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis

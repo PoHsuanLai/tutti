@@ -2,7 +2,7 @@
 name = "tutti-io"
 version = "0.0.1"
 edition = "2021"
-description = "Tutti's live audio I/O edge — mic monitoring in, WAV out"
+description = "Tutti's audio I/O edge — mic monitoring and file decode in, WAV out"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "recording", "capture", "wav"]
@@ -10,6 +10,23 @@ categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
+
+[features]
+# No codec by default, as on every engine crate: a host doing only mic → WAV
+# needs no decoder. Each feature pulls exactly one symphonia container (and
+# its codec) for `Wave::load`, `Wave::probe_metadata` and `FileIn`. They moved
+# here from `tutti-core` (which forwarded them to the fundsp fork) with the
+# decoder, design doc 013 Phase 0. `wav` needs `pcm`: WAV is only the container.
+default = []
+wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
+flac = ["dep:symphonia", "symphonia/flac"]
+mp3 = ["dep:symphonia", "symphonia/mp3"]
+ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
+
+# `WaveAsset` — the Bevy `Asset` wrapper a loader hands out. Only the derive;
+# the loader itself lives in `bevy-tutti`. Present only with a codec as well,
+# since an asset that cannot be decoded has no constructor.
+bevy = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [dependencies]
 # The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioUnit`,
@@ -28,7 +45,19 @@ ringbuf = "0.4"
 # the root leaf: a file-format codec belongs at the edge that writes files.
 hound = "3.5"
 
+# File decode for `Wave::load` / `FileIn`. No default features: each codec is a
+# feature above, so a build lists exactly the containers it can read.
+symphonia = { version = "0.5.5", optional = true, default-features = false }
+
+bevy_asset = { workspace = true, optional = true }
+bevy_reflect = { workspace = true, optional = true }
+
 [dev-dependencies]
+# Every codec, for this crate's own tests. A dev-dependency on self is how a
+# feature reaches the test targets unconditionally; `required-features` would
+# instead *skip* `tests/decode_golden.rs` on a plain run and report green
+# having decoded nothing. Same device as `tutti-sampler`'s `test-support`.
+tutti-io = { path = ".", features = ["wav", "flac", "mp3", "ogg"] }
 tempfile = "3.8"
 # The RT gate: `MicMonitorNode::{tick, process}` must not allocate.
 assert_no_alloc = { version = "1", default-features = false }

@@ -63,9 +63,8 @@ Add `fundsp` to your `Cargo.toml` as a dependency.
 fundsp = "0.23.0"
 ```
 
-The `files` feature is enabled by default. It adds support for
-loading of audio files into `Wave` objects
-via the [Symphonia](https://crates.io/crates/symphonia) crate.
+This fork has no `files` feature: loading audio files moved to the tutti
+engine's `tutti-io` crate, and this fork's `Wave` cannot load a file.
 
 The `fft` feature is also enabled by default.
 It adds support for efficient FFT convolutions via the
@@ -693,16 +692,7 @@ For example, to save `wave2` to `test.wav`:
 wave2.save_wav16("test.wav").expect("Could not save wave.");
 ```
 
-Loading of audio files in various formats is handled by the
-[Symphonia](https://crates.io/crates/symphonia) crate.
-Symphonia integration is enabled by the `files` feature, which is enabled by default.
-The `std` feature must be enabled also.
-
-For example, to load `test.wav`:
-
-```rust
-let wave3 = Wave::load("test.wav").expect("Could not load wave.");
-```
+Loading audio files is not part of this fork; see `tutti-io`.
 
 Individual channels of waves can be played back with the `playwave` and `playwave_at` opcodes.
 

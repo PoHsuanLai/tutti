@@ -14,7 +14,8 @@ use dashmap::DashMap;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
-use tutti_core::{ChannelLayout, SampleRate, Wave};
+use tutti_core::{ChannelLayout, SampleRate};
+use tutti_io::Wave;
 
 use crate::nonempty;
 
@@ -239,7 +240,7 @@ mod tests {
     fn make_test_wave(samples: &[(f32, f32)]) -> Wave {
         let mut wave = Wave::new(2, 48000.0);
         for (l, r) in samples {
-            wave.push((*l, *r));
+            wave.push_frame(&[*l, *r]);
         }
         wave
     }
@@ -247,7 +248,7 @@ mod tests {
     fn make_mono_wave(samples: &[f32]) -> Wave {
         let mut wave = Wave::new(1, 48000.0);
         for s in samples {
-            wave.push(*s);
+            wave.push_frame(&[*s]);
         }
         wave
     }

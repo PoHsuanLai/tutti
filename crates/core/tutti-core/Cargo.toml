@@ -22,14 +22,9 @@ bevy = ["dep:bevy_ecs", "dep:bevy_reflect"]
 # Back-compat alias: sibling crates still pass `features = ["bevy_ecs"]`, which
 # maps onto the `bevy` feature.
 bevy_ecs = ["bevy"]
-# Asset loading is a distinct axis (fundsp's `WaveAsset` derives).
-bevy_asset = ["bevy", "dep:bevy_asset", "fundsp/bevy_asset"]
 
-# Individual audio format support (each pulls only its codec)
-wav = ["fundsp/wav"]
-flac = ["fundsp/flac"]
-mp3 = ["fundsp/mp3"]
-ogg = ["fundsp/ogg"]
+# No codec features: decoding (and `WaveAsset`, the Bevy asset it produces)
+# moved to `tutti-io` with `Wave`/`FileIn`. Name `tutti-io/wav` etc. instead.
 
 # Optional subsystems
 midi = []
@@ -77,7 +72,6 @@ parking_lot = { version = "0.12", default-features = false }
 # workspace. `--no-default-features` drops all of these.
 bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"], optional = true }
 bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_asset = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

@@ -134,6 +134,9 @@ jobs:
       #                         5 tests looked for the .sf2 at the pre-extraction
       #                         `crates/tutti/assets/` path and failed on every
       #                         run, which no run ever made
+      #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
+      #                         components) and its tests
+      #   tutti-io/bevy       — WaveAsset's Asset derive
       #
       # Not `--all-features`: that pulls every plugin-format SDK. Name the
       # combinations, and add one here whenever a new feature is added.
@@ -144,12 +147,16 @@ jobs:
           cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
+          cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
+          cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
 
       - name: Test
         run: |
           cargo nextest run -p tutti-cpal --features capture,midi
           cargo nextest run -p bevy-tutti --features audio-io
           cargo nextest run -p bevy-tutti --features soundfont
+          cargo nextest run -p bevy-tutti --features sampler
+          cargo nextest run -p tutti-io --features bevy
 
       # JACK hard-links libjack at build time, so it gets its own step (and its
       # own apt package) rather than joining the list above. `AudioHost::Jack`

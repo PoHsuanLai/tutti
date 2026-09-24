@@ -1,4 +1,4 @@
-//! Incremental disk streaming on top of Symphonia's public API.
+//! Incremental disk streaming on top of symphonia's public API.
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
@@ -8,8 +8,11 @@
 //! width, so a caller sizes its buffer from the trait and never has to ask the
 //! concrete type.
 //!
+//! It is this crate's read edge, the counterpart of [`WavOut`](crate::WavOut).
+//! Moved here from the fundsp fork's `stream.rs` by design doc 013, Phase 0.
+//!
 //! **It does not downmix.** A caller wanting stereo folds the frames itself
-//! through [`tutti_types::fold_frame`], as every other engine edge does. This
+//! through [`tutti_core::fold_frame`], as every other engine edge does. This
 //! used to fold internally and present a fixed stereo `layout()`, which meant a
 //! 6-channel file came back silently downmixed — see the [`AudioIn`] impl for
 //! why that was wrong and what replaced it.
@@ -23,24 +26,21 @@
 //! [`poll_into`]: FileIn::poll_into
 //! [`seek`]: FileIn::seek
 //!
-//! It shares `read.rs`'s codec feature gates and the `decode_packet_into`
-//! one-packet helper. All decode/seek/file I/O runs on the butler thread; the
-//! audio thread never touches this type.
+//! It shares [`decode`](crate::Wave::load)'s codec feature gates, its probe
+//! head and its one-packet helper. All decode/seek/file I/O runs on the butler
+//! thread; the audio thread never touches this type.
 
-use super::read::{WaveResult, decode_packet_into};
-use std::fs::File;
 use std::path::Path;
-use tutti_types::io::{AudioIn, OnEmpty};
-use tutti_types::{ChannelLayout, Samples};
-extern crate alloc;
-use alloc::boxed::Box;
+
 use symphonia::core::audio::{AudioBuffer, Signal};
-use symphonia::core::codecs::{CODEC_TYPE_NULL, Decoder, DecoderOptions};
+use symphonia::core::codecs::{Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
-use symphonia::core::io::{MediaSource, MediaSourceStream};
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
+use tutti_core::io::{AudioIn, OnEmpty};
+use tutti_core::{ChannelLayout, Samples};
+
+use crate::decode::{decode_packet_into, first_audio_track, probe_path};
+use crate::WaveError;
 
 // `MAX_FILE_CHANNELS = 16` was removed with the stereo fold. It bounded the
 // stack scratch that fold chunked through and constrained nothing else — reads
@@ -75,6 +75,11 @@ pub struct FileIn {
     cursor: u64,
     /// Whether the container reports a frame count and supports accurate seek.
     seekable: bool,
+    /// Timestamp of the first zero-frame packet the latest
+    /// [`decode_next_packet`](Self::decode_next_packet) call skipped, if any —
+    /// the decoder primer. [`seek`](Self::seek) steps back past it when the
+    /// frames it swallowed include the one asked for.
+    skipped_primer: Option<u64>,
 }
 
 impl FileIn {
@@ -97,44 +102,18 @@ impl FileIn {
         self.seekable
     }
 
-    /// Open `path`, selecting `track` (or the first known-codec track).
+    /// Open `path` at its first known-codec track.
     ///
     /// Probes the container, makes a decoder, and allocates the persistent
     /// scratch (`convert_buf` lazily on first decode; `leftover` reserved
     /// here). Detects seekability from the reported frame count.
-    pub fn open<P: AsRef<Path>>(path: P, track: Option<usize>) -> WaveResult<Self> {
-        let path = path.as_ref();
-        let mut hint = Hint::new();
-        if let Some(extension) = path.extension()
-            && let Some(extension_str) = extension.to_str()
-        {
-            hint.with_extension(extension_str);
-        }
-
-        let source: Box<dyn MediaSource> = match File::open(path) {
-            Ok(file) => Box::new(file),
-            Err(error) => return Err(Error::IoError(error)),
-        };
-
-        let stream = MediaSourceStream::new(source, Default::default());
-        let format_opts = FormatOptions {
-            enable_gapless: false,
-            ..Default::default()
-        };
-        let metadata_opts: MetadataOptions = Default::default();
-
-        let probed =
-            symphonia::default::get_probe().format(&hint, stream, &format_opts, &metadata_opts)?;
-        let reader = probed.format;
-
-        // Select the requested track, else the first track with a known codec.
-        let track = track.and_then(|t| reader.tracks().get(t)).or_else(|| {
-            reader
-                .tracks()
-                .iter()
-                .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        });
-        let track = track.ok_or(Error::DecodeError("Could not find track."))?;
+    ///
+    /// `track` is not a parameter: the fork's `open(path, track)` was only ever
+    /// called with `None`, and the whole-file [`Wave::load`](crate::Wave::load)
+    /// decodes the same track, so the two paths cannot disagree about which.
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WaveError> {
+        let reader = probe_path(path.as_ref())?;
+        let track = first_audio_track(&*reader)?;
         let track_id = track.id;
 
         let total_frames = track.codec_params.n_frames;
@@ -169,6 +148,7 @@ impl FileIn {
             leftover_pos: 0,
             cursor: 0,
             seekable,
+            skipped_primer: None,
         })
     }
 
@@ -181,15 +161,27 @@ impl FileIn {
         (self.leftover.len() / ch).saturating_sub(self.leftover_pos)
     }
 
-    /// Refill `leftover` from exactly one more packet of the selected track.
-    /// Returns the number of frames decoded (0 at EOF). Retains a `convert_buf`
-    /// scratch to stay allocation-free after warmup.
-    fn decode_next_packet(&mut self) -> WaveResult<usize> {
+    /// Refill `leftover` from the next packet of the selected track that
+    /// decodes to audio. Returns the number of frames decoded, which is 0 only
+    /// at EOF, and the timestamp (`packet.ts()`, in frames) of the packet that
+    /// produced them. Retains a `convert_buf` scratch to stay allocation-free
+    /// after warmup.
+    ///
+    /// A packet can decode to **zero** frames without the stream ending —
+    /// Vorbis's first packet, and its first after a `reset`, only prime the
+    /// decoder's overlap — and both callers read a 0 as end-of-stream, so such
+    /// a packet is skipped here rather than returned. Returning it made every
+    /// Ogg file stream as empty. The skip is also why the timestamp comes back:
+    /// the frames in `leftover` start at the returned packet's `ts`, not at
+    /// the first packet read, and [`seek`](Self::seek) must count its preroll
+    /// from there.
+    fn decode_next_packet(&mut self) -> Result<(usize, u64), WaveError> {
+        self.skipped_primer = None;
         loop {
             let packet = match self.reader.next_packet() {
                 Ok(p) => p,
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    return Ok(0);
+                    return Ok((0, 0));
                 }
                 Err(e) => return Err(e),
             };
@@ -199,15 +191,20 @@ impl FileIn {
 
             let (buf, frames) =
                 decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)?;
+            if frames == 0 {
+                self.skipped_primer.get_or_insert(packet.ts());
+                continue;
+            }
             let num_ch = buf.spec().channels.count();
+            let ts = packet.ts();
 
             self.leftover.clear();
             self.leftover_pos = 0;
             // Interleave every decoded channel at the file's own width. This
             // used to keep channels 0 and 1 and drop the rest, so a 6-channel
             // file was decoded in full and then thrown away down to its front
-            // pair. The mono→stereo duplication that lived here moved up to the
-            // `AudioIn<f32, 2>` impl, where the stereo contract actually is.
+            // pair. The mono→stereo duplication that lived here is gone too: a
+            // caller wanting stereo folds, as the `AudioIn` impl's doc says.
             //
             // A packet whose channel count disagrees with the one read at
             // `open` (rare, malformed) is trusted per-packet for the read and
@@ -222,7 +219,7 @@ impl FileIn {
                     self.leftover.push(0.0);
                 }
             }
-            return Ok(frames);
+            return Ok((frames, ts));
         }
     }
 
@@ -239,7 +236,7 @@ impl FileIn {
     //
     // The replacement is the pair every other engine edge already uses:
     // `fill_sequential_interleaved` for the read, then
-    // `tutti_types::fold_frame` per frame if the caller genuinely wants stereo.
+    // `tutti_core::fold_frame` per frame if the caller genuinely wants stereo.
     // That is exactly what this method did internally, minus the decision being
     // made on the caller's behalf. `mic.rs`, `wav_out.rs` and `engine.rs` are
     // worked examples.
@@ -248,10 +245,10 @@ impl FileIn {
     /// width, interleaved, and return how many frames were produced.
     ///
     /// `out.len()` should be a multiple of [`channels`](Self::channels); a
-    /// partial trailing frame is not filled. This is the native read — the
-    /// [`AudioIn<f32, 2>`](AudioIn) impl folds it to stereo for callers that
-    /// still speak stereo frames.
-    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> WaveResult<usize> {
+    /// partial trailing frame is not filled. This is the native read, and the
+    /// fallible one — the [`AudioIn`] impl is this with a decode error folded
+    /// into end-of-stream.
+    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<usize, WaveError> {
         let ch = self.channels.max(1);
         let capacity_frames = out.len() / ch;
         let mut filled = 0usize;
@@ -271,7 +268,7 @@ impl FileIn {
             }
 
             // Need another packet.
-            let decoded = self.decode_next_packet()?;
+            let (decoded, _) = self.decode_next_packet()?;
             if decoded == 0 {
                 // End-of-stream — leave the untouched tail for the caller.
                 break;
@@ -283,31 +280,67 @@ impl FileIn {
 
     /// Accurate-seek to `start` so the next [`poll_into`](Self::poll_into)
     /// produces frame `start`. Discards the preroll so `cursor == start`.
-    pub fn seek(&mut self, start: u64) -> WaveResult<()> {
-        self.leftover.clear();
-        self.leftover_pos = 0;
+    pub fn seek(&mut self, start: u64) -> Result<(), WaveError> {
+        // Accurate seek lands on the packet containing `target`; decoding then
+        // discards the preroll up to `start`. Two things make that subtler
+        // than `start - actual_ts`:
+        //
+        // 1. **The first packet after `reset` may decode to nothing.** A
+        //    Vorbis decoder needs one packet to prime its overlap, and
+        //    `decode_next_packet` skips it. The frames that come out then start
+        //    at the *next* packet's `ts`, so the preroll is counted from the
+        //    timestamp of the first packet that produced frames — never from
+        //    `actual_ts`. Counting from `actual_ts` landed every Ogg seek about
+        //    1024 frames late, with no error.
+        // 2. **That packet can start after `start`** — or not exist, when the
+        //    primer was the file's last packet. The primer was then the packet
+        //    containing `start`, and the frames at `start` cannot be discarded
+        //    back into existence. So the seek is retried from one frame before
+        //    the primer, which makes the packet before it the primer instead.
+        //    Each retry targets strictly earlier, and target 0 ends it.
+        //
+        // For codecs whose first packet decodes (PCM, FLAC, MP3 here) the
+        // first attempt succeeds and this is one seek, as before.
+        let mut target = start;
+        loop {
+            self.leftover.clear();
+            self.leftover_pos = 0;
+            self.reader.seek(
+                SeekMode::Accurate,
+                SeekTo::TimeStamp {
+                    ts: target,
+                    track_id: self.track_id,
+                },
+            )?;
+            self.decoder.reset();
 
-        let seeked = self.reader.seek(
-            SeekMode::Accurate,
-            SeekTo::TimeStamp {
-                ts: start,
-                track_id: self.track_id,
-            },
-        )?;
-        self.decoder.reset();
-
-        // Accurate seek lands at actual_ts <= start; decode-and-discard the
-        // preroll frames to reach the exact requested frame.
-        let mut discard = start.saturating_sub(seeked.actual_ts);
-        while discard > 0 {
-            let decoded = self.decode_next_packet()?;
+            let (decoded, ts) = self.decode_next_packet()?;
+            if decoded == 0 || ts > start {
+                if let Some(primer) = self.skipped_primer.filter(|&p| target > 0 && p <= target) {
+                    target = primer.saturating_sub(1);
+                    continue;
+                }
+            }
             if decoded == 0 {
-                // Seeked past EOF; nothing more to discard.
+                // Seeked past EOF; nothing to discard.
                 break;
             }
-            let skip = (decoded as u64).min(discard);
-            self.leftover_pos += skip as usize;
-            discard -= skip;
+
+            // The frames in `leftover` start at `ts`; discard up to `start`.
+            let mut discard = start.saturating_sub(ts);
+            loop {
+                let avail = self.leftover_len() as u64;
+                let skip = avail.min(discard);
+                self.leftover_pos += skip as usize;
+                discard -= skip;
+                if discard == 0 {
+                    break;
+                }
+                if self.decode_next_packet()?.0 == 0 {
+                    break; // EOF inside the preroll
+                }
+            }
+            break;
         }
 
         self.cursor = start;
@@ -330,13 +363,13 @@ impl FileIn {
 /// produces, and a fixed answer over a variable source cannot.
 ///
 /// It was survivable only because nothing used it — every real consumer
-/// (`butler/io/refill.rs` at both sites, `dawai-waveform`) already called
+/// (`butler/io/refill.rs` at both sites, a host's waveform summariser) already called
 /// `fill_sequential_interleaved` and read `channels()`, precisely to escape the
 /// fold. The trait path's only callers were this file's own tests.
 ///
 /// **Folding is not lost, it moved to the caller**, which is where every other
 /// engine edge already puts it: `mic.rs`, `wav_out.rs`, `engine.rs` and
-/// `tutti-nodes`' `DownmixNode` all narrow through [`tutti_types::fold_frame`]
+/// `tutti-nodes`' `DownmixNode` all narrow through [`tutti_core::fold_frame`]
 /// themselves. A caller wanting stereo does the same, and now *chooses* to.
 impl AudioIn for FileIn {
     /// A file has an end, and this impl folds a decode error into it (see the
@@ -360,9 +393,8 @@ impl AudioIn for FileIn {
     /// interleave for everything after it.
     ///
     /// The inherent [`fill_sequential_interleaved`](Self::fill_sequential_interleaved)
-    /// keeps its bare `usize` frame count — this is vendored code, and the
-    /// engine's frame type is applied here, at the trait boundary, rather than
-    /// threaded through the decoder.
+    /// keeps its bare `usize` frame count — it is the decoder's own count, and
+    /// the engine's frame type is applied here, at the trait boundary.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
     }
@@ -371,7 +403,34 @@ impl AudioIn for FileIn {
 #[cfg(all(test, feature = "wav"))]
 mod tests {
     use super::*;
-    use crate::wave::Wave;
+    use crate::Wave;
+
+    /// Write `wave` as a 16-bit WAV named `name` and return its path.
+    ///
+    /// The fork's tests wrote through its own `Wave::save_wav16`; the engine's
+    /// `Wave` has no writer (the engine's WAV sink is `WavOut`), so this uses
+    /// `hound` directly. The directory is per process, and nextest runs each
+    /// test in its own, so no two tests share a file.
+    fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(name);
+        let spec = hound::WavSpec {
+            channels: wave.channels() as u16,
+            sample_rate: wave.sample_rate().get() as u32,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).expect("create wav");
+        for i in 0..wave.len() {
+            for c in 0..wave.channels() {
+                let s = (wave.at(c, i).clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                w.write_sample(s).expect("write sample");
+            }
+        }
+        w.finalize().expect("finalize wav");
+        path
+    }
 
     /// Write a scratch WAV for one test. `tag` must be unique per caller:
     /// tests run in parallel, and a shared filename means one test reads the
@@ -383,12 +442,9 @@ mod tests {
             // Distinct per-frame values so slice comparisons are meaningful.
             let l = (i as f32 / frames as f32) - 0.5;
             let r = 0.25 - (i as f32 / frames as f32);
-            wave.push((l, r));
+            wave.push_frame(&[l, r]);
         }
-        let mut path = std::env::temp_dir();
-        path.push(format!("tutti_stream_decoder_{tag}_{frames}.wav"));
-        wave.save_wav16(&path).expect("save wav");
-        path
+        save_wav16(&wave, &format!("tutti_stream_decoder_{tag}_{frames}.wav"))
     }
 
     fn loaded_stereo(path: &std::path::Path) -> Vec<[f32; 2]> {
@@ -402,7 +458,7 @@ mod tests {
         let path = write_test_wav(frames, "sequential");
         let expected = loaded_stereo(&path);
 
-        let mut dec = FileIn::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path).expect("open");
         assert!(dec.seekable());
 
         // Poll the whole file in several sequential chunks (all fast-path, no
@@ -436,7 +492,7 @@ mod tests {
         let path = write_test_wav(frames, "seek");
         let expected = loaded_stereo(&path);
 
-        let mut dec = FileIn::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path).expect("open");
 
         let start = 12_345u64;
         let len = 2_000usize;
@@ -466,7 +522,7 @@ mod tests {
         let path = write_test_wav(frames, "eof");
         let expected = loaded_stereo(&path);
 
-        let mut dec = FileIn::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path).expect("open");
 
         // Straddle EOF: seek to 500 before the end, then ask for 1000 frames.
         let start = (frames - 500) as u64;
@@ -486,8 +542,8 @@ mod tests {
             );
         }
         // AudioIn leaves the tail past the returned count untouched (no zero-pad).
-        for i in 500..len {
-            assert_eq!(got[i], [1.0, 1.0], "frame {} should be left untouched", i);
+        for (i, frame) in got.iter().enumerate().skip(500) {
+            assert_eq!(*frame, [1.0, 1.0], "frame {} should be left untouched", i);
         }
         // A further poll at EOF yields nothing.
         let mut more = [[0.0f32; 2]; 8];
@@ -506,12 +562,10 @@ mod tests {
                 wave.set(c, i, (c + 1) as f32 * 0.1 + (i % 64) as f32 * 0.0005);
             }
         }
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "tutti_stream_indexed_{tag}_{channels}x{frames}.wav"
-        ));
-        wave.save_wav16(&path).expect("save wav");
-        path
+        save_wav16(
+            &wave,
+            &format!("tutti_stream_indexed_{tag}_{channels}x{frames}.wav"),
+        )
     }
 
     /// The native read delivers every channel at the file's own width. Before
@@ -522,7 +576,7 @@ mod tests {
     fn interleaved_read_delivers_every_channel() {
         let frames = 128;
         let path = write_indexed_wav(6, frames, "every_channel");
-        let mut decoder = FileIn::open(&path, None).expect("open");
+        let mut decoder = FileIn::open(&path).expect("open");
         assert_eq!(decoder.channels(), 6);
 
         let mut out = vec![0.0f32; 16 * 6];
@@ -552,7 +606,7 @@ mod tests {
     fn interleaved_read_stays_frame_aligned_across_packets() {
         let frames = 4096;
         let path = write_indexed_wav(6, frames, "packet_boundary");
-        let mut decoder = FileIn::open(&path, None).expect("open");
+        let mut decoder = FileIn::open(&path).expect("open");
 
         // Read in small odd-sized chunks so reads land mid-packet repeatedly.
         let mut produced = 0usize;
@@ -596,11 +650,9 @@ mod tests {
         for i in 0..frames {
             wave.set(2, i, 0.5);
         }
-        let mut path = std::env::temp_dir();
-        path.push("tutti_stream_centre_only.wav");
-        wave.save_wav16(&path).expect("save wav");
+        let path = save_wav16(&wave, "tutti_stream_centre_only.wav");
 
-        let mut decoder = FileIn::open(&path, None).expect("open");
+        let mut decoder = FileIn::open(&path).expect("open");
         assert_eq!(decoder.layout().count(), 6u16, "the trait reports the file");
 
         let mut out = [0.0f32; 6 * 16];
@@ -643,11 +695,9 @@ mod tests {
         for i in 0..frames {
             wave.set(0, i, i as f32 / frames as f32);
         }
-        let mut path = std::env::temp_dir();
-        path.push("tutti_stream_mono_native.wav");
-        wave.save_wav16(&path).expect("save wav");
+        let path = save_wav16(&wave, "tutti_stream_mono_native.wav");
 
-        let mut decoder = FileIn::open(&path, None).expect("open");
+        let mut decoder = FileIn::open(&path).expect("open");
         assert_eq!(decoder.channels(), 1);
         assert_eq!(decoder.layout(), ChannelLayout::MONO, "no widening");
 
@@ -676,18 +726,16 @@ mod tests {
         for i in 0..frames {
             wave.set(2, i, 0.5); // centre only, as above
         }
-        let mut path = std::env::temp_dir();
-        path.push("tutti_stream_caller_fold.wav");
-        wave.save_wav16(&path).expect("save wav");
+        let path = save_wav16(&wave, "tutti_stream_caller_fold.wav");
 
-        let mut decoder = FileIn::open(&path, None).expect("open");
+        let mut decoder = FileIn::open(&path).expect("open");
         let ch = decoder.layout().count() as usize;
         let mut native = vec![0.0f32; ch * 16];
         let got = decoder.poll_into(&mut native);
         assert!(!got.is_zero());
 
         let mut stereo = [0.0f32; 2];
-        tutti_types::fold_frame(&native[..ch], &mut stereo);
+        tutti_core::fold_frame(&native[..ch], &mut stereo);
 
         // The centre reaches both sides rather than being dropped with the
         // surrounds — the property the old in-decoder fold guaranteed.

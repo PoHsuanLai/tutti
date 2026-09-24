@@ -26,11 +26,12 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tutti_core::BufferVec;
-use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline, Wave};
+use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline};
+use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
 const SR: f64 = 48_000.0;
-/// `BufferArray<U2>` is `MAX_BUFFER_SIZE` frames wide, and that is 64, so a
+/// A `BufferVec` channel is `MAX_BUFFER_SIZE` frames long, and that is 64, so a
 /// pool block cannot be longer. Block size is `tutti-core`'s axis, not this
 /// crate's.
 const BLOCK: usize = 64;
@@ -68,7 +69,7 @@ impl Timeline for Clock {
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {
     let mut w = Wave::new(1, SR);
     for i in 0..frames {
-        w.push((TAU * freq * i as f32 / SR as f32).sin());
+        w.push_frame(&[(TAU * freq * i as f32 / SR as f32).sin()]);
     }
     Arc::new(w)
 }

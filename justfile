@@ -72,6 +72,9 @@ test-all: test test-features test-editor test-doc
 #                          looked for the .sf2 at the pre-extraction
 #                          `crates/tutti/assets/` path and failed on every run,
 #                          which no run ever made
+#   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
+#                         components) and its tests
+#   tutti-io/bevy       — WaveAsset's Asset derive
 #
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
@@ -81,12 +84,16 @@ check-features:
     cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
+    cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
+    cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 test-features:
     cargo nextest run -p tutti-cpal --features capture,midi
     cargo nextest run -p bevy-tutti --features audio-io
     cargo nextest run -p bevy-tutti --features soundfont
+    cargo nextest run -p bevy-tutti --features sampler
+    cargo nextest run -p tutti-io --features bevy
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs
 # `libjack-jackd2-dev` (Debian) / `jack-audio-connection-kit-devel` (Fedora)

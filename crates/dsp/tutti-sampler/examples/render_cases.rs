@@ -20,7 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::BufferVec;
-use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline, Wave};
+use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline};
+use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
 /// A rolling transport whose beat this example advances by hand.
@@ -76,7 +77,7 @@ const BLOCK: usize = 64;
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {
     let mut w = Wave::new(1, SR);
     for i in 0..frames {
-        w.push((TAU * freq * i as f32 / SR as f32).sin());
+        w.push_frame(&[(TAU * freq * i as f32 / SR as f32).sin()]);
     }
     Arc::new(w)
 }

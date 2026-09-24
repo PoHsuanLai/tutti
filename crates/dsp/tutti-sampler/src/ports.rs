@@ -19,7 +19,8 @@ use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
-use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline};
+use tutti_io::Wave;
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`).

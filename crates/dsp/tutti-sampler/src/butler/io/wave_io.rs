@@ -13,7 +13,8 @@
 //! type docs, which is where that decision and its reasoning live.
 
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
-use tutti_core::{fold_frame, ChannelLayout, Wave};
+use tutti_core::{fold_frame, ChannelLayout};
+use tutti_io::Wave;
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into
 /// `out` at `out.len()` channels, zero past the end.
@@ -222,7 +223,7 @@ mod tests {
     fn test_wave(samples: &[(f32, f32)]) -> Wave {
         let mut wave = Wave::new(2, 48000.0);
         for &(l, r) in samples {
-            wave.push((l, r));
+            wave.push_frame(&[l, r]);
         }
         wave
     }
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn wave_frame_duplicates_left_for_mono() {
         let mut wave = Wave::new(1, 48000.0);
-        wave.push(0.7);
+        wave.push_frame(&[0.7]);
         let mut f = [0.0f32; 2];
         wave_frame_into(&wave, 0, &mut f);
         assert_eq!(f, [0.7, 0.7]);
@@ -271,7 +272,7 @@ mod tests {
     fn wave_frame_matches_the_rt_readers_channel_policy() {
         // Mono fans to every channel.
         let mut mono = Wave::new(1, 48000.0);
-        mono.push(0.4);
+        mono.push_frame(&[0.4]);
         let mut f = [0.0f32; 6];
         wave_frame_into(&mono, 0, &mut f);
         assert!(

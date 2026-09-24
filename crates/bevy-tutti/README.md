@@ -348,7 +348,7 @@ All features are opt-in and aligned with Tutti's feature flags.
 | `dsp` | The VBAP/binaural panner. Dynamics are always compiled |
 | `convolution` | FFT convolution reverb (partitioned IR) |
 | `export` | The `tutti-export` dependency (no ECS surface — see above) |
-| `wav` / `flac` / `mp3` / `ogg` | Individual audio format decoders |
+| `wav` / `flac` / `mp3` / `ogg` | Individual audio format decoders (`tutti-io`'s, reached through `sampler` or `audio-io`) |
 | `full` | Everything above except the opt-in plugin formats |
 
 `AudioPump`, the graph, transport, metering and PDC are always available — no

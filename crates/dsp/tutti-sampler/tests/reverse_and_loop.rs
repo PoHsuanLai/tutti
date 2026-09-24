@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
+use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline};
+use tutti_io::Wave;
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,
     VoiceSource,
@@ -41,7 +42,7 @@ fn ramp(len: usize) -> Arc<Wave> {
     let mut w = Wave::new(2, SR);
     for i in 0..len {
         let v = i as f32 / len as f32;
-        w.push((v, v));
+        w.push_frame(&[v, v]);
     }
     Arc::new(w)
 }
@@ -367,7 +368,7 @@ fn a_crossfaded_loop_holds_its_level_across_the_seam() {
     // same value, so a correct linear crossfade between them is flat at 0.5.
     let mut w = Wave::new(2, SR);
     for _ in 0..LEN {
-        w.push((0.5f32, 0.5f32));
+        w.push_frame(&[0.5f32, 0.5f32]);
     }
     let mut source = looping_source(Arc::new(w), start, end, XFADE);
 
@@ -523,7 +524,7 @@ fn reverse_and_loop_work_at_mono_width() {
     const LEN: usize = 2048;
     let mut w = Wave::new(1, SR);
     for i in 0..LEN {
-        w.push(i as f32 / LEN as f32);
+        w.push_frame(&[i as f32 / LEN as f32]);
     }
     let mut source = MemorySource::with_config(
         Arc::new(w),

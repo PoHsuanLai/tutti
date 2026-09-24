@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AudioUnit` lost seven derived methods and `footprint` is defaulted.**
+  `get_mono`, `get_stereo`, `filter_mono`, `filter_stereo`, `response`,
+  `response_db` and `display` had no caller outside the fundsp fork; they are
+  `fundsp_tutti::audiounit::AudioUnitExt` now (blanket-implemented, fork
+  preludes only). A caller that ticked a unit through `get_stereo` calls
+  `tick(&[], &mut [0.0; 2])` instead. `footprint` defaults to
+  `size_of_val(self)`, so a new node need not write it; existing overrides are
+  untouched. `ping` and `set_hash` stay on the trait: the fork's `Net` seeds
+  its own generators through them by dynamic dispatch (see the trait docs).
+
+- **File I/O moved from `tutti-core` (the fundsp fork) to `tutti-io`.** Old →
+  new: `tutti_core::Wave` → `tutti_io::Wave`, `tutti_core::FileIn` →
+  `tutti_io::FileIn`, `tutti_core::{WaveAsset, WaveMetadata, WaveError}` →
+  `tutti_io::{WaveAsset, WaveMetadata, WaveError}`,
+  `tutti_core::{can_decode, decodable_extensions}` →
+  `tutti_io::{can_decode, decodable_extensions}`. Through the `tutti` umbrella
+  they are `tutti::io::…`, gated on a new `io` feature that every codec
+  feature and `audio-io` imply. Decoded samples are bit-identical
+  (`tutti-io/tests/decode_golden.rs` pins them against fixtures in
+  `assets/audio/`: bit-exact digests for WAV and FLAC on every platform and for
+  MP3 and Ogg on Linux x86_64, where they were recorded, since those decoders'
+  trig is libm-dependent; frame counts and per-channel levels everywhere).
+
+  Features moved with them. `tutti-core` has no `wav`/`flac`/`mp3`/`ogg` or
+  `bevy_asset` features any more; name `tutti-io/wav` etc., and
+  `tutti-io/bevy` for `WaveAsset`'s `Asset` derive. `tutti-sampler`,
+  `bevy-tutti` and `tutti` keep their codec features and forward them to
+  `tutti-io`. `tutti-sampler` now depends on `tutti-io` and re-exports
+  `tutti_sampler::Wave`; `bevy_tutti::sampler` re-exports `Wave` and
+  `WaveAsset`, so a voice or asset consumer needs no direct `tutti-io` edge.
+
+  The API was trimmed to what the engine calls. `Wave` keeps `new`,
+  `with_capacity`, `zero`, `from_samples`, `sample_rate`, `channels`,
+  `channel`, `channel_mut`, `at`, `set`, `len`, `is_empty`, `duration`, `load`
+  and `probe_metadata`. `Wave::push(frame)` (a typenum tuple or a broadcast
+  scalar) is `Wave::push_frame(&[f32])`, one sample per channel. Gone, with no
+  engine caller: `render*`, `filter*`, `multifilter*`, `resample_fir`,
+  `fade*`, `normalize`, `amplify`, `amplitude`, `retain`, `append`, `mix*`,
+  `set_sample_rate`, channel insert/remove/push, `load_slice*`,
+  `load_track*`, `load_with_progress`, `load_with_peaks`, and the WAV writers
+  (`WavOut` is the engine's sink). `FileIn::open(path, track)` is
+  `FileIn::open(path)`; every caller passed `None`. The fork's own `Wave` stays
+  for its internal nodes and no longer decodes; its `files`/codec/`bevy_asset`
+  features, symphonia dependency and `pub use symphonia` are gone.
+
 - **Every count on the `AudioIn`/`AudioOut` edge is a `Samples`, not a
   `usize`.** `AudioIn::poll_into` and `pump` return `Samples` — the engine's
   existing frame count, the same type latency and `Seconds::to_samples` use —
@@ -104,6 +149,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **`FileIn` streamed every Ogg Vorbis file as empty.** Vorbis's first packet
+  decodes to zero frames, and the streamer took any zero-frame packet for
+  end-of-stream, so a streamed `.ogg` clip played silence from its first block
+  (and a seek's preroll stopped early). `tutti_sampler::probe` still reported
+  such files streamable, since the container carries a frame count. Zero-frame
+  packets are now skipped; a streamed read now yields the same samples as
+  `Wave::load`, bit for bit, for every fixture in `assets/audio/`.
+
+- **A `FileIn` seek into an Ogg Vorbis file landed up to ~1024 frames late.**
+  After a seek resets the decoder, its first Vorbis packet only primes the
+  overlap; the preroll discard was counted from the seek's `actual_ts` rather
+  than from the packet that produced audio, and when the primer was the packet
+  holding the target frame no discard could recover it. `seek` now counts from
+  the producing packet's timestamp and steps back past a primer that swallowed
+  the target. Every loop wrap, seek and reverse refill on a streamed Ogg clip
+  was off by ~23 ms. Seeks now land bit-exact on `Wave::load`'s frames for
+  every fixture, lossy included.
 
 - **Four defects in `Routing::route`, the arithmetic plugin delay
   compensation is computed from.** Each was inert in the tree as it stood,

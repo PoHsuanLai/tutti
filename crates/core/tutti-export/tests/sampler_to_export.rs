@@ -42,12 +42,13 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 
 use tutti_core::{
-    Beat, Bpm, Cents, OfflineTimeline, OfflineTimelineConfig, SampleRate, StretchFactor, Wave,
+    Beat, Bpm, Cents, OfflineTimeline, OfflineTimelineConfig, SampleRate, StretchFactor,
 };
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig,
 };
+use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 
 const SR: f64 = 48_000.0;
@@ -66,7 +67,7 @@ const DUR_S: f64 = 1.0;
 fn tone(frames: usize) -> Arc<Wave> {
     let mut w = Wave::new(1, SR);
     for i in 0..frames {
-        w.push((TAU * BASE_HZ * i as f32 / SR as f32).sin());
+        w.push_frame(&[(TAU * BASE_HZ * i as f32 / SR as f32).sin()]);
     }
     Arc::new(w)
 }

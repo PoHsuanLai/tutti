@@ -20,7 +20,7 @@ use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tutti_core::Wave;
+use tutti_io::Wave;
 
 /// How many **frames** to read this cycle, under the varifill strategy.
 ///
@@ -504,8 +504,8 @@ pub(in crate::butler) fn load_wave(
         return Some(cached);
     }
 
-    // `Wave::load` lives in fundsp's `read` module, which is compiled only when
-    // a codec feature is on — calling it unconditionally breaks the
+    // `Wave::load` is `tutti-io`'s decode path, which is compiled only when a
+    // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     {
@@ -688,7 +688,7 @@ mod tests {
     fn make_test_wave(samples: &[(f32, f32)]) -> Wave {
         let mut wave = Wave::new(2, 48000.0);
         for (l, r) in samples {
-            wave.push((*l, *r));
+            wave.push_frame(&[*l, *r]);
         }
         wave
     }

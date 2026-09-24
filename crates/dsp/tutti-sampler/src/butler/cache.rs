@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use tutti_core::Wave;
+use tutti_io::Wave;
 
 /// Bounded LRU cache with entry count and byte limits.
 pub struct LruCache {

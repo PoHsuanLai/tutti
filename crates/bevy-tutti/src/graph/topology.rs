@@ -39,8 +39,8 @@
 //!    are in the same position: no `kind` string could reconstruct them.
 //!
 //! So [`compile`](tutti_core::topology::compile) stays what it is — the
-//! from-scratch path, for tests and offline rendering, where there is no live
-//! backend to preserve. This module is the incremental path over a running one.
+//! from-scratch path, for a caller with no live backend to preserve (only tests
+//! call it today). This module is the incremental path over a running one.
 //!
 //! # PDC delays are runtime-only, deliberately
 //!
@@ -99,21 +99,26 @@ use super::AudioGraphRes;
 /// which layer produced it.
 pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 
-/// The last [`Topology`] the wire phase built.
+/// The last [`Topology`] the wire rebuild applied to the engine.
 ///
 /// # Who owns it
 ///
-/// Written by [`snapshot`](super::wire::rebuild)'s call to [`build`] in the
-/// `Wire` phase and by nothing else. Read by tests, and by anything wanting to
-/// ask a question about the graph without a runtime in hand:
+/// Written by [`rebuild`](super::wire::rebuild) — the system `GraphWirePlugin`
+/// schedules between `Spawn` and `Compensate` — after [`apply`] has brought the
+/// engine into line with it, and by nothing else. Read by tests, and by
+/// anything wanting to ask a question about the graph without a runtime in
+/// hand:
 /// [`tutti_types::latency::plan`] over it is the same fold `compensate_graph`
 /// runs against the `Net`, and
 /// [`Topology::validate`](tutti_types::graph::Topology::validate) reports every
 /// structural fault at once.
 ///
-/// It is **not** a cache the engine is derived from — the per-port diff is
-/// still what writes `Net`. Holding it is what makes "did anything change"
-/// answerable as one comparison rather than as a per-port read-back.
+/// It is **not** what writes `Net`, and not a cache the engine is derived
+/// from. Each rebuild builds a fresh value from the declarations, and
+/// [`apply`] writes that value — every declared port the engine disagrees
+/// with. This is the value applied *last time*; holding it is what makes "did
+/// anything change" answerable as one comparison (`want == live`) rather than
+/// as a per-port read-back.
 #[derive(Resource, Debug, Default)]
 pub struct LiveGraph(Topology);
 
@@ -123,8 +128,8 @@ impl LiveGraph {
         &self.0
     }
 
-    /// Replace it. The `Wire` phase's to call; exposed for a host driving the
-    /// phase itself.
+    /// Replace it. [`rebuild`](super::wire::rebuild)'s to call; exposed for a
+    /// host driving the rebuild itself.
     pub fn set(&mut self, topology: Topology) {
         self.0 = topology;
     }

@@ -27,7 +27,7 @@ use tutti_core::{AtomicU64, ChannelLayout, Ordering, Samples};
 use crate::nonempty;
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_core::FileIn;
+use tutti_io::FileIn;
 
 use super::command::RegionId;
 
@@ -241,7 +241,7 @@ impl RegionOut {
     }
 
     /// The file this region streams. The butler uses it to reach the whole-file
-    /// [`Wave`](tutti_core::Wave) when capturing crossfade buffers.
+    /// [`Wave`](tutti_io::Wave) when capturing crossfade buffers.
     pub fn file_path(&self) -> &Path {
         &self.meta.file_path
     }

@@ -51,6 +51,8 @@ tutti-spatial = { path = "../../dsp/tutti-spatial", default-features = false }
 # voice through the offline clock and asserts on the exported pitch. Also
 # acyclic: tutti-sampler does NOT depend on tutti-export.
 tutti-sampler = { path = "../../dsp/tutti-sampler", default-features = false }
+# The `Wave` those voices play. Acyclic: tutti-io names nothing above tutti-core.
+tutti-io = { path = "../tutti-io" }
 # An independent decoder for every container this crate writes, for
 # `tests/oracle_decode.rs`. `hound` only speaks WAV, so FLAC/AIFF/Ogg were
 # checked by frame count and header, never by content. The feature list is the

@@ -16,8 +16,9 @@ use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
     Amplitude, Beat, BeatDuration, Cents, ChannelLayout, PlaybackRate, SamplePosition, SampleRate,
-    StretchFactor, Wave,
+    StretchFactor,
 };
+use tutti_io::Wave;
 
 /// Voice slots a reader holds before its slot vector has to grow.
 ///

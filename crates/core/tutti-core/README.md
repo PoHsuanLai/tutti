@@ -21,8 +21,9 @@ already depends on.
 - `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
   `tutti_types::graph::Topology` (the graph as a *value*) into a `Net`. The value
   is the graph; `Net` is the interpreter, and nothing reads a topology back out
-  of one. Additive today — every existing caller still builds a `Net`
-  imperatively.
+  of one. Only tests call it today: `bevy-tutti` builds the same value each
+  rebuild but applies it incrementally to its running `Net`, which owns state
+  no value can rebuild.
 - `Engine` — the graph render the RT callback runs.
 
 A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
@@ -83,8 +84,9 @@ net.check();
 // The backend is the audio thread's half. There is exactly one, and after
 // it exists every frontend edit needs a `commit` to reach it.
 let mut backend = net.backend();
-let (left, right) = backend.get_stereo();
-assert_eq!(left, right);
+let mut frame = [0.0f32; 2];
+backend.tick(&[], &mut frame);
+assert_eq!(frame[0], frame[1]);
 
 net.connect(clock, 0, delay, 0);
 net.commit();
@@ -121,15 +123,14 @@ Bevy-free unless a consumer asks:
 - `bevy` — the `Component` derive on `AudioNode` described above.
 - `bevy_ecs` — a back-compat alias for `bevy`, kept because sibling crates still
   spell it that way.
-- `bevy_asset` — the above plus fundsp's asset integration (`WaveAsset`). Needs
-  a codec feature as well: the type lives in fundsp's decode module, so gating
-  on either axis alone breaks the other combination.
-- `wav` / `flac` / `mp3` / `ogg` — fundsp's decoders, for loading a `Wave` from
-  disk. `can_decode` reports which of them a given build has.
 - `midi` — reserved; the MIDI subsystems are separate crates.
 - `serde` — `Serialize`/`Deserialize` on the shared value vocabulary (forwards
   to `tutti-types/serde`). Off by default, since the engine itself never
   serializes.
+
+There are no codec or asset features. Decoding a file (`Wave`, `FileIn`,
+`can_decode`) and the Bevy `WaveAsset` are `tutti-io`'s, behind its own
+`wav` / `flac` / `mp3` / `ogg` and `bevy` features.
 
 ## License
 

@@ -59,7 +59,11 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 /// and never blocks).
 pub struct ClockMaster {
     transport: Arc<dyn Timeline>,
-    sample_rate: SampleRate,
+    /// The device rate, in Hz: what turns the transport's beats into frame
+    /// offsets. An atomic because a device restart moves it
+    /// ([`set_sample_rate`](Self::set_sample_rate)) on a master the audio
+    /// thread shares; `tick` reads it once per block.
+    sample_rate: AtomicF64,
     /// UMP group stamped on every emitted event.
     group: MidiGroup,
     /// The output mailbox's push half — lock-free `&self` queueing. The paired
@@ -80,6 +84,13 @@ pub struct ClockMaster {
     /// `current_beat()` at the previous tick — for seek detection and to carry
     /// the fractional clock-tick phase across blocks.
     prev_beat: AtomicF64,
+    /// How far the previous tick's block was due to move the beat, in beats:
+    /// what the beat is compared with at the next tick to tell a locate from
+    /// ordinary playback. The previous block's figure, not this one's — they
+    /// differ when the block size, the tempo or (on a device restart) the
+    /// sample rate moved in between, and comparing with this block's called
+    /// that a seek.
+    prev_advance: AtomicF64,
     /// Fractional SMPTE-frame phase carried across blocks (in quarter-frames),
     /// so MTC emission stays on the wall-clock grid regardless of block size.
     mtc_qf_phase: AtomicF64,
@@ -105,7 +116,7 @@ impl ClockMaster {
     ) -> Self {
         Self {
             transport,
-            sample_rate: sample_rate.into(),
+            sample_rate: AtomicF64::new(sample_rate.into().get()),
             group: MidiGroup::FIRST,
             out,
             enabled: AtomicBool::new(false),
@@ -113,6 +124,7 @@ impl ClockMaster {
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
             prev_playing: AtomicBool::new(false),
             prev_beat: AtomicF64::new(0.0),
+            prev_advance: AtomicF64::new(0.0),
             mtc_qf_phase: AtomicF64::new(0.0),
             mtc_piece: AtomicU8::new(0),
         }
@@ -133,6 +145,33 @@ impl ClockMaster {
     /// Whether clock generation is on.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    /// Move the master to a device running at `sample_rate`: what a device
+    /// restart at a new rate does, with no callback running.
+    ///
+    /// The 24-PPQN ticks are placed from the transport's beat, so from the
+    /// next block they land on the new rate's frames — at 120 BPM a tick
+    /// every 1 000 frames at 48 kHz, not the 918.75 of 44.1 kHz, which would
+    /// run the receiving gear ~8.8% fast. The MTC quarter-frame phase is the
+    /// one figure carried across blocks in frames, so it is rescaled to the
+    /// same wall-clock time: the next quarter-frame stays where it was due.
+    ///
+    /// `&self`, lock-free: the master is shared with the audio thread. A
+    /// non-positive rate is stored as given, and `tick` then emits nothing.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        let new = sample_rate.into().get();
+        let old = self.sample_rate.swap(new, Ordering::AcqRel);
+        if old > 0.0 && new > 0.0 {
+            let phase = self.mtc_qf_phase.load(Ordering::Acquire);
+            self.mtc_qf_phase
+                .store(phase * new / old, Ordering::Release);
+        }
+    }
+
+    /// The rate [`tick`](Self::tick) places events at.
+    pub fn sample_rate(&self) -> SampleRate {
+        SampleRate(self.sample_rate.load(Ordering::Acquire))
     }
 
     /// Turn MTC quarter-frame emission on or off, independently of the 24-PPQN
@@ -162,8 +201,9 @@ impl ClockMaster {
     /// Generate this block's clock/timecode. Call once per audio block with the
     /// block's frame count. Reads the transport internally.
     pub fn tick(&self, block_size: usize) {
-        if !self.enabled.load(Ordering::Acquire) || block_size == 0 || self.sample_rate.get() <= 0.0
-        {
+        // Once per block: a rate moved mid-block would split it in two.
+        let sample_rate = self.sample_rate();
+        if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
             // Keep prev_playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
             // under way.
@@ -201,8 +241,9 @@ impl ClockMaster {
         }
 
         // --- seek while playing ---------------------------------------------
-        // A block normally advances the beat by ~block_size * beats_per_sample;
-        // anything beyond that (either direction) is a locate.
+        // A block normally advances the beat by what it was due to (the
+        // previous tick's `expected_advance`); anything else, either direction,
+        // is a locate.
         let tempo = self.transport.tempo();
         if tempo.get() <= 0.0 {
             return;
@@ -212,11 +253,14 @@ impl ClockMaster {
         // below is a *position*. Both are beats-denominated and neither is an
         // `Hz` — a beat-synced rate is beats-per-cycle, the inverse of a
         // frequency. Unwrapping either lets the two mix silently.
-        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, self.sample_rate);
+        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
         let expected_advance = beats_per_sample * block_size as f64;
+        let prev_advance = BeatDuration(
+            self.prev_advance
+                .swap(expected_advance.get(), Ordering::AcqRel),
+        );
         let is_edge = playing && !was_playing;
-        if !is_edge
-            && (beat - prev_beat).abs() > expected_advance + BeatDuration(SEEK_EPSILON_BEATS)
+        if !is_edge && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS)
         {
             self.emit(MidiEvent::song_position(
                 self.group,
@@ -253,7 +297,7 @@ impl ClockMaster {
 
         // --- MTC quarter-frames ---------------------------------------------
         if self.send_mtc.load(Ordering::Acquire) {
-            self.tick_mtc(block_size, beats_per_sample, beat, max_offset);
+            self.tick_mtc(block_size, sample_rate, beats_per_sample, beat, max_offset);
         }
     }
 
@@ -266,13 +310,14 @@ impl ClockMaster {
     fn tick_mtc(
         &self,
         block_size: usize,
+        sample_rate: SampleRate,
         beats_per_sample: BeatDuration,
         beat: Beat,
         max_offset: u32,
     ) {
         let fps = SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire));
         let qf_per_sec = fps.fps() * 4.0;
-        let samples_per_qf = self.sample_rate.get() / qf_per_sec;
+        let samples_per_qf = sample_rate.get() / qf_per_sec;
         if samples_per_qf <= 0.0 {
             return;
         }
@@ -292,7 +337,7 @@ impl ClockMaster {
         // this through it would re-associate the arithmetic. It also returns
         // f32 `Seconds`, and SMPTE is one of the named f64 carve-outs.
         let secs_per_beat = if beats_per_sample > BeatDuration(0.0) {
-            1.0 / (beats_per_sample.get() * self.sample_rate.get())
+            1.0 / (beats_per_sample.get() * sample_rate.get())
         } else {
             0.0
         };
@@ -567,6 +612,137 @@ mod tests {
         );
         assert!((events[0].frame_offset as i64 - 1000).abs() < 4);
         assert!((events[1].frame_offset as i64 - 2000).abs() < 4);
+    }
+
+    /// Run `blocks` blocks of `block` frames at `rate`, the transport rolling
+    /// at 120 BPM from `*beat`, and return every event with its absolute
+    /// frame (counted from `*frame`). Advances both.
+    fn run_at(
+        cm: &ClockMaster,
+        transport: &TestTransport,
+        cons: &crate::MidiReceiver,
+        rate: f64,
+        (block, blocks): (usize, usize),
+        (beat, frame): (&mut f64, &mut u64),
+    ) -> Vec<(MidiEvent, u64)> {
+        let mut at = Vec::new();
+        for _ in 0..blocks {
+            transport.set_beat(*beat);
+            cm.tick(block);
+            at.extend(
+                drain_all(cons)
+                    .into_iter()
+                    .map(|e| (e, *frame + u64::from(e.frame_offset))),
+            );
+            *beat += block as f64 * 2.0 / rate;
+            *frame += block as u64;
+        }
+        at
+    }
+
+    /// The frames of the events in `events` with `status`.
+    fn of(events: &[(MidiEvent, u64)], status: u8) -> Vec<u64> {
+        events
+            .iter()
+            .filter(|(e, _)| is_status(e, status))
+            .map(|&(_, at)| at)
+            .collect()
+    }
+
+    /// Mean spacing, in frames, of the events at `at`.
+    fn spacing(at: &[u64]) -> f64 {
+        assert!(at.len() > 10, "events to measure, got {}", at.len());
+        (at[at.len() - 1] - at[0]) as f64 / (at.len() - 1) as f64
+    }
+
+    /// **A rate change moves the tick spacing to the new rate's frames.** At
+    /// 120 BPM a 24-PPQN tick is 1/48 s: 918.75 frames at 44.1 kHz, 1 000 at
+    /// 48 kHz. A master built at 44.1 kHz and re-rated to 48 kHz (a device
+    /// restart) must space its ticks 1 000 frames apart from the next block,
+    /// or the receiving gear runs ~8.8% fast. (Offsets are whole frames, so
+    /// each tick sits up to one frame early; the mean over ~48 ticks is within
+    /// 0.05 of the exact spacing.)
+    ///
+    /// Mutation (run): `set_sample_rate` not storing the rate → the ticks
+    /// after it stay 918.75 frames apart → fails.
+    #[test]
+    fn a_rate_change_moves_the_tick_spacing() {
+        let (cm, transport, cons) = master(Bpm(120.0), 44_100.0);
+        transport.set_playing(true);
+        let (mut beat, mut frame) = (0.0, 0);
+        let run = (&mut beat, &mut frame);
+        let before = of(
+            &run_at(&cm, &transport, &cons, 44_100.0, (441, 100), run),
+            0xF8,
+        );
+        assert!(
+            (spacing(&before) - 918.75).abs() < 0.05,
+            "{}",
+            spacing(&before)
+        );
+
+        cm.set_sample_rate(48_000.0);
+        assert_eq!(cm.sample_rate(), SampleRate(48_000.0));
+        let run = (&mut beat, &mut frame);
+        let after = of(
+            &run_at(&cm, &transport, &cons, 48_000.0, (480, 100), run),
+            0xF8,
+        );
+        assert!(
+            (spacing(&after) - 1_000.0).abs() < 0.05,
+            "{}",
+            spacing(&after)
+        );
+    }
+
+    /// **The MTC quarter-frame due across a rate change lands on its
+    /// wall-clock time.** At 25 fps a quarter-frame is 1/100 s: 441 frames at
+    /// 44.1 kHz, 480 at 48 kHz. After 20 blocks of 512 at 44.1 kHz (10 240
+    /// frames) the last quarter-frame was at 10 143 and the next is due 441
+    /// frames later, 344 old frames after the restart: 374.4 new frames, and
+    /// 480 apart from there. And the restart is not a locate: no Song
+    /// Position goes out, and the phase is not reset.
+    ///
+    /// Mutations (run):
+    /// - `set_sample_rate` not rescaling the carried phase → the first one
+    ///   lands 344 frames after the restart, ~30 early → fails;
+    /// - the seek check comparing the beat's move with *this* block's
+    ///   advance (as it did) → the old-rate block's 0.0232 beats against the
+    ///   new rate's 0.0213 is past the 0.001 epsilon → a Song Position, and
+    ///   the phase reset to the restart's frame → fails.
+    #[test]
+    fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
+        let (cm, transport, cons) = master(Bpm(120.0), 44_100.0);
+        cm.set_send_mtc(true);
+        cm.set_mtc_fps(SmpteFrameRate::Fps25);
+        transport.set_playing(true);
+        let (mut beat, mut frame) = (0.0, 0);
+        let run = (&mut beat, &mut frame);
+        let before = of(
+            &run_at(&cm, &transport, &cons, 44_100.0, (512, 20), run),
+            0xF1,
+        );
+        assert_eq!(
+            before.last(),
+            Some(&10_143),
+            "setup: every 441 frames from 0"
+        );
+
+        cm.set_sample_rate(48_000.0);
+        let run = (&mut beat, &mut frame);
+        let events = run_at(&cm, &transport, &cons, 48_000.0, (512, 20), run);
+        assert_eq!(
+            of(&events, 0xF2),
+            Vec::<u64>::new(),
+            "the restart is not a seek"
+        );
+        let after = of(&events, 0xF1);
+        assert_eq!(after[0], 10_240 + 374, "344 old frames are 374.4 new ones");
+        assert!(
+            (spacing(&after) - 480.0).abs() < 0.05,
+            "{}",
+            spacing(&after)
+        );
     }
 
     #[test]

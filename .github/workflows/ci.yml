@@ -142,6 +142,12 @@ jobs:
       #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
       #                         components) and its tests
       #   tutti-io/bevy       — WaveAsset's Asset derive
+      #   bevy-tutti/plugin   — src/plugin_host's binding against a live plugin:
+      #                         tests/plugin_capture.rs loads the reference CLAP
+      #                         plugin through a real plugin-server and is the
+      #                         only test that watches the latency poll see one.
+      #                         `full,plugin` so the modulation-gated param
+      #                         binding compiles with it.
       #
       # Not `--all-features`: that pulls every plugin-format SDK. Name the
       # combinations, and add one here whenever a new feature is added.
@@ -153,7 +159,17 @@ jobs:
           cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
+          cargo clippy -p bevy-tutti --features full,plugin --all-targets -- -D warnings
           cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
+
+      # `tests/plugin_capture.rs` spawns the `plugin-server` binary, which no
+      # test build produces (it would be a dependency cycle through
+      # `tutti-plugin`), so it is built here, before the tests, as the `test`
+      # job does. CLAP only: that is the format the reference plugin is, and the
+      # default features would pull the VST3 SDK submodules this checkout does
+      # not fetch.
+      - name: Build plugin-server (bevy-tutti/plugin spawns it)
+        run: cargo build -p tutti-plugin-server --no-default-features --features clap
 
       - name: Test
         run: |
@@ -161,6 +177,7 @@ jobs:
           cargo nextest run -p bevy-tutti --features audio-io
           cargo nextest run -p bevy-tutti --features soundfont
           cargo nextest run -p bevy-tutti --features sampler
+          cargo nextest run -p bevy-tutti --features full,plugin
           cargo nextest run -p tutti-io --features bevy
 
       # JACK hard-links libjack at build time, so it gets its own step (and its

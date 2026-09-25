@@ -155,7 +155,9 @@ pub struct MidiRouteFallback(pub Option<Entity>);
 /// node does not exist yet; nothing about the rule changes when it finally
 /// arrives, so without watching for that the rule would stay unresolved until
 /// something unrelated happened to touch it. `Added<AudioNode>` is the signal
-/// that a previously-skipped target may now resolve.
+/// that a previously-skipped target may now resolve, and a changed
+/// [`MidiTarget`](crate::midi::MidiTarget) is its crossfade twin: the node
+/// stays and its port's id does not.
 pub fn rebuild(
     // `Option`: the routing table is inserted by `engine::build_into`, but the
     // `engine_ready` gate only reads `AudioEngineState`. A host that declares the
@@ -167,10 +169,16 @@ pub fn rebuild(
     fallback: Res<MidiRouteFallback>,
     changed: Query<(), Changed<MidiRouteRule>>,
     arrived: Query<(), Added<tutti_core::AudioNode>>,
+    // A crossfade replaces a target's port (and its id) under a surviving
+    // `AudioNode`, so a changed capture is an arrival too.
+    recaptured: Query<(), Changed<crate::midi::MidiTarget>>,
     mut removed: RemovedComponents<MidiRouteRule>,
 ) {
-    let dirty =
-        !changed.is_empty() || !removed.is_empty() || !arrived.is_empty() || fallback.is_changed();
+    let dirty = !changed.is_empty()
+        || !removed.is_empty()
+        || !arrived.is_empty()
+        || !recaptured.is_empty()
+        || fallback.is_changed();
     // An event reader: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();

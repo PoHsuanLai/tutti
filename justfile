@@ -75,6 +75,9 @@ test-all: test test-features test-editor test-doc
 #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
 #                         components) and its tests
 #   tutti-io/bevy       — WaveAsset's Asset derive
+#   bevy-tutti/plugin   — plugin_host binding against a live plugin
+#                         (tests/plugin_capture.rs); `full,plugin` so the
+#                         modulation-gated param binding compiles with it
 #
 # Not `--all-features`: that would pull every plugin-format SDK and (once it
 # exists) JACK, which needs libjack on the box. Name the combinations.
@@ -85,14 +88,19 @@ check-features:
     cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
+    cargo clippy -p bevy-tutti --features full,plugin --all-targets -- -D warnings
     cargo clippy -p tutti-io --features bevy --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
+# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs, which
+# spawns it; CLAP only, as in CI, so no VST3 SDK is needed.
 test-features:
+    cargo build -p tutti-plugin-server --no-default-features --features clap
     cargo nextest run -p tutti-cpal --features capture,midi
     cargo nextest run -p bevy-tutti --features audio-io
     cargo nextest run -p bevy-tutti --features soundfont
     cargo nextest run -p bevy-tutti --features sampler
+    cargo nextest run -p bevy-tutti --features full,plugin
     cargo nextest run -p tutti-io --features bevy
 
 # JACK, separately: it hard-links libjack at BUILD time, so it needs

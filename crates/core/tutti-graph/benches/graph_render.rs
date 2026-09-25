@@ -377,7 +377,9 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
         if native {
             Box::new(NativeLowpass::new(cutoff(i), 0.7))
         } else {
-            Box::new(Legacy::new(lowpass_hz(cutoff(i), 0.7)))
+            // Pure: a filter is a function of its input, so it keeps the
+            // silence scan the table in doc 013 measured.
+            Box::new(Legacy::pure(lowpass_hz(cutoff(i), 0.7)))
         }
     };
     let wire = |ed: &mut Editor, sink: NodeKey, port: u16, from: Source| {
@@ -407,7 +409,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
             let s: Box<dyn Node> = if native {
                 Box::new(NativeSum(width))
             } else {
-                Box::new(Legacy::new(SumUnit(width)))
+                Box::new(Legacy::pure(SumUnit(width)))
             };
             ed.insert(sum, "sum", s);
             for i in 0..width {
@@ -427,7 +429,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
                 let nop: Box<dyn Node> = if native {
                     Box::new(NativeNop)
                 } else {
-                    Box::new(Legacy::new(NopUnit { copy: true }))
+                    Box::new(Legacy::pure(NopUnit { copy: true }))
                 };
                 ed.insert(k, "nop", nop);
                 wire(&mut ed, k, 0, from);

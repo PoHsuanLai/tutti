@@ -120,6 +120,10 @@
 //!   crossfade: both units run for the fade, the old one retires on the
 //!   control thread, and a replace during a fade waits for it.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
+//! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
+//!   [`pure`](Legacy::pure), with a `Net::set` replacement
+//!   ([`Legacy::controlled`]: a settings ring and a shadow copy). A unit's
+//!   latency can change at runtime with [`Editor::set_latency`].
 //!
 //! # Building a graph in a test
 //!
@@ -186,7 +190,7 @@ pub use event::{
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
-pub use legacy::Legacy;
+pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_SETTINGS_CAPACITY};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
     Scratch, Shape, SilenceMask, Status, Transport, TransportChange, TransportChangeRejected,

@@ -25,17 +25,19 @@ use tutti_core::AudioNode;
 use tutti_midi_types::MidiUnitId;
 
 use super::bus::MidiBusRes;
-use super::target::MidiTargetResolver;
+use super::target::{MidiTarget, MidiTargetResolver};
 use crate::graph::{engine_ready, GraphReconcileSystems};
 
 /// "This entity's MIDI sender is on the bus, under this id."
 ///
 /// Carries the id purely so [`unregister_midi_sender`] can remove the right
 /// entry after the node — and with it the port that knew the id — is already
-/// gone. It is *not* an address to route by: resolution always re-derives from
-/// the graph, because a `crossfade` can replace a node's port while keeping its
-/// `NodeId`. Reading this to send MIDI would reintroduce exactly the staleness
-/// the resolver exists to avoid.
+/// gone. It is *not* an address to route by: resolution reads the entity's
+/// [`MidiTarget`](MidiTarget), which a `crossfade` replaces along with the
+/// node's port while keeping its `NodeId`. [`register_midi_senders`] catches up
+/// with that replacement a frame later, so between the two this id names the
+/// outgoing port — which is exactly what unregistering it needs, and exactly
+/// what sending to it must not use.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiRegistered {
     unit_id: MidiUnitId,
@@ -59,6 +61,16 @@ impl MidiRegistered {
 /// currently addresses it. That is not over-eagerness: a synth's port *is* its
 /// inbox, and being reachable is what lets a route or a preview arrive later
 /// without a round-trip through this system. An entry costs one map slot.
+///
+/// # A replaced port is re-registered
+///
+/// A [`crossfade`](crate::graph::crossfade_audio_node) replaces the unit, and
+/// with it the port and its id, while the entity keeps its `AudioNode` and its
+/// [`MidiRegistered`]. So a registered entity whose [`MidiTarget`] changed is
+/// visited again: if the port it resolves to now has a different id, the old
+/// sender comes off the bus and the new one goes on. Without this the bus kept
+/// the outgoing unit's sender and never learned the incoming one's, so a
+/// crossfaded synth went deaf.
 pub fn register_midi_senders(
     mut commands: Commands,
     // `Option` for the same reason `unregister_midi_sender` below takes one: the
@@ -68,18 +80,53 @@ pub fn register_midi_senders(
     // that a panicked schedule instead of a frame with nothing to register into.
     bus: Option<Res<MidiBusRes>>,
     resolver: MidiTargetResolver,
-    pending: Query<Entity, (With<AudioNode>, Without<MidiRegistered>)>,
+    pending: Query<
+        (Entity, Option<&MidiRegistered>),
+        (
+            With<AudioNode>,
+            Or<(Without<MidiRegistered>, Changed<MidiTarget>)>,
+        ),
+    >,
 ) {
     let Some(bus) = bus else {
         return;
     };
-    for entity in pending.iter() {
+    for (entity, registered) in pending.iter() {
         let Some(port) = resolver.port(entity) else {
             continue;
         };
         let unit_id = port.unit_id();
+        if let Some(old) = registered {
+            if old.unit_id == unit_id {
+                continue;
+            }
+            bus.0.remove(old.unit_id);
+        }
         bus.0.insert(port.sender());
         commands.entity(entity).insert(MidiRegistered { unit_id });
+    }
+}
+
+/// Take a sender off the bus when its entity's [`MidiTarget`] goes, with the
+/// node staying.
+///
+/// The crossfade case again, to a unit with no MIDI port: the capture removes
+/// the target, and the outgoing unit's sender must not stay routable.
+/// [`unregister_midi_sender`] covers the node itself going.
+pub fn unregister_removed_midi_target(
+    remove: On<Remove, MidiTarget>,
+    bus: Option<Res<MidiBusRes>>,
+    registered: Query<&MidiRegistered>,
+    mut commands: Commands,
+) {
+    let entity = remove.event_target();
+    let Ok(marker) = registered.get(entity) else {
+        return;
+    };
+    let Some(bus) = bus else { return };
+    bus.0.remove(marker.unit_id);
+    if let Ok(mut e) = commands.get_entity(entity) {
+        e.remove::<MidiRegistered>();
     }
 }
 
@@ -135,5 +182,6 @@ impl Plugin for MidiRegistrationPlugin {
         // An observer, not a system: it must read `MidiRegistered` before a
         // despawn drops it. See [`unregister_midi_sender`].
         app.add_observer(unregister_midi_sender);
+        app.add_observer(unregister_removed_midi_target);
     }
 }

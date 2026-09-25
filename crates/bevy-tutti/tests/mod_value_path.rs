@@ -26,7 +26,7 @@ mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
         ModulationMatrix, TuttiModulationPlugin,
@@ -34,7 +34,6 @@ mod modulation {
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioNode;
     use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
@@ -52,11 +51,7 @@ mod modulation {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        let mut net = Net::new(0, 1);
-        let node = net.push(Box::new(drive_node()));
-        net.pipe_output(node);
-
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         // The systems are gated on a running engine; nothing here opens a device,
         // so the state stands in for one.
@@ -67,19 +62,39 @@ mod modulation {
             .resource_mut::<ModTargetRegistry>()
             .register::<DistortionNode>();
 
-        let target = app.world_mut().spawn(AudioNode(node)).id();
+        let target = bind_drive_node(&mut app, drive_node());
         (app, target)
+    }
+
+    /// The node's own drive atomic, taken from the unit before it moved into the
+    /// graph — shared with every clone of the node, so it reads what the DSP
+    /// reads.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+
+    /// Push a drive node into the graph and bind an entity to it the way every
+    /// insertion path does: the controls are captured from the unit first,
+    /// against whatever the registry knows at that moment.
+    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+        let drive = DriveCell(unit.drive());
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut entity = app.world_mut().spawn(drive);
+        controls.bind(&mut entity, node);
+        entity.id()
     }
 
     /// The node's live drive value — what the DSP reads, not what the matrix thinks.
     fn node_drive(app: &App, entity: Entity) -> f32 {
-        let node = app.world().get::<AudioNode>(entity).unwrap().0;
-        let graph = app.world().resource::<AudioGraphRes>();
-        graph
-            .0
-            .node_as::<DistortionNode>(node)
+        app.world()
+            .get::<DriveCell>(entity)
             .unwrap()
-            .drive()
+            .0
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -145,16 +160,13 @@ mod modulation {
         // The registry is what makes resolution possible; without the node type
         // registered a route is inert rather than panicking.
         let mut app = App::new();
-        let mut net = Net::new(0, 1);
-        let node = net.push(Box::new(drive_node()));
-        net.pipe_output(node);
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         // Deliberately no `.register::<DistortionNode>()`.
 
-        let target = app.world_mut().spawn(AudioNode(node)).id();
+        let target = bind_drive_node(&mut app, drive_node());
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -457,9 +469,10 @@ mod modulation {
 /// One LFO modulating another LFO's rate, declared entirely in the ECS.
 ///
 /// A modulation source is not a graph node, so the ordinary resolver path —
-/// `AudioNode` then downcast — could never serve a route onto a source's own
-/// rate. These tests cover the second path: a source carries a live rate cell,
-/// and the accumulator that drives it mirrors into that same cell.
+/// `AudioNode` then its captured params — could never serve a route onto a
+/// source's own rate. These tests cover the second path: a source carries a
+/// live rate cell, and the accumulator that drives it mirrors into that same
+/// cell.
 ///
 /// Sharing exactly one cell is the load-bearing part, and it is the part that
 /// fails *silently* — a second cell type-checks, runs, and modulates nothing —
@@ -470,7 +483,7 @@ mod mod_cascade {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModRateCell, ModRoute, ModSource, ModSourceRate,
         ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
@@ -488,14 +501,7 @@ mod mod_cascade {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        let mut net = Net::new(0, 1);
-        let node = net.push(Box::new(DistortionNode::new(
-            tutti_nodes::ShapeKind::Tanh,
-            1.0,
-        )));
-        net.pipe_output(node);
-
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -503,8 +509,34 @@ mod mod_cascade {
             .resource_mut::<ModTargetRegistry>()
             .register::<DistortionNode>();
 
-        let target = app.world_mut().spawn(AudioNode(node)).id();
+        let target = bind_drive_node(
+            &mut app,
+            DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0),
+        );
         (app, target)
+    }
+
+    /// The node's own drive atomic, taken from the unit before it moved into the
+    /// graph — shared with every clone of the node, so it reads what the DSP
+    /// reads.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+
+    /// Push a drive node into the graph and bind an entity to it the way every
+    /// insertion path does: the controls are captured from the unit first,
+    /// against whatever the registry knows at that moment.
+    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+        let drive = DriveCell(unit.drive());
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut entity = app.world_mut().spawn(drive);
+        controls.bind(&mut entity, node);
+        entity.id()
     }
 
     fn advance_transport(app: &mut App, samples: i64) {
@@ -697,14 +729,11 @@ mod mod_cascade {
             for _ in 0..60 {
                 advance_transport(&mut app, 480);
                 app.update();
-                let node = app.world().get::<AudioNode>(target).unwrap().0;
                 trace.push(
                     app.world()
-                        .resource::<AudioGraphRes>()
-                        .0
-                        .node_as::<DistortionNode>(node)
+                        .get::<DriveCell>(target)
                         .unwrap()
-                        .drive()
+                        .0
                         .load(std::sync::atomic::Ordering::Acquire),
                 );
             }
@@ -824,7 +853,7 @@ mod mod_curve_delivery {
 
     use bevy_app::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
         TuttiModulationPlugin,
@@ -1003,24 +1032,25 @@ mod mod_curve_delivery {
         let param = ParamAddr::Unit(UnitParam::Drive);
 
         // A real graph node, whose `ModParams` hands back an `AtomicTarget`.
-        let node = {
-            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(tutti_nodes::DistortionNode::new(
-                tutti_nodes::ShapeKind::Tanh,
-                BASE,
-            )))
-        };
+        // Registered before it is captured and pushed: the capture runs once,
+        // on the unit, before insertion.
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
             .register::<tutti_nodes::DistortionNode>();
+        let unit = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, BASE);
+        // The node's own atomic, shared with every clone of it.
+        let drive_cell = unit.drive();
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            graph.0.push(Box::new(unit))
+        };
 
-        let target = app
+        let mut target = app
             .world_mut()
-            .spawn((
-                tutti_core::AudioNode(node),
-                ModParamRange::default().with(param, BASE, 0.0, 10.0),
-            ))
-            .id();
+            .spawn(ModParamRange::default().with(param, BASE, 0.0, 10.0));
+        controls.bind(&mut target, node);
+        let target = target.id();
         let source = app
             .world_mut()
             .spawn((
@@ -1032,15 +1062,7 @@ mod mod_curve_delivery {
         app.world_mut()
             .spawn(ModRoute::new(source, target, param).per_block());
 
-        let drive = |app: &App| {
-            app.world()
-                .resource::<AudioGraphRes>()
-                .0
-                .node_as::<tutti_nodes::DistortionNode>(node)
-                .unwrap()
-                .drive()
-                .load(std::sync::atomic::Ordering::Acquire)
-        };
+        let drive = |_: &App| drive_cell.load(std::sync::atomic::Ordering::Acquire);
 
         // A beat-synced source derives its phase from the transport *beat*, which
         // is its own atomic — advancing `steady_time` alone leaves it at zero and
@@ -1075,7 +1097,7 @@ mod mod_source {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         ModParamRange, ModRoute, ModSource, ModSourceAppExt, ModSourceKind, ModSourceRate,
         ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
@@ -1083,7 +1105,6 @@ mod mod_source {
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioNode;
     use tutti_mod::Modulator;
     use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, Phase, UnitParam};
@@ -1138,14 +1159,7 @@ mod mod_source {
     fn app_with_node() -> (App, Entity) {
         let mut app = App::new();
 
-        let mut net = Net::new(0, 1);
-        let node = net.push(Box::new(DistortionNode::new(
-            tutti_nodes::ShapeKind::Tanh,
-            1.0,
-        )));
-        net.pipe_output(node);
-
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -1153,7 +1167,10 @@ mod mod_source {
             .resource_mut::<ModTargetRegistry>()
             .register::<DistortionNode>();
 
-        let target = app.world_mut().spawn(AudioNode(node)).id();
+        let target = bind_drive_node(
+            &mut app,
+            DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0),
+        );
         app.world_mut()
             .entity_mut(target)
             .insert(ModParamRange::default().with(
@@ -1165,14 +1182,34 @@ mod mod_source {
         (app, target)
     }
 
+    /// The node's own drive atomic, taken from the unit before it moved into the
+    /// graph — shared with every clone of the node, so it reads what the DSP
+    /// reads.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+
+    /// Push a drive node into the graph and bind an entity to it the way every
+    /// insertion path does: the controls are captured from the unit first,
+    /// against whatever the registry knows at that moment.
+    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+        let drive = DriveCell(unit.drive());
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut entity = app.world_mut().spawn(drive);
+        controls.bind(&mut entity, node);
+        entity.id()
+    }
+
     fn node_drive(app: &App, entity: Entity) -> f32 {
-        let node = app.world().get::<AudioNode>(entity).unwrap().0;
         app.world()
-            .resource::<AudioGraphRes>()
-            .0
-            .node_as::<DistortionNode>(node)
+            .get::<DriveCell>(entity)
             .unwrap()
-            .drive()
+            .0
             .load(std::sync::atomic::Ordering::Acquire)
     }
 

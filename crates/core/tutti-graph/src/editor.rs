@@ -51,11 +51,12 @@
 //! sending anything.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
-use tutti_types::NodeKey;
+use tutti_types::latency::MAX_NODE_LATENCY;
+use tutti_types::{Latency, NodeKey};
 
 use tutti_types::At;
 
@@ -66,6 +67,7 @@ use crate::exec::{
     channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY,
 };
 use crate::fade::Fade;
+use crate::legacy::Outbox;
 use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
@@ -137,6 +139,22 @@ pub enum CommitError {
     /// verifier refuses ([`verify_fades`](crate::verify_fades)). Nothing was
     /// sent.
     Fade(VerifyError),
+    /// No node at this key ([`Editor::set_latency`]).
+    NoSuchNode {
+        /// The key.
+        node: NodeKey,
+    },
+    /// A latency past what PDC compensates
+    /// (`tutti_types::latency::MAX_NODE_LATENCY`), refused rather than
+    /// silently clamped ([`Editor::set_latency`]).
+    LatencyTooLong {
+        /// The node.
+        node: NodeKey,
+        /// The latency asked for.
+        latency: Latency,
+        /// The most PDC compensates.
+        limit: Latency,
+    },
 }
 
 /// What the host that runs an [`Executor`] can take, enforced by its
@@ -208,6 +226,18 @@ impl std::fmt::Display for CommitError {
                 write!(f, "node {} has no running unit to fade from", node.0)
             }
             Self::Fade(e) => write!(f, "{e}"),
+            Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
+            Self::LatencyTooLong {
+                node,
+                latency,
+                limit,
+            } => write!(
+                f,
+                "node {}: latency {} frames; PDC compensates at most {}",
+                node.0,
+                latency.samples().get(),
+                limit.samples().get()
+            ),
         }
     }
 }
@@ -243,6 +273,10 @@ pub struct Editor {
     poisoned: Option<String>,
     /// What the executor's host can take.
     limits: Limits,
+    /// The settings queues of `Legacy::controlled` nodes built for this
+    /// editor, flushed on every `collect`. Weak: dropping a node's controls
+    /// unregisters it, pruned on the next `collect`.
+    outboxes: Vec<Weak<Mutex<Outbox>>>,
 }
 
 /// A panic payload as text.
@@ -300,6 +334,7 @@ impl Editor {
             repreparing: None,
             poisoned: None,
             limits: Limits::NONE,
+            outboxes: Vec::new(),
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -502,6 +537,62 @@ impl Editor {
         self.pending.insert(key, unit);
     }
 
+    /// Change `key`'s declared processing latency at runtime — a plugin whose
+    /// latency atomic moved. Takes effect on the next
+    /// [`commit`](Self::commit), like any edit to the spec: it recompiles,
+    /// and PDC delays move to the new figure. **The running unit is not
+    /// touched** — same generation, same state, no replacement — so only the
+    /// compensation changes. Delay rings are retuned by the recompile rule
+    /// ([`reprepare`](Self::reprepare)'s "keeps everything that is still the
+    /// same wire"): a ring whose length changes keeps its most recent
+    /// `min(old, new)` inputs, and a ring whose length does not is untouched,
+    /// so a path whose compensation stays the same does not click.
+    ///
+    /// **Who holds the figure.** A node reports its latency through
+    /// [`Node::shape`], which the editor reads at [`insert`](Self::insert)
+    /// and at every re-prepare. Between those, this call is the authority:
+    /// it writes the spec's [`NodeSpec`] latency and the editor's shape
+    /// entry, which is all the compiler reads, and a running unit's own
+    /// `shape()` may lag (a `Legacy` caches the latency it probed; nothing
+    /// asks it again until it is prepared). A re-prepare asks the unit again
+    /// and its answer replaces this one — a frame count set at the old rate
+    /// is wrong at a new one, and the unit is the one that can convert it.
+    /// A unit that cannot report its own latency must be told again after a
+    /// re-prepare. The same holds for a **replace** — an
+    /// [`insert`](Self::insert) at the key, which is a new generation: the
+    /// new unit's shape is read afresh and this figure is discarded.
+    ///
+    /// Refused with [`CommitError::NoSuchNode`] for a key with no node,
+    /// [`CommitError::LatencyTooLong`] past what PDC compensates
+    /// (`tutti_types::latency::MAX_NODE_LATENCY`; a probed latency is
+    /// clamped there, a figure set by hand is refused), and
+    /// [`CommitError::Repreparing`] between a re-prepare's two commits (its
+    /// second half re-probes every unit and would overwrite this).
+    pub fn set_latency(&mut self, key: NodeKey, latency: Latency) -> Result<(), CommitError> {
+        self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        let limit = Latency::new(MAX_NODE_LATENCY);
+        if latency > limit {
+            return Err(CommitError::LatencyTooLong {
+                node: key,
+                latency,
+                limit,
+            });
+        }
+        let (Some(node), Some(shape)) = (
+            self.spec.topology.nodes.get_mut(&key),
+            self.shapes.get_mut(&key),
+        ) else {
+            return Err(CommitError::NoSuchNode { node: key });
+        };
+        node.latency = latency.samples();
+        shape.latency = latency;
+        Ok(())
+    }
+
     /// Remove `key` and every edge that touches it. Output channels it fed
     /// become [`Source::Zero`].
     pub fn remove(&mut self, key: NodeKey) {
@@ -552,6 +643,11 @@ impl Editor {
     ///
     /// When the box coming back is a [`reprepare`](Self::reprepare)'s first
     /// half, this re-prepares the units it carries and sends the second.
+    ///
+    /// It also flushes every `Legacy::controlled` node's held settings into
+    /// its ring, as far as there is room (see `src/legacy.rs`): a host that
+    /// calls this every frame never leaves a setting stuck behind a full
+    /// ring.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         while let Some(done) = self.channels.returned.try_pop() {
@@ -568,6 +664,16 @@ impl Editor {
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
             drop(x);
         }
+        self.outboxes.retain(|w| match w.upgrade() {
+            Some(outbox) => {
+                let _ = outbox
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .flush();
+                true
+            }
+            None => false,
+        });
         keys
     }
 
@@ -578,6 +684,11 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         Ok(())
+    }
+
+    /// Flush `outbox` on every [`collect`](Self::collect) from now on.
+    pub(crate) fn register_outbox(&mut self, outbox: Weak<Mutex<Outbox>>) {
+        self.outboxes.push(outbox);
     }
 
     /// Change the sample rate or the maximum block of a running graph.

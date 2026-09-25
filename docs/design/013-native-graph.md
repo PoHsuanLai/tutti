@@ -784,7 +784,13 @@ passes pay back differently.
   `rebound` exception, `compensate_graph`'s re-minting and the
   `PdcDelay`/`PDC_DELAY_ID` exclusions, `commit_output_arity_change` pinning.
 - `node_as*` sites → `Controls` returned at insert (MIDI endpoint target,
-  modulation target/driver, plugin bind/latency).
+  modulation target/driver, plugin bind/latency). **Done on `Net` (PR 9):**
+  every insertion path captures `MidiTarget` / `ModParamsHandle` /
+  `PluginShadow` from the owned unit (`bevy_tutti::graph::capture`), readers
+  never touch the graph, and `tests/no_graph_downcasts.rs` keeps it that way.
+  `PluginClient`'s sample rate became a shared cell to make its `PluginControls`
+  valid off the node. `build_param_mod` is now `param_mod_parts` (owned units,
+  internal edges as data, handles) plus a `Net` adapter.
 - `export/run.rs` → `Fork` instead of `clone_isolated`/`isolate_for_offline`.
 - `tutti-export` (38 `Net::new`, 34 `pipe_*`) and tests → a `GraphBuilder`
   helper over `Topology`.
@@ -798,12 +804,40 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
 1. **Silence skip.** It starves `Legacy` sources that are fed out-of-band
    (SoundFont, PolySynth, VoicePool, plugin instruments, mic, a base-0
    `AtomicSourceNode`): a silent block parks them for good. Legacy must report
-   `Modified` by default and opt in to skipping [PR 1].
+   `Modified` by default and opt in to skipping [PR 1]. **Closed by PR 1:**
+   `Legacy` returns `Modified` unless built with `Legacy::pure` (or
+   `assume_pure`), which keeps the scan, the masks and the skip. A default
+   `Legacy` does not scan for downstream masks either: the contract has no
+   "silent, but keep calling me" status, so the masks cost the skip. Measured
+   against the code, the live hazard was narrower than listed: the executor
+   never skipped a node with no audio inputs, so the 0-input sources above
+   were safe already; a unit *with* audio inputs fed out of band (a plugin
+   instrument with a sidechain) was not. The executor now also never parks a
+   node with no outputs at all (a sink runs for its side effects).
 2. **No `Net::set(Setting)` path.** Some `set` impls write plain fields (the
-   sampler voice's `play.gain`) [PR 1].
+   sampler voice's `play.gain`) [PR 1]. **Closed by PR 1:**
+   `Legacy::controlled(unit)` returns the node and `LegacyControls<T>`: a
+   64-deep SPSC ring of `Setting`s drained into `AudioUnit::set` at the start
+   of each call, and a never-processed shadow (`Arc<Mutex<T>>`) that every
+   `set` is applied to. The shadow is an isolated deep copy (`clone()` then
+   `AudioUnit::isolate()`), a by-value snapshot for `Fork` and for reading
+   plain fields — never a window onto live state (`SvfFilterNode::isolate`
+   now severs its param cells for this). A full ring holds the setting
+   control-side, coalesced per parameter by moving the latest value to the
+   back (delivery is always a subsequence of what was sent), and sends it
+   ahead of anything newer (`Delivery::Held`); nothing is dropped. The
+   editor passed to `controlled` flushes held settings on every `collect`,
+   so a burst that goes quiet is still delivered.
 3. ~~**No replace-with-fade** for `crossfade_audio_node`~~ [PR 3]. **Closed**:
    `Editor::replace`, below.
 4. **No runtime latency change** for a plugin's latency atomic [PR 1].
+   **Closed by PR 1:** `Editor::set_latency(key, Latency)` updates the spec
+   and the shape; the next commit moves PDC without touching the unit. It is
+   the authority until the next re-prepare, which re-probes the unit (a frame
+   count is wrong at a new rate) or a replace re-reads the new unit's shape.
+   A figure past `MAX_NODE_LATENCY` is refused (`LatencyTooLong`), not
+   clamped. The reference interpreter reads latency from the spec, as the
+   compiler does.
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
    hosts read its `BEAT_PORTS` [PR 6]. **Closed:** `EnvClock` (tutti-core,
    beside `TransportClock`) is a native `Node` that emits the same

@@ -106,6 +106,7 @@ Every component is a thin wrapper over a tutti capability that already exists.
 | `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
 | `MidiRouteRule` | `midi` | Which inbound MIDI channel reaches which entities. |
 | `PluginEmitter`, `PluginEditorOpen` | `plugin` | A hosted plugin instance and its editor window. |
+| `MidiTarget`, `ModParamsHandle`, `PluginShadow` | `midi`, `modulation`, `plugin` | Controls captured from a unit as its node is inserted (`CapturedControls`): its MIDI port, its modulatable params, a hosted plugin's input slots and latency. Read instead of the graph. |
 
 The DAW parameter components (`Volume`, `Pan`, `Mute`, …) are **not** here: they
 are app vocabulary and live app-side. `AudioParam<U, P>` is the generic the

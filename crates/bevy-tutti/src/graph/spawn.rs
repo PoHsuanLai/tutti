@@ -12,7 +12,7 @@ use bevy_ecs::system::EntityCommands;
 use tutti_core::AudioNode;
 use tutti_core::AudioUnit;
 
-use crate::graph::{AudioGraphRes, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 
 /// `Commands` extension that adds a unit to the graph and spawns an entity
 /// with `AudioNode(id)` attached.
@@ -108,24 +108,8 @@ impl InsertAudioNode for EntityCommands<'_> {
         let entity = self.id();
         // Same deferred shape as `spawn_audio_node`: `Net::add` returns the id
         // inside the command, so the binding cannot be observed from outside.
-        self.commands().queue(move |world: &mut World| {
-            let id = match world.get_resource_mut::<AudioGraphRes>() {
-                Some(mut graph) => graph.0.add(unit),
-                None => {
-                    bevy_log::warn!(
-                        "insert_audio_node: AudioGraphRes missing; entity {:?} left without AudioNode",
-                        entity
-                    );
-                    return;
-                }
-            };
-            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-                dirty.0 = true;
-            }
-            if let Ok(mut e) = world.get_entity_mut(entity) {
-                e.insert(AudioNode(id));
-            }
-        });
+        self.commands()
+            .queue(move |world: &mut World| add_and_bind(world, entity, unit, "insert_audio_node"));
         self
     }
 }
@@ -136,27 +120,35 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
         U: AudioUnit + 'static,
     {
         let entity = self.spawn_empty().id();
-        self.queue(move |world: &mut World| {
-            let id = match world.get_resource_mut::<AudioGraphRes>() {
-                Some(mut graph) => graph.0.add(unit),
-                None => {
-                    bevy_log::warn!(
-                        "spawn_audio_node: AudioGraphRes missing; entity {:?} left without AudioNode",
-                        entity
-                    );
-                    return;
-                }
-            };
-            // Mark the graph dirty so the per-frame commit system flushes
-            // this addition along with whatever else mutated this frame.
-            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-                dirty.0 = true;
-            }
-            if let Ok(mut e) = world.get_entity_mut(entity) {
-                e.insert(AudioNode(id));
-            }
-        });
+        self.queue(move |world: &mut World| add_and_bind(world, entity, unit, "spawn_audio_node"));
         self.entity(entity)
+    }
+}
+
+/// The body both insertion commands share: capture the unit's controls, add it
+/// to the graph, mark the graph dirty, and bind the entity.
+///
+/// The capture comes first because it is the last moment the concrete unit is
+/// in hand — see [`capture`](crate::graph::capture).
+fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit: U, caller: &str) {
+    let controls = CapturedControls::capture(world, &unit);
+    let id = match world.get_resource_mut::<AudioGraphRes>() {
+        Some(mut graph) => graph.0.add(unit),
+        None => {
+            bevy_log::warn!(
+                "{caller}: AudioGraphRes missing; entity {:?} left without AudioNode",
+                entity
+            );
+            return;
+        }
+    };
+    // Mark the graph dirty so the per-frame commit system flushes this
+    // addition along with whatever else mutated this frame.
+    if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
+        dirty.0 = true;
+    }
+    if let Ok(mut e) = world.get_entity_mut(entity) {
+        controls.bind(&mut e, id);
     }
 }
 
@@ -165,13 +157,17 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode(NodeId)`](AudioNode).
-/// 2. Calls [`Net::crossfade`](tutti_core::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
-/// 3. Marks [`GraphDirty`] so the per-frame
+/// 2. Captures `new_unit`'s controls, as every insertion does (see
+///    [`capture`](crate::graph::capture)), replacing the old unit's: a synth's
+///    new MIDI port, a filter's new param cells.
+/// 3. Calls [`Net::crossfade`](tutti_core::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
+/// 4. Marks [`GraphDirty`] so the per-frame
 ///    [`commit_graph`](crate::graph::commit_graph) flushes.
 ///
 /// The same `NodeId` survives the crossfade — connections to/from this node
 /// stay valid, and any [`PortSources`](crate::graph::PortSources) naming this
-/// entity keeps resolving. Callers don't need to update any other components.
+/// entity keeps resolving. Callers don't need to update any other components;
+/// the captured controls are replaced here.
 ///
 /// Use this for parameter changes that aren't safe to mutate live (e.g. a
 /// filter cutoff baked into the unit at construction, a sampler loop range
@@ -194,6 +190,7 @@ pub fn crossfade_audio_node(
             );
             return;
         };
+        let controls = CapturedControls::capture(world, new_unit.as_ref());
         let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
             bevy_log::warn!(
                 "crossfade_audio_node: AudioGraphRes missing; entity {:?} not crossfaded",
@@ -209,6 +206,9 @@ pub fn crossfade_audio_node(
         );
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
+        }
+        if let Ok(mut e) = world.get_entity_mut(entity) {
+            controls.replace(&mut e, node.0);
         }
     });
 }

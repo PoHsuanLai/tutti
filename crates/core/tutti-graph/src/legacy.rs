@@ -28,11 +28,100 @@
 //! - **In place.** The adapter copies each chunk of input into its own buffer
 //!   before the unit runs, so an output that already holds its input is no
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].
+//! - **Silence: no claim unless the caller makes it.** See below.
+//!
+//! # Never skipped, unless [`pure`](Legacy::pure)
+//!
+//! The executor skips an event-free node whose inputs are silent once its
+//! last call was silent and its tail has elapsed (see `Executor`). That is
+//! right for a node whose output depends only on its audio inputs, and wrong
+//! for one fed **out of band** — a SoundFont or a PolySynth steered through a
+//! channel, a plugin instrument driven through its own MIDI queue, a mic
+//! monitor, an `AtomicSourceNode` whose base is 0 until someone writes it.
+//! Skipped once, such a unit is never called again to notice that it has
+//! something to say: parked for good.
+//!
+//! An `AudioUnit` receives no events, so the adapter cannot tell the two
+//! kinds apart, and `Net` never skipped anything. So a `Legacy` makes **no
+//! silence claim** by default: it returns [`Status::Modified`], which leaves
+//! its outputs unflagged and the node running every block, as `Net` ran it.
+//! [`Legacy::pure`] is the opt-in for a unit that *is* a function of its audio
+//! inputs (a filter, a gain, a mixer): it scans what the unit wrote, reports
+//! the silent channels as [`Status::Masked`], and so becomes skippable.
+//!
+//! **Downstream masks come with the skip, not without it.** A default
+//! `Legacy` could scan its output and report silence purely so the nodes
+//! *after* it may skip — but a node with no event inputs that reports silent
+//! outputs is exactly the node the executor parks, and the `Node` contract has
+//! no status for "silent, but keep calling me". So a default `Legacy` does not
+//! scan at all (it saves the scan, too), and a pure filter after it is not
+//! skipped on the silence it cannot see. Losing that skip costs CPU on a quiet
+//! graph; parking an instrument costs its audio. If the lost skip shows up in
+//! a profile, the fix is a contract flag the executor reads, not a scan here.
+//!
+//! # Settings, and the shadow: [`Legacy::controlled`]
+//!
+//! `Net::set(Setting)` reached a unit's [`AudioUnit::set`] on the audio
+//! thread: the frontend enqueued the setting and the backend drained its
+//! queue at the start of each `process` (`fundsp-tutti/src/realnet.rs`,
+//! `handle_messages`). Some units depend on exactly that — the sampler
+//! voice's `set` writes `play.gain`, a plain field, so a write anywhere but on
+//! the copy that renders is lost. The graph has no `Net` to carry it, so
+//! [`Legacy::controlled`] builds the same path per node:
+//!
+//! - a preallocated SPSC **settings ring** ([`LEGACY_SETTINGS_CAPACITY`]
+//!   deep) that the node drains at the start of each call, before the first
+//!   chunk, applying each setting through `AudioUnit::set` in the order sent;
+//! - a **shadow**: an isolated deep copy of the unit (`clone()` then
+//!   `AudioUnit::isolate`) taken at construction, behind an `Arc<Mutex<_>>`
+//!   on the control side, never processed and never locked by the audio
+//!   thread. Every [`LegacyControls::set`] is applied to it as well, so it
+//!   holds the unit's by-value params as the caller last set them — what a
+//!   fork (doc 013, Phase 3 PR 2) clones from. It is a snapshot, not a window:
+//!   `isolate` severs the `Arc` cells a plain clone would share with the live
+//!   unit, so writing the shadow never moves live state ahead of the ring.
+//!   Live handles come from a node's captured controls (Phase 3 PR 9).
+//!
+//! **A full ring never blocks and never drops.** The setting is *held* on
+//! the control side, coalesced per parameter with anything already held for
+//! it: the earlier value (same parameter kind and address) is removed and the
+//! new one appended, so what reaches the unit is always a subsequence of what
+//! was sent — each held parameter at its last send's position. Held settings
+//! go out ahead of anything newer, on the next [`set`](LegacyControls::set),
+//! [`flush`](LegacyControls::flush), or [`Editor::collect`] (and so every
+//! commit) of the editor the node was built for, which holds each node's queue
+//! weakly — a burst that fills the ring and then goes quiet is still delivered.
+//! The answer says which happened ([`Delivery`], after doc 011's `Delivered`
+//! minus its "dropped": nothing here is). 64 settings per block per node is
+//! far above what a UI or an automation lane sends; `Net` had 256 for the
+//! whole graph.
+//!
+//! **Timing.** A setting sent between blocks lands on the next block, as it
+//! did through `Net`. `Net`'s backend drained per `process` call, which the
+//! engine made at most 64 frames long; the graph hands a node the whole
+//! block, so a setting that races a block lands at the block's start rather
+//! than at the next 64-frame chunk. A pure node that is parked does not drain
+//! until it is next called — nothing it renders can differ, since it renders
+//! only silence meanwhile; its ring may fill, and holding covers that.
+//!
+//! (Two shapes never reached the park even before this: the executor never
+//! skips a node with no audio inputs, and never one with no outputs at all.
+//! The first covers a 0-input source; the second a sink that exists for its
+//! side effects. The hazard was a unit *with* audio inputs fed out of band —
+//! a plugin instrument with a sidechain, a vocoder carrier. `Modified` closes
+//! it for every shape at once, without leaning on either rule.)
 
+use std::collections::VecDeque;
+use std::mem::Discriminant;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_node::buffer::BufferVec;
-use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
+use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
+use crate::editor::Editor;
 use crate::io::Io;
 use crate::node::{ConstantMask, Cx, Node, Prepare, Resolution, Shape, SilenceMask, Status};
 
@@ -42,12 +131,250 @@ pub struct Legacy {
     shape: Shape,
     input: BufferVec,
     output: BufferVec,
+    /// Whether the unit's output depends only on its audio inputs, so its
+    /// silence may be reported (and the node skipped). See the module docs.
+    pure: bool,
+    /// The audio-thread end of [`Legacy::controlled`]'s settings ring.
+    settings: Option<HeapCons<Setting>>,
+}
+
+/// Settings one [`Legacy::controlled`] node's ring holds between two of its
+/// calls. Past that, [`LegacyControls::set`] holds and coalesces on the
+/// control side (see the `legacy` module docs, `src/legacy.rs`).
+pub const LEGACY_SETTINGS_CAPACITY: usize = 64;
+
+/// What became of a [`LegacyControls::set`] or
+/// [`flush`](LegacyControls::flush). Never "dropped": a setting that did not
+/// fit is held, not lost.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Everything sent so far is in the ring: the unit applies it at the
+    /// start of its next call.
+    Queued,
+    /// The ring was full. What did not fit is held on the control side,
+    /// coalesced per parameter, and goes out on the next `set` or `flush`
+    /// that finds room. Transient: call [`flush`](LegacyControls::flush)
+    /// after the executor has run a block. The shadow already has it.
+    Held,
+}
+
+/// Which parameter a [`Setting`] sets: its kind and its address. Two
+/// settings with the same key set the same thing, so the later one wins
+/// when both are held.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SettingKey {
+    kind: Discriminant<Parameter>,
+    address: [(u8, u64); 4],
+}
+
+impl SettingKey {
+    fn of(setting: &Setting) -> Self {
+        // `Setting`'s address is private; walk it the way a structural unit
+        // does, one level per `peel`. Four levels is `Setting`'s own bound.
+        let mut rest = setting.clone();
+        let mut address = [(0u8, 0u64); 4];
+        for level in &mut address {
+            *level = match rest.direction() {
+                Address::Null => (0, 0),
+                Address::Left => (1, 0),
+                Address::Right => (2, 0),
+                Address::Index(i) => (3, i as u64),
+                Address::Node(n) => (4, n.get()),
+            };
+            rest = rest.peel();
+        }
+        Self {
+            kind: std::mem::discriminant(setting.parameter()),
+            address,
+        }
+    }
+}
+
+/// The control-side end of one controlled node's ring, and what did not fit
+/// in it. Shared between its [`LegacyControls`] and, weakly, the [`Editor`]
+/// that flushes it on every [`collect`](Editor::collect), so a burst that
+/// filled the ring is delivered even if no `set` ever follows it.
+pub(crate) struct Outbox {
+    tx: HeapProd<Setting>,
+    /// Settings that did not fit, one per parameter, in the order of each
+    /// parameter's **last** send.
+    held: VecDeque<(SettingKey, Setting)>,
+}
+
+impl Outbox {
+    fn answer(&self) -> Delivery {
+        if self.held.is_empty() {
+            Delivery::Queued
+        } else {
+            Delivery::Held
+        }
+    }
+
+    /// Send what is held, oldest first, as far as the ring has room.
+    pub(crate) fn flush(&mut self) -> Delivery {
+        while let Some((key, setting)) = self.held.pop_front() {
+            if let Err(setting) = self.tx.try_push(setting) {
+                self.held.push_front((key, setting));
+                break;
+            }
+        }
+        self.answer()
+    }
+
+    /// Send `setting` after everything held, or hold it.
+    ///
+    /// Holding coalesces by **moving to the back**: an earlier held value for
+    /// the same parameter is removed and this one appended. So what reaches
+    /// the unit is always a subsequence of what was sent, with each held
+    /// parameter at its last send's position. Replacing in place would
+    /// reorder: with the ring full, `Center(1000)`, `CenterQ(500, 0.7)`,
+    /// `Center(2000)` would deliver `Center(2000)` *before* the `CenterQ`,
+    /// leaving the unit at 500 Hz while the shadow — which applied all three
+    /// in order — says 2000, for good.
+    fn send(&mut self, setting: Setting) -> Delivery {
+        if self.flush() == Delivery::Queued {
+            match self.tx.try_push(setting) {
+                Ok(()) => return Delivery::Queued,
+                Err(setting) => return self.hold(setting),
+            }
+        }
+        self.hold(setting)
+    }
+
+    fn hold(&mut self, setting: Setting) -> Delivery {
+        let key = SettingKey::of(&setting);
+        self.held.retain(|(k, _)| *k != key);
+        self.held.push_back((key, setting));
+        Delivery::Held
+    }
+}
+
+/// Lock `m`, recovering from poison: nothing behind these locks is ever left
+/// torn in a way audio could hear (see [`LegacyControls::shadow`]).
+fn lock<T: ?Sized>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The control side of a [`Legacy::controlled`] node: its settings ring, and
+/// the shadow copy of its unit. Control thread only.
+pub struct LegacyControls<T> {
+    outbox: Arc<Mutex<Outbox>>,
+    shadow: Arc<Mutex<T>>,
+}
+
+impl<T: AudioUnit> LegacyControls<T> {
+    /// Send `setting` to the unit, and apply it to the shadow now.
+    ///
+    /// Anything held from before goes first, so settings reach the unit in
+    /// the order they were sent, less any earlier value a later one for the
+    /// same parameter replaced while held. Never blocks, never drops.
+    pub fn set(&mut self, setting: Setting) -> Delivery {
+        self.shadow().set(setting.clone());
+        lock(&self.outbox).send(setting)
+    }
+
+    /// Send what is held, as far as the ring has room. The editor the node
+    /// was built for does this on every [`collect`](Editor::collect) (and so
+    /// on every commit); calling it here is only for a host that wants the
+    /// answer.
+    pub fn flush(&mut self) -> Delivery {
+        lock(&self.outbox).flush()
+    }
+
+    /// Settings held because the ring was full, one per parameter.
+    pub fn held(&self) -> usize {
+        lock(&self.outbox).held.len()
+    }
+
+    /// The shadow: an **isolated deep copy** of the unit — `clone()`, then
+    /// [`AudioUnit::isolate`], taken at construction — with every setting
+    /// sent since applied to it. Never processed, never prepared (its sample
+    /// rate is whatever the unit had when it was wrapped).
+    ///
+    /// It is a **by-value snapshot**: what a fork (doc 013 Phase 3 PR 2)
+    /// clones, and where a plain field the unit's `set` writes (a sampler
+    /// voice's `play.gain`) can be read back. It is *not* a window onto the
+    /// live unit: `isolate` severs the `Arc` cells a clone would share, so a
+    /// `set` here never writes live state ahead of the ring (a clone of an
+    /// `SvfFilterNode` shares its param atomics, and would move the live
+    /// cutoff at once, only for the ring to write older values back). Live
+    /// handles come from a node's captured controls (Phase 3 PR 9), not from
+    /// here.
+    ///
+    /// A poisoned lock is recovered: the shadow renders nothing, so a panic
+    /// mid-`set` leaves nothing torn that audio could hear.
+    pub fn shadow(&self) -> MutexGuard<'_, T> {
+        lock(&self.shadow)
+    }
 }
 
 impl Legacy {
-    /// Wrap `unit`.
+    /// Wrap `unit`. It is called every block, silent or not — see "Never
+    /// skipped, unless pure" in the module docs.
     pub fn new(unit: impl AudioUnit + 'static) -> Self {
         Self::from_box(Box::new(unit))
+    }
+
+    /// Wrap a unit whose output is a function of its **audio inputs alone**
+    /// (and its own state, which its declared tail bounds): a filter, a gain,
+    /// a mixer. Its silent outputs are reported, so the executor may skip it
+    /// once its inputs are silent and its tail has elapsed, and nodes after it
+    /// see the silence too.
+    ///
+    /// A claim the caller makes about the unit, and the executor trusts: wrap
+    /// a unit fed any other way — a channel, an atomic, a MIDI queue of its
+    /// own — with [`new`](Self::new), or it falls silent for good the first
+    /// time it is quiet.
+    pub fn pure(unit: impl AudioUnit + 'static) -> Self {
+        Self::new(unit).assume_pure()
+    }
+
+    /// Mark this node [`pure`](Self::pure): for a node built some other way
+    /// ([`from_box`](Self::from_box)). The same claim, with the same
+    /// consequence if it is false.
+    pub fn assume_pure(mut self) -> Self {
+        self.pure = true;
+        self
+    }
+
+    /// Whether this node was declared [`pure`](Self::pure).
+    pub fn is_pure(&self) -> bool {
+        self.pure
+    }
+
+    /// Wrap `unit` with a settings path: the `Net::set` replacement. Returns
+    /// the node and its [`LegacyControls`] — a ring the node drains into
+    /// `AudioUnit::set` at the start of each call, and a never-processed,
+    /// isolated shadow copy of `unit` that every setting is also applied to.
+    /// See "Settings, and the shadow" in the module docs (`src/legacy.rs`).
+    ///
+    /// `editor` is the editor the node will be inserted into: it flushes
+    /// what the ring could not take on every [`collect`](Editor::collect),
+    /// so held settings go out without another `set`. It holds the queue
+    /// weakly; dropping the controls unregisters it.
+    ///
+    /// Not [`pure`](Self::pure) unless marked with
+    /// [`assume_pure`](Self::assume_pure).
+    pub fn controlled<T: AudioUnit + Clone + 'static>(
+        editor: &mut Editor,
+        unit: T,
+    ) -> (Self, LegacyControls<T>) {
+        let mut shadow = unit.clone();
+        shadow.isolate();
+        let (tx, rx) = HeapRb::<Setting>::new(LEGACY_SETTINGS_CAPACITY).split();
+        let outbox = Arc::new(Mutex::new(Outbox {
+            tx,
+            held: VecDeque::new(),
+        }));
+        editor.register_outbox(Arc::downgrade(&outbox));
+        let mut node = Self::new(unit);
+        node.settings = Some(rx);
+        let controls = LegacyControls {
+            outbox,
+            shadow: Arc::new(Mutex::new(shadow)),
+        };
+        (node, controls)
     }
 
     /// Wrap an already boxed unit.
@@ -59,6 +386,8 @@ impl Legacy {
             shape,
             input: BufferVec::new(ins),
             output: BufferVec::new(outs),
+            pure: false,
+            settings: None,
         }
     }
 
@@ -107,6 +436,21 @@ impl Node for Legacy {
         let ins = self.shape.audio_in.count() as usize;
         let outs = self.shape.audio_out.count() as usize;
         let frames = io.frames();
+        // Settings first, as `Net`'s backend applied its queue at the start
+        // of `process`. `Setting` owns no heap memory, so neither the pop nor
+        // the drop inside `set` allocates or frees.
+        // Bounded by what was there on entry (at most the ring's capacity),
+        // so a producer racing this loop cannot keep the callback in it.
+        // (No test covers the bound: single-threaded, nothing can push while
+        // the loop runs, so a bounded and an unbounded drain look alike.)
+        if let Some(rx) = &mut self.settings {
+            for _ in 0..rx.occupied_len() {
+                match rx.try_pop() {
+                    Some(setting) => self.unit.set(setting),
+                    None => break,
+                }
+            }
+        }
         let mut start = 0;
         while start < frames {
             let len = (frames - start).min(MAX_BUFFER_SIZE);
@@ -122,9 +466,16 @@ impl Node for Legacy {
             }
             start += len;
         }
-        // Report silence the unit produced, so the executor can skip it
-        // (it has no event inputs, so its tail decides — see `Executor`).
-        // One scan of what was just written; cheap next to the unit.
+        // No claim unless the caller made one for us (see the module docs):
+        // any silence reported here would let the executor park the unit,
+        // and a unit fed out of band would never be called again.
+        if !self.pure {
+            return Status::Modified;
+        }
+        // Pure: report the silence the unit produced, so the executor can
+        // skip it (it has no event inputs, so its tail decides — see
+        // `Executor`). One scan of what was just written; cheap next to the
+        // unit.
         let mut silent = SilenceMask::NONE;
         for c in 0..outs {
             if io

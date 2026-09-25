@@ -21,8 +21,12 @@
 //! /// One line per param — the unit and the address, both load-bearing.
 //! type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 //!
+//! let unit = DistortionNode::new(ShapeKind::Tanh, 1.0);
+//! // The node's own drive atomic — shared with every clone of the node, so it
+//! // is the cell the DSP reads, wherever the graph keeps the unit.
+//! let live = unit.drive();
 //! let mut net = Net::new(0, 1);
-//! let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 1.0)));
+//! let node = net.push(Box::new(unit));
 //! net.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
@@ -39,8 +43,6 @@
 //! app.update();
 //!
 //! // Read the node's own atomic — the cell the DSP reads, not the component.
-//! let graph = app.world().resource::<AudioGraphRes>();
-//! let live = graph.0.node_as::<DistortionNode>(node).unwrap().drive();
 //! assert_eq!(live.load(std::sync::atomic::Ordering::Acquire), 4.0);
 //! ```
 //!
@@ -49,7 +51,7 @@
 //! Pushing a param needs no node-type dispatch: `Net::set` carries a
 //! `(param, value)` pair to the addressed node, and the unit's own `set`
 //! decodes it — a unit ignores params it does not own. That is the opposite of
-//! resolving a *modulation target*, which needs a concrete downcast (see
+//! resolving a *modulation target*, which needs the concrete node type (see
 //! `modulation::target`). Reconciling is uniform; resolving is not.
 //!
 //! # Modulated params
@@ -133,8 +135,8 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 ///
 /// Taking only the last two loses every write to an audio-rate param, and it is
 /// the quietest of the three failures: the write lands on the node's atomic,
-/// which is a real cell that a debugger and a `node_as` read both show holding
-/// the new value — while the DSP reads the port and hears the old one.
+/// which is a real cell that a debugger and a read of the node both show
+/// holding the new value — while the DSP reads the port and hears the old one.
 /// `tutti-nodes`' `a_wired_param_port_makes_the_node_ignore_its_atomic` is the
 /// engine-level statement of it.
 ///

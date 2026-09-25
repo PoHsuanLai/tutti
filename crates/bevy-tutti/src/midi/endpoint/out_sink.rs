@@ -88,7 +88,7 @@ impl MidiOutSinkRes {
 // which is a **routing decision**, not an address. Three things go wrong if the
 // registration pass makes it for you:
 //
-// - **The type cannot answer the question.** Resolution is a downcast per
+// - **The type cannot answer the question.** Capture is a match per
 //   registered concrete type, but a plugin's MIDI-out capability is a per-
 //   instance negotiated fact (`Features::MIDI_OUT`), so `register::<PluginClient>`
 //   cannot tell an emitting instance from a silent one.

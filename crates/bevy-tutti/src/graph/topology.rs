@@ -31,11 +31,8 @@
 //!    parks it with no setter. A `Net` built from scratch by
 //!    [`tutti_core::topology::compile`] has no backend and nowhere to land.
 //! 2. **The frontend `Net` is live mutable state, not a derived artifact.**
-//!    `plugin_host` mutates hosted-plugin units in place through `node_as_mut`
-//!    (sound precisely because their input slots are `Arc`-shared across the
-//!    frontend's clones), and `crossfade_audio_node` queues a `NodeEdit` into
-//!    `Net::edit_queue` that `commit` drains. A from-scratch rebuild discards
-//!    both. The sampler's butler-shared buffers and a decoded `SoundFontUnit`
+//!    `crossfade_audio_node` queues a `NodeEdit` into `Net::edit_queue` that
+//!    `commit` drains, and a from-scratch rebuild discards it. The sampler's butler-shared buffers and a decoded `SoundFontUnit`
 //!    are in the same position: no `kind` string could reconstruct them.
 //!
 //! So [`compile`](tutti_core::topology::compile) stays what it is — the

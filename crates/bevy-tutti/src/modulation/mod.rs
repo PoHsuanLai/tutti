@@ -8,18 +8,17 @@
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
-//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+//! use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_core::dsp::Net;
 //! use tutti_core::AudioUnit as _;
 //! use tutti_core::transport::Transport;
-//! use tutti_core::{AudioNode, SampleRate};
+//! use tutti_core::SampleRate;
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
 //! let mut net = Net::new(0, 1);
-//! let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 5.0)));
 //! net.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
@@ -27,10 +26,18 @@
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-//! // The host supplies the downcast — see the last section.
+//! // The host names the node types it modulates — see the last section. Before
+//! // the node goes in: the registry is read once, when the node's controls are
+//! // captured.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
 //!     .register::<DistortionNode>();
+//!
+//! // A unit pushed by hand is bound the way `spawn_audio_node` binds one: its
+//! // controls captured first, then the entity bound to the node.
+//! let unit = DistortionNode::new(ShapeKind::Tanh, 5.0);
+//! let controls = CapturedControls::capture(app.world(), &unit);
+//! let node = app.world_mut().resource_mut::<AudioGraphRes>().0.push(Box::new(unit));
 //!
 //! let lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
@@ -39,10 +46,11 @@
 //!
 //! // The target declares what is modulatable and over what range; the engine
 //! // does not invent a param's sensible bounds.
-//! let drive = app.world_mut().spawn((
-//!     AudioNode(node),
+//! let mut drive = app.world_mut().spawn(
 //!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-//! )).id();
+//! );
+//! controls.bind(&mut drive, node);
+//! let drive = drive.id();
 //!
 //! app.world_mut().spawn(
 //!     ModRoute::new(lfo, drive, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
@@ -105,7 +113,7 @@
 //! assert!(app.world().get::<ModRateCell>(carrier).is_some());
 //! ```
 //!
-//! A source carries no `AudioNode`, so the registry's downcast path cannot
+//! A source carries no `AudioNode`, so the registry's capture path cannot
 //! serve this; the resolver tries a source's rate first and hands back an
 //! accumulator mirroring into that entity's [`ModRateCell`] — the same cell the
 //! running modulator reads its frequency from. `ModRateCell` is added
@@ -212,8 +220,9 @@
 //!
 //! # What the host must supply
 //!
-//! Resolving a param to an accumulator needs a downcast to a concrete node type
-//! (see [`target`]), so an app registers the node types it modulates:
+//! Resolving a param to an accumulator needs the concrete node type (see
+//! [`target`]), so an app registers the node types it modulates — before it
+//! spawns them, since the registry is read once per node, as it is inserted:
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -240,7 +249,7 @@ pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
     CollectedModSources, ModRateCell, ModSourceAppExt, ModSourceKind, ModSourceSystems,
 };
-pub use target::{ModBusRes, ModTargetRegistry, ModTargetResolver};
+pub use target::{ModBusRes, ModParamsHandle, ModTargetRegistry, ModTargetResolver};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

@@ -19,14 +19,13 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::topology::{key_of, LiveGraph};
-use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
 use bevy_tutti::modulation::audio_rate::AudioRateChains;
 use bevy_tutti::modulation::{
     ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
-use tutti_core::AudioNode;
 use tutti_mod::LfoShape;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_types::graph::{Edge, InPort, OutPort, Source, Topology};
@@ -49,15 +48,16 @@ fn app_with_target() -> (App, Entity) {
     // this is a direct `Net::add` site, so nothing else would record it and the
     // audio-rate route would fall back to per-frame.
     let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
+    // And its controls, captured from the unit before it moves — the step every
+    // insertion path in `bevy_tutti::graph` runs.
+    let controls = CapturedControls::capture(app.world(), &dist);
     let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
-    let target = app
-        .world_mut()
-        .spawn((
-            AudioNode(node),
-            ports,
-            ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-        ))
-        .id();
+    let mut target = app.world_mut().spawn((
+        ports,
+        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
+    ));
+    controls.bind(&mut target, node);
+    let target = target.id();
     (app, target)
 }
 

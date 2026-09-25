@@ -401,3 +401,62 @@ fn a_crossed_range_is_survivable() {
         out[0]
     );
 }
+
+/// **The parts carry their handles and their internal edges, in no graph.**
+///
+/// `param_mod_parts` is what a graph other than `Net` inserts, so everything a
+/// host needs has to be on the parts before any unit moves: the base cell must
+/// be the one the base unit reads, the bounds the ones the sum clamps to, and
+/// the edge list must put the base on port 0 and shaper `i` on port `i + 1`.
+///
+/// Mutation: numbering shaper edges `port: i` (the off-by-one
+/// `n_edges_land_on_ports_one_through_n` describes) fails the edge assertion;
+/// minting the base cell with a fresh `AtomicSourceNode::new(base).shared()`
+/// instead of the base unit's own fails the first `tick`.
+#[test]
+fn parts_carry_their_cells_and_edges_before_insertion() {
+    let shaping = ParamModShaping {
+        depth: Depth(0.5),
+        polarity: Polarity::Bipolar,
+        curve: CurveType::Linear,
+    };
+    let mut parts = tutti_nodes::param_mod_parts(1.0, 0.0, 10.0, &[shaping, shaping]);
+
+    parts.base_cell().store(4.0, Ordering::Release);
+    let mut out = [0.0f32; 1];
+    parts.base.tick(&[], &mut out);
+    assert_eq!(
+        out[0], 4.0,
+        "the handed-out cell is the one the base unit reads"
+    );
+
+    parts.bounds().set(0.0, 2.0);
+    parts.sum.tick(&[100.0, 0.0, 0.0], &mut out);
+    assert_eq!(
+        out[0], 2.0,
+        "the handed-out bounds are the ones the sum clamps to"
+    );
+
+    use tutti_nodes::{ParamModEdge, ParamModPart};
+    let edges: Vec<ParamModEdge> = parts.edges().collect();
+    assert_eq!(
+        edges,
+        vec![
+            ParamModEdge {
+                from: ParamModPart::Base,
+                to: ParamModPart::Sum,
+                port: 0
+            },
+            ParamModEdge {
+                from: ParamModPart::Shaper(0),
+                to: ParamModPart::Sum,
+                port: 1
+            },
+            ParamModEdge {
+                from: ParamModPart::Shaper(1),
+                to: ParamModPart::Sum,
+                port: 2
+            },
+        ]
+    );
+}

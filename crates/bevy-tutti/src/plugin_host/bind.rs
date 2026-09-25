@@ -20,24 +20,64 @@
 //! Binding is idempotent anyway (installing a source replaces the previous one),
 //! so the marker is an optimisation, not a correctness device.
 //!
-//! # Why `node_as_mut` is safe here
+//! # Through the shadow, never the graph
 //!
-//! `Net`'s frontend holds *clones* of the vertices, so a mutation through
-//! `node_as_mut` normally reaches the audio thread only via the next commit —
-//! and anything stored by value is discarded outright. The plugin input slots
-//! are built for exactly this: each is an `Arc<ArcSwapOption<..>>` **shared
-//! across clones**, so an install on any clone is seen live by whichever clone
-//! is running, lock-free and with no commit. Installing a source is therefore
-//! sound through this accessor; storing a plain value would not be.
+//! Every system here drives the plugin through its [`PluginShadow`] — the
+//! node's [`PluginControls`], captured when the node was loaded. Those are the
+//! node's input slots, latency and tail cells and sample rate, each shared
+//! across the node's clones, so an install through the shadow is seen live by
+//! whichever clone the audio thread runs, lock-free and with no commit.
+//!
+//! This used to reach the graph's frontend clone of the node by downcast. That
+//! was sound for the same reason (the slots are shared) but tied the binding to
+//! a graph that keeps a frontend clone at all; the shadow does not care which
+//! graph the node is in.
 
 use bevy_ecs::prelude::*;
 #[cfg(feature = "modulation")]
 use bevy_log::warn;
 
-use tutti_plugin::handles::PluginClient;
+use tutti_core::dsp::NodeId;
+use tutti_core::AudioNode;
+use tutti_plugin::handles::{PluginClient, PluginControls};
 
-use crate::graph::{AudioGraphRes, MetronomeRes, TransportRes};
+use crate::graph::{MetronomeRes, TransportRes};
 use crate::plugin_host::editor::PluginEmitter;
+
+/// A loaded plugin's [`PluginControls`], captured from its node before the node
+/// went into the graph.
+///
+/// Inserted by the plugin load (and by any insertion path that meets a
+/// [`PluginClient`] — see [`CapturedControls`](crate::graph::CapturedControls)).
+/// Transport and param binding install through it, and the latency poll reads
+/// it; none of them touch the graph.
+///
+/// It records the node it came from, and [`controls_for`](Self::controls_for)
+/// answers only while that is still the entity's [`AudioNode`], so a shadow
+/// left behind by a node replaced by hand drives nothing.
+#[derive(Component, Debug, Clone)]
+pub struct PluginShadow {
+    node: NodeId,
+    controls: PluginControls,
+}
+
+impl PluginShadow {
+    /// The controls captured from the plugin node that became `node`.
+    pub fn new(node: NodeId, controls: PluginControls) -> Self {
+        Self { node, controls }
+    }
+
+    /// The graph node these controls were captured from.
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// The controls, if this shadow belongs to `node` — the entity's current
+    /// [`AudioNode`].
+    pub fn controls_for(&self, node: &AudioNode) -> Option<&PluginControls> {
+        (self.node == node.0).then_some(&self.controls)
+    }
+}
 
 /// "This plugin has the project transport installed."
 ///
@@ -67,48 +107,48 @@ type TransportUnbound = (With<PluginEmitter>, Without<PluginTransportBound>);
 ///
 /// # Every resource here is optional, deliberately
 ///
-/// All three come from `engine::build_into`, and `engine_ready` only reads
+/// Both come from `engine::build_into`, and `engine_ready` only reads
 /// `AudioEngineState` — a value a host can insert on its own, as this crate's
 /// own tests and examples do. Waiting is the right answer anyway: the
 /// steady-state query means a plugin binds as soon as the missing half turns up,
 /// where a hard `Res` turns "not yet" into a panicked schedule.
 pub fn plugin_bind_transport(
     mut commands: Commands,
-    graph: Option<ResMut<AudioGraphRes>>,
     transport: Option<Res<TransportRes>>,
     metronome: Option<Res<MetronomeRes>>,
-    unbound: Query<(Entity, &tutti_core::AudioNode), TransportUnbound>,
+    unbound: Query<(Entity, &AudioNode, &PluginShadow), TransportUnbound>,
 ) {
     if unbound.is_empty() {
         return;
     }
-    let (Some(mut graph), Some(transport), Some(metronome)) = (graph, transport, metronome) else {
+    let (Some(transport), Some(metronome)) = (transport, metronome) else {
         return;
     };
     let meter = metronome.0.meter_cell();
 
-    for (entity, node) in unbound.iter() {
-        // `None` means the node is not (yet) a `PluginClient` in the graph —
-        // skip and retry next frame, the same "skip and retry" every other
-        // resolver in this crate documents.
-        let Some(client) = graph.0.node_as_mut::<PluginClient>(node.0) else {
+    for (entity, node, shadow) in unbound.iter() {
+        // `None` means the shadow was captured for a node this entity no longer
+        // carries — skip and retry next frame, the same "skip and retry" every
+        // other resolver in this crate documents.
+        let Some(controls) = shadow.controls_for(node) else {
             continue;
         };
-        client.set_transport_source(transport.0.clone(), meter.clone());
+        controls.set_transport_source(transport.0.clone(), meter.clone());
         commands.entity(entity).insert(PluginTransportBound);
     }
 }
 
-/// Register `PluginClient` with the MIDI and modulation registries.
+/// Register `PluginClient` with the MIDI registry.
 ///
-/// Both registries resolve a target by downcasting the graph node to a concrete
-/// type, so a type nobody registered is unreachable — which is why a hosted
+/// The registry captures a node's port from the concrete unit when the node is
+/// inserted, so a type nobody registered is unreachable — which is why a hosted
 /// plugin could not receive MIDI regardless of how it was wired.
 ///
 /// # MIDI needs nothing else
 ///
-/// With the type registered, `register_midi_senders` picks a plugin up off its
-/// `AudioNode` like any other unit, and `unregister_midi_sender` takes it off
+/// With the type registered, the plugin load captures its `MidiTarget` like any
+/// other insertion, `register_midi_senders` picks the plugin up off it, and
+/// `unregister_midi_sender` takes it off
 /// the bus when that component goes. No plugin-specific system, and — more to
 /// the point — no plugin-specific *path*: inventing one would be a second
 /// lookup beside the shared one, and two lookups for one question drift.
@@ -157,7 +197,8 @@ pub struct PluginParamsBound;
 #[cfg(feature = "modulation")]
 type ParamBindItem = (
     Entity,
-    &'static tutti_core::AudioNode,
+    &'static AudioNode,
+    &'static PluginShadow,
     &'static crate::modulation::ModParamRange,
 );
 
@@ -191,8 +232,8 @@ type ParamsNeedRebind = (
 /// `register` looks like it would work — `PluginClient` implements `ModParams`,
 /// answering on `ParamAddr::Id` — and it compiles. It is wrong.
 ///
-/// `register` re-runs the downcast on **every** modulation rebuild, and
-/// `PluginClient::param_target` is a *constructor*: it returns a fresh
+/// `register`'s handle is asked again on **every** modulation rebuild, and
+/// `PluginControls::param_target` is a *constructor*: it returns a fresh
 /// accumulator each call and stores nothing. So each rebuild would mint a new
 /// `Arc`, hand it to the router, and leave the plugin reading the previous one —
 /// the param would sit silently at its base while the modulation appeared to be
@@ -208,8 +249,8 @@ type ParamsNeedRebind = (
 /// base from `ModParamRange`.
 ///
 /// So the target is built **once, here**, and supplied to the registry with
-/// `insert_target` — checked before the node path, so no downcast ever runs for
-/// these params. The same `Arc` goes to the plugin's automation source, which is
+/// `insert_target` — checked before the node path, so the node's own
+/// `ModParams` is never asked for these params. The same `Arc` goes to the plugin's automation source, which is
 /// what makes accumulation visible to the per-block read.
 ///
 /// `insert_target` is also the only route that accepts **curve** layers
@@ -228,7 +269,6 @@ type ParamsNeedRebind = (
 #[cfg(feature = "modulation")]
 pub fn plugin_bind_params(
     mut commands: Commands,
-    graph: Option<ResMut<AudioGraphRes>>,
     registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
     transport: Option<Res<TransportRes>>,
     changed: Query<ParamBindItem, ParamsNeedRebind>,
@@ -236,14 +276,13 @@ pub fn plugin_bind_params(
     if changed.is_empty() {
         return;
     }
-    let (Some(mut graph), Some(mut registry), Some(transport)) = (graph, registry, transport)
-    else {
+    let (Some(mut registry), Some(transport)) = (registry, transport) else {
         return;
     };
 
-    for (entity, node, ranges) in changed.iter() {
-        let Some(client) = graph.0.node_as_mut::<PluginClient>(node.0) else {
-            continue; // not resolvable yet — retried next frame
+    for (entity, node, shadow, ranges) in changed.iter() {
+        let Some(client) = shadow.controls_for(node) else {
+            continue; // captured for another node — retried next frame
         };
 
         let mut timed: Vec<tutti_plugin::handles::TimedParam> = Vec::new();

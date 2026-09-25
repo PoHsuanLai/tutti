@@ -18,7 +18,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, TransportRes,
+    AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
+    TransportRes,
 };
 use bevy_tutti::modulation::{
     LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
@@ -28,7 +29,7 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioUnit as _;
-use tutti_core::{AudioNode, SampleRate};
+use tutti_core::SampleRate;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_types::{Depth, Drive, Hz, ParamAddr, Unit, UnitParam};
 
@@ -120,8 +121,6 @@ fn main() {
     let mut app = App::new();
 
     let mut net = Net::new(0, 1);
-    let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 1.0)));
-    net.pipe_output(node);
     net.set_sample_rate(SampleRate(SAMPLE_RATE));
 
     app.insert_resource(AudioGraphRes(net));
@@ -136,18 +135,27 @@ fn main() {
         .resource_mut::<ModTargetRegistry>()
         .register::<DistortionNode>();
 
-    let strip = app
-        .world_mut()
-        .spawn((
-            Strip,
-            AudioNode(node),
-            DriveParam::new(Drive(5.0)),
-            CutoffParam::new(Hz(2_000.0)),
-            // Declaring the range is what makes a param modulatable at all.
-            // Only `Drive` gets one here — `Cutoff` stays unmodulated.
-            ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-        ))
-        .id();
+    // Registered above, captured here: the node's controls are taken from the
+    // unit once, before it moves into the graph, and bound with its `AudioNode`.
+    let unit = DistortionNode::new(ShapeKind::Tanh, 1.0);
+    let controls = CapturedControls::capture(app.world(), &unit);
+    let node = {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let node = graph.0.push(Box::new(unit));
+        graph.0.pipe_output(node);
+        node
+    };
+
+    let mut strip = app.world_mut().spawn((
+        Strip,
+        DriveParam::new(Drive(5.0)),
+        CutoffParam::new(Hz(2_000.0)),
+        // Declaring the range is what makes a param modulatable at all.
+        // Only `Drive` gets one here — `Cutoff` stays unmodulated.
+        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
+    ));
+    controls.bind(&mut strip, node);
+    let strip = strip.id();
 
     let lfo = app
         .world_mut()

@@ -10,12 +10,13 @@
 use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
-use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
-use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
+use bevy_tutti::graph::{
+    AudioConfig, AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes,
+};
+use bevy_tutti::midi::{MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
-use tutti_core::AudioNode;
 use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
@@ -86,13 +87,19 @@ fn app() -> App {
 }
 
 /// A synth entity, plus a handle on its port for assertions.
+///
+/// Bound the way every insertion path binds one: its controls (the MIDI port)
+/// are captured from the unit before it moves into the graph.
 fn spawn_synth(app: &mut App) -> Entity {
     let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+    let controls = CapturedControls::capture(app.world(), &synth);
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.0.push(Box::new(synth))
     };
-    app.world_mut().spawn(AudioNode(node)).id()
+    let mut entity = app.world_mut().spawn_empty();
+    controls.bind(&mut entity, node);
+    entity.id()
 }
 
 /// Start the transport rolling.
@@ -116,14 +123,13 @@ fn roll(app: &App) {
 /// This is what the audio thread does. Polling drains, so a caller sees each
 /// event once.
 fn poll(app: &App, entity: Entity, block: usize) -> Vec<MidiEvent> {
-    let node = app.world().get::<AudioNode>(entity).expect("has a node");
-    let graph = app.world().resource::<AudioGraphRes>();
-    let synth = graph
-        .0
-        .node_as::<PolySynth>(node.0)
-        .expect("is a PolySynth");
+    // The captured port shares its mailbox and source slot with the synth's.
+    let target = app
+        .world()
+        .get::<MidiTarget>(entity)
+        .expect("has a MIDI port");
     let mut buf = [MidiEvent::noop(); 64];
-    let n = synth.midi_port().poll(block, &mut buf);
+    let n = target.port().poll(block, &mut buf);
     buf[..n].to_vec()
 }
 

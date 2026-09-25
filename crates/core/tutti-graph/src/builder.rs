@@ -154,6 +154,14 @@ impl GraphBuilder {
         self.insert("legacy", Box::new(Legacy::from_box(unit)))
     }
 
+    /// [`add_unit`](Self::add_unit) for a unit whose output is a function of
+    /// its audio inputs alone (a filter, a gain), through
+    /// [`Legacy::pure`]: its silence is reported, so it may be skipped. A
+    /// unit fed any other way belongs in `add_unit`, which never skips it.
+    pub fn add_pure_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
+        self.insert("legacy", Box::new(Legacy::from_box(unit).assume_pure()))
+    }
+
     fn insert(&mut self, kind: &str, unit: Box<dyn Node>) -> NodeKey {
         let key = NodeKey(self.units.len() as u64);
         let shape = unit.shape();

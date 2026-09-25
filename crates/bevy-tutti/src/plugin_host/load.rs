@@ -37,7 +37,7 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
 
-use crate::graph::{AudioGraphRes, GraphDirty};
+use crate::graph::{AudioGraphRes, ControlCapture, GraphDirty};
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
@@ -269,6 +269,7 @@ pub fn plugin_load_promote(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
+    capture: ControlCapture,
     mut pending: Query<(Entity, &PluginRequest, &mut PendingPlugin)>,
 ) {
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
@@ -301,6 +302,10 @@ pub fn plugin_load_promote(
                     }
                 }
                 let name = handle.name().to_string();
+                // Before the unit moves into the graph: this is the last point
+                // the concrete `PluginClient` is in hand, and the shadow the
+                // binding systems drive (and the MIDI target) come from it.
+                let controls = capture.capture(unit.as_ref());
                 // `push`, not `add`: the unit is already boxed, and `add` boxes
                 // what it is given.
                 let id = graph.0.push(unit);
@@ -309,11 +314,14 @@ pub fn plugin_load_promote(
                 commands
                     .entity(entity)
                     .insert((PluginEmitter { handle }, PluginHealth::default()));
-                // `AudioNode` last: its *presence* is what MIDI registration and
-                // engine binding key on, and its removal is what unwires them.
-                // Inserting it before the emitter would let a binding system see
-                // a node whose handle has not landed yet.
-                commands.entity(entity).insert(tutti_core::AudioNode(id));
+                // `AudioNode` (with the captured controls) last: its *presence*
+                // is what MIDI registration and engine binding key on, and its
+                // removal is what unwires them. Inserting it before the emitter
+                // would let a binding system see a node whose handle has not
+                // landed yet.
+                commands
+                    .entity(entity)
+                    .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, id));
                 info!("plugin '{name}' loaded (entity {entity:?})");
                 Ok(())
             }

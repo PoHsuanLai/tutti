@@ -8,7 +8,8 @@
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
 //! - the pipeline, one file per duty: [`schedule`] (the set order, the
 //!   [`engine_ready`] gate, [`GraphDirty`]), [`spawn`] ([`SpawnAudioNode`],
-//!   [`crossfade_audio_node`]), [`despawn`] ([`reconcile_node_despawn`]) and
+//!   [`crossfade_audio_node`]), [`capture`] (what an insertion keeps of the
+//!   unit: [`CapturedControls`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
 //! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
@@ -24,6 +25,7 @@
 //! The node handle itself, [`AudioNode`](tutti_core::AudioNode), lives in
 //! tutti-core: an entity carrying one *is* a node in the graph.
 
+pub mod capture;
 pub mod commit;
 pub mod despawn;
 pub mod latency;
@@ -40,6 +42,7 @@ pub mod topology;
 pub mod transport;
 pub mod wire;
 
+pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use metering::MeteringRes;

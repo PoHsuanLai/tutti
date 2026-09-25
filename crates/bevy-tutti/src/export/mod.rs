@@ -126,7 +126,8 @@
 //!   ([`ExportError::NotForkable`]): a microphone monitor and an in-process
 //!   VST2 plugin. Export a node it does not feed.
 //! - **A fork that fails while rendering** — a plugin server that crashes or
-//!   hangs — fails the export by name ([`ExportError::ForkFailed`]) rather
+//!   hangs, a disk voice whose file cannot be read (its cause names the
+//!   file) — fails the export by name ([`ExportError::ForkFailed`]) rather
 //!   than writing silence as a success.
 //!
 //! # What is deliberately not here

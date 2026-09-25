@@ -51,7 +51,8 @@ pub use transport::{
 // `tutti-types` so the graph's `Editor::schedule` and the transport's
 // `MotionFsm::schedule` share one vocabulary.
 pub use tutti_types::{
-    first_frame_at_or_after, At, Frame, FrameClock, SegmentOrigin, TimelineSegment, FRAME_TOLERANCE,
+    first_frame_at_or_after, snap_to_whole_frame, At, Frame, FrameClock, SegmentOrigin,
+    TimelineSegment, FRAME_TOLERANCE,
 };
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
@@ -250,7 +251,7 @@ pub mod dsp {
 pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 pub use tutti_node::setting::Setting;
 pub use tutti_node::signal::{Signal, SignalFrame};
-pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
+pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
 // The numeric tower the contract is generic over — the part of it consumers
 // actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
 // two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);

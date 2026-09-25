@@ -111,6 +111,9 @@ impl AudioUnit for Boxed {
     fn forkable(&self) -> bool {
         self.0.forkable()
     }
+    fn render_fault(&self) -> Option<std::sync::Arc<dyn tutti_core::RenderFault>> {
+        self.0.render_fault()
+    }
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.0.set_sample_rate(sample_rate);
     }

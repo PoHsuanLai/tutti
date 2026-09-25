@@ -82,6 +82,26 @@ pub fn first_frame_at_or_after(frames_ahead: f64) -> i64 {
     (frames_ahead - FRAME_TOLERANCE).ceil() as i64
 }
 
+/// A fractional frame position, landed on the whole frame it is within
+/// [`FRAME_TOLERANCE`] of, if any; otherwise unchanged.
+///
+/// The same rule as [`first_frame_at_or_after`], for a reader that keeps the
+/// fraction (a sampler's read position) rather than rounding to a frame. A
+/// clock's beat is its frame count in closed form, and a position derived
+/// from it back through seconds lands a hair off the whole frame it is:
+/// frame 128 at 120 BPM and 48 kHz comes out 127.99999999999. Read as
+/// "frame 127, 0.99999999999 of the way to 128", an interpolator returns
+/// frame 128 only to within an ulp, not exactly.
+#[inline]
+pub fn snap_to_whole_frame(position: f64) -> f64 {
+    let whole = position.round();
+    if (position - whole).abs() < FRAME_TOLERANCE {
+        whole
+    } else {
+        position
+    }
+}
+
 /// A stretch of the timeline at one tempo: the beat at its first frame, and
 /// the tempo and rate it rolls at. The frame→beat conversion
 /// ([`beat_at`](Self::beat_at)) and its inverse ([`frame_of`](Self::frame_of)),
@@ -202,6 +222,20 @@ mod tests {
     use super::*;
 
     const SR: SampleRate = SampleRate(48_000.0);
+
+    /// A position within the tolerance of a whole frame is that frame, from
+    /// either side; one further off, or halfway, keeps its fraction.
+    ///
+    /// Mutation (run): `snap_to_whole_frame` returning `position` → 128 ±
+    /// 1e-10 stays off the frame → fails. Mutation (run): snapping with
+    /// `floor` → 128 − 1e-10 stays → fails.
+    #[test]
+    fn a_position_a_hair_off_a_frame_is_that_frame() {
+        assert_eq!(snap_to_whole_frame(128.0 + 1e-10), 128.0);
+        assert_eq!(snap_to_whole_frame(128.0 - 1e-10), 128.0);
+        assert_eq!(snap_to_whole_frame(128.5), 128.5);
+        assert_eq!(snap_to_whole_frame(128.001), 128.001);
+    }
 
     /// The reviewer's case: at 90 BPM / 48 kHz, frame 96 000 is beat 3 and
     /// frame 32 000 is beat 1, to the bit, and they convert back.

@@ -20,8 +20,8 @@
 
 use std::sync::Arc;
 use tutti_core::{
-    fold_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition, SampleRate, Timeline,
-    TimelineSegment, FRAME_TOLERANCE,
+    fold_frame, snap_to_whole_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition,
+    SampleRate, Timeline, TimelineSegment,
 };
 use tutti_io::Wave;
 
@@ -115,21 +115,12 @@ pub fn window_position(
     let tempo = tempo.get();
     let seconds_offset = beat_offset * 60.0 / tempo;
     let position = seconds_offset * source_rate.get() * rate.get();
-    // Within a millionth of a whole frame is that frame, by the same
-    // tolerance as the entry above. The clock's beat is its frame count in
-    // closed form, and coming back through seconds lands a hair off the
-    // whole frame it is (frame 128 of a clip at 120 BPM, 48 kHz, came out
-    // 127.99999999999: frame 127 at `t` = 1.0 in `f32`, which the cubic
-    // does not return as frame 128 exactly). Unsnapped, a clip placed on a
-    // beat played its own samples to within an ulp, not exactly.
-    let whole = position.round();
-    Some(SamplePosition(
-        if (position - whole).abs() < FRAME_TOLERANCE {
-            whole
-        } else {
-            position
-        },
-    ))
+    // The clock's beat is its frame count in closed form; back through
+    // seconds it lands a hair off the whole frame it is (frame 128 of a
+    // clip at 120 BPM, 48 kHz came out 127.99999999999). Landed on the
+    // frame by the engine's one tolerance, a clip on a beat plays its own
+    // samples exactly.
+    Some(SamplePosition(snap_to_whole_frame(position)))
 }
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
@@ -208,8 +199,17 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
 /// `len` must be non-zero.
 #[inline]
 pub(crate) fn tap_indices(len: usize, position: f64) -> ([usize; 4], f32) {
-    let idx = position.floor() as usize;
-    let frac = position.fract() as f32;
+    let mut idx = position.floor() as usize;
+    let mut frac = position.fract() as f32;
+    // A fraction a hair under 1 rounds to 1.0 in `f32`: "frame n, all the
+    // way to n + 1", which the cubic returns as frame n + 1 only to within
+    // an ulp. It *is* frame n + 1 at `t` = 0, where the kernel returns the
+    // tap exactly. (A position n - e inside a block, which no snap on the
+    // block's origin reaches, landed here.)
+    if frac >= 1.0 {
+        idx += 1;
+        frac = 0.0;
+    }
 
     let last = len - 1;
     // All four taps clamp to `last`, `im1` included: `saturating_sub` guards
@@ -290,6 +290,27 @@ mod tests {
     use super::*;
     use crate::test_transport::MockTransport;
     use tutti_core::{Bpm, PlaybackRate, SrcRatio};
+
+    /// **A position a hair under a whole frame reads that frame exactly.**
+    /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns
+    /// the next tap only to within an ulp, so the read lands on the next frame
+    /// at `t` = 0 instead, where the tap is returned as it is.
+    ///
+    /// Mutation (run): the `frac >= 1.0` carry removed from `tap_indices` →
+    /// taps `[3, 4, 5, 6]` at 1.0 → fails.
+    #[test]
+    fn a_position_a_hair_under_a_frame_reads_that_frame() {
+        let below = 5.0 - 1e-12;
+        assert_eq!(tap_indices(100, below), ([4, 5, 6, 7], 0.0));
+        let mut wave = Wave::new(1, 48_000.0);
+        for i in 0..16 {
+            wave.push_frame(&[(i as f32 + 1.0) * 0.1234567]);
+        }
+        let wave = Arc::new(wave);
+        let mut out = [0.0f32; 1];
+        read_frame(&wave, below, &mut out);
+        assert_eq!(out[0], wave.at(0, 5));
+    }
 
     /// **Gate parity.** Both tiers must derive the SAME source position from the
     /// same transport reading — asserted on the value, not on liveness.

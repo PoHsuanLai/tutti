@@ -180,6 +180,7 @@ mod tests {
                 None,
                 tutti_core::SampleRate::SR_48K,
                 PathBuf::from("test.wav"),
+                std::sync::Weak::new(),
             );
             plans.insert(i, state);
         }

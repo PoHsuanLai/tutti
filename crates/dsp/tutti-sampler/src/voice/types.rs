@@ -320,6 +320,16 @@ impl Voice {
         }
     }
 
+    /// `AudioUnit::render_fault` for the source that backs it: a severed disk
+    /// voice's failure latch, `None` for a memory voice (which cannot fail).
+    pub fn render_fault(&self) -> Option<Arc<dyn tutti_core::RenderFault>> {
+        use tutti_core::AudioUnit;
+        match &self.source {
+            VoiceSource::Memory(_) => None,
+            VoiceSource::Disk(voice) => voice.render_fault(),
+        }
+    }
+
     /// Whether [`isolate`](Self::isolate) severs everything this voice
     /// shares — `AudioUnit::forkable` for the source that backs it. Both
     /// tiers answer yes: a disk voice's `isolate` cuts it off from the ring

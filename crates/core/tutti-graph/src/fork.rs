@@ -170,6 +170,9 @@ pub enum ForkFaultKind {
     /// It stopped answering within its budget; it renders silence from then
     /// on rather than wait again.
     TimedOut,
+    /// It could not produce what it describes (a disk voice that could not
+    /// read its file); it renders silence from then on. The cause says why.
+    Failed,
 }
 
 /// A forked unit failed while rendering ([`Editor::fork_health`]): the
@@ -189,6 +192,7 @@ impl fmt::Display for ForkFault {
         let how = match self.kind {
             ForkFaultKind::Crashed => "crashed",
             ForkFaultKind::TimedOut => "timed out",
+            ForkFaultKind::Failed => "failed",
         };
         write!(f, "forked node {:?} {how}: {}", self.key, self.cause)
     }
@@ -215,6 +219,12 @@ impl ForkCause {
     /// Wrap a source's error.
     pub fn new(error: impl Error + Send + Sync + 'static) -> Self {
         Self(Arc::new(error))
+    }
+
+    /// Wrap an error already shared, as a unit's
+    /// [`RenderFault`](tutti_node::RenderFault) hands one over.
+    pub fn from_arc(error: Arc<dyn Error + Send + Sync + 'static>) -> Self {
+        Self(error)
     }
 
     /// The error, as the source reported it.

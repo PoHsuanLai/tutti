@@ -435,6 +435,11 @@ impl AudioUnit for VoiceNode {
         self.slot.voice.forkable()
     }
 
+    /// Answers for the voice it holds: a severed disk voice's failure latch.
+    fn render_fault(&self) -> Option<std::sync::Arc<dyn tutti_core::RenderFault>> {
+        self.slot.voice.render_fault()
+    }
+
     /// The host's door to a live voice's scalar controls.
     ///
     /// # Why this exists, when `voice_mut` already did

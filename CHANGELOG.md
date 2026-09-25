@@ -61,26 +61,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   touches the live stream: `isolate` gives it a private snapshot of the
   stream's control cell (so its gate can no longer ask the live butler to
   seek) and switches it off the ring, and `rebind_offline` hands it the
-  stream's file, loop and rate as the butler records them at that moment
-  (`Status::take_disk_voice` now keeps a read-only handle on that record).
-  The copy decodes the file on demand on the render's thread, in pages,
-  and reads each position as `MemorySource` reads it (the same four taps
-  and kernel, split out of `interp::read_frame`), so a clip rendered from
-  disk is bit-identical to the same clip in memory. It plays the voice's
-  window on the render's timeline, resampled from the file's rate to the
-  render's, looped as the stream is (with its linear crossfade), reversed
-  as the memory tier reverses; the butler's PDC preroll is not applied
-  offline. It registers no butler stream, so nothing is left behind when
-  the render ends: its decoder drops with it. `DiskVoice::forkable` is
-  `true` again (the trait default), and so is a `VoiceNode` holding one.
-  A voice whose stream was stopped or restarted on another file by the
-  time it is forked renders silence, as it does live.
-- **tutti-sampler: the placement gate lands on whole frames.**
-  `interp::window_position` (both tiers) returns a whole frame when the
-  position it derives is within `FRAME_TOLERANCE` of one. Converting the
-  clock's beat back through seconds landed an ulp off (frame 128 of a clip
-  at 120 BPM, 48 kHz came out 127.99999999999), so a clip placed on a beat
-  played its own samples only to within an ulp.
+  stream's file, loop and rate as the stream's record says at that moment
+  (each butler stream keeps a small `StreamRecord`; `Status::take_disk_voice`
+  hands the voice a read-only handle on it, never the plan map). The copy
+  re-opens the file by its path and decodes it on demand on the render's
+  thread in two resident pages laid out ahead of the read in either
+  direction — or reads the butler's cached `Arc<Wave>` in place when the
+  cache holds the file (always, for a file that cannot seek) — and reads
+  each position as `MemorySource` reads it (the same four taps and kernel,
+  split out of `interp::read_frame`), so a clip rendered from disk is
+  bit-identical to the same clip in memory at matched rates. It plays the
+  voice's window on the render's timeline, resampled from the file's rate
+  to the rate it was last told (`set_sample_rate`; never a default),
+  looped as the stream is, reversed as the memory tier reverses; the
+  butler's PDC preroll is not applied offline. It registers no butler
+  stream, and closes its file once past its window. A copy that cannot play
+  what it describes (its stream ended before the fork, its file unreadable,
+  no sample rate) renders silence **and latches the failure**, reported
+  through `AudioUnit::render_fault` so the render fails by name.
+  `DiskVoice::forkable` is `true` again (the trait default), and so is a
+  `VoiceNode` holding one.
+- **tutti-sampler / tutti-types: whole frames land exactly.**
+  `interp::window_position` (both tiers) lands a position within
+  `FRAME_TOLERANCE` of a whole frame on it (`tutti_types::snap_to_whole_frame`,
+  new, beside the tolerance), and `tap_indices` reads a position whose
+  fraction rounds to 1.0 in `f32` as the next frame at `t` = 0. Converting
+  the clock's beat back through seconds landed an ulp off (frame 128 of a
+  clip at 120 BPM, 48 kHz came out 127.99999999999), so a clip placed on a
+  beat played its own samples only to within an ulp.
+- **tutti-node / tutti-graph: a `Legacy` unit can fail its fork while it
+  renders.** `AudioUnit::render_fault()` (default `None`) hands a copy's
+  failure probe (`RenderFault`; `FaultLatch` is the plain one) to
+  `Legacy`'s fork source, which gives it to the forked editor as a
+  `ForkHealth`; `ForkFaultKind` gained `Failed` (a unit could not produce
+  what it describes, its cause says why). tutti-export's `fork_health`
+  check then fails the render, and bevy-tutti reports
+  `ExportError::ForkFailed` naming the node — for a disk voice, with the
+  file.
 - **tutti-graph: `ForkTarget::Master` forks what the global outputs
   reach**, walking back along audio, feedback and event edges, and nothing
   else. A node no output reaches is not copied and need not be forkable

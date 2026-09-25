@@ -444,18 +444,20 @@ pub enum ExportError {
     },
 
     /// `node`'s fork failed **while rendering** — a hosted plugin's server
-    /// crashed or stopped answering — so the render holds silence where its
-    /// output belongs from then on. Reported rather than written as a
+    /// crashed or stopped answering, a disk-streamed voice could not read its
+    /// file — so the render holds silence where its output belongs from then
+    /// on. Reported rather than written as a
     /// success; a file target may already have been written, and is not a
     /// valid render.
     #[error("export failed: {node} {kind:?} during the render: {cause}")]
     ForkFailed {
         /// The node.
         node: ExportNode,
-        /// Crashed, or timed out.
+        /// Crashed, timed out, or failed (could not produce what it
+        /// describes; the cause says why).
         kind: ForkFaultKind,
         /// The unit's own account (`tutti_plugin::PluginRenderFault` for a
-        /// plugin).
+        /// plugin; for a disk voice, the file and what went wrong with it).
         cause: ForkCause,
     },
 }

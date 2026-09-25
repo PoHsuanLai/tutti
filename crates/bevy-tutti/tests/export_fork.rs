@@ -81,7 +81,7 @@ enum Got {
     Planes(Vec<Vec<f32>>),
     NotForkable(ExportNode),
     ForkSource(ExportNode, bevy_tutti::export::ForkCause),
-    ForkFailed(ExportNode, tutti_graph::ForkFaultKind),
+    ForkFailed(ExportNode, tutti_graph::ForkFaultKind, String),
     Other(String),
 }
 
@@ -108,8 +108,8 @@ fn export(app: &mut App, request: ExportRequest) -> Got {
                 Err(ExportError::ForkSource { node, cause }) => {
                     Got::ForkSource(node.clone(), cause.clone())
                 }
-                Err(ExportError::ForkFailed { node, kind, .. }) => {
-                    Got::ForkFailed(node.clone(), *kind)
+                Err(e @ ExportError::ForkFailed { node, kind, .. }) => {
+                    Got::ForkFailed(node.clone(), *kind, e.to_string())
                 }
                 Err(e) => Got::Other(e.to_string()),
             });
@@ -1109,7 +1109,7 @@ mod plugin {
         probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
         let started = Instant::now();
         match export(&mut app, buffers(ExportSource::Master, 2.0)) {
-            Got::ForkFailed(node, kind) => {
+            Got::ForkFailed(node, kind, _) => {
                 assert_eq!(node.entity, Some(probe));
                 assert_eq!(node.name.as_deref(), Some("Probe"));
                 assert_eq!(kind, tutti_graph::ForkFaultKind::Crashed);
@@ -1943,9 +1943,9 @@ mod disk {
     ///
     /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
     /// file (`offline.read` left `None`) → both exports silent → fails.
-    /// Mutation (run): the placement gate's whole-frame snap removed
-    /// (tutti-sampler `interp::window_position`) → a frame of the clip reads
-    /// an ulp off → fails. Mutation (run): `DiskVoice::forkable` answering
+    /// Mutation (run): both whole-frame rules removed (`snap_to_whole_frame`
+    /// in the gate, and tutti-sampler `tap_indices`'s carry of a fraction
+    /// that rounds to 1.0) → a frame of the clip reads an ulp off → fails. Mutation (run): `DiskVoice::forkable` answering
     /// `false` again → refused as not forkable → fails.
     #[test]
     fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
@@ -2211,7 +2211,7 @@ mod disk {
     /// platforms do not have. What it pins is platform-independent.
     ///
     /// Mutation (run): the offline reader leaking its decoder
-    /// (`Box::leak` of the `FileIn` in `Pages::open`) → one handle more
+    /// (`Box::leak` of the `FileIn` in `Open::open_path`) → one handle more
     /// after the export → fails.
     #[cfg(target_os = "linux")]
     #[test]
@@ -2236,5 +2236,43 @@ mod disk {
             before,
             "the export left a handle on the file open"
         );
+    }
+
+    /// **A disk voice whose file cannot be read fails the export by name**,
+    /// with the file, rather than write its silence as a success. The file is
+    /// removed after the stream started (the live butler keeps its own
+    /// handle); the fork re-opens it by its path, cannot, and its render is
+    /// `ExportError::ForkFailed` naming the voice's entity and `Name`.
+    ///
+    /// Mutation (run): `LegacyFork::fork` not asking the copy for its
+    /// `render_fault` → the export succeeds, silent → fails.
+    #[test]
+    fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("vanished.wav");
+        write_ramp(&path, RATE as u32, 4_800);
+        let streamer = streamer_on(&path);
+
+        let mut app = app_over(graph_on(GraphBackend::Native));
+        let clip = {
+            let voice = disk_voice(&streamer, timeline(120.0), 0.0);
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert(voice);
+            graph.set_outputs_from(node);
+            app.world_mut().spawn((node, Name::new("Clip"))).id()
+        };
+        std::fs::remove_file(&path).expect("removes");
+        match export(&mut app, on(0.2, ExportSource::Master, &timeline(120.0))) {
+            Got::ForkFailed(node, kind, message) => {
+                assert_eq!(node.entity, Some(clip));
+                assert_eq!(node.name.as_deref(), Some("Clip"));
+                assert_eq!(kind, tutti_graph::ForkFaultKind::Failed);
+                assert!(
+                    message.contains("vanished.wav"),
+                    "names the file: {message}"
+                );
+            }
+            other => panic!("expected a named failure, got {other:?}"),
+        }
     }
 }

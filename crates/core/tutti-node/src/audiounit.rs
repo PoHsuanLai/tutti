@@ -28,6 +28,47 @@ use crate::signal::{Signal, SignalFrame};
 use crate::value::Tail;
 use dyn_clone::DynClone;
 
+/// Whether a unit rendering offline has failed in a way its output cannot say
+/// ([`AudioUnit::render_fault`]). Read on the control thread, after or
+/// between rendered spans, never from the audio path.
+pub trait RenderFault: Send + Sync {
+    /// `None` while the unit renders what it describes; the first failure
+    /// otherwise. Latched: once failed, it stays failed.
+    fn fault(&self) -> Option<std::sync::Arc<dyn std::error::Error + Send + Sync>>;
+}
+
+/// The plain [`RenderFault`]: the first error latched into it, kept.
+///
+/// Latching takes no lock and, after the first, allocates nothing (a later
+/// error is dropped unboxed), but the first boxes its error: latch from a
+/// thread that may allocate, which an offline render's is.
+#[derive(Default)]
+pub struct FaultLatch(std::sync::OnceLock<std::sync::Arc<dyn std::error::Error + Send + Sync>>);
+
+impl FaultLatch {
+    /// Keep `error` unless an earlier one is already kept.
+    pub fn latch(&self, error: impl std::error::Error + Send + Sync + 'static) {
+        if self.0.get().is_none() {
+            let _ = self.0.set(std::sync::Arc::new(error));
+        }
+    }
+}
+
+impl RenderFault for FaultLatch {
+    fn fault(&self) -> Option<std::sync::Arc<dyn std::error::Error + Send + Sync>> {
+        self.0.get().cloned()
+    }
+}
+
+impl core::fmt::Debug for FaultLatch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0.get() {
+            Some(e) => write!(f, "FaultLatch({e})"),
+            None => f.write_str("FaultLatch(ok)"),
+        }
+    }
+}
+
 /// An audio processor with an object safe interface.
 /// Once constructed, it has a fixed number of inputs and outputs.
 ///
@@ -143,6 +184,21 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// unit. A unit holding other units answers for all of them.
     fn forkable(&self) -> bool {
         true
+    }
+
+    /// For a copy made for an offline render (after `isolate` and
+    /// `rebind_offline`): a probe that says whether it has failed since, in a
+    /// way its output cannot say. `None` (the default) for a unit that
+    /// cannot fail while it renders.
+    ///
+    /// Silence is valid audio, so a copy that could not read its input
+    /// (a disk voice whose file went missing) renders a silent span that
+    /// looks like success. A fork keeps the probe
+    /// (`tutti_graph::ForkHealth`) and fails the render, naming the node,
+    /// rather than write that span as if it were the graph's. A unit holding
+    /// other units answers for them.
+    fn render_fault(&self) -> Option<std::sync::Arc<dyn RenderFault>> {
+        None
     }
 
     /// Set the sample rate of the unit.

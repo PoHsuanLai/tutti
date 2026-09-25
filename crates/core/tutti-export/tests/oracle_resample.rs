@@ -47,22 +47,32 @@ use tutti_core::Amplitude;
 use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    FrozenClock, RenderConfig, Resample,
+    FrozenClock, RenderConfig, RenderGraph, Resample,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 
 const IN_RATE: f64 = 48_000.0;
 const OUT_RATE: f64 = 44_100.0;
 
-fn sine_net(freq: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(
+/// `g`, built for an export at [`IN_RATE`] — the rate every config here
+/// renders at (a graph prepared at another is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_core::SampleRate(IN_RATE)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
+fn sine_graph(freq: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g)
 }
 
 fn config(freq_target: SampleRateTarget) -> ExportConfig {
@@ -146,14 +156,14 @@ fn a_tone_keeps_its_frequency_across_a_rate_change() {
     let direct = d.path().join("direct.wav");
     let converted = d.path().join("converted.wav");
     render_to_file(
-        sine_net(1000.0),
+        sine_graph(1000.0),
         &config(SampleRateTarget::Passthrough),
         &FrozenClock,
         &direct,
     )
     .unwrap();
     render_to_file(
-        sine_net(1000.0),
+        sine_graph(1000.0),
         &config(SampleRateTarget::Convert),
         &FrozenClock,
         &converted,
@@ -206,7 +216,7 @@ fn a_tone_above_the_new_nyquist_is_filtered_not_aliased() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("alias.wav");
     render_to_file(
-        sine_net(23_000.0),
+        sine_graph(23_000.0),
         &config(SampleRateTarget::Convert),
         &FrozenClock,
         &p,

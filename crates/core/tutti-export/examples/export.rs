@@ -10,33 +10,44 @@
 //! Run: `cargo run --example export -- <outdir>`
 
 use tutti_analysis::{measure_loudness, LoudnessConfig};
-use tutti_core::dsp::Net;
 use tutti_core::{Amplitude, FrozenClock, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
-    ExportConfig, RenderConfig,
+    ExportConfig, RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Db, Interleaved};
 
+/// The rate every render below runs at.
+const RATE: SampleRate = SampleRate(48_000.0);
+
+/// `g`, ready to export: built (every unit prepared) at the render's rate. A
+/// graph prepared at another rate is refused rather than re-rated, so a graph
+/// is built for the render that takes it.
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
 /// A 440 Hz tone at −12 dBFS, in stereo.
-fn tone() -> Net {
-    let mut net = Net::new(0, 2);
-    let id = net.push(Box::new(
+fn tone() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.25))
             .with_layout(ChannelLayout::STEREO),
     ));
-    net.pipe_output(id);
-    net
+    g.pipe_output(id);
+    built(g)
 }
 
 /// A mono graph, to show the channel fold.
-fn mono_tone() -> Net {
-    let mut net = Net::new(0, 1);
-    let id = net.push(Box::new(Const::mono(0.5)));
-    net.pipe_output(id);
-    net
+fn mono_tone() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    g.pipe_output(id);
+    built(g)
 }
 
 fn main() -> tutti_export::Result<()> {
@@ -53,7 +64,7 @@ fn main() -> tutti_export::Result<()> {
     // the path you chose will quietly ignore.
     let config = ExportConfig {
         render: RenderConfig {
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: RATE,
             duration_seconds: 2.0,
             ..Default::default()
         },

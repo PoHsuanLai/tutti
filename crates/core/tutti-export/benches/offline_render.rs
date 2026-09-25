@@ -26,32 +26,45 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::Net;
 use tutti_core::{Amplitude, ChannelLayout, FrozenClock, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig,
-    RenderConfig,
+    RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 48_000.0;
 
-fn tone_net() -> Net {
-    let mut n = Net::new(0, 2);
-    let id = n.push(Box::new(
+/// `g`, built for an export at `rate` — the config's render rate, which the
+/// graph must be prepared at.
+///
+/// Built per iteration, like the `Net` it replaces was: an export consumes its
+/// graph, so the build (preparing every unit, compiling the plan) is part of
+/// what a bounce costs.
+fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(SampleRate(rate)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
+fn tone_graph(rate: f64) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g, rate)
 }
 
-fn dc_net() -> Net {
-    let mut n = Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[0.25, 0.25])));
-    n.pipe_output(id);
-    n
+fn dc_graph(rate: f64) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[0.25, 0.25])));
+    g.pipe_output(id);
+    built(g, rate)
 }
 
 fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: AudioFormat) -> ExportConfig {
@@ -84,7 +97,9 @@ fn bench_render(c: &mut Criterion) {
             &cfg,
             |b, cfg| {
                 b.iter(|| {
-                    black_box(render_to_buffers(tone_net(), cfg, &FrozenClock).expect("renders"))
+                    black_box(
+                        render_to_buffers(tone_graph(SR), cfg, &FrozenClock).expect("renders"),
+                    )
                 })
             },
         );
@@ -100,7 +115,9 @@ fn bench_render(c: &mut Criterion) {
         let cfg = config(0.25, SR, layout, AudioFormat::Wav);
         group.throughput(Throughput::Elements((0.25 * SR) as u64));
         group.bench_with_input(BenchmarkId::new("width", name), &cfg, |b, cfg| {
-            b.iter(|| black_box(render_to_buffers(dc_net(), cfg, &FrozenClock).expect("renders")))
+            b.iter(|| {
+                black_box(render_to_buffers(dc_graph(SR), cfg, &FrozenClock).expect("renders"))
+            })
         });
     }
 
@@ -109,7 +126,9 @@ fn bench_render(c: &mut Criterion) {
         let cfg = config(0.25, rate, ChannelLayout::STEREO, AudioFormat::Wav);
         group.throughput(Throughput::Elements((0.25 * rate) as u64));
         group.bench_with_input(BenchmarkId::new("rate", rate as u64), &cfg, |b, cfg| {
-            b.iter(|| black_box(render_to_buffers(tone_net(), cfg, &FrozenClock).expect("renders")))
+            b.iter(|| {
+                black_box(render_to_buffers(tone_graph(rate), cfg, &FrozenClock).expect("renders"))
+            })
         });
     }
 
@@ -141,7 +160,7 @@ fn bench_encode(c: &mut Criterion) {
         let path = dir.path().join(format!("bench.{name}"));
         group.bench_with_input(BenchmarkId::from_parameter(name), &cfg, |b, cfg| {
             b.iter(|| {
-                black_box(render_to_file(tone_net(), cfg, &FrozenClock, &path).expect("writes"))
+                black_box(render_to_file(tone_graph(SR), cfg, &FrozenClock, &path).expect("writes"))
             })
         });
     }

@@ -2,9 +2,10 @@
 //! so a source lands between the speakers nearest its direction.
 //!
 //! [`build_vbap_mix`] assembles the whole `sources → panners → sum` graph,
-//! including LFE bass management. Named for the algorithm rather than the output
-//! shape: it calls [`VbapPannerNode::for_layout`], so there is no non-VBAP way
-//! to reach it.
+//! including LFE bass management, into a `Net`; [`vbap_mix_parts`] returns the
+//! same mix as owned units and edges, for a graph that is not a `Net`. Named for
+//! the algorithm rather than the output shape: it calls
+//! [`VbapPannerNode::for_layout`], so there is no non-VBAP way to reach it.
 //!
 //! # Why this is a module and not a `SpatialPanner` variant
 //!
@@ -35,5 +36,7 @@ mod node;
 mod panner;
 
 pub use error::{Result, VbapError};
-pub use mix::{build_vbap_mix, VbapSource};
+pub use mix::{
+    build_vbap_mix, vbap_mix_parts, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapSource,
+};
 pub use node::VbapPannerNode;

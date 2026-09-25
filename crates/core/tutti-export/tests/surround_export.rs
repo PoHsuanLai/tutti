@@ -6,22 +6,33 @@
 //! the resulting file is a genuine multi-channel WAV whose channels carry the
 //! placed energy — i.e. the surround producer and the multi-channel export path
 //! work together without any DAW/ECS layer.
+//!
+//! The graphs are native (`tutti_graph::GraphBuilder`, rendered through
+//! `RenderGraph::Graph`; doc 013 Phase 3 PR 8), and the mix is
+//! `tutti_spatial::vbap_mix_parts` wired on the builder — the same units and
+//! edges `build_vbap_mix` puts in a `Net` (`tutti-spatial`'s
+//! `tests/vbap_mix_parts.rs` pins the two bit-identical).
 
 #![cfg(feature = "wav")]
 
-use tutti_core::dsp::Net;
-use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig};
+use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph};
+use tutti_graph::GraphBuilder;
+use tutti_types::NodeKey;
 
-/// Render `net` to `path` as float WAV at `layout`, for `secs`.
+/// The rate [`export`] renders at, and so the rate every graph is built for.
+const RATE: tutti_core::SampleRate = tutti_core::SampleRate(48_000.0);
+
+/// Render `g` to `path` as float WAV at `layout`, for `secs`.
 ///
 /// The tests care about channel routing, not about export configuration, so the
 /// config is built once here rather than restated at every call site.
-fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
+fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
+    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
     tutti_export::render_to_file(
-        net,
+        RenderGraph::Graph { editor, executor },
         &ExportConfig {
             render: RenderConfig {
-                sample_rate: tutti_core::SampleRate(48_000.0),
+                sample_rate: RATE,
                 duration_seconds: secs,
                 ..Default::default()
             },
@@ -38,19 +49,54 @@ fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &st
     .expect("export");
 }
 use tutti_nodes::testing::Const;
-use tutti_spatial::{build_vbap_mix, VbapSource};
+use tutti_spatial::{vbap_mix_parts, VbapMixNode, VbapSource};
 
-/// Build a quad surround graph via the engine's `build_vbap_mix` helper: one
-/// source at the front-left speaker (45°) and one at the rear-left speaker
-/// (135°), each placed by a panner and summed into a 4-wide `Net` output.
-fn quad_surround_net() -> Net {
-    let mut net = Net::new(0, 4);
+/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node —
+/// `build_vbap_mix` for the builder: `vbap_mix_parts`' units added, and every
+/// one of its edges wired, the sources resolved by position in `sources`.
+fn vbap_mix(
+    g: &mut GraphBuilder,
+    layout: ChannelLayout,
+    sources: &[VbapSource<NodeKey>],
+) -> Result<NodeKey, tutti_spatial::VbapError> {
+    let parts = vbap_mix_parts(layout, sources)?;
+    let edges = parts.edges().to_vec();
+    let panners: Vec<NodeKey> = parts
+        .panners
+        .into_iter()
+        .map(|p| g.add_unit(Box::new(p)))
+        .collect();
+    let lfe = parts.lfe.map(|send| {
+        (
+            g.add_unit(Box::new(send.sum)),
+            g.add_unit(Box::new(send.lowpass)),
+        )
+    });
+    let sum = g.add_unit(Box::new(parts.sum));
+    let key = |n: VbapMixNode| match n {
+        VbapMixNode::Source(i) => sources[i].node,
+        VbapMixNode::Panner(i) => panners[i],
+        VbapMixNode::LfeSum => lfe.expect("an LFE edge implies the send").0,
+        VbapMixNode::LfeLowpass => lfe.expect("an LFE edge implies the send").1,
+        VbapMixNode::Sum => sum,
+    };
+    for e in edges {
+        g.connect(key(e.from), e.from_port, key(e.to), e.to_port);
+    }
+    Ok(sum)
+}
 
-    let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+/// Build a quad surround graph via the engine's VBAP mix: one source at the
+/// front-left speaker (45°) and one at the rear-left speaker (135°), each
+/// placed by a panner and summed into a 4-wide output.
+fn quad_surround_graph() -> GraphBuilder {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
-    let mix = build_vbap_mix(
-        &mut net,
+    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::QUAD,
         &[
             VbapSource::at(src_front, 45.0), // FL (ch0)
@@ -58,8 +104,8 @@ fn quad_surround_net() -> Net {
         ],
     )
     .expect("build quad surround mix");
-    net.pipe_output(mix);
-    net
+    g.pipe_output(mix);
+    g
 }
 
 #[test]
@@ -69,7 +115,7 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 
     // Render long enough for the panner's ~0.05s position smoother to settle
     // (0.3s @ 48k ≈ 14k samples, well past the ~2400-sample time constant).
-    export(quad_surround_net(), ChannelLayout::QUAD, 0.3, &path);
+    export(quad_surround_graph(), ChannelLayout::QUAD, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 4, "file must carry four channels");
@@ -103,22 +149,25 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
     );
 }
 
-/// The Stage-4 export path: a net that starts at the **device (stereo) output**
-/// width — exactly what the live engine produces — is widened offline via
-/// `set_output_arity` and re-piped to a surround master before export. This
-/// mirrors what the app's `widen_export_net` does to the cloned net, and proves
-/// widening a stereo net does NOT lose the surround channels.
+/// The Stage-4 export path: a graph that starts at the **device (stereo)
+/// output** width — exactly what the live engine produces — is widened offline
+/// and re-piped to a surround master before export. This mirrors what a host
+/// does to the graph it exports (a `Net`'s `set_output_arity`; on the native
+/// graph, the topology's global outputs grown), and proves widening a stereo
+/// graph does NOT lose the surround channels.
+///
+/// Mutation (run): widen *after* `pipe_output` → only the first two global
+/// outputs are wired, the file is 4-wide with silent rears, and the rear-left
+/// assertion fails.
 #[test]
 fn stereo_net_widened_then_exports_four_channels() {
-    use tutti_core::AudioUnit; // for `Net::outputs`
-
-    // Build the surround producer inside a STEREO-output net (like the live one).
-    let mut net = Net::new(0, 2);
-    assert_eq!(net.outputs(), 2, "starts at device stereo width");
-    let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let mix = build_vbap_mix(
-        &mut net,
+    // Build the surround producer inside a STEREO-output graph (like the live one).
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    assert_eq!(g.outputs(), 2, "starts at device stereo width");
+    let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::QUAD,
         &[
             VbapSource::at(src_front, 45.0),
@@ -127,15 +176,19 @@ fn stereo_net_widened_then_exports_four_channels() {
     )
     .expect("build quad mix");
 
-    // Widen the (backend-less) net to quad, then re-pipe the master. Without the
-    // widen, `pipe_output` would only wire 2 global outputs and the rears drop.
-    net.set_output_arity(4);
-    assert_eq!(net.outputs(), 4, "net widened to quad");
-    net.pipe_output(mix);
+    // Widen the graph to quad (the new outputs silent until wired), then re-pipe
+    // the master. Without the widen, `pipe_output` would only wire 2 global
+    // outputs and the rears drop.
+    g.spec_mut()
+        .topology
+        .outputs
+        .resize(4, tutti_types::graph::Source::Zero);
+    assert_eq!(g.outputs(), 4, "graph widened to quad");
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("widened.wav");
-    export(net, ChannelLayout::QUAD, 0.3, &path);
+    export(g, ChannelLayout::QUAD, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(
@@ -170,22 +223,25 @@ fn stereo_net_widened_then_exports_four_channels() {
 /// file, not just the graph.
 ///
 /// 5.1 file order: FL(0), FR(1), C(2), LFE(3), SL(4), SR(5).
+///
+/// Mutation (run): [`vbap_mix`] skipping the low-pass→sum edge → the LFE
+/// assertion fails.
 #[test]
 fn surround_5_1_export_places_center_and_feeds_lfe() {
-    let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
     // A single dead-center source.
-    let mix = build_vbap_mix(
-        &mut net,
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, 0.0)],
     )
     .expect("build 5.1 mix");
-    net.pipe_output(mix);
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround51.wav");
-    export(net, ChannelLayout::from(6u16), 0.3, &path);
+    export(g, ChannelLayout::from(6u16), 0.3, &path);
 
     // The 6-channel file must declare WAVEFORMATEXTENSIBLE (0xfffe) with the
     // standard 5.1 dwChannelMask 0x3F (FL|FR|FC|LFE|BL|BR), so other tools read
@@ -243,20 +299,20 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 /// −3 dB — if the downmix just took channels 0/1, a center source would vanish.
 #[test]
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
-    let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let mix = build_vbap_mix(
-        &mut net,
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, 0.0)], // dead center → C channel
     )
     .expect("build 5.1 mix");
-    net.pipe_output(mix);
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("downmix.wav");
     // Render the 5.1 graph but request a STEREO file → triggers the downmix.
-    export(net, ChannelLayout::STEREO, 0.3, &path);
+    export(g, ChannelLayout::STEREO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");
@@ -300,14 +356,13 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
 #[test]
 fn stereo_graph_exports_folded_mono_not_left_only() {
     // Const::frame(&[0.8, 0.2]): left=0.8, right=0.2 → mono average = 0.5, NOT 0.8.
-    let mut net = Net::new(0, 2);
-    let src = net.push(Box::new(Const::frame(&[0.8, 0.2])));
-    net.connect_output(src, 0, 0);
-    net.connect_output(src, 1, 1);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let src = g.add_unit(Box::new(Const::frame(&[0.8, 0.2])));
+    g.connect_output(src, 0, 0).connect_output(src, 1, 1);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mono.wav");
-    export(net, ChannelLayout::MONO, 0.1, &path);
+    export(g, ChannelLayout::MONO, 0.1, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -326,19 +381,19 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 /// pick that would drop C.
 #[test]
 fn surround_5_1_exports_folded_mono_keeps_center() {
-    let mut net = Net::new(0, 6);
-    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let mix = build_vbap_mix(
-        &mut net,
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::from(6u16),
         &[VbapSource::at(src, 0.0)], // dead center → C channel (2)
     )
     .expect("build 5.1 mix");
-    net.pipe_output(mix);
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround_mono.wav");
-    export(net, ChannelLayout::MONO, 0.3, &path);
+    export(g, ChannelLayout::MONO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -366,19 +421,19 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 /// 7.1.4 order: FL FR C LFE Lss Rss Lrs Rrs + 4 heights.
 #[test]
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
-    let mut net = Net::new(0, 12);
-    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let mix = build_vbap_mix(
-        &mut net,
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
+    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::from(12u16),
         &[VbapSource::at(src, 150.0)], // hard rear-left
     )
     .expect("build 7.1.4 mix");
-    net.pipe_output(mix);
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos.wav");
-    export(net, ChannelLayout::from(12u16), 0.3, &path);
+    export(g, ChannelLayout::from(12u16), 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 12, "file carries twelve channels");
@@ -409,19 +464,19 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 /// front-pair pick would drop Lrs entirely and leave the left channel silent.
 #[test]
 fn atmos_7_1_4_downmixes_surround_into_front() {
-    let mut net = Net::new(0, 12);
-    let src = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-    let mix = build_vbap_mix(
-        &mut net,
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(12u16));
+    let src = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+    let mix = vbap_mix(
+        &mut g,
         ChannelLayout::from(12u16),
         &[VbapSource::at(src, 150.0)], // hard rear-left → Lrs (discrete ch 6)
     )
     .expect("build 7.1.4 mix");
-    net.pipe_output(mix);
+    g.pipe_output(mix);
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos_stereo.wav");
-    export(net, ChannelLayout::STEREO, 0.3, &path);
+    export(g, ChannelLayout::STEREO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");

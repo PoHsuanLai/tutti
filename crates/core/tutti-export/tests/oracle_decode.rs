@@ -53,31 +53,41 @@ use tutti_core::Amplitude;
 use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    FrozenClock, RenderConfig,
+    FrozenClock, RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.25;
 
+/// `g`, built for an export at [`SR`] — the rate every config here
+/// renders at (a graph prepared at another is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
 /// A graph emitting the constant `level` on both channels.
-fn dc_net(level: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[level, level])));
-    n.pipe_output(id);
-    n
+fn dc_graph(level: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    g.pipe_output(id);
+    built(g)
 }
 
 /// A graph emitting a `freq` Hz sine on both channels.
-fn sine_net(freq: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(
+fn sine_graph(freq: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g)
 }
 
 fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
@@ -187,14 +197,14 @@ fn flac_and_wav_agree_sample_for_sample() {
             let wav = d.path().join(format!("a_{bit_depth:?}_{level}.wav"));
             let flac = d.path().join(format!("a_{bit_depth:?}_{level}.flac"));
             render_to_file(
-                dc_net(level),
+                dc_graph(level),
                 &config(AudioFormat::Wav, bit_depth),
                 &FrozenClock,
                 &wav,
             )
             .unwrap();
             render_to_file(
-                dc_net(level),
+                dc_graph(level),
                 &config(AudioFormat::Flac(Default::default()), bit_depth),
                 &FrozenClock,
                 &flac,
@@ -246,14 +256,14 @@ fn aiff_and_wav_agree_sample_for_sample() {
             let wav = d.path().join(format!("b_{bit_depth:?}_{level}.wav"));
             let aiff = d.path().join(format!("b_{bit_depth:?}_{level}.aiff"));
             render_to_file(
-                dc_net(level),
+                dc_graph(level),
                 &config(AudioFormat::Wav, bit_depth),
                 &FrozenClock,
                 &wav,
             )
             .unwrap();
             render_to_file(
-                dc_net(level),
+                dc_graph(level),
                 &config(AudioFormat::Aiff, bit_depth),
                 &FrozenClock,
                 &aiff,
@@ -294,14 +304,14 @@ fn ogg_preserves_the_tone() {
     let wav = d.path().join("tone.wav");
     let ogg = d.path().join("tone.ogg");
     render_to_file(
-        sine_net(1000.0),
+        sine_graph(1000.0),
         &config(AudioFormat::Wav, BitDepth::Float32),
         &FrozenClock,
         &wav,
     )
     .unwrap();
     render_to_file(
-        sine_net(1000.0),
+        sine_graph(1000.0),
         &config(
             AudioFormat::OggVorbis(Default::default()),
             BitDepth::Float32,

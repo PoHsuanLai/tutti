@@ -1042,7 +1042,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 5 | **Done.** tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks, scheduled `At::Frame`/`At::Beat`; the harness behind a `contract` feature | 4 |
 | 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
 | 7 | **Done.** tutti-export `GraphSource` beside `NetSource`; `RenderGraph { Net, Graph }` at every entry point; `RenderGraph::fork` | 2, 4, 6 |
-| 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
+| 8 | **Done.** tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
 | 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
 | 11 | bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
@@ -1051,6 +1051,50 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
 | 16 | tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
+
+**PR 8 landed.** Every tutti-export suite, both examples, the README and
+the `offline_render` bench build with `GraphBuilder` and render through
+`RenderGraph::Graph`, with every assertion as it was. `Net` stays only where
+the `Net` arm is the subject: `tests/graph_source.rs` (the equivalence
+suite, now the one thing carrying the oracle suites' checks over to the `Net`
+arm), `NetSource`'s unit tests in `render/driver.rs`, and the doc examples of
+the `Net`-taking `reported_latency` / `reported_tail`. `tutti-spatial` gained
+`vbap_mix_parts` (the mix's owned units plus every edge as data, sources
+included; `param_mod_parts`' shape), and `build_vbap_mix` is now that plus
+`VbapMixParts::insert_into(&mut Net, ..)`, so bevy-tutti keeps its `Net`
+form until PR 13; `tests/vbap_mix_parts.rs` renders the two bit-identical at
+quad, 5.1 and 7.1.4. Byte-comparing `render_export_cases`' 30 files against
+the `Net` build: 29 identical, and the Ogg differs only in its stream serial
+number, which is random per run on either backend. Found on the way:
+
+- **A `Legacy` clip reader needs the render clock to move per 64-frame
+  chunk.** A sampler voice (`VoicePool`, `MemorySource`, and so every clip
+  reader) reads its `Arc<dyn Timeline>` out of band, on every `process`
+  call. `Legacy` calls it in 64-frame chunks, but `RenderClock::render_graph`
+  advances the timeline once per graph block, so at `GRAPH_MAX_BLOCK`
+  every chunk of a block reads the block's first beat and the voice replays
+  its first 64 frames sixteen times: `sampler_to_export.rs`'s dry 440 Hz
+  voice measured 768 Hz. `NetSource` never hit it because it advances every
+  64 frames. The port prepares that fixture at a 64-frame `MaxBlock`, where
+  the clock moves between the voice's calls as a `Net` render's does, and
+  says why. It is not fixed here, and it needs a decision before PR 12 (the
+  export fork prepares at `GRAPH_MAX_BLOCK`) and PR 11 (the live graph
+  engine advances its clock once per block piece, `GraphRender` in
+  `engine.rs`, so a `Legacy` sampler there likely has the same shape of
+  fault; not measured here): sub-block `render_graph` at 64 frames
+  for a moving clock (tried: correct, but it breaks
+  `env_clock.rs`'s `an_offline_render_sees_the_live_engine_transport`, which
+  pins offline and live blocks one to one), prepare graphs holding clip
+  readers at 64, or port the readers to `Env::transport_at` (Phase 4).
+- **Widening a graph for export** (the `Net`'s `set_output_arity`, which
+  `surround_export.rs` tests) is growing `topology.outputs` through
+  `GraphBuilder::spec_mut` (or `Editor::spec_mut` and a commit), new
+  channels `Source::Zero` until wired. No new call was needed.
+- **The bench now measures the graph backend.** `offline_render`'s figures
+  are 1024-frame executor blocks, not the `Net`'s 64, and include the
+  build (every unit prepared, the plan compiled) per iteration as they
+  included the `Net`'s construction; its history does not compare across
+  this change.
 
 **PR 7 landed.** Export's entry points (`render_to_file`,
 `render_to_buffers`, `render_normalized_to_file`) take

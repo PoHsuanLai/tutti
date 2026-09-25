@@ -45,7 +45,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
         .expect("builds");
-    RenderGraph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 fn dc_graph(level: f32) -> RenderGraph {

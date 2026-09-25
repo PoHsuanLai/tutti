@@ -495,7 +495,7 @@ impl std::fmt::Display for ExportNode {
 /// `graph` is the engine's own [`RenderGraph`]: the fork's own editor and
 /// executor, already installed. It is a native graph and nothing else (since
 /// design doc 013 PR 14 tutti-export renders no `Net`, so a hook cannot swap
-/// one in). Edit a fork through its `editor`
+/// one in). Edit a fork through `graph.editor_mut()`
 /// (insert nodes, `spec_mut`); the adapter commits whatever the hook leaves,
 /// and a commit the fork refuses fails the export with the reason. A fork's
 /// units are on its executor by the time the hook runs, so a unit already in

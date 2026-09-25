@@ -29,7 +29,7 @@ const RATE: tutti_core::SampleRate = tutti_core::SampleRate(48_000.0);
 fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
     tutti_export::render_to_file(
-        RenderGraph { editor, executor },
+        RenderGraph::new(editor, executor).expect("built together"),
         &ExportConfig {
             render: RenderConfig {
                 sample_rate: RATE,

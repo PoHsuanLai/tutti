@@ -143,7 +143,10 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     let (editor, executor) = g
         .build(RenderGraph::prepare(SampleRate(SR)))
         .expect("builds");
-    (RenderGraph { editor, executor }, transport)
+    (
+        RenderGraph::new(editor, executor).expect("built together"),
+        transport,
+    )
 }
 
 fn config(format: AudioFormat) -> ExportConfig {

@@ -31,7 +31,7 @@ const RATE: SampleRate = SampleRate(44_100.0);
 /// rate: a graph prepared at another is refused, not re-rated.
 fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 /// A stereo DC at 0.5, built for an export at `rate`.

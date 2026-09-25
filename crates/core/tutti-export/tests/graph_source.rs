@@ -87,7 +87,7 @@ fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
 /// The builder's graph, built for the export.
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 /// The builder's graph as an export gets it from a live one: built at a
@@ -586,6 +586,42 @@ fn an_unforkable_node_is_an_export_error_naming_it() {
     assert!(RenderGraph::fork(&live, ForkTarget::Node(fine), ForkMode::Live, RATE).is_ok());
 }
 
+/// An editor that does not feed the executor beside it is refused when the
+/// `RenderGraph` is made, not first at render.
+///
+/// Mutation (run): `RenderGraph::new` skipping `check_paired` → it wraps
+/// the crossed pair.
+#[test]
+fn a_crossed_pair_is_refused_at_construction() {
+    let (editor_a, executor_a) = sine(1000.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let (editor_b, executor_b) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    for (editor, executor) in [(editor_a, executor_b), (editor_b, executor_a)] {
+        let r = RenderGraph::new(editor, executor);
+        assert!(
+            matches!(r, Err(Error::InvalidConfig(_))),
+            "a crossed pair was wrapped"
+        );
+    }
+}
+
+/// An editor swapped in through `editor_mut` after construction is refused
+/// at render: the render keeps the pairing check as a real error.
+///
+/// Mutation (run): drop `check_paired` from `render::with_source` → it
+/// renders the crossed pair.
+#[test]
+fn an_editor_swapped_after_construction_is_refused_at_render() {
+    let mut graph = built(sine(1000.0).1);
+    let (other, _exec) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let _live = std::mem::replace(graph.editor_mut(), other);
+    let r = render_to_buffers(
+        graph,
+        &config(BitDepth::Float32, ChannelLayout::STEREO),
+        &FrozenClock,
+    );
+    assert!(matches!(r, Err(Error::InvalidConfig(_))), "{r:?}");
+}
+
 /// A pair prepared at another rate is refused, not rendered at the wrong one.
 ///
 /// Mutation (run): drop the rate check in `GraphSource::new` → it renders.
@@ -596,7 +632,7 @@ fn a_graph_prepared_at_another_rate_is_refused() {
         .build(RenderGraph::prepare(SampleRate(44_100.0)))
         .expect("builds");
     let r = render_to_buffers(
-        RenderGraph { editor, executor },
+        RenderGraph::new(editor, executor).expect("built together"),
         &config(BitDepth::Float32, ChannelLayout::STEREO),
         &FrozenClock,
     );

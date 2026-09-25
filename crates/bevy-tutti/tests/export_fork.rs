@@ -430,7 +430,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
         .trim_reported_latency()
         .with_prepare(|prepared, _world| {
             let key = prepared.fresh_key();
-            let editor = &mut prepared.graph.editor;
+            let editor = prepared.graph.editor_mut();
             editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
             for out in editor.spec_mut().topology.outputs.iter_mut() {
                 *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {

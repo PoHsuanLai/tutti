@@ -504,7 +504,7 @@ impl NativeGraph {
             rate,
         )?;
         // The keys the fork holds are exactly what it forked.
-        let dropped = graph.editor.spec().topology.nodes.keys().find(|k| {
+        let dropped = graph.editor().spec().topology.nodes.keys().find(|k| {
             self.nodes
                 .get(k)
                 .is_some_and(|e| !e.carries_midi && midi.contains(k))

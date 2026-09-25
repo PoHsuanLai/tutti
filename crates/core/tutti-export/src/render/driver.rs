@@ -176,9 +176,9 @@ pub(crate) struct GraphSource<'a> {
 
 impl<'a> GraphSource<'a> {
     /// Refuses a pair it cannot render **as configured** rather than rendering
-    /// something else: an editor that does not feed this executor (its
-    /// retirees would never be collected), or an executor prepared at a rate
-    /// other than the render's. An executor's units are prepared for one rate
+    /// something else: an executor prepared at a rate other than the
+    /// render's. (The pairing is `RenderGraph`'s check, made before this is
+    /// built.) An executor's units are prepared for one rate
     /// on the control side, which is what `RenderGraph::prepare` and
     /// `RenderGraph::fork` are for; re-rating them here would be preparing
     /// them on the render thread.
@@ -188,12 +188,6 @@ impl<'a> GraphSource<'a> {
         sample_rate: tutti_core::SampleRate,
         clock: &'a dyn RenderClock,
     ) -> crate::Result<Self> {
-        if !editor.is_paired_with(executor) {
-            return Err(crate::Error::InvalidConfig(
-                "the graph's editor does not feed its executor; pass the pair built together"
-                    .into(),
-            ));
-        }
         let prepared = executor.prepare().sample_rate();
         if prepared.get() != sample_rate.get() {
             return Err(crate::Error::InvalidConfig(format!(
@@ -287,7 +281,10 @@ pub(crate) fn with_source<R>(
     clock: &dyn RenderClock,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
 ) -> crate::Result<R> {
-    let RenderGraph { editor, executor } = graph;
+    // Again at render, as a real error: `editor_mut` can swap the editor
+    // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
+    graph.check_paired()?;
+    let (editor, executor) = graph.parts_mut();
     let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
     // A forked unit that failed mid-render (a plugin's server crashed or
     // hung) rendered silence from then on, and `process` has no error
@@ -427,7 +424,7 @@ mod tests {
         let k = g.add_unit(Box::new(tutti_nodes::testing::Const::mono(v)));
         g.pipe_output(k);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-        RenderGraph { editor, executor }
+        RenderGraph::new(editor, executor).expect("built together")
     }
 
     /// Render `frames` frames of `graph` at a runtime width under `clock`,
@@ -515,7 +512,7 @@ mod tests {
         let clock = g.add(tutti_core::EnvClock::new());
         g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-        let mut graph = RenderGraph { editor, executor };
+        let mut graph = RenderGraph::new(editor, executor).expect("built together");
 
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(start_beat),

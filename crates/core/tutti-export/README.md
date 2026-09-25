@@ -67,7 +67,7 @@ let tone = || {
     let osc = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
     g.pipe_output(osc);
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 };
 
 let config = ExportConfig {

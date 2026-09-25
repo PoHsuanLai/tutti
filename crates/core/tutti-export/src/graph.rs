@@ -7,7 +7,7 @@
 //! see only frames.
 
 use tutti_core::SampleRate;
-use tutti_graph::{Editor, Executor, ForkError, ForkMode, ForkTarget, Prepare};
+use tutti_graph::{CommitError, Editor, Executor, ForkError, ForkMode, ForkTarget, Prepare};
 use tutti_types::{GraphTail, Samples};
 
 use crate::{Error, Result};
@@ -36,11 +36,24 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///   render's rate and [`GRAPH_MAX_BLOCK`], and a node that cannot be forked
 ///   is [`Error::NotForkable`] naming it.
 /// - Build one at [`RenderGraph::prepare`] (a `GraphBuilder` in a test or a
-///   simple host) and wrap the pair: `RenderGraph { editor, executor }`.
+///   simple host) and wrap the pair with [`RenderGraph::new`].
 ///
-/// The fields are public so a caller can edit the graph before it renders
-/// (bevy-tutti's export hook inserts nodes through `editor`). The render
-/// checks that `editor` feeds `executor` and refuses a pair that does not.
+/// # The pair
+///
+/// The editor must feed the executor: it is what the render drains of the
+/// units and commits the executor retires, and an editor paired with some
+/// other executor would never see them. The fields are private and both
+/// constructors check it, so a `RenderGraph` holds a matched pair from the
+/// start. A caller edits the graph before it renders through
+/// [`editor_mut`](Self::editor_mut) and sends the edit with
+/// [`commit`](Self::commit) (bevy-tutti's export hook does both); the
+/// executor is never handed out.
+///
+/// The render checks the pairing again, as a real error rather than a
+/// `debug_assert`: `editor_mut` hands out `&mut Editor`, which
+/// `std::mem::replace` can swap for an editor of another graph, and a check
+/// that costs one comparison per render is cheaper than a render whose
+/// retirees are never collected.
 ///
 /// The executor renders in blocks of its prepared `MaxBlock`, each handed the
 /// transport the render's clock reports ([`RenderClock::graph_block`]), and
@@ -75,24 +88,83 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
 /// g.pipe_output(tone);
 /// let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
+/// let graph = RenderGraph::new(editor, executor).expect("built together, so paired");
 ///
 /// let config = ExportConfig {
 ///     render: RenderConfig { sample_rate: rate, duration_seconds: 0.1, ..Default::default() },
 ///     ..Default::default()
 /// };
-/// let out = render_to_buffers(RenderGraph { editor, executor }, &config, &FrozenClock)
-///     .expect("renders");
+/// let out = render_to_buffers(graph, &config, &FrozenClock).expect("renders");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```
 pub struct RenderGraph {
     /// The control side. Drained after every block, so what the executor
     /// retires is freed on the render thread.
-    pub editor: Editor,
-    /// The executor the render drives.
-    pub executor: Executor,
+    editor: Editor,
+    /// The executor the render drives. Never handed out: the render is the
+    /// only thing that runs it.
+    executor: Executor,
 }
 
 impl RenderGraph {
+    /// Wrap an installed editor/executor pair for a render.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidConfig`] if `editor` does not feed `executor`
+    /// (`Editor::is_paired_with`): pass the pair built or forked together.
+    /// The rate is checked at render, against the render's config.
+    pub fn new(editor: Editor, executor: Executor) -> Result<Self> {
+        let graph = Self { editor, executor };
+        graph.check_paired()?;
+        Ok(graph)
+    }
+
+    /// Refuse a pair whose editor does not feed its executor. [`new`](Self::new)
+    /// and the render both ask (see "The pair" above for why twice).
+    pub(crate) fn check_paired(&self) -> Result<()> {
+        if self.editor.is_paired_with(&self.executor) {
+            Ok(())
+        } else {
+            Err(Error::InvalidConfig(
+                "the graph's editor does not feed its executor; pass the pair built together"
+                    .into(),
+            ))
+        }
+    }
+
+    /// The graph's editor, to read its spec.
+    pub fn editor(&self) -> &Editor {
+        &self.editor
+    }
+
+    /// The graph's editor, to edit the graph before it renders (insert a
+    /// node, rewire through `spec_mut`). Send the edit with
+    /// [`commit`](Self::commit); the render does not commit for you.
+    pub fn editor_mut(&mut self) -> &mut Editor {
+        &mut self.editor
+    }
+
+    /// Send what [`editor_mut`](Self::editor_mut) edited, and install it on
+    /// the executor now, so the render's first block already runs it.
+    ///
+    /// # Errors
+    ///
+    /// The editor's [`CommitError`] if the edit does not compile (a cycle, a
+    /// port out of range) or the editor is poisoned; nothing is installed.
+    pub fn commit(&mut self) -> std::result::Result<(), CommitError> {
+        self.editor.commit()?;
+        self.executor.apply_pending();
+        self.editor.collect();
+        Ok(())
+    }
+
+    /// Both halves, for the render. Crate-private: outside the crate the
+    /// executor is never handed out.
+    pub(crate) fn parts_mut(&mut self) -> (&mut Editor, &mut Executor) {
+        (&mut self.editor, &mut self.executor)
+    }
+
     /// What a native graph is prepared at to render at `sample_rate`: that
     /// rate, and [`GRAPH_MAX_BLOCK`].
     pub fn prepare(sample_rate: SampleRate) -> Prepare {
@@ -128,7 +200,9 @@ impl RenderGraph {
                 ForkError::NotForkable { key } => Error::NotForkable { key },
                 other => Error::Fork(other),
             })?;
-        Ok(Self { editor, executor })
+        // A fork returns its own installed pair; checked all the same, so no
+        // constructor skips the pairing.
+        Self::new(editor, executor)
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the
@@ -155,7 +229,7 @@ impl RenderGraph {
     /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
-    /// # let graph = RenderGraph { editor, executor };
+    /// # let graph = RenderGraph::new(editor, executor).unwrap();
     /// let latency = graph.reported_latency();
     /// let config = ExportConfig {
     ///     render: RenderConfig { sample_rate: rate, latency, ..Default::default() },
@@ -195,7 +269,7 @@ impl RenderGraph {
     /// # let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
     /// # g.pipe_output(tone);
     /// # let (editor, executor) = g.build(RenderGraph::prepare(rate)).unwrap();
-    /// # let graph = RenderGraph { editor, executor };
+    /// # let graph = RenderGraph::new(editor, executor).unwrap();
     /// let reported = graph.reported_tail();
     /// let tail = reported.samples().unwrap_or_else(|| {
     ///     // This bounce stops four seconds into an unbounded tail.

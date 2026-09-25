@@ -2388,13 +2388,20 @@ in `render/driver.rs`, and the free `reported_latency(&mut Net)` /
 tutti-core's (`Engine::new(NetBackend)`), and none of them renders through
 tutti-export. Decisions and deviations:
 
-- **`RenderGraph` is a struct, not a one-variant enum**
-  (`RenderGraph { editor, executor }`, public fields), for PR 13's reason
-  about `GraphBackend`: one variant selects nothing. The fields stay public
-  because bevy-tutti's export hook edits the fork through `editor`; the
-  render still refuses a pair whose editor does not feed its executor.
-  bevy-tutti's `PreparedGraph::graph: &mut RenderGraph` is therefore the
-  graph-only type, and a hook can no longer assign a `Net` (#45's note).
+- **`RenderGraph` is a struct, not a one-variant enum**, for PR 13's
+  reason about `GraphBackend`: one variant selects nothing. **Its fields
+  are private (changed in review)**, so a mismatched editor/executor pair
+  is refused at construction rather than first at render:
+  `RenderGraph::new(editor, executor) -> Result<Self>` checks
+  `Editor::is_paired_with` (as does `fork`, which goes through it);
+  `editor()` / `editor_mut()` reach the editor, and `commit()` sends an
+  edit and installs it on the executor, which is never handed out. The
+  render keeps the pairing check as a real error, not a `debug_assert`:
+  `editor_mut` can `mem::replace` the editor after `new` checked it, and
+  the check is one comparison per render. bevy-tutti's
+  `PreparedGraph::graph: &mut RenderGraph` is therefore the graph-only
+  type, and a hook can no longer assign a `Net` (#45's note) or a
+  mismatched pair.
 - **The entry points take `RenderGraph`, not `impl Into<RenderGraph>`**:
   the conversion existed so a `Net` could be passed unchanged.
 - **`RenderGraph::reported_latency` takes `&self`** (it only reads the

@@ -302,7 +302,7 @@ fn a_batch_spawned_in_one_frame_starts_one_at_a_time() {
 /// edits the fork's editor and does not commit: the adapter does.
 ///
 /// Mutation (run): dropping the adapter's commit of the fork after the hook
-/// (`run.rs`, `editor.commit()` after the hook) → renders 0.5.
+/// (`run.rs`, `graph.commit()` after the hook) → renders 0.5.
 #[test]
 fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     let (mut app, _node) = app_with_engine_on();
@@ -328,7 +328,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         let prepared_key = prepared.fresh_key();
         // Named through `bevy_tutti::export`, the path a host uses.
         let graph: &mut RenderGraph = prepared.graph;
-        let editor = &mut graph.editor;
+        let editor = graph.editor_mut();
         let key = prepared_key;
         editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
         for out in editor.spec_mut().topology.outputs.iter_mut() {

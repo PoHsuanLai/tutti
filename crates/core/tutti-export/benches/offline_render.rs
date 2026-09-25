@@ -46,7 +46,7 @@ fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(SampleRate(rate)))
         .expect("builds");
-    RenderGraph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 fn tone_graph(rate: f64) -> RenderGraph {

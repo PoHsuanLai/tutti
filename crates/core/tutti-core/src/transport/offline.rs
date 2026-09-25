@@ -228,7 +228,11 @@ impl OfflineTimeline {
     /// advance the timeline by it: [`graph_block`](Self::graph_block),
     /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
     /// then [`advance`](Self::advance), in the one order that keeps every
-    /// reader of this timeline on the frame the graph renders.
+    /// reader of this timeline on the frame the graph renders — once per
+    /// 64-frame chunk while the graph holds a `Legacy` unit (see
+    /// [`RenderClock::render_graph`](super::RenderClock::render_graph)), so
+    /// a clip reader polling this timeline reads the positions a `Net`
+    /// render's 64-frame `advance`s give it, to the bit.
     ///
     /// The graph's frames and this timeline's beats both start where they
     /// stand: the executor keeps its own frame clock, and the beat is this

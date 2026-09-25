@@ -29,6 +29,30 @@
 //!   before the unit runs, so an output that already holds its input is no
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].
 //! - **Silence: no claim unless the caller makes it.** See below.
+//! - **Time read out of band: the renderer renders chunk-major.** See below.
+//!
+//! # A timeline polled per call: [`Shape::legacy`]
+//!
+//! An `AudioUnit` receives no `Env`. One that follows the transport (a
+//! sampler voice, and so every clip reader; a MIDI clip source feeding a
+//! synth; a plugin's transport source) polls a shared timeline, an
+//! `Arc<dyn Timeline>` in tutti-core, on every `process` call, and takes what
+//! it reads as the position of that call's first frame. `Net` rendered every
+//! node 64 frames at a time and moved its clock between chunks, so the poll
+//! was right to the chunk, and every reader of one timeline saw it move
+//! forward only. The graph moves its clock once per block; over a longer
+//! block every chunk would read the same beat, and a voice would replay its
+//! first 64 frames `block / 64` times (a dry 440 Hz voice measured 768 Hz at
+//! 1024).
+//!
+//! So every `Legacy` node declares [`Shape::legacy`], a plan holding one
+//! reports [`Plan::has_legacy`](crate::Plan::has_legacy), and a renderer that
+//! sees it (tutti-core's `Engine` and `RenderClock::render_graph`) hands the
+//! executor blocks of at most [`LEGACY_CHUNK`], across **all** nodes, moving
+//! its clock between them, exactly as `Net` did. Doc 013 has the decision
+//! ("chunk-major `Legacy` compatibility mode") and why per-node seating of a
+//! shared timeline was rejected; it goes away as nodes port natively and
+//! read `Env::transport_at` (Phase 4).
 //!
 //! # Never skipped, unless [`pure`](Legacy::pure)
 //!
@@ -215,6 +239,12 @@ struct Adapter {
 /// calls. Past that, [`LegacyControls::set`] holds and coalesces on the
 /// control side (see the `legacy` module docs, `src/legacy.rs`).
 pub const LEGACY_SETTINGS_CAPACITY: usize = 64;
+
+/// The frames a [`Legacy`] hands its unit per `AudioUnit::process` call,
+/// walking each block from its first frame: fundsp's `MAX_BUFFER_SIZE`, the
+/// most a call can take. The longest block a renderer hands a plan that
+/// [`has_legacy`](crate::Plan::has_legacy) (see the module docs).
+pub const LEGACY_CHUNK: usize = MAX_BUFFER_SIZE;
 
 /// What became of a [`LegacyControls::set`] or
 /// [`flush`](LegacyControls::flush). Never "dropped": a setting that did not
@@ -601,6 +631,9 @@ impl Adapter {
         // An `AudioUnit` receives no events at all, so it promises nothing
         // about their timing — and says so, rather than inheriting `Sample`.
         .with_event_resolution(Resolution::Block)
+        // It may poll a timeline out of band: rendered chunk-major (see "A
+        // timeline polled per call").
+        .with_legacy()
     }
 }
 
@@ -636,7 +669,7 @@ impl Node for Adapter {
         }
         let mut start = 0;
         while start < frames {
-            let len = (frames - start).min(MAX_BUFFER_SIZE);
+            let len = (frames - start).min(LEGACY_CHUNK);
             for c in 0..ins {
                 self.input.channel_f32_mut(c)[..len]
                     .copy_from_slice(&io.input(c)[start..start + len]);

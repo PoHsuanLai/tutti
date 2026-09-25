@@ -72,6 +72,15 @@ pub struct Shape {
     /// refuses an event edge that requires a finer resolution than its sink
     /// declares (see [`GraphSpec::require_resolution`](crate::GraphSpec::require_resolution)).
     pub event_resolution: Resolution,
+    /// Whether this node is a [`Legacy`](crate::Legacy) `AudioUnit`, which
+    /// may read time **out of band**: a shared timeline polled on every
+    /// 64-frame call rather than [`Env`]. A plan holding one
+    /// ([`Plan::has_legacy`](crate::Plan::has_legacy)) must be rendered in
+    /// blocks of at most [`LEGACY_CHUNK`](crate::LEGACY_CHUNK) with the
+    /// timeline moved between them, as `Net` rendered every node (see the
+    /// `legacy` module docs, `src/legacy.rs`). Set only by `Legacy`; a
+    /// native node reads [`Env`] and leaves it `false`.
+    pub legacy: bool,
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -128,6 +137,7 @@ impl Shape {
             tail: Tail::None,
             in_place: false,
             event_resolution: Resolution::Sample,
+            legacy: false,
         }
     }
 
@@ -191,6 +201,14 @@ impl Shape {
     #[must_use]
     pub const fn with_event_resolution(mut self, resolution: Resolution) -> Self {
         self.event_resolution = resolution;
+        self
+    }
+
+    /// This shape, marked [`legacy`](Self::legacy). `Legacy`'s; a native
+    /// node has no reason to call it.
+    #[must_use]
+    pub const fn with_legacy(mut self) -> Self {
+        self.legacy = true;
         self
     }
 }

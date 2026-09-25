@@ -22,6 +22,16 @@
 //!   and renders the whole block once. A node reads the transport at a frame
 //!   with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
 //!   against the piece that reaches their beat.
+//!
+//!   **Chunk-major while the plan holds a `Legacy` unit**
+//!   (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
+//!   unit reads no `Env`: one that follows the transport (a sampler voice, a
+//!   MIDI clip source) polls the live `Transport` on every 64-frame call. So
+//!   the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
+//!   across every node, each with its own walk, and publishes the playhead
+//!   after each: through a chunk it reads the chunk's first frame, as through
+//!   a `Net` whose clock node publishes after its chunk, and it only moves
+//!   forward. A graph with no `Legacy` unit renders whole blocks.
 //! - **Net**: the engine renders the `Net` piece by piece (it already renders
 //!   in 64-frame chunks, so this breaks no promise), applying the commands
 //!   between pieces; the `TransportClock` inside the net reads them at the
@@ -87,7 +97,7 @@
 
 use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
-    MAX_TRANSPORT_CHANGES,
+    LEGACY_CHUNK, MAX_TRANSPORT_CHANGES,
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
@@ -906,7 +916,14 @@ impl GraphRender {
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
-        (bound.min(self.stride), rate)
+        let bound = bound.min(self.stride);
+        // Chunk-major while a `Legacy` unit may poll the transport (the
+        // module docs): after `apply_pending`, so a commit that adds or
+        // removes the last one switches at this block.
+        if self.exec.plan().is_some_and(|p| p.has_legacy()) {
+            return (bound.min(LEGACY_CHUNK), rate);
+        }
+        (bound, rate)
     }
 
     /// Render one graph block of `len` frames into frames
@@ -937,6 +954,12 @@ impl GraphRender {
             std::array::from_fn(|_| chunks.next().expect("MAX_ROOT_CHANNELS chunks"));
         self.exec
             .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
+        // Published after the block, not by the walk before it: through the
+        // block the live playhead still reads its first frame (the last
+        // block's end), which is what a `Legacy` unit polling it takes for
+        // its call's first frame, as through a `Net` whose clock node
+        // publishes after its chunk. And it only moves forward.
+        self.clock.publish_position(self.clock.current_beat());
         if width == 0 {
             block.fill(0.0);
             return;

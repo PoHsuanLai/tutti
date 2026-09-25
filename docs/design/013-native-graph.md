@@ -288,7 +288,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
-| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block | none by construction (a declick moves the transport on its frame; the fade is audio only) |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -524,7 +524,11 @@ that the running plan holds the edit.
   whichever chunk polls it), so they cannot honour the contract and get
   rows when events become their ports. So do the sampler's time-stretch
   unit (a declared latency not yet rowed) and every other node as it is
-  ported natively; a native port adds its row with the same harness.
+  ported natively; a native port adds its row with the same harness. The
+  sampler's clip readers are in the same position for time rather than
+  events: they poll a timeline once per 64-frame call (a graph holding
+  them renders chunk-major, Phase 3), so a clip lands on its chunk, not its frame,
+  until they read `Env::transport_at`.
 
 ### SIMD and DOD, concretely
 
@@ -1087,6 +1091,8 @@ number, which is random per run on either backend. Found on the way:
   `env_clock.rs`'s `an_offline_render_sees_the_live_engine_transport`, which
   pins offline and live blocks one to one), prepare graphs holding clip
   readers at 64, or port the readers to `Env::transport_at` (Phase 4).
+  **Since fixed** (the next paragraph): the fixture is back at
+  `GRAPH_MAX_BLOCK`, and the live engine did have the same fault.
 - **Widening a graph for export** (the `Net`'s `set_output_arity`, which
   `surround_export.rs` tests) is growing `topology.outputs` through
   `GraphBuilder::spec_mut` (or `Editor::spec_mut` and a commit), new
@@ -1096,6 +1102,136 @@ number, which is random per run on either backend. Found on the way:
   build (every unit prepared, the plan compiled) per iteration as they
   included the `Net`'s construction; its history does not compare across
   this change.
+
+**A `Legacy` clip reader reads its timeline per 64-frame chunk (decided
+2026-09-25, fixed before PRs 11 and 12).** Found porting export's tests (PR
+8): a sampler voice (`VoicePool`, `MemorySource`, `DiskVoice`, and so every
+clip reader) polls its `Arc<dyn Timeline>` out of band on every
+`AudioUnit::process` call and takes the answer as that call's first frame.
+`Legacy` makes that call per 64-frame chunk, but the graph backend moved
+the timeline once per graph block, live (`GraphRender`'s walk advances the
+engine's clock over the whole block before it renders) and offline
+(`RenderClock::render_graph` advanced after the block). So every chunk of
+a block read one beat (the block's end live, its start offline) and a voice
+replayed one 64-frame stretch through the block: at 1024 frames a dry
+440 Hz voice measured 768 Hz. The `Net` never hit it because it renders in
+64-frame chunks and its clock moves between them.
+
+**Decision: parity with `Net` for Phase 3, by rendering chunk-major —
+the `Legacy` compatibility mode.** While the compiled plan holds any
+`Legacy` unit, the renderer drives the executor in blocks of at most
+`LEGACY_CHUNK` (64) frames **across every node**, moving its clock (and
+publishing the playhead) between them, exactly as `Net` rendered. A graph
+with no `Legacy` unit keeps whole blocks. `Env` then describes each 64-frame
+block; scheduled commands, `TransportChanges` and sample-accurate events
+work unchanged at that granularity (a cut inside a chunk still lands on its
+frame within the chunk, in `Env`).
+
+- **tutti-graph:** `Shape::legacy`, set only by `Legacy`'s probe, and
+  `Plan::has_legacy()`. `Editor::replace` requires both halves of a fade to
+  agree on it, so a fade never leaves the outgoing unit unchunked.
+  `LEGACY_CHUNK` is `MAX_BUFFER_SIZE`, the chunk `Legacy` calls a unit in.
+- **Live (`Engine` graph path):** `GraphRender::settle` bounds the graph
+  block to 64 frames while `exec.plan().has_legacy()` (asked after
+  `apply_pending`, so a commit that adds or removes the last one switches at
+  that block). Each chunk gets its own walk (commands, cuts, declick plan)
+  and render. The engine's clock no longer writes the playhead in the walk:
+  `TransportClock::advance` only steps, and the engine publishes
+  (`publish_position`) after each rendered block. So through a chunk the
+  playhead a `Legacy` unit polls reads the chunk's first frame, as through a
+  `Net` whose clock node publishes after its chunk, and it only moves
+  forward: the control thread's playhead (`TransportRes`, the mod driver,
+  `sequence.rs`'s "end of the last completed block") is monotonic within a
+  block again.
+- **Offline (`RenderClock::render_graph`):** the same loop: `graph_block`,
+  `process_with_changes`, `advance`, once per 64 frames while the plan has a
+  `Legacy` unit. `OfflineTimeline` is advanced 64 frames at a time exactly
+  as a `NetSource` render advances it, so a clip reader reads a `Net`
+  render's positions to the bit (the bit matters: advanced a block at a
+  time, a voice a fifth up, through the vocoder, left the `Net`'s render by
+  1e-3 at frame 3076). No new `RenderClock` method.
+
+**Rejected: seating a shared timeline per node** (the first version of this
+fix: `Legacy` called a renderer-installed `LegacyClock::seat(offset)` before
+each chunk, which stored that chunk's beat into the shared playhead). It
+passes a single-voice test and breaks everything that shares timeline state
+across `Legacy` nodes, because the executor is node-major: each `Legacy`
+node rewound the shared playhead to the block's start and walked it forward
+again. A `BeatCursor` shared by a voice's clones, one clip source feeding
+two synths, or both halves of a crossfade then saw `BeatWindowSync::Rewound`
+every block, which refires a clip's notes and flushes a vocoder. The
+control-thread playhead went backwards mid-block. And it is a global the
+Phase 6 parallel executor could not run. `Net` never had these problems
+because it runs 64-frame chunks across all nodes, so that is what the graph
+does while it hosts units written for `Net`. Also rejected: preparing graphs
+that hold clip readers at a 64-frame `MaxBlock` (the PR 8 workaround: a
+per-graph rule every host must know), and a thread-local "current chunk"
+that `Transport::beat` would consult (a `Timeline` whose answer depends on
+the asking thread).
+
+**Cost.** Chunk-major pays the executor's per-call cost once per 64 frames
+instead of once per block, the price `Net` always paid. Measured with
+`tutti-graph`'s `graph_render` bench (criterion medians, the same all-`Legacy`
+graphs, eight 64-frame blocks against one 512-frame block, and sixteen
+against one 1024): an 8-filter chain 16.7 µs against 15.4 µs per 512 frames
+(+9%; +10% at 1024), a 128-filter chain 246 µs against 229 µs (+8%), a
+512-filter chain +8%, a 64-wide fan 130 µs against 119 µs (+10%), and a
+single node +17%, where the fixed per-block cost dominates. That is about
+17 ns per `Legacy` node per extra 64-frame call, plus the engine's walk per
+chunk live. Against `Net` on the same work at 512 frames (14.6 µs, 217 µs,
+113 µs), chunk-major is 13–15% slower; whole-block it was 5% slower.
+A native-only graph pays nothing.
+
+**It disappears as nodes port natively (Phase 4).** Each port removes a
+`Legacy` unit; the last one removed turns the mode off for that graph,
+at the next block, with no configuration. Clip readers are the ones that
+need it for correctness (they read `Env::transport_at` once ported); the
+rest merely pay for it while they share a graph with one. **Phase 6's
+parallel executor runs chunk-major across workers while a `Legacy` unit is
+present**: every worker finishes chunk *k* before any starts chunk *k + 1*,
+and the clock moves between, which is what keeps a timeline shared between
+nodes on different workers monotonic.
+
+What it does not change, still Phase 4's: a `Legacy` unit reads the
+transport **once per 64-frame call**, so a cut inside a chunk reaches it at
+the chunk's start (a scheduled locate at frame 10 037 plays the target from
+9 984; `Net`, which renders pieces split at the cut, plays it from 10 037;
+from the next chunk the two agree), and **steady time** and play state are
+read per call, as through `Net`. The proper fix is the port: clip readers
+read `Env::transport_at` themselves.
+
+Pinned by:
+- `tutti-core/tests/legacy_chunk_major.rs`: two `Legacy` nodes sharing a
+  `BeatCursor`, and a crossfade of one, see no discontinuity; the playhead
+  sampled from another thread while the engine renders never goes
+  backwards; the native node beside them is handed 64-frame blocks; a graph
+  without a `Legacy` unit renders whole blocks, and goes back to them when
+  the last one is removed.
+- `tutti-sampler/tests/graph_engine_clock.rs`: a placed voice, dry and a
+  fifth up, through `Engine::with_graph` at device blocks of 256, 480, 512,
+  1024 and 2048 frames, bit-identical to `Engine::new` (whose clock is
+  pushed first, as bevy-tutti's engine build pushes it; pushed after the
+  voice, a `Net` runs the clock first and its voice reads a chunk ahead);
+  two voices sharing a cursor; a crossfade of a voice; a loop wrap
+  (bit-identical); a scheduled mid-block locate (bit-identical before its
+  chunk, within 1e-4 after it, the difference being that chunk).
+- `tutti-polysynth/tests/clip_source_shared.rs`: one clip source feeding
+  two synths plays its notes once (the two render, in sum, what one synth
+  alone renders, bit for bit, and the `Net`'s two).
+- `tutti-export/tests/graph_source.rs`: a placed voice and a forked
+  `MemorySource` bit-identical to the `Net` render at `GRAPH_MAX_BLOCK`;
+  `sampler_to_export.rs`'s five pitch and stretch cases, which PR 8 had
+  prepared at a 64-frame `MaxBlock`, back at `GRAPH_MAX_BLOCK`.
+- `env_clock.rs`'s `an_offline_render_sees_the_live_engine_transport`:
+  offline and live hand the graph the same `Env` per block, every block at
+  most 64 frames, and a `Legacy` clip reader polls the `Env`'s beat on
+  both.
+- bevy-tutti's `engine::build` tests: a placed voice through the builder's
+  own engine on both backends at 256 and 512 frames, rolling.
+
+Mutation, run against every one of those: the renderer rendering whole
+blocks with a `Legacy` unit present (`has_legacy` ignored) fails each.
+
 
 **PR 7 landed.** Export's entry points (`render_to_file`,
 `render_to_buffers`, `render_normalized_to_file`) take
@@ -1354,11 +1490,14 @@ ask again.
 
 **Phase 3 follow-ups** (recorded, not done here):
 
-- **An engine-driven sampler A/B.** `AudioSide::render` renders under a
-  stopped transport, so the A/B suite cannot see a clip reader's clock.
-  Once the `Legacy` per-64-chunk timeline fix for clip readers lands
-  (tutti-core / tutti-export), add a sampler A/B through
-  `Engine::process` at 256- and 512-frame blocks with a rolling transport.
+- **An engine-driven sampler A/B — done** with the `Legacy` per-chunk
+  timeline fix. `AudioSide::render` renders under a stopped transport, so
+  the A/B suite cannot see a clip reader's clock; bevy-tutti's
+  `engine::build` tests now render a placed sampler voice (dry and a fifth
+  up) through the builder's own engine (`assemble`, the beat clock it
+  inserts) with a rolling transport at 256- and 512-frame blocks: `Native`
+  matches `Net` bit for bit, and the dry voice is the tone. Rendered in
+  whole blocks (no chunk-major mode), `Native` parts from `Net` at frame 64.
 - **`TuttiDriver::restart` at a new device rate** re-prepares nothing: the
   graph keeps its old rate (on `Net` its units, on `Native` its `Prepare`),
   and `AudioConfig` and `Transport` keep the old one too. It predates PR 11
@@ -1386,7 +1525,11 @@ sampler's `Arc`-everything-to-survive-clone workarounds (`voice/node.rs:236-255`
 `harmony_source.rs:47`) can be simplified once units stop being cloned.
 The convolver's IR spectra move to `Arc` (read-only, shared): today every
 forkable `Legacy` convolver keeps a second copy of them, megabytes per long
-reverb, for its fork source (Phase 3 PR 2). Delete `Legacy`.
+reverb, for its fork source (Phase 3 PR 2). Clip readers (the sampler's
+voices, `DiskVoice`, and the plugin transport sources) read
+`Env::transport_at` instead of polling an `Arc<dyn Timeline>`. The
+chunk-major compatibility mode (Phase 3) turns itself off for a graph once
+its last `Legacy` unit is gone, and goes with `Legacy`. Delete `Legacy`.
 
 ### Phase 5 — delete
 

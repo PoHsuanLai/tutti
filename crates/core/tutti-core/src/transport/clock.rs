@@ -249,7 +249,11 @@ impl TransportClock {
     /// Advance `frames` under `from`, the transport the last
     /// [`begin`](Self::begin) reported, exactly as `process` would over that
     /// many frames: the same per-frame increment and loop wrap, then the
-    /// position writeback and the steady-time count.
+    /// steady-time count. **Not** the position writeback: the engine walks
+    /// a block before rendering it, and publishes with
+    /// [`publish_position`](Self::publish_position) once the block is
+    /// rendered, so the live playhead reads the block's first frame while it
+    /// renders (as `process` publishes only at the end of its call).
     ///
     /// Takes the play state and loop from `from` rather than re-reading the
     /// atomics, so a store from the control thread between the two calls
@@ -274,10 +278,19 @@ impl TransportClock {
                 }
             }
         }
-        if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(self.current_beat.get(), Ordering::Release);
-        }
         self.advance_steady_time(frames);
+    }
+
+    /// Publish `beat` as the live playhead, the figure a [`Timeline`]
+    /// (`Transport::beat`) reads, without moving this clock: the graph
+    /// engine's writeback, after each block it renders (see
+    /// [`advance`](Self::advance)). A no-op for a clock with no writeback.
+    ///
+    /// [`Timeline`]: super::Timeline
+    pub(crate) fn publish_position(&self, beat: Beat) {
+        if let Some(ref writeback) = self.links.position_writeback {
+            writeback.store(beat.get(), Ordering::Release);
+        }
     }
 
     /// Advance the free-running sample counter.

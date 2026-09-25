@@ -731,3 +731,61 @@ fn a_quiet_burst_is_delivered_after_the_next_collect() {
         &[(0, 10.0), (1, 11.0), (2, 12.0)]
     );
 }
+
+/// A native node with a `Legacy` node's outward shape (one channel in place,
+/// `Block` event resolution), but not `legacy`: what `replace` must refuse
+/// to fade a `Legacy` node into.
+struct NativeLookalike;
+
+impl tutti_graph::Node for NativeLookalike {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_in_place()
+            .with_event_resolution(tutti_graph::Resolution::Block)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(&mut self, _: &tutti_graph::Cx<'_>, _: tutti_graph::Io<'_>) -> tutti_graph::Status {
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A `Legacy` unit marks its plan**, and nothing else does: its shape is
+/// `legacy`, a plan holding one `has_legacy` (the renderers' cue to render
+/// chunk-major, doc 013's `Legacy` compatibility mode), a plan without one
+/// does not. And a crossfade may not change it: fading a `Legacy` node into
+/// a native one of the same ports would leave the outgoing unit running in
+/// whole blocks, so `replace` refuses it.
+///
+/// Mutations (run): `Legacy`'s probe not calling `with_legacy` → the plan
+/// does not report it → fails; `Editor::replace` not comparing `legacy` →
+/// the lookalike fades in → fails.
+#[test]
+fn a_legacy_unit_marks_its_plan() {
+    let node = Legacy::new(lowpass_hz(1_000.0, 1.0));
+    assert!(node.shape().legacy, "a `Legacy` shape is legacy");
+    let (mut ed, mut exec) = out_of_band_graph(node, 1);
+    assert!(exec.plan().expect("applied").has_legacy());
+    assert_eq!(
+        ed.replace(
+            NodeKey(1),
+            NativeLookalike,
+            tutti_graph::Fade::new(Samples(64), tutti_graph::CrossfadeCurve::EqualAmplitude),
+        )
+        .map(|_| ()),
+        Err(tutti_graph::CommitError::FadeShape { node: NodeKey(1) })
+    );
+
+    ed.remove(NodeKey(1));
+    ed.insert(NodeKey(2), "native", NativeLookalike);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(2),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    assert!(
+        !exec.plan().expect("applied").has_legacy(),
+        "a native node does not mark its plan"
+    );
+}

@@ -93,7 +93,8 @@ pub trait Timeline: Send + Sync {
 /// (`tutti_graph::Executor`) must also *hand* each block a transport, since
 /// the graph's clock is the executor's `Env`, not a node — that is
 /// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
-/// is the one order the two are called in. It is still not a supertrait of
+/// is the one order the two are called in (chunk by chunk, for a graph
+/// holding `Legacy` units). It is still not a supertrait of
 /// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
 /// report — stopped, at beat zero — without being a timeline anything reads.
 ///
@@ -123,11 +124,23 @@ pub trait RenderClock: Send + Sync {
     /// it is.
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
 
-    /// Render one block of `frames` through `exec` under this clock, then
-    /// advance the clock by it: [`graph_block`](Self::graph_block),
+    /// Render `frames` through `exec` under this clock, then advance the
+    /// clock by it: [`graph_block`](Self::graph_block),
     /// `Executor::process_with_changes`, then [`advance`](Self::advance) —
     /// the one order that keeps every reader of this clock on the frame the
     /// graph renders (emit-then-advance, as above).
+    ///
+    /// **Chunk-major while the graph holds a `Legacy` unit**
+    /// (`Plan::has_legacy`): that sequence runs once per `LEGACY_CHUNK` (64)
+    /// frames, across every node, as a `Net` render runs. A `Legacy` unit (a
+    /// sampler voice, a MIDI clip source) polls this clock as a [`Timeline`]
+    /// on every 64-frame call, so the clock must move between its calls, and
+    /// every reader of it must see it move forward only (doc 013,
+    /// "chunk-major `Legacy` compatibility mode"). A graph with none renders
+    /// `frames` in one block.
+    ///
+    /// Allocates two short slice lists per chunk when it chunks: an offline
+    /// render, not the audio thread.
     ///
     /// # Panics
     ///
@@ -140,9 +153,26 @@ pub trait RenderClock: Send + Sync {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
-        let (transport, changes) = self.graph_block();
-        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
-        self.advance(tutti_types::Samples(frames));
+        // Installs queued commits first, so the question is asked of the
+        // plan this block renders.
+        exec.apply_pending();
+        if !exec.plan().is_some_and(|p| p.has_legacy()) {
+            let (transport, changes) = self.graph_block();
+            exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
+            self.advance(tutti_types::Samples(frames));
+            return;
+        }
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(tutti_graph::LEGACY_CHUNK);
+            let ins: Vec<&[f32]> = inputs.iter().map(|i| &i[done..done + n]).collect();
+            let mut outs: Vec<&mut [f32]> =
+                outputs.iter_mut().map(|o| &mut o[done..done + n]).collect();
+            let (transport, changes) = self.graph_block();
+            exec.process_with_changes(n, &transport, &changes, &ins, &mut outs);
+            self.advance(tutti_types::Samples(n));
+            done += n;
+        }
     }
 }
 

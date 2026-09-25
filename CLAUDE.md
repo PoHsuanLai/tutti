@@ -98,6 +98,16 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
   cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
+`just check-windows` runs this over the workspace and over the plugin crates
+with every format feature. It excludes the five members that cannot
+cross-compile: `ogg_next_sys` (via `tutti-export`) and `tutti-vst3-host`'s
+`conformance` probe need real Windows C headers. CI's `clippy (windows)` job
+runs everything natively on a `windows-latest` runner.
+**A cast from a vst3 SDK enum constant differs by platform.** The bindings
+type those constants as `c_uint` on unix and `c_int` on Windows, so
+`kFoo as i32` passes Linux clippy and fails `unnecessary_cast` on Windows.
+Use `helpers::sdk_enum_i32`.
+
 These catch compile errors only. `nm` the object to confirm the branch you
 meant was taken. Windows behaviour that surprised us before (named-pipe
 timeouts, the MSVC CRT environment, VST3 UID layouts, `USERPROFILE`, bundle

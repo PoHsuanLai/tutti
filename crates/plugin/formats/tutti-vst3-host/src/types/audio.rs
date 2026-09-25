@@ -2,8 +2,10 @@
 
 use vst3::Steinberg::Vst::{AudioBusBuffers, ProcessModes_, SymbolicSampleSizes_};
 
-pub(crate) const K_SAMPLE_32_INT: i32 = SymbolicSampleSizes_::kSample32 as i32;
-pub(crate) const K_SAMPLE_64_INT: i32 = SymbolicSampleSizes_::kSample64 as i32;
+use crate::helpers::sdk_enum_i32;
+
+pub(crate) const K_SAMPLE_32_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample32);
+pub(crate) const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample64);
 
 /// Which of VST3's three processing modes (`ProcessModes_`) the host is asking
 /// for: live playback, offline bounce, or the look-ahead prefetch mode.
@@ -53,11 +55,11 @@ impl ProcessMode {
     /// Stays a bare `i32`: both fields are C ABI, which the unit-newtype rule
     /// explicitly carves out.
     pub(crate) const fn to_vst3(self) -> i32 {
-        (match self {
+        sdk_enum_i32(match self {
             Self::Realtime => ProcessModes_::kRealtime,
             Self::Prefetch => ProcessModes_::kPrefetch,
             Self::Offline => ProcessModes_::kOffline,
-        }) as i32
+        })
     }
 
     /// Whether a live instance may switch from `self` to `other` without
@@ -119,7 +121,7 @@ impl Vst3Sample for f64 {
 
 #[cfg(test)]
 mod process_mode_tests {
-    use super::{ProcessMode, ProcessModes_};
+    use super::{sdk_enum_i32, ProcessMode, ProcessModes_};
 
     /// The wire values must be the SDK's, not a re-declared copy. A host that
     /// sends 2 where the plugin reads `kPrefetch` asks for the wrong behaviour
@@ -128,15 +130,15 @@ mod process_mode_tests {
     fn maps_onto_the_sdk_constants() {
         assert_eq!(
             ProcessMode::Realtime.to_vst3(),
-            ProcessModes_::kRealtime as i32
+            sdk_enum_i32(ProcessModes_::kRealtime)
         );
         assert_eq!(
             ProcessMode::Prefetch.to_vst3(),
-            ProcessModes_::kPrefetch as i32
+            sdk_enum_i32(ProcessModes_::kPrefetch)
         );
         assert_eq!(
             ProcessMode::Offline.to_vst3(),
-            ProcessModes_::kOffline as i32
+            sdk_enum_i32(ProcessModes_::kOffline)
         );
     }
 

@@ -61,11 +61,12 @@ use vst3::Steinberg::{
 
 use tutti_types::ChannelLayout;
 
+use crate::helpers::sdk_enum_i32;
 use crate::types::BusInfo as BusInfoWrap;
 
-pub(super) const K_AUDIO: i32 = kAudio as i32;
-pub(super) const K_INPUT: i32 = kInput as i32;
-pub(super) const K_OUTPUT: i32 = kOutput as i32;
+pub(super) const K_AUDIO: i32 = sdk_enum_i32(kAudio);
+pub(super) const K_INPUT: i32 = sdk_enum_i32(kInput);
+pub(super) const K_OUTPUT: i32 = sdk_enum_i32(kOutput);
 
 /// Whether this host activates a bus at load, given its `busType` and `flags`.
 ///
@@ -103,7 +104,7 @@ pub(super) fn wants_activation(bus_type: i32, flags: u32) -> bool {
     bus_type == K_MAIN || (flags & BUS_DEFAULT_ACTIVE) != 0
 }
 
-const K_MAIN: i32 = kMain as i32;
+const K_MAIN: i32 = sdk_enum_i32(kMain);
 
 /// `BusFlags` is `DefaultEnumType`, which is `u32` on unix and `c_int` on
 /// Windows — so the cast is a no-op here and load-bearing there. Same reason
@@ -173,7 +174,7 @@ mod bus_activation_policy_tests {
 
     /// `kAux` is not zero, so a test using `0` for "not main" would be testing
     /// the main path by accident.
-    const K_AUX: i32 = vst3::Steinberg::Vst::BusTypes_::kAux as i32;
+    const K_AUX: i32 = crate::helpers::sdk_enum_i32(vst3::Steinberg::Vst::BusTypes_::kAux);
 
     /// A main bus is activated whether or not it carries the flag.
     ///

@@ -105,6 +105,45 @@ jobs:
       # restyle, and they carry pre-existing lint debt that is not ours to pay.
       - run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
 
+  # The same lint, on Windows. The `clippy` job above cannot see a
+  # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on
+  # one platform and a no-op on the other: the vst3 bindings type every SDK
+  # enum constant as `c_uint` on unix and `c_int` on Windows, so
+  # `kAudio as i32` passes Linux clippy and fails `unnecessary_cast` here. The
+  # test job's Windows leg compiles this code but does not lint it.
+  #
+  # A native runner rather than a cross-check from ubuntu. The cross-check
+  # (`just check-windows`) reaches the plugin crates, but not the workspace:
+  # `ogg_next_sys` needs real Windows C headers, and `tutti-vst3-host`'s
+  # `conformance` feature compiles and links the `audio-probe` DLL against the
+  # SDK's Win32 sources, which only an MSVC toolchain can do. Here `cc` finds
+  # MSVC, so no clang/stub workaround is needed.
+  clippy-windows:
+    name: clippy (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Workspace
+        run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+      # The workspace run builds each crate with the features the workspace
+      # unifies to, which leaves tutti-plugin's format features and
+      # clap-extras dark. `au` is macOS-only and compiles to nothing here.
+      - name: Plugin formats
+        shell: bash
+        run: |
+          cargo clippy -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
+          cargo clippy -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
+      # WASAPI capture and the MIDI arms of the callback, which the `features`
+      # job lints only on Linux.
+      - name: Device features
+        run: cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
+
   features:
     name: dark features
     runs-on: ubuntu-latest

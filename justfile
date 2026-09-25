@@ -274,11 +274,40 @@ lint:
 # change shipped that took Windows from 37 failures to 47. This needs no Windows
 # machine — only `rustup target add x86_64-pc-windows-msvc`, once.
 #
-# `cargo check`, not `test`: the tests cannot RUN here. This catches the
+# Clippy, not `test`: the tests cannot RUN here. This catches the
 # compile-shaped half, which is the half that was being missed.
+#
+# Needs `clang` and `llvm-ar` too. criterion (a dev-dependency, so every
+# `--all-targets`) builds a C shim through `cc`, which picks gcc, and gcc
+# cannot target MSVC; clang can, and wants only a one-line `malloc.h` stub for
+# `_alloca`. Clippy never links, so the stub has only to let the C compile.
+#
+# This is the part of CI's `clippy (windows)` job that Linux can do: the
+# workspace minus five members, then the plugin crates with every format
+# feature. The excluded members cannot cross-compile, because they need a real
+# Windows C toolchain and headers, not a stub. `ogg_next_sys` (the vorbis codec,
+# via tutti-export, which `tutti` and `bevy-tutti` depend on) includes
+# `<string.h>`. `tutti-vst3-host`'s `conformance` feature (on in its own tests
+# and `tutti-plugin-server`'s) compiles and links the `audio-probe` DLL against
+# the SDK's Win32 sources. That is why the CI job runs on `windows-latest`.
+# Their lib targets are still checked below where they can be.
+# `au` is macOS-only and compiles to nothing here.
 check-windows:
-    cargo clippy -p tutti-plugin -p tutti-plugin-types --all-targets \
-        --target x86_64-pc-windows-msvc -- -D warnings
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stub="${TMPDIR:-/tmp}/tutti-winstub"
+    mkdir -p "$stub"
+    printf '#include <stddef.h>\nvoid *_alloca(size_t);\n' > "$stub/malloc.h"
+    export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
+    export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
+    win() { cargo clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
+    win --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti \
+        --exclude tutti-export --exclude tutti --exclude bevy-tutti \
+        --exclude tutti-vst3-host --exclude tutti-plugin-server
+    win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
+    win -p tutti-clap-host --features clap-extras --all-targets
+    win -p tutti-vst2-host --all-targets
+    win -p tutti-vst3-host -p tutti-plugin-server --lib --bins
 
 # The rustdoc gate. The workspace sets broken_intra_doc_links and
 # private_intra_doc_links to deny, but a plain build never runs rustdoc, so this

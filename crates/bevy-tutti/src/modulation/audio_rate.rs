@@ -33,7 +33,7 @@
 //! # The base chain is not optional
 //!
 //! A node born with a param port reads that port *unconditionally* — it cannot
-//! ask whether anything is connected. An unconnected input in `Net` is `Zero`,
+//! ask whether anything is connected. An unconnected input in the graph is `Zero`,
 //! so a port with nothing feeding it delivers the param as literal `0.0`, not
 //! as its authored value: a distortion at drive 0 is silence, not a passthrough.
 //!

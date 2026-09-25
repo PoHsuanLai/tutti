@@ -16,10 +16,11 @@
 //! The pool's *retirement channel* looks like a hazard being ignored here. It
 //! is not: that channel exists because `VoiceCommand::Remove` is handled inside
 //! `drain_commands`, which runs from the audio callback, and dropping a slot
-//! frees its vocoder bank. **That cannot happen here.** `Net::remove` *returns*
-//! the `Box<dyn AudioUnit>` rather than dropping it, and
-//! [`reconcile_node_despawn`](crate::graph::reconcile_node_despawn) discards it
-//! inside an observer — main thread. No channel needed.
+//! frees its vocoder bank. **That cannot happen here.** A node removed from
+//! the graph ([`reconcile_node_despawn`](crate::graph::reconcile_node_despawn))
+//! is retired by the executor *back* to the editor rather than dropped, and
+//! freed in [`commit_graph`](crate::graph::commit_graph)'s collect — main
+//! thread. No channel needed.
 //!
 //! One [`BeatCursor`](tutti_core::transport::BeatCursor) per voice is inherited
 //! rather than one shared. The pool's doc argues against N cursors, but that
@@ -84,7 +85,7 @@ pub struct VoiceCommands(
 /// Spawn a [`VoiceNode`] on an entity, wired to the transport.
 ///
 /// An extension trait on `Commands` for the same reason
-/// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is one: `Net::add` returns
+/// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is one: `AudioGraphRes::insert` returns
 /// its id inside a deferred command, so nothing outside the command queue can
 /// observe the binding.
 pub trait SpawnVoice {

@@ -163,7 +163,7 @@ fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit:
 /// 4. If the graph took it: binds the captured controls and marks
 ///    [`GraphDirty`] so the per-frame
 ///    [`commit_graph`](crate::graph::commit_graph) flushes. If the graph is
-///    re-preparing (native backend, a rate change between its two commits),
+///    re-preparing (a rate change between its two commits),
 ///    parks unit and controls in [`PendingCrossfades`] and applies them on the
 ///    first frame the graph takes them; until then the entity keeps driving
 ///    the unit that is still playing. On a poisoned graph, logs and drops.

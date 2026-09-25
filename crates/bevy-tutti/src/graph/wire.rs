@@ -44,17 +44,17 @@
 //!
 //! # Why the sink owns the declaration
 //!
-//! A [`Net`](tutti_core::dsp::Net) graph is a *total function from input port to
-//! source*: every port — `(node, channel)` and `(global, channel)` — holds
-//! exactly one [`GraphSource`], defaulting to `Silence`. There is no fan-in and no
-//! partial state.
+//! The graph is a *total function from input port to source*: every port —
+//! `(node, channel)` and `(global, channel)` — holds exactly one
+//! [`GraphSource`], defaulting to `Silence`. There is no fan-in and no partial
+//! state.
 //!
 //! So the declaration is keyed the way the engine is keyed. [`PortSources`] is
 //! a component (one per entity, enforced by the ECS) whose index *i* is input
 //! port *i* (one slot, enforced by the type). **Two sources into one port cannot
 //! be expressed.** An edge-entity model could express it, and would resolve it
 //! by archetype iteration order — a silent, nondeterministic last-write-wins.
-//! Summing is a node's job: `Net` has no summing bus and this layer must not
+//! Summing is a node's job: the graph has no summing bus and this layer must not
 //! invent one.
 //!
 //! An edge-component model is also ruled out. Such a component needs a tracked
@@ -203,9 +203,9 @@ impl PortSources {
     /// the graph, then name it here like any other port.
     ///
     /// Declaring it here is not a stylistic preference. Wiring a param port
-    /// imperatively is *fragile*:
-    /// [`Net::pipe_input`](tutti_core::dsp::Net::pipe_input) walks **every**
-    /// input port of a node, so a later "wire the audio in" call silently
+    /// imperatively is *fragile*: a wiring call that walks **every** input
+    /// port of a node (as `Net::pipe_input` did, before the native graph) lets
+    /// a later "wire the audio in" call silently
     /// overwrites a param edge with a global input — no error, no warning, the
     /// modulation just stops arriving.
     ///
@@ -259,7 +259,7 @@ impl MasterSources {
     ///
     /// For a source with fewer outputs, say so explicitly — a mono node feeding
     /// both channels is [`mono_from`](Self::mono_from). There is no wrapping
-    /// here on purpose. `Net::pipe_output` wraps with `channel % node_outputs`,
+    /// here on purpose. `AudioGraphRes::set_outputs_from` wraps with `channel % node_outputs`,
     /// which silently turns "route this" into "route this, duplicated", and the
     /// arity it wraps against is the *node's*, which this constructor cannot see
     /// — it has an `Entity`, not a graph. Guessing wrong leaves a channel
@@ -329,7 +329,7 @@ impl MasterSources {
 /// belt-and-braces addition — `Changed` does not report a removal, and a removal
 /// is a real graph edit. `remove::<AudioNode>()` without a despawn takes the
 /// node out of the engine (the `On<Remove, AudioNode>` observer calls
-/// `Net::remove`, which zeroes every edge to and from it) while leaving the
+/// `AudioGraphRes::remove`, which zeroes every edge to and from it) while leaving the
 /// entity, its `PortSources` and every declaration naming it untouched. None of
 /// the other four arms fires, so before this arm existed the pass simply did not
 /// run: the engine was repaired and the declaration side was never re-derived.
@@ -346,13 +346,11 @@ impl MasterSources {
 ///
 /// # Why a diff rather than a wholesale replace
 ///
-/// The MIDI routing table and the modulation matrix both rebuild wholesale,
-/// because their engines offer no incremental edit. `Net` offers *only*
-/// incremental edits and already has `commit()` for atomicity, so writing every
-/// port every rebuild would invalidate the topological order for ports that did
-/// not change. So the value decides *what* the graph is, and
-/// [`topology::apply`] still writes only the ports whose
-/// runtime source differs from it.
+/// The value decides *what* the graph is, and [`topology::apply`] writes only
+/// the ports whose runtime source differs from it, so a rebuild that moves
+/// nothing leaves the graph clean: no `GraphDirty`, so no compile and no
+/// commit. And a wholesale replace would also clear the ports the declaration
+/// does not name, which belong to whoever wired them (see [`PortSources`]).
 #[allow(
     clippy::too_many_arguments,
     reason = "Bevy systems declare their data access as parameters; each one here \
@@ -408,15 +406,20 @@ pub fn rebuild(
     // already was — reaches here and stops, where a per-port diff would have
     // walked every port to discover the same thing.
     //
-    // It cannot be fooled the way a revision counter can. `Net::revision` is
-    // monotone but is not a function of the graph, so it can order two states
+    // It cannot be fooled the way a revision counter can. A revision is
+    // monotone but not a function of the graph, so it can order two states
     // and cannot identify one; `want == live` is structural equality, so two
     // graphs compare equal exactly when they are the same graph.
     //
     // # Why `rebound` is an exception and not a redundancy
     //
-    // A [`NodeKey`] is an `Entity`, deliberately: that is what lets a crossfade
-    // replace the unit behind a node without moving a wire. The consequence is
+    // A value's [`NodeKey`] is an `Entity`, deliberately: that is what lets a
+    // crossfade replace the unit behind a node without moving a wire. The
+    // graph keys the same node by its `AudioNode`, which an entity binds, and
+    // that binding is not the value's. (It survived the move off `Net`, doc
+    // 013 PR 13: a node goes into the graph before any entity is bound to it,
+    // and nodes with no entity at all are allowed, so the graph cannot key by
+    // entity.) The consequence is
     // that the value **cannot see a re-bind** — `insert`ing a different
     // `AudioNode` on the same entity changes which `NodeId` the declaration
     // resolves to while leaving the entity, and therefore the key, alone. If the
@@ -449,9 +452,9 @@ pub fn rebuild(
     //
     // Global output arity has none of the per-vertex hazard that makes node
     // arity a respawn: global outputs are sinks, so shrinking cannot dangle a
-    // reference. `commit_graph` uses the arity-permitting commit, and
-    // `Engine::process_segment` re-reads `backend.outputs()` after `pump()`
-    // every block, so the RT side needs nothing here.
+    // reference. The width is part of the spec the next commit compiles, and
+    // the engine renders each plan at its own output count, so the RT side
+    // needs nothing here.
     //
     // Driven by the declaration rather than by `want`, and that is deliberate:
     // `topology::build` clamps its outputs to the arity the root *has*, so a

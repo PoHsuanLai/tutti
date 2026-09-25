@@ -3,7 +3,7 @@
 //!
 //! This is the irreducible core of bevy-tutti. The order is load-bearing:
 //! `AudioEngine::new` opens CPAL (yielding sample rate + channels), the shared
-//! managers and graph are built from those, the graph's backend is taken once, the
+//! managers and graph are built from those, the graph's audio side is taken once, the
 //! RT processor is assembled, `audio_engine.start()` makes the callback live
 //! (once), then the sampler / soundfont / analysis handles are built sharing
 //! the same managers. The shared manager *instances* never escape — only the
@@ -21,8 +21,7 @@ use tutti_core::{Engine, SampleRate, MAX_ROOT_CHANNELS};
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 use crate::graph::{
-    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, GraphBackend, MeteringRes, MetronomeRes,
-    TransportRes,
+    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
@@ -97,9 +96,8 @@ pub(crate) fn build_on(
     let tap = AudioTap::new();
     let click_settings = Arc::new(ClickSettings::new());
 
-    // Per-channel pre-roll for sources outside the graph. Stays empty unless the
-    // app adds `LatencyCompensationPlugin`, which owns publishing into it; the
-    // sampler subscribes here so the wiring exists either way.
+    // Per-channel pre-roll for sources outside the graph, which `commit_graph`
+    // publishes with every plan; the sampler subscribes to this one.
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
     let Assembled {
@@ -107,14 +105,7 @@ pub(crate) fn build_on(
         engine,
         clock: clock_node,
         click: click_node,
-    } = assemble(
-        plugin.graph_backend,
-        sample_rate,
-        inputs,
-        outputs,
-        &transport,
-        &click_settings,
-    )?;
+    } = assemble(sample_rate, inputs, outputs, &transport, &click_settings)?;
 
     // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
     // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
@@ -236,9 +227,9 @@ pub(crate) fn build_on(
     };
     app.insert_resource(graph);
     app.insert_resource(config);
-    // Inserted whether or not the app opts into compensation: the sampler already
-    // holds a clone of this Arc, so the resource must be *this* one, not a fresh
-    // default. `LatencyCompensationPlugin` uses `init_resource`, which leaves it.
+    // The sampler already holds a clone of this Arc, so the resource must be
+    // *this* one, not a fresh default. `GraphReconcilePlugin` (and
+    // `LatencyCompensationPlugin`) use `init_resource`, which leaves it.
     app.insert_resource(compensation);
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));
@@ -314,36 +305,33 @@ struct Assembled {
     click: AudioNode,
 }
 
-/// Build the graph on `backend`, add the beat clock and the metronome, and
-/// build the engine over its audio side. The device-free half of
-/// [`build_into`], so both backends' engines can be rendered in a test.
+/// Build the graph, add the beat clock and the metronome, and build the
+/// engine over its audio side. The device-free half of [`build_into`], so the
+/// engine can be rendered in a test.
 ///
-/// **The graph runs at the device's `rate`.** Both backends re-rate every
-/// unit they insert to the graph's rate (`Net::push`, `Legacy`'s prepare), so
-/// a graph left at its default 44.1 kHz would run every node — the beat clock
-/// included — at 44.1 kHz on a 48 kHz device: the clock and every oscillator
-/// about 8.8% slow. (That is what this builder did on `Net` before the rate
-/// was passed here.)
+/// **The graph runs at the device's `rate`.** Every unit inserted is prepared
+/// at the graph's rate (`Legacy`'s prepare), so a graph left at its default
+/// 44.1 kHz would run every node — the beat clock included — at 44.1 kHz on a
+/// 48 kHz device: the clock and every oscillator about 8.8% slow. (That is
+/// what this builder did on `Net` before the rate was passed here.)
 ///
-/// The clock is a `TransportClock` on `Net` and an `EnvClock` on `Native`
-/// ([`AudioGraphRes::insert_beat_clock`]): a graph engine drives its own
-/// `TransportClock` and forbids a second in the graph. Either emits the beat
-/// on the same two ports, so the metronome is wired to it the same way — by
-/// the `PortSources` [`build_into`] declares.
+/// The clock is an `EnvClock` ([`AudioGraphRes::insert_beat_clock`]): a
+/// graph engine drives its own `TransportClock` and forbids a second in the
+/// graph. It emits the beat on a `TransportClock`'s two ports, and the
+/// metronome is wired to them by the `PortSources` [`build_into`] declares.
 fn assemble(
-    backend: GraphBackend,
     rate: SampleRate,
     inputs: usize,
     outputs: usize,
     transport: &Transport,
     click_settings: &Arc<ClickSettings>,
 ) -> Result<Assembled> {
-    let mut graph = AudioGraphRes::with_rate(backend, inputs, outputs, rate);
+    let mut graph = AudioGraphRes::with_rate(inputs, outputs, rate);
 
     // The beat clock — emits the beat on two ports. Beat-driven nodes take
     // those ports as inputs, so the clock needs a name a host can address; it
     // gets an entity in `build_into`, like every other node in the graph.
-    let clock = graph.insert_beat_clock(transport);
+    let clock = graph.insert_beat_clock();
 
     // Metronome. It only READS the transport (rolling/recording), so it takes a
     // read view, not a control handle; the beat itself arrives on its two input
@@ -389,11 +377,11 @@ fn assemble(
 /// the device" is the obvious wrong instinct.
 ///
 /// The [`MAX_ROOT_CHANNELS`] clamp is applied **here, at construction**, rather
-/// than left to `process_segment`'s runtime clamp: without it `Net::outputs()`
-/// reports a width whose upper channels are declarable — a sink can name them,
-/// the wiring resolves — but never rendered, because the render scratch is
-/// bounded. Offline export is unaffected: it clones the net and uses the
-/// offline `set_output_arity`, which has no such cap.
+/// than left to the engine: `Engine::with_graph` bounds the editor to
+/// [`MAX_ROOT_CHANNELS`] global outputs (the render scratch is bounded), so a
+/// wider root would be refused at its first commit, and the graph would never
+/// play. Offline export is unaffected: a fork is prepared on its own, with no
+/// such cap.
 pub(crate) fn root_width(plugin_outputs: usize, device: tutti_core::ChannelLayout) -> usize {
     plugin_outputs
         .max(device.count() as usize)
@@ -405,6 +393,47 @@ mod tests {
     use super::root_width;
     use tutti_core::ChannelLayout;
     use tutti_core::MAX_ROOT_CHANNELS;
+
+    /// **The engine publishes the tap its callback feeds**, not a fresh
+    /// disconnected one: a host opens `AudioTapRes` and sees the frames the
+    /// callback renders. Built device-free (`build_on` over a
+    /// `ManualStreamDriver`), so it runs in CI; it replaces
+    /// `graph_reconcile`'s `the_engine_publishes_its_tap`, which opened a real
+    /// device, was ignored, and asserted only that the resource existed.
+    ///
+    /// Mutation (run): `build_on` inserting `AudioTapRes(AudioTap::new())`
+    /// instead of the callback's `tap` → the opened consumer sees nothing.
+    #[test]
+    fn the_engine_publishes_the_tap_its_callback_feeds() {
+        use crate::graph::AudioTapRes;
+        use tutti_core::SampleRate;
+        use tutti_cpal::{AudioEngine, ManualStreamDriver, OutputSpec};
+
+        let mut app = bevy_app::App::new();
+        let (driver, stream) = ManualStreamDriver::new();
+        super::build_on(
+            &crate::TuttiPlugin::default(),
+            &mut app,
+            AudioEngine::from_spec(OutputSpec::new(
+                SampleRate(48_000.0),
+                ChannelLayout::STEREO,
+                tutti_cpal::cpal::SampleFormat::F32,
+            )),
+            |engine, state| engine.start_with(state, driver),
+        )
+        .expect("builds with no device");
+        let mut consumer = app
+            .world()
+            .resource::<AudioTapRes>()
+            .open()
+            .expect("a fresh tap opens");
+        stream.render_block(64).expect("the stream is open");
+        let mut frames = 0;
+        while consumer.try_pop().is_some() {
+            frames += 1;
+        }
+        assert_eq!(frames, 64, "the callback's block reached the published tap");
+    }
 
     /// `root_width` is `max(project, device)` clamped to `1..=MAX_ROOT_CHANNELS`,
     /// and each row below is one of the four ways that rule is load-bearing.
@@ -468,42 +497,69 @@ mod tests {
     }
 }
 
-/// The engine [`assemble`] builds, rendered: both backends, from the builder's
-/// own wiring (the beat clock it picks, the click it builds against it).
+/// The engine [`assemble`] builds, rendered from the builder's own wiring (the
+/// beat clock it picks, the click it builds against it), against the engine
+/// this builder made before design doc 013's PR 13: fundsp's `Net` with a
+/// `TransportClock` in it, over `Engine::new`.
+///
+/// **The `Net`-era engine is a test oracle here, and nothing else.** The
+/// adapter lost its `Net` arm in PR 13; these tests keep the assertions it
+/// used to run on both arms ("the native engine renders the `Net` engine's
+/// samples"), with the `Net` side rebuilt by hand from tutti-core
+/// ([`net_era`]) exactly as `assemble` built it on `Net`. It goes when
+/// `Engine::new(NetBackend)` does (doc 013, PR 15), and these become checks
+/// against the analytic figures each test also asserts.
 #[cfg(test)]
 mod engine_tests {
     use super::*;
     use crate::graph::GraphSource;
-    use tutti_core::{ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent};
+    use tutti_core::{AudioUnit, ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent};
 
     const RATE: f64 = 48_000.0;
 
-    /// An engine from [`assemble`] at `RATE`, the click fed by the beat clock
-    /// and on both global outputs, rolling from the first block. `frames`
-    /// stereo frames rendered in 512-frame device blocks.
-    ///
-    /// The click's inputs are wired here the way `build_into` declares them
-    /// (`PortSources::stereo_from(clock)`), without an `App`.
-    fn render_click(backend: GraphBackend, frames: usize) -> Vec<f32> {
-        let transport = Transport::new(SampleRate(RATE));
-        let settings = Arc::new(ClickSettings::new());
-        settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
-        let Assembled {
-            mut graph,
-            engine,
-            clock,
-            click,
-        } = assemble(backend, SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
-        for port in 0..2 {
-            graph.set_source(click, port, GraphSource::Node(clock, port));
-            graph.set_output_source(port, GraphSource::Node(click, port));
-        }
-        assert!(graph.commit(), "{backend:?}: the first commit goes through");
+    /// The engine `assemble` built on `GraphBackend::Net` before PR 13, and
+    /// the graph it renders: a `Net` at `RATE`, the `TransportClock` pushed
+    /// first, then the click (`AudioGraphRes::insert_beat_clock` and
+    /// `insert` on the `Net` arm), and `Engine::new` over its backend. `wire`
+    /// edits the net as a test edits the adapter's graph, and its edits are
+    /// committed as the adapter's `commit` committed them.
+    fn net_era(
+        transport: &Transport,
+        settings: &Arc<ClickSettings>,
+        wire: impl FnOnce(&mut tutti_core::dsp::Net, tutti_core::dsp::NodeId, tutti_core::dsp::NodeId),
+    ) -> (Engine, tutti_core::dsp::Net) {
+        let rate = SampleRate(RATE);
+        let mut net = tutti_core::dsp::Net::new(0, 2);
+        net.set_sample_rate(rate);
+        let clock = net.add(tutti_core::TransportClock::new(
+            transport.clock_links(),
+            rate,
+        ));
+        let click = net.push(Box::new(ClickNode::with_transport(
+            transport.clone(),
+            settings.clone(),
+            rate,
+        )));
+        let engine = Engine::new(transport.motion.clone(), net.backend());
+        wire(&mut net, clock, click);
+        net.commit_output_arity_change();
+        (engine, net)
+    }
+
+    /// `frames` stereo frames of `engine` in `block`-frame device blocks,
+    /// the transport rolling from the first block, and — with `seek` — a
+    /// locate to beat 0.75 between two blocks past the first 60 000 frames.
+    fn run(
+        engine: &Engine,
+        transport: &Transport,
+        frames: usize,
+        block: usize,
+        seek: bool,
+    ) -> Vec<f32> {
         transport.motion.try_send(MotionEvent::Play).expect("room");
         let mut out = Vec::with_capacity(frames * 2);
-        let mut block = vec![0.0f32; 512 * 2];
-        let mut located = false;
+        let mut buf = vec![0.0f32; block * 2];
+        let mut located = !seek;
         while out.len() < frames * 2 {
             // A seek between two blocks, past the first second: the beat
             // clock has to follow the transport, not just count frames.
@@ -518,13 +574,59 @@ mod engine_tests {
                     })
                     .expect("room");
             }
-            engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
-            out.extend_from_slice(&block);
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            out.extend_from_slice(&buf);
         }
         out.truncate(frames * 2);
-        // The graph outlives every render: a `Net` engine renders the backend
-        // its frontend feeds.
-        drop(graph);
+        out
+    }
+
+    /// The click at full volume on every beat.
+    fn loud_click() -> Arc<ClickSettings> {
+        let settings = Arc::new(ClickSettings::new());
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_volume(1.0);
+        settings
+    }
+
+    /// An engine from [`assemble`] at `RATE`, the click fed by the beat clock
+    /// and on both global outputs, rolling from the first block. `frames`
+    /// stereo frames rendered in 512-frame device blocks, with a seek past
+    /// the first second.
+    ///
+    /// The click's inputs are wired here the way `build_into` declares them
+    /// (`PortSources::stereo_from(clock)`), without an `App`.
+    fn render_click(frames: usize) -> Vec<f32> {
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = loud_click();
+        let Assembled {
+            mut graph,
+            engine,
+            clock,
+            click,
+        } = assemble(SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+        for port in 0..2 {
+            graph.set_source(click, port, GraphSource::Node(clock, port));
+            graph.set_output_source(port, GraphSource::Node(click, port));
+        }
+        assert!(graph.commit(), "the first commit goes through");
+        run(&engine, &transport, frames, 512, true)
+    }
+
+    /// [`render_click`] on the `Net`-era engine ([`net_era`]).
+    fn render_click_net_era(frames: usize) -> Vec<f32> {
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = loud_click();
+        let (engine, net) = net_era(&transport, &settings, |net, clock, click| {
+            for port in 0..2 {
+                net.set_source(click, port, tutti_core::dsp::Source::Local(clock, port));
+                net.set_output_source(port, tutti_core::dsp::Source::Local(click, port));
+            }
+        });
+        let out = run(&engine, &transport, frames, 512, true);
+        // The net outlives the render: `Engine::new` renders the backend its
+        // frontend feeds.
+        drop(net);
         out
     }
 
@@ -537,36 +639,44 @@ mod engine_tests {
             .collect()
     }
 
-    /// **The builder's engine clicks the same samples on both backends.** On
-    /// `Net` the click reads a `TransportClock` in the graph; on `Native` an
-    /// `EnvClock` (the graph engine drives its own `TransportClock` and
-    /// forbids a second), wired to the click the same way. The transport
-    /// starts before the first block, so `ClickNode`'s play gate — read once
-    /// per 64-frame chunk, from the live flag, which on the graph backend is
-    /// already the whole block's (doc 013, gap 5) — opens on the same frame
-    /// on both. A start *inside* a block would open it a block early on
-    /// `Native`; that is `ClickNode`'s gate, not the beat, and is pinned in
+    /// **The builder's engine clicks the samples the `Net`-era engine
+    /// clicked.** The click reads an `EnvClock` (the graph engine drives its
+    /// own `TransportClock` and forbids a second); on `Net` it read a
+    /// `TransportClock` in the graph, wired to the click the same way. The
+    /// transport starts before the first block, so `ClickNode`'s play gate —
+    /// read once per 64-frame chunk, from the live flag, which on the graph
+    /// engine is already the whole block's (doc 013, gap 5) — opens on the
+    /// same frame on both. A start *inside* a block would open it a block
+    /// early; that is `ClickNode`'s gate, not the beat, and is pinned in
     /// `tutti-core`'s `env_clock` suite.
     ///
     /// A seek between two blocks is in the render, because that is where a
     /// wrong clock shows: a steady transport is counted alike by any clock.
+    /// The onsets are also pinned on their own, so the test does not rest on
+    /// the oracle alone: at 120 BPM a beat is 24 000 frames, the seek lands on
+    /// the 118th 512-frame block (frame 60 416) at beat 0.75, and the next
+    /// beat is a quarter beat (6 000 frames) later; a click is heard from the
+    /// frame after its beat. The locate itself clicks too (60 417): it moves
+    /// the whole beat from 2 to 0, which the click takes for a new beat — as
+    /// it did on `Net`, and as the oracle below agrees.
     ///
     /// Mutations (run):
-    /// - `AudioGraphRes::insert_beat_clock` inserting a `TransportClock` on
-    ///   `Native` as on `Net` → two clocks consume the one transport's seek,
+    /// - `AudioGraphRes::insert_beat_clock` inserting a `TransportClock`
+    ///   beside the engine's → two clocks consume the one transport's seek,
     ///   the click's misses it, and the renders part after it;
     /// - inserting a silent two-port node in its place → no clicks at all.
     #[test]
-    fn the_click_is_bit_identical_on_both_backends() {
+    fn the_click_is_bit_identical_to_the_net_era_engine() {
         let frames = 3 * RATE as usize;
-        let net = render_click(GraphBackend::Net, frames);
-        let native = render_click(GraphBackend::Native, frames);
-        let on = onsets(&net);
-        assert!(
-            on.len() >= 5,
-            "clicks every beat for 3 s at 120 BPM: {on:?}"
+        let net = render_click_net_era(frames);
+        let native = render_click(frames);
+        let on = onsets(&native);
+        assert_eq!(
+            on,
+            vec![1, 24_001, 48_001, 60_417, 66_417, 90_417, 114_417, 138_417],
+            "a click on every beat, across the seek"
         );
-        assert_eq!(on, onsets(&native), "onset frames");
+        assert_eq!(onsets(&net), on, "onset frames");
         let parted = net
             .iter()
             .zip(&native)
@@ -575,21 +685,20 @@ mod engine_tests {
     }
 
     /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
-    /// click lands every 24 000 frames. Both backends re-rate every unit they
-    /// insert to the graph's rate, so a graph left at its 44.1 kHz default —
-    /// which is what `build_into` built on `Net` before the rate was passed —
-    /// runs the beat clock 8.8% fast and clicks every 22 050 frames.
+    /// click lands every 24 000 frames. Every unit inserted is prepared at
+    /// the graph's rate, so a graph left at its 44.1 kHz default — which is
+    /// what `build_into` built on `Net` before the rate was passed — runs the
+    /// beat clock 8.8% fast and clicks every 22 050 frames.
     ///
-    /// Mutation (run): `AudioGraphRes::with_rate` not setting the rate on the
-    /// `Net` it builds → the `Net` run clicks at 22 050 and fails.
+    /// Mutation (run): `assemble` building the graph with
+    /// `AudioGraphRes::headless` (the 44.1 kHz default) instead of at `rate`
+    /// → clicks at 22 050 and fails.
     #[test]
     fn the_graph_runs_at_the_device_rate() {
-        for backend in [GraphBackend::Net, GraphBackend::Native] {
-            // The click's first sample is `sin(0)`, so it is heard from the
-            // frame after its beat; the spacing is what the rate decides.
-            let on = onsets(&render_click(backend, 50_000));
-            assert_eq!(on, vec![1, 24_001, 48_001], "{backend:?}");
-        }
+        // The click's first sample is `sin(0)`, so it is heard from the
+        // frame after its beat; the spacing is what the rate decides.
+        let on = onsets(&render_click(50_000));
+        assert_eq!(on, vec![1, 24_001, 48_001]);
     }
 
     // ---- a clip reader through the builder's engine -------------------------
@@ -600,29 +709,11 @@ mod engine_tests {
         (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin()
     }
 
-    /// An engine from [`assemble`] with one sampler voice, placed at beat 0 on
-    /// the live transport and pitched by `cents`, on both global outputs;
-    /// the transport rolling from the first block. `frames` stereo frames in
-    /// `block`-frame device blocks.
-    ///
-    /// The voice is a clip reader: it polls the transport (its
-    /// `Arc<dyn Timeline>`) on every 64-frame call. On `Native` that call is
-    /// `Legacy`'s, and it reads the right beat because the engine renders a
-    /// plan holding a `Legacy` unit chunk-major, 64 frames across every node
-    /// with the playhead published after each (doc 013, "chunk-major
-    /// `Legacy` compatibility mode"). On `Net` the builder inserts its
-    /// `TransportClock` before any voice; the net then runs the voice first
-    /// in each 64-frame chunk, and it reads the beat the clock published at
-    /// the end of the previous chunk: this chunk's first frame, the same.
+    /// One sampler voice on a second of the tone, placed at beat 0 on
+    /// `transport` and pitched by `cents`.
     #[cfg(feature = "sampler")]
-    fn render_voice(backend: GraphBackend, cents: f32, frames: usize, block: usize) -> Vec<f32> {
+    fn voice(transport: &Transport, cents: f32) -> tutti_sampler::VoicePool {
         use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-        let transport = Transport::new(SampleRate(RATE));
-        let settings = Arc::new(ClickSettings::new());
-        let Assembled {
-            mut graph, engine, ..
-        } = assemble(backend, SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
-
         let mut wave = tutti_io::Wave::new(1, RATE);
         for i in 0..RATE as usize {
             wave.push_frame(&[tone_at(i)]);
@@ -645,55 +736,87 @@ mod engine_tests {
                 channel_index: None,
             },
         );
-        let voice = graph.insert(pool);
+        pool
+    }
+
+    /// An engine from [`assemble`] with one sampler voice ([`voice`]) on both
+    /// global outputs, the transport rolling from the first block. `frames`
+    /// stereo frames in `block`-frame device blocks.
+    ///
+    /// The voice is a clip reader: it polls the transport (its
+    /// `Arc<dyn Timeline>`) on every 64-frame call. That call is `Legacy`'s,
+    /// and it reads the right beat because the engine renders a plan holding
+    /// a `Legacy` unit chunk-major, 64 frames across every node with the
+    /// playhead published after each (doc 013, "chunk-major `Legacy`
+    /// compatibility mode").
+    #[cfg(feature = "sampler")]
+    fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = Arc::new(ClickSettings::new());
+        let Assembled {
+            mut graph, engine, ..
+        } = assemble(SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+        let voice = graph.insert(voice(&transport, cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));
         }
-        assert!(graph.commit(), "{backend:?}: the first commit goes through");
+        assert!(graph.commit(), "the first commit goes through");
+        run(&engine, &transport, frames, block, false)
+    }
 
-        transport.motion.try_send(MotionEvent::Play).expect("room");
-        let mut out = Vec::with_capacity(frames * 2);
-        let mut buf = vec![0.0f32; block * 2];
-        while out.len() < frames * 2 {
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            out.extend_from_slice(&buf);
-        }
-        out.truncate(frames * 2);
-        drop(graph);
+    /// [`render_voice`] on the `Net`-era engine ([`net_era`]). The builder
+    /// pushed its `TransportClock` before any voice; the net then runs the
+    /// voice first in each 64-frame chunk, and it reads the beat the clock
+    /// published at the end of the previous chunk: this chunk's first frame,
+    /// what the graph engine's chunk-major render gives it.
+    #[cfg(feature = "sampler")]
+    fn render_voice_net_era(cents: f32, frames: usize, block: usize) -> Vec<f32> {
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = Arc::new(ClickSettings::new());
+        let (engine, net) = net_era(&transport, &settings, |net, _, _| {
+            let v = net.push(Box::new(voice(&transport, cents)));
+            for port in 0..2 {
+                net.set_output_source(port, tutti_core::dsp::Source::Local(v, port));
+            }
+        });
+        let out = run(&engine, &transport, frames, block, false);
+        drop(net);
         out
     }
 
-    /// **A sampler voice plays in time through the builder's engine on both
-    /// backends**, at `block`-frame device blocks with a rolling transport:
-    /// dry and a fifth up, `Native` renders `Net`'s samples bit for bit, and
-    /// the dry voice is the tone it plays, frame for frame (so the two cannot
-    /// agree on a wrong answer).
+    /// **A sampler voice plays in time through the builder's engine**, at
+    /// `block`-frame device blocks with a rolling transport: the dry voice is
+    /// the tone it plays, frame for frame, and dry and a fifth up it renders
+    /// the `Net`-era engine's samples bit for bit (which also checks the
+    /// oracle against the tone, so the two cannot agree on a wrong answer).
     ///
-    /// `graph_backends.rs`'s A/B renders under a stopped transport, where a
-    /// clip reader sounds nothing; this is the adapter's path with the clock
-    /// moving (doc 013, the #32 follow-up).
+    /// `net_parity.rs` renders under a stopped transport, where a clip reader
+    /// sounds nothing; this is the adapter's path with the clock moving (doc
+    /// 013, the #32 follow-up).
     ///
     /// Mutation (run): the engine rendering whole device blocks with a
     /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`)
-    /// → `Native` parts from `Net` at frame 64, at both block sizes; `Net`
-    /// still matches the tone.
+    /// → the native render parts from the tone and from `Net`'s at frame 64,
+    /// at both block sizes.
     #[cfg(feature = "sampler")]
-    fn a_voice_plays_in_time_on_both_backends(block: usize) {
+    fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;
         for cents in [0.0f32, 700.0] {
-            let net = render_voice(GraphBackend::Net, cents, frames, block);
-            let native = render_voice(GraphBackend::Native, cents, frames, block);
+            let net = render_voice_net_era(cents, frames, block);
+            let native = render_voice(cents, frames, block);
             if cents == 0.0 {
-                for (i, s) in net.as_chunks::<2>().0.iter().enumerate() {
-                    let want = tone_at(i);
-                    assert!(
-                        (s[0] - want).abs() < 1e-3,
-                        "{block}-frame blocks, Net: frame {i} read {}, the tone is {want}",
-                        s[0]
-                    );
+                for (what, out) in [("native", &native), ("Net era", &net)] {
+                    for (i, s) in out.as_chunks::<2>().0.iter().enumerate() {
+                        let want = tone_at(i);
+                        assert!(
+                            (s[0] - want).abs() < 1e-3,
+                            "{block}-frame blocks, {what}: frame {i} read {}, the tone is {want}",
+                            s[0]
+                        );
+                    }
                 }
             }
-            let peak = net.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            let peak = native.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
             if let Some(i) = net
                 .iter()
@@ -701,8 +824,8 @@ mod engine_tests {
                 .position(|(a, b)| a.to_bits() != b.to_bits())
             {
                 panic!(
-                    "{block}-frame blocks, {cents} cents: Native parts from Net at frame {} \
-                     (channel {}): net {} native {}",
+                    "{block}-frame blocks, {cents} cents: the render parts from the Net era's \
+                     at frame {} (channel {}): net {} native {}",
                     i / 2,
                     i % 2,
                     net[i],
@@ -714,13 +837,13 @@ mod engine_tests {
 
     #[cfg(feature = "sampler")]
     #[test]
-    fn a_voice_plays_in_time_on_both_backends_at_256_frame_blocks() {
-        a_voice_plays_in_time_on_both_backends(256);
+    fn a_voice_plays_in_time_at_256_frame_blocks() {
+        a_voice_plays_in_time(256);
     }
 
     #[cfg(feature = "sampler")]
     #[test]
-    fn a_voice_plays_in_time_on_both_backends_at_512_frame_blocks() {
-        a_voice_plays_in_time_on_both_backends(512);
+    fn a_voice_plays_in_time_at_512_frame_blocks() {
+        a_voice_plays_in_time(512);
     }
 }

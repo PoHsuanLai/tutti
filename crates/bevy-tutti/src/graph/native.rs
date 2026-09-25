@@ -1,11 +1,10 @@
-//! The native backend behind [`AudioGraphRes`](super::AudioGraphRes): a
+//! The runtime behind [`AudioGraphRes`](super::AudioGraphRes): a
 //! `tutti-graph` [`Editor`], and — until the engine or a test takes it — the
 //! [`Executor`] it sends to.
 //!
-//! Design doc 013, Phase 3 PR 11. Selected with
-//! [`GraphBackend::Native`](super::GraphBackend::Native); the default is still
-//! fundsp's `Net`. Every method here answers one of `AudioGraphRes`'s, and
-//! the mapping is:
+//! Design doc 013, Phase 3: added beside fundsp's `Net` in PR 11, the only
+//! runtime since PR 13. Every method here answers one of `AudioGraphRes`'s,
+//! and the mapping is:
 //!
 //! | `AudioGraphRes` | here |
 //! |---|---|
@@ -27,9 +26,10 @@
 //! output is a function of its audio inputs alone — a SoundFont fed through
 //! its MIDI port looks exactly like a filter from here. A `pure` claim that is
 //! wrong parks the unit for good the first time it is quiet (`tutti_graph`'s
-//! `legacy` module docs), so the backend never makes one: every unit is
+//! `legacy` module docs), so this adapter never makes one: every unit is
 //! [`Legacy::controlled`], which runs every block and gives `set_param` its
-//! settings ring. The price is the silence skip, which `Net` never had either.
+//! settings ring. The price is the silence skip, which the `Net` this
+//! replaced never had either.
 //!
 //! # Where the audio side lives
 //!
@@ -38,16 +38,14 @@
 //! a test's [`AudioSide`](super::AudioSide). While it is local, a commit is
 //! applied at once on this thread and its box collected, so a headless graph
 //! never meets back-pressure, and [`render_frame`](NativeGraph::render_frame)
-//! runs it. So on this backend `headless` and `unattached` build the same
-//! thing; the difference `Net` has between them (whether `set_param` reaches a
-//! control-side copy of the node) has no counterpart, because there is no
-//! control-side copy.
+//! runs it.
 //!
 //! # `set_param` lands on the next block, never at once
 //!
-//! A `Net` with no audio side applies a setting straight to its only copy of
-//! the node, so a test could read an atomic back the moment it wrote it. Here
-//! a setting goes into the node's ring and reaches the unit at the start of
+//! There is no control-side copy of a node for a setting to land on at once
+//! (a `Net` with no audio side, before PR 13, applied one straight to its only
+//! copy, so a test could read an atomic back the moment it wrote it). A
+//! setting goes into the node's ring and reaches the unit at the start of
 //! the executor's next block: one block later, on every graph. A test that
 //! reads a unit's live state after a write renders a frame first
 //! ([`render_frame`](super::AudioGraphRes::render_frame)); one that reads the
@@ -80,12 +78,12 @@ use super::resources::GraphSource;
 /// by default; `Legacy` still runs each unit in 64-frame chunks inside it.
 pub(crate) const NATIVE_MAX_BLOCK: Samples = Samples(1024);
 
-/// The spec `kind` of a unit this backend inserted. Nothing builds a unit from
+/// The spec `kind` of a unit this adapter inserted. Nothing builds a unit from
 /// it (the same reason `topology::ENTITY_NODE_KIND` exists); it names the
 /// layer in a debugger.
 const UNIT_KIND: &str = "bevy-tutti:unit";
 
-/// The spec `kind` of the engine's beat generator on this backend.
+/// The spec `kind` of the engine's beat generator.
 const ENV_CLOCK_KIND: &str = "bevy-tutti:env-clock";
 
 /// A boxed unit as a sized, `Clone` one, which is what `Legacy::controlled`
@@ -165,7 +163,7 @@ impl AudioUnit for Boxed {
 }
 
 /// Why [`AudioGraphRes::replace`](super::AudioGraphRes::replace) did not
-/// take a unit. Only the native backend refuses; `Net` always takes it.
+/// take a unit.
 pub enum ReplaceRefused {
     /// Not now: the graph is re-preparing (a sample-rate or block-size change
     /// between its two commits). The unit is handed back, untouched; retry
@@ -209,14 +207,14 @@ pub(crate) struct Local {
     scratch: Vec<Vec<f32>>,
 }
 
-/// The native backend. See the module docs.
+/// The graph runtime. See the module docs.
 pub(crate) struct NativeGraph {
     editor: Editor,
     local: Option<Local>,
     nodes: BTreeMap<NodeKey, Entry>,
     /// Edited since the last commit — only a local render reads it, to
-    /// commit before it renders (a `Net`'s control-side tick renders the
-    /// graph as edited, uncommitted edits included).
+    /// commit before it renders, so a local render plays the graph as
+    /// edited, uncommitted edits included.
     edited: bool,
 }
 
@@ -233,7 +231,7 @@ pub(crate) enum Committed {
 
 /// `node`'s key: its `NodeId`'s bits. `NodeId::new` draws from a global
 /// counter, so a key minted this way is unique without a map, and
-/// [`AudioNode`] keeps wrapping a `NodeId` on both backends.
+/// [`AudioNode`] keeps wrapping a `NodeId`.
 pub(crate) fn key(node: AudioNode) -> NodeKey {
     NodeKey(node.0.value())
 }
@@ -564,7 +562,8 @@ impl NativeGraph {
     ///
     /// `Editor::replace` fades only between units of one shape (ports,
     /// latency, in-place acceptance, event resolution; doc 013, PR 3) and
-    /// only from a unit that is running. `Net::crossfade` asks neither. So
+    /// only from a unit that is running (`Net::crossfade`, before PR 13,
+    /// asked neither). So
     /// where the fade cannot be had — the node is not committed yet, or the
     /// new unit declares another latency — this lands the unit with
     /// `Editor::insert` instead: the same key, every edge kept, heard as a
@@ -733,7 +732,7 @@ impl NativeGraph {
         };
         match self.editor.spec().topology.edges.get(&at) {
             Some(Edge::Direct(source)) => self.lift(*source),
-            // This backend writes no feedback edge (`Net` has none).
+            // This adapter writes no feedback edge.
             Some(Edge::Feedback(_)) | None => GraphSource::Silence,
         }
     }
@@ -773,7 +772,7 @@ impl NativeGraph {
 
     /// # Panics
     ///
-    /// If `channel` is past the global outputs, as `Net` does.
+    /// If `channel` is past the global outputs.
     pub(crate) fn set_output_source(&mut self, channel: usize, source: GraphSource) {
         self.editor.spec_mut().topology.outputs[channel] = Self::lower(source);
         self.edited = true;
@@ -862,9 +861,8 @@ impl NativeGraph {
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
     }
 
-    /// The compensation of the plan sent last, for a test that checks the
-    /// published figures against what the executor was actually handed.
-    #[cfg(test)]
+    /// The compensation of the plan sent last: what `commit_graph` publishes,
+    /// since it is what the executor is handed.
     pub(crate) fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
         let plan = self.editor.base()?;
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
@@ -879,7 +877,7 @@ impl NativeGraph {
     /// because the node's latency is the *unit's* declaration: a hosted
     /// plugin's is its own latency cell **plus** the block its pipeline holds
     /// (`tutti-plugin`'s `route`), and only the unit knows the second term.
-    /// That is how `Net` reads it too (a clone sharing the cell). It holds
+    /// That is how `Net` read it too (a clone sharing the cell). It holds
     /// while the unit's `isolate` leaves the latency cell shared with the
     /// shadow, which `PluginClient`'s does (it isolates nothing: its clones
     /// share the plugin); `tests/plugin_capture.rs` pins the figure.
@@ -940,7 +938,7 @@ impl NativeGraph {
     pub(crate) fn render_frame(&mut self, output: &mut [f32]) {
         assert!(
             self.local.is_some(),
-            "render_frame on the native backend needs the audio side, and it was taken; \
+            "render_frame needs the audio side, and it was taken; \
              render through it (`AudioGraphRes::take_audio_side`) instead"
         );
         if self.edited {
@@ -961,8 +959,7 @@ impl NativeGraph {
 /// reading `input` (one sample per global input).
 ///
 /// `output` wider than the plan reads silence past it; narrower, the extra
-/// channels are dropped — the width a caller passes is its own business, as
-/// with `Net::tick`.
+/// channels are dropped — the width a caller passes is its own business.
 fn render(
     exec: &mut Executor,
     scratch: &mut Vec<Vec<f32>>,
@@ -990,118 +987,82 @@ fn render(
 /// The audio thread's half of a graph, for a test that renders what a device
 /// would hear: every commit lands on it, and rendering it plays the graph.
 /// Taken with [`AudioGraphRes::take_audio_side`](super::AudioGraphRes::take_audio_side).
-pub struct AudioSide(Side);
-
-#[allow(
-    clippy::large_enum_variant,
-    reason = "one per test render, held for its life; boxing buys a pointer hop per block"
-)]
-enum Side {
-    Net(tutti_core::NetBackend),
-    Native {
-        exec: Executor,
-        transport: Transport,
-        scratch: Vec<Vec<f32>>,
-        /// A fork's own editor, kept for as long as its executor runs: the
-        /// executor sends its boxes back to it. `None` for the live graph's
-        /// audio side, whose editor stays in `AudioGraphRes`.
-        _editor: Option<Editor>,
-    },
+pub struct AudioSide {
+    exec: Executor,
+    transport: Transport,
+    scratch: Vec<Vec<f32>>,
+    /// A fork's own editor, kept for as long as its executor runs: the
+    /// executor sends its boxes back to it. `None` for the live graph's
+    /// audio side, whose editor stays in `AudioGraphRes`.
+    _editor: Option<Editor>,
 }
 
 impl AudioSide {
-    pub(crate) fn net(backend: tutti_core::NetBackend) -> Self {
-        Self(Side::Net(backend))
-    }
-
     pub(crate) fn native(exec: Executor) -> Self {
-        Self(Side::Native {
+        Self {
             exec,
             transport: Transport::default(),
             scratch: Vec::new(),
             _editor: None,
-        })
+        }
     }
 
     /// A fork's pair, rendered as an audio side.
     #[cfg(test)]
     fn forked(editor: Editor, exec: Executor) -> Self {
-        Self(Side::Native {
+        Self {
             exec,
             transport: Transport::default(),
             scratch: Vec::new(),
             _editor: Some(editor),
-        })
+        }
     }
 
     /// Render one frame: `input` one sample per global input, `output` one
     /// per global output. Commits sent since the last call land first.
     pub fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        match &mut self.0 {
-            Side::Net(backend) => backend.tick(input, output),
-            Side::Native {
-                exec,
-                transport,
-                scratch,
-                ..
-            } => render(exec, scratch, transport, input, output),
-        }
+        render(
+            &mut self.exec,
+            &mut self.scratch,
+            &self.transport,
+            input,
+            output,
+        );
     }
 
     /// Render `frames` frames with no global input into `output`, planar,
     /// one slice per global output, in the blocks a device would hand over:
-    /// `Net` through `process` in 64-frame chunks (as `tutti_core::Engine`
-    /// renders it), the native graph in executor blocks of up to
-    /// `block` frames. The transport is stopped at beat zero on both.
+    /// executor blocks of up to `block` frames. The transport is stopped at
+    /// beat zero.
     ///
     /// # Panics
     ///
-    /// If `block` is zero, or past the native graph's prepared maximum.
+    /// If `block` is zero, or past the graph's prepared maximum.
     pub fn render(&mut self, frames: usize, block: usize, output: &mut [Vec<f32>]) {
         assert!(block > 0, "a zero-frame block");
         for o in output.iter_mut() {
             o.clear();
             o.resize(frames, 0.0);
         }
-        match &mut self.0 {
-            Side::Net(backend) => {
-                let width = backend.outputs();
-                let mut buf = tutti_core::BufferVec::new(width);
-                let none = tutti_core::BufferVec::new(backend.inputs());
-                let mut done = 0;
-                while done < frames {
-                    let len = (frames - done).min(block).min(tutti_core::MAX_BUFFER_SIZE);
-                    backend.process(len, &none.buffer_ref(), &mut buf.buffer_mut());
-                    for (c, o) in output.iter_mut().enumerate().take(width) {
-                        o[done..done + len].copy_from_slice(&buf.channel_f32(c)[..len]);
-                    }
-                    done += len;
-                }
+        let exec = &mut self.exec;
+        let mut done = 0;
+        while done < frames {
+            let len = (frames - done).min(block);
+            exec.apply_pending();
+            let (ins, outs) = exec
+                .plan()
+                .map_or((0, 0), |p| (p.global_inputs() as usize, p.global_outputs()));
+            let zeros = vec![0.0f32; len];
+            let inputs: Vec<&[f32]> = (0..ins).map(|_| &zeros[..]).collect();
+            let mut planes: Vec<Vec<f32>> = vec![vec![0.0; len]; outs];
+            let mut slices: Vec<&mut [f32]> = planes.iter_mut().map(|p| &mut p[..]).collect();
+            if exec.plan().is_some() {
+                exec.process(len, &self.transport, &inputs, &mut slices);
             }
-            Side::Native {
-                exec, transport, ..
-            } => {
-                let mut done = 0;
-                while done < frames {
-                    let len = (frames - done).min(block);
-                    exec.apply_pending();
-                    let (ins, outs) = exec
-                        .plan()
-                        .map_or((0, 0), |p| (p.global_inputs() as usize, p.global_outputs()));
-                    let zeros = vec![0.0f32; len];
-                    let inputs: Vec<&[f32]> = (0..ins).map(|_| &zeros[..]).collect();
-                    let mut planes: Vec<Vec<f32>> = vec![vec![0.0; len]; outs];
-                    let mut slices: Vec<&mut [f32]> =
-                        planes.iter_mut().map(|p| &mut p[..]).collect();
-                    if exec.plan().is_some() {
-                        exec.process(len, transport, &inputs, &mut slices);
-                    }
-                    for (o, p) in output.iter_mut().zip(&planes) {
-                        o[done..done + len].copy_from_slice(p);
-                    }
-                    done += len;
-                }
+            for (o, p) in output.iter_mut().zip(&planes) {
+                o[done..done + len].copy_from_slice(p);
             }
+            done += len;
         }
     }
 }
@@ -1114,8 +1075,8 @@ mod tests {
     use tutti_core::{AtomicF32, Drive, Ordering, Signal};
 
     use crate::graph::{
-        AudioGraphRes, AudioParam, AudioParamAppExt, GraphBackend, GraphReconcilePlugin,
-        MasterSources, PortSource, SpawnAudioNode,
+        AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, MasterSources,
+        PortSource, SpawnAudioNode,
     };
     use crate::AudioEngineState;
 
@@ -1215,7 +1176,7 @@ mod tests {
     }
 
     /// **Every bevy path that writes a param by value reaches a fork of the
-    /// node** on the native backend — the constraint export by `Editor::fork`
+    /// node** — the constraint export by `Editor::fork`
     /// (doc 013, PR 12) rests on: a fork is cloned from each node's shadow, so a
     /// write that bypasses the settings ring (a captured handle, a shared cell)
     /// moves the live unit and leaves the fork at the value it was built with.
@@ -1248,7 +1209,7 @@ mod tests {
     /// own (`tutti-graph`'s `legacy` tests), since this crate only calls it.
     #[test]
     fn every_param_write_path_reaches_a_fork() {
-        let mut graph = AudioGraphRes::headless_with(GraphBackend::Native, 0, 4);
+        let mut graph = AudioGraphRes::headless(0, 4);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
         let mut app = App::new();
         app.insert_resource(graph);
@@ -1370,7 +1331,7 @@ mod tests {
     ///   captures a handle).
     #[test]
     fn a_crossfade_during_a_re_prepare_lands_after_it() {
-        let mut graph = AudioGraphRes::unattached_with(GraphBackend::Native, 0, 1);
+        let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
         let mut side = graph.take_audio_side();
         let mut app = App::new();
@@ -1498,7 +1459,7 @@ mod tests {
     /// graph → the request is parked for good, and this fails.
     #[test]
     fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
-        let mut graph = AudioGraphRes::headless_with(GraphBackend::Native, 0, 1);
+        let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
         let mut app = App::new();
         app.insert_resource(graph);

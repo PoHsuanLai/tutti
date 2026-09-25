@@ -41,8 +41,6 @@ mod common;
 
 use common::plugin::{clap_probe, plugin_server};
 
-use bevy_tutti::graph::GraphBackend;
-
 use std::time::{Duration, Instant};
 
 use bevy_app::prelude::*;
@@ -62,7 +60,7 @@ use tutti_plugin::catalog::PluginId;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
-fn app(backend: GraphBackend) -> App {
+fn app() -> App {
     // SAFETY: nextest runs this test in its own process, and nothing else in it
     // reads the environment concurrently; the server path is the only lever
     // `Plugin::open_with` offers.
@@ -70,7 +68,7 @@ fn app(backend: GraphBackend) -> App {
 
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
-    app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
     // Both are what `plugin_bind_transport` installs; it waits without them.
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
@@ -79,8 +77,9 @@ fn app(backend: GraphBackend) -> App {
     app
 }
 
-fn a_loaded_plugin_is_bound_and_polled_through_its_shadow(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
+    let mut app = app();
     let entity = app
         .world_mut()
         .spawn(PluginRequest {
@@ -141,26 +140,24 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow(backend: GraphBackend)
     // And the graph plans PDC against the node's whole latency: the plugin's
     // figure plus the one block its out-of-process pipeline holds
     // (`tutti-plugin`'s `PIPELINE_LATENCY_FRAMES`, its 64-frame batch, which
-    // the unit adds in `route`). On `Net` read off the unit; on `Native` off
-    // the shape the editor holds, which the latency poll re-probes from the
-    // node's shadow. (Handing the editor the plugin's own figure instead —
+    // the unit adds in `route`). Read off the shape the editor holds, which
+    // the latency poll re-probes from the node's shadow. (Handing the editor the plugin's own figure instead —
     // what the poll reads — drops the pipeline block, and fails here.)
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
         Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + 64),
-        "{backend:?}: the graph plans PDC against the node's latency"
+        "the graph plans PDC against the node's latency"
     );
 
     // A latency change after load — what a plugin's `latency.changed`
-    // delivers into its cell — reaches the graph through the poll. On
-    // `Native` that is the one path: the editor probed the plugin at insert
-    // and holds that figure until told.
+    // delivers into its cell — reaches the graph through the poll. That is
+    // the one path: the editor probed the plugin at insert and holds that
+    // figure until told.
     //
-    // Mutation (run): the poll not calling `refresh_node_latency` → the native
-    // graph keeps planning against the load-time figure, and this fails on
-    // `native` only.
+    // Mutation (run): the poll not calling `refresh_node_latency` → the graph
+    // keeps planning against the load-time figure, and this fails.
     app.world()
         .get::<PluginShadow>(entity)
         .and_then(|s| s.controls_for(&AudioNode(node)))
@@ -172,34 +169,29 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow(backend: GraphBackend)
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
         Samples(300 + 64),
-        "{backend:?}: a changed plugin latency reaches the graph"
+        "a changed plugin latency reaches the graph"
     );
 
-    // A figure past what PDC compensates is clamped, not refused: the native
-    // editor refuses one past `MAX_NODE_LATENCY` outright, and the poll would
-    // not ask again until the plugin's figure moved. (`Net` reports the raw
-    // figure here and clamps inside its plan, so this is the native editor's
-    // rule to pin.)
+    // A figure past what PDC compensates is clamped, not refused: the editor
+    // refuses one past `MAX_NODE_LATENCY` outright, and the poll would not
+    // ask again until the plugin's figure moved.
     //
     // Mutation (run): dropping the clamp in `refresh_node_latency` → the
-    // native graph keeps 364 and this fails.
-    if backend == GraphBackend::Native {
+    // graph keeps 364 and this fails.
+    app.world()
+        .get::<PluginShadow>(entity)
+        .and_then(|s| s.controls_for(&AudioNode(node)))
+        .expect("the shadow is for this node")
+        .set_latency(Samples(10_000_000));
+    app.update();
+    assert_eq!(
         app.world()
-            .get::<PluginShadow>(entity)
-            .and_then(|s| s.controls_for(&AudioNode(node)))
-            .expect("the shadow is for this node")
-            .set_latency(Samples(10_000_000));
-        app.update();
-        assert_eq!(
-            app.world()
-                .resource::<AudioGraphRes>()
-                .node_latency(AudioNode(node)),
-            tutti_core::latency::MAX_NODE_LATENCY,
-            "clamped to what PDC compensates"
-        );
-    }
+            .resource::<AudioGraphRes>()
+            .node_latency(AudioNode(node)),
+        tutti_core::latency::MAX_NODE_LATENCY,
+        "clamped to what PDC compensates"
+    );
 }
-both_backends!(a_loaded_plugin_is_bound_and_polled_through_its_shadow);
 
 /// What the capture's consumers left on the entity.
 #[derive(Debug, PartialEq)]
@@ -251,8 +243,9 @@ fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
 /// incoming client's slots stay empty. Not replacing the shadow at all
 /// (dropping the `plugin` arm of `replace`) fails the latency assertion too,
 /// since the poll keeps reading the outgoing client's 137.
-fn a_crossfaded_plugin_is_bound_again(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn a_crossfaded_plugin_is_bound_again() {
+    let mut app = app();
     #[cfg(feature = "modulation")]
     app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
     let entity = load_probe_entity(&mut app);
@@ -313,4 +306,3 @@ fn a_crossfaded_plugin_is_bound_again(backend: GraphBackend) {
     app.update();
     assert!(app.world().get::<PluginShadow>(entity).is_none());
 }
-both_backends!(a_crossfaded_plugin_is_bound_again);

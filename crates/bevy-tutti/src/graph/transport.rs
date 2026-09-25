@@ -155,7 +155,9 @@ impl std::ops::Deref for MetronomeRes {
 /// a declaration names entities, so a bare engine id would be unusable here.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineNodes {
-    /// The [`TransportClock`](tutti_core::transport::TransportClock).
+    /// The beat clock: an [`EnvClock`](tutti_core::EnvClock), which emits a
+    /// `TransportClock`'s beat ports from each block's `Env` (the graph engine
+    /// drives its own `TransportClock` and forbids a second in the graph).
     ///
     /// Emits the beat on [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS)
     /// output ports — **port 0 whole beats, port 1 the fraction** — which is the
@@ -171,7 +173,7 @@ pub struct EngineNodes {
     /// use bevy_app::prelude::*;
     /// use bevy_ecs::prelude::*;
     /// use bevy_tutti::prelude::*;
-    /// use tutti_core::transport::{TransportClock, BEAT_PORTS};
+    /// use tutti_core::transport::BEAT_PORTS;
     /// use tutti_nodes::testing::Through;
     ///
     /// /// Stands in for a beat-driven node — `tutti_nodes::Lfo` in beat-synced
@@ -194,7 +196,7 @@ pub struct EngineNodes {
     /// // app does the same two steps by hand.
     /// let transport = Transport::new(48_000.0);
     /// let mut graph = AudioGraphRes::headless(0, 2);
-    /// let clock_id = graph.insert(TransportClock::new(transport.clock_links(), 48_000.0));
+    /// let clock_id = graph.insert_beat_clock();
     ///
     /// let mut app = App::new();
     /// app.insert_resource(graph);

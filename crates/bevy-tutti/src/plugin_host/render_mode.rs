@@ -9,7 +9,7 @@
 //! `audioMasterGetCurrentProcessLevel`), and `tutti-plugin` carries it all the
 //! way to `PluginHandle::set_render_mode`.
 //!
-//! Nothing below this module calls it. `tutti-export` renders a `Net` and has
+//! Nothing below this module calls it. `tutti-export` renders a graph and has
 //! never heard of a plugin; [`crate::export`] queries entities by the generic
 //! `AudioNode`. Without this system a bounce renders every hosted plugin in its
 //! live-quality mode and writes that into the file the user asked to be exact —

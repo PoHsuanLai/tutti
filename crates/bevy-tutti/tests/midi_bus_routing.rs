@@ -28,7 +28,6 @@ mod common;
 /// publishing fails them.
 /// (Was `tests/midi_route.rs`.)
 mod midi_route {
-    use bevy_tutti::graph::GraphBackend;
     use std::sync::Arc;
 
     use bevy_app::prelude::*;
@@ -54,9 +53,9 @@ mod midi_route {
 
     /// An app wired the way `build_into` leaves one, minus the audio device, with
     /// the routing table's RT half handed back so assertions can read it.
-    fn app(backend: GraphBackend) -> (App, RtView) {
+    fn app() -> (App, RtView) {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(TransportRes(tutti_core::transport::Transport::new(
             SAMPLE_RATE,
         )));
@@ -116,8 +115,9 @@ mod midi_route {
     }
 
     /// The headline claim: a rule spawned in the ECS routes a channel to a synth.
-    fn a_declared_route_reaches_the_rt_snapshot(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn a_declared_route_reaches_the_rt_snapshot() {
+        let (mut app, rt_view) = app();
         let (synth, unit_id) = spawn_synth(&mut app);
 
         app.world_mut()
@@ -133,11 +133,11 @@ mod midi_route {
             "and only on the channel it names"
         );
     }
-    both_backends!(a_declared_route_reaches_the_rt_snapshot);
 
     /// One rule, several destinations — a channel can layer two synths.
-    fn a_rule_can_feed_several_synths(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn a_rule_can_feed_several_synths() {
+        let (mut app, rt_view) = app();
         let (lead, lead_id) = spawn_synth(&mut app);
         let (pad, pad_id) = spawn_synth(&mut app);
 
@@ -151,15 +151,15 @@ mod midi_route {
         let targets = targets_on(&rt_view, 0);
         assert!(targets.contains(&lead_id) && targets.contains(&pad_id));
     }
-    both_backends!(a_rule_can_feed_several_synths);
 
     /// Removing a rule stops the routing — the rebuild is a whole-table replace, so
     /// a stale rule cannot survive in the published snapshot.
     ///
     /// This is what an additive rebuild would break: without the replace, the
     /// removed rule would go on routing forever.
-    fn a_removed_rule_stops_routing(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn a_removed_rule_stops_routing() {
+        let (mut app, rt_view) = app();
         let (synth, unit_id) = spawn_synth(&mut app);
 
         let rule = app
@@ -177,11 +177,11 @@ mod midi_route {
             "a despawned rule must stop routing"
         );
     }
-    both_backends!(a_removed_rule_stops_routing);
 
     /// Disabling a rule keeps the declaration but stops the delivery.
-    fn a_disabled_rule_routes_nothing(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn a_disabled_rule_routes_nothing() {
+        let (mut app, rt_view) = app();
         let (synth, unit_id) = spawn_synth(&mut app);
 
         let rule = app
@@ -203,11 +203,11 @@ mod midi_route {
             "a disabled rule stays declared but delivers nothing"
         );
     }
-    both_backends!(a_disabled_rule_routes_nothing);
 
     /// An unmatched event reaches the fallback, and only when one is declared.
-    fn the_fallback_catches_what_no_rule_matches(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn the_fallback_catches_what_no_rule_matches() {
+        let (mut app, rt_view) = app();
         let (synth, unit_id) = spawn_synth(&mut app);
 
         // No rules at all, so every channel is unmatched.
@@ -226,15 +226,15 @@ mod midi_route {
             "once declared, the fallback catches unmatched channels"
         );
     }
-    both_backends!(the_fallback_catches_what_no_rule_matches);
 
     /// A rule naming an entity with no resolvable node is skipped, not panicked on,
     /// and picked up once the node arrives.
     ///
     /// An entity's node routinely materialises a frame after the entity does, so
     /// this is the ordinary case rather than an error path.
-    fn an_unresolvable_target_is_skipped_then_picked_up(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn an_unresolvable_target_is_skipped_then_picked_up() {
+        let (mut app, rt_view) = app();
 
         // An entity with no `AudioNode` at all.
         let pending = app.world_mut().spawn_empty().id();
@@ -266,12 +266,12 @@ mod midi_route {
              leave it unresolved forever"
         );
     }
-    both_backends!(an_unresolvable_target_is_skipped_then_picked_up);
 
     /// The resource is the one the RT reads — a rebuild publishes into the shared
     /// cell, not a copy.
-    fn the_rebuild_publishes_into_the_shared_cell(backend: GraphBackend) {
-        let (mut app, rt_view) = app(backend);
+    #[test]
+    fn the_rebuild_publishes_into_the_shared_cell() {
+        let (mut app, rt_view) = app();
         let (synth, _) = spawn_synth(&mut app);
 
         app.world_mut()
@@ -288,7 +288,6 @@ mod midi_route {
             "and the RT snapshot sees it — same cell, not two"
         );
     }
-    both_backends!(the_rebuild_publishes_into_the_shared_cell);
 }
 
 /// A MIDI node's sender reaches the bus, and leaves it again.
@@ -304,7 +303,6 @@ mod midi_route {
 /// (Was `tests/midi_registration.rs`.)
 mod midi_registration {
     use bevy_app::prelude::*;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiRegistered, MidiTargetRegistry, TuttiMidiPlugin};
@@ -317,8 +315,8 @@ mod midi_registration {
     /// `MidiBusRes` cannot be `init_resource`d — it must be the instance the RT
     /// pre-block shares — so this uses the crate's own test constructor to stand one
     /// up without booting an audio device.
-    fn app(backend: GraphBackend) -> App {
-        let mut app = bare_app(backend);
+    fn app() -> App {
+        let mut app = bare_app();
         app.world_mut()
             .resource_mut::<MidiTargetRegistry>()
             .register::<PolySynth>();
@@ -327,12 +325,11 @@ mod midi_registration {
 
     /// The same app without any node type registered.
     ///
-    /// The graph takes a `backend()`: removing a node marks it dirty, and the
-    /// Commit-phase `commit_graph` asserts a backend exists before publishing. A
-    /// backend-less graph is fine only for tests that never edit the topology.
-    fn bare_app(backend: GraphBackend) -> App {
+    /// A headless graph: removing a node marks it dirty, and the Commit-phase
+    /// `commit_graph` publishes to its audio side.
+    fn bare_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         // `AudioEngineState::Running` is a claim about the whole engine block, and
         // systems gated on `engine_ready` take everything that block inserts as
         // plain `Res` — so a test asserting readiness has to supply them all.
@@ -386,8 +383,9 @@ mod midi_registration {
     }
 
     /// The bus learns a node's sender without anyone registering it by hand.
-    fn a_midi_node_reaches_the_bus(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_midi_node_reaches_the_bus() {
+        let mut app = app();
         let (entity, unit_id) = spawn_synth(&mut app);
         assert!(
             !bus_has(&app, unit_id),
@@ -405,11 +403,11 @@ mod midi_registration {
             "and the entity should be marked as registered"
         );
     }
-    both_backends!(a_midi_node_reaches_the_bus);
 
     /// The half that never existed: despawning takes the sender back off.
-    fn a_despawned_node_leaves_the_bus(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_despawned_node_leaves_the_bus() {
+        let mut app = app();
         let (entity, unit_id) = spawn_synth(&mut app);
         app.update();
         assert!(bus_has(&app, unit_id));
@@ -422,12 +420,12 @@ mod midi_registration {
             "a despawned synth must not keep routing MIDI — this is the leak"
         );
     }
-    both_backends!(a_despawned_node_leaves_the_bus);
 
     /// Removing just the node, keeping the entity, also unregisters — and the
     /// entity can register again if a node comes back.
-    fn removing_the_node_unregisters_and_re_registering_works(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn removing_the_node_unregisters_and_re_registering_works() {
+        let mut app = app();
         let (entity, first_id) = spawn_synth(&mut app);
         app.update();
         assert!(bus_has(&app, first_id));
@@ -456,15 +454,15 @@ mod midi_registration {
         assert_ne!(first_id, second_id, "a new port mints a new id");
         assert!(bus_has(&app, second_id), "the replacement registers");
     }
-    both_backends!(removing_the_node_unregisters_and_re_registering_works);
 
     /// Crossfading a synth to a unit with no MIDI port takes the outgoing
     /// sender off the bus, though the node stays.
     ///
     /// Mutation: removing the `unregister_removed_midi_target` observer leaves
     /// the outgoing synth routable and fails the first assertion.
-    fn a_crossfade_to_a_portless_unit_leaves_the_bus(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_crossfade_to_a_portless_unit_leaves_the_bus() {
+        let mut app = app();
         let (entity, unit_id) = spawn_synth(&mut app);
         app.update();
         assert!(bus_has(&app, unit_id));
@@ -488,13 +486,13 @@ mod midi_registration {
             "and the marker is cleared"
         );
     }
-    both_backends!(a_crossfade_to_a_portless_unit_leaves_the_bus);
 
     /// An entity whose node type was never registered is skipped, not panicked on,
     /// and does not block the ones that were.
-    fn an_unregistered_node_type_is_skipped(backend: GraphBackend) {
+    #[test]
+    fn an_unregistered_node_type_is_skipped() {
         // Deliberately no `.register::<PolySynth>()`.
-        let mut app = bare_app(backend);
+        let mut app = bare_app();
 
         let (entity, unit_id) = spawn_synth(&mut app);
         app.update();
@@ -505,7 +503,6 @@ mod midi_registration {
             "and it stays unmarked, so it registers if a captured port turns up later"
         );
     }
-    both_backends!(an_unregistered_node_type_is_skipped);
 }
 
 /// Unwiring an entity from the graph takes `AudioNode` off, not a second handle.
@@ -529,7 +526,6 @@ mod midi_registration {
 mod plugin_crash_unwire {
     use bevy_app::prelude::*;
     use bevy_ecs::entity::Entity;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiBusRes, MidiTargetRegistry, TuttiMidiPlugin};
@@ -540,11 +536,11 @@ mod plugin_crash_unwire {
 
     /// An app whose graph, bus, and registry are wired the way `build_into` leaves
     /// them, minus the audio device.
-    fn app(backend: GraphBackend) -> App {
+    fn app() -> App {
         let mut app = App::new();
         // Removing a node marks the graph dirty, and Commit-phase `commit_graph`
         // needs an audio side to publish to.
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(bevy_tutti::graph::TransportRes(
             tutti_core::transport::Transport::new(48_000.0),
         ));
@@ -604,8 +600,9 @@ mod plugin_crash_unwire {
     ///
     /// This is what the crash path now does, and why it no longer touches the graph
     /// itself: one component removal drives both observers.
-    fn removing_the_node_handle_unwires_the_graph_and_the_bus(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn removing_the_node_handle_unwires_the_graph_and_the_bus() {
+        let mut app = app();
         let (entity, node, unit_id) = spawn_synth(&mut app);
         app.update();
         assert!(bus_has(&app, unit_id), "registered to begin with");
@@ -623,14 +620,14 @@ mod plugin_crash_unwire {
             "and MIDI unregistration rides on the same removal"
         );
     }
-    both_backends!(removing_the_node_handle_unwires_the_graph_and_the_bus);
 
     /// Despawning the whole entity unwires it too — the crash path's neighbour.
     ///
     /// `On<Remove, AudioNode>` fires for a despawn as well as an explicit removal,
     /// so a plugin that is despawned rather than stripped leaks nothing either.
-    fn despawning_the_entity_unwires_it_as_well(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn despawning_the_entity_unwires_it_as_well() {
+        let mut app = app();
         let (entity, node, unit_id) = spawn_synth(&mut app);
         app.update();
 
@@ -640,5 +637,4 @@ mod plugin_crash_unwire {
         assert!(!graph_has(&app, node), "the node goes with the entity");
         assert!(!bus_has(&app, unit_id), "and so does the sender");
     }
-    both_backends!(despawning_the_entity_unwires_it_as_well);
 }

@@ -1,9 +1,9 @@
 //! Binding the DSP graph to an ECS world.
 //!
-//! The engine itself needs none of this: the graph is fundsp's
-//! [`Net`](tutti_core::dsp::Net) or the native `tutti-graph` runtime
-//! ([`GraphBackend`]), and transport, metering and PDC are plain value types a
-//! host can drive directly. This module is the adapter that lets
+//! The engine itself needs none of this: the graph is the native
+//! `tutti-graph` runtime (design doc 013), and transport, metering and PDC are
+//! plain value types a host can drive directly. This module is the adapter
+//! that lets
 //! a Bevy `App` reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]) in [`resources`],
@@ -44,28 +44,6 @@ pub mod topology;
 pub mod transport;
 pub mod wire;
 
-/// One `#[test]` per graph backend for `fn $name(backend: GraphBackend)`,
-/// for this crate's unit tests (the integration suites have their own copy in
-/// `tests/common`): a module `$name` holding `net` and `native`.
-#[cfg(test)]
-macro_rules! both_backends {
-    ($name:ident) => {
-        mod $name {
-            #[test]
-            fn net() {
-                super::$name(crate::graph::GraphBackend::Net)
-            }
-
-            #[test]
-            fn native() {
-                super::$name(crate::graph::GraphBackend::Native)
-            }
-        }
-    };
-}
-#[cfg(test)]
-pub(crate) use both_backends;
-
 pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
@@ -77,7 +55,7 @@ pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
-pub use resources::{AudioConfig, AudioGraphRes, GraphBackend, GraphSource};
+pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode};
 pub use tap::AudioTapRes;

@@ -118,7 +118,7 @@ impl FaderView {
 fn main() {
     let mut app = App::new();
 
-    let mut graph = AudioGraphRes::unattached(0, 1);
+    let mut graph = AudioGraphRes::headless(0, 1);
     graph.set_sample_rate(SampleRate(SAMPLE_RATE));
 
     app.insert_resource(graph);

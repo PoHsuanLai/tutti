@@ -298,7 +298,7 @@ pub fn promote_pending_soundfonts(
 ///
 /// That registration belongs here rather than with each consumer, because the
 /// failure it prevents is invisible: the asset loads, the unit builds, the node
-/// appears in the `Net`, the install is emitted, and the graph is correctly
+/// appears in the graph, the install is emitted, and the graph is correctly
 /// wired end to end — every observable step succeeds and no note ever sounds.
 /// Leaving it to the caller means only a caller that already knows gets sound,
 /// which is a test rather than a host.

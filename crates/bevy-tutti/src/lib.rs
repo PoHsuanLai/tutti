@@ -141,9 +141,8 @@ pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationP
 #[cfg(feature = "plugin")]
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
 
-// Engine types. `Net` is the offline render's graph (see `engine`'s note); the
-// live one is `graph::AudioGraphRes`.
-pub use engine::{restart_device, restart_device_on, DeviceInfo, DeviceRestart, Net, TuttiDriver};
+// Engine types. The graph itself is `graph::AudioGraphRes`.
+pub use engine::{restart_device, restart_device_on, DeviceInfo, DeviceRestart, TuttiDriver};
 
 /// The crate error, at the crate root: its public position and its file
 /// position agree, which is the workspace convention.
@@ -168,7 +167,7 @@ pub mod prelude {
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
-        LatencyCompensationPlugin, Net, TuttiDriver, TuttiPlugin,
+        LatencyCompensationPlugin, TuttiDriver, TuttiPlugin,
     };
 
     #[cfg(feature = "export")]

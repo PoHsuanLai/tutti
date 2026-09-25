@@ -109,10 +109,10 @@ fn main() {
     // is the shared path — nothing plugin-shaped is added by enabling this.
     #[cfg(feature = "midi")]
     app.add_plugins(bevy_tutti::midi::TuttiMidiPlugin);
-    // PDC is opt-in: it costs a graph walk per commit, and a host with no
-    // latency-reporting nodes never needs it. A plugin *is* such a node — it
-    // reports its own latency plus the IPC pipeline's — so a host that loads
-    // plugins and skips this has every plugin's delay uncompensated.
+    // The graph compensates every plugin's latency (its own plus the IPC
+    // pipeline's) on every commit, and publishes the figures; this optional
+    // plugin adds a debug-build check that the latency readout agrees with
+    // the compiled plan.
     app.add_plugins(bevy_tutti::LatencyCompensationPlugin);
     app.add_plugins(TuttiHostingPlugin);
 
@@ -123,11 +123,10 @@ fn main() {
     let _ = transport
         .motion
         .try_send(tutti_core::transport::MotionEvent::Play);
-    // Take a backend before handing the graph over. `commit_graph` asserts one
-    // exists — a commit publishes the new version *to* the backend, so a `Net`
-    // without one has nowhere to publish. A real host gets this from
-    // `TuttiPlugin`, which hands the backend to the audio callback; here it is
-    // dropped, so nothing renders and commits merely have somewhere to go.
+    // A graph with no device: its audio side stays on this thread, so every
+    // commit lands at once and `render_frame` below plays it. A real host
+    // gets the graph from `TuttiPlugin`, which hands the audio side to the
+    // callback.
     app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE.into(),
@@ -421,9 +420,8 @@ fn report(world: &mut World) {
     // Pull real samples through the graph. Everything above only proves the
     // plugin is *reachable*; this proves audio moves through it.
     //
-    // `tick` per sample, as a `Net` at the master output is driven. It warms up
-    // one block later than `process` (frame 127 vs 63), which is why the
-    // format-level suites in `tutti-vst3-host` see a shorter dead zone.
+    // One frame per `render_frame`. The plugin's pipeline opens silent for
+    // its warm-up, which is the dead zone `first_signal` measures.
     {
         let mut graph = world.resource_mut::<AudioGraphRes>();
         let mut frame = [0.0f32; 2];

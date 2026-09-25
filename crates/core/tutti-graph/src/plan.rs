@@ -858,6 +858,13 @@ pub struct Delta {
     /// [`Editor::replace`](crate::Editor::replace)), and
     /// [`verify_fades`](crate::verify_fades) checks it.
     pub fades: Vec<(NodeKey, Fade)>,
+    /// Kept units whose crossfade, running or waiting, is **cut**: every
+    /// unit at the key but the newest retires. A hard edit that is not a new
+    /// generation — [`Editor::set_latency`](crate::Editor::set_latency) —
+    /// attaches it, since a fade's two units must share the latency the
+    /// plan compensates. Harmless on a key with no fade. `compile` never
+    /// fills it; [`verify_fades`](crate::verify_fades) checks it.
+    pub cuts: Vec<Placement>,
     /// The store length the new plan needs.
     pub store_len: u32,
 }

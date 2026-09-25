@@ -581,3 +581,111 @@ fn a_hard_edit_cuts_a_fade() {
     assert_eq!(ed.in_flight(), 0);
     assert_eq!(ed.fades_in_flight(), 0);
 }
+
+/// `set_latency` at a key that is mid-fade is a hard edit for the fade: the
+/// next commit cuts it, keeping the newest unit (here the one waiting), and
+/// the two units it retires — the one fading out and the one displaced —
+/// are reported by `collect`. Both units of a fade must share the latency
+/// the plan compensates, so a fade cannot run across the change.
+///
+/// Mutation: don't attach `delta.cuts` in `Editor::commit` → the fade runs
+/// on (the output is not yet 4) → fails. Mutation: in `cut_fades`, keep the
+/// running unit rather than the waiting one → the gain is 2 → fails.
+/// Mutation: in `cut_fades`, forget the cut crossfades → they are never
+/// reported → fails.
+#[test]
+fn set_latency_cuts_a_fade() {
+    let fade = Fade::new(Samples(1000), CrossfadeCurve::EqualAmplitude);
+    let (mut ed, mut exec) = gain_graph(1.0);
+    ed.replace(NODE, gain(2.0), fade).expect("fits");
+    ed.commit().expect("commits");
+    dc(&mut exec, 64);
+    ed.replace(NODE, gain(4.0), fade).expect("fits");
+    ed.commit().expect("commits");
+    dc(&mut exec, 64);
+    assert!(ed.collect().is_empty());
+    assert_eq!(ed.fades_in_flight(), 2, "one running, one waiting");
+
+    ed.set_latency(NODE, tutti_types::Latency::new(Samples(3)))
+        .expect("sets");
+    ed.commit().expect("commits");
+    let out = dc(&mut exec, 64);
+    assert!(
+        out.iter().all(|&y| y == 4.0),
+        "the newest unit: {:?}",
+        &out[..4]
+    );
+    assert_eq!(ed.collect(), vec![NODE; 2], "the cut units are reported");
+    assert_eq!(ed.fades_in_flight(), 0);
+}
+
+/// The reference derives the same rule from the graph value alone: a node
+/// whose declared latency changes with no new generation has its fade cut,
+/// keeping the newest unit.
+///
+/// Mutation: drop the latency-change cut from
+/// `Reference::set_graph_with_fades` → the fade runs on → fails.
+#[test]
+fn the_reference_cuts_a_fade_on_a_latency_change() {
+    use tutti_graph::{GraphSpec, Reference};
+    use tutti_types::graph::NodeSpec;
+    use tutti_types::Topology;
+
+    let spec_at = |gen: u32, latency: usize| {
+        let mut t = Topology {
+            inputs: ChannelLayout::MONO,
+            ..Topology::default()
+        };
+        t.nodes.insert(
+            NODE,
+            NodeSpec::new("gain", ChannelLayout::MONO, ChannelLayout::MONO)
+                .with_latency(Samples(latency)),
+        );
+        t.edges.insert(
+            InPort {
+                node: NODE,
+                port: 0,
+            },
+            Edge::Direct(Source::Global(0)),
+        );
+        t.outputs = vec![Source::Node(OutPort {
+            node: NODE,
+            port: 0,
+        })];
+        let mut spec = GraphSpec::new(t);
+        spec.generations.insert(NODE, gen);
+        spec.validate().expect("valid")
+    };
+    let unit = |g: f32| -> BTreeMap<NodeKey, Box<dyn Node>> {
+        [(NODE, Box::new(gain(g)) as Box<dyn Node>)]
+            .into_iter()
+            .collect()
+    };
+    let fade = Fade::new(Samples(1000), CrossfadeCurve::EqualAmplitude);
+    let fades: BTreeMap<NodeKey, Fade> = [(NODE, fade)].into_iter().collect();
+    let mut r = Reference::new(prepare(128));
+    let render = |r: &mut Reference| {
+        let input = vec![1.0f32; 64];
+        let mut out = vec![0.0f32; 64];
+        r.process(
+            64,
+            &Transport::default(),
+            &[&input[..]],
+            &mut [&mut out[..]],
+        );
+        out
+    };
+    r.set_graph(&spec_at(0, 0), unit(1.0));
+    render(&mut r);
+    r.set_graph_with_fades(&spec_at(1, 0), unit(2.0), &fades);
+    render(&mut r);
+    r.set_graph_with_fades(&spec_at(2, 0), unit(4.0), &fades);
+    render(&mut r);
+    r.set_graph_with_fades(&spec_at(2, 3), unit(8.0), &fades);
+    let out = render(&mut r);
+    assert!(
+        out.iter().all(|&y| y == 4.0),
+        "the newest unit: {:?}",
+        &out[..4]
+    );
+}

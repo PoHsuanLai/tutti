@@ -685,6 +685,21 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
 /// `Editor::replace`'s check — so a delta built by hand (through
 /// `Editor::package`) gets the same scrutiny as one the editor built.
 pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
+    // A cut names a unit both plans hold at one generation and index: a
+    // kept unit, not one the delta places or retires.
+    for c in &delta.cuts {
+        let held = |p: &Plan| {
+            p.units
+                .iter()
+                .any(|u| u.key == c.key && u.gen == c.gen && u.idx == c.idx)
+        };
+        if !(prev.is_some_and(held) && held(plan)) {
+            return Err(VerifyError(format!(
+                "node {} is cut, but is not a unit both plans keep",
+                c.key.0
+            )));
+        }
+    }
     for (i, &(key, _)) in delta.fades.iter().enumerate() {
         if delta.fades[..i].iter().any(|&(k, _)| k == key) {
             return Err(VerifyError(format!("node {} fades twice", key.0)));

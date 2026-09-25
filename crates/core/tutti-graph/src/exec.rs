@@ -419,6 +419,24 @@ fn retire_fade(fade_back: &mut HeapProd<Box<Crossfade>>, x: Box<Crossfade>) {
     }
 }
 
+/// Cut `u`'s crossfades: the newest unit at the key (a waiting one, if
+/// any — the one the plan's generation names) becomes `u`'s unit, and the
+/// others go back on the fade-return ring with their crossfades.
+fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) {
+    if let Some(mut q) = u.queued.take() {
+        let newest = q.waiting.take().expect("a queued fade holds its unit");
+        q.out = Some(std::mem::replace(&mut u.node, newest));
+        retire_fade(fade_back, q);
+    }
+    if let Some(f) = u.fade.take() {
+        retire_fade(fade_back, f);
+        // A cut is a step: never skip the next call on stale flags.
+        u.quiet = 0;
+        u.last_quiet = false;
+        u.last_idle = false;
+    }
+}
+
 /// The queue pair between an editor and its executor.
 pub(crate) struct Channels {
     pub(crate) to_executor: HeapProd<Box<Commit>>,
@@ -689,26 +707,13 @@ impl Executor {
             // plan's generation names; the others go back with their fades.
             if let Some(plan) = &self.plan {
                 for u in &plan.units {
-                    let Some(unit) = self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
+                    let Some(mut unit) =
+                        self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
                     else {
                         continue;
                     };
-                    let Unit {
-                        node, fade, queued, ..
-                    } = unit;
-                    let newest = match queued {
-                        Some(mut q) => {
-                            let newest = q.waiting.take().expect("a queued fade holds its unit");
-                            q.out = Some(node);
-                            retire_fade(&mut self.fade_back, q);
-                            newest
-                        }
-                        None => node,
-                    };
-                    c.retired.push((u.key, newest));
-                    if let Some(f) = fade {
-                        retire_fade(&mut self.fade_back, f);
-                    }
+                    cut_fades(&mut unit, &mut self.fade_back);
+                    c.retired.push((u.key, unit.node));
                 }
             }
             let (old, new) = (
@@ -762,6 +767,17 @@ impl Executor {
                 for f in [u.fade, u.queued].into_iter().flatten() {
                     retire_fade(&mut self.fade_back, f);
                 }
+            }
+        }
+        // Cuts: a kept unit's crossfades go, its newest unit stays.
+        for p in &c.delta.cuts {
+            if let Some(u) = self
+                .store
+                .get_mut(p.idx.0 as usize)
+                .and_then(Option::as_mut)
+            {
+                debug_assert_eq!(u.gen, p.gen, "cutting the unit the delta named");
+                cut_fades(u, &mut self.fade_back);
             }
         }
         if self.store.len() < c.delta.store_len as usize {

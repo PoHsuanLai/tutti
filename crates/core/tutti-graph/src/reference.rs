@@ -311,6 +311,28 @@ impl Reference {
         fades: &BTreeMap<NodeKey, crate::Fade>,
     ) {
         let t = graph.topology();
+        // A node whose declared latency changed without a new generation
+        // (`Editor::set_latency`) has its crossfade cut: both units of a
+        // fade must share the latency the graph compensates. Derived here
+        // from the two values, not told.
+        if let Some(old) = self.graph.as_ref() {
+            let moved: Vec<NodeKey> = self
+                .fading
+                .keys()
+                .copied()
+                .filter(|k| {
+                    let (was, now) = (old.topology().nodes.get(k), t.nodes.get(k));
+                    matches!((was, now), (Some(a), Some(b)) if a.latency != b.latency)
+                        && old.generation(*k) == graph.generation(*k)
+                })
+                .collect();
+            for key in moved {
+                let f = self.fading.remove(&key).expect("listed");
+                if let (Some((unit, _)), Some(slot)) = (f.next, self.units.get_mut(&key)) {
+                    slot.1 = unit;
+                }
+            }
+        }
         for (&key, fade) in fades {
             let gen = graph.generation(key);
             let changed = self.units.get(&key).is_some_and(|(g, _)| *g != gen);

@@ -50,7 +50,7 @@
 //! `compile` enforces it, and `reprepare` refuses such a change before
 //! sending anything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ringbuf::traits::{Consumer, Producer};
@@ -263,6 +263,9 @@ pub struct Editor {
     /// Crossfades for the pending units [`replace`](Self::replace) placed,
     /// attached to the next commit's delta.
     fades: BTreeMap<NodeKey, Fade>,
+    /// Keys [`set_latency`](Self::set_latency) changed since the last
+    /// commit: any crossfade running or waiting there is cut by it.
+    latency_cuts: BTreeSet<NodeKey>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -329,6 +332,7 @@ impl Editor {
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
             fades: BTreeMap::new(),
+            latency_cuts: BTreeSet::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             repreparing: None,
@@ -514,6 +518,7 @@ impl Editor {
         // A later placement at a key takes an earlier fade back: the fade
         // was for the unit this one supersedes.
         self.fades.remove(&key);
+        self.latency_cuts.remove(&key);
         let gen = {
             let g = self.next_gen.entry(key).or_insert(0);
             let this = *g;
@@ -562,6 +567,13 @@ impl Editor {
     /// [`insert`](Self::insert) at the key, which is a new generation: the
     /// new unit's shape is read afresh and this figure is discarded.
     ///
+    /// **A crossfade at `key` is cut.** Both units of a fade run under one
+    /// op and one PDC, so a latency change is a hard edit for it: the next
+    /// commit retires every unit at the key but the newest (a waiting one,
+    /// if any) — reported by [`collect`](Self::collect) like any retiree —
+    /// and a [`replace`](Self::replace) not yet committed lands as a plain
+    /// swap.
+    ///
     /// Refused with [`CommitError::NoSuchNode`] for a key with no node,
     /// [`CommitError::LatencyTooLong`] past what PDC compensates
     /// (`tutti_types::latency::MAX_NODE_LATENCY`; a probed latency is
@@ -590,6 +602,11 @@ impl Editor {
         };
         node.latency = latency.samples();
         shape.latency = latency;
+        // A hard edit for a crossfade: its two units must share the latency
+        // the plan compensates, so a fade running or waiting here is cut by
+        // the next commit, and a replace not yet committed lands as a swap.
+        self.fades.remove(&key);
+        self.latency_cuts.insert(key);
         Ok(())
     }
 
@@ -623,6 +640,7 @@ impl Editor {
         self.shapes.remove(&key);
         self.pending.remove(&key);
         self.fades.remove(&key);
+        self.latency_cuts.remove(&key);
     }
 
     /// `Err(Poisoned)` once a re-prepare has failed with its units out.
@@ -784,6 +802,7 @@ impl Editor {
         // The re-prepare restarts every unit from silence, so there is
         // nothing to fade from: a pending replace lands as a plain swap.
         self.fades.clear();
+        self.latency_cuts.clear();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for (&key, unit) in &mut pending {
                 unit.prepare(&prepare);
@@ -901,6 +920,7 @@ impl Editor {
             retire: Vec::new(),
             replace: Vec::new(),
             fades: Vec::new(),
+            cuts: Vec::new(),
             store_len: delta.store_len,
         };
         Ok((plan, resume, units))
@@ -937,6 +957,22 @@ impl Editor {
             .iter()
             .filter_map(|&(_, new)| self.fades.get(&new.key).map(|&f| (new.key, f)))
             .collect();
+        // The keys `set_latency` changed that this delta keeps: their
+        // crossfades are cut (see `Delta::cuts`).
+        let base = self.plan.as_deref();
+        delta.cuts = self
+            .latency_cuts
+            .iter()
+            .filter_map(|&key| {
+                let now = plan.unit(key)?;
+                let was = base?.unit(key)?;
+                (was.gen == now.gen && was.idx == now.idx).then_some(Placement {
+                    key,
+                    gen: now.gen,
+                    idx: now.idx,
+                })
+            })
+            .collect();
         debug_assert_eq!(
             crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta),
             Ok(()),
@@ -954,6 +990,7 @@ impl Editor {
             return Err(CommitError::MissingUnit { node });
         }
         self.fade_room(&delta)?;
+        self.latency_cuts.clear();
         let units: BTreeMap<NodeKey, Box<dyn Node>> = needed
             .into_iter()
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))

@@ -1456,3 +1456,156 @@ fn two_declicked_commands_close_together_stay_continuous() {
         assert_eq!(t[868].0, 20.0, "{backend}");
     }
 }
+
+// ---- a rate change under the engine (a device restart) -------------------
+
+/// The rate before the change, and the one after: 44.1 kHz to 48 kHz, a
+/// device restart's commonest case.
+const OLD_SR: f64 = 44_100.0;
+const NEW_SR: f64 = 48_000.0;
+
+/// **A re-prepare to a new rate keeps the beat and a frame-timed transport
+/// command on wall-clock time, through the graph engine.**
+///
+/// Rolling at 120 BPM from beat 0, half a second at 44.1 kHz (22 050
+/// frames), then a re-prepare to 48 kHz: the executor rescales its frame
+/// clock to 24 000 on the block the first commit lands, renders that block
+/// as silence, and resumes after `collect`. Two beats a second means the
+/// beat at any logged frame `f` is `f / 24 000` from then on — so the beat
+/// is continuous across the silent block, and a stop scheduled at
+/// `Frame(44 100)` (one second at the old rate) lands on frame 48 000, one
+/// second at the new one.
+///
+/// Mutations (run):
+/// - `GraphRender::settle` following the rate at the resume only (reading
+///   `exec.prepare()`, as before this change) → the clock steps the silent
+///   block at the old rate, and every later beat is ~0.0018 of a beat
+///   early → fails;
+/// - dropping `schedule.rescale` there → the stop lands on executor frame
+///   44 100 → fails.
+#[test]
+fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
+    let transport = Transport::new(OLD_SR);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(OLD_SR), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "node",
+        Gate {
+            log: Some(Arc::clone(&log)),
+        },
+    );
+    outputs(&mut ed, NodeKey(1), 1);
+    ed.commit().expect("commits");
+    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion
+        .schedule(At::Frame(Frame(44_100)), MotionEvent::stop_now())
+        .expect("room");
+
+    render(&engine, ChannelLayout::MONO, &[441; 50]);
+    ed.reprepare(Prepare::new(SampleRate(NEW_SR), Samples(512)))
+        .expect("re-prepares");
+    // The suspended block: silence, and the rate moves here.
+    render(&engine, ChannelLayout::MONO, &[480]);
+    ed.collect();
+    render(&engine, ChannelLayout::MONO, &[480; 60]);
+
+    let log = log.lock().expect("log");
+    let (before, after): (Vec<_>, Vec<_>) = log.iter().partition(|e| e.0 < 22_050);
+    assert_eq!(before.len(), 22_050, "half a second at the old rate");
+    for &&(f, beat, _) in &before {
+        assert!(
+            (beat - f as f64 / 22_050.0).abs() < 1e-9,
+            "frame {f}: {beat}"
+        );
+    }
+    // Resumed after the silent block, at the rescaled clock.
+    assert_eq!(after.first().map(|e| e.0), Some(24_000 + 480));
+    for &&(f, beat, playing) in &after {
+        if playing {
+            assert!(
+                (beat - f as f64 / 24_000.0).abs() < 1e-9,
+                "frame {f} at 48 kHz: beat {beat}, wall clock says {}",
+                f as f64 / 24_000.0
+            );
+        }
+    }
+    let stop = after
+        .iter()
+        .find(|e| !e.2)
+        .map(|e| e.0)
+        .expect("the stop landed");
+    assert_eq!(stop, 48_000, "one second, at the new rate");
+    assert_eq!(transport.motion.late_commands(), 0);
+}
+
+/// **A re-rated `Net` keeps a frame-timed transport command on wall-clock
+/// time.** The `Net` engine counts frames too (`At::Frame` on it is the
+/// samples since it was built); a commit of the net at a new rate is where
+/// that count changes units, and the engine rescales it and the transport's
+/// pending `At::Frame` commands there, as the graph executor does on a
+/// re-prepare. A stop at `Frame(44 100)`, half a second in at 44.1 kHz,
+/// lands 24 000 frames after the switch to 48 kHz: frame 46 050 of the log.
+///
+/// The host re-seats the net's clock (a seek to the live playhead) as it
+/// commits the re-rated net, because the commit swaps in the frontend's
+/// copy of every re-rated unit, the clock's included, and that copy has
+/// never run (`bevy_tutti`'s device restart does the same). So the beat is
+/// continuous across the switch, stepping `1/22 050` before it and
+/// `1/24 000` after.
+///
+/// Mutation (run): `NetRender::follow_rate` not rescaling (its frame or the
+/// schedule) → the stop lands 22 050 frames after the switch, at log frame
+/// 44 100 → fails. Without the seek, the beat after the switch restarts
+/// from 0 → fails (the host's half; pinned end to end in `bevy-tutti`).
+#[test]
+fn a_re_rated_net_keeps_a_frame_command_on_wall_clock_time() {
+    let transport = Transport::new(OLD_SR);
+    let beats = Arc::new(Mutex::new(Vec::new()));
+    let mut net = Net::new(0, 1);
+    let src = net.push(Box::new(Surround {
+        channels: 1,
+        frame: 0,
+    }));
+    net.connect_output(src, 0, 0);
+    let clock = net.push(Box::new(TransportClock::new(
+        transport.clock_links(),
+        OLD_SR,
+    )));
+    let sink = net.push(Box::new(BeatLog(Arc::clone(&beats))));
+    net.connect(clock, 0, sink, 0);
+    net.connect(clock, 1, sink, 1);
+    net.set_sample_rate(SampleRate(OLD_SR));
+    let backend = net.backend();
+    let engine = Engine::new(transport.motion.clone(), backend);
+    transport.motion.try_send(MotionEvent::Play).expect("room");
+    transport
+        .motion
+        .schedule(At::Frame(Frame(44_100)), MotionEvent::stop_now())
+        .expect("room");
+
+    render(&engine, ChannelLayout::MONO, &[441; 50]);
+    net.set_sample_rate(SampleRate(NEW_SR));
+    transport.motion.seek.request(transport.settings.beat());
+    net.commit();
+    render(&engine, ChannelLayout::MONO, &[480; 60]);
+
+    let beats = beats.lock().expect("log");
+    let beat = |i: usize| beats[i].0 as f64 + beats[i].1 as f64;
+    // f32 ports: the fraction carries ~1e-7.
+    let step = |i: usize| beat(i + 1) - beat(i);
+    assert!((step(22_048) - 1.0 / 22_050.0).abs() < 1e-6, "old rate");
+    assert!(
+        (step(22_049) - 1.0 / 22_050.0).abs() < 1e-6,
+        "the first frame after the switch continues the beat: {}",
+        step(22_049)
+    );
+    assert!((step(22_050) - 1.0 / 24_000.0).abs() < 1e-6, "new rate");
+    let stop = (22_050..beats.len() - 1)
+        .find(|&i| beats[i + 1] == beats[i])
+        .expect("the stop landed");
+    assert_eq!(stop, 22_050 + 24_000, "half a second after the switch");
+    drop(net);
+}

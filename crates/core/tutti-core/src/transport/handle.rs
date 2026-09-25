@@ -6,6 +6,7 @@ use super::motion::MotionFsm;
 use super::settings::TransportSettings;
 use super::state::ClockLinks;
 use super::state::LoopRange;
+use crate::{AtomicF64, Ordering};
 use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
@@ -36,7 +37,11 @@ pub struct Transport {
     pub motion: MotionFsm,
     /// The plain shared values: tempo, playhead, loop region, record arm.
     pub settings: TransportSettings,
-    sample_rate: SampleRate,
+    /// Shared by every clone, so a device restart at a new rate
+    /// ([`set_sample_rate`](Self::set_sample_rate)) reaches each holder —
+    /// a clip reader's `Arc<dyn Timeline>`, the MIDI clock master — rather
+    /// than only the handle it was called on.
+    sample_rate: Arc<AtomicF64>,
 }
 
 impl Transport {
@@ -46,7 +51,7 @@ impl Transport {
         Self {
             motion: MotionFsm::new(settings.clone()),
             settings,
-            sample_rate: sample_rate.into(),
+            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
     }
 
@@ -69,10 +74,23 @@ impl Transport {
         }
     }
 
-    /// The device rate this transport converts musical time against. Fixed at
-    /// construction.
+    /// The device rate this transport converts musical time against: the
+    /// one it was built at, until [`set_sample_rate`](Self::set_sample_rate).
     pub fn sample_rate(&self) -> SampleRate {
+        SampleRate(self.sample_rate.load(Ordering::Acquire))
+    }
+
+    /// The device now runs at `sample_rate`: every clone of this transport
+    /// converts against it from here on.
+    ///
+    /// Only the *conversion* rate. The playhead is in beats and does not
+    /// move; the engine's clock follows the graph's own rate when the engine
+    /// adopts it (`Engine::process`), which is where a frame count turns into
+    /// beats. A host changing device rate calls this beside re-rating the
+    /// graph — `bevy_tutti`'s device restart does both.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.sample_rate
+            .store(sample_rate.into().get(), Ordering::Release);
     }
 
     /// Frames one beat spans at the current tempo, rounded to the nearest
@@ -87,7 +105,7 @@ impl Transport {
     /// thread, and an infinite frame count is an unbounded allocation waiting
     /// for its first caller.
     pub fn samples_per_beat(&self) -> Samples {
-        let bps = super::beats_per_sample(self.settings.tempo(), self.sample_rate);
+        let bps = super::beats_per_sample(self.settings.tempo(), self.sample_rate());
         if bps <= BeatDuration(0.0) {
             return Samples::ZERO;
         }
@@ -140,6 +158,22 @@ mod tests {
         let _ = a.motion.try_send(MotionEvent::Play);
         b.motion.drain();
         assert!(a.motion.is_playing(), "the FSM is shared, not copied");
+    }
+
+    /// A rate change reaches every clone: a clip reader holds the transport
+    /// as its own `Arc<dyn Timeline>`, and a device restart sets the rate on
+    /// the host's copy.
+    ///
+    /// Mutation (run): `sample_rate` a plain `SampleRate` field again (and
+    /// `set_sample_rate` taking `&mut self`, storing into it) → the clone
+    /// keeps 44.1 kHz and its `samples_per_beat` stays 22 050 → fails.
+    #[test]
+    fn a_rate_change_reaches_every_clone() {
+        let a = Transport::new(44_100.0);
+        let b = a.clone();
+        a.set_sample_rate(48_000.0);
+        assert_eq!(b.sample_rate(), SampleRate(48_000.0));
+        assert_eq!(b.samples_per_beat(), Samples(24_000), "120 BPM at 48 kHz");
     }
 
     #[test]

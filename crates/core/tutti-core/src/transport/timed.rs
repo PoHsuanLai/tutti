@@ -95,6 +95,11 @@ pub(crate) struct Scheduled {
     /// Send order: the tie-break between commands due on one frame, and what
     /// a cancel compares against.
     seq: u64,
+    /// An `At::Frame`'s frame, unrounded: a rate change moves it by
+    /// `new / old` ([`Schedule::rescale`]), and `at` is this rounded to the
+    /// nearest frame, so two changes in a row round once rather than twice
+    /// (the graph executor's `CommandRx::rescale` keeps the same figure).
+    pos: f64,
 }
 
 impl Scheduled {
@@ -148,10 +153,19 @@ impl Schedule {
             }
         }
         let seq = self.next_seq.fetch_add(1, Ordering::AcqRel);
+        let pos = match at {
+            At::Frame(f) => f.get() as f64,
+            _ => 0.0,
+        };
         // Cannot fail: the ring holds at most the commands in flight, and the
         // credit just taken keeps those at or under its capacity.
         self.queue
-            .push(Scheduled { at, command, seq })
+            .push(Scheduled {
+                at,
+                command,
+                seq,
+                pos,
+            })
             .expect("credit bounds the ring");
         Ok(())
     }
@@ -190,6 +204,28 @@ impl Schedule {
         pending.retain(|c| c.seq >= cancel_before);
         self.release(before - pending.len());
         f(&mut pending)
+    }
+
+    /// Audio thread: the engine's frame clock moved to a rate `ratio` times
+    /// the old one (new / old), so every `At::Frame` command in flight moves
+    /// to the same wall-clock time at the new rate, rounded to the nearest
+    /// frame. `At::Beat` and `At::NextBlock` are not in frames and stay.
+    ///
+    /// Every command in flight is taken to speak the old rate: the engine
+    /// calls this on the block it adopts the new one, and a command sent
+    /// after that block is sent against the new rate. Doc 013's rule for the
+    /// executor's own schedule (`Editor::reprepare`), with the adoption block
+    /// as the boundary where the executor has a commit's sequence number.
+    /// Never allocates (see [`with_pending`](Self::with_pending)).
+    pub(crate) fn rescale(&self, ratio: f64) {
+        self.with_pending(|pending| {
+            for cmd in pending.iter_mut() {
+                if let At::Frame(_) = cmd.at {
+                    cmd.pos *= ratio;
+                    cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
+                }
+            }
+        });
     }
 
     /// `n` commands left the pending list: applied or cancelled.

@@ -622,7 +622,7 @@ mod tests {
         use tutti_core::{Beat, SamplePosition};
         use tutti_sampler::{Command, DiskStreamer};
 
-        let (mut app, old, _, lim) = engine_app(backend);
+        let (mut app, old, _, _) = engine_app(backend);
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("tone_44k1.wav");
         {
@@ -661,11 +661,11 @@ mod tests {
             .expect("the link is installed");
         app.world_mut().insert_resource(DiskStreamerRes(streamer));
         let clip = app.world_mut().commands().spawn_audio_node(voice).id();
-        app.world_mut().insert_resource(
-            MasterSources::default()
-                .with(0, PortSource::node(clip))
-                .with(1, PortSource::node(lim)),
-        );
+        // The master shrinks to the clip alone: channel 1, which carried the
+        // limiter, is released while the limiter stays in the graph — the
+        // shrink `topology::build` makes the value as wide as the root for.
+        app.world_mut()
+            .insert_resource(MasterSources::default().with(0, PortSource::node(clip)));
         app.world_mut().flush();
         app.update();
         let t = transport(&app);

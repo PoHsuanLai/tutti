@@ -221,20 +221,40 @@ pub fn build(
         }
     }
 
-    // Only the channels the resource names, and only those the root has — the
-    // same two clamps `rebuild` applies, for the reasons its comments give: a
-    // shorter declaration is *undeclared*, not silent, and a longer one has
-    // already widened the root by the time the loop runs.
-    let root_channels = graph.outputs();
-    topology.outputs = (0..master.0.len().min(root_channels))
-        .map(|channel| {
-            // Unresolvable, not silent — but `Topology::outputs` is positional,
-            // so the channel must keep its slot. `Zero` is what the engine holds
-            // for a channel nothing has written, which is exactly what an
-            // unresolvable declaration leaves behind.
-            source_of(master.0[channel], None, nodes, &topology).unwrap_or(Source::Zero)
-        })
-        .collect();
+    // A written `MasterSources` owns **every** root channel, not just the ones
+    // its `Vec` reaches: a channel past its length is declared silent. Empty
+    // declares nothing, and the value then carries no outputs at all.
+    //
+    // It used to stop at the declaration's length, reading a shorter `Vec` as
+    // "undeclared". That made a shrink impossible to express: the channel the
+    // host dropped kept its last source, since nothing declared it any more
+    // and so nothing wrote it, and the value — one channel short of the root —
+    // folded to a different latency plan from the engine it had just been
+    // applied to, which is what tripped `rebuild`'s consistency check. A value
+    // as wide as the root is also what makes `LiveGraph` answer the questions
+    // its docs promise: `latency::plan` over it is the graph's fold only when
+    // every output the graph has is in it.
+    //
+    // As wide as the root, not as the declaration: a longer declaration has
+    // already widened the root by the time this runs (`rebuild`), and a
+    // shorter one leaves it at its width — the root is the device's, and a
+    // shrink is not a narrowing.
+    topology.outputs = if master.0.is_empty() {
+        Vec::new()
+    } else {
+        (0..graph.outputs())
+            .map(|channel| match master.0.get(channel) {
+                // Unresolvable, not silent — but `Topology::outputs` is
+                // positional, so the channel must keep its slot. `Zero` is what
+                // the engine holds for a channel nothing has written, which is
+                // exactly what an unresolvable declaration leaves behind.
+                Some(&declared) => {
+                    source_of(declared, None, nodes, &topology).unwrap_or(Source::Zero)
+                }
+                None => Source::Zero,
+            })
+            .collect()
+    };
 
     topology
 }
@@ -347,10 +367,12 @@ fn curve_key(curve: tutti_mod::CurveType) -> (u32, Option<(f32, f32)>) {
 ///
 /// A port the value says nothing about. `wire`'s contract is that an undeclared
 /// port belongs to whoever wired it — a `PortSources` shorter than the node's
-/// arity leaves the trailing ports alone, and a `MasterSources` shorter than the
-/// root leaves the remaining channels alone. The value carries exactly the
-/// declared ports (see [`build`]), so iterating it *is* that contract rather
-/// than a clamp reimposed here.
+/// arity leaves the trailing ports alone, and an *empty* `MasterSources` leaves
+/// every output channel alone. The value carries exactly the declared ports
+/// (see [`build`]), so iterating it *is* that contract rather than a clamp
+/// reimposed here. (A non-empty `MasterSources` declares the whole root, a
+/// channel past its length as silence, so every one of its channels is in the
+/// value and written here.)
 pub fn apply(
     want: &Topology,
     graph: &mut AudioGraphRes,
@@ -444,8 +466,8 @@ fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSour
 ///
 /// **Not compared:** a port the value says nothing about. The loop's own
 /// contract is that an undeclared port belongs to whoever wired it — a `Vec`
-/// shorter than the node's arity leaves the trailing ports alone, and
-/// `MasterSources` past its length is undeclared rather than silent. Asserting
+/// shorter than the node's arity leaves the trailing ports alone, and an empty
+/// `MasterSources` declares no output channel. Asserting
 /// the engine holds `Zero` there would be asserting the opposite of what
 /// `wire`'s docs promise.
 ///

@@ -29,7 +29,7 @@ pub use crossfade::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it — seven callsites did, all through the module path.
-pub use engine::{Engine, MAX_ROOT_CHANNELS};
+pub use engine::{Engine, GraphEngineError, DEFAULT_GRAPH_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
 
 // The value → runtime seam: `Topology` in, `Net` out. A module rather than root
 // re-exports, because `compile` and `Catalog` are words that only read right
@@ -41,9 +41,13 @@ pub mod transport;
 pub use transport::{
     beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange,
     MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig,
-    QueueFull, RenderClock, Then, Timeline, Transport, TransportClock, TransportSettings,
-    TransportState, BEAT_PORTS,
+    QueueFull, RenderClock, ScheduleFull, Then, Timeline, Transport, TransportClock,
+    TransportCommand, TransportSettings, TransportState, BEAT_PORTS, SCHEDULE_CAPACITY,
 };
+// The time a scheduled command names, and the engine's frame clock. Homed in
+// `tutti-types` so the graph's `Editor::schedule` and the transport's
+// `MotionFsm::schedule` share one vocabulary.
+pub use tutti_types::{At, Frame};
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
 // here so consumers that already depend on tutti-core need no new dependency.

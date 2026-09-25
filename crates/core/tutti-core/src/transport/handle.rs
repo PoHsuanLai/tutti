@@ -65,6 +65,7 @@ impl Transport {
             loop_span: Some(self.settings.loop_span.clone()),
             position_writeback: Some(Arc::clone(&self.settings.beat)),
             steady_time: Some(Arc::clone(&self.settings.steady_time)),
+            tempo_in_force: Some(Arc::clone(&self.settings.tempo_in_force)),
         }
     }
 

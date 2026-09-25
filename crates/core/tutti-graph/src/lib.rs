@@ -3,12 +3,13 @@
 //! [`Reference`] interpreter the executor is proven against.
 //!
 //! This is Phase 1 of `docs/design/013-native-graph.md` (PR #2): the road off
-//! fundsp's `Net` runtime. Nothing in the engine uses it yet — Phase 2 puts it
-//! behind `Engine`, Phase 3 flips the Bevy adapter — so it can be read, tested
-//! and benchmarked on its own. Of Phase 2 it already has the sample-accuracy
-//! contract's type-level half (doc 013 §6: [`Offset`] vs `Frame`,
-//! timestamped commands, [`Io::sub_blocks`], [`Resolution`]) and live
-//! re-preparation ([`Editor::reprepare`]).
+//! fundsp's `Net` runtime. `tutti_core::Engine::with_graph` renders an
+//! [`Executor`] behind the engine (Phase 2); the Bevy adapter and export still
+//! build `Net`s until Phase 3 flips them. Of Phase 2 it has the
+//! sample-accuracy contract's type-level half (doc 013 §6: [`Offset`] vs
+//! `Frame`, timestamped commands, [`Io::sub_blocks`], [`Resolution`]),
+//! transport changes inside a block ([`TransportChanges`], carried by
+//! [`Env`]) and live re-preparation ([`Editor::reprepare`]).
 //!
 //! # The four layers (doc 013 §"The design")
 //!
@@ -69,7 +70,10 @@
 //! at a transport loop wrap. That is what keeps an out-of-process plugin's
 //! declared pipeline latency constant. A wrap inside a block is visible to
 //! the nodes that care through [`Transport::looping`] and the block-start
-//! beat in [`Env`], from which a node computes where the wrap falls.
+//! beat in [`Env`], from which a node computes where the wrap falls. A
+//! transport command landing inside a block (a start, a stop, a seek) is not
+//! a split either: [`Env::changes`] carries it, and [`Env::transport_at`]
+//! answers "what was the transport at this frame" for both.
 //!
 //! # Precision
 //!
@@ -140,7 +144,7 @@ mod time;
 
 pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
-pub use editor::{CommitError, Editor};
+pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
     SubBlocks, Ump,
@@ -150,7 +154,8 @@ pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
-    Scratch, Shape, SilenceMask, Status, Transport, MAX_PORTS,
+    Scratch, Shape, SilenceMask, Status, Transport, TransportChange, TransportChangeRejected,
+    TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,

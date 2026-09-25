@@ -251,6 +251,13 @@ pub(crate) struct CommandRx {
     playhead: Playhead,
 }
 
+impl CommandTx {
+    /// Whether `rx` is this end's other half.
+    pub(crate) fn same_pair(&self, rx: &CommandRx) -> bool {
+        Arc::ptr_eq(&self.done, &rx.done)
+    }
+}
+
 /// Build the command ring pair.
 pub(crate) fn command_channel() -> (CommandTx, CommandRx) {
     let (tx, rx) = HeapRb::<Scheduled>::new(COMMAND_CAPACITY).split();

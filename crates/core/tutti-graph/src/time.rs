@@ -29,9 +29,9 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{At, Frame, Latency, Samples};
+use tutti_types::{At, Beat, Frame, Latency, Samples};
 
-use crate::node::Env;
+use crate::node::{Env, Transport, TransportChanges};
 
 /// A position inside the current block: frames from its first frame.
 ///
@@ -172,7 +172,18 @@ impl Playhead {
     }
 
     /// Record the block about to be rendered.
+    ///
+    /// A block with [transport changes](Env::changes) is recorded segment by
+    /// segment, as if each were a block of its own: a start or a tempo change
+    /// continues the run, a seek begins a new one at its target. So "crossed"
+    /// after a mid-block seek means crossed since the seek.
     pub fn observe(&mut self, env: &Env) {
+        for (_, segment) in env.segments() {
+            self.observe_segment(&segment);
+        }
+    }
+
+    fn observe_segment(&mut self, env: &Env) {
         let now = env.transport.beat.get();
         let continues = self.prev.and_then(|p| {
             if p.transport.looping != env.transport.looping {
@@ -266,8 +277,85 @@ impl Env {
                     Due::NotYet
                 }
             }
-            At::Beat(b) => self.beat_due(b.get()),
+            // Segment by segment: the transport a beat is resolved against is
+            // the one in force where playback reaches it, so a beat just
+            // after a mid-block start lands inside this block.
+            At::Beat(b) => self
+                .segments()
+                .find_map(|(start, segment)| match segment.beat_due(b.get()) {
+                    Due::In(k) => Some(Due::In(Offset(start.0 + k.0))),
+                    _ => None,
+                })
+                .unwrap_or(Due::NotYet),
         }
+    }
+
+    /// The block cut at its [transport changes](Self::changes): each piece's
+    /// first offset, and the piece as an `Env` of its own (its `frame`,
+    /// length and transport, with no changes). A block with no change is one
+    /// piece, the block itself. Pieces are never empty; a change at or past
+    /// the block's end cuts nothing.
+    pub fn segments(&self) -> impl Iterator<Item = (Offset, Env)> + '_ {
+        let changes = self.changes.as_slice();
+        let len = self.block_len.get();
+        (0..=changes.len()).filter_map(move |i| {
+            let start = if i == 0 {
+                0
+            } else {
+                changes[i - 1].at.index().min(len)
+            };
+            let end = changes.get(i).map_or(len, |c| c.at.index().min(len));
+            let transport = if i == 0 {
+                self.transport
+            } else {
+                changes[i - 1].to
+            };
+            (end > start).then(|| {
+                (
+                    Offset(start as u32),
+                    Env {
+                        frame: self.frame + Samples(start),
+                        sample_rate: self.sample_rate,
+                        block_len: Samples(end - start),
+                        transport,
+                        changes: TransportChanges::NONE,
+                    },
+                )
+            })
+        })
+    }
+
+    /// The transport at frame `offset` of this block: the change in force
+    /// there (or the block's own transport), with its beat advanced to
+    /// `offset` at its tempo while it rolls, wrapping at its loop.
+    ///
+    /// Closed form, in `f64`: a host that accumulates its beat frame by frame
+    /// (tutti-core's `TransportClock`) agrees to rounding, not to the bit. The
+    /// block-start beat and every change's beat are the host's own figures.
+    pub fn transport_at(&self, offset: Offset) -> Transport {
+        let (start, mut t) = self
+            .changes
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|c| c.at <= offset)
+            .map_or((0, self.transport), |c| (c.at.index(), c.to));
+        let Some(fpb) = self.frames_per_beat_at(t.tempo.get()).filter(|_| t.playing) else {
+            return t;
+        };
+        let pos = t.beat.get() + (offset.index() - start) as f64 / fpb;
+        t.beat = Beat(match t.looping {
+            Some(l) if t.beat.get() < l.end.get() && l.start.get() < l.end.get() => {
+                let (ls, le) = (l.start.get(), l.end.get());
+                if pos < le {
+                    pos
+                } else {
+                    ls + (pos - ls).rem_euclid(le - ls)
+                }
+            }
+            _ => pos,
+        });
+        t
     }
 
     /// Whether this block, with its tempo changing to `next_tempo` at some
@@ -379,6 +467,19 @@ impl Env {
             return Due::NotYet;
         };
         let now = self.transport.beat.get();
+        // A beat behind the playhead by less than a frame (minus the
+        // tolerance) falls due on this block's first frame. It is the exact
+        // complement of the ahead side: the previous block resolved a beat
+        // `d` frames before its end to offset `ceil(len - d - TOLERANCE)`,
+        // which is inside that block only when `d >= 1 - TOLERANCE`. So a
+        // beat between a block's last frame and its end (or a rounding error
+        // behind an accumulated playhead) is due here, not late, and every
+        // beat lands exactly once.
+        let beat = if beat < now && (now - beat) * frames_per_beat < 1.0 - TOLERANCE {
+            now
+        } else {
+            beat
+        };
         let ahead = match self.transport.looping {
             Some(l) if now < l.end.get() && l.start.get() < l.end.get() => {
                 let (start, end) = (l.start.get(), l.end.get());
@@ -424,6 +525,7 @@ mod tests {
             sample_rate: SampleRate(48_000.0),
             block_len: Samples(len),
             transport,
+            changes: crate::node::TransportChanges::NONE,
         }
     }
 
@@ -764,5 +866,134 @@ mod tests {
             seek.due_at_arrival(&mut jumped, Latency::ZERO, &ph),
             Due::NotYet
         );
+    }
+
+    fn at(k: usize) -> Offset {
+        Offset::new(k, Samples(usize::MAX)).expect("small")
+    }
+
+    /// A change list is ordered and distinct; one at the block start or past
+    /// the bound is refused; the same offset twice keeps the later transport.
+    ///
+    /// Mutation: drop the `at < last.at` check → the out-of-order push is
+    /// accepted → fails. Push a second entry instead of replacing on an
+    /// equal offset → `len` is 2 → fails.
+    #[test]
+    fn transport_changes_are_ordered_distinct_and_bounded() {
+        let playing = Transport {
+            playing: true,
+            ..Transport::default()
+        };
+        let mut c = TransportChanges::NONE;
+        assert_eq!(
+            c.push(Offset::ZERO, playing),
+            Err(crate::TransportChangeRejected::AtBlockStart)
+        );
+        c.push(at(10), Transport::default()).expect("first");
+        c.push(at(10), playing).expect("same frame replaces");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c.as_slice()[0].to, playing, "the later command wins");
+        assert_eq!(
+            c.push(at(5), playing),
+            Err(crate::TransportChangeRejected::OutOfOrder)
+        );
+        for k in 1..crate::MAX_TRANSPORT_CHANGES {
+            c.push(at(10 + k), playing).expect("room");
+        }
+        assert!(c.is_full());
+        assert_eq!(
+            c.push(at(1000), playing),
+            Err(crate::TransportChangeRejected::Full)
+        );
+        c.push(
+            at(10 + crate::MAX_TRANSPORT_CHANGES - 1),
+            Transport::default(),
+        )
+        .expect("replacing the last needs no room");
+    }
+
+    /// `segments` cuts at each change; `transport_at` reads the change in
+    /// force and advances it; `due` resolves a beat in the piece that reaches
+    /// it.
+    ///
+    /// Mutation: take the block's own transport in `transport_at` (ignore
+    /// changes) → the frame after the start reads stopped → fails. Give a
+    /// piece the block's `frame` in `segments` → the frame assertion fails.
+    /// Return `k` without adding the piece's start in `due` → fails.
+    #[test]
+    fn a_start_inside_the_block_is_seen_from_its_frame() {
+        // Stopped at beat 2 until frame 100, then rolling from there.
+        let mut e = env(
+            1_000,
+            512,
+            Transport {
+                beat: Beat(2.0),
+                ..Transport::default()
+            },
+        );
+        let rolling = Transport {
+            playing: true,
+            beat: Beat(2.0),
+            ..Transport::default()
+        };
+        e.changes.push(at(100), rolling).expect("inside");
+
+        let pieces: Vec<(Offset, Env)> = e.segments().collect();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(pieces[0].0, Offset::ZERO);
+        assert_eq!(pieces[0].1.block_len, Samples(100));
+        assert_eq!(pieces[1].0, at(100));
+        assert_eq!(pieces[1].1.frame, Frame(1_100));
+        assert_eq!(pieces[1].1.block_len, Samples(412));
+
+        assert!(!e.transport_at(at(99)).playing);
+        assert_eq!(e.transport_at(at(99)).beat, Beat(2.0));
+        assert!(e.transport_at(at(100)).playing);
+        // 120 BPM at 48 kHz: 24 000 frames a beat.
+        assert_eq!(e.transport_at(at(340)).beat, Beat(2.01));
+
+        // Beat 2 is reached on the start's frame; beat 2.01 240 frames later.
+        assert_eq!(e.due(At::Beat(Beat(2.0))), Due::In(at(100)));
+        assert_eq!(e.due(At::Beat(Beat(2.01))), Due::In(at(340)));
+        // Not by the block's own transport alone: it is stopped.
+        let mut first = e;
+        first.changes = TransportChanges::NONE;
+        assert_eq!(first.due(At::Beat(Beat(2.0))), Due::NotYet);
+    }
+
+    /// A beat a rounding error behind the playhead is its first frame, not a
+    /// crossed beat; one a whole frame behind is not due.
+    ///
+    /// Mutation: drop the behind-side tolerance in `beat_due` → the first
+    /// assertion reads `NotYet` → fails.
+    #[test]
+    fn a_beat_a_rounding_error_behind_is_the_first_frame() {
+        let e = block(1.0 + 1e-12, 64, true, None);
+        assert_eq!(e.due(At::Beat(Beat(1.0))), Due::In(Offset::ZERO));
+        let e = block(1.0 + 1.0 / 24_000.0, 64, true, None);
+        assert_eq!(e.due(At::Beat(Beat(1.0))), Due::NotYet);
+    }
+
+    /// A seek inside a rolling block starts a new run: a beat the new run
+    /// passed is crossed, one before the seek or jumped over is not.
+    ///
+    /// Mutation: observe only the block's first piece in `Playhead::observe`
+    /// → beat 8.05 (after the seek) is not crossed → fails.
+    #[test]
+    fn a_seek_inside_the_block_starts_a_new_run() {
+        let roll = |beat: f64| Transport {
+            playing: true,
+            beat: Beat(beat),
+            ..Transport::default()
+        };
+        let mut ph = Playhead::new();
+        let mut b = env(0, 4_800, roll(0.0));
+        b.changes.push(at(2_400), roll(8.0)).expect("inside");
+        ph.observe(&b);
+        // The next block continues from the seek: 2 400 frames = 0.1 beat.
+        ph.observe(&env(4_800, 4_800, roll(8.1)));
+        assert!(ph.crossed(8.05), "crossed after the seek");
+        assert!(!ph.crossed(0.05), "before the seek: a different run");
+        assert!(!ph.crossed(4.0), "jumped over");
     }
 }

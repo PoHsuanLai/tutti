@@ -26,8 +26,10 @@ use crossbeam_queue::ArrayQueue;
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
+use super::timed::{Schedule, ScheduleFull, TransportCommand};
 use crate::Beat;
 use crate::{AtomicU8, AudioThreadCell};
+use tutti_types::At;
 
 pub use super::fsm::MotionState;
 
@@ -188,6 +190,9 @@ pub struct MotionFsm {
     /// The FSM writes the playhead on a locate, and pausedness tracks motion,
     /// so it needs the settings it publishes into.
     settings: TransportSettings,
+    /// Timestamped commands, applied by the engine on their frame. See
+    /// [`schedule`](Self::schedule).
+    timed: Schedule,
 }
 
 /// Reports the *published* state only. The FSM behind `AudioThreadCell` is
@@ -213,6 +218,105 @@ impl MotionFsm {
             seek: SeekSlot::new(),
             declick: Declick::new(),
             settings,
+            timed: Schedule::new(),
+        }
+    }
+
+    /// Request a transport change **at a time**: a play, stop or seek
+    /// ([`MotionEvent`]), a tempo or a loop edit ([`TransportCommand`]).
+    /// Lock-free, callable from any thread, never allocates.
+    ///
+    /// The engine applies it on its frame, sample-accurately
+    /// ([`Engine::process`](crate::Engine::process)):
+    ///
+    /// - an [`At::Frame`] on the engine's frame clock. For a graph engine
+    ///   that is the executor's (`tutti_graph::Executor::frame`): it tracks
+    ///   device time, advances while a re-prepare has the graph suspended,
+    ///   and is rescaled to the same wall-clock time on a rate change. For a
+    ///   `Net` engine it is the frames rendered since the engine was built;
+    /// - an [`At::Beat`] on the first frame at or after that beat once
+    ///   playback reaches it;
+    /// - an [`At::NextBlock`] at the next block's first frame.
+    ///
+    /// Commands due on one frame apply in the order they were sent.
+    ///
+    /// A **declicked** stop or seek (`FadeOut::Declick`) is where a time
+    /// pays off: the engine sees it coming and fades the old audio out so it
+    /// reaches zero exactly on the command's frame, then fades back in from
+    /// there, with no gain step anywhere. The same command sent untimed (or
+    /// as `At::NextBlock`, or late) has no lead: the old audio ends on the
+    /// block's first frame and the new one fades in. See the engine's module
+    /// docs. A frame
+    /// already past, a beat continuous playback already crossed, or a
+    /// command past a block's cut bound
+    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)) lands
+    /// at the start of the next block and is counted
+    /// ([`late_commands`](Self::late_commands)); an `At::NextBlock` needs no
+    /// cut and is never late. A beat a seek or loop jumped over waits until
+    /// playback reaches it, holding its credit;
+    /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
+    ///
+    /// `Err` when [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands
+    /// are in flight: nothing was sent, and the command is handed back.
+    ///
+    /// The untimed [`try_send`](Self::try_send) and settings stores still
+    /// work and mean `At::NextBlock`; this method has no untimed form of its
+    /// own, so "whenever" is spelled out as `At::NextBlock`.
+    pub fn schedule(
+        &self,
+        at: At,
+        command: impl Into<TransportCommand>,
+    ) -> Result<(), ScheduleFull> {
+        self.timed.send(at, command.into())
+    }
+
+    /// Take back every scheduled command not yet applied, and free their
+    /// credit. Takes effect at the engine's next block.
+    pub fn cancel_scheduled(&self) {
+        self.timed.cancel_all();
+    }
+
+    /// Scheduled commands in flight: sent, and not yet applied or cancelled.
+    pub fn scheduled_outstanding(&self) -> usize {
+        self.timed.outstanding()
+    }
+
+    /// Scheduled commands that were already past due when the engine first
+    /// saw them, and so landed at the start of that block instead of on
+    /// their frame. Never dropped.
+    pub fn late_commands(&self) -> u64 {
+        self.timed.late()
+    }
+
+    /// The timestamped queue, for the engine.
+    pub(crate) fn timed(&self) -> &Schedule {
+        &self.timed
+    }
+
+    /// The settings this machine publishes into, for the engine.
+    pub(crate) fn settings(&self) -> &TransportSettings {
+        &self.settings
+    }
+
+    /// Apply one scheduled command now. **Audio thread only**, as
+    /// [`drain`](Self::drain): a motion change goes through the state
+    /// machine exactly as a drained event does.
+    pub(crate) fn apply(&self, command: TransportCommand) {
+        match command {
+            TransportCommand::Motion(event) => {
+                let result = { self.fsm.borrow_mut().transition(event) };
+                if let Some(result) = result {
+                    self.publish(result);
+                }
+            }
+            TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
+            TransportCommand::Loop(Some(range)) => {
+                self.settings
+                    .loop_span
+                    .set_range(range.start(), range.end());
+                self.settings.loop_span.set_enabled(true);
+            }
+            TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
         }
     }
 
@@ -307,20 +411,34 @@ impl MotionFsm {
 
     fn publish(&self, result: TransitionResult) {
         match result {
-            TransitionResult::MotionChanged(motion) => {
-                self.set_motion(motion);
-                // A settled state change cancels any fade. Retargeting one
-                // declick state to another must NOT clear it — that ramp is
-                // mid-count, and restarting it would step the gain back to
-                // full and click.
-                if !is_declicking(motion) {
-                    self.declick.clear();
+            TransitionResult::MotionChanged(motion) if is_declicking(motion) => {
+                // A fade retargeted in flight. Its ramp is mid-count and must
+                // NOT restart (the gain would step back to full and click),
+                // but its new outcome takes effect on the transport now, as a
+                // fresh fade's does.
+                self.set_mirror(motion);
+                let outcome = { self.fsm.borrow().declick_outcome() };
+                if let Some(outcome) = outcome {
+                    self.apply_outcome(outcome);
                 }
             }
-            TransitionResult::DeclickStarted { motion, frames, .. } => {
+            TransitionResult::MotionChanged(motion) => {
+                // A settled state change cancels any fade.
                 self.set_motion(motion);
-                // Audio keeps playing while the gain ramps to zero.
+                self.declick.clear();
+            }
+            TransitionResult::DeclickStarted {
+                motion,
+                frames,
+                on_complete,
+            } => {
+                // The transport stops or jumps **now**, on the command's
+                // frame; the fade is an audio-only concern (doc 013 §6). The
+                // output ramps to zero over `frames` from here, and the motion
+                // mirror reads the declick state until the fade completes.
+                self.set_mirror(motion);
                 self.declick.start(frames);
+                self.apply_outcome(on_complete);
             }
             TransitionResult::Located { pos, motion } => {
                 self.locate_to(pos);
@@ -330,12 +448,34 @@ impl MotionFsm {
         }
     }
 
-    /// Called by the processor when a declick fade reaches zero: finish the
-    /// action the fade was covering for.
+    /// Put a fade's outcome into effect on the transport: stop the playhead,
+    /// or jump it and leave it rolling or stopped as the outcome says.
+    fn apply_outcome(&self, outcome: DeclickOutcome) {
+        match outcome {
+            DeclickOutcome::Stop => self.settings.paused.store(true, Ordering::Release),
+            DeclickOutcome::Locate { pos, motion } => {
+                self.locate_to(pos);
+                self.settings
+                    .paused
+                    .store(motion == MotionState::Stopped, Ordering::Release);
+            }
+        }
+    }
+
+    /// Publish `motion` to the UI mirror only, leaving the playhead's
+    /// pausedness alone (a declick state is not a playhead state).
+    fn set_mirror(&self, motion: MotionState) {
+        self.motion.store(motion.into(), Ordering::Release);
+    }
+
+    /// Called by the processor when a declick fade reaches zero: settle the
+    /// motion the fade was heading for.
     ///
-    /// Driven by the outcome the FSM parked when the fade started, not by
-    /// reading the published mirror back: the mirror is a projection, so
-    /// dispatching on it lets an FSM/mirror disagreement pass unnoticed.
+    /// The transport itself already stopped or jumped when the fade began
+    /// (see `publish`); what is left is the mirror and the parked outcome.
+    /// Driven by the outcome the FSM parked, not by reading the published
+    /// mirror back: the mirror is a projection, so dispatching on it lets an
+    /// FSM/mirror disagreement pass unnoticed.
     ///
     /// **Audio thread only**, for the same reason as
     /// [`drain`](Self::drain) — it borrows the FSM's cell.
@@ -349,10 +489,7 @@ impl MotionFsm {
 
         match outcome {
             DeclickOutcome::Stop => self.set_motion(MotionState::Stopped),
-            DeclickOutcome::Locate { pos, motion } => {
-                self.locate_to(pos);
-                self.set_motion(motion);
-            }
+            DeclickOutcome::Locate { motion, .. } => self.set_motion(motion),
         }
     }
 }
@@ -459,16 +596,21 @@ mod tests {
         );
     }
 
-    /// The Stop button's fade and its return-to-zero must be ONE event.
+    /// The Stop button's fade and its return-to-zero are ONE event, and the
+    /// transport acts on it at once: the playhead jumps (and stops) on the
+    /// command's frame, and the fade only shapes the audio from there (doc
+    /// 013 §6, the declick decision: a fade is an audio-only concern and
+    /// never delays the transport state a graph sees). Completing the fade
+    /// settles the motion mirror and does **not** jump again.
     ///
-    /// Sent as `Stop` + `Locate(0.0)`, `drain` pops both in one callback, so
-    /// the seek lands immediately while the fade still has samples to run —
-    /// the declick then ramps down audio rendered from the *new* position,
-    /// protecting nothing, and the click it exists to suppress happens unmasked
-    /// at the seek instant. `stop_and_return` carries both halves, so the jump
-    /// waits for silence.
+    /// This replaced a test pinning the opposite rule (the seek waited for
+    /// the fade), which the doc 013 decision reversed.
+    ///
+    /// Mutation: leave `apply_outcome` out of the `DeclickStarted` arm → no
+    /// seek, playhead still 12 → fails. Call `locate_to` again in
+    /// `complete_declick` → a second seek is requested → fails.
     #[test]
-    fn stop_and_return_holds_the_playhead_until_the_fade_ends() {
+    fn stop_and_return_moves_the_playhead_at_once_and_fades_the_audio() {
         let m = fsm();
         let _ = m.try_send(MotionEvent::Play);
         m.drain();
@@ -479,17 +621,32 @@ mod tests {
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
         assert!(m.declick.is_active(), "the fade must be armed");
-        assert_eq!(m.seek.take(), None, "the seek must wait for the fade");
-        assert_eq!(
-            m.settings.beat.load(Ordering::Acquire),
-            12.0,
-            "the playhead must not move while audio is still fading"
-        );
+        assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands now");
+        assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
+        assert!(m.settings.is_paused(), "and the playhead holds there");
 
         m.complete_declick();
-        assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands on silence");
-        assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
+        assert_eq!(m.seek.take(), None, "no second jump");
         assert!(m.is_stopped());
+    }
+
+    /// A declick stop pauses the playhead on its command; the motion mirror
+    /// reads the fade until it completes.
+    ///
+    /// Mutation: store `paused` from the motion (`set_motion`) in the
+    /// `DeclickStarted` arm → `DeclickToStop` is not `Stopped`, so the
+    /// playhead keeps rolling → fails.
+    #[test]
+    fn a_declick_stop_pauses_the_playhead_at_once() {
+        let m = fsm();
+        let _ = m.try_send(MotionEvent::Play);
+        m.drain();
+        let _ = m.try_send(MotionEvent::stop());
+        m.drain();
+        assert_eq!(m.motion(), MotionState::DeclickToStop);
+        assert!(m.settings.is_paused());
+        m.complete_declick();
+        assert!(m.is_stopped() && m.settings.is_paused());
     }
 
     /// Pressing Stop while already stopped has nothing to fade, so it returns

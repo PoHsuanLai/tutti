@@ -151,6 +151,25 @@ impl LoopRange {
         beat >= self.start && beat < self.end
     }
 
+    /// Where a playhead that moved forward from `from` to `to` lands under
+    /// this loop: wrapped back into the region when the move crossed the end,
+    /// and **unchanged when `from` was already at or past the end**.
+    ///
+    /// Arming a loop whose end is at or behind the playhead does not jump
+    /// (the common DAW behaviour, and doc 013's decision): the loop takes
+    /// effect once the playhead is inside it, by a seek or by playing into it
+    /// from before `start`. The native graph reads a transport the same way
+    /// (`tutti_graph::Env::due` and `transport_at` treat a playhead at or past
+    /// the loop end as not looping), so the two agree.
+    #[inline]
+    pub fn advance(&self, from: Beat, to: Beat) -> Beat {
+        if from < self.end {
+            self.wrap(to)
+        } else {
+            to
+        }
+    }
+
     /// Wrap `beat` back into the region, preserving overshoot.
     ///
     /// The remainder needs no zero guard because `len()` is positive by
@@ -353,6 +372,10 @@ pub struct ClockLinks {
     ///
     /// `None` = writes nothing live, matching `position_writeback`.
     pub steady_time: Option<Arc<AtomicI64>>,
+    /// Where the clock publishes the tempo it runs at (its hysteresis
+    /// applied), so a beat resolved elsewhere uses the same one. `None` =
+    /// writes nothing live.
+    pub tempo_in_force: Option<Arc<AtomicF64>>,
 }
 
 impl ClockLinks {
@@ -367,6 +390,7 @@ impl ClockLinks {
             loop_span: None,
             position_writeback: None,
             steady_time: None,
+            tempo_in_force: None,
         }
     }
 
@@ -387,6 +411,7 @@ impl ClockLinks {
             loop_span: _,
             position_writeback: _,
             steady_time: _,
+            tempo_in_force: _,
         } = self;
 
         Self {
@@ -396,6 +421,7 @@ impl ClockLinks {
             loop_span: None,
             position_writeback: None,
             steady_time: None,
+            tempo_in_force: None,
         }
     }
 }
@@ -458,6 +484,20 @@ mod tests {
         assert!(!declick.is_active());
         // Total is retained so a fade's length stays inspectable.
         assert_eq!(declick.total.load(Ordering::Acquire), 480);
+    }
+
+    /// Only a move that crosses the end wraps; a playhead already at or past
+    /// the end runs on, and one from before the start wraps at the end.
+    ///
+    /// Mutation: wrap regardless of `from` → the past-the-end case jumps to
+    /// 5.5 → fails.
+    #[test]
+    fn loop_range_advance_wraps_only_a_crossing() {
+        let r = LoopRange::new(4.0, 8.0).unwrap();
+        assert_eq!(r.advance(Beat(7.5), Beat(8.5)), Beat(4.5), "crossed");
+        assert_eq!(r.advance(Beat(9.0), Beat(9.5)), Beat(9.5), "armed behind");
+        assert_eq!(r.advance(Beat(8.0), Beat(8.5)), Beat(8.5), "from the end");
+        assert_eq!(r.advance(Beat(2.0), Beat(8.25)), Beat(4.25), "from before");
     }
 
     #[test]

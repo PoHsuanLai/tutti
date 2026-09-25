@@ -401,6 +401,7 @@ mod tests {
                 loop_span: None,
                 position_writeback: None,
                 steady_time: None,
+                tempo_in_force: None,
             },
             sample_rate,
         )

@@ -10,12 +10,18 @@ section there before you relax or work around a rule.
 **fundsp's `Net` is being replaced by a native graph**, per
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. Until the migration lands:
+once, and events as ports. `Engine` can already render it
+(`Engine::with_graph`); `bevy-tutti` and export still build `Net`s until
+Phase 3. Until the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can
   (`process`, `reset`, `set_sample_rate`, declared latency and tail).
 - Musical delay is not latency. Report only processing latency to PDC.
+- Transport commands meant for playback take an `At`
+  (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
+  graph node that needs the transport at a frame reads `Env::transport_at`:
+  a start or seek inside a block is in `Env`, never a split block.
 - Doc 013 lists the defects and types each phase addresses. Update it when a
   phase lands or a decision changes.
 
@@ -96,8 +102,8 @@ crates/
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
                  tutti-node (node contract), tutti-cpal (device), tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
-                 tutti-graph (doc 013 Phase 1: Node contract, Topology→Plan compiler,
-                 serial executor + reference interpreter; not wired in yet)
+                 tutti-graph (doc 013 Phases 1–2: Node contract, Topology→Plan compiler,
+                 serial executor + reference interpreter; `Engine::with_graph` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
   midi/          tutti-midi-{types,runtime,hardware,file}

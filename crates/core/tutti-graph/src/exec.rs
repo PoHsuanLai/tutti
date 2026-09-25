@@ -128,7 +128,7 @@ use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
-    MAX_PORTS,
+    TransportChanges, MAX_PORTS,
 };
 use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::spec::EventIn;
@@ -443,6 +443,11 @@ impl Executor {
             next_prepare: None,
             reset_time: false,
         }
+    }
+
+    /// The command ring's executor end, for the pair check.
+    pub(crate) fn commands(&self) -> &CommandRx {
+        &self.commands
     }
 
     /// What this executor, and every unit it runs, is prepared for. During a
@@ -792,6 +797,29 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        self.process_with_changes(frames, transport, &TransportChanges::NONE, inputs, outputs);
+    }
+
+    /// As [`process`](Self::process), with the transport changing inside the
+    /// block: `transport` holds at the first frame, and each of `changes`
+    /// from its offset on (doc 013 §6: a transport command lands on its
+    /// frame). The block is **not** split at them. Every node gets the whole
+    /// block and an [`Env`] carrying the changes, and scheduled `At::Beat`
+    /// commands resolve against the transport in force where playback
+    /// reaches their beat.
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process), and if a change is not inside the
+    /// block (outside a re-prepare, when any block length is accepted).
+    pub fn process_with_changes(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
         let _rt = AudioThread::enter();
         let _ftz = ScopedNoDenormals::new();
         // Before the bound is checked: a queued resume changes it, and the
@@ -814,6 +842,7 @@ impl Executor {
                 sample_rate: rate,
                 block_len: Samples(frames),
                 transport: *transport,
+                changes: *changes,
             });
             self.frame += Samples(frames);
             return;
@@ -823,6 +852,10 @@ impl Executor {
             frames > 0 && frames <= max.get(),
             "block of {frames} frames against a max of {}",
             max.get()
+        );
+        assert!(
+            changes.as_slice().iter().all(|c| c.at.index() < frames),
+            "a transport change past the end of a {frames}-frame block"
         );
         let Self {
             prepare,
@@ -876,6 +909,7 @@ impl Executor {
             sample_rate: prepare.sample_rate(),
             block_len: Samples(frames),
             transport: *transport,
+            changes: *changes,
         };
         commands.gather(&env, plan, *applied, has_due);
 
@@ -1562,6 +1596,7 @@ mod tests {
             sample_rate: prepare.sample_rate(),
             block_len: Samples(64),
             transport: Transport::default(),
+            changes: TransportChanges::NONE,
         };
         let mut has_due = vec![false; plan.units.len()];
         exec.commands

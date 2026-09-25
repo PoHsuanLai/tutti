@@ -24,6 +24,7 @@
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 
 use crate::io::Io;
+use crate::time::Offset;
 
 /// Most audio channels, or event ports, on one side of one node.
 ///
@@ -421,6 +422,142 @@ impl Default for Transport {
     }
 }
 
+/// Most transport changes one block can carry; see [`TransportChanges`].
+///
+/// A transport command is a user or arrangement action (play, stop, a seek, a
+/// tempo or loop edit), so more than a handful inside one block (a few
+/// milliseconds) is not music. Bounded so an [`Env`] stays `Copy` and the
+/// audio thread never allocates one. Whoever fills the list decides what
+/// happens to a change past the bound (the engine lands it at the start of
+/// the next block and counts it late).
+pub const MAX_TRANSPORT_CHANGES: usize = 8;
+
+/// A change of the transport inside a block: from frame [`at`](Self::at) on,
+/// the transport is [`to`](Self::to).
+///
+/// Doc 013 §6: a transport command lands on its exact frame, and the
+/// executor never splits a block for it, not even for a start or a seek. The
+/// block's [`Env`] carries the change instead, the way it carries a loop
+/// wrap, and a node that cares reads the transport at a frame with
+/// [`Env::transport_at`] (or walks [`Env::segments`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransportChange {
+    /// The first frame the new transport applies to. Never
+    /// [`Offset::ZERO`]: a change at the first frame is the block's own
+    /// [`Env::transport`].
+    pub at: Offset,
+    /// The transport at frame `at`. Its `beat` is the position *at* that
+    /// frame, after the change (the target of a seek, the held position of a
+    /// stop).
+    pub to: Transport,
+}
+
+/// Why [`TransportChanges::push`] refused a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportChangeRejected {
+    /// At [`Offset::ZERO`]. A change at the block's first frame is the
+    /// block's transport, not a change inside it.
+    AtBlockStart,
+    /// Before the last change pushed. Changes are pushed in time order.
+    OutOfOrder,
+    /// [`MAX_TRANSPORT_CHANGES`] are already held.
+    Full,
+}
+
+impl std::fmt::Display for TransportChangeRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::AtBlockStart => "a change at the first frame is the block's transport",
+            Self::OutOfOrder => "transport changes must be pushed in time order",
+            Self::Full => "too many transport changes in one block",
+        })
+    }
+}
+
+impl std::error::Error for TransportChangeRejected {}
+
+/// The transport changes inside one block: in time order, at distinct
+/// offsets, none at the first frame. A fixed-capacity list, so an [`Env`]
+/// that holds one is still `Copy` and building it never allocates.
+///
+/// Every offset is checked against the block when the list is handed to
+/// [`Executor::process_with_changes`](crate::Executor::process_with_changes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransportChanges {
+    len: u8,
+    items: [TransportChange; MAX_TRANSPORT_CHANGES],
+}
+
+impl TransportChanges {
+    /// No change: the transport of the block's first frame holds throughout
+    /// (moving, if it rolls).
+    pub const NONE: Self = Self {
+        len: 0,
+        items: [TransportChange {
+            at: Offset::ZERO,
+            to: Transport {
+                playing: false,
+                tempo: Bpm(120.0),
+                beat: Beat(0.0),
+                looping: None,
+            },
+        }; MAX_TRANSPORT_CHANGES],
+    };
+
+    /// Add a change after the ones already held. A change at the same offset
+    /// as the last one **replaces** it: two commands landing on one frame
+    /// leave the transport where the later one put it, and a frame has one
+    /// transport.
+    pub fn push(&mut self, at: Offset, to: Transport) -> Result<(), TransportChangeRejected> {
+        if at == Offset::ZERO {
+            return Err(TransportChangeRejected::AtBlockStart);
+        }
+        let len = self.len as usize;
+        if let Some(last) = self.items[..len].last_mut() {
+            if at < last.at {
+                return Err(TransportChangeRejected::OutOfOrder);
+            }
+            if at == last.at {
+                last.to = to;
+                return Ok(());
+            }
+        }
+        if len == MAX_TRANSPORT_CHANGES {
+            return Err(TransportChangeRejected::Full);
+        }
+        self.items[len] = TransportChange { at, to };
+        self.len += 1;
+        Ok(())
+    }
+
+    /// The changes, in time order.
+    pub fn as_slice(&self) -> &[TransportChange] {
+        &self.items[..self.len as usize]
+    }
+
+    /// Whether the block has no change.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// How many changes the block has.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Whether a change at a new offset would be refused as
+    /// [`Full`](TransportChangeRejected::Full).
+    pub fn is_full(&self) -> bool {
+        self.len as usize == MAX_TRANSPORT_CHANGES
+    }
+}
+
+impl Default for TransportChanges {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// The per-block environment — read once per block by the executor and passed
 /// by reference to every node (doc 013 §2, the `Env` of
 /// `tutti-core/src/lib.rs:175-181` given a seam).
@@ -440,6 +577,12 @@ pub struct Env {
     pub block_len: Samples,
     /// The transport at the block's first frame.
     pub transport: Transport,
+    /// Where the transport changes inside the block: a start, a stop, a
+    /// seek, a tempo or loop edit landing on its frame (doc 013 §6). Empty
+    /// for most blocks. The executor does not split the block at them; read
+    /// the transport at a frame with [`transport_at`](Self::transport_at), or
+    /// walk [`segments`](Self::segments).
+    pub changes: TransportChanges,
 }
 
 /// What a node is told about *this* call besides its buffers.

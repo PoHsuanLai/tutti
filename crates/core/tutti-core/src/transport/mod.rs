@@ -19,10 +19,12 @@ mod motion;
 mod offline;
 mod settings;
 mod state;
+mod timed;
 
 pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
+pub(crate) use clock::{tempo_in_effect, Control};
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
@@ -31,6 +33,8 @@ pub use state::{
     beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,
     BEAT_PORTS,
 };
+pub(crate) use timed::Scheduled;
+pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
 // host adapter, `bevy_tutti::graph`, not to this crate.

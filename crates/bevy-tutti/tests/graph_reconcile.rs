@@ -598,24 +598,9 @@ mod audio_tap {
         assert!(!tap.is_open());
     }
 
-    /// The engine publishes its tap, so a host can reach the one the callback holds
-    /// rather than a fresh disconnected one.
-    ///
-    /// Ignored: `build_into` opens a real CPAL device. This is the assertion the
-    /// other tests in this file cannot make — they prove the wrapper's shape, not
-    /// that `build_into` inserts it — so it is recorded here rather than left
-    /// implicit, and run by hand on a machine with audio.
-    #[test]
-    #[ignore = "requires an audio device"]
-    fn the_engine_publishes_its_tap() {
-        let mut app = App::new();
-        app.add_plugins(bevy_tutti::TuttiPlugin::default());
-
-        assert!(
-            app.world().get_resource::<AudioTapRes>().is_some(),
-            "build_into must publish the tap it hands the callback"
-        );
-    }
+    // `the_engine_publishes_its_tap` (ignored: it opened a real device) moved
+    // to `engine::build`'s `the_engine_publishes_the_tap_its_callback_feeds`,
+    // which builds device-free and checks the frames reach the published tap.
 }
 
 /// The nodes the engine builds for itself, and the one edge between them.
@@ -633,7 +618,7 @@ mod engine_nodes {
     /// sounds once — and nothing else would notice, because its *outputs* are
     /// the host's to declare, so a default app renders no click either way.
     ///
-    /// Ignored for the reason `the_engine_publishes_its_tap` is: `build_into`
+    /// Ignored: `build_into`
     /// opens a real CPAL device. It passes on a machine with ALSA's default
     /// device, which is how it was run.
     ///

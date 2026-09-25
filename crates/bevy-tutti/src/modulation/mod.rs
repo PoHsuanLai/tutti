@@ -161,14 +161,14 @@
 //! scalar is written once a frame, and a curve is only as fine as the sink that
 //! samples it. For a genuinely per-sample modulator, don't route at all — spawn
 //! `tutti_nodes::LfoNode` in beat-synced mode and wire its
-//! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the transport
+//! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the beat
 //! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::transport::{TransportClock, BEAT_PORTS};
+//! use tutti_core::transport::BEAT_PORTS;
 //! use tutti_types::BeatDuration;
 //! use tutti_nodes::{LfoNode, LfoShape};
 //!
@@ -183,7 +183,7 @@
 //!
 //! let transport = Transport::new(48_000.0);
 //! let mut graph = AudioGraphRes::headless(0, 2);
-//! let clock_id = graph.insert(TransportClock::new(transport.clock_links(), 48_000.0));
+//! let clock_id = graph.insert_beat_clock();
 //!
 //! let mut app = App::new();
 //! app.insert_resource(graph);

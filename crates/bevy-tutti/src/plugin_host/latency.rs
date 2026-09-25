@@ -85,11 +85,10 @@ pub struct CompensatedLatency(
 /// `Editor::set_latency`), and `GraphDirty` is set. The editor holds the
 /// latency it probed at insert, so it re-probes the node's shadow (the
 /// plugin's figure plus its pipeline block, which only the unit knows) and the
-/// next commit moves PDC to it without touching the plugin. `compensate_graph`
-/// is gated on the flag rather than on a graph *edit*, so republishing the
-/// figures needs no rewiring — and `commit_graph` clears the flag after
-/// publishing, so this must run before the `Compensate` phase to be seen in
-/// the same frame.
+/// next commit moves PDC to it without touching the plugin. The flag makes
+/// that frame commit, and `commit_graph` publishes the new plan's figures
+/// with it — so this must run before the `Commit` phase to be seen in the
+/// same frame.
 /// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
 /// for the reason `commit_graph` is: `Editor::set_latency` collects what the
 /// audio thread retired, which can be a plugin node whose drop tears down an

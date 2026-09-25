@@ -2245,10 +2245,16 @@ built what `headless` builds once there is no control-side copy of a node);
   `Source`. `bevy_tutti::Net` (and its prelude entry) is no longer
   re-exported: nothing in the adapter hands one out.
 - **`PdcDelay`**: `has_compensation` and `is_compensation`, the only
-  readers of `PDC_DELAY_ID` here, are gone, and `compensate_graph` publishes
-  the plan's figures with no re-minting (`AudioGraphRes::compensate` takes
-  `&self`). `LatencyCompensationPlugin` is now a publisher: the graph is
-  compensated with or without it.
+  readers of `PDC_DELAY_ID` here, are gone. **Changed in review:** the
+  figures (`ChannelCompensation`, `GraphLatency`) are published by
+  `commit_graph` from the plan it sent, with every commit and every resumed
+  re-prepare, on every graph — the graph always compensates, so a graph
+  that did not add `LatencyCompensationPlugin` used to compensate while
+  publishing nothing, and a disk source pre-rolled by zero against it.
+  `GraphReconcilePlugin` inits both resources, and nothing compiles twice.
+  The plugin is now an optional debug check (`compensate_graph`: the
+  topology's `latency::plan` agrees with what the compiled plan compensates
+  by).
 - **Arity**: `commit_output_arity_change` went with the `Net` commit; a
   wider root is part of the spec the next commit compiles.
 - **`disagreements`** is kept, but compares only what the value declares
@@ -2312,23 +2318,57 @@ These oracles are the **narrowest `Net` seam left in bevy-tutti**, test-only;
 they go with tutti-export's `Net` arm (PR 14) and `Engine::new(NetBackend)`
 (PR 15), when each test keeps only its analytic half or is re-pinned against
 recorded figures. Assertions that were about the adapter's `Net` arm itself
-could not be ported and are dropped, each named where it was: the restart
-test's "`Net` publishes the new PDC figures before the first block" (the
-graph republishes once its re-prepare resumes, which the test still
-checks); the PDC-switch test's "`Net`'s dry channel reads a spliced delay"
+could not be ported and are dropped, each named where it was: the PDC-switch test's "`Net`'s dry channel reads a spliced delay"
 (its native half stays, `pdc_is_the_compilers`); the engine-export test's
 `Net` early return (it only checked lengths there); and
 `a_master_export_says_whether_it_was_rebound`'s `None` for `Net`, now
 `a_master_export_is_rebound_onto_the_callers_timeline`. The native
 `has_compensation()` assertion in `latency`'s
 `publishes_the_compensation_its_commit_sends` became "both channels still
-read the nodes they were wired to".
+read the nodes they were wired to". (The restart test's "`Net` publishes the
+new PDC figures before the first block" was dropped with the arm at first,
+and is back, on the native graph, since the review fix below.)
+
+**A device restart finishes its re-prepare in the hook (review).** The
+restart used to send only `Editor::reprepare`'s first half from its hook,
+leaving the second to the next `commit_graph`: the first block on the new
+device was the executor's silent checked-out block, and the PDC figures
+stayed at the old rate until the re-prepare resumed, so a disk source that
+seeked in that window pre-rolled by old-rate sample counts (`Net` had
+committed and published before the first block). Now tutti-cpal hands a
+restart hook a `Stopped` — the engine, constructible only while the stream
+is stopped — whose `settle_graph` calls `Engine::settle_graph` (tutti-core,
+new): install the editor's commits and follow the rate with the engine's
+clock and the transport's scheduled commands, exactly as the next block's
+settle would. The hook sets the transport's rate (the rescale mark), then
+settles (units out), collects (units re-prepared, resumed plan sent),
+settles again (adopted), commits any root widening, and publishes the
+resumed plan's figures. Both parts are fixed: no silent block, figures
+before the first block. A re-prepare that poisons the editor now fails the
+restart with the stream stopped, instead of a running stream rendering
+silence. A crossfade asked for right after a restart no longer waits in
+`PendingCrossfades` (nothing is between halves); the wait is still pinned
+by a re-prepare of a running graph (`set_sample_rate`).
+
+**Exports a default host now meets as refusals** (each `NotForkable`,
+naming the node), recorded in the CHANGELOG's migration table:
+
+- an **in-process VST2 plugin** (inserted boxed; its clones share the one
+  plugin) — a **follow-up**: an in-process VST2 fork by state transfer
+  (a second `AEffect` from the same library, and non-chunk plugins whose
+  state is only the current program's parameters; item 7 above);
+- a **unit with a captured MIDI port pushed with `insert` /
+  `insert_boxed`** — by design: `insert_with` carries its fork;
+- a **mic monitor** an output reaches — by design: a live input has
+  nothing to render offline.
+
+(Disk voices export since #43.)
 
 Left for the next PRs, as scoped: `PreparedGraph::graph` is still a
 `&mut RenderGraph` whose `Net` arm the adapter never builds (PR 14 makes it
 graph-only); `AudioNode` still wraps fundsp's `NodeId` (the key's source of
-uniqueness, and harmless). PR #43 (disk voices in native export) touches
-`export/mod.rs` and `tests/export_fork.rs` alongside this.
+uniqueness, and harmless). `tests/no_net.rs` keeps `dsp::Net` and
+`NetBackend` out of bevy-tutti's non-test code.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

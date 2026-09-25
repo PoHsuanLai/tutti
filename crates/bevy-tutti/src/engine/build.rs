@@ -394,6 +394,47 @@ mod tests {
     use tutti_core::ChannelLayout;
     use tutti_core::MAX_ROOT_CHANNELS;
 
+    /// **The engine publishes the tap its callback feeds**, not a fresh
+    /// disconnected one: a host opens `AudioTapRes` and sees the frames the
+    /// callback renders. Built device-free (`build_on` over a
+    /// `ManualStreamDriver`), so it runs in CI; it replaces
+    /// `graph_reconcile`'s `the_engine_publishes_its_tap`, which opened a real
+    /// device, was ignored, and asserted only that the resource existed.
+    ///
+    /// Mutation (run): `build_on` inserting `AudioTapRes(AudioTap::new())`
+    /// instead of the callback's `tap` → the opened consumer sees nothing.
+    #[test]
+    fn the_engine_publishes_the_tap_its_callback_feeds() {
+        use crate::graph::AudioTapRes;
+        use tutti_core::SampleRate;
+        use tutti_cpal::{AudioEngine, ManualStreamDriver, OutputSpec};
+
+        let mut app = bevy_app::App::new();
+        let (driver, stream) = ManualStreamDriver::new();
+        super::build_on(
+            &crate::TuttiPlugin::default(),
+            &mut app,
+            AudioEngine::from_spec(OutputSpec::new(
+                SampleRate(48_000.0),
+                ChannelLayout::STEREO,
+                tutti_cpal::cpal::SampleFormat::F32,
+            )),
+            |engine, state| engine.start_with(state, driver),
+        )
+        .expect("builds with no device");
+        let mut consumer = app
+            .world()
+            .resource::<AudioTapRes>()
+            .open()
+            .expect("a fresh tap opens");
+        stream.render_block(64).expect("the stream is open");
+        let mut frames = 0;
+        while consumer.try_pop().is_some() {
+            frames += 1;
+        }
+        assert_eq!(frames, 64, "the callback's block reached the published tap");
+    }
+
     /// `root_width` is `max(project, device)` clamped to `1..=MAX_ROOT_CHANNELS`,
     /// and each row below is one of the four ways that rule is load-bearing.
     ///

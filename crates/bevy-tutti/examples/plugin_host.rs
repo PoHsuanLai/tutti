@@ -109,10 +109,10 @@ fn main() {
     // is the shared path — nothing plugin-shaped is added by enabling this.
     #[cfg(feature = "midi")]
     app.add_plugins(bevy_tutti::midi::TuttiMidiPlugin);
-    // PDC is opt-in: it costs a graph walk per commit, and a host with no
-    // latency-reporting nodes never needs it. A plugin *is* such a node — it
-    // reports its own latency plus the IPC pipeline's — so a host that loads
-    // plugins and skips this has every plugin's delay uncompensated.
+    // The graph compensates every plugin's latency (its own plus the IPC
+    // pipeline's) on every commit, and publishes the figures; this optional
+    // plugin adds a debug-build check that the latency readout agrees with
+    // the compiled plan.
     app.add_plugins(bevy_tutti::LatencyCompensationPlugin);
     app.add_plugins(TuttiHostingPlugin);
 

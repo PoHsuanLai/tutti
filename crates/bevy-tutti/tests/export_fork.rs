@@ -1416,6 +1416,37 @@ mod synths {
         }
     }
 
+    /// **A synth crossfaded to a new unit still exports its notes.** A
+    /// crossfade lands the incoming unit with the fork its captured port asks
+    /// for (`AudioGraphRes::replace_with`), and the graph records that the
+    /// unit now at the key carries its clip, so an export reaching it forks
+    /// it (here through `PolySynth`'s own fork source) rather than refusing
+    /// it as a unit whose fork would drop the clip. The clip the entity
+    /// installed follows it onto the incoming unit's port (the sequencer
+    /// re-installs on the re-captured `MidiTarget`), and is heard once.
+    ///
+    /// Mutations (run): `NativeGraph::replace` recording `carries_midi =
+    /// false` for the incoming unit → the export is refused as
+    /// `NotForkable`; `replace` dropping the fork it took (landing the unit
+    /// with `None`) → the fork drops the clip, and the export is silent.
+    #[test]
+    fn a_crossfaded_synth_still_exports_its_notes() {
+        let (mut app, synth) = app_with(poly());
+        install_clip(&mut app, synth);
+        bevy_tutti::graph::crossfade_audio_node(
+            &mut app.world_mut().commands(),
+            synth,
+            Box::new(poly()),
+        );
+        app.world_mut().flush();
+        app.update();
+        let planes = export(&mut app, request(ExportSource::Master, RATE)).planes();
+        let reference = reference(poly(), |s| {
+            s.midi_sender().queue(&[note_on()]);
+        });
+        assert_note_at_beat_1("crossfaded PolySynth", RATE, &planes, &reference);
+    }
+
     /// **An exported `SoundFontUnit` plays its clip**, on the live unit's
     /// preset, over the same decoded SoundFont, at the render's rate — a
     /// 48 kHz unit exported at 96 kHz renders what a unit built at 96 kHz
@@ -1888,8 +1919,8 @@ mod host_midi {
 /// streams into its ring; the fork cannot (the ring's one consumer is the live
 /// audio thread, and a seek moves the live stream), so it reads the file the
 /// butler's record names itself, on the render's thread (tutti-sampler's
-/// `offline_read`). Native only: a `Net` master export is a plain clone that
-/// reads the live ring.
+/// `offline_read`). (A `Net` master export, before PR 13, was a plain clone
+/// that read the live ring.)
 ///
 /// The butler is hand-stepped (`DiskStreamer::manual`), so a refill is a
 /// step, not a race with a render that runs faster than real time.
@@ -2016,7 +2047,7 @@ mod disk {
         let streamer = streamer_on(&path);
         let live = timeline(90.0) as Arc<dyn Timeline>;
 
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         let (disk_node, memory_node) = {
             let bare = disk_voice(&streamer, live.clone(), 3.0);
             let wrapped = node_of(VoiceSource::Disk(disk_voice(&streamer, live.clone(), 3.0)));
@@ -2076,22 +2107,20 @@ mod disk {
         }
     }
 
-    /// **A node export of a disk voice plays its file on either backend.**
-    /// `Net`'s node export isolates and rebinds a clone of the node
-    /// (`clone_isolated`), the same calls a fork makes, so its copy reads
-    /// the file too (it rendered silence while `isolate` only cut the ring).
-    /// A `Net` master export is a plain clone of the live net and is not
-    /// covered: it reads the live ring, until PR 13 removes it.
+    /// **A node export of a disk voice plays its file.** (Until PR 13 this
+    /// also ran on `Net`, whose node export isolated and rebound a clone of
+    /// the node, the same calls a fork makes.)
     ///
     /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
-    /// file → silent on both → fails.
-    fn a_node_export_of_a_disk_voice_plays_its_file(backend: GraphBackend) {
+    /// file → silent → fails.
+    #[test]
+    fn a_node_export_of_a_disk_voice_plays_its_file() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("ramp.wav");
         write_ramp(&path, RATE as u32, 4_800);
         let streamer = streamer_on(&path);
 
-        let mut app = app_over(graph_on(backend));
+        let mut app = app_over(graph_on());
         let voice = {
             let voice = node_of(VoiceSource::Disk(disk_voice(
                 &streamer,
@@ -2109,17 +2138,12 @@ mod disk {
         .planes();
         assert!(
             planes[0][..24_000].iter().all(|&s| s == 0.0),
-            "{backend:?}: sounded before beat 1"
+            "sounded before beat 1"
         );
         for k in 0..4_800 {
-            assert_eq!(
-                planes[0][24_000 + k],
-                value(k),
-                "{backend:?}: file frame {k}"
-            );
+            assert_eq!(planes[0][24_000 + k], value(k), "file frame {k}");
         }
     }
-    both_backends!(a_node_export_of_a_disk_voice_plays_its_file);
 
     /// **A clip whose file is at another rate is resampled to the export's**:
     /// a 24 kHz file exported at 48 kHz reads file frame `n / 2` on render
@@ -2138,7 +2162,7 @@ mod disk {
         write_ramp(&path, 24_000, 24_000);
         let streamer = streamer_on(&path);
 
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         {
             let voice = disk_voice(&streamer, timeline(120.0), 1.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
@@ -2192,7 +2216,7 @@ mod disk {
         let mut streamer = streamer_on(&path);
         let live_clock = timeline(120.0);
 
-        let mut graph = graph_on(GraphBackend::Native);
+        let mut graph = graph_on();
         let node = graph.insert(disk_voice(&streamer, live_clock.clone(), 0.0));
         graph.set_outputs_from(node);
         graph.render_frame(&mut [0.0, 0.0]);
@@ -2280,7 +2304,7 @@ mod disk {
         write_ramp(&path, RATE as u32, 4_800);
         let streamer = streamer_on(&path);
 
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         {
             let voice = disk_voice(&streamer, timeline(120.0), 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
@@ -2312,7 +2336,7 @@ mod disk {
         write_ramp(&path, RATE as u32, 4_800);
         let streamer = streamer_on(&path);
 
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         let clip = {
             let voice = disk_voice(&streamer, timeline(120.0), 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();

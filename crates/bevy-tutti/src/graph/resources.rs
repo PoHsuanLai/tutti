@@ -114,8 +114,7 @@ pub enum GraphSource {
 pub struct AudioGraphRes(Mutex<NativeGraph>);
 
 /// The per-channel pre-roll and the total a compensation pass arrived at —
-/// what [`compensate_graph`](crate::graph::latency::compensate_graph)
-/// publishes.
+/// what [`commit_graph`](crate::graph::commit_graph) publishes.
 pub(crate) struct PdcFigures {
     pub(crate) channels: Vec<Samples>,
     pub(crate) total: Samples,
@@ -226,12 +225,16 @@ impl AudioGraphRes {
         tutti_core::Engine::with_graph(transport, graph.editor_mut(), exec)
     }
 
-    /// The node the engine's beat ports come from: an
-    /// [`EnvClock`](tutti_core::EnvClock). A graph engine drives its own
-    /// `TransportClock` and forbids a second in the graph, and an `EnvClock`
-    /// emits the same samples from each block's `Env` (doc 013, Phase 3 gap
-    /// 5).
-    pub(crate) fn insert_beat_clock(&mut self) -> AudioNode {
+    /// Add the node the engine's beat ports come from — an
+    /// [`EnvClock`](tutti_core::EnvClock), forkable, as
+    /// [`build_into`](crate::engine::build_into) inserts it for
+    /// [`EngineNodes::clock`](crate::graph::EngineNodes::clock) — unwired.
+    ///
+    /// For a headless graph that wants the beat clock an engine-built one
+    /// has. A graph engine drives its own `TransportClock` and forbids a
+    /// second in the graph; an `EnvClock` emits the same samples from each
+    /// block's `Env` (doc 013, Phase 3 gap 5).
+    pub fn insert_beat_clock(&mut self) -> AudioNode {
         self.write().insert_env_clock()
     }
 
@@ -477,9 +480,7 @@ impl AudioGraphRes {
     ///
     /// Nothing is ever spliced into the graph to apply it — the compiler
     /// compensates every commit — so this is always the figure the plans
-    /// compensate by, whether or not
-    /// [`LatencyCompensationPlugin`](crate::graph::latency::LatencyCompensationPlugin)
-    /// runs.
+    /// compensate by.
     pub fn latency_plan(&self) -> Compensation {
         self.read().latency_plan()
     }

@@ -89,19 +89,14 @@ raw-window-handle = { version = "0.6", optional = true }
 # Bevy-free — this crate supplies only the lifecycle around it.
 tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
 
-# Engine graph + RT primitives (used by src/engine/).
-arc-swap = "1.7"
+# `ModSource::as_atomic` hands out an `AtomicF32` cell.
 atomic_float = "1.1"
-parking_lot = "0.12"
 
 # Error handling
 thiserror.workspace = true
 
 # Diagnostics
 tracing = "0.1"
-
-# MIDI UI observer channel
-crossbeam-channel = "0.5"
 
 # macOS: child-window attach + live-resize observer for plugin editors.
 [target.'cfg(target_os = "macos")'.dependencies]

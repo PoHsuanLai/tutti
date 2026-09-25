@@ -459,6 +459,38 @@ mod midi_registration {
         assert!(bus_has(&app, second_id), "the replacement registers");
     }
 
+    /// Crossfading a synth to a unit with no MIDI port takes the outgoing
+    /// sender off the bus, though the node stays.
+    ///
+    /// Mutation: removing the `unregister_removed_midi_target` observer leaves
+    /// the outgoing synth routable and fails the first assertion.
+    #[test]
+    fn a_crossfade_to_a_portless_unit_leaves_the_bus() {
+        let mut app = app();
+        let (entity, unit_id) = spawn_synth(&mut app);
+        app.update();
+        assert!(bus_has(&app, unit_id));
+
+        bevy_tutti::graph::crossfade_audio_node(
+            &mut app.world_mut().commands(),
+            entity,
+            Box::new(tutti_nodes::testing::Const::new(
+                0.0,
+                tutti_types::ChannelLayout::STEREO,
+            )),
+        );
+        app.update();
+
+        assert!(
+            !bus_has(&app, unit_id),
+            "the outgoing synth must not stay routable"
+        );
+        assert!(
+            app.world().get::<MidiRegistered>(entity).is_none(),
+            "and the marker is cleared"
+        );
+    }
+
     /// An entity whose node type was never registered is skipped, not panicked on,
     /// and does not block the ones that were.
     #[test]

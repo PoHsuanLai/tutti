@@ -495,3 +495,160 @@ mod midi_soundfont_audio {
         );
     }
 }
+
+/// A crossfaded synth still plays: MIDI sent the way the inbound phase sends it
+/// reaches the **incoming** unit, rendered through the audio-thread backend.
+///
+/// A crossfade replaces the unit — and with it the MIDI port and its id — under
+/// a surviving `NodeId`. Registration used to key on the first port's id and
+/// never revisit it, and the route table rebuilt only on a new `AudioNode`, so
+/// after a crossfade the bus held the outgoing unit's sender, the routes named
+/// the outgoing unit's id, and the synth the listener hears was unreachable.
+///
+/// Rendered through the `NetBackend`, not the frontend `Net`: a commit hands
+/// the frontend's vertices to the backend along with the crossfade edit, so the
+/// frontend keeps rendering the outgoing unit and could never show this.
+///
+/// # Mutation
+///
+/// - Dropping `Changed<MidiTarget>` from `register_midi_senders`' filter (the
+///   bug as it was) leaves the new id off the bus: the `contains` assertion
+///   fails, and without it the render is silent.
+/// - Dropping the `recaptured` arm from the route `rebuild`'s dirty check
+///   leaves the routes naming the outgoing unit: the route assertion fails.
+mod midi_crossfade {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use bevy_app::prelude::*;
+
+    use bevy_tutti::graph::{
+        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources,
+        SpawnAudioNode, TransportRes,
+    };
+    use bevy_tutti::midi::{
+        MidiBusRes, MidiRouteRule, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
+    };
+    use bevy_tutti::AudioEngineState;
+    use tutti_core::dsp::Net;
+    use tutti_core::transport::Transport;
+    use tutti_core::{AudioUnit, SampleRate};
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
+    use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+
+    const SAMPLE_RATE: f64 = 48_000.0;
+
+    fn soundfont() -> Arc<SoundFont> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("bevy-tutti lives two levels below the repo root")
+            .join("assets/soundfonts/TimGM6mb.sf2");
+        let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
+            panic!(
+                "committed test soundfont missing at {}: {e}",
+                path.display()
+            )
+        });
+        Arc::new(SoundFont::new(&mut file).expect("test soundfont parses"))
+    }
+
+    fn unit(sf: &Arc<SoundFont>) -> SoundFontUnit {
+        let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
+        settings.enable_reverb_and_chorus = false;
+        SoundFontUnit::new(Arc::clone(sf), &settings).expect("build the SoundFontUnit")
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    /// Render `frames` stereo frames from the backend the audio thread would own.
+    fn render(backend: &mut impl AudioUnit, frames: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            let mut frame = [0.0f32; 2];
+            backend.tick(&[], &mut frame);
+            out.extend_from_slice(&frame);
+        }
+        out
+    }
+
+    #[test]
+    fn a_crossfaded_synth_is_reached_through_the_bus() {
+        let sf = soundfont();
+        let mut net = Net::new(0, 2);
+        net.set_sample_rate(SampleRate(SAMPLE_RATE));
+        let mut backend = net.backend();
+
+        let mut app = App::new();
+        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
+        app.insert_resource(AudioConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            channels: tutti_core::ChannelLayout::STEREO,
+        });
+        app.insert_resource(AudioEngineState::Running);
+        app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
+            SAMPLE_RATE,
+        ));
+        let (routing, rt_view) = bevy_tutti::midi::test_support::routing_table_for_test();
+        app.insert_resource(routing);
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            bevy_asset::AssetPlugin::default(),
+        ));
+        app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
+        app.world_mut()
+            .resource_mut::<MidiTargetRegistry>()
+            .register::<SoundFontUnit>();
+
+        let synth = app.world_mut().commands().spawn_audio_node(unit(&sf)).id();
+        app.insert_resource(MasterSources::from(synth));
+        app.world_mut()
+            .spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(synth));
+        app.update();
+        let first = app
+            .world()
+            .get::<MidiTarget>(synth)
+            .unwrap()
+            .port()
+            .unit_id();
+
+        crossfade_audio_node(&mut app.world_mut().commands(), synth, Box::new(unit(&sf)));
+        app.update();
+        app.update();
+        let second = app
+            .world()
+            .get::<MidiTarget>(synth)
+            .unwrap()
+            .port()
+            .unit_id();
+        assert_ne!(first, second, "the incoming unit has its own port");
+
+        let bus = app.world().resource::<MidiBusRes>().clone();
+        assert!(
+            bus.contains(second) && !bus.contains(first),
+            "the bus must carry the incoming unit's sender, not the outgoing one's"
+        );
+
+        // Let the backend take the commit and finish the 5 ms fade.
+        render(&mut backend, 2_048);
+
+        // What the inbound phase does: route by the RT snapshot, queue on the bus.
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, u16::MAX);
+        let targets: Vec<MidiUnitId> = rt_view.read().route(&note).collect();
+        assert_eq!(targets, vec![second], "the routes name the incoming unit");
+        for id in targets {
+            bus.queue(id, &[note]);
+        }
+
+        let level = rms(&render(&mut backend, 12_000));
+        assert!(
+            level > 1e-4,
+            "a note routed to the crossfaded synth must sound, got RMS {level}"
+        );
+    }
+}

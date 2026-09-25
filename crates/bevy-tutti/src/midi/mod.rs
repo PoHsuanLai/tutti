@@ -135,7 +135,8 @@ pub mod test_support {
 pub use endpoint::bus::{MidiBusRes, MpeModeConfig, MpeModeRes};
 pub use endpoint::out_sink::MidiOutSinkRes;
 pub use endpoint::registration::{
-    register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
+    register_midi_senders, unregister_midi_sender, unregister_removed_midi_target, MidiRegistered,
+    MidiRegistrationPlugin,
 };
 pub use endpoint::target::{MidiNode, MidiTarget, MidiTargetRegistry, MidiTargetResolver};
 

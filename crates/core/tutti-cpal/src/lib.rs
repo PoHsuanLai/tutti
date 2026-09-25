@@ -12,7 +12,7 @@ mod output;
 mod mic;
 
 pub use block::OutputBlock;
-pub use driver::{DeviceInfo, TuttiDriver};
+pub use driver::{DeviceInfo, Stopped, TuttiDriver};
 pub use driver_seam::{
     CpalDriver, CpalStream, ManualRunning, ManualStream, ManualStreamDriver, OutputSpec,
     RunningStream, StreamDriver,

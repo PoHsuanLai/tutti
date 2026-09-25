@@ -10,9 +10,11 @@
 //! no callback runs, moves everything the adapter owns to the new
 //! configuration:
 //!
-//! - the graph: `Editor::reprepare`, whose second half lands through the
-//!   ordinary per-frame `commit_graph` (a crossfade asked for meanwhile waits
-//!   in [`PendingCrossfades`](crate::graph::PendingCrossfades));
+//! - the graph: both halves of `Editor::reprepare`, inside the hook — the
+//!   engine settled from the control side while no callback runs
+//!   ([`Stopped::settle_graph`]) — so the first block at the new rate renders
+//!   the re-prepared graph, not the silent block of a re-prepare with its
+//!   units out;
 //! - the engine follows by itself: it adopts the new rate on the first block
 //!   that carries it, rescaling its frame clock and every scheduled
 //!   `At::Frame` transport command to the same wall-clock time, and stepping
@@ -24,9 +26,9 @@
 //!   sampler's disk streamer (every open stream's conversion ratio, so a
 //!   streamed clip keeps its pitch and speed) and the MIDI clock master (its
 //!   24-PPQN ticks and MTC quarter-frames land on the new rate's frames);
-//! - the compensation figures in samples ([`ChannelCompensation`],
-//!   [`GraphLatency`]), republished once the re-prepare resumes (see
-//!   `commit_graph`).
+//! - the compensation figures in samples (`ChannelCompensation`,
+//!   `GraphLatency`), published before the first block, so a disk source
+//!   seeking in it pre-rolls by the new rate's.
 //!
 //! Every unit instance is kept across the re-prepare, and only time-based
 //! state resets (`Editor::reprepare`'s rule). (On `Net`, before design doc
@@ -47,7 +49,7 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::Samples;
-use tutti_cpal::{OutputSpec, StreamDriver, TuttiDriver};
+use tutti_cpal::{OutputSpec, Stopped, StreamDriver, TuttiDriver};
 
 use crate::engine::{Error, Result};
 use crate::graph::{AudioConfig, AudioGraphRes, GraphDirty, TransportRes};
@@ -93,8 +95,8 @@ pub struct DeviceRestart {
 ///   onto the old device and rate, which moves nothing and plays again.
 pub fn restart_device(world: &mut World, request: DeviceRestart) -> Result<()> {
     restart(world, request.max_block, |driver, world| {
-        driver.restart_with(request.device, |spec| {
-            rerate(world, spec, request.max_block)
+        driver.restart_with(request.device, |spec, stopped| {
+            rerate(world, spec, stopped, request.max_block)
         })
     })
 }
@@ -117,7 +119,9 @@ where
     D::Running: 'static,
 {
     restart(world, max_block, |d, world| {
-        d.restart_on(spec, driver, |spec| rerate(world, spec, max_block))
+        d.restart_on(spec, driver, |spec, stopped| {
+            rerate(world, spec, stopped, max_block)
+        })
     })
 }
 
@@ -160,7 +164,12 @@ fn not_built() -> Error {
 
 /// The hook: move everything the adapter owns to `spec`, with no callback
 /// running.
-fn rerate(world: &mut World, spec: &OutputSpec, max_block: Option<Samples>) -> Result<()> {
+fn rerate(
+    world: &mut World,
+    spec: &OutputSpec,
+    stopped: &Stopped<'_>,
+    max_block: Option<Samples>,
+) -> Result<()> {
     let rate = spec.sample_rate;
     let transport = world
         .get_resource::<TransportRes>()
@@ -168,22 +177,42 @@ fn rerate(world: &mut World, spec: &OutputSpec, max_block: Option<Samples>) -> R
         .ok_or_else(not_built)?;
     let mut graph = world.resource_mut::<AudioGraphRes>();
     graph.rerate(rate, max_block)?;
+    // The transport's rate first: it marks every frame-timed command sent
+    // from here on as already in the new rate's frames, and the engine's
+    // settle below rescales only the ones before the mark.
+    transport.set_sample_rate(rate);
+    // Both halves of the re-prepare, now, while no callback runs: the
+    // executor checks its units out (the engine following the rate with its
+    // clock and the scheduled commands), the editor re-prepares them and
+    // sends the resumed plan, and the executor adopts it. So the first block
+    // on the new device renders the re-prepared graph — not the silent block
+    // an executor renders while its units are out — and the plan's PDC
+    // figures are the new rate's before that block.
+    stopped.settle_graph();
+    graph.collect();
+    // A unit that panicked in `prepare`, or shapes that no longer compile,
+    // poison the editor here: refuse, with the stream still stopped.
+    graph.check_rerate(None)?;
     // A wider device widens the root, by the build's rule, so its channels
     // are there to be routed to rather than left silent; a narrower one keeps
-    // it, and the engine folds. The new channels read silence. The spec edit
-    // waits for the re-prepare's second half and lands with the next
-    // `commit_graph`, as any edit made meanwhile does; that frame's
-    // `commit_graph` finishes the re-prepare too, and republishes the PDC
-    // figures once it resumes, when the new shapes are known.
+    // it, and the engine folds. The new channels read silence. Committed and
+    // settled here too, so the first block has the width.
     let width = crate::engine::build::root_width(graph.outputs(), spec.channels);
     if width > graph.outputs() {
         graph.widen_outputs(width);
+        if !graph.commit() {
+            // Refused for now (commits in flight): the frame's
+            // `commit_graph` retries.
+            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
+                dirty.0 = true;
+            }
+        }
     }
-    if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-        dirty.0 = true;
-    }
-
-    transport.set_sample_rate(rate);
+    let running = stopped.settle_graph();
+    debug_assert!(running, "the re-prepare resumed inside the hook");
+    // The figures the first block runs at, published before it
+    // (`ChannelCompensation` is what a disk source pre-rolls by).
+    crate::graph::latency::publish_sent(world);
     // The port manager turns an event's wall-clock arrival into a frame
     // offset at this rate; its contract is to be told before the stream
     // starts, which is where the hook runs.
@@ -320,17 +349,20 @@ mod tests {
     ///
     /// - the 1 kHz sine is 48 frames a cycle, not 44.1 (the graph runs at
     ///   the device's rate);
+    /// - the first block on the new device plays: the re-prepare finished in
+    ///   the restart's hook, so there is no silent checked-out block;
     /// - the beat carries on from 2.0 without a jump: 2.02 after the first
-    ///   480-frame block (that block is the re-prepare's silent one, and the
-    ///   transport rolls through it at the new rate);
+    ///   480-frame block;
     /// - the stop keeps its wall-clock time: it lands 0.5 s after the
     ///   restart, on frame 72 000 (beat 3.0 to the frame);
     /// - a play scheduled *after* the restart, at 48 kHz frame 84 000, is
     ///   not rescaled a second time when the engine adopts the rate: it
     ///   lands on its frame (beat 3.5 half a beat later, to the frame);
     /// - `AudioConfig`, the transport's rate, and the PDC figures
-    ///   (`GraphLatency`, the dry channel's pre-roll) are the new ones —
-    ///   the limiter's lookahead is a time, so its latency in samples moved.
+    ///   (`GraphLatency`, the dry channel's pre-roll) are the new ones
+    ///   **before the first block** — the limiter's lookahead is a time, so
+    ///   its latency in samples moved, and a disk source seeking in that
+    ///   block pre-rolls by the new figure.
     ///
     /// Mutations (run):
     /// - `rerate` not calling `AudioGraphRes::rerate` → the beat steps at
@@ -340,13 +372,11 @@ mod tests {
     ///   transport's rate) → fails on each;
     /// - `Schedule::rescale` ignoring the `mark_rate_change` boundary → the
     ///   play at 84 000 moves to ~91 429 → beat ~3.19 → fails;
-    /// - `commit_graph` clearing the flag on the frame a re-prepare resumes
-    ///   → the figures stay old for good.
-    ///
-    /// Until PR 13 this also ran on `Net`, where the restart committed the
-    /// re-rated net and published the new figures before the first block;
-    /// that assertion went with the `Net` arm (the graph republishes once
-    /// its re-prepare resumes, which the end of this test checks).
+    /// - `rerate` not calling `latency::publish_sent` → the 44.1 kHz figure
+    ///   is still published before the first block → fails;
+    /// - `rerate` not settling the engine and collecting (leaving the second
+    ///   half to `commit_graph`, as before PR 13's review) → the first block
+    ///   is silent, and the figures are old before it → fails.
     #[test]
     fn a_restart_at_a_new_rate_re_rates_the_graph_and_everything_on_it() {
         let (mut app, old, _, lim) = engine_app();
@@ -379,6 +409,25 @@ mod tests {
             }
         );
         assert_eq!(t.sample_rate(), SampleRate(NEW), "the transport's rate");
+        // Before the first block: the re-prepare finished inside the hook,
+        // and the figures a disk source pre-rolls by are the new rate's.
+        let new_latency = latency_of(&app, lim);
+        assert_ne!(new_latency, old_latency, "the lookahead moved in samples");
+        assert_eq!(
+            app.world().resource::<GraphLatency>().0,
+            new_latency,
+            "the new figure is published before the first block"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<ChannelCompensation>()
+                .0
+                .read()
+                .first()
+                .copied(),
+            Some(new_latency),
+            "and the dry channel's pre-roll with it"
+        );
 
         // Sent after the restart, before the first block at the new rate:
         // already in 48 kHz frames (1.75 s of wall clock), so the rate's
@@ -388,6 +437,11 @@ mod tests {
             .expect("room");
 
         let mut after = play(&mut app, &new, 480, 1);
+        assert!(
+            after.iter().any(|s| s.abs() > 0.5),
+            "the first block at the new rate plays the graph, not the silence \
+             of a re-prepare with its units out"
+        );
         assert!(
             (t.settings.beat().get() - 2.02).abs() < 1e-9,
             "the beat carries on from 2.0 at the new rate, not from {}",
@@ -774,17 +828,22 @@ mod tests {
         assert!(app.world().get_non_send::<TuttiDriver>().is_some());
     }
 
-    /// **A crossfade asked for while the restart's re-prepare is between its
-    /// halves waits, and lands once it resumes** (#32's `PendingCrossfades`):
-    /// the native graph refuses a replace then, and consumes what it
-    /// refuses. The incoming 2 kHz sine plays at the new rate: 24 frames a
-    /// cycle.
+    /// **A crossfade asked for right after a restart lands at once, at the
+    /// new rate**: the restart's re-prepare finished inside the hook, so the
+    /// graph is not between its halves and nothing waits. The incoming 2 kHz
+    /// sine plays at the new rate: 24 frames a cycle.
     ///
-    /// Mutation (run): `apply_crossfade` dropping a busy unit instead of
-    /// parking it → nothing waits, and the 1 kHz sine would play on →
+    /// Until PR 13's review this crossfade waited in `PendingCrossfades`
+    /// (#32), because the re-prepare's second half only landed on a later
+    /// frame; the waiting itself is still pinned, on a graph re-prepared
+    /// while it runs, by `graph::native`'s
+    /// `a_crossfade_during_a_re_prepare_lands_after_it`.
+    ///
+    /// Mutation (run): `rerate` not settling the engine and collecting
+    /// (leaving the second half to `commit_graph`) → the crossfade waits →
     /// fails.
     #[test]
-    fn a_crossfade_during_the_restart_lands_after_it() {
+    fn a_crossfade_after_the_restart_lands_at_once() {
         let (mut app, _old, osc, _) = engine_app();
         let (driver, new) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_at(NEW), driver, None).expect("restarts");
@@ -794,7 +853,10 @@ mod tests {
             Box::new(Osc::sine(Hz(2_000.0))),
         );
         app.world_mut().flush();
-        assert_eq!(app.world().resource::<PendingCrossfades>().len(), 1);
+        assert!(
+            app.world().resource::<PendingCrossfades>().is_empty(),
+            "nothing waits: the re-prepare is done"
+        );
         let out = play(&mut app, &new, 480, 50);
         assert!(app.world().resource::<PendingCrossfades>().is_empty());
         assert!(

@@ -861,9 +861,8 @@ impl NativeGraph {
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
     }
 
-    /// The compensation of the plan sent last, for a test that checks the
-    /// published figures against what the executor was actually handed.
-    #[cfg(test)]
+    /// The compensation of the plan sent last: what `commit_graph` publishes,
+    /// since it is what the executor is handed.
     pub(crate) fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
         let plan = self.editor.base()?;
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))

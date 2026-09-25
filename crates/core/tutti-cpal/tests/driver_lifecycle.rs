@@ -301,7 +301,7 @@ fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
     );
     let mut seen = None;
     driver
-        .restart_on(new.clone(), d2, |spec| {
+        .restart_on(new.clone(), d2, |spec, _| {
             assert!(!s1.is_open(), "the old stream is stopped before the hook");
             assert!(!s2.is_open(), "the new one starts after it");
             seen = Some(spec.clone());
@@ -330,7 +330,7 @@ fn a_restart_whose_hook_fails_stays_stopped() {
 
     let (d2, s2) = ManualStreamDriver::new();
     let err = driver
-        .restart_on(spec(2, cpal::SampleFormat::F32), d2, |_| {
+        .restart_on(spec(2, cpal::SampleFormat::F32), d2, |_, _| {
             Err(tutti_cpal::Error::InvalidConfig("no".into()))
         })
         .expect_err("the hook's error");

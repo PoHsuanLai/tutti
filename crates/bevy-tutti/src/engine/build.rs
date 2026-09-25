@@ -96,9 +96,8 @@ pub(crate) fn build_on(
     let tap = AudioTap::new();
     let click_settings = Arc::new(ClickSettings::new());
 
-    // Per-channel pre-roll for sources outside the graph. Stays empty unless the
-    // app adds `LatencyCompensationPlugin`, which owns publishing into it; the
-    // sampler subscribes here so the wiring exists either way.
+    // Per-channel pre-roll for sources outside the graph, which `commit_graph`
+    // publishes with every plan; the sampler subscribes to this one.
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
     let Assembled {
@@ -228,9 +227,9 @@ pub(crate) fn build_on(
     };
     app.insert_resource(graph);
     app.insert_resource(config);
-    // Inserted whether or not the app opts into compensation: the sampler already
-    // holds a clone of this Arc, so the resource must be *this* one, not a fresh
-    // default. `LatencyCompensationPlugin` uses `init_resource`, which leaves it.
+    // The sampler already holds a clone of this Arc, so the resource must be
+    // *this* one, not a fresh default. `GraphReconcilePlugin` (and
+    // `LatencyCompensationPlugin`) use `init_resource`, which leaves it.
     app.insert_resource(compensation);
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));

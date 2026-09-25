@@ -16,8 +16,9 @@ use crate::graph::{
 ///
 /// Runs the five-phase reconcile cycle every `Update`: `Spawn` → `Params` →
 /// `Despawn` → `Compensate` → `Commit`. Other plugins hook into these sets to
-/// interleave their work; `Compensate` stays empty unless a host adds
-/// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin). This is the
+/// interleave their work; `Compensate` holds only
+/// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s debug check,
+/// if a host adds it (the figures are published in `Commit`). This is the
 /// leaf-agnostic core; bevy-tutti adds the sampler/plugin/convolution/midi
 /// systems on top.
 pub struct GraphReconcilePlugin;
@@ -28,6 +29,11 @@ impl Plugin for GraphReconcilePlugin {
         // are a host's — this crate carries none of them. `AudioParam<U, P>` (see
         // `graph::param`) is the generic one here.
 
+        // The PDC figures `commit_graph` publishes with every plan. `init`, so
+        // `build_into`'s `ChannelCompensation` (the one the sampler holds)
+        // is kept.
+        app.init_resource::<crate::graph::latency::ChannelCompensation>()
+            .init_resource::<crate::graph::latency::GraphLatency>();
         app.init_resource::<GraphDirty>().configure_sets(
             Update,
             (

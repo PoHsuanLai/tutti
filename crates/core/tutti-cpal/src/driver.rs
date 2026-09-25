@@ -34,6 +34,30 @@ pub struct DeviceInfo {
     pub name: String,
 }
 
+/// The engine while its stream is stopped: handed to a restart hook
+/// ([`TuttiDriver::restart_with`]), and constructible nowhere else, so what it
+/// reaches of the audio thread's state is reached only while no callback can
+/// run.
+pub struct Stopped<'a> {
+    state: &'a AudioCallbackState,
+}
+
+impl Stopped<'_> {
+    /// Install every commit the graph's editor has sent, following a
+    /// re-prepare's rate with the engine's clock
+    /// ([`Engine::settle_graph`](tutti_core::Engine::settle_graph)). Returns
+    /// whether the graph runs a plan with no re-prepare between its halves.
+    ///
+    /// A host drives a re-prepare's two halves through it — settle (the
+    /// executor checks its units out), let the editor collect and resume,
+    /// settle again (the executor adopts the resumed plan) — so the first
+    /// block at the new rate renders the re-prepared graph instead of the
+    /// silent block a re-prepare otherwise costs.
+    pub fn settle_graph(&self) -> bool {
+        self.state.engine.settle_graph()
+    }
+}
+
 /// Owns the CPAL stream and drives the audio thread.
 pub struct TuttiDriver {
     audio_engine: AudioEngine,
@@ -126,6 +150,11 @@ impl TuttiDriver {
     /// the old rate and the old [`spec`](Self::spec), so a later restart
     /// onto the old device and rate (a plain `restart` of it) recovers.
     ///
+    /// The hook is also handed a [`Stopped`]: the engine, reachable from the
+    /// control side for as long as the hook runs and no callback can, so the
+    /// host can finish a graph re-prepare before the first block
+    /// ([`Stopped::settle_graph`]).
+    ///
     /// # Errors
     ///
     /// What resolving or opening the device reports (as `E`), or the hook's
@@ -133,7 +162,7 @@ impl TuttiDriver {
     pub fn restart_with<E: From<crate::Error>>(
         &mut self,
         device_index: Option<usize>,
-        rerate: impl FnOnce(&crate::OutputSpec) -> core::result::Result<(), E>,
+        rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
         self.audio_engine.stop();
         self.callback_state.reset_owners();
@@ -163,7 +192,7 @@ impl TuttiDriver {
         &mut self,
         spec: crate::OutputSpec,
         driver: D,
-        rerate: impl FnOnce(&crate::OutputSpec) -> core::result::Result<(), E>,
+        rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E>
     where
         D::Running: 'static,
@@ -184,9 +213,12 @@ impl TuttiDriver {
     fn rerate_or_restore<E>(
         &mut self,
         old: crate::OutputSpec,
-        rerate: impl FnOnce(&crate::OutputSpec) -> core::result::Result<(), E>,
+        rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
-        match rerate(self.audio_engine.spec()) {
+        let stopped = Stopped {
+            state: &self.callback_state,
+        };
+        match rerate(self.audio_engine.spec(), &stopped) {
             Ok(()) => {
                 self.graph_rate = self.audio_engine.spec().sample_rate;
                 Ok(())
@@ -263,8 +295,8 @@ impl TuttiDriver {
 /// with [`Error::RateChanged`](crate::Error::RateChanged).
 fn refuse_rate_change(
     graph: tutti_core::SampleRate,
-) -> impl FnOnce(&crate::OutputSpec) -> Result<()> {
-    move |spec| {
+) -> impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> Result<()> {
+    move |spec, _| {
         if spec.sample_rate == graph {
             Ok(())
         } else {

@@ -495,7 +495,6 @@ impl AudioGraphRes {
     }
 
     /// The compensation of the plan last sent to the audio thread.
-    #[cfg(test)]
     pub(crate) fn sent_compensation(&self) -> Option<PdcFigures> {
         self.read()
             .sent_compensation()

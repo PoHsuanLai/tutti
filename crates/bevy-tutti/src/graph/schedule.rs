@@ -33,14 +33,12 @@ pub enum GraphReconcileSystems {
     /// ([`reconcile_node_despawn`](super::reconcile_node_despawn)), which fires
     /// at command-flush time rather than in this set.
     Despawn,
-    /// Latency compensation, if the app opted into it.
+    /// Work that must see the frame's final topology before it is committed.
     ///
-    /// **Empty by default** — nothing in this crate runs here. It sits between
-    /// `Despawn` and `Commit` because compensation must see the frame's final
-    /// topology, yet must reach the audio thread in the same commit. Apps that
-    /// want delay compensation add a system here; `bevy_tutti` ships
-    /// [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin) for
-    /// exactly that.
+    /// **Empty by default.** The graph compensates every commit itself, and
+    /// `commit_graph` publishes the figures; the only system this crate puts
+    /// here is [`LatencyCompensationPlugin`](crate::LatencyCompensationPlugin)'s
+    /// debug cross-check, when a host adds it.
     Compensate,
     /// Single `graph.commit()` if any earlier set mutated the graph.
     Commit,

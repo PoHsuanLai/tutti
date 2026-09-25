@@ -3,8 +3,8 @@
 //!
 //! Device-free, so it runs on every platform in CI. The smallest harness in
 //! the repo (`tutti-core/tests/root_channel_layouts.rs`) is the shape this
-//! borrows — a net, a backend, an engine, one block, and an assertion that
-//! the block is not silence.
+//! borrows — a graph, its editor and executor, an engine, one block, and an
+//! assertion that the block is not silence.
 //!
 //! What this cannot prove is that a *live* engine assembles in one import;
 //! nothing in the engine offers that (see `examples/headless_engine.rs` and
@@ -14,16 +14,25 @@ use tutti::prelude::*;
 
 /// Everything below is reached through `tutti::` and nothing else. If the
 /// façade stopped re-exporting something, this stops compiling.
+///
+/// (Until doc 013 Phase 3 PR 15 this built a `tutti::dsp::Net` and handed
+/// its backend to `Engine::new`; the engine renders only the native graph
+/// now, built here with `tutti::graph::GraphBuilder`.)
 #[test]
 fn one_import_renders_a_block() {
-    let mut net = tutti::dsp::Net::new(0, 2);
-    let tone = net.push(Box::new(tutti::nodes::testing::Osc::sine(Hz(440.0))));
-    net.pipe_output(tone);
+    let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let tone = g.add_unit(Box::new(tutti::nodes::testing::Osc::sine(Hz(440.0))));
+    g.pipe_output(tone);
+    let (mut editor, executor) = g
+        .build(tutti::graph::Prepare::new(
+            SampleRate(48_000.0),
+            Samples(256),
+        ))
+        .expect("builds");
 
-    let engine = tutti::core::Engine::new(
-        tutti::core::MotionFsm::new(tutti::core::TransportSettings::new()),
-        net.backend(),
-    );
+    let transport = tutti::core::Transport::new(48_000.0);
+    let engine =
+        tutti::core::Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
     let mut out = vec![0.0f32; 256 * 2];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
@@ -33,8 +42,6 @@ fn one_import_renders_a_block() {
         "the graph must actually render — an assertion over silence would \
          pass against a façade that re-exported nothing useful"
     );
-    // The backend borrows through the net, so the net outlives this scope.
-    std::mem::forget(net);
 }
 
 /// The measurement vocabulary arrives through the prelude, converting as

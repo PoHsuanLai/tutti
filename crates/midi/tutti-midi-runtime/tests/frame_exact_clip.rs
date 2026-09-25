@@ -12,9 +12,10 @@
 //!
 //! A note at beat 1 lands on frame 32 000 exactly, and one at beat 3 on
 //! frame 96 000, on every path a clip source is driven by: live through the
-//! `Net` engine and the native graph engine (the source polled by a `Legacy`
-//! node, chunk-major), offline `Net`-style (polled per 64 frames, then the
-//! `OfflineTimeline` advanced) and through `OfflineTimeline::render_graph`.
+//! engine (the source polled by a `Legacy` node, chunk-major; until doc 013
+//! PR 15 also the `Net` engine, which is gone), offline `Net`-style (polled
+//! per 64 frames, then the `OfflineTimeline` advanced) and through
+//! `OfflineTimeline::render_graph`.
 //!
 //! Each path also checks the beat the source read on those frames' chunks:
 //! 1 and 3, to the bit.
@@ -34,12 +35,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tutti_core::dsp::Net;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
     AudioUnit, Beat, Bpm, BufferMut, BufferRef, BufferVec, ChannelLayout, Engine, InterleavedMut,
     MotionEvent, NodeKey, OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal,
-    SignalFrame, Timeline, Transport, TransportClock,
+    SignalFrame, Timeline, Transport,
 };
 use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_midi_runtime::{MidiClipSource, TimedClipEvent};
@@ -186,23 +186,6 @@ fn hits(p: &ClipProbe) -> Run {
     }
 }
 
-fn live_net(events: &[TimedClipEvent]) -> Run {
-    let t = transport();
-    let p = probe(Arc::new(t.clone()), events);
-    let mut net = Net::new(0, 1);
-    // The clock first, as bevy-tutti's build pushes it: the source reads the
-    // beat of its chunk's first frame.
-    net.push(Box::new(TransportClock::new(t.clock_links(), SR)));
-    let id = net.push(Box::new(p.clone()));
-    net.connect_output(id, 0, 0);
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    // The backend is fed through the net; keep the frontend alive.
-    Box::leak(Box::new(net));
-    play(&Engine::new(t.motion.clone(), backend), &t);
-    hits(&p)
-}
-
 fn graph_with(p: &ClipProbe) -> (Editor, tutti_graph::Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
     ed.insert(NodeKey(1), "clip", Legacy::new(p.clone()));
@@ -218,7 +201,7 @@ fn live_graph(events: &[TimedClipEvent]) -> Run {
     let t = transport();
     let p = probe(Arc::new(t.clone()), events);
     let (mut ed, exec) = graph_with(&p);
-    let engine = Engine::with_graph(&t, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&t, &mut ed, exec).expect("within the limits");
     play(&engine, &t);
     hits(&p)
 }
@@ -276,11 +259,6 @@ fn assert_on_their_frames(what: &str, run: &Run) {
 
 fn notes() -> [TimedClipEvent; 2] {
     [note(1.0), note(3.0)]
-}
-
-#[test]
-fn a_clip_note_lands_on_its_frame_live_through_the_net() {
-    assert_on_their_frames("live, Net", &live_net(&notes()));
 }
 
 #[test]

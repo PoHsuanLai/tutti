@@ -3,27 +3,49 @@
 //! matching-width device, or folded to a narrower one via the ITU/Dolby matrix.
 //!
 //! `TuttiPlugin.outputs` is a public field, so a host can build a mono or wider
-//! root. `Net::process` iterates `output.channels()` and indexes its own
-//! `output_edge` table by that channel — so a scratch buffer wider than the net
-//! indexes past the end and panics *in release*, inside the CPAL callback. These
-//! run in both profiles on purpose: the failure mode was release-only.
+//! root. A root wider than the engine's fold scratch once indexed past its end
+//! and panicked *in release*, inside the CPAL callback (a `Net` iterated its
+//! own output table by the scratch's width). The engine now renders only the
+//! native graph (doc 013 Phase 3 PR 15) and refuses such a root on the control
+//! thread instead; these still run in both profiles on purpose.
 
 mod support;
 
 use support::Sine;
-use tutti_core::dsp::Net;
-use tutti_core::{ChannelLayout, Engine, Hz, InterleavedMut, MotionFsm, TransportSettings};
+use tutti_core::{
+    ChannelLayout, Engine, GraphEngineError, Hz, InterleavedMut, SampleRate, Samples,
+};
+use tutti_core::{Transport, MAX_ROOT_CHANNELS};
+use tutti_graph::{CommitError, Editor, Legacy, Prepare};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::NodeKey;
+
+/// A graph whose root has `outputs` channels, with a sine at key 1 feeding
+/// the channels `wire` picks (the rest explicitly silent).
+fn root(outputs: usize, wire: &[usize]) -> (Editor, tutti_graph::Executor) {
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    ed.insert(NodeKey(1), "sine", Legacy::new(Sine::new(Hz(440.0))));
+    ed.spec_mut().topology.outputs = (0..outputs)
+        .map(|ch| {
+            if wire.contains(&ch) {
+                Source::Node(OutPort {
+                    node: NodeKey(1),
+                    port: 0,
+                })
+            } else {
+                Source::Zero
+            }
+        })
+        .collect();
+    ed.commit().expect("commits");
+    (ed, exec)
+}
 
 /// Render one block of a root with `outputs` channels into a `target`-wide
-/// interleaved buffer. `wire` connects the source to root outputs (its `NodeId`
-/// output 0 is fed to whichever channels `wire` picks).
+/// interleaved buffer. `wire` feeds the source to the root outputs it picks.
 fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
-    let mut net = Net::new(0, outputs);
-    let id = net.push(Box::new(Sine::new(Hz(440.0))));
-    for &ch in wire {
-        net.connect_output(id, 0, ch);
-    }
-    let engine = Engine::new(MotionFsm::new(TransportSettings::new()), net.backend());
+    let (mut ed, exec) = root(outputs, wire);
+    let engine = Engine::new(&Transport::new(48_000.0), &mut ed, exec).expect("within the limits");
     let frames = 256;
     let mut out = vec![0.0f32; frames * target];
     // `target` stays a plain count in the assertions below — they read as
@@ -101,14 +123,27 @@ fn center_root_folds_symmetrically_to_stereo() {
     );
 }
 
+/// A root wider than `MAX_ROOT_CHANNELS` (8) never reaches the callback:
+/// the engine refuses it at construction, naming the widths.
+///
+/// Until doc 013 PR 15 this rendered a 12-wide `Net` root and checked it
+/// clamped to 8 channels without panicking. A native graph cannot be handed
+/// to the engine that wide, so the property is the refusal (the refusal of
+/// a later widening commit is `engine_graph`'s
+/// `a_graph_engine_refuses_more_outputs_than_it_folds`).
+///
+/// Mutation (run): `max_global_outputs: usize::MAX` in
+/// `Engine::with_capacity` → the engine is built → fails.
 #[test]
-fn over_wide_root_clamps_without_panicking() {
-    // A root wider than MAX_ROOT_CHANNELS (8) renders its first 8 channels
-    // rather than indexing past the scratch. Folded to stereo here.
+fn over_wide_root_is_refused_before_it_can_render() {
     let wide = 12;
-    let out = render_root_to(wide, 2, &(0..wide).collect::<Vec<_>>());
-    assert!(
-        out.iter().any(|s| *s != 0.0),
-        "over-wide root produced silence"
+    let (mut ed, exec) = root(wide, &(0..wide).collect::<Vec<_>>());
+    let refused = Engine::new(&Transport::new(48_000.0), &mut ed, exec).err();
+    assert_eq!(
+        refused,
+        Some(GraphEngineError::Limits(CommitError::TooManyOutputs {
+            outputs: wide,
+            limit: MAX_ROOT_CHANNELS,
+        }))
     );
 }

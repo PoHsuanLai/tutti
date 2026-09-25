@@ -62,7 +62,7 @@ pub struct DeviceRestart {
     pub device: Option<usize>,
     /// The largest block the graph is prepared for from the restart on
     /// (`Prepare`'s `MaxBlock`); `None` keeps the one it has. At most the
-    /// engine's block capacity (`Engine::graph_block_capacity`): past it the
+    /// engine's block capacity (`Engine::block_capacity`): past it the
     /// restart is refused before the stream stops.
     ///
     /// A host's choice, not the device's: the device hands over whatever

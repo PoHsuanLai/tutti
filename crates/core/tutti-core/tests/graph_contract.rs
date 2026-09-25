@@ -1,5 +1,5 @@
 //! The sample-accuracy contract (doc 013 §6, "Proof") at the engine: a
-//! graph rendered through `Engine::with_graph`, a transport started by a
+//! graph rendered through `Engine::new`, a transport started by a
 //! timestamped command (`MotionFsm::schedule(At::Frame)`), and notes
 //! scheduled at `At::Beat` into two impulse nodes — one direct, one behind
 //! PDC. Each note must land on its beat's frame at its node, and the two
@@ -44,7 +44,7 @@ fn engine(
     let plan = exec.plan().expect("installed");
     assert_eq!(plan.unit(pdc).unwrap().arrival, Latency::new(Samples(D)));
     assert_eq!(plan.unit(direct).unwrap().arrival, Latency::ZERO);
-    let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed, direct, pdc)
 }
 

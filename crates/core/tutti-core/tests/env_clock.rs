@@ -2,26 +2,34 @@
 //!
 //! What is pinned here:
 //!
-//! - `EnvClock` in a graph engine emits, bit for bit, what a
-//!   `TransportClock` in a `Net` engine emits under the same transport:
-//!   play, timestamped seeks, a loop wrap (and a loop armed behind the
-//!   playhead, which does not jump), stop and start, tempo steps inside a
-//!   block, untimed edits between blocks, and ragged device blocks;
-//! - `ClickNode` fed by `EnvClock` clicks on the same frames, with the same
-//!   samples, as fed by `TransportClock`;
+//! - `EnvClock` in a graph engine emits the beat of each frame's `Env`
+//!   under the whole transport vocabulary: play, timestamped seeks, a loop
+//!   wrap (and a loop armed behind the playhead, which does not jump), stop
+//!   and start, tempo steps inside a block, untimed edits between blocks,
+//!   and ragged device blocks;
+//! - `ClickNode` fed by `EnvClock` clicks on the frames the beat model
+//!   reaches each beat on;
 //! - an offline render driven by `OfflineTimeline::render_graph` hands the
 //!   graph the transport a live graph engine hands it for the same timeline:
 //!   the `Env` per block, and the timeline a `Legacy` clip reader polls per
 //!   64-frame chunk.
+//!
+//! Until doc 013 PR 15 the first two compared the graph against a `Net`
+//! engine with a `TransportClock`, bit for bit. With the engine's `Net`
+//! backend gone, the oracles are the graph's own `Env` (a second code path:
+//! `Env::transport_at`'s closed form, against `EnvClock`'s walk of the
+//! clock's `FrameClock`) and the closed-form beat model in `support`.
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::dsp::Net;
+mod support;
+
+use support::{model_beats, Change};
 use tutti_core::{
     At, AudioUnit, Beat, Bpm, BufferMut, BufferRef, ChannelLayout, ClickNode, ClickSettings,
     Engine, EnvClock, FadeOut, Frame, InterleavedMut, LoopRange, MetronomeMode, MotionEvent,
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
-    Timeline, Transport, TransportClock, TransportCommand,
+    Timeline, Transport, TransportCommand,
 };
 use tutti_graph::{Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -32,7 +40,7 @@ const SR: f64 = 48_000.0;
 type Log = Arc<Mutex<Vec<(f32, f32)>>>;
 
 /// Ragged device blocks, some past the graph's 512-frame maximum (split into
-/// graph blocks) and some not multiples of 64 (the `Net`'s chunk).
+/// graph blocks) and some not multiples of 64 (`Legacy`'s chunk).
 fn blocks(total: usize) -> Vec<usize> {
     let pattern = [512usize, 300, 77, 1024, 511, 64, 1, 900];
     let mut out = Vec::new();
@@ -47,89 +55,36 @@ fn blocks(total: usize) -> Vec<usize> {
     out
 }
 
-// ---- the two backends ------------------------------------------------------
+// ---- the graph -------------------------------------------------------------
 
-/// Two inputs (the beat ports), one silent output: logs the beat of every
-/// frame. The `Net` side.
-#[derive(Clone)]
-struct NetBeats(Log);
+/// Two inputs (the beat ports), one silent output: logs, for every frame,
+/// the port pair and the beat the block's `Env` gives the frame
+/// (`transport_at`).
+struct GraphBeats(Log, Arc<Mutex<Vec<f64>>>);
 
-impl AudioUnit for NetBeats {
-    fn inputs(&self) -> usize {
-        2
-    }
-    fn outputs(&self) -> usize {
-        1
-    }
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.0.lock().expect("log").push((input[0], input[1]));
-        output[0] = 0.0;
-    }
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut log = self.0.lock().expect("log");
-        for i in 0..size {
-            log.push((input.channel_f32(0)[i], input.channel_f32(1)[i]));
-            output.set_f32(0, i, 0.0);
-        }
-    }
-    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, Signal::Latency(0.0));
-        out
-    }
-    fn tail(&mut self) -> Tail {
-        Tail::Unbounded
-    }
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"TNETBEAT")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+impl GraphBeats {
+    fn new(log: &Log) -> Self {
+        Self(Arc::clone(log), Arc::default())
     }
 }
-
-/// The same, as a native graph node.
-struct GraphBeats(Log);
 
 impl Node for GraphBeats {
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::STEREO, ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
     fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let mut log = self.0.lock().expect("log");
-        for i in 0..io.frames() {
+        let mut env = self.1.lock().expect("log");
+        for k in cx.env.offsets() {
+            let i = k.index();
             log.push((io.input(0)[i], io.input(1)[i]));
+            env.push(cx.env.transport_at(k).beat().get());
         }
         io.output(0).fill(0.0);
         Status::Modified
     }
     fn reset(&mut self) {}
-}
-
-/// A `Net` engine over `transport`: a `TransportClock` feeding `sink`'s two
-/// inputs, `sink`'s outputs the root's.
-fn net_engine(transport: &Transport, sink: Box<dyn AudioUnit>) -> Engine {
-    let width = sink.outputs();
-    let mut net = Net::new(0, width);
-    let clock = net.push(Box::new(TransportClock::new(transport.clock_links(), SR)));
-    let sink = net.push(sink);
-    net.connect(clock, 0, sink, 0);
-    net.connect(clock, 1, sink, 1);
-    for c in 0..width {
-        net.connect_output(sink, c, c);
-    }
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    // The backend is fed through the net; keep the frontend alive.
-    Box::leak(Box::new(net));
-    Engine::new(transport.motion.clone(), backend)
 }
 
 /// Wire an `EnvClock` at key 1 into `sink` (key 2)'s two inputs, and `sink`'s
@@ -160,7 +115,7 @@ fn graph_engine(
 ) -> (Engine, Editor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     wire_clock(&mut ed, sink, width);
-    let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed)
 }
 
@@ -174,93 +129,101 @@ fn beat(p: (f32, f32)) -> f64 {
     tutti_core::beat_from_ports(p.0, p.1).get()
 }
 
-// ---- EnvClock == TransportClock --------------------------------------------
+// ---- EnvClock carries the Env's beat ----------------------------------------
 
-/// The whole transport vocabulary, driven through a `Net` engine with a
-/// `TransportClock` and a graph engine with an `EnvClock`: every frame's
-/// port pair is bit-equal. Commands land inside blocks (the graph block is
-/// not split; the `Net` is rendered piece by piece), so this is the
-/// segment walk, not only the block start.
+/// The whole transport vocabulary, driven through a graph engine with an
+/// `EnvClock`: every frame's port pair is the beat that frame's `Env` gives
+/// (`transport_at`, a closed form written apart from the clock's walk), to
+/// the bit on each block's first frame and within the `f32` split's
+/// rounding (1e-7 beat) everywhere else; and the events land where they
+/// were meant to. Commands land inside blocks (the graph block is not
+/// split), so this is the segment walk, not only the block start.
 ///
-/// Mutations (run), each fails on the first frame after the event:
-/// - use the block's `env.transport` for the whole block instead of walking
-///   `segments` → wrong from the first mid-block command (frame 700);
-/// - wrap with `LoopRange::wrap` instead of `advance` → the loop armed
-///   behind the playhead at frame 4 000 jumps into [1, 2);
+/// Until doc 013 PR 15 the oracle was a `TransportClock` in a `Net` engine,
+/// bit for bit per frame. `EnvClock` runs that clock's own code
+/// (`FrameClock`) from each piece's origin, so the ports equal it by
+/// construction; `transport_at` agrees with it to rounding (it folds a loop
+/// by the unwrapped position), and the frame checks below pin each event.
+///
+/// Mutations (run), each fails:
+/// - use the block's `env.transport` for every piece in `EnvClock` (ignore
+///   the cuts) → wrong from the first mid-block command (frame 700);
+/// - hand `EnvClock`'s walk no loop region → it never wraps → wrong from
+///   the first wrap (~1 600);
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
-///
-/// Not caught, and not claimed: reading `env.transport_at(k)` instead of
-/// continuing the clock's segment. It is the same closed form up to a loop
-/// wrap and agrees to rounding past one, which the `f32` split at the ports
-/// rounds away; `EnvClock` runs the clock's own code (`FrameClock`) so the
-/// ports equal the clock's by construction rather than by that rounding.
 #[test]
-fn env_clock_emits_what_transport_clock_emits() {
-    let net_t = Transport::new(SR);
-    let net_log = Log::default();
-    let net = net_engine(&net_t, Box::new(NetBeats(Arc::clone(&net_log))));
-    let graph_t = Transport::new(SR);
-    let graph_log = Log::default();
-    let (graph, _ed) = graph_engine(&graph_t, GraphBeats(Arc::clone(&graph_log)), 1);
+fn env_clock_emits_the_env_beat() {
+    let transport = Transport::new(SR);
+    let log = Log::default();
+    let sink = GraphBeats::new(&log);
+    let env_beats = Arc::clone(&sink.1);
+    let (graph, _ed) = graph_engine(&transport, sink, 1);
 
     let locate = |beat: f64| MotionEvent::Locate {
         beat: Beat(beat),
         fade: FadeOut::Immediate,
         then: Then::Keep,
     };
-    for t in [&net_t, &graph_t] {
-        let m = &t.motion;
-        m.try_send(MotionEvent::Play).expect("room");
-        let at = |f: u64| At::Frame(Frame(f));
-        m.schedule(at(700), TransportCommand::Tempo(Bpm(97.0)))
-            .expect("room");
-        // Armed with the playhead inside it (~0.03): wraps from ~1 600.
-        m.schedule(
-            at(1_000),
-            TransportCommand::Loop(LoopRange::new(0.02, 0.06)),
-        )
+    let m = &transport.motion;
+    m.try_send(MotionEvent::Play).expect("room");
+    let at = |f: u64| At::Frame(Frame(f));
+    m.schedule(at(700), TransportCommand::Tempo(Bpm(97.0)))
         .expect("room");
-        m.schedule(at(2_900), TransportCommand::Loop(None))
-            .expect("room");
-        m.schedule(at(3_100), locate(3.25)).expect("room");
-        // Armed behind the playhead (~3.28): no jump.
-        m.schedule(at(4_000), TransportCommand::Loop(LoopRange::new(1.0, 2.0)))
-            .expect("room");
-        // Into it, just before its end: wraps ~300 frames on.
-        m.schedule(at(6_000), locate(1.99)).expect("room");
-        m.schedule(at(8_000), MotionEvent::stop_now())
-            .expect("room");
-        m.schedule(at(9_500), MotionEvent::Play).expect("room");
-        // A beat-timed tempo step, mid-block.
-        m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm(140.0)))
-            .expect("room");
-        m.schedule(at(30_000), TransportCommand::Loop(None))
-            .expect("room");
-    }
+    // Armed with the playhead inside it (~0.03): wraps from ~1 600.
+    m.schedule(
+        at(1_000),
+        TransportCommand::Loop(LoopRange::new(0.02, 0.06)),
+    )
+    .expect("room");
+    m.schedule(at(2_900), TransportCommand::Loop(None))
+        .expect("room");
+    m.schedule(at(3_100), locate(3.25)).expect("room");
+    // Armed behind the playhead (~3.28): no jump.
+    m.schedule(at(4_000), TransportCommand::Loop(LoopRange::new(1.0, 2.0)))
+        .expect("room");
+    // Into it, just before its end: wraps ~300 frames on.
+    m.schedule(at(6_000), locate(1.99)).expect("room");
+    m.schedule(at(8_000), MotionEvent::stop_now())
+        .expect("room");
+    m.schedule(at(9_500), MotionEvent::Play).expect("room");
+    // A beat-timed tempo step, mid-block.
+    m.schedule(At::Beat(Beat(1.5)), TransportCommand::Tempo(Bpm(140.0)))
+        .expect("room");
+    m.schedule(at(30_000), TransportCommand::Loop(None))
+        .expect("room");
     let blocks = blocks(40_000);
+    let mut starts = Vec::new();
+    let mut f = 0;
     for (i, &n) in blocks.iter().enumerate() {
         if i == 20 {
             // An untimed edit between blocks, as a UI makes one.
-            net_t.settings.set_tempo(Bpm(133.0));
-            graph_t.settings.set_tempo(Bpm(133.0));
+            transport.settings.set_tempo(Bpm(133.0));
         }
-        render(&net, ChannelLayout::MONO, n);
         render(&graph, ChannelLayout::MONO, n);
+        starts.push(f);
+        f += n;
     }
-    let net_log = net_log.lock().expect("log");
-    let graph_log = graph_log.lock().expect("log");
+    let graph_log = log.lock().expect("log");
+    let env_beats = env_beats.lock().expect("log");
     let frames: usize = blocks.iter().sum();
-    assert_eq!(net_log.len(), frames);
     assert_eq!(graph_log.len(), frames);
-    for (f, (n, g)) in net_log.iter().zip(graph_log.iter()).enumerate() {
-        assert_eq!(
-            (n.0.to_bits(), n.1.to_bits()),
-            (g.0.to_bits(), g.1.to_bits()),
-            "frame {f}: net {n:?}, graph {g:?}"
+    assert_eq!(env_beats.len(), frames);
+    for (f, (&p, &e)) in graph_log.iter().zip(env_beats.iter()).enumerate() {
+        assert!(
+            (beat(p) - e).abs() < 1e-7,
+            "frame {f}: ports {p:?} ({}), env {e}",
+            beat(p)
         );
     }
+    // Graph blocks never straddle a device block, so each device block's
+    // first frame starts a graph block.
+    for &f in &starts {
+        let e = env_beats[f];
+        let split = (e.floor() as f32, e.fract() as f32);
+        assert_eq!(graph_log[f], split, "block starting at frame {f}");
+    }
 
-    // Not vacuous: every event happened, where it was meant to.
+    // Every event happened, where it was meant to.
     let b = |f: usize| beat(graph_log[f]);
     assert!(
         graph_log[1_000..2_900]
@@ -281,6 +244,20 @@ fn env_clock_emits_what_transport_clock_emits() {
         .find(|&f| step(f) > 136.5 / 60.0 / SR)
         .expect("the tempo step landed");
     assert!(b(fast) >= 1.5 - 1e-6 && b(fast - 1) < 1.5, "on its beat");
+    // The first stretch, before any wrap, is the closed form: 120 BPM to
+    // 700, then 97.
+    let model = model_beats(
+        SR,
+        120.0,
+        &[
+            (700, Change::Tempo(97.0)),
+            (1_000, Change::Loop(Some((0.02, 0.06)))),
+        ],
+        2_900,
+    );
+    for (f, &want) in model.iter().enumerate().take(2_900) {
+        assert!((b(f) - want).abs() < 1e-7, "frame {f}: {} vs {want}", b(f));
+    }
 }
 
 // ---- the metronome ---------------------------------------------------------
@@ -293,76 +270,83 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
         .collect()
 }
 
-/// `ClickNode` behind an `EnvClock` (through `Legacy`) clicks on the same
-/// frames, with the same samples, as behind a `TransportClock`: across a
-/// tempo step, a seek and a loop wrap, landing inside blocks.
+/// `ClickNode` behind an `EnvClock` (through `Legacy`) clicks on the frame
+/// the beat model reaches each new beat on: across a tempo step, a seek and
+/// loop wraps, landing inside blocks.
 ///
 /// The transport rolls throughout. `ClickNode` gates on the live play flag,
-/// read once per 64-frame chunk; on the graph backend every chunk runs after
-/// the whole block's commands are applied, so a mid-block start or stop
-/// gates it from the block's first frame, not on its frame. That is
-/// `ClickNode`'s own gate (doc 013, gap 5; fixed by its native port), not
-/// the beat's.
+/// read once per 64-frame chunk; the engine runs every chunk after the whole
+/// block's commands are applied, so a mid-block start or stop gates it from
+/// the block's first frame, not on its frame. That is `ClickNode`'s own gate
+/// (doc 013, gap 5; fixed by its native port), not the beat's.
+///
+/// Until doc 013 PR 15 the oracle was the same click behind a `TransportClock`
+/// in a `Net` engine: the same onset frames and the same samples. The onsets
+/// are now the model's (`support::model_beats`): a click starts on the first
+/// frame of each beat (frame 0, then each frame whose beat's whole part
+/// changes, a seek and a wrap included). `onsets` counts a silent frame
+/// followed by a sounding one, and a click's first sample is `sin(0)`, an
+/// exact zero on every target, so each is seen one frame after its beat.
+/// The samples themselves are `ClickNode`'s (its own tests pin them, and
+/// they are `sin` of a phase, which is libm), so they are not pinned here.
 ///
 /// Mutation (run): hold the first segment's transport for the whole block in
-/// `EnvClock` (ignore `segments`) → the clicks after the seek at 30 000 land
-/// on other frames → fails.
+/// `EnvClock` (ignore the cuts) → the clicks after the seek at 30 000 land on
+/// other frames → fails.
 #[test]
-fn click_behind_env_clock_clicks_on_the_same_frames() {
-    let click = |t: &Transport| {
-        let settings = Arc::new(ClickSettings::new());
-        settings.set_mode(MetronomeMode::Always);
-        settings.set_volume(1.0);
-        ClickNode::with_transport(t.clone(), settings, SR)
-    };
-    let net_t = Transport::new(SR);
-    let net = net_engine(&net_t, Box::new(click(&net_t)));
-    let graph_t = Transport::new(SR);
-    let (graph, _ed) = graph_engine(&graph_t, Legacy::new(click(&graph_t)), 2);
-    for t in [&net_t, &graph_t] {
-        let m = &t.motion;
-        m.try_send(MotionEvent::Play).expect("room");
-        m.schedule(
-            At::Frame(Frame(20_111)),
-            TransportCommand::Tempo(Bpm(151.0)),
-        )
-        .expect("room");
-        m.schedule(
-            At::Frame(Frame(30_000)),
-            MotionEvent::Locate {
-                beat: Beat(6.9),
-                fade: FadeOut::Immediate,
-                then: Then::Keep,
-            },
-        )
-        .expect("room");
-        m.schedule(
-            At::Frame(Frame(30_001)),
-            TransportCommand::Loop(LoopRange::new(6.5, 8.25)),
-        )
-        .expect("room");
-    }
-    let mut net_out = Vec::new();
-    let mut graph_out = Vec::new();
+fn click_behind_env_clock_clicks_on_the_model_beats() {
+    let transport = Transport::new(SR);
+    let settings = Arc::new(ClickSettings::new());
+    settings.set_mode(MetronomeMode::Always);
+    settings.set_volume(1.0);
+    let click = ClickNode::with_transport(transport.clone(), settings, SR);
+    let (graph, _ed) = graph_engine(&transport, Legacy::new(click), 2);
+    let m = &transport.motion;
+    m.try_send(MotionEvent::Play).expect("room");
+    m.schedule(
+        At::Frame(Frame(20_111)),
+        TransportCommand::Tempo(Bpm(151.0)),
+    )
+    .expect("room");
+    m.schedule(
+        At::Frame(Frame(30_000)),
+        MotionEvent::Locate {
+            beat: Beat(6.9),
+            fade: FadeOut::Immediate,
+            then: Then::Keep,
+        },
+    )
+    .expect("room");
+    m.schedule(
+        At::Frame(Frame(30_001)),
+        TransportCommand::Loop(LoopRange::new(6.5, 8.25)),
+    )
+    .expect("room");
+    let mut out = Vec::new();
     for n in blocks(150_000) {
-        net_out.extend(render(&net, ChannelLayout::STEREO, n));
-        graph_out.extend(render(&graph, ChannelLayout::STEREO, n));
+        out.extend(render(&graph, ChannelLayout::STEREO, n));
     }
-    let net_on = onsets(&net_out);
-    let graph_on = onsets(&graph_out);
-    assert_eq!(net_on, graph_on, "onset frames");
+    let frames = out.len() / 2;
+    let model = model_beats(
+        SR,
+        120.0,
+        &[
+            (20_111, Change::Tempo(151.0)),
+            (30_000, Change::Seek(6.9)),
+            (30_001, Change::Loop(Some((6.5, 8.25)))),
+        ],
+        frames as u64,
+    );
+    let beats =
+        std::iter::once(0).chain((1..frames).filter(|&f| model[f].floor() != model[f - 1].floor()));
+    let want: Vec<usize> = beats.map(|f| f + 1).collect();
+    let got = onsets(&out);
+    assert_eq!(got, want, "onset frames");
     // Not vacuous: clicks before the tempo step, after the seek, and after
     // the loop wraps (7 and 8, then 7 and 8 again).
-    assert!(net_on.len() >= 8, "{net_on:?}");
-    assert!(net_on.iter().any(|&f| f < 20_000));
-    assert!(net_on.iter().filter(|&&f| f > 30_000).count() >= 4);
-    assert!(
-        net_out
-            .iter()
-            .zip(&graph_out)
-            .all(|(a, b)| a.to_bits() == b.to_bits()),
-        "the same samples"
-    );
+    assert!(got.len() >= 8, "{got:?}");
+    assert!(got.iter().any(|&f| f < 20_000));
+    assert!(got.iter().filter(|&&f| f > 30_000).count() >= 4);
 }
 
 // ---- offline ---------------------------------------------------------------
@@ -500,7 +484,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     let live_log = Arc::new(Mutex::new(Vec::new()));
     let live_polls = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = env_graph(512, &live_log, Arc::new(live_t.clone()), &live_polls);
-    let live = Engine::with_graph(&live_t, &mut ed, exec).expect("within the limits");
+    let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
     live_t.settings.set_tempo(Bpm(100.0));
     live_t.settings.loop_span.set_range(6.0, 7.0);
     live_t.settings.loop_span.set_enabled(true);
@@ -609,7 +593,7 @@ fn env_clock_offline_starts_each_block_on_the_timeline() {
     });
     let log = Log::default();
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
-    wire_clock(&mut ed, GraphBeats(Arc::clone(&log)), 1);
+    wire_clock(&mut ed, GraphBeats::new(&log), 1);
     let mut out = vec![0.0f32; 512];
     let mut at = 0;
     for n in [512usize, 300, 77, 512, 1, 200] {

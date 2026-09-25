@@ -155,7 +155,7 @@ fn shared_cursors_see_no_jump_and_the_playhead_never_goes_backwards() {
     ed.insert(NodeKey(3), "blocks", BlockLog(Arc::clone(&blocks)));
     outputs(&mut ed, &[1, 2, 3]);
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     // A reader on another thread, as a UI or the mod driver reads the
     // playhead: every value it sees must be at or past the last.
@@ -262,7 +262,7 @@ fn a_graph_without_legacy_renders_whole_blocks() {
     ed.insert(NodeKey(1), "clip", Legacy::new(probe));
     outputs(&mut ed, &[3, 1]);
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let mut buf = vec![0.0f32; 512 * 2];
     let mut render = || {
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));

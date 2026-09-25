@@ -23,21 +23,21 @@
 //!
 //! # The fixture has to render
 //!
-//! A `Net` with nothing wired leaves every output edge on `Port::Zero`, so
-//! `process_audio` folds silence without walking a single vertex — an
-//! allocation gate around that proves nothing. The graph below is a sine
-//! through a filter into both device channels, so the render path evaluates
-//! real vertices, gathers per-vertex buffers, and folds to the device width.
+//! A graph with nothing wired renders silence without running a node — an
+//! allocation gate around that proves nothing. The graph below (the native
+//! graph, the only one `Engine` renders since doc 013 Phase 3 PR 15) is a
+//! sine through a filter into both device channels, so the render path runs
+//! real nodes, hands buffers between them, and folds to the device width.
 //! `renders_something_to_gate` asserts that, so the gates cannot pass by
 //! rendering nothing.
 
 use assert_no_alloc::AllocDisabler;
-use parking_lot::Mutex;
-use tutti_core::dsp::Net;
-use tutti_core::{AudioTap, Engine, Hz, MasterMeter, Q};
+use tutti_core::graph::{Edge, InPort, OutPort, Source};
+use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples, Q};
 use tutti_core::{ChannelLayout, InterleavedMut};
-use tutti_core::{MotionEvent, Transport, TransportClock};
+use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{process_audio, AudioCallbackState, MAX_FRAMES};
+use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 
@@ -56,28 +56,40 @@ const SAMPLE_RATE: f64 = 48_000.0;
 fn rolling_state() -> (Transport, AudioCallbackState) {
     let transport = Transport::new(SAMPLE_RATE);
 
-    let mut net = Net::new(0, 2);
-    net.push(Box::new(TransportClock::new(
-        transport.clock_links(),
-        SAMPLE_RATE,
-    )));
-
-    let source = net.push(Box::new(Osc::sine(Hz(220.0))));
-    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
-        SvfType::LowPass,
-        Hz(2_000.0),
-        Q(0.7),
-    )));
-    net.connect(source, 0, filter, 0);
-    net.pipe_output(filter);
-
-    let backend = net.backend();
-    // The backend borrows the engine through its inner `NetBackend`, so the
-    // net must outlive it. Leaked deliberately: a test process is the whole
-    // lifetime, and this keeps the fixture free of a self-referential handle.
-    let _keep_net_alive: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
-
-    let engine = Engine::new(transport.motion.clone(), backend);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
+    let (source, filter) = (NodeKey(1), NodeKey(2));
+    ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+    ed.insert(
+        filter,
+        "filter",
+        Legacy::new(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(2_000.0),
+            Q(0.7),
+        )),
+    );
+    ed.spec_mut().topology.edges.insert(
+        InPort {
+            node: filter,
+            port: 0,
+        },
+        Edge::Direct(Source::Node(OutPort {
+            node: source,
+            port: 0,
+        })),
+    );
+    ed.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort {
+            node: filter,
+            port: 0,
+        });
+        2
+    ];
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    // Every commit is sent; the editor only has to outlive the engine's
+    // setup. Leaked like the fixtures in `support`, for the same reason.
+    Box::leak(Box::new(ed));
     let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
 
     transport.settings.set_tempo(120.0);

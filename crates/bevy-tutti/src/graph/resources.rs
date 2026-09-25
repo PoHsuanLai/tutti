@@ -213,7 +213,7 @@ impl AudioGraphRes {
     }
 
     /// Build the engine over this graph's audio side, which it takes:
-    /// `Engine::with_graph` over the editor and its executor, which bounds the
+    /// `Engine::new` over the editor and its executor, which bounds the
     /// editor to what the engine can render (a commit past it is refused, and
     /// logged).
     pub(crate) fn engine(
@@ -222,7 +222,7 @@ impl AudioGraphRes {
     ) -> Result<tutti_core::Engine, tutti_core::GraphEngineError> {
         let graph = self.write();
         let exec = graph.take_executor();
-        tutti_core::Engine::with_graph(transport, graph.editor_mut(), exec)
+        tutti_core::Engine::new(transport, graph.editor_mut(), exec)
     }
 
     /// Add the node the engine's beat ports come from — an

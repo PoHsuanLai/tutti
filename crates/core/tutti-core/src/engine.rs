@@ -1,57 +1,45 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
-//! [`Engine`] ticks the DSP graph + transport and renders one output buffer per
-//! block. It renders one of two graph runtimes, chosen at construction:
-//! fundsp's `Net` ([`Engine::new`]) or the native graph's
-//! [`Executor`](tutti_graph::Executor) ([`Engine::with_graph`], doc 013
-//! Phase 2). Both fold the graph's outputs to the device width the same way,
-//! keep the same declick, and apply timestamped transport commands on their
-//! frame.
+//! [`Engine`] ticks the native graph's
+//! [`Executor`](tutti_graph::Executor) and the transport, and renders one
+//! output buffer per block (doc 013; fundsp's `Net` rendered here too until
+//! Phase 3 PR 15). It folds the graph's outputs to the device width, keeps
+//! the declick, and applies timestamped transport commands on their frame.
 //!
 //! # Timestamped transport commands
 //!
 //! [`MotionFsm::schedule`] queues a play, stop, seek, tempo or loop change at
 //! an [`At`]. Each block, the engine walks the commands due in it in time
 //! order and **cuts the block's transport** at each one's frame: the pieces
-//! before and after run under different transports. What a cut means
-//! depends on the runtime:
+//! before and after run under different transports. The executor never
+//! splits a block (doc 013 §6): the engine advances its own clock piece by
+//! piece, records each cut as a
+//! [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
+//! and renders the whole block once. A node reads the transport at a frame
+//! with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
+//! against the piece that reaches their beat.
 //!
-//! - **Graph**: the executor never splits a block (doc 013 §6). The engine
-//!   advances its own clock piece by piece, records each cut as a
-//!   [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
-//!   and renders the whole block once. A node reads the transport at a frame
-//!   with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
-//!   against the piece that reaches their beat.
+//! **Chunk-major while the plan holds a `Legacy` unit**
+//! (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
+//! unit reads no `Env`: one that follows the transport (a sampler voice, a
+//! MIDI clip source) polls the live `Transport` on every 64-frame call. So
+//! the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
+//! across every node, each with its own walk, and publishes the playhead
+//! after each: through a chunk it reads the chunk's first frame, and it only
+//! moves forward. A graph with no `Legacy` unit renders whole blocks.
 //!
-//!   **Chunk-major while the plan holds a `Legacy` unit**
-//!   (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
-//!   unit reads no `Env`: one that follows the transport (a sampler voice, a
-//!   MIDI clip source) polls the live `Transport` on every 64-frame call. So
-//!   the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
-//!   across every node, each with its own walk, and publishes the playhead
-//!   after each: through a chunk it reads the chunk's first frame, as through
-//!   a `Net` whose clock node publishes after its chunk, and it only moves
-//!   forward. A graph with no `Legacy` unit renders whole blocks.
-//! - **Net**: the engine renders the `Net` piece by piece (it already renders
-//!   in 64-frame chunks, so this breaks no promise), applying the commands
-//!   between pieces; the `TransportClock` inside the net reads them at the
-//!   start of the next piece.
-//!
-//! A block holds at most [`MAX_TRANSPORT_CHANGES`] cuts. A command due past
+//! A block holds at most
+//! [`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES) cuts. A command due past
 //! that lands at the start of the next block and is counted late, like any
 //! command already past due ([`MotionFsm::late_commands`]). (`At::NextBlock`
 //! commands, late ones and crossed beats all land at the block's first frame
 //! and need no cut, so they are never deferred.) Commands due on one frame
 //! apply in send order.
 //!
-//! **Untimed state is read once per block.** On the Graph path the tempo,
-//! loop and play state are read at the start of the walk; a store from the
-//! control thread during the block lands at the next one, and only an
-//! applied command changes them at a cut. The Net path cannot promise that:
-//! its `TransportClock` is a node in the net and reads the shared atomics at
-//! every 64-frame chunk, as it always has. The engine resolves beats for it
-//! with the tempo the clock actually runs at (`TransportSettings::
-//! tempo_in_force`, its hysteresis applied).
+//! **Untimed state is read once per block.** The tempo, loop and play state
+//! are read at the start of the walk; a store from the control thread during
+//! the block lands at the next one, and only an applied command changes them
+//! at a cut.
 //!
 //! **Beats** are resolved with the graph's rule (`tutti_graph::Env::due`):
 //! the first frame at or after the beat that playback reaches, the piece's
@@ -84,55 +72,46 @@
 //! machine's own fade ramp is not used; the engine settles it the moment the
 //! command lands.
 //!
-//! # Limits of a graph engine
+//! # Limits
 //!
-//! [`Engine::with_graph`] bounds the graph's editor ([`Editor::set_limits`])
-//! to what its fold scratch holds: at most [`MAX_ROOT_CHANNELS`] global
+//! [`Engine::new`] bounds the graph's editor ([`Editor::set_limits`]) to
+//! what its fold scratch holds: at most [`MAX_ROOT_CHANNELS`] global
 //! outputs, and a `MaxBlock` no larger than its block capacity (the larger
 //! of the prepared maximum and [`DEFAULT_GRAPH_BLOCK_CAPACITY`], or the
-//! capacity given to [`Engine::with_graph_capacity`]). A commit or a
-//! re-prepare past them is refused on the control thread
+//! capacity given to [`Engine::with_capacity`]). A commit or a re-prepare
+//! past them is refused on the control thread
 //! (`CommitError::TooManyOutputs`, `CommitError::BlockTooLong`), so the
 //! callback never meets a graph it cannot render.
 
 use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
-    LEGACY_CHUNK, MAX_TRANSPORT_CHANGES,
+    LEGACY_CHUNK,
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
-use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
-use tutti_types::{At, Frame};
-
-use crate::transport::{tempo_in_effect, Control};
+use crate::transport::Control;
 use crate::transport::{
     FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
 };
-use crate::{AudioThreadCell, InterleavedMut, Ordering, SampleRate, Samples};
-use fundsp::audiounit::AudioUnit;
-use fundsp::buffer::BufferArray;
-use fundsp::prelude::{BufferRef, U8};
-use fundsp::realnet::NetBackend;
-use fundsp::MAX_BUFFER_SIZE;
+use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
+use crate::{AudioThreadCell, AudioUnit, InterleavedMut, SampleRate, Samples};
+use tutti_types::{At, Frame};
 
-/// Widest graph root [`Engine::process_segment`] renders without dropping
-/// channels — and the widest output (device) width it folds to. The scratch is
-/// stack-allocated, so this is a fixed ceiling: mono through 7.1. A root or
-/// device wider than this clamps (its extra channels are dropped / silent).
-///
-/// For the native graph the ceiling is harder: the executor must be handed a
-/// buffer for **every** global output, and the engine's scratch holds this
-/// many. So a graph engine refuses more: [`Engine::with_graph`] bounds the
-/// editor to it, and a commit with more global outputs is an error on the
-/// control thread.
+/// The widest graph root an engine renders — the most global outputs it
+/// folds to the device. The executor must be handed a buffer for **every**
+/// global output, and the engine's fold scratch holds this many: mono
+/// through 7.1. So an engine refuses more: [`Engine::new`] bounds the editor
+/// to it, and a commit with more global outputs is an error on the control
+/// thread. (A device wider than this is fine: `fold_frame` writes every
+/// device channel, and the ones past what the root folds to are silent.)
 pub const MAX_ROOT_CHANNELS: usize = 8;
 
-/// The block capacity a graph engine sizes its fold scratch for unless given
-/// another ([`Engine::with_graph_capacity`]): tutti-cpal's largest callback
+/// The block capacity an engine sizes its fold scratch for unless given
+/// another ([`Engine::with_capacity`]): tutti-cpal's largest callback
 /// (`MAX_FRAMES`). The engine bounds its editor's re-prepares to it.
 pub const DEFAULT_GRAPH_BLOCK_CAPACITY: Samples = Samples(8192);
 
-/// Why [`Engine::with_graph`] refused a graph.
+/// Why [`Engine::new`] refused a graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphEngineError {
     /// The executor is not the editor's: they were not built together.
@@ -154,25 +133,21 @@ impl core::fmt::Display for GraphEngineError {
 
 impl std::error::Error for GraphEngineError {}
 
-/// Type-level [`MAX_ROOT_CHANNELS`], for sizing the scratch [`BufferArray`].
-type MaxRootChannels = U8;
-
 /// The transport as a native graph block sees it.
 type GraphTransport = tutti_graph::Transport;
 
-/// The audio engine: ticks the DSP graph + transport and renders one output
-/// buffer per block from the audio callback.
+/// The audio engine: ticks the native graph + transport and renders one
+/// output buffer per block from the audio callback.
 ///
 /// # What it owns, and what it deliberately does not
 ///
 /// `Engine` is the *audio-thread half* of the runtime and holds only what a
-/// render needs: the transport's [`MotionFsm`], the graph runtime (a committed
-/// [`NetBackend`], or a native [`Executor`] with the clock that feeds its
-/// `Env`), and the declick gain it puts on the output. It owns no graph topology, no parameter
-/// storage and no device configuration — the control thread keeps the graph's
-/// editing half (fundsp's `Net` frontend, or the `tutti_graph::Editor`) and
-/// hands changes over by committing, so nothing here allocates, locks, or
-/// edits a graph.
+/// render needs: the transport's [`MotionFsm`], the graph's [`Executor`]
+/// with the clock that feeds its `Env`, and the declick gain it puts on the
+/// output. It owns no graph topology, no parameter storage and no device
+/// configuration — the control thread keeps the graph's editing half (the
+/// `tutti_graph::Editor`) and hands changes over by committing, so nothing
+/// here allocates, locks, or edits a graph.
 ///
 /// That split is the reason this is a distinct type rather than a method on the
 /// transport or the graph. Both of those are edited from the control thread;
@@ -190,67 +165,21 @@ type GraphTransport = tutti_graph::Transport;
 /// where transport motion and declicking are not in play.
 pub struct Engine {
     motion: MotionFsm,
-    backend: AudioThreadCell<Backend>,
+    graph: AudioThreadCell<GraphRender>,
     /// Cached from the transport so the fade path avoids a double deref.
     fader: AudioThreadCell<Fader>,
-    /// A graph engine's block capacity (its editor's `MaxBlock` limit).
-    graph_capacity: Option<Samples>,
-}
-
-/// The graph runtime an engine renders. An enum rather than a trait object:
-/// two variants, matched once per block, keeps the RT path monomorphic.
-///
-/// The variants differ in size (the executor is about twice the `Net`
-/// side); there is one per engine, held in place for its life, so boxing
-/// either would buy a pointer hop a block and save nothing.
-#[allow(clippy::large_enum_variant)]
-enum Backend {
-    Net(NetRender),
-    Graph(GraphRender),
-}
-
-/// fundsp's `Net`, and the transport bookkeeping the engine keeps beside it.
-struct NetRender {
-    backend: NetBackend,
-    /// Samples at the current rate since the engine was built: the clock
-    /// `At::Frame` names, rescaled with the rate as the executor's is (the
-    /// native graph's executor keeps its own).
-    frame: Frame,
-    /// The rate `frame` counts in: the net's, as of the last block.
-    rate: SampleRate,
-    playhead: Playhead,
-}
-
-impl NetRender {
-    /// Follow the rate of the net the last `pump` installed, and return it.
-    ///
-    /// A commit of a re-rated net (`Net::set_sample_rate`, as a device
-    /// restart makes) lands in a `pump`. Time in frames moves with it, as
-    /// the graph executor's does on a re-prepare (doc 013, #16): the frame
-    /// clock and every scheduled `At::Frame` transport command move to the
-    /// same wall-clock time at the new rate, rounded to the nearest frame.
-    /// The beat needs nothing here — the net's own `TransportClock` was
-    /// re-rated with it.
-    fn follow_rate(&mut self, schedule: &Schedule) -> SampleRate {
-        let rate = SampleRate(self.backend.sample_rate());
-        if rate != self.rate {
-            let ratio = rate.get() / self.rate.get();
-            self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
-            schedule.rescale(ratio);
-            self.rate = rate;
-        }
-        rate
-    }
+    /// The block capacity (the editor's `MaxBlock` limit).
+    capacity: Samples,
 }
 
 /// The native graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
     exec: Executor,
-    /// The engine's playhead. A `Net` carries its `TransportClock` as a node;
-    /// the native graph reads the transport from `Env`, so the engine drives
-    /// the same clock itself ([`TransportClock::begin`] /
-    /// [`TransportClock::advance`]) and the two backends see the same beats.
+    /// The engine's playhead. The graph reads the transport from `Env`, so
+    /// the engine drives the clock itself ([`TransportClock::begin`] /
+    /// [`TransportClock::advance`]); an `EnvClock` in the graph continues it
+    /// with the same arithmetic.
     clock: TransportClock,
     /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
     scratch: Vec<f32>,
@@ -259,52 +188,32 @@ struct GraphRender {
 }
 
 impl Engine {
-    /// Build an engine over a transport's motion FSM and a committed graph
-    /// backend.
-    ///
-    /// `net_backend` is the audio-thread half of fundsp's `Net`; the control
-    /// thread keeps the frontend and hands changes over by committing.
-    pub fn new(motion: MotionFsm, net_backend: NetBackend) -> Self {
-        Self {
-            motion,
-            backend: AudioThreadCell::new(Backend::Net(NetRender {
-                rate: SampleRate(net_backend.sample_rate()),
-                backend: net_backend,
-                frame: Frame::ZERO,
-                playhead: Playhead::new(),
-            })),
-            fader: AudioThreadCell::new(Fader::new()),
-            graph_capacity: None,
-        }
-    }
-
     /// Build an engine that renders a native graph: `executor`, the audio
     /// half of `editor`'s pair, whose `Prepare` comes from the device
     /// configuration (its rate, and the largest block the device hands
     /// over). The block capacity is the larger of that maximum and
     /// [`DEFAULT_GRAPH_BLOCK_CAPACITY`]; see
-    /// [`with_graph_capacity`](Self::with_graph_capacity).
-    pub fn with_graph(
+    /// [`with_capacity`](Self::with_capacity).
+    pub fn new(
         transport: &crate::Transport,
         editor: &mut Editor,
         executor: Executor,
     ) -> Result<Self, GraphEngineError> {
-        Self::with_graph_capacity(transport, editor, executor, DEFAULT_GRAPH_BLOCK_CAPACITY)
+        Self::with_capacity(transport, editor, executor, DEFAULT_GRAPH_BLOCK_CAPACITY)
     }
 
-    /// As [`with_graph`](Self::with_graph), with the fold scratch sized for
-    /// blocks of up to `capacity` frames (or the prepared maximum, if
-    /// larger).
+    /// As [`new`](Self::new), with the fold scratch sized for blocks of up
+    /// to `capacity` frames (or the prepared maximum, if larger).
     ///
     /// The engine renders whole device blocks through the executor — no
-    /// 64-frame chunking; a device block longer than the prepared maximum is
-    /// rendered as consecutive graph blocks of at most that — and builds each
-    /// block's `Env` from `transport`: the frame is the executor's clock,
-    /// which tracks device time, and the transport snapshot comes from a
+    /// 64-frame chunking unless a `Legacy` unit is present (module docs); a
+    /// device block longer than the prepared maximum is rendered as
+    /// consecutive graph blocks of at most that — and builds each block's
+    /// `Env` from `transport`: the frame is the executor's clock, which
+    /// tracks device time, and the transport snapshot comes from a
     /// [`TransportClock`] the engine drives over `transport`'s
     /// [`clock_links`](crate::Transport::clock_links), so it publishes the
-    /// playhead, steady time and tempo in force as the clock node in a `Net`
-    /// would.
+    /// playhead, steady time and tempo in force.
     ///
     /// **Bounds the editor** ([`Editor::set_limits`]) to at most
     /// [`MAX_ROOT_CHANNELS`] global outputs and a `MaxBlock` of at most the
@@ -323,7 +232,7 @@ impl Engine {
     ///
     /// Control thread. Allocates the fold scratch
     /// (`MAX_ROOT_CHANNELS × capacity` samples).
-    pub fn with_graph_capacity(
+    pub fn with_capacity(
         transport: &crate::Transport,
         editor: &mut Editor,
         executor: Executor,
@@ -348,92 +257,72 @@ impl Engine {
         let motion = transport.motion.clone();
         Ok(Self {
             motion,
-            backend: AudioThreadCell::new(Backend::Graph(GraphRender {
+            graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
                 clock: TransportClock::new(transport.clock_links(), rate),
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
                 stride,
                 playhead: Playhead::new(),
-            })),
+            }),
             fader: AudioThreadCell::new(Fader::new()),
-            graph_capacity: Some(Samples(stride)),
+            capacity: Samples(stride),
         })
     }
 
-    /// A graph engine's block capacity: the largest `MaxBlock` its editor may
-    /// re-prepare to. `None` for a `Net` engine.
-    pub fn graph_block_capacity(&self) -> Option<Samples> {
-        self.graph_capacity
+    /// The block capacity: the largest `MaxBlock` the editor may re-prepare
+    /// to.
+    pub fn block_capacity(&self) -> Samples {
+        self.capacity
     }
 
     /// Render the whole of `output` — an interleaved device buffer that carries
     /// its own width — with no transport motion and no declick: the pure
     /// render.
     ///
-    /// For a `Net`, drives the graph through fundsp's SIMD block path
-    /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one
-    /// frame at a time; for a native graph, one executor block per device
-    /// block (up to its prepared maximum), under the transport as it stands.
-    /// The graph root has no inputs. The root is rendered at its **own**
-    /// output width (up to [`MAX_ROOT_CHANNELS`]) into scratch, then each
-    /// frame is folded to the *output's* width — the device / target width —
-    /// via the ITU/Dolby matrices ([`tutti_types::fold_frame`]): a surround
-    /// root plays folded to a stereo device, or straight through to a
+    /// One executor block per device block (up to its prepared maximum, or
+    /// [`LEGACY_CHUNK`] while a `Legacy` unit is present), under the
+    /// transport as it stands. The graph root has no inputs. The root is
+    /// rendered at its **own** output width (at most [`MAX_ROOT_CHANNELS`],
+    /// which the editor's limits enforce) into scratch, then each frame is
+    /// folded to the *output's* width — the device / target width — via the
+    /// ITU/Dolby matrices ([`tutti_types::fold_frame`]): a surround root
+    /// plays folded to a stereo device, or straight through to a
     /// matching-width surround device; a mono root duplicates into every
     /// target channel of a wider output.
     ///
-    /// # Three widths are live here; only one is the buffer's
+    /// # Two widths are live here; only one is the buffer's
     ///
     /// The output width (`out_ch`) comes from `output`'s own layout; the
-    /// root's from the graph (`backend.outputs()`, or the plan's global
-    /// outputs), clamped to the scratch. They are different numbers from
-    /// different sources, and confusing them writes past the end of one
-    /// buffer or reads garbage from the other. The output width arrives welded
-    /// to the buffer it strides, which is what makes the third confusion — a
-    /// width disagreeing with its slice — unrepresentable rather than merely
-    /// unlikely.
-    ///
-    /// For a `Net`, the scratch is a stack-allocated [`BufferArray`] sized to
-    /// [`MAX_ROOT_CHANNELS`], **sliced to the root's actual output count**
-    /// before each `process` call. The slicing is load-bearing:
-    /// `Net::process` iterates `output.channels()` and indexes its own
-    /// `output_edge` table by that channel, so handing it a wider buffer than
-    /// the net's width indexes past the end and panics — in release, inside
-    /// the audio callback. The whole path is alloc-free (stack scratch + a
-    /// stack `[f32; MAX_ROOT_CHANNELS]` frame).
+    /// root's from the plan's global outputs. They are different numbers
+    /// from different sources, and confusing them writes past the end of one
+    /// buffer or reads garbage from the other. The output width arrives
+    /// welded to the buffer it strides, which is what makes a third
+    /// confusion — a width disagreeing with its slice — unrepresentable
+    /// rather than merely unlikely.
     #[inline]
     pub fn process_segment(&self, output: &mut InterleavedMut<'_>) {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        match &mut *self.backend.borrow_mut() {
-            Backend::Net(net) => {
-                net.backend.pump();
-                net.follow_rate(self.motion.timed());
-                render_net(&mut net.backend, output, out_ch, 0, frames);
-                net.frame += Samples(frames);
-            }
-            Backend::Graph(g) => {
-                let mut done = 0;
-                while done < frames {
-                    let (bound, rate) = g.settle(self.motion.timed());
-                    let len = (frames - done).min(bound);
-                    let control = Control::read(self.motion.settings());
-                    let t = g.clock.begin(&control, true);
-                    // Kept current, so a later `process` tells a late beat
-                    // from one jumped over across this block too.
-                    g.playhead.observe(&Env {
-                        frame: g.exec.frame(),
-                        sample_rate: rate,
-                        block_len: Samples(len),
-                        transport: t,
-                        changes: TransportChanges::NONE,
-                    });
-                    g.clock.advance(len, &t);
-                    g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
-                    done += len;
-                }
-            }
+        let g = &mut *self.graph.borrow_mut();
+        let mut done = 0;
+        while done < frames {
+            let (bound, rate) = g.settle(self.motion.timed());
+            let len = (frames - done).min(bound);
+            let control = Control::read(self.motion.settings());
+            let t = g.clock.begin(&control, true);
+            // Kept current, so a later `process` tells a late beat from one
+            // jumped over across this block too.
+            g.playhead.observe(&Env {
+                frame: g.exec.frame(),
+                sample_rate: rate,
+                block_len: Samples(len),
+                transport: t,
+                changes: TransportChanges::NONE,
+            });
+            g.clock.advance(len, &t);
+            g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
+            done += len;
         }
     }
 
@@ -454,47 +343,26 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        match &mut *self.backend.borrow_mut() {
-            Backend::Net(net) => {
-                net.backend.pump();
-                let rate = net.follow_rate(self.motion.timed());
-                let frame0 = net.frame;
-                let mut pieces = NetPieces {
-                    engine: self,
-                    backend: &mut net.backend,
-                    output,
-                    out_ch,
-                    cuts: 0,
-                };
-                let aim = self.fader.borrow().aim;
-                let walk = self.walk(frame0, frames, rate, aim, &mut net.playhead, &mut pieces);
-                self.fader
-                    .borrow_mut()
-                    .apply(&walk.gain, frame0, output, out_ch, 0, frames);
-                net.frame += Samples(frames);
-            }
-            Backend::Graph(g) => {
-                let mut done = 0;
-                while done < frames {
-                    let (bound, rate) = g.settle(self.motion.timed());
-                    let len = (frames - done).min(bound);
-                    let frame0 = g.exec.frame();
-                    let mut pieces = GraphPieces {
-                        clock: &mut g.clock,
-                        settings: self.motion.settings(),
-                        control: Control::read(self.motion.settings()),
-                        changes: TransportChanges::NONE,
-                    };
-                    let aim = self.fader.borrow().aim;
-                    let walk = self.walk(frame0, len, rate, aim, &mut g.playhead, &mut pieces);
-                    let changes = pieces.changes;
-                    g.render(output, out_ch, done, len, &walk.start, &changes);
-                    self.fader
-                        .borrow_mut()
-                        .apply(&walk.gain, frame0, output, out_ch, done, len);
-                    done += len;
-                }
-            }
+        let g = &mut *self.graph.borrow_mut();
+        let mut done = 0;
+        while done < frames {
+            let (bound, rate) = g.settle(self.motion.timed());
+            let len = (frames - done).min(bound);
+            let frame0 = g.exec.frame();
+            let mut pieces = GraphPieces {
+                clock: &mut g.clock,
+                settings: self.motion.settings(),
+                control: Control::read(self.motion.settings()),
+                changes: TransportChanges::NONE,
+            };
+            let aim = self.fader.borrow().aim;
+            let walk = self.walk(frame0, len, rate, aim, &mut g.playhead, &mut pieces);
+            let changes = pieces.changes;
+            g.render(output, out_ch, done, len, &walk.start, &changes);
+            self.fader
+                .borrow_mut()
+                .apply(&walk.gain, frame0, output, out_ch, done, len);
+            done += len;
         }
     }
 
@@ -621,12 +489,11 @@ impl Engine {
         false
     }
 
-    /// Install every commit a graph engine's editor has sent, and follow a
+    /// Install every commit the engine's editor has sent, and follow a
     /// re-prepare's rate change with the engine's clock and the transport's
     /// frame-timed commands — what the first block after it would do, done
     /// now. Returns whether the graph is running a plan with no re-prepare
-    /// between its halves (always `true` for a `Net` engine, which has
-    /// neither and is left alone).
+    /// between its halves.
     ///
     /// A device restart calls it between the two halves of
     /// `Editor::reprepare` so the re-prepare finishes before the first block
@@ -651,13 +518,9 @@ impl Engine {
     /// [`process`]: Self::process
     /// [`process_segment`]: Self::process_segment
     pub unsafe fn settle_graph(&self) -> bool {
-        match &mut *self.backend.borrow_mut() {
-            Backend::Net(_) => true,
-            Backend::Graph(graph) => {
-                graph.settle(self.motion.timed());
-                graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
-            }
-        }
+        let graph = &mut *self.graph.borrow_mut();
+        graph.settle(self.motion.timed());
+        graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
     }
 
     /// Reset the audio-thread ownership assertions on both cells.
@@ -667,7 +530,7 @@ impl Engine {
     /// panics in debug builds on any other, so a new callback thread must be
     /// announced rather than discovered.
     pub fn reset_owners(&self) {
-        self.backend.reset_owner();
+        self.graph.reset_owner();
         self.motion.reset_owner();
     }
 }
@@ -863,7 +726,9 @@ impl Fader {
     }
 }
 
-/// One runtime's side of a block walk.
+/// What a block walk does with each piece between its cuts. A trait, with
+/// one implementation in the engine ([`GraphPieces`]), so a test can wrap it
+/// and stage a control-thread store between pieces deterministically.
 trait Pieces {
     /// The transport from the current frame on: at the block's start
     /// (`after` is `None`), or after applying `after` there.
@@ -876,60 +741,8 @@ trait Pieces {
     fn change(&mut self, at: Offset, t: GraphTransport);
 }
 
-/// The `Net` side: render each piece as it is cut; the transport comes from
-/// the shared atomics, which the net's `TransportClock` reads at the start of
-/// each piece.
-struct NetPieces<'a> {
-    engine: &'a Engine,
-    backend: &'a mut NetBackend,
-    output: &'a mut [f32],
-    out_ch: usize,
-    cuts: usize,
-}
-
-impl Pieces for NetPieces<'_> {
-    fn begin(&mut self, _: Option<&TransportCommand>) -> GraphTransport {
-        let motion = &self.engine.motion;
-        let settings = motion.settings();
-        // A seek not yet taken by the clock is where it will emit from.
-        let beat = if motion.seek.is_pending() {
-            crate::Beat(motion.seek.target.load(Ordering::Acquire))
-        } else {
-            settings.beat()
-        };
-        // A bare beat, not counted: this side only resolves commands
-        // against it; the net's own clock is what counts frames.
-        GraphTransport::new(
-            !settings.is_paused(),
-            // The tempo the net's clock will run the next piece at: the one
-            // asked for, through its hysteresis.
-            tempo_in_effect(
-                settings.tempo(),
-                crate::Bpm(settings.tempo_in_force.load(Ordering::Acquire)),
-            ),
-            beat,
-            settings.loop_span.range().map(|r| tutti_graph::LoopRange {
-                start: r.start(),
-                end: r.end(),
-            }),
-        )
-    }
-
-    fn run(&mut self, start: usize, end: usize, _: &GraphTransport) {
-        render_net(self.backend, self.output, self.out_ch, start, end);
-    }
-
-    fn room(&self) -> bool {
-        self.cuts < MAX_TRANSPORT_CHANGES
-    }
-
-    fn change(&mut self, _: Offset, _: GraphTransport) {
-        self.cuts += 1;
-    }
-}
-
-/// The native graph side: advance the engine's clock over each piece, and
-/// collect the cuts for the block's `Env`; the render happens once, after.
+/// Advance the engine's clock over each piece, and collect the cuts for the
+/// block's `Env`; the render happens once, after.
 struct GraphPieces<'a> {
     clock: &'a mut TransportClock,
     settings: &'a crate::TransportSettings,
@@ -1042,8 +855,7 @@ impl GraphRender {
         // Published after the block, not by the walk before it: through the
         // block the live playhead still reads its first frame (the last
         // block's end), which is what a `Legacy` unit polling it takes for
-        // its call's first frame, as through a `Net` whose clock node
-        // publishes after its chunk. And it only moves forward.
+        // its call's first frame. And it only moves forward.
         self.clock.publish_position(self.clock.current_beat());
         if width == 0 {
             block.fill(0.0);
@@ -1057,61 +869,6 @@ impl GraphRender {
             }
             tutti_types::fold_frame(src, &mut block[i * out_ch..(i + 1) * out_ch]);
         }
-    }
-}
-
-/// Render frames `start..end` of the interleaved `output` (`out_ch` wide)
-/// through `backend`, in `MAX_BUFFER_SIZE` chunks from `start`.
-///
-/// Destructured by the caller, per the `Interleaved` rule: the stride and the
-/// frame count are read once and the loops below index raw.
-#[inline]
-fn render_net(
-    backend: &mut NetBackend,
-    output: &mut [f32],
-    out_ch: usize,
-    start: usize,
-    end: usize,
-) {
-    debug_assert!(backend.inputs() == 0);
-    // The root's real width, clamped to what the scratch can hold. A wider
-    // root drops its extra channels (they can't be rendered), but must never
-    // index past the buffer.
-    // NOTE this is the ROOT's width, not the output buffer's. `out_ch` is the
-    // output's, and it is NOT clamped to MAX_ROOT_CHANNELS — `fold_frame`
-    // writes exactly `out_ch` channels (zero-filling any past the root
-    // width), so a wider-than-8 device simply gets silent extra channels.
-    // Only the render scratch is bounded. The caller pumped the backend
-    // first, so a just-committed width change is reflected here.
-    let root_channels = backend.outputs().clamp(1, MAX_ROOT_CHANNELS);
-
-    let empty_input = BufferRef::new(&[]);
-    let mut scratch = BufferArray::<MaxRootChannels>::new();
-
-    let mut done = start;
-    while done < end {
-        let block = (end - done).min(MAX_BUFFER_SIZE);
-
-        // Slice to the root's width so `Net::process` iterates exactly the
-        // channels it has edges for.
-        let mut full = scratch.buffer_mut();
-        let mut buffer_mut = full.subset(0, root_channels);
-        backend.process(block, &empty_input, &mut buffer_mut);
-
-        // Fold each planar frame (root_channels wide) to the interleaved
-        // output width. Gather into a stack frame sliced to the root width —
-        // no allocation.
-        for i in 0..block {
-            let mut frame = [0.0f32; MAX_ROOT_CHANNELS];
-            let src = &mut frame[..root_channels];
-            for (c, s) in src.iter_mut().enumerate() {
-                *s = buffer_mut.channel_f32(c)[i];
-            }
-            let o = (done + i) * out_ch;
-            tutti_types::fold_frame(src, &mut output[o..o + out_ch]);
-        }
-
-        done += block;
     }
 }
 
@@ -1157,7 +914,7 @@ mod tests {
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
         let transport = Transport::new(48_000.0);
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-        let engine = Engine::with_graph(&transport, &mut ed, exec).expect("empty graph");
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         transport
             .motion
             .schedule(At::Frame(Frame(100)), MotionEvent::Play)
@@ -1203,7 +960,7 @@ mod tests {
     fn a_quiet_block_plans_no_gain_event() {
         let transport = Transport::new(48_000.0);
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-        let engine = Engine::with_graph(&transport, &mut ed, exec).expect("empty graph");
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
         let mut clock = TransportClock::new(transport.clock_links(), 48_000.0);

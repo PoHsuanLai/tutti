@@ -70,8 +70,10 @@ pub use tutti_types as types;
 /// Planar block buffers and the routing/contract arithmetic.
 pub use tutti_node as node;
 
-/// The graph runtime a headless host builds on: `Net`, and the `NodeId` /
-/// `Source` a wiring call names an endpoint with.
+/// fundsp's graph container: `Net`, and the `NodeId` / `Source` a `Net`
+/// wiring call names an endpoint with. `Engine` no longer renders a `Net`
+/// (design doc 013, Phase 3 PR 15); a headless host builds on [`graph`],
+/// and this module goes with fundsp in Phase 5.
 ///
 /// Three names, not `tutti_core::dsp` whole. That module also carries the
 /// fundsp combinators `tutti-polysynth` still builds its sub-voice from; they
@@ -86,7 +88,7 @@ pub mod dsp {
 }
 
 /// The native graph (design doc 013): `GraphBuilder`, `Editor`, `Executor`,
-/// `Fork`. What `export` renders and what `Engine::with_graph` runs; the
+/// `Fork`. What `export` renders and what `Engine::new` runs; the
 /// successor to `dsp::Net`.
 pub use tutti_graph as graph;
 

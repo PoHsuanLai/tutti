@@ -10,21 +10,23 @@ transport, level metering, and delay compensation. Sibling crates
 re-export them, so a consumer usually meets them through whichever subsystem it
 already depends on.
 
-- `dsp::Net` — the DSP graph itself. It is **fundsp's** `Net`, re-exported;
-  tutti adds no wrapper around it.
+- `Engine` — the graph render the RT callback runs. It renders the native
+  graph (`tutti-graph`'s `Executor`, whose `Editor` the control thread keeps),
+  and only that since design doc 013's Phase 3 PR 15.
 - `Transport` — playback control, split into `settings` (anyone may store into)
-  and `motion` (a state machine that may defer or reject). `TransportClock` puts
-  the beat on graph ports, so beat-driven sources read musical time as a signal
-  rather than consulting the transport.
+  and `motion` (a state machine that may defer or reject), with commands
+  timed to a frame or a beat (`MotionFsm::schedule`). The engine drives the
+  transport's clock and hands each block its transport in `Env`; `EnvClock`
+  puts the beat on graph ports, so beat-driven sources read musical time as a
+  signal rather than consulting the transport.
 - `MasterMeter` / `AudioTap` — level monitoring and the analysis tap.
 - `latency` — delay compensation: explicit, opt-in, over any graph.
 - `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
-  `tutti_types::graph::Topology` (the graph as a *value*) into a `Net`. The value
-  is the graph; `Net` is the interpreter, and nothing reads a topology back out
-  of one. Only tests call it today: `bevy-tutti` builds the same value each
-  rebuild but applies it incrementally to its running `Net`, which owns state
-  no value can rebuild.
-- `Engine` — the graph render the RT callback runs.
+  `tutti_types::graph::Topology` (the graph as a *value*) into fundsp's `Net`.
+  Only tests call it; the native graph compiles the same value itself, and
+  this seam goes with `Net` (doc 013, Phase 5).
+- `dsp::Net` — **fundsp's** graph container, re-exported, which the nodes'
+  own tests still wire units in. `Engine` does not render it.
 
 A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
 the umbrella. A consumer that wants audio without Bevy takes the `tutti` facade crate,
@@ -47,63 +49,58 @@ directly.
   declarative wiring live in the host adapter, `bevy_tutti::graph`. The optional
   `bevy` feature here adds exactly one thing — see below.
 
-## Example — a graph, a backend, and a transport
+## Example — a graph, an engine, and a transport
 
-The engine's centre in one block: build a `Net`, wire it, take the audio-thread
-`backend`, then edit the graph and `commit` the edit across to it. `tutti-cpal`
-does exactly this around a real device; here the backend is pulled by hand, so
+The engine's centre in one block: build a graph, hand its executor to an
+`Engine` over a `Transport`, keep the editor, and render a block. `tutti-cpal`
+does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::{AudioUnit, Beat, Bpm, MotionEvent, PdcDelay, Samples, Timeline, Transport};
-use tutti_core::TransportClock;
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{
+    Beat, Bpm, ChannelLayout, Engine, EnvClock, InterleavedMut, MotionEvent, NodeKey,
+    SampleRate, Samples, Timeline, Transport,
+};
+use tutti_graph::{Editor, Prepare};
 
-let sample_rate = 48_000.0;
-let transport = Transport::new(sample_rate);
+let transport = Transport::new(48_000.0);
 
-// The clock is a node: beat-driven sources read musical time off their
-// input ports rather than consulting the transport, so an offline render
-// behaves identically to a live one.
-let mut net = Net::new(0, 2);
-let clock = net.push(Box::new(TransportClock::new(
-    transport.clock_links(),
-    sample_rate,
-)));
+// The editor is the control thread's half of the graph; the executor goes to
+// the engine. Every edit reaches it through a `commit`.
+let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
 
-// Any node with an input shows the wiring; this one is the compensation delay
-// this crate owns. Tone generators and filters are `tutti-nodes`', a crate
-// above this one.
-let delay = net.push(Box::new(PdcDelay::<1>::new(Samples(64))));
-net.connect(clock, 0, delay, 0);
-// Fans the delay's one output across both device channels; without this
-// every output edge stays `Port::Zero` and the graph renders silence.
-net.pipe_output(delay);
-net.check();
+// A node reads the transport from each block's `Env`; `EnvClock` puts the beat
+// on two ports (whole beats, then the fraction), for a node that wants it as
+// a signal. Tone generators and filters are `tutti-nodes`', a crate above
+// this one.
+let clock = NodeKey(1);
+editor.insert(clock, "clock", EnvClock::new());
+editor.spec_mut().topology.outputs = (0..2)
+    .map(|port| Source::Node(OutPort { node: clock, port }))
+    .collect();
+editor.commit().expect("the graph compiles");
 
-// The backend is the audio thread's half. There is exactly one, and after
-// it exists every frontend edit needs a `commit` to reach it.
-let mut backend = net.backend();
-let mut frame = [0.0f32; 2];
-backend.tick(&[], &mut frame);
-assert_eq!(frame[0], frame[1]);
-
-net.connect(clock, 0, delay, 0);
-net.commit();
+let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
 // Transport is a `motion`/`settings` split rather than a `play()` method:
 // settings anyone may store into, motion a state machine that may defer or
-// reject. Queued events apply on `drain`, which the audio callback runs.
+// reject. Queued events apply at the next block, which the audio callback
+// renders.
 transport.settings.set_tempo(Bpm(90.0));
-transport.settings.set_beat(Beat(8.0));
 transport
     .motion
-    .try_send(MotionEvent::Play)
+    .try_send(MotionEvent::locate_and_play(Beat(8.0)))
     .expect("the motion queue has room at startup");
-transport.motion.drain();
 
+let mut block = vec![0.0f32; 256 * 2];
+engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+
+// The first frame carries beat 8 on the clock's ports; the block moved the
+// playhead on by 256 frames at 90 BPM.
+assert_eq!((block[0], block[1]), (8.0, 0.0));
 assert!(transport.is_rolling());
-assert_eq!(transport.beat(), Beat(8.0));
+assert!(transport.beat() > Beat(8.0));
 ```
 
 ## The one thing `bevy` adds
@@ -113,7 +110,8 @@ tutti-core is a std crate whose DSP graph runtime is Bevy-agnostic. The optional
 derive on `AudioNode`, so an entity can *be* a node in the graph. Everything
 that reconciles against it — the set hierarchy, the graph resources, the param
 components, the declarative wiring — lives in `bevy_tutti::graph`. A non-Bevy
-host wires nodes through `Net`'s `set_source` / `connect` API directly.
+host edits the native graph through `tutti_graph::Editor` (or builds one with
+`GraphBuilder`) directly.
 
 ## Features
 

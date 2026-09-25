@@ -1,5 +1,5 @@
 //! **One MIDI clip source feeding two synths plays its notes once**, through
-//! the native graph engine as through the `Net` engine.
+//! the native graph engine.
 //!
 //! A `MidiClipSource` polls the live transport through a `BeatCursor` on
 //! every block it is asked for, and keeps its own event cursor; both are
@@ -8,7 +8,10 @@
 //! 64-frame `Legacy` call. The first poll of a chunk takes the chunk's
 //! events; the second finds the event cursor already past them and the beat
 //! cursor where it was, so the clip plays once, on whichever synth polls
-//! first, as it did through `Net`.
+//! first, as it did through `Net`. (Until doc 013 Phase 3 PR 15 the graph was
+//! also compared, bit for bit, with a `Net` engine rendering the same two
+//! synths. With that backend gone the oracle is the property itself: the
+//! pair renders what one synth playing the clip alone renders.)
 //!
 //! What this protects against is a render that walks one node's whole block
 //! and then the next's (node-major) over a timeline moved per chunk: the
@@ -19,15 +22,16 @@
 //! 013, "chunk-major `Legacy` compatibility mode"), so nothing rewinds.
 //!
 //! Mutation (run): `GraphRender::settle` ignoring `has_legacy` (whole
-//! device blocks) → the graph parts from the `Net` on the first note.
+//! device blocks) → the shared clip renders silence at both block sizes →
+//! fails (the "clip is silent" check; the `Net` comparison this replaced
+//! caught it first).
 
 use std::sync::Arc;
 
-use tutti_core::dsp::Net;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
-    AudioUnit, Beat, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate,
-    Samples, Timeline, Transport, TransportClock,
+    Beat, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate, Samples,
+    Timeline, Transport,
 };
 use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_midi_runtime::{MidiClipSource, TimedMidiEvent};
@@ -70,21 +74,6 @@ fn synth(transport: &Transport) -> PolySynth {
     s
 }
 
-/// `units` on the device's channels, one each (their port 0).
-fn net_engine(transport: &Transport, units: Vec<PolySynth>) -> Engine {
-    let mut net = Net::new(0, 2);
-    // The clock first, as bevy-tutti's engine build inserts it.
-    net.push(Box::new(TransportClock::new(transport.clock_links(), SR)));
-    for (c, u) in units.into_iter().enumerate() {
-        let id = net.push(Box::new(u));
-        net.connect_output(id, 0, c);
-    }
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    Box::leak(Box::new(net));
-    Engine::new(transport.motion.clone(), backend)
-}
-
 fn graph_engine(transport: &Transport, units: Vec<PolySynth>) -> (Engine, Editor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
     let n = units.len();
@@ -100,7 +89,7 @@ fn graph_engine(transport: &Transport, units: Vec<PolySynth>) -> (Engine, Editor
         })
         .collect();
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed)
 }
 
@@ -124,14 +113,9 @@ fn first_difference(a: &[f32], b: &[f32]) -> Option<usize> {
 }
 
 /// At `block`-frame device blocks: two synths sharing the clip render, in
-/// sum, the `Net`'s two synths bit for bit, and one synth playing the clip
-/// alone: its notes are played once, never refired.
+/// sum, one synth playing the clip alone, bit for bit: its notes are played
+/// once, never refired.
 fn shared_clip_plays_once(block: usize) {
-    let net_t = Transport::new(SR);
-    let s = synth(&net_t);
-    let net = net_engine(&net_t, vec![s.clone(), s]);
-    let a = play(&net, &net_t, block);
-
     let graph_t = Transport::new(SR);
     let s = synth(&graph_t);
     let (graph, _ed) = graph_engine(&graph_t, vec![s.clone(), s]);
@@ -151,12 +135,6 @@ fn shared_clip_plays_once(block: usize) {
 
     let peak = b.iter().fold(0.0f32, |m, x| m.max(x.abs()));
     assert!(peak > 0.05, "{block}: the clip is silent ({peak})");
-    if let Some(i) = first_difference(&a, &b) {
-        panic!(
-            "{block}-frame blocks: the graph parts from the Net at frame {i}: net {} graph {}",
-            a[i], b[i]
-        );
-    }
     if let Some(i) = first_difference(&c, &b) {
         panic!(
             "{block}-frame blocks: two synths sharing the clip part from one at frame {i}: \

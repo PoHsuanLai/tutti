@@ -1,43 +1,46 @@
-//! The native graph's exports against what fundsp's `Net` rendered for the
-//! same units.
+//! The native graph's exports, pinned to what fundsp's `Net` rendered for
+//! the same units.
 //!
-//! # The oracle is a `Net`, rendered here
+//! # The oracles
 //!
 //! Until doc 013 Phase 3 PR 14 this file compared tutti-export's two backends,
-//! `RenderGraph::Net` and the native graph. PR 14 removed the `Net` arm, and
-//! with it `NetSource`, the frame source that rendered a `Net`. The
-//! comparisons stay, as regression pins on the graph: the `Net` side is now
-//! [`net_render`], a **test-only oracle** in this file that renders a
-//! `tutti_core::dsp::Net` exactly as `NetSource` and `drive` did — re-rated
-//! to the render's rate, 64-frame blocks, the clock advanced after each,
-//! every frame folded onto the file's width by `tutti_types::fold_frame`, the
-//! head trimmed by the latency and the kept span capped. It uses nothing of
-//! tutti-export's but its public types, so it compiles without the `Net` arm;
-//! it goes with the rest of the `Net` fixtures (doc 013 PR 15).
+//! `RenderGraph::Net` and the native graph, bit for bit; PR 14 kept the
+//! comparisons against `net_render`, a test-only `Net` renderer here. PR 15
+//! retired that last `Net` oracle with the engine's `Net` backend: each
+//! comparison is now pinned to what it stood for, case by case, and two
+//! kinds of check sit side by side.
 //!
-//! Every case builds one graph twice from the same units — once as a `Net`,
-//! once with `tutti_graph::GraphBuilder` — and asserts the two are
-//! **bit-identical**: the same planes, and for the file cases the same bytes
-//! (the `Net`'s planes written by `write_buffers`, which replays them through
-//! the same encoders in 64-frame blocks, as `NetSource` fed them). The oracle
-//! suites beside this file (`oracle_resample.rs`, `dither_stats.rs`,
-//! `surround_export.rs`, `render.rs`'s dBTP cases) check the graph path
-//! against first principles; this one checks that the graph still renders
-//! what the `Net` did.
+//! - **Portable, on every target:** an analytic figure where the signal has
+//!   one (a sine's samples, a DC level, a lookahead's frames, a direct
+//!   time-domain convolution, the tone a dry voice reads), and the export's
+//!   own invariants where it does not (a file is its planes through
+//!   `write_buffers`; a width is the quad render through `fold_frame`; a
+//!   trimmed render is the untrimmed one shifted by the trim; a fork of a
+//!   graph renders the fresh graph).
+//! - **Golden digests, Linux/glibc only:** FNV-1a over the planes' (or the
+//!   file's) bits, recorded from the native render on the commit that
+//!   retired the `Net` oracle, which rendered exactly what the `Net` did
+//!   (that was asserted there, bit for bit). They catch the drift an analytic
+//!   tolerance lets through (an output scaled by `1 + f32::EPSILON`), but
+//!   they pin `sin`/`cos`/`exp`, which are libm quality-of-implementation and
+//!   differ in the last ulp between C runtimes (the reason
+//!   `render_is_bit_identical_to_the_audionode_era` is gated off MSVC). So
+//!   they are asserted only where they were recorded ([`GOLDEN_HERE`]); CI's
+//!   Linux jobs run them. The one libm-free case (a dithered DC level) is
+//!   asserted everywhere.
 //!
-//! Equality is exact, not a tolerance, and is portable: both sides run the same
-//! unit code on the same machine, so a libm `sin` that differs across C
-//! runtimes differs on both sides alike.
+//! Recompute a digest only with a deliberate, argued DSP change: a mismatch
+//! prints the new figure.
 //!
 //! # Blocks
 //!
-//! The `Net` renders 64-frame blocks and the graph `GRAPH_MAX_BLOCK` (1024).
-//! A `Legacy` unit is run in 64-frame chunks from each block's start, so at a
-//! multiple of 64 every chunk lands on the frames a `Net` block does, and a
-//! unit whose output depends on the call partition (the VBAP panner, which
-//! ramps its gains across each call) agrees. That is why
-//! `GRAPH_MAX_BLOCK` is a multiple of 64; the durations below are deliberately
-//! *not*, so the last block is short on both sides.
+//! The graph renders `GRAPH_MAX_BLOCK` (1024) frames a block. A `Legacy` unit
+//! is run in 64-frame chunks from each block's start, so at a multiple of 64
+//! every chunk lands on the frames a `Net`'s 64-frame block did, and a unit
+//! whose output depends on the call partition (the VBAP panner, which ramps
+//! its gains across each call) rendered the same. That is why
+//! `GRAPH_MAX_BLOCK` is a multiple of 64; the durations below are
+//! deliberately *not*, so the last block is short.
 //!
 //! # What these do not cover
 //!
@@ -48,14 +51,12 @@
 
 use std::sync::Arc;
 
-use tutti_core::dsp::Net;
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, BufferRef, BufferVec, Hz, SampleRate};
+use tutti_core::{Amplitude, Beat, Bpm, Hz, SampleRate};
 use tutti_export::{
-    duration_to_frames, render_normalized_to_file, render_to_buffers, render_to_file,
-    write_buffers, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig,
-    FrozenClock, Normalize, RenderClock, RenderConfig, RenderGraph, Rendered, Resample,
-    GRAPH_MAX_BLOCK,
+    render_normalized_to_file, render_to_buffers, render_to_file, write_buffers, AudioFormat,
+    BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
+    RenderConfig, RenderGraph, Rendered, Resample, GRAPH_MAX_BLOCK,
 };
 use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare};
 use tutti_nodes::testing::{Const, Osc};
@@ -64,8 +65,39 @@ use tutti_types::{Db, Samples};
 const RATE: SampleRate = SampleRate(48_000.0);
 
 /// 0.3013 s at 48 kHz is 14 462 frames: 14 × 1024 + 126, and 225 × 64 + 62.
-/// Neither backend's last block is full.
+/// The last block is short at either size.
 const SECS: f64 = 0.3013;
+const FRAMES: usize = 14_462;
+
+/// Whether this target is the one the golden digests were recorded on (see
+/// the module docs): Linux with glibc's libm.
+const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
+
+/// FNV-1a over the little-endian bytes of `bytes`.
+fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// [`fnv`] over every plane's `f32` bits, plane after plane.
+fn digest(planes: &[Vec<f32>]) -> u64 {
+    fnv(planes.iter().flatten().flat_map(|s| s.to_le_bytes()))
+}
+
+/// Assert `got` is the digest recorded as `want`, where the goldens hold
+/// ([`GOLDEN_HERE`]). The message carries the new figure.
+fn assert_golden(what: &str, got: u64, want: u64) {
+    if GOLDEN_HERE {
+        assert_eq!(
+            got, want,
+            "{what}: digest {got:#018x}, recorded {want:#018x}"
+        );
+    }
+}
 
 fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
@@ -94,10 +126,10 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// device's block, then forked offline at the render's.
 ///
 /// A fork **resets** every unit it makes (fundsp's sequence: clone, isolate,
-/// rebind, reset), so it is compared against a reset `Net` — which is what
-/// the `Net` export did to the `Net` it cloned. Against a fresh one it would
-/// differ, and not by a bug: a reset `VbapPannerNode` starts on its commanded
-/// bearing where a fresh one glides there from front-centre.
+/// rebind, reset), which is what the `Net` export did to the `Net` it
+/// cloned. For most units a reset one renders what a fresh one does; not
+/// for all: a reset `VbapPannerNode` starts on its commanded bearing where a
+/// fresh one glides there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     let timeline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -113,238 +145,132 @@ fn forked(g: GraphBuilder) -> RenderGraph {
     .expect("every node here is forkable")
 }
 
-/// The test-only `Net` oracle: render `net` as tutti-export's `NetSource`
-/// and `drive` did before doc 013 PR 14 removed them (see the module docs).
-///
-/// Re-rated to the render's rate (a `Net` answers at whatever rate it was
-/// last set to); `RenderPlan`'s frame counts (the kept span is the duration
-/// plus the tail, and the head the latency is trimmed from is rendered on
-/// top); 64-frame blocks, each processed with no input and then the clock
-/// advanced by it (emit-then-advance); each frame gathered from the `Net`'s
-/// real outputs and folded onto the file's width by `fold_frame`.
-///
-/// Mutation (run): advancing `clock` before `process` → both clip-reader
-/// cases part from the graph, so the oracle keeps `NetSource`'s order.
-fn net_render(mut net: Net, config: &ExportConfig, clock: &dyn RenderClock) -> Rendered {
-    const BLOCK: usize = tutti_core::MAX_BUFFER_SIZE;
-    let rate = config.render.sample_rate;
-    let ch = config.encode.channels.count() as usize;
-    let latency = config.render.latency.get();
-    let output_length =
-        duration_to_frames(config.render.duration_seconds, rate).get() + config.render.tail.get();
-    let total = output_length + latency;
-
-    net.set_sample_rate(rate);
-    let n_out = net.outputs();
-    let mut scratch = BufferVec::new(n_out.max(1));
-    let mut planes = vec![Vec::with_capacity(output_length); ch];
-    let mut frame = vec![0.0f32; ch];
-    let mut produced = 0;
-    while produced < total {
-        let n = (total - produced).min(BLOCK);
-        let mut out = scratch.buffer_mut();
-        net.process(n, &BufferRef::new(&[]), &mut out);
-        clock.advance(tutti_types::Samples(n));
-        for i in 0..n {
-            let at = produced + i;
-            if at < latency || at - latency >= output_length {
-                continue;
-            }
-            let src: Vec<f32> = (0..n_out).map(|c| out.channel_f32(c)[i]).collect();
-            tutti_types::fold_frame(&src, &mut frame);
-            for (plane, &s) in planes.iter_mut().zip(&frame) {
-                plane.push(s);
-            }
-        }
-        produced += n;
-    }
-    Rendered {
-        planes,
-        sample_rate: rate,
-    }
+/// `graph` into buffers under `config`.
+fn buffers(graph: RenderGraph, config: &ExportConfig) -> Rendered {
+    render_to_buffers(graph, config, &FrozenClock).expect("graph renders")
 }
 
-/// The look-ahead latency a `Net` reports, as tutti-export's
-/// `reported_latency(&mut Net)` answered it before doc 013 PR 14: asked at
-/// the net's current rate, floored.
-fn net_latency(net: &mut Net) -> Samples {
-    Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
+/// The first `(channel, frame)` at which two renders differ, if any.
+fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
+    assert_eq!(a.len(), b.len(), "widths differ");
+    a.iter().zip(b).enumerate().find_map(|(c, (x, y))| {
+        assert_eq!(x.len(), y.len(), "lengths differ");
+        x.iter()
+            .zip(y)
+            .position(|(p, q)| p.to_bits() != q.to_bits())
+            .map(|i| (c, i))
+    })
 }
 
-/// A graph built twice from the same units: `(net, builder)`.
-type Pair = (Net, GraphBuilder);
+/// Panic with where `a` and `b` part, if they do.
+fn assert_same(what: &str, a: &[Vec<f32>], b: &[Vec<f32>]) {
+    if let Some((c, i)) = first_difference(a, b) {
+        panic!(
+            "{what}: channel {c} differs first at frame {i}: {} vs {}",
+            a[c][i], b[c][i]
+        );
+    }
+}
 
 /// A stereo sine at half scale, `Osc` wired to both outputs.
-fn sine(freq: f32) -> Pair {
-    let unit = || {
+fn sine(freq: f32) -> GraphBuilder {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let k = g.add_unit(Box::new(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
-            .with_layout(ChannelLayout::STEREO)
-    };
-    let mut net = Net::new(0, 2);
-    let id = net.push(Box::new(unit()));
-    net.pipe_output(id);
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let k = g.add_unit(Box::new(unit()));
+            .with_layout(ChannelLayout::STEREO),
+    ));
     g.pipe_output(k);
-    (net, g)
+    g
+}
+
+/// Frame `i` of [`sine`]'s channels, in closed form: `Osc` evaluates
+/// `sin(2π · phase)` of an `f64` phase stepped by `freq / rate`, so the
+/// closed form agrees to the phase's accumulated rounding, far inside 1e-5
+/// over these renders.
+fn sine_at(freq: f64, amplitude: f64, i: usize) -> f64 {
+    amplitude * (std::f64::consts::TAU * freq * i as f64 / RATE.get()).sin()
 }
 
 /// A mono DC level fanned to stereo.
-fn dc(level: f32) -> Pair {
-    let mut net = Net::new(0, 2);
-    let id = net.push(Box::new(Const::mono(level)));
-    net.pipe_output(id);
+fn dc(level: f32) -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
     let k = g.add_unit(Box::new(Const::mono(level)));
     g.pipe_output(k);
-    (net, g)
+    g
 }
 
 /// A tone through a lookahead limiter: a latency-bearing chain.
-fn limited() -> Pair {
-    let limiter = || {
-        tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
-            .with_lookahead(tutti_types::Seconds(0.005))
-    };
-    let tone = || {
+fn limited() -> GraphBuilder {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let src = g.add_unit(Box::new(
         Osc::sine(Hz(220.0))
             .with_amplitude(Amplitude(0.9))
-            .with_layout(ChannelLayout::STEREO)
-    };
-    let mut net = Net::new(0, 2);
-    let src = net.push(Box::new(tone()));
-    let lim = net.push(Box::new(limiter()));
-    net.pipe_all(src, lim);
-    net.pipe_output(lim);
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let src = g.add_unit(Box::new(tone()));
-    let lim = g.add_unit(Box::new(limiter()));
+            .with_layout(ChannelLayout::STEREO),
+    ));
+    let lim = g.add_unit(Box::new(
+        tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
+            .with_lookahead(tutti_types::Seconds(0.005)),
+    ));
     g.pipe(src, lim).pipe_output(lim);
-    (net, g)
+    g
 }
 
-/// A decaying tone through a convolver: a tail, a latency, and a
-/// block-oriented unit.
-fn convolved() -> Pair {
-    let ir: Vec<f32> = (0..3000).map(|i| 0.9f32.powi(i / 40) * 0.05).collect();
-    let tone = || Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5));
-    let mut net = Net::new(0, 1);
-    let src = net.push(Box::new(tone()));
-    let conv = net.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
-    net.connect(src, 0, conv, 0);
-    net.pipe_output(conv);
+/// The convolver's impulse response: 3 000 taps, decaying in steps of 40.
+fn ir() -> Vec<f32> {
+    (0..3000).map(|i| 0.9f32.powi(i / 40) * 0.05).collect()
+}
+
+/// A tone through a convolver: a tail, a latency, and a block-oriented unit.
+fn convolved() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let src = g.add_unit(Box::new(tone()));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let src = g.add_unit(Box::new(
+        Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)),
+    ));
+    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir())));
     g.connect(src, 0, conv, 0).pipe_output(conv);
-    (net, g)
+    g
+}
+
+/// [`convolved`]'s output in the time domain, computed directly, `n` frames
+/// after its latency: the node's default blend, half the dry input (delayed
+/// by the latency, so it leaves with the wet) and half the wet, and the wet
+/// frame `n` is `Σ ir[k] · x[n − k]` over the taps, with `x` the tone in
+/// closed form and the IR as the node holds it (`f32`), summed in `f64`. No
+/// FFT, and so no libm beyond `sin`.
+fn convolved_at(ir: &[f32], n: usize) -> f64 {
+    let wet: f64 = (0..ir.len().min(n + 1))
+        .map(|k| f64::from(ir[k]) * sine_at(330.0, 0.5, n - k))
+        .sum();
+    0.5 * sine_at(330.0, 0.5, n) + 0.5 * wet
 }
 
 /// Quad VBAP: a source at front-left and one at rear-left, each panned and
 /// summed into a 4-wide master — `build_vbap_mix`'s quad graph (no LFE send),
-/// written out on both sides, so the two backends share nothing here but the
-/// units. (The builder form of the helper, `tutti_spatial::vbap_mix_parts`, is
-/// pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
+/// written out. (The builder form of the helper, `tutti_spatial::vbap_mix_parts`,
+/// is pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
 /// `surround_export.rs` renders through it.)
-fn quad_vbap() -> Pair {
+fn quad_vbap() -> GraphBuilder {
     use tutti_nodes::ChannelSumNode;
     use tutti_spatial::VbapPannerNode;
-    let panner = |az: f32| {
-        let p = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
-        p.set_position(az, tutti_core::Elevation::LEVEL);
-        p
-    };
-    let tone = |f: f32| {
-        Osc::sine(Hz(f))
-            .with_amplitude(Amplitude(0.5))
-            .with_layout(ChannelLayout::STEREO)
-    };
-
-    let mut net = Net::new(0, 4);
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
-    let sum_n = net.push(Box::new(ChannelSumNode::new(2, ChannelLayout::QUAD)));
-    let sum_g = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::QUAD)));
+    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::QUAD)));
     for (s, (az, f)) in [(45.0, 300.0), (135.0, 500.0)].into_iter().enumerate() {
-        let src = net.push(Box::new(tone(f)));
-        let pan = net.push(Box::new(panner(az)));
-        net.pipe_all(src, pan);
-        let gsrc = g.add_unit(Box::new(tone(f)));
-        let gpan = g.add_unit(Box::new(panner(az)));
-        g.pipe(gsrc, gpan);
+        let src = g.add_unit(Box::new(
+            Osc::sine(Hz(f))
+                .with_amplitude(Amplitude(0.5))
+                .with_layout(ChannelLayout::STEREO),
+        ));
+        let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
+        pan.set_position(az, tutti_core::Elevation::LEVEL);
+        let pan = g.add_unit(Box::new(pan));
+        g.pipe(src, pan);
         for c in 0..4 {
-            net.connect(pan, c, sum_n, s * 4 + c);
-            g.connect(gpan, c, sum_g, s * 4 + c);
+            g.connect(pan, c, sum, s * 4 + c);
         }
     }
-    net.pipe_output(sum_n);
-    g.pipe_output(sum_g);
-    (net, g)
-}
-
-/// How the graph side is made.
-#[derive(Clone, Copy)]
-enum Via {
-    /// [`built`].
-    Built,
-    /// [`forked`], against a reset `Net`.
-    Forked,
-}
-
-/// The graph and the `Net` oracle into buffers; asserts the planes are
-/// bit-identical, and returns them.
-fn same_buffers(pair: Pair, config: &ExportConfig, via: Via) -> Vec<Vec<f32>> {
-    let (mut net, g) = pair;
-    let graph = match via {
-        Via::Built => built(g),
-        Via::Forked => {
-            // As the export that cloned a `Net` did: re-rate, then reset
-            // (see `forked`).
-            net.set_sample_rate(RATE);
-            net.reset();
-            forked(g)
-        }
-    };
-    let a = net_render(net, config, &FrozenClock);
-    let b = render_to_buffers(graph, config, &FrozenClock).expect("graph renders");
-    assert_eq!(a.sample_rate, b.sample_rate);
-    assert_eq!(a.channels(), b.channels());
-    assert_eq!(a.frames(), b.frames(), "the two backends differ in length");
-    for (c, (x, y)) in a.planes.iter().zip(&b.planes).enumerate() {
-        if let Some(i) = x
-            .iter()
-            .zip(y)
-            .position(|(p, q)| p.to_bits() != q.to_bits())
-        {
-            panic!(
-                "{}-wide: channel {c} differs first at frame {i}: net {} graph {}",
-                a.channels(),
-                x[i],
-                y[i]
-            );
-        }
-    }
-    a.planes
-}
-
-/// The graph to a file through `write`, and the `Net` oracle's planes to
-/// another through `write_planes` (the same export, from planes already
-/// rendered); asserts the files are byte-identical.
-fn same_file(
-    pair: Pair,
-    config: &ExportConfig,
-    write: impl Fn(RenderGraph, &std::path::Path) -> tutti_export::Result<tutti_export::Written>,
-    write_planes: impl Fn(&Rendered, &std::path::Path) -> tutti_export::Result<tutti_export::Written>,
-) -> Vec<u8> {
-    let (net, g) = pair;
-    let d = tempfile::tempdir().unwrap();
-    let (pn, pg) = (d.path().join("net.wav"), d.path().join("graph.wav"));
-    write_planes(&net_render(net, config, &FrozenClock), &pn).expect("net writes");
-    write(built(g), &pg).expect("graph writes");
-    let (a, b) = (std::fs::read(&pn).unwrap(), std::fs::read(&pg).unwrap());
-    assert_eq!(a.len(), b.len(), "the two files differ in length");
-    assert!(a == b, "the two files differ");
-    a
+    g.pipe_output(sum);
+    g
 }
 
 /// Not vacuous: a render that is all zeros would agree with anything.
@@ -353,208 +279,337 @@ fn assert_audible(planes: &[Vec<f32>]) {
     assert!(peak > 0.05, "the render is (nearly) silent: peak {peak}");
 }
 
-/// The sine oracle's graph, through both backends, built for the export and
-/// forked from a live graph.
+/// A file written through `write` from one graph, and the planes of another
+/// built the same way written through `write_buffers` after `prepare`: the
+/// export writes what it renders, so the two are byte-identical. Returns the
+/// file.
+fn same_file(
+    graph: impl Fn() -> GraphBuilder,
+    config: &ExportConfig,
+    write: impl Fn(RenderGraph, &std::path::Path) -> tutti_export::Result<tutti_export::Written>,
+    prepare: impl Fn(Rendered) -> tutti_export::Result<Rendered>,
+) -> Vec<u8> {
+    let d = tempfile::tempdir().unwrap();
+    let (pf, pb) = (d.path().join("file.wav"), d.path().join("buffers.wav"));
+    write(built(graph()), &pf).expect("the graph writes");
+    let planes = prepare(buffers(built(graph()), config)).expect("prepares");
+    write_buffers(&planes, config, &pb).expect("its planes write");
+    let (a, b) = (std::fs::read(&pf).unwrap(), std::fs::read(&pb).unwrap());
+    assert_eq!(a.len(), b.len(), "the two files differ in length");
+    assert!(a == b, "the file is not its planes");
+    a
+}
+
+/// A WAV file's float samples, interleaved.
+fn float_samples(bytes: &[u8]) -> Vec<f32> {
+    hound::WavReader::new(std::io::Cursor::new(bytes))
+        .unwrap()
+        .into_samples::<f32>()
+        .map(|s| s.unwrap())
+        .collect()
+}
+
+/// The sine, built for the export and forked from a live graph: the closed
+/// form on every frame of both channels, the fork the fresh graph to the
+/// bit, and (Linux/glibc) the digest the `Net` rendered.
+///
+/// Until doc 013 PR 15 both were compared bit for bit with a `Net`
+/// rendering the same unit (`net_render`).
 ///
 /// Mutations (run): `block_size` rounded down to a multiple of 64 in
 /// `GraphSource::fill` (the last, short block is never rendered) → the
-/// lengths differ; the graph's output scaled by `1.0 + f32::EPSILON` → the
-/// planes differ. (Folding every channel from plane 0 passes here — both
-/// channels carry the same sine — and fails the surround case.)
+/// length is short; the graph's output scaled by `1.0 + f32::EPSILON` →
+/// the digest moves (the closed form's tolerance cannot see it).
 #[test]
-fn a_sine_renders_bit_identically_through_both_backends() {
+fn a_sine_renders_its_closed_form() {
     let cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
-    let planes = same_buffers(sine(1000.0), &cfg, Via::Built);
-    assert_audible(&planes);
-    assert_eq!(planes[0].len(), 14_462);
-    same_buffers(sine(1000.0), &cfg, Via::Forked);
+    let planes = buffers(built(sine(1000.0)), &cfg).planes;
+    assert_eq!(planes.len(), 2);
+    assert_eq!(planes[0].len(), FRAMES);
+    for (c, plane) in planes.iter().enumerate() {
+        for (i, &s) in plane.iter().enumerate() {
+            let want = sine_at(1000.0, 0.5, i);
+            assert!(
+                (f64::from(s) - want).abs() < 1e-5,
+                "channel {c}, frame {i}: {s}, the sine is {want}"
+            );
+        }
+    }
+    assert_golden("sine", digest(&planes), 0x4b59_8dd3_79f5_90cd);
+    let forked = buffers(forked(sine(1000.0)), &cfg).planes;
+    assert_same("forked against built", &planes, &forked);
 }
 
-/// The resample oracle's case (48 k → 44.1 k), to a file: the conversion,
-/// the gate and the encoder behind both backends are one path, so equal
-/// renders make equal bytes. The graph pulls 1024-frame blocks and the `Net`
-/// 64: the resampler's carry makes its output independent of the partition,
-/// and this pins that too.
+/// The resample case (48 k → 44.1 k), to a file: the file is the render's
+/// planes through the same conversion and encoder (`write_buffers`), byte
+/// for byte, at 44.1 kHz, and (Linux/glibc) the bytes the `Net` export
+/// wrote.
+///
+/// Until doc 013 PR 15 the planes written through `write_buffers` were a
+/// `Net`'s, rendered in 64-frame blocks against the graph's 1024 (the
+/// resampler's carry makes its output independent of the partition, which
+/// that pinned too; `oracle_resample.rs` holds the conversion to first
+/// principles).
 ///
 /// Mutation (run): scale the graph path's output by `1.0 + f32::EPSILON` in
-/// `GraphSource::fill` → the files differ.
+/// `GraphSource::fill` → the digest moves.
 #[test]
-fn a_resampled_export_is_byte_identical_through_both_backends() {
+fn a_resampled_export_writes_its_render() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.resample = Some(Resample::to(SampleRate(44_100.0)));
     let bytes = same_file(
-        sine(1000.0),
+        || sine(1000.0),
         &cfg,
         |g, p| render_to_file(g, &cfg, &FrozenClock, p),
-        |r, p| write_buffers(r, &cfg, p),
+        Ok,
     );
-    let r = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
+    let r = hound::WavReader::new(std::io::Cursor::new(&bytes)).unwrap();
     assert_eq!(r.spec().sample_rate, 44_100, "not vacuous: it resampled");
+    // A 1 kHz sine at half scale is in the passband: it keeps its level.
+    let peak = float_samples(&bytes)
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!((peak - 0.5).abs() < 0.01, "peak {peak}");
+    assert_golden(
+        "resampled file",
+        fnv(bytes.iter().copied()),
+        0x742b_d54e_8409_650e,
+    );
 }
 
 /// The dBTP case: a peak-normalized export (render, measure, gain, write)
-/// through both backends lands on the same bytes.
+/// is its render normalized and written (`Normalize::gain_for_rendered`,
+/// then `write_buffers`), byte for byte; its sample peak sits at the
+/// -1 dBTP target or just under it (the true peak, between samples, is
+/// what reaches -1 dB); and (Linux/glibc) the bytes are the `Net` export's.
 ///
-/// Mutation (run): as above → the files differ.
+/// Mutation (run): as above → the digest moves.
 #[test]
-fn a_peak_normalized_export_is_byte_identical_through_both_backends() {
+fn a_peak_normalized_export_writes_its_normalized_render() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 1.0;
     let normalize = Normalize::peak(Db(-1.0));
-    same_file(
-        sine(440.0),
+    let bytes = same_file(
+        || sine(440.0),
         &cfg,
         |g, p| render_normalized_to_file(g, &cfg, &FrozenClock, normalize, p),
         // `render_normalized_to_file`'s own steps on planes already rendered:
-        // measure, apply, write (no resample here to convert first).
-        |r, p| {
-            let mut r = r.clone();
+        // measure, apply (no resample here to convert first).
+        |mut r| {
             r.apply_gain(normalize.gain_for_rendered(&r)?);
-            write_buffers(&r, &cfg, p)
+            Ok(r)
         },
+    );
+    let target = Db(-1.0).to_amplitude().get();
+    let peak = float_samples(&bytes)
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        peak <= target + 1e-6 && peak > target * 0.99,
+        "sample peak {peak}, target {target}"
+    );
+    assert_golden(
+        "peak-normalized file",
+        fnv(bytes.iter().copied()),
+        0x5c90_1de8_221d_8251,
     );
 }
 
 /// The dither case: triangular dither to 16 bits, on a DC level between two
-/// codes so every sample is perturbed. Dither is seeded per export and runs
-/// sample by sample, so equal renders dither identically.
+/// codes, so every sample is perturbed. The file is its planes dithered and
+/// written (`write_buffers`), byte for byte; its samples scatter around the
+/// level's code (8 192.05) within the dither's two codes and average onto it;
+/// and it is the `Net` export's file to the byte, on **every** target: a DC
+/// level and a seeded integer dither use no libm.
 ///
-/// Mutation (run): as above → the files differ.
+/// Mutation (run): as above → the digest moves.
 #[test]
-fn a_dithered_export_is_byte_identical_through_both_backends() {
+fn a_dithered_export_writes_its_dithered_render() {
     let mut cfg = config(BitDepth::Int16, ChannelLayout::STEREO);
     cfg.dither = Dither::Triangular;
+    let level = 0.25 + 0.3 / 32_768.0;
     let bytes = same_file(
-        dc(0.25 + 0.3 / 32_768.0),
+        || dc(level),
         &cfg,
         |g, p| render_to_file(g, &cfg, &FrozenClock, p),
-        |r, p| write_buffers(r, &cfg, p),
+        Ok,
     );
-    // Not vacuous: the dither moved samples off the one code.
-    let s: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(bytes))
+    let s: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(&bytes))
         .unwrap()
         .into_samples::<i16>()
         .map(|s| s.unwrap())
         .collect();
+    // Not vacuous: the dither moved samples off the one code.
     assert!(s.iter().any(|&x| x != s[0]), "dither left the level flat");
+    // In the encoder's scale (`f32_to_i16`: full scale is `i16::MAX`).
+    let code = f64::from(level) * f64::from(i16::MAX);
+    assert!(s.iter().all(|&x| (f64::from(x) - code).abs() <= 2.0));
+    let mean = s.iter().map(|&x| f64::from(x)).sum::<f64>() / s.len() as f64;
+    assert!(
+        (mean - code).abs() < 0.05,
+        "mean {mean}, the level is {code}"
+    );
+    assert_eq!(
+        fnv(bytes.iter().copied()),
+        0xcc78_4f0b_ee7c_d5f9,
+        "the dithered file's digest"
+    );
 }
 
 /// The surround case: a quad VBAP mix, exported at its own width and folded
-/// down to stereo and to mono by the ITU matrix, through both backends.
+/// down to stereo and to mono. The narrower files are the quad render folded
+/// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
+/// render puts the front-left source in channel 0 and the rear-left one in
+/// channel 2; and (Linux/glibc) the quad render, built and forked, is the
+/// `Net`'s.
 ///
 /// This is also the case that pins the block rule in the module docs: the
 /// VBAP panner ramps its gains across each call, so it is the unit here whose
 /// output depends on where the 64-frame chunks fall.
 ///
 /// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
-/// channel → the quad render differs on channel 1; `GRAPH_MAX_BLOCK = 1000`
-/// (not a multiple of 64) → the panners' ramps restart on other frames and
-/// the renders differ.
+/// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
+/// = 1000` (not a multiple of 64) → the panners' ramps restart on other
+/// frames and the quad digest moves.
 #[test]
-fn a_surround_mix_renders_bit_identically_at_every_width() {
-    for width in [
-        ChannelLayout::QUAD,
-        ChannelLayout::STEREO,
-        ChannelLayout::MONO,
-    ] {
-        let planes = same_buffers(quad_vbap(), &config(BitDepth::Float32, width), Via::Built);
-        assert_audible(&planes);
-    }
-    let quad = same_buffers(
-        quad_vbap(),
+fn a_surround_mix_folds_to_every_width() {
+    let quad = buffers(
+        built(quad_vbap()),
         &config(BitDepth::Float32, ChannelLayout::QUAD),
-        Via::Forked,
-    );
-    // Not vacuous: the rear-left source put energy in channel 2.
+    )
+    .planes;
+    assert_audible(&quad);
+    // Not vacuous: the rear-left source put energy in channel 2, and the
+    // front-left one in channel 0.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
+    assert!(quad[0].iter().any(|s| s.abs() > 0.05), "no front energy");
+    assert_golden("quad", digest(&quad), 0x2df3_9481_9b23_375a);
+    // No digest for these: each is the quad render (whose digest is pinned)
+    // folded, to the bit.
+    for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
+        let got = buffers(built(quad_vbap()), &config(BitDepth::Float32, width)).planes;
+        let n = width.count() as usize;
+        let mut folded = vec![Vec::with_capacity(FRAMES); n];
+        let mut frame = vec![0.0f32; n];
+        for i in 0..FRAMES {
+            let src: Vec<f32> = quad.iter().map(|p| p[i]).collect();
+            tutti_types::fold_frame(&src, &mut frame);
+            for (plane, &s) in folded.iter_mut().zip(&frame) {
+                plane.push(s);
+            }
+        }
+        assert_same(&format!("{n}-wide against the quad folded"), &folded, &got);
+    }
+    let fork = buffers(
+        forked(quad_vbap()),
+        &config(BitDepth::Float32, ChannelLayout::QUAD),
+    )
+    .planes;
+    assert!(fork[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
+    assert_golden("quad, forked", digest(&fork), 0x800b_0ec2_8842_1715);
 }
 
-/// A convolver — FFT-partitioned, latency- and tail-bearing — renders
-/// bit-identically at the graph's block.
+/// A convolver — FFT-partitioned, latency- and tail-bearing — renders the
+/// direct time-domain convolution of its input, delayed by the latency it
+/// reports, at the graph's block; and (Linux/glibc) the `Net`'s render.
 ///
-/// It turns out not to be the block-sensitive one: it buffers its partitions
-/// internally, so `GRAPH_MAX_BLOCK = 1000` still passes here (run) and the
-/// surround case is what catches that. The assertion on the constant below
-/// is the cheap guard; this test is here for the latency/tail-bearing unit.
+/// It turns out not to be the block-sensitive unit: it buffers its
+/// partitions internally, so `GRAPH_MAX_BLOCK = 1000` still passes here
+/// (run) and the surround case is what catches that. The assertion on the
+/// constant below is the cheap guard; this test is here for the
+/// latency/tail-bearing unit.
 ///
-/// Mutations (run): `block_size` rounded down to a multiple of 64, or the
-/// output scaled by `1.0 + f32::EPSILON` → the planes differ.
+/// The tolerance is the FFT's `f32` rounding over a 3 000-tap sum whose
+/// output reaches ~10: 1e-3, against an error measured below 1e-4.
+///
+/// Mutations (run): `block_size` rounded down to a multiple of 64 → the
+/// length is short; the output scaled by `1.0 + f32::EPSILON` → the digest
+/// moves.
 #[test]
-fn a_convolver_renders_bit_identically_at_the_graph_block() {
+fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get() % 64, 0);
-    let planes = same_buffers(
-        convolved(),
-        &config(BitDepth::Float32, ChannelLayout::MONO),
-        Via::Built,
-    );
+    let graph = built(convolved());
+    let latency = graph.reported_latency().get();
+    let planes = buffers(graph, &config(BitDepth::Float32, ChannelLayout::MONO)).planes;
     assert_audible(&planes);
+    assert_eq!(planes[0].len(), FRAMES);
+    let ir = ir();
+    for (n, &s) in planes[0].iter().enumerate() {
+        let want = if n < latency {
+            0.0
+        } else {
+            convolved_at(&ir, n - latency)
+        };
+        assert!(
+            (f64::from(s) - want).abs() < 1e-3,
+            "frame {n}: {s}, the convolution is {want} (latency {latency})"
+        );
+    }
+    assert_golden("convolver", digest(&planes), 0x1163_cc03_0b49_99c6);
 }
 
-/// The graph reports a lookahead limiter's latency as the `Net` did, and a
-/// render trimmed by it is the `Net`'s trimmed render, sample for sample.
+/// The graph reports a lookahead limiter's latency analytically (5 ms at
+/// 48 kHz, 240 frames), and a render trimmed by it is the untrimmed render
+/// from frame 240 on, sample for sample.
 ///
-/// Mutation (run): `RenderGraph::reported_latency` returning
-/// `Samples::ZERO` → the figures differ (the limiter reports 240 frames at
-/// 48 kHz).
+/// Until doc 013 PR 15 the figure was also compared with a `Net`'s
+/// (`net_latency`, re-rated to the render's rate) and the trimmed render
+/// with the `Net`'s trimmed render (`net_render`).
 ///
-/// Doc 013 PR 14 dropped one assertion here with the `Net` arm: that
-/// `RenderGraph::Net`'s answer equalled the free `reported_latency(&mut Net)`
-/// — two spellings of the one removed call. The figure itself is now also
-/// pinned analytically: 5 ms of lookahead at 48 kHz is 240 frames.
+/// Mutations (run): `RenderGraph::reported_latency` returning
+/// `Samples::ZERO` → the figure is 0; `drive` trimming one frame more than
+/// the latency → the trimmed render is a frame short.
 #[test]
-fn the_latency_trim_equals_the_net_paths() {
-    let (mut net, g) = limited();
-    let graph = built(g);
-    // A `Net` answers at whatever rate it was last set to — 44.1 kHz for
-    // one never rendered, where this limiter reports 221 frames, not 240 —
-    // so it is re-rated to the render's first, as a caller had to. The graph
-    // answers at the rate it was prepared at and cannot be asked early.
-    net.set_sample_rate(RATE);
-    let net_latency = net_latency(&mut net);
-    let graph_latency = graph.reported_latency();
-    assert!(
-        net_latency.get() > 0,
-        "not vacuous: the limiter looks ahead"
-    );
-    assert_eq!(graph_latency, net_latency);
-    assert_eq!(graph_latency, Samples(240), "5 ms at 48 kHz");
+fn the_latency_trim_drops_the_lookahead() {
+    let latency = built(limited()).reported_latency();
+    assert_eq!(latency, Samples(240), "5 ms at 48 kHz");
 
-    let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
-    cfg.render.latency = graph_latency;
-    let (net, g) = limited();
-    let planes = same_buffers((net, g), &cfg, Via::Built);
-    assert_eq!(
-        planes[0].len(),
-        14_462,
-        "the trim does not shorten the output"
-    );
-    assert_audible(&planes);
+    let mut trimmed = config(BitDepth::Float32, ChannelLayout::STEREO);
+    trimmed.render.latency = latency;
+    let a = buffers(built(limited()), &trimmed).planes;
+    assert_eq!(a[0].len(), FRAMES, "the trim does not shorten the output");
+    assert_audible(&a);
+
+    // Untrimmed, and 240 frames longer (as a tail), so it covers the same
+    // span shifted.
+    let mut whole = config(BitDepth::Float32, ChannelLayout::STEREO);
+    whole.render.tail = latency;
+    let b = buffers(built(limited()), &whole).planes;
+    let shifted: Vec<Vec<f32>> = b.iter().map(|p| p[240..].to_vec()).collect();
+    assert_same("trimmed against untrimmed from 240", &a, &shifted);
 }
 
-/// The graph reports a convolver's tail as the `Net` did, and a render
-/// extended by it is the `Net`'s, sample for sample.
+/// The graph reports a convolver's tail analytically (a 3 000-tap IR rings
+/// 2 999 frames), and a render trimmed by its latency and extended by its
+/// tail is the direct convolution, frame for frame, through the tail.
+///
+/// Until doc 013 PR 15 the figure was also compared with the tail fold over
+/// a `Net` (`graph_tail`), and the render with the `Net`'s (`net_render`).
 ///
 /// Mutation (run): `RenderGraph::reported_tail` folding an empty topology
 /// → `Some(0)` against the convolver's 2999.
-///
-/// Doc 013 PR 14 dropped one assertion here with the `Net` arm:
-/// `RenderGraph::Net`'s tail equalled the free `reported_tail(&Net)`, both
-/// the one fold this test now calls directly (`graph_tail` over the `Net`).
 #[test]
-fn the_tail_length_equals_the_net_paths() {
-    let (net, g) = convolved();
-    let graph = built(g);
-    let net_tail = tutti_types::graph_tail(&net);
-    assert_eq!(net_tail.samples(), Some(Samples(2999)), "the IR's ring-out");
-    assert_eq!(graph.reported_tail(), net_tail);
-
+fn the_tail_extends_the_render_by_the_ring_out() {
+    let graph = built(convolved());
+    assert_eq!(
+        graph.reported_tail().samples(),
+        Some(Samples(2999)),
+        "the IR's ring-out"
+    );
     let mut cfg = config(BitDepth::Float32, ChannelLayout::MONO);
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     // The latency trim too, so both halves of the gate run together.
-    let probe = built(convolved().1);
-    cfg.render.latency = probe.reported_latency();
-    let planes = same_buffers(convolved(), &cfg, Via::Built);
-    assert_eq!(planes[0].len(), 14_462 + 2999);
+    cfg.render.latency = graph.reported_latency();
+    let planes = buffers(built(convolved()), &cfg).planes;
+    assert_eq!(planes[0].len(), FRAMES + 2999);
+    let ir = ir();
+    for (n, &s) in planes[0].iter().enumerate() {
+        let want = convolved_at(&ir, n);
+        assert!(
+            (f64::from(s) - want).abs() < 1e-3,
+            "frame {n}: {s}, the convolution is {want}"
+        );
+    }
 }
 
 /// A graph holding a node that cannot be forked (a plugin, a mic monitor —
@@ -593,8 +648,8 @@ fn an_unforkable_node_is_an_export_error_naming_it() {
 /// the crossed pair.
 #[test]
 fn a_crossed_pair_is_refused_at_construction() {
-    let (editor_a, executor_a) = sine(1000.0).1.build(RenderGraph::prepare(RATE)).unwrap();
-    let (editor_b, executor_b) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let (editor_a, executor_a) = sine(1000.0).build(RenderGraph::prepare(RATE)).unwrap();
+    let (editor_b, executor_b) = sine(500.0).build(RenderGraph::prepare(RATE)).unwrap();
     for (editor, executor) in [(editor_a, executor_b), (editor_b, executor_a)] {
         let r = RenderGraph::new(editor, executor);
         assert!(
@@ -611,8 +666,8 @@ fn a_crossed_pair_is_refused_at_construction() {
 /// renders the crossed pair.
 #[test]
 fn an_editor_swapped_after_construction_is_refused_at_render() {
-    let mut graph = built(sine(1000.0).1);
-    let (other, _exec) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let mut graph = built(sine(1000.0));
+    let (other, _exec) = sine(500.0).build(RenderGraph::prepare(RATE)).unwrap();
     let _live = std::mem::replace(graph.editor_mut(), other);
     let r = render_to_buffers(
         graph,
@@ -627,7 +682,7 @@ fn an_editor_swapped_after_construction_is_refused_at_render() {
 /// Mutation (run): drop the rate check in `GraphSource::new` → it renders.
 #[test]
 fn a_graph_prepared_at_another_rate_is_refused() {
-    let (_, g) = sine(1000.0);
+    let g = sine(1000.0);
     let (editor, executor) = g
         .build(RenderGraph::prepare(SampleRate(44_100.0)))
         .expect("builds");
@@ -749,26 +804,23 @@ fn render_under(
         .planes
 }
 
-/// [`render_under`] for the `Net` oracle.
-fn net_render_under(net: Net, clock: &OfflineTimeline, width: ChannelLayout) -> Vec<Vec<f32>> {
-    net_render(net, &config(BitDepth::Float32, width), clock).planes
+/// Every frame of `plane` is the tone's, to the bit: a dry voice read at a
+/// whole source frame copies the sample the wave holds.
+fn assert_the_tone(what: &str, plane: &[f32]) {
+    for (i, &s) in plane.iter().enumerate() {
+        assert_eq!(
+            s.to_bits(),
+            tone_at(i).to_bits(),
+            "{what}: frame {i} read {s}, the tone is {} there",
+            tone_at(i)
+        );
+    }
 }
 
-/// The first `(channel, frame)` at which two renders differ, if any.
-fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
-    assert_eq!(a.len(), b.len(), "widths differ");
-    a.iter().zip(b).enumerate().find_map(|(c, (x, y))| {
-        assert_eq!(x.len(), y.len(), "lengths differ");
-        x.iter()
-            .zip(y)
-            .position(|(p, q)| p.to_bits() != q.to_bits())
-            .map(|i| (c, i))
-    })
-}
-
-/// **A sampler voice renders bit-identically through both backends at
-/// `GRAPH_MAX_BLOCK`**, dry and a fifth up, and the dry one is the tone it
-/// plays, frame for frame.
+/// **A sampler voice renders in time at `GRAPH_MAX_BLOCK`**, dry and a fifth
+/// up: the dry one is the tone it plays, to the bit, on both channels; the
+/// render clock ends the render's frames on; and (Linux/glibc) the pitched
+/// one is the `Net`'s render.
 ///
 /// The voice polls the render clock (its `Arc<dyn Timeline>`) on every
 /// `AudioUnit::process` call, which `Legacy` makes per 64-frame chunk. The
@@ -778,69 +830,68 @@ fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
 /// measured 768 Hz). `RenderClock::render_graph` therefore renders a graph
 /// holding a `Legacy` unit chunk-major, 64 frames across every node with
 /// the clock advanced between (doc 013's `Legacy` compatibility mode), as
-/// a `Net` was rendered, so the two agree to the bit.
+/// a `Net` was rendered.
 ///
-/// Why to the bit and not to rounding: the pitched voice runs through the
-/// vocoder, which turns an ulp of beat into far more. Measured with the
-/// clock advanced a block at a time and the chunk positions computed in one
-/// multiply each: the fifth-up voice left the `Net`'s render by 1e-3 at
-/// frame 3076.
+/// Why a digest and not a tolerance for the pitched voice: the vocoder turns
+/// an ulp of beat into far more. Measured with the clock advanced a block at
+/// a time and the chunk positions computed in one multiply each, the
+/// fifth-up voice left the `Net`'s render by 1e-3 at frame 3076. Until doc
+/// 013 PR 15 both voices were compared with a `Net` rendering them
+/// (`net_render`), bit for bit.
 ///
-/// Mutation (run): `render_graph` rendering whole blocks with a `Legacy`
-/// unit present (`has_legacy` ignored) → the backends part at frame 64, and
-/// the dry render leaves the tone there.
+/// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
+/// → the dry render is not the tone, and the pitched digest moves.
+///
+/// Not caught here: `render_graph` rendering whole blocks with a `Legacy`
+/// unit present (`has_legacy` ignored). A voice placed at beat 0 enters on
+/// frame 0 and then reads its own cursor, so with these fixtures a
+/// whole-block render is the same bits (measured: both voices, both
+/// digests). Where the polled beat matters, at a clip's entry mid-render,
+/// tutti-sampler's `frame_exact_entry.rs` catches it
+/// (`a_clip_enters_on_its_frame_offline_through_the_graph`). This test's
+/// note used to claim the backends parted at frame 64; that was measured
+/// before the sampler's own cursor took over, and no longer holds.
 #[test]
-fn a_sampler_voice_renders_bit_identically_at_the_graph_block() {
+fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
-    for cents in [0.0f32, 700.0] {
-        let net_clock = timeline();
-        let mut net = Net::new(0, 2);
-        let id = net.push(Box::new(placed_pool(&net_clock, cents)));
-        net.pipe_output(id);
-        let a = net_render_under(net, &net_clock, ChannelLayout::STEREO);
-
-        let graph_clock = timeline();
+    for (cents, want) in [
+        (0.0f32, 0xbd52_29c7_8f1d_ca41u64),
+        (700.0, 0xd11e_26e8_e6d8_b81d),
+    ] {
+        let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let k = g.add_unit(Box::new(placed_pool(&graph_clock, cents)));
+        let k = g.add_unit(Box::new(placed_pool(&clock, cents)));
         g.pipe_output(k);
-        let b = render_under(built(g), &graph_clock, ChannelLayout::STEREO);
-
-        if let Some((c, i)) = first_difference(&a, &b) {
-            panic!(
-                "{cents} cents: channel {c} differs first at frame {i}: net {} graph {}",
-                a[c][i], b[c][i]
-            );
-        }
+        let b = render_under(built(g), &clock, ChannelLayout::STEREO);
         assert_audible(&b);
-        // Both clocks stand where the render ends, to the bit.
-        assert_eq!(
-            net_clock.beat().get().to_bits(),
-            graph_clock.beat().get().to_bits(),
-            "{cents} cents: the clocks end apart"
+        assert_eq!(b[0].len(), FRAMES);
+        // The clock stands where the render ends: the offline timeline's
+        // closed form, frames × tempo / (60 × rate), to rounding.
+        let end = (FRAMES as f64 * 120.0) / (60.0 * RATE.get());
+        assert!(
+            (clock.beat().get() - end).abs() < 1e-9,
+            "{cents} cents: the clock ends at {}, not {end}",
+            clock.beat().get()
         );
         if cents == 0.0 {
-            // Not merely the `Net`'s render: the right one. At unit rate the
-            // voice reads the table at (nearly) integer positions.
-            for (i, &s) in b[0].iter().enumerate() {
-                let want = tone_at(i);
-                assert!(
-                    (s - want).abs() < 1e-3,
-                    "frame {i}: the voice read {s}, the tone is {want} there"
-                );
-            }
+            assert_the_tone("dry, left", &b[0]);
+            assert_the_tone("dry, right", &b[1]);
         }
+        assert_golden(&format!("voice, {cents} cents"), digest(&b), want);
     }
 }
 
 /// The same through a **fork**: a placed `MemorySource` in a live graph,
 /// forked offline onto the render's timeline (its `rebind_offline`
-/// re-points it), renders what the `Net` path renders with the voice on
-/// that timeline from the start.
+/// re-points it), plays the tone from the render's start, to the bit, as a
+/// voice on that timeline from the start does. (Until doc 013 PR 15 it was
+/// compared with a `Net` rendering the source on that timeline.)
 ///
-/// Mutation (run): `render_graph` rendering whole blocks with a `Legacy`
-/// unit present → the backends part at frame 64.
+/// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
+/// → the render is not the tone. (Whole-block rendering is not caught
+/// here, for the reason the test above gives.)
 #[test]
-fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
+fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     use tutti_sampler::MemorySource;
     let placed = |clock: Arc<OfflineTimeline>| {
         MemorySource::with_transport(
@@ -850,14 +901,6 @@ fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
             None,
         )
     };
-
-    let net_clock = timeline();
-    let mut net = Net::new(0, 1);
-    let id = net.push(Box::new(placed(Arc::clone(&net_clock))));
-    net.pipe_output(id);
-    net.set_sample_rate(RATE);
-    net.reset();
-    let a = net_render_under(net, &net_clock, ChannelLayout::MONO);
 
     // Live, the voice follows another clock, somewhere else; the fork
     // re-points it at the render's.
@@ -872,12 +915,6 @@ fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
     let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)
         .expect("a memory source is forkable");
     let b = render_under(forked, &graph_clock, ChannelLayout::MONO);
-
-    if let Some((c, i)) = first_difference(&a, &b) {
-        panic!(
-            "channel {c} differs first at frame {i}: net {} graph {}",
-            a[c][i], b[c][i]
-        );
-    }
     assert_audible(&b);
+    assert_the_tone("forked", &b[0]);
 }

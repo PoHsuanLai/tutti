@@ -320,7 +320,7 @@ impl NativeGraph {
             .exec
     }
 
-    /// The editor, for `Engine::with_graph`.
+    /// The editor, for `Engine::new`.
     pub(crate) fn editor_mut(&mut self) -> &mut Editor {
         &mut self.editor
     }
@@ -346,7 +346,7 @@ impl NativeGraph {
 
     /// Refuse, before a device restart stops anything, a re-prepare to
     /// `max_block` this graph could not start: past the engine's block
-    /// capacity (the editor's limits, set by `Engine::with_graph`), with one
+    /// capacity (the editor's limits, set by `Engine::new`), with one
     /// already between its halves, or on a poisoned editor. The rest of what
     /// `Editor::reprepare` checks depends on the new `Prepare` and is left
     /// to it.
@@ -516,7 +516,7 @@ impl NativeGraph {
     }
 
     /// The beat generator a graph engine needs in place of a
-    /// `TransportClock` (`Engine::with_graph` forbids one in the graph).
+    /// `TransportClock` (`Engine::new` forbids one in the graph).
     ///
     /// Forkable by clone (`ForkByClone`): it is a unit struct that reads only
     /// its block's `Env`, so a clone shares nothing, and a fork's renderer

@@ -102,22 +102,14 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
         "tests/export_fork.rs",
         "downcast_ref / downcast_mut",
-        6,
+        5,
         "a_plugin_fork_that_cannot_be_built_is_a_named_failure, \
          an_unrebindable_synth_source_is_a_named_failure and \
          a_host_midi_unit_with_an_unrebindable_source_refuses_by_name downcast an export \
          error's `ForkCause` to the node's own error (the cause's documented \
-         use), not a graph node. poly_node_export_net_era (the `Net`-era \
-         oracle of synth_exports_are_bit_identical_to_the_net_era) downcasts \
-         the synth in its own isolated `Net` to hand it the clip the way a \
-         `Net`-era host did; it goes with tutti-export's `Net` arm (PR 14).",
-    ),
-    (
-        "tests/export_fork.rs",
-        "raw graph node access (.0.node( / net.node()",
-        1,
-        "poly_node_export_net_era: the same refill, on the oracle's own isolated \
-         `Net`, never the adapter's graph.",
+         use), not a graph node. (The `Net`-era oracle's downcast of the synth \
+         in its own `Net`, and its raw node access, went with it in doc 013 \
+         PR 15.)",
     ),
 ];
 

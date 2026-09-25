@@ -238,7 +238,15 @@ impl MotionFsm {
     ///   playback reaches it;
     /// - an [`At::NextBlock`] at the next block's first frame.
     ///
-    /// Commands due on one frame apply in the order they were sent. A frame
+    /// Commands due on one frame apply in the order they were sent.
+    ///
+    /// A **declicked** stop or seek (`FadeOut::Declick`) is where a time
+    /// pays off: the engine sees it coming and fades the old audio out so it
+    /// reaches zero exactly on the command's frame, then fades back in from
+    /// there, with no gain step anywhere. The same command sent untimed (or
+    /// as `At::NextBlock`, or late) has no lead: the old audio ends on the
+    /// block's first frame and the new one fades in. See the engine's module
+    /// docs. A frame
     /// already past, a beat continuous playback already crossed, or a
     /// command past a block's cut bound
     /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)) lands

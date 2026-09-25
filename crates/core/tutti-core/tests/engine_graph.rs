@@ -113,21 +113,6 @@ impl Node for Gate {
     fn reset(&mut self) {}
 }
 
-/// A constant 1.0, whatever the transport does.
-struct Ones;
-
-impl Node for Ones {
-    fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-        io.output(0).fill(1.0);
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-
 /// One event input; logs the absolute frame of every event it receives.
 struct NoteLog(Arc<Mutex<Vec<u64>>>);
 
@@ -382,17 +367,14 @@ fn fold_and_declick_match_the_net_path() {
         let a = run(&net, &net_t);
         let b = run(&graph, &graph_t);
         assert_eq!(bits(&a), bits(&b), "{src} → {device}");
-        // Not vacuous: sound, a fade over 480 frames from the stop, and
-        // silence for the rest of the block the fade ends in (192..704 of the
-        // blocks after the stop). The source is not transport-gated, so it
-        // sounds again from the next block.
+        // Not vacuous: sound, then the untimed stop (no lead time) lands on
+        // the next block's first frame with the gain at zero there, and the
+        // ungated source fades back in from it.
         let ch = device as usize;
         let stop = 256 + 256 + 300;
         assert!(a[..stop * ch].iter().any(|&x| x != 0.0));
-        assert!(a[(stop + 480) * ch..(stop + 704) * ch]
-            .iter()
-            .all(|&x| x == 0.0));
-        assert!(a[(stop + 704) * ch..].iter().any(|&x| x != 0.0));
+        assert!(a[stop * ch..(stop + 1) * ch].iter().all(|&x| x == 0.0));
+        assert!(a[(stop + 480) * ch..].iter().any(|&x| x != 0.0));
         assert!(net_t.motion.is_stopped() && graph_t.motion.is_stopped());
     }
 }
@@ -509,32 +491,263 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
     assert_eq!(m.late_commands(), 0);
 }
 
-/// A timed declick stop starts its fade on its frame, not at the block's
-/// start: full level up to the frame, then the ramp. The source is not
-/// transport-gated (the transport itself stops on the frame; see
-/// `a_declick_stop_stops_the_transport_on_its_frame`), so what is measured
-/// is the fade alone.
+/// A constant 1.0 that logs the transport at every frame: the declick gain
+/// envelope, read straight off the output, beside where the transport moved.
+struct DcLog(Arc<Mutex<Vec<(u64, f64, bool)>>>);
+
+impl Node for DcLog {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let env = *cx.env;
+        let mut log = self.0.lock().expect("log");
+        for k in env.offsets() {
+            let t = env.transport_at(k);
+            log.push((env.frame_at(k).get(), t.beat.get(), t.playing));
+            io.output(0)[k.index()] = 1.0;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A constant 1.0 as a `Net` unit.
+#[derive(Clone)]
+struct Dc;
+
+impl AudioUnit for Dc {
+    fn inputs(&self) -> usize {
+        0
+    }
+    fn outputs(&self) -> usize {
+        1
+    }
+    fn tick(&mut self, _: &[f32], output: &mut [f32]) {
+        output[0] = 1.0;
+    }
+    fn process(&mut self, size: usize, _: &BufferRef, output: &mut BufferMut) {
+        for i in 0..size {
+            output.set_f32(0, i, 1.0);
+        }
+    }
+    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
+        let mut out = SignalFrame::new(1);
+        out.set(0, Signal::Latency(0.0));
+        out
+    }
+    fn tail(&mut self) -> Tail {
+        Tail::Unbounded
+    }
+    fn get_id(&self) -> u64 {
+        tutti_core::mnemonic(b"TDCONE00")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// The largest frame-to-frame gain change in `out` (a DC source's output),
+/// skipping the step into each frame in `except`.
+fn max_step(out: &[f32], except: &[usize]) -> f32 {
+    out.windows(2)
+        .enumerate()
+        .filter(|(i, _)| !except.contains(&(i + 1)))
+        .map(|(_, w)| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max)
+}
+
+/// One fade's step, with room for `f32` rounding.
+const FADE_STEP: f32 = 1.0 / 480.0 + 1e-5;
+
+/// Run `script` against a DC source through both backends, rolling from
+/// beat 0, in 256-frame blocks for `blocks` blocks; `script(motion, i)` is
+/// called before block `i`. Returns, per backend, the output and the
+/// transport per frame as `(beat, playing)`: the graph's from its `Env`, the
+/// Net's from its clock's ports and published pausedness.
+#[allow(clippy::type_complexity)]
+fn dc_run(
+    blocks: usize,
+    script: impl Fn(&tutti_core::MotionFsm, usize),
+) -> [(Vec<f32>, Vec<(f64, bool)>); 2] {
+    let net_t = Transport::new(SR);
+    let beats = Arc::new(Mutex::new(Vec::new()));
+    let net = net_engine(&net_t, Box::new(Dc), Some(Arc::clone(&beats)));
+    let graph_t = Transport::new(SR);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (graph, _ed) = graph_engine(&graph_t, 256, DcLog(Arc::clone(&log)), 1);
+    let mut outs = [Vec::new(), Vec::new()];
+    for t in [&net_t, &graph_t] {
+        t.motion.try_send(MotionEvent::Play).expect("room");
+    }
+    for i in 0..blocks {
+        script(&net_t.motion, i);
+        script(&graph_t.motion, i);
+        outs[0].extend(render(&net, ChannelLayout::MONO, &[256]));
+        outs[1].extend(render(&graph, ChannelLayout::MONO, &[256]));
+    }
+    // The Net's clock emits a frame's beat before advancing: playing at
+    // frame x means the beat moves from x to x + 1.
+    let beats = beats.lock().expect("log");
+    let net_t: Vec<(f64, bool)> = beats
+        .iter()
+        .enumerate()
+        .map(|(x, &(w, f))| {
+            let moving = beats.get(x + 1).is_some_and(|&n| n != (w, f));
+            (w as f64 + f as f64, moving)
+        })
+        .collect();
+    let graph_t: Vec<(f64, bool)> = log
+        .lock()
+        .expect("log")
+        .iter()
+        .map(|&(_, b, p)| (b, p))
+        .collect();
+    let [n, g] = outs;
+    [(n, net_t), (g, graph_t)]
+}
+
+/// A seek to beat 10 at `At::Frame(1000)`, mid-block, with a declick: the
+/// old position's audio fades out over the 480 frames **before** the seek
+/// (from 520), reaching zero exactly on frame 1 000, where the transport
+/// jumps; the new position's audio fades in from there. The gain never moves
+/// by more than one fade step a frame, through both backends.
 ///
-/// Mutation (run): land every due command at its piece's first frame → the
-/// fade starts at the block's first frame → fails. Skip
-/// `walk.ramps.apply` for the graph → fails.
+/// Mutation (run): give no lead (`Gain::Aim(None)` at every walk step) →
+/// the gain steps from 1 to 0 at 1 000 → fails. Snap the gain back to 1
+/// after the jump (no fade-in) → fails.
 #[test]
-fn a_timed_declick_fades_from_its_frame() {
-    let transport = Transport::new(SR);
-    let (engine, _ed) = graph_engine(&transport, 256, Ones, 1);
-    let m = &transport.motion;
-    m.try_send(MotionEvent::Play).expect("room");
-    m.schedule(At::Frame(Frame(600)), MotionEvent::stop())
-        .expect("room");
-    let out = render(&engine, ChannelLayout::MONO, &[256; 8]);
-    assert_eq!(out[599], 1.0);
-    assert_eq!(out[600], 479.0 / 480.0);
-    assert_eq!(out[600 + 479], 0.0);
-    // Silent to the end of the block the fade ends in (1 024..1 280); the
-    // ungated source is back at full level from the next.
-    assert!(out[600 + 480..1_280].iter().all(|&x| x == 0.0));
-    assert_eq!(out[1_280], 1.0);
-    assert!(m.is_stopped());
+fn a_timed_declicked_seek_fades_out_before_and_in_after_its_frame() {
+    let runs = dc_run(12, |m, i| {
+        if i == 0 {
+            m.schedule(
+                At::Frame(Frame(1_000)),
+                MotionEvent::Locate {
+                    beat: Beat(10.0),
+                    fade: FadeOut::Declick,
+                    then: Then::Keep,
+                },
+            )
+            .expect("room");
+        }
+    });
+    for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+        assert_eq!(out[519], 1.0, "{backend}: full level before the lead");
+        assert!(out[520] < 1.0, "{backend}: the fade-out starts 480 ahead");
+        assert_eq!(out[1_000], 0.0, "{backend}: zero on the command frame");
+        assert!(out[1_001] > 0.0, "{backend}: the fade-in starts there");
+        assert_eq!(out[1_480], 1.0, "{backend}: back to full level");
+        assert!(max_step(out, &[]) <= FADE_STEP, "{backend}: continuous");
+        // The transport jumps on the command frame.
+        assert!(t[999].0 < 1.0, "{backend}: old position up to 999");
+        assert_eq!(t[1_000].0, 10.0, "{backend}: beat 10 from frame 1 000");
+        assert!(t[1_000].1, "{backend}: still rolling");
+    }
+}
+
+/// A declicked seek scheduled less than a fade ahead: noticed at frame 1 024
+/// (the block after it was sent) for frame 1 224, it fades out over the 200
+/// frames that remain (a steeper, still continuous ramp) and lands on its
+/// frame.
+///
+/// Mutation (run): fade out at `1/FADE` a frame regardless of the lead left
+/// → the gain is not zero on frame 1 224 → fails. Give no lead → a 1-to-0
+/// step → fails.
+#[test]
+fn a_declicked_seek_with_short_notice_fades_over_what_is_left() {
+    let runs = dc_run(12, |m, i| {
+        if i == 4 {
+            m.schedule(
+                At::Frame(Frame(1_224)),
+                MotionEvent::Locate {
+                    beat: Beat(10.0),
+                    fade: FadeOut::Declick,
+                    then: Then::Keep,
+                },
+            )
+            .expect("room");
+        }
+    });
+    for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+        assert_eq!(out[1_023], 1.0, "{backend}");
+        assert!(
+            out[1_024] < 1.0,
+            "{backend}: fading from the first frame it is seen"
+        );
+        assert_eq!(out[1_224], 0.0, "{backend}: zero on the command frame");
+        assert!(
+            max_step(out, &[]) <= 1.0 / 200.0 + 1e-5,
+            "{backend}: continuous"
+        );
+        assert_eq!(t[1_224].0, 10.0, "{backend}: jumps on its frame");
+    }
+}
+
+/// A declicked stop at `At::Frame(1000)`: the audio fades out before it, is
+/// at zero on frame 1 000 where the transport stops, and the gain recovers
+/// from there (the DC source keeps sounding while stopped, as live input or
+/// a reverb tail would), continuously.
+///
+/// Mutation (run): snap the gain back to 1 after the zero (no recovery
+/// ramp) → a step → fails. Give no lead → a 1-to-0 step at the stop →
+/// fails.
+#[test]
+fn a_timed_declicked_stop_fades_out_before_its_frame() {
+    let runs = dc_run(12, |m, i| {
+        if i == 0 {
+            m.schedule(At::Frame(Frame(1_000)), MotionEvent::stop())
+                .expect("room");
+        }
+    });
+    for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+        assert!(out[520] < 1.0 && out[519] == 1.0, "{backend}");
+        assert_eq!(out[1_000], 0.0, "{backend}");
+        assert!(max_step(out, &[]) <= FADE_STEP, "{backend}: continuous");
+        assert!(t[999].1, "{backend}: rolling up to the stop");
+        assert!(!t[1_000].1, "{backend}: stopped on its frame");
+    }
+}
+
+/// An untimed declicked seek (`At::NextBlock`) has no lead time: it lands on
+/// the next block's first frame with the gain at zero there (the old audio
+/// ends on that frame, the one step, which the design accepts), and the new
+/// audio fades in continuously from it.
+///
+/// Mutation (run): skip the fade-in after a no-lead jump (gain straight back
+/// to 1) → a second step → fails.
+#[test]
+fn a_next_block_declicked_seek_fades_in_after_the_jump() {
+    let runs = dc_run(8, |m, i| {
+        if i == 3 {
+            m.try_send(MotionEvent::Locate {
+                beat: Beat(10.0),
+                fade: FadeOut::Declick,
+                then: Then::Keep,
+            })
+            .expect("room");
+        }
+    });
+    for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+        let jump = 3 * 256;
+        assert_eq!(out[jump - 1], 1.0, "{backend}: no lead, full level");
+        assert_eq!(out[jump], 0.0, "{backend}: zero on the jump frame");
+        assert!(
+            max_step(out, &[jump]) <= FADE_STEP,
+            "{backend}: fade-in continuous"
+        );
+        assert_eq!(out[jump + 480], 1.0, "{backend}");
+        assert_eq!(
+            t[jump].0, 10.0,
+            "{backend}: jumps on the block's first frame"
+        );
+    }
 }
 
 /// A command whose frame is already past lands at the next block's first

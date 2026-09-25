@@ -401,14 +401,28 @@ place that loses precision to be written out explicitly:
    atomics at every 64-frame chunk, as it always has.)
 
    **Decisions taken in review (#18):**
-   - **The declick is audio only.** A declick stop or seek moves the
-     transport on its command's frame (`MotionFsm` applies a fade's outcome
-     when the fade starts or is retargeted); the fade ramps the output to
-     zero from there. So `Env` reads stopped (or jumped) from the command's
-     frame, and a beat command after it in the same block does not fire.
-     The motion mirror reads the declick state until the fade completes.
-     This reverses the earlier rule that a stop-and-return's seek waited
-     for the fade.
+   - **The declick is audio only, and it is continuous.** A declick stop
+     or seek moves the transport on its command's frame (`MotionFsm`
+     applies a fade's outcome at once), so `Env` reads stopped (or jumped)
+     from that frame and a beat command after it in the same block does not
+     fire. The fade is a gain the engine puts on the output, and no frame
+     moves it by more than one fade step (`1/480`):
+     - a **timed** command (`At::Frame`, `At::Beat`) is seen ahead: the
+       engine looks one fade past each block for the next declicked command
+       playback reaches, and fades the **old** position's audio out so the
+       gain is zero exactly on the command's frame. With less than a fade of
+       notice it fades over the frames left (steeper, still continuous);
+     - **on the frame** the transport jumps or stops, and the gain rises
+       over one fade: the new position's audio after a seek; after a stop,
+       whatever still sounds while stopped (live input, tails), so the
+       output never returns with a step;
+     - with **no lead time** (`At::NextBlock`, an untimed `try_send`, a late
+       command) the jump is on the block's first frame, the gain is zero
+       there (the old audio's abrupt end, accepted: nothing can fade audio
+       already delivered) and the new audio fades in.
+     This reverses two earlier rules: the seek of a stop-and-return waited
+     for the fade, and later the fade-out ran on the *new* position's audio
+     after the jump and returned to full gain with a step.
    - **A loop armed behind the playhead does not jump.** A loop whose end
      is at or behind the playhead takes effect once the playhead is inside
      `[start, end)`, by a seek or by playing into it from before `start`

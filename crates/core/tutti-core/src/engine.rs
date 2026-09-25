@@ -48,13 +48,31 @@
 //! own transport deciding. A beat continuous playback already crossed is late;
 //! one a seek or loop jumped over waits (`tutti_graph::Playhead`).
 //!
-//! **The declick is audio only.** A declick stop or seek moves the transport
-//! on its command's frame, as an immediate one does (`MotionFsm` applies a
-//! fade's outcome when the fade starts); the fade then ramps the *output* to
-//! zero from that frame, and the output stays silent to the end of the block
-//! the fade ends in. Completing the fade only settles the motion mirror. A
-//! later command in the same block that settles the motion (a `Play`)
-//! cancels the fade and its silence from its own frame.
+//! **The declick is audio only, and its fade-out ends on the command's
+//! frame.** A declick stop or seek moves the transport on its command's
+//! frame, as an immediate one does. The fade is the engine's, as a gain on
+//! the output, continuous at every frame:
+//!
+//! - **A timed command** (`At::Frame`, `At::Beat`) is seen ahead: the walk
+//!   looks one fade (480 frames) past each block for the next declicked
+//!   command playback reaches, and the gain falls linearly on the *old*
+//!   position's audio to reach zero exactly on its frame. Seen with less
+//!   than a fade to go (sent late, or reached sooner after a tempo change),
+//!   it falls over whatever frames are left: steeper, still continuous.
+//! - **On the frame** the transport jumps or stops, sample-accurately, and
+//!   the gain rises from zero over one fade: the new position's audio after
+//!   a seek, and after a stop whatever still sounds while stopped (live
+//!   input, a reverb tail; transport-gated sources are already silent), so
+//!   the output never comes back with a step.
+//! - **With no lead time** (`At::NextBlock`, an untimed `try_send`, a late
+//!   command) the jump is at the block's first frame and nothing could fade
+//!   the audio before it: the gain is zero on that frame (the old audio's
+//!   abrupt end, the one step, accepted) and the new audio fades in.
+//!
+//! A command the motion machine refuses after its fade-out still leaves the
+//! gain at zero on its frame, and it fades back in from there. The motion
+//! machine's own fade ramp is not used; the engine settles it the moment the
+//! command lands.
 //!
 //! # Limits of a graph engine
 //!
@@ -71,10 +89,15 @@ use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
     MAX_TRANSPORT_CHANGES,
 };
+
+use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
+use crate::transport::{Scheduled, SCHEDULE_CAPACITY};
 use tutti_types::{At, Frame};
 
 use crate::transport::{tempo_in_effect, Control};
-use crate::transport::{Declick, MotionFsm, MotionState, TransportClock, TransportCommand};
+use crate::transport::{
+    FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
+};
 use crate::{AudioThreadCell, InterleavedMut, Ordering, SampleRate, Samples};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
@@ -135,7 +158,7 @@ type GraphTransport = tutti_graph::Transport;
 /// `Engine` is the *audio-thread half* of the runtime and holds only what a
 /// render needs: the transport's [`MotionFsm`], the graph runtime (a committed
 /// [`NetBackend`], or a native [`Executor`] with the clock that feeds its
-/// `Env`), and a cached [`Declick`]. It owns no graph topology, no parameter
+/// `Env`), and the declick gain it puts on the output. It owns no graph topology, no parameter
 /// storage and no device configuration — the control thread keeps the graph's
 /// editing half (fundsp's `Net` frontend, or the `tutti_graph::Editor`) and
 /// hands changes over by committing, so nothing here allocates, locks, or
@@ -159,7 +182,7 @@ pub struct Engine {
     motion: MotionFsm,
     backend: AudioThreadCell<Backend>,
     /// Cached from the transport so the fade path avoids a double deref.
-    declick: Declick,
+    fader: AudioThreadCell<Fader>,
     /// A graph engine's block capacity (its editor's `MaxBlock` limit).
     graph_capacity: Option<Samples>,
 }
@@ -207,7 +230,6 @@ impl Engine {
     /// `net_backend` is the audio-thread half of fundsp's `Net`; the control
     /// thread keeps the frontend and hands changes over by committing.
     pub fn new(motion: MotionFsm, net_backend: NetBackend) -> Self {
-        let declick = motion.declick.clone();
         Self {
             motion,
             backend: AudioThreadCell::new(Backend::Net(NetRender {
@@ -215,7 +237,7 @@ impl Engine {
                 frame: Frame::ZERO,
                 playhead: Playhead::new(),
             })),
-            declick,
+            fader: AudioThreadCell::new(Fader::new()),
             graph_capacity: None,
         }
     }
@@ -284,7 +306,6 @@ impl Engine {
             .map_err(GraphEngineError::Limits)?;
         let rate = executor.prepare().sample_rate();
         let motion = transport.motion.clone();
-        let declick = motion.declick.clone();
         Ok(Self {
             motion,
             backend: AudioThreadCell::new(Backend::Graph(GraphRender {
@@ -294,7 +315,7 @@ impl Engine {
                 stride,
                 playhead: Playhead::new(),
             })),
-            declick,
+            fader: AudioThreadCell::new(Fader::new()),
             graph_capacity: Some(Samples(stride)),
         })
     }
@@ -405,11 +426,10 @@ impl Engine {
                     cuts: 0,
                 };
                 let walk = self.walk(frame0, frames, rate, &mut net.playhead, &mut pieces);
-                walk.ramps.apply(output, out_ch, 0);
+                self.fader
+                    .borrow_mut()
+                    .apply(&walk.gain, frame0, output, out_ch, 0, frames);
                 net.frame += Samples(frames);
-                if walk.faded_out {
-                    self.motion.complete_declick();
-                }
             }
             Backend::Graph(g) => {
                 let mut done = 0;
@@ -426,10 +446,9 @@ impl Engine {
                     let walk = self.walk(frame0, len, rate, &mut g.playhead, &mut pieces);
                     let changes = pieces.changes;
                     g.render(output, out_ch, done, len, &walk.start, &changes);
-                    walk.ramps.apply(output, out_ch, done);
-                    if walk.faded_out {
-                        self.motion.complete_declick();
-                    }
+                    self.fader
+                        .borrow_mut()
+                        .apply(&walk.gain, frame0, output, out_ch, done, len);
                     done += len;
                 }
             }
@@ -438,7 +457,7 @@ impl Engine {
 
     /// Walk one block's scheduled transport commands in time order, running
     /// each piece between them through `pieces` and planning the declick
-    /// over it. See the module docs for the rules.
+    /// gain over the block. See the module docs for the rules.
     fn walk(
         &self,
         frame0: Frame,
@@ -450,9 +469,11 @@ impl Engine {
         let schedule = self.motion.timed();
         let mut walk = Walk {
             start: pieces.begin(None),
-            ramps: Ramps::new(),
-            faded_out: false,
+            gain: GainPlan::new(),
         };
+        // An untimed declicked command drained at the block's start has no
+        // lead time: it lands at the first frame.
+        self.settle_declick(&mut walk.gain, 0);
         let mut t = walk.start;
         let mut cursor = 0;
         // The playhead as of the start of the current piece. Each piece is
@@ -467,6 +488,10 @@ impl Engine {
                 transport: t,
                 changes: TransportChanges::NONE,
             };
+            // The next declicked command ahead, within one fade of the end of
+            // this block: the fade-out that ends on its frame may start here.
+            walk.gain
+                .push(cursor, Gain::Aim(lead_target(pending, &env)));
             let mut ph = base;
             ph.observe(&env);
             // The earliest command due from the cursor on; send order breaks
@@ -498,8 +523,6 @@ impl Engine {
                     ..env
                 });
                 pieces.run(cursor, at, &t);
-                walk.ramps
-                    .push(self.plan_declick(cursor, at, &mut walk.faded_out));
                 cursor = at;
             }
             let cmd = pending.swap_remove(i);
@@ -508,11 +531,7 @@ impl Engine {
                 schedule.count_late();
             }
             self.motion.apply(cmd.command);
-            if walk.faded_out && !is_declicking(self.motion.motion()) {
-                // The motion settled (a `Play` over a finished fade): the
-                // fade and its silence are over from this frame.
-                walk.faded_out = false;
-            }
+            self.settle_declick(&mut walk.gain, cursor);
             t = pieces.begin(Some(&cmd.command));
             match Offset::new(cursor, Samples(frames)) {
                 Some(o) if cursor > 0 => pieces.change(o, t),
@@ -528,48 +547,18 @@ impl Engine {
         });
         *playhead = base;
         pieces.run(cursor, frames, &t);
-        walk.ramps
-            .push(self.plan_declick(cursor, frames, &mut walk.faded_out));
         walk
     }
 
-    /// Account the declick over frames `start..end` of the block, and say how
-    /// to shape them. `faded_out` is set when the fade reaches zero here, and
-    /// every later piece of the block is then silenced: the output stays down
-    /// to the block's end, where the motion mirror settles (the transport
-    /// itself stopped or jumped when the fade began).
-    #[inline]
-    fn plan_declick(&self, start: usize, end: usize, faded_out: &mut bool) -> Ramp {
-        if *faded_out {
-            return Ramp {
-                start,
-                end,
-                shape: Shape::Silence,
-            };
-        }
-        let remaining = self.declick.remaining().get();
-        let total = self.declick.total().get();
-        if remaining == 0 || total == 0 {
-            return Ramp {
-                start,
-                end,
-                shape: Shape::Unity,
-            };
-        }
-        // Both operands are frame counts, so the fade length and the piece
-        // length cannot be compared as anything else by accident.
-        let frames = end - start;
-        let new_remaining = remaining.saturating_sub(frames);
-        self.declick
-            .remaining
-            .store(new_remaining as u32, Ordering::Release);
-        if new_remaining == 0 {
-            *faded_out = true;
-        }
-        Ramp {
-            start,
-            end,
-            shape: Shape::Fade { remaining, total },
+    /// The motion machine chose a declick for the command just applied at
+    /// `at`: the transport has already moved (`MotionFsm` applies a fade's
+    /// outcome at once), so the fade is the engine's, as gain. Mark the jump
+    /// (the fade-out, if it had lead time, ends here; the fade-in starts
+    /// here) and settle the machine, whose own ramp the engine does not use.
+    fn settle_declick(&self, gain: &mut GainPlan, at: usize) {
+        if is_declicking(self.motion.motion()) {
+            gain.push(at, Gain::Jump);
+            self.motion.complete_declick();
         }
     }
 
@@ -599,75 +588,173 @@ struct Walk {
     /// The transport at the block's first frame, after the commands that
     /// landed there.
     start: GraphTransport,
-    ramps: Ramps,
-    /// A declick reached zero in this block: its motion settles at the end.
-    faded_out: bool,
+    /// The declick gain's events in this block.
+    gain: GainPlan,
 }
 
-/// How one piece's gain is shaped.
-#[derive(Clone, Copy)]
-enum Shape {
-    Unity,
-    /// A linear fade from `remaining / total` towards zero, one step a frame;
-    /// frames past the fade's end are silent.
-    Fade {
-        remaining: usize,
-        total: usize,
-    },
-    Silence,
+/// Frames a declick fades over, out and in: the motion machine's fade
+/// length (10 ms at 48 kHz).
+const FADE: usize = DEFAULT_DECLICK_FRAMES.get();
+
+/// Whether `command` asks for a declick (the motion machine grants it only
+/// while the transport is audible, which the lead check mirrors).
+fn declicks(command: &TransportCommand) -> bool {
+    matches!(
+        command,
+        TransportCommand::Motion(
+            MotionEvent::Stop {
+                fade: FadeOut::Declick
+            } | MotionEvent::Locate {
+                fade: FadeOut::Declick,
+                ..
+            }
+        )
+    )
 }
 
-#[derive(Clone, Copy)]
-struct Ramp {
-    start: usize,
-    end: usize,
-    shape: Shape,
+/// The frame of the next declicked command ahead of `env`'s first frame,
+/// if playback reaches it within `env`'s block plus one fade: where a
+/// fade-out has to end. Timed commands only (`At::Frame`, `At::Beat`); one
+/// due on the first frame itself has no lead left.
+fn lead_target(pending: &[Scheduled], env: &Env) -> Option<Frame> {
+    if !env.transport.playing {
+        return None;
+    }
+    let look = Env {
+        block_len: env.block_len + Samples(FADE),
+        ..*env
+    };
+    pending
+        .iter()
+        .filter(|c| declicks(&c.command) && !matches!(c.at, At::NextBlock))
+        .filter_map(|c| match look.due(c.at) {
+            Due::In(k) if k.index() > 0 => Some(look.frame_at(k)),
+            _ => None,
+        })
+        .min()
 }
 
-/// A block's gain shaping, one ramp per piece — at most one more than the
-/// cuts a block may hold. On the stack.
-struct Ramps {
+/// One change to the declick gain, at an offset of the block.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Gain {
+    /// From here, the next declicked command lands on this frame (or none
+    /// is in sight): the gain falls linearly to reach zero exactly there,
+    /// starting at most one fade ahead of it.
+    Aim(Option<Frame>),
+    /// A declicked command landed here: the gain is zero on this frame, and
+    /// fades in from it.
+    Jump,
+}
+
+/// Capacity of a block's gain plan: an aim per walk step and a jump per
+/// command, bounded by the commands a block can apply.
+const GAIN_EVENTS: usize = 2 * (SCHEDULE_CAPACITY + 2);
+
+/// A block's declick gain events, in offset order, on the stack.
+struct GainPlan {
     len: usize,
-    items: [Ramp; MAX_TRANSPORT_CHANGES + 1],
+    items: [(usize, Gain); GAIN_EVENTS],
 }
 
-impl Ramps {
+impl GainPlan {
     fn new() -> Self {
         Self {
             len: 0,
-            items: [Ramp {
-                start: 0,
-                end: 0,
-                shape: Shape::Unity,
-            }; MAX_TRANSPORT_CHANGES + 1],
+            items: [(0, Gain::Aim(None)); GAIN_EVENTS],
         }
     }
 
-    fn push(&mut self, ramp: Ramp) {
-        // The walk cuts at most `MAX_TRANSPORT_CHANGES` times.
-        self.items[self.len] = ramp;
-        self.len += 1;
+    fn push(&mut self, at: usize, gain: Gain) {
+        // A later aim at the same offset replaces an earlier one.
+        if let Some(last) = self.items[..self.len].last_mut() {
+            if last.0 == at && matches!(last.1, Gain::Aim(_)) && matches!(gain, Gain::Aim(_)) {
+                last.1 = gain;
+                return;
+            }
+        }
+        debug_assert!(self.len < GAIN_EVENTS, "bounded by the commands applied");
+        if self.len < GAIN_EVENTS {
+            self.items[self.len] = (at, gain);
+            self.len += 1;
+        }
+    }
+}
+
+/// The declick gain, carried across blocks: a fade-out that ends exactly on
+/// a declicked command's frame, and a fade-in that starts there.
+///
+/// Continuous by construction: a fade-out falls linearly from wherever the
+/// gain is to zero at its target, so with a full fade of lead each frame
+/// moves it by at most `1/FADE`; a fade-in rises by `1/FADE` a frame. The one
+/// step is a declicked command with no lead time (`At::NextBlock`, a late
+/// command, an untimed `try_send`): the old audio ends on the jump frame
+/// with the gain at zero there, and the new audio fades in.
+#[derive(Clone, Copy, Debug)]
+struct Fader {
+    gain: f32,
+    aim: Option<Frame>,
+}
+
+impl Fader {
+    fn new() -> Self {
+        Self {
+            gain: 1.0,
+            aim: None,
+        }
     }
 
-    /// Shape the interleaved `output` (`channels` wide); ramp frames are
-    /// relative to frame `base` of it. The gain is per frame, the same across
-    /// every channel, so it works at any width.
-    fn apply(&self, output: &mut [f32], channels: usize, base: usize) {
-        for r in &self.items[..self.len] {
-            let (from, to) = ((base + r.start) * channels, (base + r.end) * channels);
-            match r.shape {
-                Shape::Unity => {}
-                Shape::Silence => output[from..to].fill(0.0),
-                Shape::Fade { remaining, total } => {
-                    let fading = remaining.min(r.end - r.start);
-                    let total = total as f32;
-                    for i in 0..fading {
-                        let gain = (remaining - i - 1) as f32 / total;
-                        for s in &mut output[from + i * channels..from + (i + 1) * channels] {
-                            *s *= gain;
-                        }
+    /// Shape frames `base..base + frames` of the interleaved `output`
+    /// (`channels` wide), the block that starts at `frame0`, by `plan`. The
+    /// gain is per frame, the same across every channel.
+    fn apply(
+        &mut self,
+        plan: &GainPlan,
+        frame0: Frame,
+        output: &mut [f32],
+        channels: usize,
+        base: usize,
+        frames: usize,
+    ) {
+        let end = frame0.get() + frames as u64;
+        // Nothing to do on a block with no event, full gain, and no fade-out
+        // starting inside it: the common case.
+        let quiet = self.aim.is_none_or(|to| to.get() > end + FADE as u64);
+        if plan.len == 0 && self.gain == 1.0 && quiet {
+            return;
+        }
+        let mut next = 0;
+        for i in 0..frames {
+            let mut jump = false;
+            while next < plan.len && plan.items[next].0 == i {
+                match plan.items[next].1 {
+                    Gain::Aim(to) => self.aim = to,
+                    Gain::Jump => jump = true,
+                }
+                next += 1;
+            }
+            let x = frame0.get() + i as u64;
+            if jump {
+                self.gain = 0.0;
+                self.aim = None;
+            } else {
+                match self.aim {
+                    Some(to) if x >= to.get() => {
+                        // On the target: zero, and the fade-in starts from
+                        // here (whether or not the command was applied).
+                        self.gain = 0.0;
+                        self.aim = None;
                     }
-                    output[from + fading * channels..to].fill(0.0);
+                    Some(to) if to.get() - x <= FADE as u64 => {
+                        let left = (to.get() - x) as f32;
+                        self.gain *= left / (left + 1.0);
+                    }
+                    _ => self.gain = (self.gain + 1.0 / FADE as f32).min(1.0),
+                }
+            }
+            if self.gain != 1.0 {
+                let at = (base + i) * channels;
+                for s in &mut output[at..at + channels] {
+                    *s *= self.gain;
                 }
             }
         }

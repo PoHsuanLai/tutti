@@ -63,6 +63,13 @@
 //! calls the unit in 64-frame chunks, and a mailbox offset is relative to
 //! whichever chunk polls it), so it cannot honour this contract until events
 //! are its ports (doc 013 Phase 4).
+//!
+//! # The fork's snapshot
+//!
+//! [`IsolateRow`] (and its one-control form [`assert_isolate_snapshots`])
+//! checks the other promise a node crate makes here: that a forkable unit's
+//! `isolate` severs every live control it reads, so a fork renders the
+//! controls as they were at fork time. See `src/contract/snapshot.rs`.
 
 use tutti_node::AudioUnit;
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples};
@@ -77,6 +84,9 @@ use crate::node::{
     Cx, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
 use crate::spec::EventIn;
+
+mod snapshot;
+pub use snapshot::{assert_isolate_snapshots, IsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
 pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);

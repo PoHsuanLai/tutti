@@ -359,6 +359,14 @@ impl AudioUnit for ModDelayNode {
         self.delays.len()
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.lfo.detach();
+        self.controls.detach();
+    }
+
     fn reset(&mut self) {
         for d in &mut self.delays {
             d.reset();

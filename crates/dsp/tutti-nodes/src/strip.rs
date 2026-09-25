@@ -470,6 +470,15 @@ impl AudioUnit for BusStripNode {
 
     /// Forget the previous block's gains, so the next block starts at its
     /// target rather than ramping from a signal that is no longer playing.
+    /// Detach volume, pan and mute (see `Param::detach`), so a fork renders
+    /// the strip as it was set when it was taken, not a fader ride or a mute
+    /// made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.volume.detach();
+        self.pan.detach();
+        self.muted = Arc::new(AtomicBool::new(self.muted.load(Ordering::Acquire)));
+    }
+
     fn reset(&mut self) {
         self.ramp_from = None;
     }

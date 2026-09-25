@@ -129,6 +129,10 @@ mod tests {
         live.store(Hz(880.0));
         assert_eq!(copy.load(), Hz(440.0), "a live write must not reach it");
         copy.store(Hz(110.0));
-        assert_eq!(live.load(), Hz(880.0), "its write must not reach the live cell");
+        assert_eq!(
+            live.load(),
+            Hz(880.0),
+            "its write must not reach the live cell"
+        );
     }
 }

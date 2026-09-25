@@ -467,6 +467,16 @@ impl AudioUnit for CompressorNode {
         self.channels.count() as usize
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.core.threshold.detach();
+        self.core.ratio.detach();
+        self.core.timing.detach();
+        self.core.makeup_db.detach();
+    }
+
     fn reset(&mut self) {
         self.core.reset();
     }

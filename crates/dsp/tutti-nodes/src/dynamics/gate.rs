@@ -414,6 +414,16 @@ impl AudioUnit for GateNode {
         self.channels.count() as usize
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.core.threshold_db.detach();
+        self.core.timing.detach();
+        self.core.hold.detach();
+        self.core.range_db.detach();
+    }
+
     fn reset(&mut self) {
         self.core.reset();
     }

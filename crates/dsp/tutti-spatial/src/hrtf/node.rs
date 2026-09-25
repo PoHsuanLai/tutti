@@ -131,6 +131,14 @@ impl AudioUnit for HrtfBinauralNode {
     /// call, which used to run only inside `tick`/`process`. Without it a
     /// `set_position` → `reset` seeded the ramp at the panner's stale direction
     /// and the first block after the reset rendered from front-centre.
+    /// Detach the position and width cells (see `Param::detach`), so a fork
+    /// renders the placement it was taken at, not a source moved while it
+    /// runs. Values are kept.
+    fn isolate(&mut self) {
+        self.target.detach();
+        self.width.detach();
+    }
+
     fn reset(&mut self) {
         self.sync_position();
         self.panner.reset_state();

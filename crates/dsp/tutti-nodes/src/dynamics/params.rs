@@ -21,6 +21,13 @@ impl AttackRelease {
             release: Param::new(release.into()),
         }
     }
+
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.attack.detach();
+        self.release.detach();
+    }
 }
 
 /// Threshold + optional knee width (both in dB). Gates and limiters omit
@@ -37,6 +44,13 @@ impl ThresholdParams {
             threshold: Param::new(threshold_db.into()),
             knee: Param::new(Db(knee_db.into().get().max(0.0))),
         }
+    }
+
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.threshold.detach();
+        self.knee.detach();
     }
 
     /// Both stay typed: every consumer feeds them to `Db`-taking converters

@@ -248,6 +248,16 @@ impl AudioUnit for ParamSumNode {
         1
     }
 
+    /// Detach the clamp bounds, keeping their current values, so a fork
+    /// clamps to the range it was taken with, not one moved while it runs.
+    fn isolate(&mut self) {
+        let (min, max) = self.bounds.get();
+        self.bounds = Arc::new(ClampBounds {
+            min: AtomicF32::new(min),
+            max: AtomicF32::new(max),
+        });
+    }
+
     fn reset(&mut self) {}
 
     #[inline]
@@ -342,6 +352,12 @@ impl AudioUnit for AtomicSourceNode {
     }
     fn outputs(&self) -> usize {
         1
+    }
+
+    /// Detach the base cell, keeping its current value, so a fork emits the
+    /// base it was taken with, not one the control tier moves while it runs.
+    fn isolate(&mut self) {
+        self.value = Arc::new(AtomicF32::new(self.value.load(Ordering::Acquire)));
     }
 
     fn reset(&mut self) {}

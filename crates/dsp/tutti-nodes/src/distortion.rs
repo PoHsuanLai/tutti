@@ -268,6 +268,13 @@ impl AudioUnit for DistortionNode {
         self.channels
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.drive.detach();
+    }
+
     fn reset(&mut self) {}
 
     #[inline]

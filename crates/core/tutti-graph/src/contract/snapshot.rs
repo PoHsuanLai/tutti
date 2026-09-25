@@ -132,7 +132,11 @@ impl<U: AudioUnit + Clone + 'static> IsolateRow<U> {
     /// when the row has no controls, when a live move reaches the fork, and
     /// when a move is inaudible.
     pub fn check(&self) {
-        assert!(!self.controls.is_empty(), "{}: a row with no controls", self.name);
+        assert!(
+            !self.controls.is_empty(),
+            "{}: a row with no controls",
+            self.name
+        );
         for (control, write) in &self.controls {
             let mut live = (self.make)();
             live.set_sample_rate(SAMPLE_RATE);

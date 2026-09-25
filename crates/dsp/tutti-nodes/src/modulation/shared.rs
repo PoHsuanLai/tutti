@@ -70,6 +70,12 @@ impl LfoDrive {
     pub fn reset_phase(&mut self) {
         self.phase = Phase::START;
     }
+
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.rate.detach();
+    }
 }
 
 /// Wet/dry + feedback + unitless 0..1 depth (phaser-style).
@@ -122,6 +128,14 @@ impl LinearModMix {
             Mix(self.good[2].read(self.mix.load().get())),
         )
     }
+
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.depth.detach();
+        self.feedback.detach();
+        self.mix.detach();
+    }
 }
 
 /// Wet/dry + feedback + time-amplitude depth in seconds (chorus/flanger-style).
@@ -173,6 +187,14 @@ impl TimeModMix {
             self.good[1].read(self.feedback.load().get()),
             Mix(self.good[2].read(self.mix.load().get())),
         )
+    }
+
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.depth.detach();
+        self.feedback.detach();
+        self.mix.detach();
     }
 }
 

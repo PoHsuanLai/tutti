@@ -32,6 +32,13 @@ impl WetDry {
         }
     }
 
+    /// Detach every cell (see [`Param::detach`]): the `isolate` half of this
+    /// group, keeping the current values.
+    pub fn detach(&mut self) {
+        self.mix.detach();
+        self.gain.detach();
+    }
+
     /// The shared wet/dry [`Mix`] cell, for driving the blend from a modulator.
     ///
     /// Read once per block. Shared across clones, so a write reaches the live

@@ -64,6 +64,24 @@ pub enum Error {
         graph: tutti_core::SampleRate,
     },
 
+    /// A plain [`TuttiDriver::restart`](crate::TuttiDriver::restart) found
+    /// the output device at a different rate than the graph was built at.
+    ///
+    /// Everything time-denominated in the graph — every oscillator, every
+    /// delay in samples, the beat clock — would run at the old rate on the
+    /// new device, off pitch and off tempo with no error anywhere, so the
+    /// stream is left stopped instead. Restart with
+    /// [`TuttiDriver::restart_with`](crate::TuttiDriver::restart_with) and
+    /// re-rate the graph in its hook (`bevy_tutti`'s device restart does).
+    #[error(
+        "the output device now runs at {device} Hz, the graph at {graph} Hz; \
+         restart with `restart_with` and re-rate the graph"
+    )]
+    RateChanged {
+        device: tutti_core::SampleRate,
+        graph: tutti_core::SampleRate,
+    },
+
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

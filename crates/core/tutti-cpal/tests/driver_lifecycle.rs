@@ -278,3 +278,63 @@ fn the_fault_handle_survives_a_restart() {
          second stream"
     );
 }
+
+/// **A restart hands its hook the new device's config while no stream runs,
+/// and starts only after the hook** — so a host re-rates the graph before
+/// the first block at the new rate, never after it.
+///
+/// Mutation (run): open the new stream before running the hook in
+/// `TuttiDriver::restart_on` → the hook sees the new stream open → fails.
+#[test]
+fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
+    let (_t, state) = rolling_state(2);
+    let engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
+    let mut driver = TuttiDriver::from_parts(engine, state);
+    let (d1, s1) = ManualStreamDriver::new();
+    driver.start_with(d1).unwrap();
+
+    let (d2, s2) = ManualStreamDriver::new();
+    let new = tutti_cpal::OutputSpec::new(
+        tutti_core::SampleRate(96_000.0),
+        tutti_core::ChannelLayout::from(6usize),
+        cpal::SampleFormat::F32,
+    );
+    let mut seen = None;
+    driver
+        .restart_on(new.clone(), d2, |spec| {
+            assert!(!s1.is_open(), "the old stream is stopped before the hook");
+            assert!(!s2.is_open(), "the new one starts after it");
+            seen = Some(spec.clone());
+            Ok::<(), tutti_cpal::Error>(())
+        })
+        .expect("restarts");
+    assert_eq!(seen, Some(new.clone()), "the hook saw the new config");
+    assert_eq!(driver.spec(), &new, "and the driver reports it");
+    assert!(s2.is_open() && driver.is_running());
+    assert_eq!(s2.channels(), Some(6), "opened at the new width");
+}
+
+/// **A hook that fails leaves the stream stopped**, and its error is the
+/// restart's: a host that could not re-rate its graph gets no audio at the
+/// wrong rate.
+///
+/// Mutation (run): start the stream before propagating the hook's error →
+/// the new stream is open → fails.
+#[test]
+fn a_restart_whose_hook_fails_stays_stopped() {
+    let (_t, state) = rolling_state(2);
+    let engine = AudioEngine::from_spec(spec(2, cpal::SampleFormat::F32));
+    let mut driver = TuttiDriver::from_parts(engine, state);
+    let (d1, _s1) = ManualStreamDriver::new();
+    driver.start_with(d1).unwrap();
+
+    let (d2, s2) = ManualStreamDriver::new();
+    let err = driver
+        .restart_on(spec(2, cpal::SampleFormat::F32), d2, |_| {
+            Err(tutti_cpal::Error::InvalidConfig("no".into()))
+        })
+        .expect_err("the hook's error");
+    assert!(matches!(err, tutti_cpal::Error::InvalidConfig(_)));
+    assert!(!driver.is_running());
+    assert!(!s2.is_open());
+}

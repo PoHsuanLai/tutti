@@ -252,6 +252,15 @@ impl AudioEngine {
         if self.is_running() {
             return Ok(());
         }
+        let device = self.resolve()?;
+        self.start_with(state, CpalDriver::from_device(device))
+    }
+
+    /// Resolve the selected device and read its config into
+    /// [`spec`](Self::spec), without opening a stream: the first half of
+    /// [`start`](Self::start), split out so a restart can see the config the
+    /// stream will run at before it runs (`TuttiDriver::restart_with`).
+    pub(crate) fn resolve(&mut self) -> Result<cpal::Device> {
         let Some((host, sel)) = &self.target else {
             return Err(Error::InvalidDevice(
                 "this engine was built from a bare spec and has no device to open; \
@@ -262,8 +271,14 @@ impl AudioEngine {
         let device = host.device(Direction::Output, sel)?;
         let config = device.default_output_config()?;
         self.spec = OutputSpec::from_supported(&config);
-        let driver = CpalDriver::from_device(device);
-        self.start_with(state, driver)
+        Ok(device)
+    }
+
+    /// Replace the spec the next [`start_with`](Self::start_with) opens at:
+    /// the device-free counterpart of [`resolve`](Self::resolve), where the
+    /// caller is the device.
+    pub(crate) fn set_spec(&mut self, spec: OutputSpec) {
+        self.spec = spec;
     }
 
     /// [`start`](Self::start), with the caller choosing how the callback runs.

@@ -97,7 +97,9 @@ rather than a missing implementation.
 **The graph will not complain.** A unit built at 44.1 kHz and run in a 48 kHz
 graph keeps rendering — every note simply plays at the wrong pitch and tempo,
 with no error at any layer. A rate change means constructing a new unit and
-swapping it into the graph.
+swapping it into the graph; `with_sample_rate` builds it from this one, with the
+same SoundFont (shared) and preset. The one unit that follows its graph's rate
+is a fork for an export (`fork_source`), which is rendered at the export's.
 
 ## Constraint: MIDI timing resolution stops at 8 frames
 

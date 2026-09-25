@@ -28,6 +28,10 @@ pub use error::{Error, Result};
 
 mod node_id;
 
+// `SoundFontUnit::fork_source` / `fork_instance`: the unit in a fork of the
+// native graph (an export), with its clip.
+mod fork;
+
 pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
 use rustysynth::Synthesizer;
@@ -100,7 +104,10 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 /// A unit built at 44.1 kHz and run in a 48 kHz graph keeps rendering — every
 /// note simply plays at the wrong pitch and tempo, with no error at any layer.
 /// A rate change means constructing a new unit and swapping it into the graph,
-/// not reconfiguring this one.
+/// not reconfiguring this one; [`with_sample_rate`](Self::with_sample_rate)
+/// builds that unit, keeping the preset. A fork of the unit for an export
+/// ([`fork_source`](Self::fork_source)) is the exception: it follows the
+/// rate its graph is prepared at.
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,
@@ -199,6 +206,39 @@ impl SoundFontUnit {
     /// [`SynthesizerSettings`].
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
+    }
+
+    /// A copy of this unit that renders at `sample_rate`: the same SoundFont
+    /// (shared, not reloaded), settings, preset and channel state, no voice
+    /// sounding, and **the same MIDI port** (a clone, sharing its mailbox and
+    /// source cell, as [`Clone`] does). Allocates a new synthesizer's voices
+    /// and effect lines: control thread.
+    ///
+    /// The way to move a unit to another rate, since
+    /// [`AudioUnit::set_sample_rate`] cannot (see "The sample rate is fixed"
+    /// on [`SoundFontUnit`]); a fork of the unit for an export uses it to
+    /// render at the export's rate (`fork_source`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::SoundFont`] if RustySynth refuses the rate (outside
+    /// 16–192 kHz).
+    pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
+        // RustySynth takes whole hertz; every rate a device or a render asks
+        // for is one.
+        let hz = sample_rate.get().round() as i32;
+        let synthesizer = self
+            .synthesizer
+            .with_sample_rate(hz)
+            .map_err(|e| Error::SoundFont(e.to_string()))?;
+        Ok(Self {
+            synthesizer,
+            sample_rate: SampleRate::from(hz.max(0) as u32),
+            left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
+            right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
+            midi: self.midi.clone(),
+            midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+        })
     }
 
     /// Starts a note directly, bypassing the MIDI inbox.

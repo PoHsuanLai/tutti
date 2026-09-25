@@ -457,6 +457,27 @@ impl Synthesizer {
     pub fn set_master_volume(&mut self, value: f32) {
         self.master_volume = value;
     }
+
+    /// A copy of this synthesizer that renders at `sample_rate`: the same
+    /// SoundFont (shared, not reloaded), block size, polyphony, effects
+    /// switch, master volume and per-channel state (bank, patch,
+    /// controllers, pitch bend), with no voice sounding and fresh effect
+    /// lines. Allocates.
+    ///
+    /// tutti addition: the voices and the effects are built against a rate
+    /// and cannot be re-rated in place, but a channel's state holds no rate,
+    /// so a re-rated copy keeps the preset a host selected. `tutti-soundfont`
+    /// uses it to run a fork of a unit at its render's rate.
+    pub fn with_sample_rate(&self, sample_rate: i32) -> Result<Self, SynthesizerError> {
+        let mut settings = SynthesizerSettings::new(sample_rate);
+        settings.block_size = self.block_size;
+        settings.maximum_polyphony = self.maximum_polyphony;
+        settings.enable_reverb_and_chorus = self.effects.is_some();
+        let mut synthesizer = Synthesizer::new(&self.sound_font, &settings)?;
+        synthesizer.channels = self.channels.clone();
+        synthesizer.master_volume = self.master_volume;
+        Ok(synthesizer)
+    }
 }
 
 #[derive(Debug, Clone)]

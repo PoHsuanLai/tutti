@@ -857,7 +857,7 @@ passes pay back differently.
 
 #### Phase 3 PR plan (scoped 2026-09-25)
 
-Six gaps have to close before the flip. Each is closed by the PR in brackets:
+Seven gaps have to close before the flip. Each is closed by the PR in brackets:
 
 1. **Silence skip.** It starves `Legacy` sources that are fed out-of-band
    (SoundFont, PolySynth, VoicePool, plugin instruments, mic, a base-0
@@ -926,7 +926,26 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    (`IntoNode::into_parts`, default none); a node without one is
    `ForkError::NotForkable { key }`, checked before anything is forked.
    `Legacy` became a builder (it is an `IntoNode`, no longer a `Node`) so
-   every `AudioUnit` hands one over: a `controlled` node forks from its
+   an `AudioUnit` can hand one over, **if it says it can**:
+   `AudioUnit::forkable()` (default `true`) is the unit's promise that its
+   `isolate` severs all shared mutable state, and a fork trusts nothing
+   else. `MicMonitorNode` (a clone shares the ring consumer), `PluginClient`
+   and `InProcessVst2Client` (clones share the plugin) say `false`, `Net`
+   and fundsp's wrappers forward it, and `Legacy::unforkable()` opts a node
+   out. An audit of every in-tree unit's `isolate` found three more:
+   `DiskVoice` keeps a second `Arc<RtState>` that a fork would seek the live
+   butler through, so it says `false` (and a `VoiceNode` answers for its
+   voice); `VoicePool::isolate` left its beat cursor shared (now dropped,
+   and rebuilt on the render's transport by `rebind_offline`);
+   `EqBandNode` never forwarded `isolate` to its SVF (now it does). Two
+   known limits stay: `stretch::Unit::isolate` reads the live bank's
+   `AudioThreadCell` from the forking thread to copy its geometry (as
+   `clone_isolated` always did; debug builds can trip the cell's guard),
+   and most effects share `Param` cells they only read, so a render
+   follows live control moves made while it runs rather than a snapshot.
+   The editor stores each source with the generation it came from,
+   and a fork refuses (and debug-asserts on) a source whose generation the
+   spec has moved past. A `controlled` node forks from its
    isolated shadow, which holds every setting sent; a plain one from a
    never-processed clone taken at insert, left un-isolated so a cell it
    shares is read at fork time (a plain `Legacy` has no other by-value
@@ -940,7 +959,26 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    has no controls, and is not itself forkable. A `controlled` fork does
    not see a value that something other than its controls writes into a
    shared `Arc` cell after construction (the shadow was isolated then);
-   that is the Phase 4 port's to close with native `ForkSource`s.
+   that is the Phase 4 port's to close with native `ForkSource`s. Every
+   forkable `Legacy` keeps a second deep copy of its unit for its lifetime
+   (the shadow or the insert-time clone): negligible for most units,
+   megabytes for a convolver, which copies its IR spectra (Phase 4 moves
+   them to `Arc`).
+
+   Two things for PR 12. **`ForkTarget::Master` isolates and resets**,
+   unlike today's master export, which is a plain `Net::clone` that keeps
+   live bindings: through a fork, disk voices are severed from their live
+   stream and render silence, and a `VoicePool`'s voices are cleared, so a
+   master export renders what the graph is *driven* to play from the
+   offline transport, not a copy of what is sounding now. And a graph
+   holding a plugin is `NotForkable` until item 7 lands.
+7. **A plugin cannot be forked** [PR 16, before PR 12]. Its clones share the one
+   plugin process (or in-process instance), so it says `forkable() ==
+   false` and export of a graph containing one is refused explicitly
+   rather than driving the live plugin from the worker. The fix is a fork
+   by **state transfer**: spawn a fresh plugin instance, load the live
+   instance's saved state into it, and rebind it offline — a `ForkSource`
+   for the plugin node, built at bind time.
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 
@@ -957,10 +995,11 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
 | 10 | bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
 | 11 | bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
-| 12 | bevy-tutti: export through `Fork` | 2, 7, 11 |
+| 12 | bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
+| 16 | tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
 
 **PR 4 landed.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
 `push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,
@@ -1048,7 +1087,9 @@ Mechanical, 43 impls: `route`→`Shape.latency`, drop `tick`/`footprint`/
 sampler's `Arc`-everything-to-survive-clone workarounds (`voice/node.rs:236-255`,
 `mic.rs:32`, `metering/tap.rs:15`, `beat_window.rs:197`, `post_block.rs:85`,
 `harmony_source.rs:47`) can be simplified once units stop being cloned.
-Delete `Legacy`.
+The convolver's IR spectra move to `Arc` (read-only, shared): today every
+forkable `Legacy` convolver keeps a second copy of them, megabytes per long
+reverb, for its fork source (Phase 3 PR 2). Delete `Legacy`.
 
 ### Phase 5 — delete
 

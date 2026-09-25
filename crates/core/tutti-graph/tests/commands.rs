@@ -251,26 +251,14 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
     // reached where the *current* tempo puts it.
     let mut beat = 0.0f64;
     for n in [64usize; 4] {
-        let t = Transport {
-            playing: true,
-            tempo: Bpm(60.0),
-            beat: Beat(beat),
-            looping: None,
-            origin: None,
-        };
+        let t = Transport::new(true, Bpm(60.0), Beat(beat), None);
         rig.block(n, &t);
         beat += n as f64 * 60.0 / (60.0 * rate); // 60 BPM: beats per frame
         frame += n as u64;
     }
     // Jump to just before beat 1.5 at 120 BPM: 10 frames short.
     let spb = 120.0 / (60.0 * rate); // beats per frame
-    let t = Transport {
-        playing: true,
-        tempo: Bpm(120.0),
-        beat: Beat(1.5 - 10.0 * spb),
-        looping: None,
-        origin: None,
-    };
+    let t = Transport::new(true, Bpm(120.0), Beat(1.5 - 10.0 * spb), None);
     rig.block(64, &t);
     for log in [&rig.exec_log, &rig.ref_log] {
         assert_eq!(
@@ -694,16 +682,15 @@ fn a_ramp_into_a_coarse_node_is_refused() {
 /// A transport at `beat`. The oracle table runs at 1440 BPM and 48 kHz:
 /// 2 000 frames a beat, so a 500-frame block is a quarter beat.
 fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) -> Transport {
-    Transport {
+    Transport::new(
         playing,
-        tempo: Bpm(tempo),
-        beat: Beat(beat),
-        looping: looping.map(|(start, end)| tutti_graph::LoopRange {
+        Bpm(tempo),
+        Beat(beat),
+        looping.map(|(start, end)| tutti_graph::LoopRange {
             start: Beat(start),
             end: Beat(end),
         }),
-        origin: None,
-    }
+    )
 }
 
 /// One case of the oracle table: blocks of 500 frames, each with its
@@ -1234,15 +1221,16 @@ fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
     let mut rig = rig();
     let (start, end) = (4.0, 4.0005);
     let frame_beat = 1.0 / 24_000.0;
-    let at = |beat: f64| Transport {
-        playing: true,
-        tempo: Bpm(120.0),
-        beat: Beat(beat),
-        looping: Some(tutti_graph::LoopRange {
-            start: Beat(start),
-            end: Beat(end),
-        }),
-        origin: None,
+    let at = |beat: f64| {
+        Transport::new(
+            true,
+            Bpm(120.0),
+            Beat(beat),
+            Some(tutti_graph::LoopRange {
+                start: Beat(start),
+                end: Beat(end),
+            }),
+        )
     };
     let step = |b: f64| {
         let x = b + frame_beat;

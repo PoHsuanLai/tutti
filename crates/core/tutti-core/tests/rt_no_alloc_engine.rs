@@ -116,7 +116,7 @@ impl tutti_graph::Node for TransportTone {
         for k in env.offsets() {
             let t = env.transport_at(k);
             let v = if t.playing {
-                t.beat.get().fract() as f32
+                t.beat().get().fract() as f32
             } else {
                 0.0
             } + bumps;

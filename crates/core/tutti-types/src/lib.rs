@@ -56,7 +56,9 @@ pub use value::{
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
 // and the one rule for which frame a beat lands on.
-pub use value::{first_frame_at_or_after, TimelineSegment, FRAME_TOLERANCE};
+pub use value::{
+    first_frame_at_or_after, FrameClock, LoopRange, SegmentOrigin, TimelineSegment, FRAME_TOLERANCE,
+};
 
 // Channel layout — how many channels.
 pub use channels::ChannelLayout;

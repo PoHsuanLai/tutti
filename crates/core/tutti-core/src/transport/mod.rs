@@ -15,7 +15,6 @@ mod beat_window;
 mod click;
 mod clock;
 mod env_clock;
-mod frame_clock;
 pub(crate) mod fsm;
 mod handle;
 mod motion;

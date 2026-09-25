@@ -328,7 +328,7 @@ impl Node for TestNode {
                     *o = ((env.frame.get() + k.get() as u64) % 1000) as f32 * 1e-3
                         + base
                         + moving
-                        + t.beat.get().fract() as f32;
+                        + t.beat().get().fract() as f32;
                 }
                 Status::Modified
             }
@@ -535,10 +535,7 @@ impl Pair {
 
     /// Render one block through both; return (executor, reference) outputs.
     pub fn block(&mut self, frames: usize, input: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-        let transport = Transport {
-            playing: true,
-            ..Transport::default()
-        };
+        let transport = Transport::new(true, tutti_types::Bpm(120.0), tutti_types::Beat(0.0), None);
         self.block_at(frames, input, &transport)
     }
 

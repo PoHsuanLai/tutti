@@ -858,21 +858,22 @@ impl Pieces for NetPieces<'_> {
         } else {
             settings.beat()
         };
-        GraphTransport {
-            playing: !settings.is_paused(),
+        // A bare beat, not counted: this side only resolves commands
+        // against it; the net's own clock is what counts frames.
+        GraphTransport::new(
+            !settings.is_paused(),
             // The tempo the net's clock will run the next piece at: the one
             // asked for, through its hysteresis.
-            tempo: tempo_in_effect(
+            tempo_in_effect(
                 settings.tempo(),
                 crate::Bpm(settings.tempo_in_force.load(Ordering::Acquire)),
             ),
             beat,
-            looping: settings.loop_span.range().map(|r| tutti_graph::LoopRange {
+            settings.loop_span.range().map(|r| tutti_graph::LoopRange {
                 start: r.start(),
                 end: r.end(),
             }),
-            origin: None,
-        }
+        )
     }
 
     fn run(&mut self, start: usize, end: usize, _: &GraphTransport) {

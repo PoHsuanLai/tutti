@@ -7,6 +7,8 @@
 //!   shareable with the audio thread (load / store / handle).
 //! - [`frame`] — [`Frame`], an absolute frame position (a count's affine
 //!   partner), and [`At`], when a scheduled command takes effect.
+//! - [`frame_clock`] — [`FrameClock`], the playhead as a frame count, and
+//!   the [`LoopRange`] it wraps at.
 //! - [`timeline`] — [`TimelineSegment`], the one frame↔beat conversion, and
 //!   [`first_frame_at_or_after`], the one rule for the frame a beat lands on.
 //! - [`samples`] — [`Samples`], an integer frame count. A discrete quantity,
@@ -25,6 +27,7 @@ pub mod midi_group;
 pub mod note;
 
 pub mod frame;
+pub mod frame_clock;
 pub mod latency;
 pub mod param;
 pub mod samples;
@@ -34,6 +37,7 @@ pub mod unit_param;
 
 pub use cc_number::CCNumber;
 pub use frame::{At, Frame};
+pub use frame_clock::{FrameClock, LoopRange, SegmentOrigin};
 pub use latency::Latency;
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;

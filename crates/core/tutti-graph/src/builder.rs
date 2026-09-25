@@ -583,7 +583,7 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// ```
 /// # use fundsp::prelude32::pass;
 /// use tutti_graph::{GraphBuilder, Prepare, Transport};
-/// use tutti_types::{Beat, ChannelLayout, SampleRate, Samples};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
 /// g.chain_unit(Box::new(pass()));
@@ -597,10 +597,9 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// assert_eq!(out, vec![input.clone(), input]);
 ///
 /// // A rolling transport is a function of the block's first frame.
-/// r.set_transport_fn(|frame| Transport {
-///     playing: true,
-///     beat: Beat(frame.0 as f64 / 24_000.0), // 120 BPM at 48 kHz
-///     ..Transport::default()
+/// r.set_transport_fn(|frame| {
+///     // 120 BPM at 48 kHz: 24 000 frames a beat.
+///     Transport::new(true, Bpm(120.0), Beat(frame.0 as f64 / 24_000.0), None)
 /// });
 /// assert_eq!(r.render_interleaved(2), vec![0.0; 4]); // L R L R
 /// ```

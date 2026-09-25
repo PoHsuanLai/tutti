@@ -5,12 +5,12 @@
 //! (whole, then fraction) so precision does not decay as a session runs long,
 //! and writes the playhead back to the transport once per buffer.
 
-use super::frame_clock::FrameClock;
 use super::state::{ClockLinks, LoopSpan};
 use crate::Ordering;
-use crate::{Beat, Bpm};
+use crate::{Beat, Bpm, Samples};
 use fundsp::prelude::*;
 use std::any;
+use tutti_types::FrameClock;
 
 /// How far the tempo must move before the clock takes it (and starts a new
 /// segment). Comparing for equality would restart on every buffer from ULP
@@ -223,18 +223,18 @@ impl TransportClock {
             self.apply_pending_seek();
         }
         self.take_tempo(control.tempo);
-        tutti_graph::Transport {
-            playing: !control.paused,
-            tempo: self.clock.tempo(),
-            beat: self.clock.beat(),
-            looping: control.looping.map(|r| tutti_graph::LoopRange {
+        // Counted: the frame count the beat is derived from, so the graph's
+        // `EnvClock` and `Env::transport_at` continue this clock with its
+        // own code.
+        tutti_graph::Transport::counted(
+            !control.paused,
+            self.clock.tempo(),
+            self.clock.origin(),
+            control.looping.map(|r| tutti_graph::LoopRange {
                 start: r.start(),
                 end: r.end(),
             }),
-            // The frame count the beat is derived from, so the graph's
-            // `EnvClock` continues this clock with its arithmetic.
-            origin: Some(self.clock.origin()),
-        }
+        )
     }
 
     /// Advance `frames` under `from`, the transport the last
@@ -255,7 +255,7 @@ impl TransportClock {
             let region = from
                 .looping
                 .and_then(|l| super::LoopRange::new(l.start, l.end));
-            self.clock.advance(frames, region);
+            self.clock.advance(Samples(frames), region);
         }
         self.advance_steady_time(frames);
     }
@@ -364,7 +364,7 @@ impl AudioUnit for TransportClock {
             // `LoopRange` is non-empty by construction; only a playhead that
             // crosses the end wraps (`FrameClock::advance`).
             let region = self.links.loop_span.as_ref().and_then(LoopSpan::range);
-            self.clock.advance(1, region);
+            self.clock.advance(Samples(1), region);
         }
 
         if let Some(ref writeback) = self.links.position_writeback {
@@ -395,7 +395,7 @@ impl AudioUnit for TransportClock {
                 let (whole, frac) = split_beat(self.clock.beat());
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
-                self.clock.advance(1, active_loop);
+                self.clock.advance(Samples(1), active_loop);
             }
         }
 

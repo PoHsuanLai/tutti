@@ -952,12 +952,13 @@ fn block_of(blocks: &[usize], frame: u64) -> (u64, u64) {
 /// change inside its block when it falls inside one.
 fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, TransportChanges) {
     let stopped = Transport::default();
-    let rolling = |at: u64| Transport {
-        playing: true,
-        tempo: Bpm(120.0),
-        beat: Beat((at - start.unwrap_or(0)) as f64 / FRAMES_PER_BEAT as f64),
-        looping: None,
-        origin: None,
+    let rolling = |at: u64| {
+        Transport::new(
+            true,
+            Bpm(120.0),
+            Beat((at - start.unwrap_or(0)) as f64 / FRAMES_PER_BEAT as f64),
+            None,
+        )
     };
     let mut changes = TransportChanges::NONE;
     let Some(s) = start else {

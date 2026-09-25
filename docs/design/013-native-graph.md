@@ -480,10 +480,13 @@ place that loses precision to be written out explicitly:
    `EnvClock`, `OfflineTimeline`) keeps an integer frame count on a
    **`TimelineSegment`** (`tutti-types`: origin frame, origin beat, tempo,
    rate) and derives the beat in closed form, `origin_beat + frames × tempo
-   / (60 × rate)`, never by adding `beats_per_sample`. The shared walker is
-   tutti-core's `FrameClock`. A segment restarts on a seek, a tempo or rate
-   change and a loop wrap (on the first frame whose beat reaches the loop's
-   end, found exactly); a stopped transport does not count frames. The bug
+   / (60 × rate)`, never by adding `beats_per_sample`. There is one walker,
+   **`FrameClock`** (`tutti-types`, beside the `LoopRange` it wraps at): the
+   clocks, `EnvClock` and `Env::transport_at` all step with it. A segment
+   restarts on a seek, a tempo or rate change and a loop wrap (on the first
+   frame whose beat reaches the loop's end, found exactly; a wrap that
+   rounds up to the end is clamped inside the loop); a stopped transport
+   does not count frames. The bug
    it fixes, found in review: at 90 BPM / 48 kHz one frame is 1/32 000
    beat, which binary cannot represent, so the accumulated offline playhead
    read `2.999999999999891` on frame 96 000 (exactly beat 3) and
@@ -493,15 +496,27 @@ place that loses precision to be written out explicitly:
    exact integers, so frame 96 000 is beat 3 to the bit, a clock stepped a
    frame at a time equals one stepped a block at a time bit for bit, and
    the result is portable (no libm).
-   - **The graph carries the segment.** `Transport::origin:
-     Option<SegmentOrigin>` is the origin's beat and the frames rolled
-     since it, as of the block's first frame (`None`: the block start is
-     the origin, for a transport built by hand). `EnvClock` continues the
-     host's clock from it with the host's code, so its ports equal a
-     `TransportClock`'s to the bit by construction (it used to accumulate
-     from the block's beat to match an accumulating clock).
-     `Env::transport_at` uses it too: exact up to a loop wrap inside the
-     block, to rounding past one.
+   - **The graph carries the frame count, and cannot disagree with it.**
+     `Transport`'s position is private: `Transport::new(.., beat, ..)` (a
+     bare beat, the block start its own origin, for a transport built by
+     hand) or `Transport::counted(.., SegmentOrigin, ..)` (the host's
+     origin beat, the frames rolled since, and **their rate**). `beat()`
+     derives a counted position's beat, so the beat and its frame count are
+     one value, and the origin's rate travels with it (`Transport::clock`
+     debug-asserts it matches the block's). `EnvClock` and
+     `Env::transport_at` rebuild the host's `FrameClock` from it and walk
+     with the host's code: `EnvClock`'s beats equal a `TransportClock`'s in
+     `f64`, bit for bit, not only after the `f32` port split, and
+     `transport_at` is the host's position at any frame, through any number
+     of wraps inside the block.
+   - **`OfflineTimeline`'s position is one `Mutex<FrameClock>`**, moved and
+     published under the lock, so a seek racing an advance cannot publish a
+     mixed position; readers read the published beat lock-free.
+   - **The MTC quarter-frame grid is closed form too** (quarter-frame `k`
+     due at `lead + k × rate / (4 × fps)` on its segment; a rate or fps
+     change restarts the segment at the next one due, rescaled to the same
+     wall-clock time), where it used to carry a phase by adding a
+     quarter-frame's length each time.
    - **One rule for "which frame".** `first_frame_at_or_after(frames_ahead)
      = ceil(frames_ahead - FRAME_TOLERANCE)`, the first frame at or after a
      beat within a millionth of a frame, is the one beat→frame conversion
@@ -514,6 +529,12 @@ place that loses precision to be written out explicitly:
      block's last frame and its end is the next block's frame 0, where beat
      comparisons (`beat < end_beat`, then `as u32`) put it on this block's
      last frame or in neither.
+   - **The tolerance's bound.** A millionth of a frame absorbs a one-ulp
+     disagreement between two beats while `ulp(beat) × frames_per_beat` is
+     under it: below beat 2¹⁴ (6.8 h) at the worst case, 40 BPM / 192 kHz,
+     and below 2¹⁸ (36 h) at 120 BPM / 48 kHz. Documented rather than
+     scaled: the rule takes a frame distance, and every reader would have
+     to pass the beats it came from.
    - **Not a new unit.** `TimelineSegment` is a value of existing units
      (`Frame`, `Beat`, `Bpm`, `SampleRate`) with the conversion as its
      methods; it adds no range or algebra. `beats_per_sample` stays, as the
@@ -526,7 +547,11 @@ place that loses precision to be written out explicitly:
      96 000; MIDI notes at beats 1 and 3 land on 32 000 and 96 000; live
      through the `Net` and graph engines, offline `Net`-style and through
      `render_graph`), each checking also that the reader read the exact
-     beat. Mutation: reintroducing accumulation fails them.
+     beat; `EnvClock` and `transport_at` against the host clock in `f64`,
+     far into a segment and through wraps of a loop shorter than the block;
+     the MTC grid against its closed form. Mutation: reintroducing
+     accumulation fails them, as does dropping the origin in either
+     graph-side walker.
 
 **Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
 recompile with every unit re-prepared on the control thread, in two commits

@@ -5,13 +5,11 @@
 //! reproducible timeline without a real CPAL callback (golden tests,
 //! automation scrubbing) can use it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use super::frame_clock::FrameClock;
 use super::state::LoopRange;
-use crate::{AtomicF64, AtomicU64, Ordering};
-use crate::{Beat, BeatDuration, Bpm, SampleRate};
-use tutti_types::Frame;
+use crate::{AtomicF64, Ordering};
+use crate::{Beat, BeatDuration, Bpm, FrameClock, SampleRate, Samples};
 
 /// The timeline an offline render advances, one block at a time.
 ///
@@ -106,23 +104,24 @@ impl Default for OfflineTimelineConfig {
 /// the export driver advances it. Everything else is render configuration
 /// fixed at construction — there are no setters — so it is a plain value.
 ///
-/// The position is the segment's origin beat and the frames rolled since it,
-/// written only by the one thread that drives the render (`advance`,
-/// `seek_to`), plus the beat derived from them, published for readers.
-/// Readers read `current_beat` alone, so they never see a torn pair.
+/// The position is a [`FrameClock`] behind a `Mutex`: a move (`advance`,
+/// `seek_to`) takes the lock, moves the clock, and publishes the beat it
+/// derives before letting go, so two writers racing (a seek against an
+/// advance) serialise, and neither can publish a position the other half
+/// wrote. Readers read the published beat alone, lock-free. An offline
+/// render, not the audio thread, is what takes the lock.
 ///
-/// The alignment keeps the position — the one genuinely contended state — on
-/// its own cache line, away from the immutable fields readers also touch.
+/// The alignment keeps the published beat — the one genuinely contended word
+/// — on its own cache line, away from the immutable fields readers also
+/// touch.
 #[derive(Debug)]
 #[repr(align(64))]
 pub struct OfflineTimeline {
-    /// Current position, derived from `origin_beat` and `rolled`: what
-    /// readers read.
+    /// The beat `clock` derives, published on every move: what readers
+    /// read.
     current_beat: AtomicF64,
-    /// The beat at the current segment's first frame.
-    origin_beat: AtomicF64,
-    /// Frames rolled since the current segment's first frame.
-    rolled: AtomicU64,
+    /// The playhead: the only writer-side state, moved under its lock.
+    clock: Mutex<FrameClock>,
     tempo: Bpm,
     sample_rate: SampleRate,
     /// Musical time per sample, precomputed from `tempo` and `sample_rate`.
@@ -138,8 +137,11 @@ impl OfflineTimeline {
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
             current_beat: AtomicF64::new(config.start_beat.get()),
-            origin_beat: AtomicF64::new(config.start_beat.get()),
-            rolled: AtomicU64::new(0),
+            clock: Mutex::new(FrameClock::new(
+                config.start_beat,
+                config.tempo,
+                config.sample_rate,
+            )),
             tempo: config.tempo,
             sample_rate: config.sample_rate,
             beats_per_sample: super::state::beats_per_sample(config.tempo, config.sample_rate),
@@ -157,48 +159,24 @@ impl OfflineTimeline {
     /// to the bit whether either is stepped a frame or a block at a time —
     /// see the sample-for-sample test below.
     pub fn advance(&self, samples: usize) {
-        let mut clock = self.clock();
+        let mut clock = self.lock();
         // `LoopRange` is non-empty by construction, so no guard. Only a
         // crossing wraps, as for the clock (`LoopRange::advance`).
-        clock.advance(samples, self.loop_range);
-        self.store(&clock);
+        clock.advance(Samples(samples), self.loop_range);
+        self.publish(&clock);
     }
 
-    /// The playhead as a frame count on its segment.
-    fn clock(&self) -> FrameClock {
-        let origin = tutti_graph::SegmentOrigin {
-            beat: Beat(self.origin_beat.load(Ordering::Acquire)),
-            frame: Frame(self.rolled.load(Ordering::Acquire)),
-        };
-        FrameClock::of(
-            &self.snapshot(Beat(self.current_beat.load(Ordering::Acquire)), origin),
-            self.sample_rate,
-        )
+    /// The playhead, for moving: held until the moved position is published.
+    fn lock(&self) -> MutexGuard<'_, FrameClock> {
+        // A panic mid-move leaves a whole `FrameClock` (it is `Copy` and
+        // moved by value), so a poisoned lock still holds a position.
+        self.clock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Store `clock` as the playhead, publishing its beat.
-    fn store(&self, clock: &FrameClock) {
-        let origin = clock.origin();
-        self.origin_beat.store(origin.beat.get(), Ordering::Release);
-        self.rolled.store(origin.frame.get(), Ordering::Release);
+    /// Publish `clock`'s beat to readers. Called with the lock held.
+    fn publish(&self, clock: &FrameClock) {
         self.current_beat
             .store(clock.beat().get(), Ordering::Release);
-    }
-
-    /// This timeline as a graph block's transport at `beat`, counted from
-    /// `origin`: rolling (an offline render always is), at its tempo,
-    /// looping over its region.
-    fn snapshot(&self, beat: Beat, origin: tutti_graph::SegmentOrigin) -> tutti_graph::Transport {
-        tutti_graph::Transport {
-            playing: true,
-            tempo: self.tempo,
-            beat,
-            looping: self.loop_range.map(|r| tutti_graph::LoopRange {
-                start: r.start(),
-                end: r.end(),
-            }),
-            origin: Some(origin),
-        }
     }
 
     /// The current playhead.
@@ -227,9 +205,9 @@ impl OfflineTimeline {
     /// destination rather than a default. Everything else on this timeline —
     /// tempo, sample rate, loop region — is fixed at construction.
     pub fn seek_to(&self, beat: impl Into<Beat>) {
-        let mut clock = self.clock();
+        let mut clock = self.lock();
         clock.seat(beat.into());
-        self.store(&clock);
+        self.publish(&clock);
     }
 
     /// Musical time one frame covers, precomputed at construction.
@@ -255,8 +233,8 @@ impl OfflineTimeline {
     /// The transport is this timeline at its current playhead: rolling (an
     /// offline render always is), at its tempo, looping over its region, and
     /// counted from its segment's origin, so an `EnvClock` in the graph
-    /// continues this timeline's arithmetic. There are never changes: the tempo and the loop are fixed for the
-    /// render, and a loop wrap inside the block is not a change: the graph
+    /// continues this timeline's arithmetic. There are never changes: the
+    /// tempo and the loop are fixed for the render, and a loop wrap inside the block is not a change: the graph
     /// derives it from the snapshot, as it does live
     /// ([`Env::transport_at`](tutti_graph::Env::transport_at), and
     /// [`EnvClock`](super::EnvClock) frame by frame). A render with a
@@ -267,8 +245,16 @@ impl OfflineTimeline {
     /// block's first frame, the one clip readers and samplers holding this
     /// timeline read during the block (see [`RenderClock`](super::RenderClock)).
     pub fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
-        let clock = self.clock();
-        let transport = self.snapshot(clock.beat(), clock.origin());
+        let origin = self.lock().origin();
+        let transport = tutti_graph::Transport::counted(
+            true,
+            self.tempo,
+            origin,
+            self.loop_range.map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            }),
+        );
         (transport, tutti_graph::TransportChanges::NONE)
     }
 
@@ -380,18 +366,22 @@ mod tests {
         assert_eq!(timeline.loop_range(), None);
     }
 
-    /// A block longer than the loop lands inside the loop, exactly where the
-    /// frames put it.
+    /// A block longer than the loop lands where its frames do: inside the
+    /// loop, exactly on the start when the crossings are on frames, and bit
+    /// for bit where the same frames one at a time land when they are not.
     ///
-    /// Named for what it first pinned: `advance` added the block's beats in
-    /// bulk and wrapped once, because an accumulating per-sample walk wrapped
-    /// repeatedly and landed elsewhere. `advance` now counts frames and starts
-    /// a new segment on every crossing's frame (`FrameClock::advance`), as
-    /// the live clock does frame by frame, so a block and its frames land on
-    /// the same bits, and here exactly on the loop's start: the assertions
-    /// stand as they were.
+    /// Renamed from `advance_wraps_once_per_block_not_once_per_sample`, whose
+    /// premise was the accumulating clock's: a per-sample walk wrapped
+    /// repeatedly and drifted, so `advance` added a block in bulk and wrapped
+    /// once. `advance` now counts frames and starts a new segment on every
+    /// crossing's frame (`FrameClock::advance`), as the live clock does frame
+    /// by frame, so the two agree to the bit.
+    ///
+    /// Mutation (run): wrap once per call, at the call's end (the old bulk
+    /// rule) → the block of 50 000 frames (five crossings of a 0.33-beat loop)
+    /// lands off the frame-by-frame position → fails.
     #[test]
-    fn advance_wraps_once_per_block_not_once_per_sample() {
+    fn a_block_longer_than_the_loop_lands_where_its_frames_do() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo: Bpm(120.0),
@@ -403,16 +393,27 @@ mod tests {
         // on a frame (one beat is exactly 22 050), so each wraps to 0.0.
         let samples_per_beat = 22050usize;
         timeline.advance(5 * samples_per_beat);
+        assert_eq!(
+            timeline.beat(),
+            Beat(0.0),
+            "5 beats over a 1-beat loop land exactly on the start"
+        );
 
-        let beat = timeline.beat().get();
-        assert!(
-            (0.0..1.0).contains(&beat),
-            "must land inside the region, got {beat}"
-        );
-        assert!(
-            beat.abs() < 1e-9,
-            "5 beats over a 1-beat loop must land exactly at the start, got {beat}"
-        );
+        // Crossings between frames, at a tempo whose frame step is not
+        // representable: a block at once and its frames one by one agree.
+        let config = OfflineTimelineConfig {
+            start_beat: Beat(0.1),
+            tempo: Bpm(97.0),
+            sample_rate: SampleRate(44100.0),
+            loop_range: LoopRange::new(0.1, 0.43),
+        };
+        let (block, frames) = (OfflineTimeline::new(&config), OfflineTimeline::new(&config));
+        block.advance(50_000);
+        for _ in 0..50_000 {
+            frames.advance(1);
+        }
+        assert!(config.loop_range.expect("a loop").contains(block.beat()));
+        assert_eq!(block.beat().get().to_bits(), frames.beat().get().to_bits());
     }
 
     /// A region render drives BOTH clocks over the same net: the in-net

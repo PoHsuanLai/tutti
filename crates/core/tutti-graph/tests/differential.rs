@@ -389,16 +389,15 @@ impl Script {
             }
             _ => {}
         }
-        let t = tutti_graph::Transport {
-            playing: self.playing,
-            tempo: tutti_types::Bpm(self.tempo),
-            beat: tutti_types::Beat(self.beat),
-            looping: self.looping.map(|(start, end)| tutti_graph::LoopRange {
+        let t = tutti_graph::Transport::new(
+            self.playing,
+            tutti_types::Bpm(self.tempo),
+            tutti_types::Beat(self.beat),
+            self.looping.map(|(start, end)| tutti_graph::LoopRange {
                 start: tutti_types::Beat(start),
                 end: tutti_types::Beat(end),
             }),
-            origin: None,
-        };
+        );
         // Half the changes ramp linearly across the block; half step at a
         // random offset inside it. Either way the block reports its starting
         // tempo, and the next block the new one.
@@ -536,7 +535,7 @@ proptest! {
                         // Around the playhead: behind it by up to 0.05
                         // beat, ahead by up to 0.25.
                         _ => tutti_types::At::Beat(tutti_types::Beat(
-                            (t.beat.get() + (rng.below(3000) as f64 - 500.0) / 10_000.0).max(0.0),
+                            (t.beat().get() + (rng.below(3000) as f64 - 500.0) / 10_000.0).max(0.0),
                         )),
                     };
                     let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
@@ -622,8 +621,8 @@ proptest! {
                         1 => tutti_types::At::Frame(tutti_types::Frame(frame + rng.below(2 * n as u64))),
                         // Near a piece's start beat, before or after it.
                         _ => {
-                            let pieces: Vec<f64> = std::iter::once(start.beat.get())
-                                .chain(changes.as_slice().iter().map(|c| c.to.beat.get()))
+                            let pieces: Vec<f64> = std::iter::once(start.beat().get())
+                                .chain(changes.as_slice().iter().map(|c| c.to.beat().get()))
                                 .collect();
                             let b = pieces[rng.below(pieces.len() as u64) as usize];
                             tutti_types::At::Beat(tutti_types::Beat(
@@ -1485,10 +1484,12 @@ impl EditorPair {
     }
 
     fn run(&mut self, blocks: &[usize], frame: &mut u64) {
-        let transport = tutti_graph::Transport {
-            playing: true,
-            ..tutti_graph::Transport::default()
-        };
+        let transport = tutti_graph::Transport::new(
+            true,
+            tutti_types::Bpm(120.0),
+            tutti_types::Beat(0.0),
+            None,
+        );
         for &n in blocks {
             let input = input_signal(*frame, n);
             let chans: Vec<Vec<f32>> = (0..self.inputs.max(1))

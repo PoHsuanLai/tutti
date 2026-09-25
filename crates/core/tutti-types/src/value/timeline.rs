@@ -43,11 +43,23 @@ use super::units::{Beat, BeatDuration, Bpm, SampleRate};
 
 /// How far past a frame a beat may fall, in frames, and still land on it.
 ///
-/// A millionth of a frame is far below anything musical (20 ns at 48 kHz) and
-/// far above the rounding of an `f64` beat (an ulp of beat 10⁶ is ~10⁻¹⁰
-/// beat, ~4·10⁻⁶ of a frame only past beat 10⁶ at 90 BPM). The native graph's
-/// beat-timed commands (`tutti_graph::Env::due`) have used this tolerance
-/// since they landed; it moved here so every reader uses the same one.
+/// A millionth of a frame is far below anything musical (20 ns at 48 kHz).
+/// The native graph's beat-timed commands (`tutti_graph::Env::due`) have used
+/// this tolerance since they landed; it moved here so every reader uses the
+/// same one.
+///
+/// # The bound
+///
+/// It absorbs a one-ulp disagreement between two `f64` beats (a clip start
+/// and the playhead, computed two ways) while an ulp of the beat is under a
+/// millionth of a frame: `ulp(beat) × frames_per_beat < 1e-6`. The worst
+/// supported case, 40 BPM at 192 kHz (288 000 frames a beat), holds below
+/// beat 2¹⁴ (16 384 beats, 6.8 h); 120 BPM at 48 kHz holds below beat 2¹⁸
+/// (36 h). Past the bound a beat an ulp late can land one frame late; a beat
+/// the clock itself derived still lands on its frame, since the clock is
+/// exact. Scaling the tolerance by `ulp(beat)` would lift the bound, but the
+/// rule takes a frame distance, not the beats it came from, and every reader
+/// would have to pass them; not worth it for sessions past these lengths.
 pub const FRAME_TOLERANCE: f64 = 1e-6;
 
 /// The frame on which playback reaches a point `frames_ahead` frames after

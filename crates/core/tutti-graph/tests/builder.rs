@@ -491,11 +491,7 @@ fn renderer_drives_blocks_and_interleaves() {
     let log = Arc::clone(&seen);
     r.set_transport_fn(move |frame| {
         log.lock().unwrap().push(frame);
-        Transport {
-            playing: true,
-            beat: Beat(frame.0 as f64),
-            ..Transport::default()
-        }
+        Transport::new(true, tutti_types::Bpm(120.0), Beat(frame.0 as f64), None)
     });
     let out = r.render_interleaved(250);
     assert_eq!(

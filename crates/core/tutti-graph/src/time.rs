@@ -29,9 +29,9 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{first_frame_at_or_after, At, Beat, Frame, Latency, Samples, FRAME_TOLERANCE};
+use tutti_types::{first_frame_at_or_after, At, Frame, Latency, Samples, FRAME_TOLERANCE};
 
-use crate::node::{Env, SegmentOrigin, Transport, TransportChanges};
+use crate::node::{Env, Transport, TransportChanges};
 
 /// A position inside the current block: frames from its first frame.
 ///
@@ -184,7 +184,7 @@ impl Playhead {
     }
 
     fn observe_segment(&mut self, env: &Env) {
-        let now = env.transport.beat.get();
+        let now = env.transport.beat().get();
         let continues = self.prev.and_then(|p| {
             if p.transport.looping != env.transport.looping {
                 return None;
@@ -207,7 +207,7 @@ impl Playhead {
         let (Some(anchor), Some(env)) = (self.anchor, self.prev) else {
             return false;
         };
-        let now = env.transport.beat.get();
+        let now = env.transport.beat().get();
         match env.transport.looping {
             Some(l) if self.wrapped => beat >= anchor.min(l.start.get()) && beat < now,
             _ => beat >= anchor && beat < now,
@@ -329,16 +329,15 @@ impl Env {
     /// there (or the block's own transport), with its beat advanced to
     /// `offset` at its tempo while it rolls, wrapping at its loop.
     ///
-    /// Closed form from the transport's [segment](Transport::segment), never
-    /// accumulated: for a host that counts frames (tutti-core's
-    /// `TransportClock`, which carries its [origin](Transport::origin)) the
-    /// beat is the host's own figure for that frame, to the bit, until a loop
-    /// wrap; past a wrap inside the block it agrees to rounding (the host
-    /// starts a new segment on the wrap's frame, this wraps the unwrapped
-    /// position). The block-start beat and every change's beat are the
-    /// host's own figures.
+    /// Walked with the host's own clock, [`FrameClock`](tutti_types::FrameClock), from the
+    /// transport's position ([`Transport::clock`]): the same code tutti-core's
+    /// `TransportClock`, `OfflineTimeline` and `EnvClock` step by, so for a
+    /// host that counts frames (its transport [counted](Transport::counted))
+    /// the result is the host's own position at that frame, to the bit,
+    /// through any number of loop wraps inside the block. The block-start
+    /// position and every change's are the host's own figures.
     pub fn transport_at(&self, offset: Offset) -> Transport {
-        let (start, mut t) = self
+        let (start, t) = self
             .changes
             .as_slice()
             .iter()
@@ -348,31 +347,12 @@ impl Env {
         if self.frames_per_beat_at(t.tempo.get()).is_none() || !t.playing {
             return t;
         }
-        let (segment, first) = t.segment(self.sample_rate);
-        let frame = first + Samples(offset.index() - start);
-        let pos = segment.beat_at(frame).get();
-        let wrapped = match t.looping {
-            Some(l) if t.beat.get() < l.end.get() && l.start.get() < l.end.get() => {
-                let (ls, le) = (l.start.get(), l.end.get());
-                (pos >= le).then(|| ls + (pos - ls).rem_euclid(le - ls))
-            }
-            _ => None,
-        };
-        match wrapped {
-            Some(beat) => {
-                t.beat = Beat(beat);
-                // Past the wrap the beat is its own origin.
-                t.origin = None;
-            }
-            None => {
-                t.beat = Beat(pos);
-                t.origin = Some(SegmentOrigin {
-                    beat: segment.origin_beat,
-                    frame,
-                });
-            }
-        }
-        t
+        let mut clock = t.clock(self.sample_rate);
+        let region = t
+            .looping
+            .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
+        clock.advance(Samples(offset.index() - start), region);
+        Transport::counted(t.playing, t.tempo, clock.origin(), t.looping)
     }
 
     /// Whether this block, with its tempo changing to `next_tempo` at some
@@ -382,7 +362,7 @@ impl Env {
     /// the loop candidate by candidate.
     fn arrives_at(&self, next: f64, next_tempo: f64) -> Option<bool> {
         let t = &self.transport;
-        let from = t.beat.get();
+        let from = t.beat().get();
         let len = self.block_len.get() as f64;
         let rolls = |tempo: f64| self.frames_per_beat_at(tempo).filter(|_| t.playing);
         let (a, b) = (rolls(t.tempo.get()), rolls(next_tempo));
@@ -483,7 +463,7 @@ impl Env {
         let Some(frames_per_beat) = self.frames_per_beat() else {
             return Due::NotYet;
         };
-        let now = self.transport.beat.get();
+        let now = self.transport.beat().get();
         // A beat behind the playhead by less than a frame (minus the
         // tolerance) falls due on this block's first frame. It is the exact
         // complement of the ahead side: the previous block resolved a beat
@@ -597,13 +577,7 @@ mod tests {
     /// → the stopped case resolves → fails.
     #[test]
     fn a_beat_is_resolved_against_the_transport() {
-        let rolling = |beat: f64| Transport {
-            playing: true,
-            tempo: Bpm(120.0),
-            beat: Beat(beat),
-            looping: None,
-            origin: None,
-        };
+        let rolling = |beat: f64| Transport::new(true, Bpm(120.0), Beat(beat), None);
         // The block starting at frame 35 990 starts at beat 35 990 / 24 000.
         let e = env(35_990, 64, rolling(35_990.0 / 24_000.0));
         assert_eq!(e.due(At::Beat(Beat(1.5))), Due::In(Offset::raw(10)));
@@ -614,14 +588,11 @@ mod tests {
         // the `Playhead`'s history).
         assert_eq!(e.due(At::Beat(Beat(1.0))), Due::NotYet);
         assert_eq!(e.due(At::Beat(Beat(2.0))), Due::NotYet);
-        let stopped = env(
-            35_990,
-            64,
-            Transport {
-                playing: false,
-                ..rolling(35_990.0 / 24_000.0)
-            },
-        );
+        let stopped = env(35_990, 64, {
+            let mut t = rolling(35_990.0 / 24_000.0);
+            t.playing = false;
+            t
+        });
         assert_eq!(stopped.due(At::Beat(Beat(1.5))), Due::NotYet);
     }
 
@@ -641,13 +612,7 @@ mod tests {
         assert_eq!(e.due_at_arrival(&mut at, a, &ph), Due::In(Offset::raw(60)));
         let mut next = At::NextBlock;
         assert_eq!(e.due_at_arrival(&mut next, a, &ph), Due::In(Offset::ZERO));
-        let t = Transport {
-            playing: true,
-            tempo: Bpm(120.0),
-            beat: Beat(1000.0 / 24_000.0),
-            looping: None,
-            origin: None,
-        };
+        let t = Transport::new(true, Bpm(120.0), Beat(1000.0 / 24_000.0), None);
         let e = env(1000, 64, t);
         let mut beat = At::Beat(Beat(1010.0 / 24_000.0));
         assert_eq!(
@@ -679,16 +644,15 @@ mod tests {
         // covers 1/375 of a beat. Loop [4, 8); the block starts 10 frames
         // before the end.
         let spb = 1.0 / 24_000.0;
-        let t = Transport {
-            playing: true,
-            tempo: Bpm(120.0),
-            beat: Beat(8.0 - 10.0 * spb),
-            looping: Some(LoopRange {
+        let t = Transport::new(
+            true,
+            Bpm(120.0),
+            Beat(8.0 - 10.0 * spb),
+            Some(LoopRange {
                 start: Beat(4.0),
                 end: Beat(8.0),
             }),
-            origin: None,
-        };
+        );
         let e = env(0, 64, t);
         // Beat 4 plus 5 frames: 10 frames to the wrap, then 5 more.
         assert_eq!(
@@ -717,13 +681,7 @@ mod tests {
         env(
             0,
             len,
-            Transport {
-                playing,
-                tempo: Bpm(120.0),
-                beat: Beat(beat),
-                looping,
-                origin: None,
-            },
+            Transport::new(playing, Bpm(120.0), Beat(beat), looping),
         )
     }
 
@@ -782,19 +740,8 @@ mod tests {
     /// the run → fails.
     #[test]
     fn continuity_survives_f32_beats_and_tempo_ramps() {
-        let at = |beat: f64, tempo: f64| {
-            env(
-                0,
-                512,
-                Transport {
-                    playing: true,
-                    tempo: Bpm(tempo),
-                    beat: Beat(beat),
-                    looping: None,
-                    origin: None,
-                },
-            )
-        };
+        let at =
+            |beat: f64, tempo: f64| env(0, 512, Transport::new(true, Bpm(tempo), Beat(beat), None));
         // f32 beats around beat 100 at 120 BPM (512 frames = 0.02133 beat).
         let mut ph = Playhead::new();
         let mut exact = 100.0f64;
@@ -818,19 +765,8 @@ mod tests {
         // block reports 120, the next 240, and the position moved 64 frames
         // at 120 and 192 at 240. A beat crossed inside it was crossed.
         let mut ph = Playhead::new();
-        let e = |beat: f64, tempo: f64| {
-            env(
-                0,
-                256,
-                Transport {
-                    playing: true,
-                    tempo: Bpm(tempo),
-                    beat: Beat(beat),
-                    looping: None,
-                    origin: None,
-                },
-            )
-        };
+        let e =
+            |beat: f64, tempo: f64| env(0, 256, Transport::new(true, Bpm(tempo), Beat(beat), None));
         ph.observe(&e(1.0, 120.0));
         let after = 1.0 + 64.0 / 24_000.0 + 192.0 / 12_000.0;
         ph.observe(&e(after, 240.0));
@@ -901,10 +837,7 @@ mod tests {
     /// equal offset → `len` is 2 → fails.
     #[test]
     fn transport_changes_are_ordered_distinct_and_bounded() {
-        let playing = Transport {
-            playing: true,
-            ..Transport::default()
-        };
+        let playing = Transport::new(true, Bpm(120.0), Beat(0.0), None);
         let mut c = TransportChanges::NONE;
         assert_eq!(
             c.push(Offset::ZERO, playing),
@@ -947,16 +880,9 @@ mod tests {
         let mut e = env(
             1_000,
             512,
-            Transport {
-                beat: Beat(2.0),
-                ..Transport::default()
-            },
+            Transport::new(false, Bpm(120.0), Beat(2.0), None),
         );
-        let rolling = Transport {
-            playing: true,
-            beat: Beat(2.0),
-            ..Transport::default()
-        };
+        let rolling = Transport::new(true, Bpm(120.0), Beat(2.0), None);
         e.changes.push(at(100), rolling).expect("inside");
 
         let pieces: Vec<(Offset, Env)> = e.segments().collect();
@@ -968,10 +894,10 @@ mod tests {
         assert_eq!(pieces[1].1.block_len, Samples(412));
 
         assert!(!e.transport_at(at(99)).playing);
-        assert_eq!(e.transport_at(at(99)).beat, Beat(2.0));
+        assert_eq!(e.transport_at(at(99)).beat(), Beat(2.0));
         assert!(e.transport_at(at(100)).playing);
         // 120 BPM at 48 kHz: 24 000 frames a beat.
-        assert_eq!(e.transport_at(at(340)).beat, Beat(2.01));
+        assert_eq!(e.transport_at(at(340)).beat(), Beat(2.01));
 
         // Beat 2 is reached on the start's frame; beat 2.01 240 frames later.
         assert_eq!(e.due(At::Beat(Beat(2.0))), Due::In(at(100)));
@@ -995,6 +921,59 @@ mod tests {
         assert_eq!(e.due(At::Beat(Beat(1.0))), Due::NotYet);
     }
 
+    /// `transport_at` is the host's own clock at that frame, in `f64`, bit
+    /// for bit: far into a segment, at a tempo whose frame step is not
+    /// representable, and through several wraps of a loop shorter than the
+    /// block.
+    ///
+    /// Mutations (run): walk from the block's beat alone, dropping the
+    /// origin (`Transport::new(.., t.beat(), ..).clock(..)`) → parts from the
+    /// host in the last bits → fails; wrap the unwrapped position with
+    /// `rem_euclid` (the old closed form) instead of restarting the segment
+    /// on each wrap's frame → parts after a wrap → fails.
+    #[test]
+    fn transport_at_is_the_host_clock() {
+        let rate = SampleRate(48_000.0);
+        for (tempo, looping) in [
+            (97.0, None),
+            (133.3, None),
+            (97.0, tutti_types::LoopRange::new(1_000.0, 1_000.004)),
+        ] {
+            let mut host = tutti_types::FrameClock::new(Beat(0.25), Bpm(tempo), rate);
+            host.advance(Samples(987_654_321), None);
+            if let Some(l) = looping {
+                host.seat(Beat(1_000.0));
+                host.advance(Samples(3), Some(l));
+            }
+            let graph_loop = looping.map(|l| LoopRange {
+                start: l.start(),
+                end: l.end(),
+            });
+            let e = Env {
+                frame: Frame(0),
+                sample_rate: rate,
+                block_len: Samples(512),
+                transport: Transport::counted(true, host.tempo(), host.origin(), graph_loop),
+                changes: TransportChanges::NONE,
+            };
+            let mut wraps = 0;
+            for k in 0..512 {
+                let beat = e.transport_at(at(k)).beat();
+                assert_eq!(
+                    beat.get().to_bits(),
+                    host.beat().get().to_bits(),
+                    "{tempo} BPM, loop {looping:?}: frame {k}"
+                );
+                let before = host.beat();
+                host.advance(Samples(1), looping);
+                wraps += usize::from(host.beat() < before);
+            }
+            if looping.is_some() {
+                assert!(wraps >= 3, "the loop wrapped several times ({wraps})");
+            }
+        }
+    }
+
     /// A seek inside a rolling block starts a new run: a beat the new run
     /// passed is crossed, one before the seek or jumped over is not.
     ///
@@ -1002,11 +981,7 @@ mod tests {
     /// → beat 8.05 (after the seek) is not crossed → fails.
     #[test]
     fn a_seek_inside_the_block_starts_a_new_run() {
-        let roll = |beat: f64| Transport {
-            playing: true,
-            beat: Beat(beat),
-            ..Transport::default()
-        };
+        let roll = |beat: f64| Transport::new(true, Bpm(120.0), Beat(beat), None);
         let mut ph = Playhead::new();
         let mut b = env(0, 4_800, roll(0.0));
         b.changes.push(at(2_400), roll(8.0)).expect("inside");

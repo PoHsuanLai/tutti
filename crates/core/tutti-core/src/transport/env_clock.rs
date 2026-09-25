@@ -14,10 +14,9 @@
 //! [`Engine::with_graph`]: crate::Engine::with_graph
 
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
-use tutti_types::{ChannelLayout, Latency, Tail};
+use tutti_types::{Beat, ChannelLayout, Latency, Samples, Tail};
 
 use super::clock::split_beat;
-use super::frame_clock::FrameClock;
 use super::state::{LoopRange, BEAT_PORTS};
 
 /// The beat generator of a native graph: no inputs, [`BEAT_PORTS`] outputs
@@ -79,28 +78,102 @@ impl Node for EnvClock {
             Latency::ZERO,
             "a node with no inputs arrives at zero"
         );
-        let env = cx.env;
-        for (start, piece) in env.segments() {
-            let t = piece.transport;
-            let from = start.index();
-            let to = from + piece.block_len.get();
-            let mut clock = FrameClock::of(&t, piece.sample_rate);
-            if !t.playing {
-                let (whole, frac) = split_beat(clock.beat());
-                io.output(0)[from..to].fill(whole);
-                io.output(1)[from..to].fill(frac);
-                continue;
-            }
-            let region = t.looping.and_then(|l| LoopRange::new(l.start, l.end));
-            for i in from..to {
-                let (whole, frac) = split_beat(clock.beat());
-                io.output(0)[i] = whole;
-                io.output(1)[i] = frac;
-                clock.advance(1, region);
-            }
-        }
+        beats(cx.env, |i, beat| {
+            let (whole, frac) = split_beat(beat);
+            io.output(0)[i] = whole;
+            io.output(1)[i] = frac;
+        });
         Status::Modified
     }
 
     fn reset(&mut self) {}
+}
+
+/// The beat of every frame of `env`'s block, in order, handed to `emit` with
+/// its index: what the ports carry before the split. Piece by piece, each
+/// walked with the host's clock rebuilt from the piece's transport
+/// ([`Transport::clock`](tutti_graph::Transport::clock)).
+fn beats(env: &tutti_graph::Env, mut emit: impl FnMut(usize, Beat)) {
+    for (start, piece) in env.segments() {
+        let t = piece.transport;
+        let from = start.index();
+        let to = from + piece.block_len.get();
+        let mut clock = t.clock(piece.sample_rate);
+        debug_assert_eq!(
+            clock.beat(),
+            t.beat(),
+            "the clock a transport describes starts on its beat"
+        );
+        let region = t.looping.and_then(|l| LoopRange::new(l.start, l.end));
+        for i in from..to {
+            emit(i, clock.beat());
+            if t.playing {
+                clock.advance(Samples(1), region);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Bpm, FrameClock, SampleRate};
+    use tutti_graph::{Env, Transport, TransportChanges};
+    use tutti_types::Frame;
+
+    const SR: SampleRate = SampleRate(48_000.0);
+
+    /// The beats a block of `len` frames starting on `host`'s frame gets, in
+    /// `f64`, before the `f32` split that would round a last-bit difference
+    /// away.
+    fn walked(host: &FrameClock, len: usize, looping: Option<tutti_graph::LoopRange>) -> Vec<Beat> {
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: SR,
+            block_len: Samples(len),
+            transport: Transport::counted(true, host.tempo(), host.origin(), looping),
+            changes: TransportChanges::NONE,
+        };
+        let mut out = vec![Beat(f64::NAN); len];
+        beats(&env, |i, b| out[i] = b);
+        out
+    }
+
+    /// `EnvClock` continues the host's clock in `f64`, bit for bit, far into
+    /// a segment at a tempo whose frame step is not representable, through
+    /// loop wraps shorter than the block.
+    ///
+    /// Mutation (run): rebuild the clock from the transport's beat alone
+    /// (`Transport::new(t.playing, t.tempo, t.beat(), t.looping).clock(..)`,
+    /// dropping the origin) → the beats part from the host's in the last
+    /// bits → fails. (The `f32` port split rounds that away, which is why
+    /// this compares the `f64` beats.)
+    #[test]
+    fn env_clock_is_the_host_clock_in_f64() {
+        for (tempo, looping) in [
+            (97.0, None),
+            (133.3, None),
+            (97.0, crate::LoopRange::new(1_000.0, 1_000.004)),
+        ] {
+            let mut host = FrameClock::new(Beat(0.25), Bpm(tempo), SR);
+            host.advance(Samples(987_654_321), None);
+            if let Some(l) = looping {
+                host.seat(Beat(1_000.0));
+                host.advance(Samples(3), Some(l));
+            }
+            let graph_loop = looping.map(|l| tutti_graph::LoopRange {
+                start: l.start(),
+                end: l.end(),
+            });
+            let got = walked(&host, 512, graph_loop);
+            for (i, b) in got.iter().enumerate() {
+                assert_eq!(
+                    b.get().to_bits(),
+                    host.beat().get().to_bits(),
+                    "{tempo} BPM, loop {looping:?}: frame {i}"
+                );
+                host.advance(Samples(1), looping);
+            }
+        }
+    }
 }

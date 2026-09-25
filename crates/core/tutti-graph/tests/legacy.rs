@@ -6,11 +6,10 @@ mod common;
 use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
-use tutti_graph::{Editor, Legacy, Node, Transport};
+use tutti_graph::{GraphBuilder, Legacy, Node};
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
-use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
+use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, Tail};
 
 fn signal(n: usize) -> Vec<f32> {
     (0..n)
@@ -51,35 +50,18 @@ fn legacy_nodes_render_what_net_renders() {
         want.extend_from_slice(&obuf.channel_f32_mut(0)[..chunk.len()]);
     }
 
-    // The graph side.
-    let (fa, fb) = (NodeKey(1), NodeKey(2));
-    let (mut ed, mut exec) = Editor::new(prepare(256));
-    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    ed.insert(fa, "lowpass", Legacy::new(lowpass_hz(700.0, 0.8)));
-    ed.insert(fb, "lowpass", Legacy::new(lowpass_hz(2_300.0, 1.1)));
-    let t = &mut ed.spec_mut().topology;
-    t.edges.insert(
-        InPort { node: fa, port: 0 },
-        Edge::Direct(Source::Global(0)),
-    );
-    t.edges.insert(
-        InPort { node: fb, port: 0 },
-        Edge::Direct(Source::Node(OutPort { node: fa, port: 0 })),
-    );
-    t.outputs = vec![Source::Node(OutPort { node: fb, port: 0 })];
-    ed.commit().expect("commits");
-    exec.apply_pending();
-    ed.collect();
+    // The graph side, built as the `Net` above is: two units, input piped
+    // into the first, `connect`, output piped from the second.
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let fa = g.add_unit(Box::new(lowpass_hz(700.0, 0.8)));
+    let fb = g.add_unit(Box::new(lowpass_hz(2_300.0, 1.1)));
+    g.pipe_input(fa).connect(fa, 0, fb, 0).pipe_output(fb);
+    let mut r = g.renderer(prepare(256)).expect("commits");
     // Aliased in place: the adapter opts in, and this exercises its path.
-    assert!(exec.plan().unwrap().in_place(fb).get(0));
+    assert!(r.executor().plan().unwrap().in_place(fb).get(0));
 
-    let mut got = Vec::with_capacity(total);
-    let mut out = vec![0.0f32; 200];
-    for chunk in input.chunks(200) {
-        let n = chunk.len();
-        exec.process(n, &Transport::default(), &[chunk], &mut [&mut out[..n]]);
-        got.extend_from_slice(&out[..n]);
-    }
+    r.set_block(Samples(200));
+    let got = r.render_input(&[&input]).remove(0);
 
     let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
@@ -245,31 +227,11 @@ impl AudioUnit for Half {
 #[test]
 fn legacy_reports_silence_so_a_silent_unit_is_skipped() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (mut ed, mut exec) = Editor::new(prepare(64));
-    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    let key = NodeKey(1);
-    ed.insert(
-        key,
-        "half",
-        Legacy::new(Half(std::sync::Arc::clone(&calls))),
-    );
-    ed.spec_mut()
-        .topology
-        .edges
-        .insert(InPort { node: key, port: 0 }, Edge::Direct(Source::Zero));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
-    ed.commit().expect("commits");
-    exec.apply_pending();
-    ed.collect();
-    let mut out = vec![0.0f32; 64];
-    for _ in 0..10 {
-        exec.process(
-            64,
-            &Transport::default(),
-            &[&[0.0; 64]],
-            &mut [&mut out[..]],
-        );
-    }
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let key = g.add_unit(Box::new(Half(std::sync::Arc::clone(&calls))));
+    g.disconnect(key, 0).pipe_output(key);
+    let mut r = g.renderer(prepare(64)).expect("commits");
+    r.render_input(&[&[0.0; 640]]);
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::Relaxed),
         1,

@@ -32,8 +32,10 @@ pub struct AudioConfig {
     // into existence.
     #[reflect(ignore)]
     pub sample_rate: SampleRate,
-    /// The device's output width. The graph root is widened to match a
-    /// declaration, not to this — see `MasterSources`.
+    /// The device's output width. The graph root is at least this wide (the
+    /// build and a device restart widen it to a wider device, and never narrow
+    /// it; the engine folds to a narrower one), and a wider declaration widens
+    /// it further — see `MasterSources`.
     // Not reflected: `ChannelLayout` derives `Reflect` only under
     // `tutti-types/bevy`, the same optional-feature trap as `sample_rate`
     // above. Reflect-construction falls back to `ChannelLayout::EMPTY` — named

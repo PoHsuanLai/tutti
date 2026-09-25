@@ -394,7 +394,7 @@ fn assemble(
 /// the wiring resolves — but never rendered, because the render scratch is
 /// bounded. Offline export is unaffected: it clones the net and uses the
 /// offline `set_output_arity`, which has no such cap.
-fn root_width(plugin_outputs: usize, device: tutti_core::ChannelLayout) -> usize {
+pub(crate) fn root_width(plugin_outputs: usize, device: tutti_core::ChannelLayout) -> usize {
     plugin_outputs
         .max(device.count() as usize)
         .clamp(1, MAX_ROOT_CHANNELS)

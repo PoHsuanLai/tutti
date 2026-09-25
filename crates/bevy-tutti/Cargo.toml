@@ -210,6 +210,13 @@ export = ["dep:tutti-export"]
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
+# `DiskStreamer::manual`, for the restart test that streams a clip through the
+# engine (`sampler`): a hand-stepped butler refills between blocks, where the
+# threaded one would race a render that runs faster than real time. Dev-only,
+# for the same reason as the fake MIDI backend below.
+tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, features = [
+    "test-support",
+] }
 # The fake MIDI backend, for the session-layer tests. A headless CI box has no
 # MIDI port, so without it every path through `MidiSession` is testable only
 # against "no device found". Dev-only: `midi-hardware` deliberately does not

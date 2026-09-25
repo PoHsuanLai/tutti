@@ -241,6 +241,45 @@ fn a_rebuild_does_not_hang_the_previous_note(backend: GraphBackend) {
 }
 both_backends!(a_rebuild_does_not_hang_the_previous_note);
 
+/// **A device restart at a new rate rebuilds every installed clip at it.** A
+/// clip source places its events in frames at the rate it was built with
+/// (its `BeatCursor`'s), so a clip built at 48 kHz on a 96 kHz device puts a
+/// note a third of a beat in (120 BPM) at frame 8 000, where the device has
+/// reached only a sixth of a beat. `restart_device` moves the transport's rate
+/// and `AudioConfig`, as done by hand here; the rebuild follows `AudioConfig`
+/// and places the note at 16 000.
+///
+/// Mutation (run): `rebuild` not treating a rate change as dirty → the 48 kHz
+/// clip stays installed and the note lands at 8 000 → fails.
+fn a_rate_change_rebuilds_the_clip_at_the_new_rate(backend: GraphBackend) {
+    let mut app = app(backend);
+    let synth = spawn_synth(&mut app);
+    roll(&app);
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, Beat(1.0 / 3.0), BeatDuration(1.0), MF).to_vec(),
+    ));
+    app.update();
+
+    app.world()
+        .resource::<TransportRes>()
+        .set_sample_rate(SampleRate(96_000.0));
+    app.world_mut().resource_mut::<AudioConfig>().sample_rate = SampleRate(96_000.0);
+    app.update();
+
+    let events = poll(&app, synth, 16_384);
+    let note_on = events
+        .iter()
+        .find(|e| e.is_note_on())
+        .expect("the clip should have emitted a note-on");
+    assert!(
+        note_on.frame_offset.abs_diff(16_000) <= 1,
+        "a third of a beat at 96 kHz is frame 16 000, got {}",
+        note_on.frame_offset
+    );
+}
+both_backends!(a_rate_change_rebuilds_the_clip_at_the_new_rate);
+
 /// Removing the last install naming a target clears its source, so the synth
 /// stops playing rather than looping the old clip forever.
 fn removing_the_last_install_clears_the_source(backend: GraphBackend) {

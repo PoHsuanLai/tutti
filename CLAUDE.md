@@ -151,6 +151,10 @@ Non-scalar state handed to the audio thread goes through
   (a parked one delays the free of what it holds). Avoid nested reads: past
   the cell's slot count they stay safe but pin every value current during
   their overflow epoch, not just the one they hold.
+- **The design's limit:** once parked overflow `RtRef`s occupy every overflow
+  epoch, each publish's retired value stays pinned and memory grows until they
+  drop. It is unreachable if the rule above is kept. A host can poll
+  `retired_len()` and `epoch_stalls()`; debug builds assert at 1024.
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.

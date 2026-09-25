@@ -84,6 +84,24 @@
 //! It stays on the list and is freed by a later publish, or when the cell drops.
 //! Either way the free runs on the control side.
 //!
+//! # The limit
+//!
+//! The bound on the retired list rests on a free epoch being available at
+//! publish time. Suppose every epoch but the current one is sealed and still
+//! has a live reader. For example, three overflow `RtRef`s are parked in three
+//! different epochs, which takes more than the slot count of refs held
+//! across several publishes. Then `publish` cannot advance: the current epoch
+//! stays open, and it pins every value retired from then on. Memory grows,
+//! one value per publish, until one of those refs is dropped. Debug builds
+//! assert at 1024 retired values. Release builds report it through
+//! [`RtPublish::retired_len`] and [`RtPublish::epoch_stalls`], which a host can
+//! poll.
+//!
+//! This is the design's limit, not a bug: reaching it takes long-lived,
+//! parked `RtRef`s, which the rules already forbid (read once per block, never
+//! hold one across blocks). Nothing is unsound in that state. It only leaks
+//! until the refs are dropped.
+//!
 //! # Why it is sound
 //!
 //! The argument is in C++20's terms (Rust's atomics model), and each step names
@@ -203,11 +221,20 @@ const EPOCH_MASK: usize = (1 << EPOCH_BITS) - 1;
 const _: () = assert!(EPOCHS <= 1 << EPOCH_BITS);
 /// Registration counts wrap in the word's upper bits; `loaded` and `exited`
 /// are compared against them in the same width.
+///
+/// Not a no-op, though it looks like one on 64-bit: there the word's count
+/// would need 2^62 overflow reads in one epoch to wrap. On a 32-bit target it
+/// is 2^30 — about twelve days of one overflow read per millisecond with no
+/// publish — and once the word has wrapped, the full-width `loaded` count no
+/// longer equals `registered` unless it is masked the same way. The seal's
+/// spin would then never end.
 const COUNT_MASK: usize = usize::MAX >> EPOCH_BITS;
 
 /// A retired list this long means reclamation has stalled — every epoch pinned
 /// by stuck readers, or a slot parked for thousands of publishes. Nothing is
 /// unsound at that point, but memory is leaking, so debug builds say so.
+/// Release builds report it only through [`RtPublish::retired_len`] and
+/// [`RtPublish::epoch_stalls`], for a host to poll; nothing here logs.
 const RETIRED_LEAK_THRESHOLD: usize = 1024;
 
 /// Slot value: no reader.
@@ -256,6 +283,8 @@ struct Control<T> {
     /// The current value's sequence number.
     seq: u64,
     epochs: [EpochState; EPOCHS],
+    /// Publishes that found no free epoch to advance into.
+    epoch_stalls: u64,
 }
 
 /// A value published from a control thread and read by the audio thread.
@@ -357,6 +386,7 @@ impl<T> RtPublish<T> {
                 retired: Vec::new(),
                 seq: 0,
                 epochs,
+                epoch_stalls: 0,
             }),
             _owns: PhantomData,
         }
@@ -527,7 +557,10 @@ impl<T> RtPublish<T> {
                 exited & COUNT_MASK == registered
             }
         });
-        let Some(next) = free else { return };
+        let Some(next) = free else {
+            control.epoch_stalls += 1;
+            return;
+        };
 
         // Every registrant of `next` has exited, and nobody can register in it
         // until the swap below names it, so the counters can be reset. The
@@ -627,9 +660,32 @@ impl<T> RtPublish<T> {
     }
 
     /// How many swapped-out values are still waiting to be freed.
-    #[cfg(all(test, not(loom)))]
-    fn retired_len(&self) -> usize {
-        self.control.lock().unwrap().retired.len()
+    /// **Control-thread only**: it takes the publisher's lock.
+    ///
+    /// For a host to poll. It should stay small: a few values plus one per
+    /// slot reader parked across publishes. If it keeps growing, reclamation
+    /// has stalled — see "The limit" in the module docs.
+    pub fn retired_len(&self) -> usize {
+        self.control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retired
+            .len()
+    }
+
+    /// How many publishes found every overflow epoch still occupied, and so
+    /// could not start a new one. **Control-thread only**: it takes the
+    /// publisher's lock.
+    ///
+    /// A counter rather than a log line, for a host to poll. It stays at zero
+    /// while `RtRef`s are held only within a block. It rises when several
+    /// long-lived overflow `RtRef`s occupy every epoch, and while that lasts,
+    /// every retired value stays pinned (module docs, "The limit").
+    pub fn epoch_stalls(&self) -> u64 {
+        self.control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .epoch_stalls
     }
 }
 
@@ -1054,6 +1110,51 @@ mod tests {
             // A fresh read (overflow too — every slot is taken) sees the news.
             assert_eq!(*cell.read(), v);
         }
+    }
+
+    /// The design's limit, and its release-mode observables: park an
+    /// overflow `RtRef` in every epoch but the current one and the current
+    /// epoch can no longer advance. Each publish counts a stall, and the
+    /// retired list grows. Dropping the parked refs ends it: the next publish
+    /// advances again and reclaims everything.
+    ///
+    /// Mutation: delete `control.epoch_stalls += 1` in `advance_epoch`. The
+    /// stall count stays 0 and the first stall assertion fails.
+    #[test]
+    fn every_epoch_parked_is_observable_and_recovers() {
+        let cell = RtPublish::new(0u32);
+        let in_slots: Vec<_> = (0..READER_SLOTS).map(|_| cell.read()).collect();
+        // One overflow ref per epoch but the last: each publish seals the
+        // epoch the previous read landed in and opens the next.
+        let mut parked = Vec::new();
+        for v in 1..EPOCHS as u32 {
+            parked.push(cell.read());
+            cell.publish(Arc::new(v));
+        }
+        assert_eq!(
+            cell.epoch_stalls(),
+            0,
+            "every advance so far found a free epoch"
+        );
+        parked.push(cell.read()); // the current epoch is occupied too
+
+        let before = cell.retired_len();
+        for v in 0..10u32 {
+            cell.publish(Arc::new(100 + v));
+        }
+        assert_eq!(cell.epoch_stalls(), 10, "every publish stalled");
+        assert_eq!(
+            cell.retired_len(),
+            before + 10,
+            "and pinned what it retired"
+        );
+
+        drop(parked);
+        drop(in_slots);
+        cell.publish(Arc::new(1000));
+        assert_eq!(cell.epoch_stalls(), 10, "a free epoch again");
+        cell.publish(Arc::new(1001));
+        assert_eq!(cell.retired_len(), 0, "and everything reclaimed");
     }
 
     /// A retired value's destructor runs *after* the control lock is

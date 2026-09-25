@@ -1580,9 +1580,21 @@ proptest! {
 /// time so the generator does not borrow either implementation's).
 fn fits(a: &Kind, b: &Kind) -> bool {
     let (a, b) = (shape(a), shape(b));
-    (a.audio_in, a.audio_out, a.event_in, a.event_out, a.latency, a.in_place)
-        == (b.audio_in, b.audio_out, b.event_in, b.event_out, b.latency, b.in_place)
-        && a.event_resolution == b.event_resolution
+    (
+        a.audio_in,
+        a.audio_out,
+        a.event_in,
+        a.event_out,
+        a.latency,
+        a.in_place,
+    ) == (
+        b.audio_in,
+        b.audio_out,
+        b.event_in,
+        b.event_out,
+        b.latency,
+        b.in_place,
+    ) && a.event_resolution == b.event_resolution
 }
 
 fn random_fade(rng: &mut Rng) -> tutti_graph::Fade {

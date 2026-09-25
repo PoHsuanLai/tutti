@@ -1286,10 +1286,11 @@ mod tests {
             t.outputs = vec![Source::Node(OutPort { node: a, port: 0 })];
             let mut spec = GraphSpec::new(t);
             spec.generations.insert(a, gen_a);
-            let prepare =
-                crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
-            compile(&spec.validate().expect("valid"), &shapes, &prepare, prev)
-                .expect("compiles")
+            let prepare = crate::node::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                tutti_types::Samples(64),
+            );
+            compile(&spec.validate().expect("valid"), &shapes, &prepare, prev).expect("compiles")
         };
         let (base, _) = build(gen(), 0, None);
         let fade = Fade::new(tutti_types::Samples(32), CrossfadeCurve::EqualPower);
@@ -1301,9 +1302,16 @@ mod tests {
 
         assert_eq!(check(gen(), vec![(a, fade)]), Ok(()));
         let tail = gen().with_tail(tutti_types::Tail::Finite(tutti_types::Samples(9)));
-        assert_eq!(check(tail, vec![(a, fade)]), Ok(()), "only the tail differs");
+        assert_eq!(
+            check(tail, vec![(a, fade)]),
+            Ok(()),
+            "only the tail differs"
+        );
         let not_replaced = check(gen(), vec![(b, fade)]).unwrap_err();
-        assert!(not_replaced.0.contains("does not replace"), "{not_replaced}");
+        assert!(
+            not_replaced.0.contains("does not replace"),
+            "{not_replaced}"
+        );
         let twice = check(gen(), vec![(a, fade), (a, fade)]).unwrap_err();
         assert!(twice.0.contains("twice"), "{twice}");
         let in_place = check(

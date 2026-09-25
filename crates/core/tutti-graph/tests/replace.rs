@@ -87,7 +87,10 @@ fn a_fade_has_no_step_at_either_end() {
             .windows(2)
             .map(|w| (w[1] - w[0]).abs())
             .fold(0.0f32, f32::max);
-        assert!(worst <= bound, "{curve:?}: a step of {worst} (bound {bound})");
+        assert!(
+            worst <= bound,
+            "{curve:?}: a step of {worst} (bound {bound})"
+        );
         assert_eq!(out[0], 1.0);
         assert_eq!(*out.last().expect("rendered"), 3.0);
     }
@@ -214,7 +217,11 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
     dc(&mut exec, 64);
     // The fade ended in that block: the box is back in the return ring, and
     // the unit in it is alive until the control thread drains it.
-    assert_eq!(dropped.load(Ordering::SeqCst), 0, "not freed by the executor");
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        0,
+        "not freed by the executor"
+    );
     assert_eq!(ed.collect(), vec![NODE]);
     assert_eq!(dropped.load(Ordering::SeqCst), 1, "freed by collect");
     assert_eq!(ed.in_flight(), 0);
@@ -250,7 +257,10 @@ fn a_shape_mismatch_is_refused() {
         Err(CommitError::NotRunning { node: NodeKey(9) })
     );
     ed.commit().expect("nothing changed");
-    assert_eq!(exec.plan().expect("applied").unit(NODE).expect("kept").gen, 0);
+    assert_eq!(
+        exec.plan().expect("applied").unit(NODE).expect("kept").gen,
+        0
+    );
 
     // Latency.
     let lagged = NodeKey(2);
@@ -291,13 +301,8 @@ fn a_shape_mismatch_is_refused() {
     );
     let shapes: tutti_graph::Shapes = [(lagged, shape)].into_iter().collect();
     let valid = spec.validate().expect("valid");
-    let (plan, mut delta) = compile(
-        &valid,
-        &shapes,
-        &prepare(128),
-        ed.base().map(|p| &**p),
-    )
-    .expect("compiles");
+    let (plan, mut delta) =
+        compile(&valid, &shapes, &prepare(128), ed.base().map(|p| &**p)).expect("compiles");
     delta.fades = vec![(lagged, fade)];
     let units: BTreeMap<NodeKey, Box<dyn Node>> =
         [(lagged, Box::new(TestNode::new(later)) as Box<dyn Node>)]
@@ -346,7 +351,11 @@ fn a_replace_during_a_fade_waits_for_it() {
     for _ in 0..8 {
         out.extend(dc(&mut exec, 25));
     }
-    assert_eq!(never.load(Ordering::Relaxed), 0, "a superseded unit never runs");
+    assert_eq!(
+        never.load(Ordering::Relaxed),
+        0,
+        "a superseded unit never runs"
+    );
 
     let expect: Vec<f32> = (0..out.len())
         .map(|f| match f {
@@ -504,7 +513,11 @@ fn a_hard_edit_cuts_a_fade() {
     dc(&mut exec, 64);
     ed.collect();
     let out = dc(&mut exec, 64);
-    assert!(out.iter().all(|&y| y == 4.0), "the newest unit: {:?}", &out[..4]);
+    assert!(
+        out.iter().all(|&y| y == 4.0),
+        "the newest unit: {:?}",
+        &out[..4]
+    );
     ed.collect();
     assert_eq!(ed.in_flight(), 0);
 }

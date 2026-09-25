@@ -53,9 +53,9 @@ use tutti_types::At;
 
 use crate::command::{command_channel, CommandId, CommandTx, ScheduleError};
 use crate::compile::{compile, CompileError, Shapes, VerifyError};
-use crate::fade::Fade;
 use crate::event::EventKind;
 use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
+use crate::fade::Fade;
 use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
@@ -425,14 +425,17 @@ impl Editor {
         let shape = unit.shape();
         // Everything the running plan was compiled from but the tail: the
         // op, its PDC and its borrows must be right for both units at once.
-        let fits = (shape.audio_in, shape.audio_out, shape.event_in, shape.event_out)
-            == (
-                running.audio_in,
-                running.audio_out,
-                running.event_in,
-                running.event_out,
-            )
-            && shape.latency == running.latency
+        let fits = (
+            shape.audio_in,
+            shape.audio_out,
+            shape.event_in,
+            shape.event_out,
+        ) == (
+            running.audio_in,
+            running.audio_out,
+            running.event_in,
+            running.event_out,
+        ) && shape.latency == running.latency
             && shape.in_place == running.in_place
             && shape.event_resolution == running.event_resolution;
         if !fits {

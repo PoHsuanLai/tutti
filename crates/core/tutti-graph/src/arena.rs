@@ -236,7 +236,10 @@ impl Arena {
     /// unit's output channels in order.
     #[inline]
     pub(crate) fn leading_mut<'a>(&'a mut self, frames: usize, outs: &mut [&'a mut [f32]]) {
-        for (o, lines) in outs.iter_mut().zip(self.lines.chunks_exact_mut(self.stride)) {
+        for (o, lines) in outs
+            .iter_mut()
+            .zip(self.lines.chunks_exact_mut(self.stride))
+        {
             *o = &mut bytemuck::cast_slice_mut::<Line, f32>(lines)[..frames];
         }
     }

@@ -59,7 +59,7 @@ jobs:
       # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
-      - run: scripts/check-canonical-paths.sh tutti_graph arena command compile editor event exec io kernels legacy node plan reference spec time
+      - run: scripts/check-canonical-paths.sh tutti_graph arena command compile editor event exec fade io kernels legacy node plan reference spec time
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving

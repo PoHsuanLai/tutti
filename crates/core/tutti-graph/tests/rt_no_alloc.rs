@@ -235,12 +235,7 @@ fn process_is_allocation_free_in_steady_state() {
 fn crossfades_are_allocation_free() {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
-    let gain = |g| {
-        TestNode::new(Kind::Gain {
-            gain: g,
-            width: 2,
-        })
-    };
+    let gain = |g| TestNode::new(Kind::Gain { gain: g, width: 2 });
     ed.insert(NodeKey(1), "gain", gain(1.0));
     ed.insert(
         NodeKey(2),

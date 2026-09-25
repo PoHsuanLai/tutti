@@ -112,6 +112,12 @@
 //! unit must tolerate (a note-off for a note that is not sounding is a
 //! no-op in MIDI).
 
+// `Vec<Box<Commit>>` and `Vec<Box<Crossfade>>` are deliberate: a commit
+// travels the rings as a box and a crossfade lives in a unit as one, and
+// each moves into these lists on the audio thread. Unboxing it there would
+// free the box there.
+#![allow(clippy::vec_box)]
+
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -301,9 +307,8 @@ impl Commit {
         // running, one waiting); each fade it starts comes back into it when
         // it ends.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
-        let faded = Vec::with_capacity(
-            2 * (delta.retire.len() + delta.replace.len()) + delta.fades.len(),
-        );
+        let faded =
+            Vec::with_capacity(2 * (delta.retire.len() + delta.replace.len()) + delta.fades.len());
         Box::new(Self {
             seq,
             suspend: None,

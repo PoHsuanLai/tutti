@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
-    Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
+    compile, Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference,
+    Shape, Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 

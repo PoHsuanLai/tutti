@@ -52,7 +52,8 @@ use tutti_types::NodeKey;
 use tutti_types::At;
 
 use crate::command::{command_channel, CommandId, CommandTx, ScheduleError};
-use crate::compile::{compile, CompileError, Shapes};
+use crate::compile::{compile, CompileError, Shapes, VerifyError};
+use crate::fade::Fade;
 use crate::event::EventKind;
 use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
@@ -108,6 +109,24 @@ pub enum CommitError {
         /// The host's limit.
         limit: usize,
     },
+    /// [`Editor::replace`] was handed a unit whose shape differs from the
+    /// running one's in more than its tail — ports, latency, in-place
+    /// acceptance or event resolution. Nothing changed; swap it with
+    /// [`Editor::insert`] instead.
+    FadeShape {
+        /// The node.
+        node: NodeKey,
+    },
+    /// [`Editor::replace`] names a node with no running unit to fade from:
+    /// not in the plan sent last, or removed since.
+    NotRunning {
+        /// The node.
+        node: NodeKey,
+    },
+    /// A delta handed to [`Editor::package`] carries a crossfade the
+    /// verifier refuses ([`verify_fades`](crate::verify_fades)). Nothing was
+    /// sent.
+    Fade(VerifyError),
 }
 
 /// What the host that runs an [`Executor`] can take, enforced by its
@@ -170,6 +189,15 @@ impl std::fmt::Display for CommitError {
             Self::BlockTooLong { max_block, limit } => {
                 write!(f, "a {max_block}-frame MaxBlock; the host takes {limit}")
             }
+            Self::FadeShape { node } => write!(
+                f,
+                "node {} cannot crossfade to a unit of another shape",
+                node.0
+            ),
+            Self::NotRunning { node } => {
+                write!(f, "node {} has no running unit to fade from", node.0)
+            }
+            Self::Fade(e) => write!(f, "{e}"),
         }
     }
 }
@@ -189,6 +217,9 @@ pub struct Editor {
     spec: GraphSpec,
     shapes: Shapes,
     pending: BTreeMap<NodeKey, Box<dyn Node>>,
+    /// Crossfades for the pending units [`replace`](Self::replace) placed,
+    /// attached to the next commit's delta.
+    fades: BTreeMap<NodeKey, Fade>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -249,6 +280,7 @@ impl Editor {
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
             pending: BTreeMap::new(),
+            fades: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             repreparing: None,
@@ -346,6 +378,78 @@ impl Editor {
         let (mut unit, controls) = node.into_node();
         unit.prepare(&self.prepare);
         let shape = unit.shape();
+        self.place(key, kind, unit, shape);
+        controls
+    }
+
+    /// Replace the unit running at `key` with `node`, crossfading from one
+    /// to the other over `fade` once the next [`commit`](Self::commit) lands
+    /// — a new generation, like [`insert`](Self::insert), but heard as a
+    /// fade rather than a swap. Returns the new unit's typed controls. See
+    /// the `fade` module docs (`src/fade.rs`) for the rules; in short:
+    ///
+    /// - Both units run on the node's inputs for `fade.duration` frames and
+    ///   their outputs are blended along `fade.curve`; then the old unit
+    ///   retires, on the control thread, through the next
+    ///   [`collect`](Self::collect).
+    /// - New events go to the incoming unit only.
+    /// - A replace while a fade runs at `key` waits for it to finish, then
+    ///   fades from its incoming unit; a newer one supersedes a waiting one.
+    ///
+    /// Refused, changing nothing, with [`CommitError::FadeShape`] when
+    /// `node`'s shape differs from the running unit's in more than its tail,
+    /// and with [`CommitError::NotRunning`] when nothing runs at `key` (not
+    /// yet committed, or removed). An [`insert`](Self::insert) or
+    /// [`remove`](Self::remove) at `key` before the commit takes the fade
+    /// back, as does a [`reprepare`](Self::reprepare) (whose units restart
+    /// from silence anyway).
+    pub fn replace<N: IntoNode>(
+        &mut self,
+        key: NodeKey,
+        node: N,
+        fade: Fade,
+    ) -> Result<N::Controls, CommitError> {
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        let running = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.unit(key))
+            .map(|u| u.shape)
+            .filter(|_| self.spec.topology.nodes.contains_key(&key))
+            .ok_or(CommitError::NotRunning { node: key })?;
+        let (mut unit, controls) = node.into_node();
+        unit.prepare(&self.prepare);
+        let shape = unit.shape();
+        // Everything the running plan was compiled from but the tail: the
+        // op, its PDC and its borrows must be right for both units at once.
+        let fits = (shape.audio_in, shape.audio_out, shape.event_in, shape.event_out)
+            == (
+                running.audio_in,
+                running.audio_out,
+                running.event_in,
+                running.event_out,
+            )
+            && shape.latency == running.latency
+            && shape.in_place == running.in_place
+            && shape.event_resolution == running.event_resolution;
+        if !fits {
+            return Err(CommitError::FadeShape { node: key });
+        }
+        let kind = self.spec.topology.nodes[&key].kind.clone();
+        self.place(key, &kind, unit, shape);
+        self.fades.insert(key, fade);
+        Ok(controls)
+    }
+
+    /// Write a prepared unit at `key` with a fresh generation — the common
+    /// half of [`insert`](Self::insert) and [`replace`](Self::replace).
+    fn place(&mut self, key: NodeKey, kind: &str, unit: Box<dyn Node>, shape: Shape) {
+        // A later placement at a key takes an earlier fade back: the fade
+        // was for the unit this one supersedes.
+        self.fades.remove(&key);
         let gen = {
             let g = self.next_gen.entry(key).or_insert(0);
             let this = *g;
@@ -367,7 +471,6 @@ impl Editor {
         self.spec.generations.insert(key, gen);
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
-        controls
     }
 
     /// Remove `key` and every edge that touches it. Output channels it fed
@@ -399,6 +502,7 @@ impl Editor {
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
+        self.fades.remove(&key);
     }
 
     /// `Err(Poisoned)` once a re-prepare has failed with its units out.
@@ -520,6 +624,9 @@ impl Editor {
         // `prepare`, which poisons the editor (the uncommitted units are lost
         // with it; nothing has been sent, so the executor keeps running).
         let mut pending = std::mem::take(&mut self.pending);
+        // The re-prepare restarts every unit from silence, so there is
+        // nothing to fade from: a pending replace lands as a plain swap.
+        self.fades.clear();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for (&key, unit) in &mut pending {
                 unit.prepare(&prepare);
@@ -636,6 +743,7 @@ impl Editor {
                 .collect(),
             retire: Vec::new(),
             replace: Vec::new(),
+            fades: Vec::new(),
             store_len: delta.store_len,
         };
         Ok((plan, resume, units))
@@ -655,13 +763,25 @@ impl Editor {
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
-        let (plan, delta) = compile(
+        let (plan, mut delta) = compile(
             &valid,
             &self.shapes,
             &self.prepare,
             self.base().map(|p| &**p),
         )
         .map_err(CommitError::Compile)?;
+        // The crossfades `replace` asked for, for the keys this delta
+        // replaces (a key removed since has none to carry).
+        delta.fades = delta
+            .replace
+            .iter()
+            .filter_map(|&(_, new)| self.fades.get(&new.key).map(|&f| (new.key, f)))
+            .collect();
+        debug_assert_eq!(
+            crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta),
+            Ok(()),
+            "`replace` checked every fade it attached"
+        );
         let needed: Vec<NodeKey> = delta
             .insert
             .iter()
@@ -677,6 +797,7 @@ impl Editor {
             .into_iter()
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))
             .collect();
+        self.fades.clear();
         self.send(plan, delta, units);
         Ok(())
     }
@@ -700,6 +821,8 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(plan.global_outputs())?;
+        crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta)
+            .map_err(CommitError::Fade)?;
         self.send(plan, delta, units);
         Ok(())
     }

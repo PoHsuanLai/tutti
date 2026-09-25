@@ -203,7 +203,7 @@ pub fn crossfade_audio_node(
         };
         graph.0.crossfade(
             node.0,
-            tutti_core::CrossfadeCurve::EqualAmplitude.into(),
+            tutti_core::net_fade(tutti_core::CrossfadeCurve::EqualAmplitude),
             0.005,
             new_unit,
         );

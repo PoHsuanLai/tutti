@@ -133,6 +133,7 @@ mod compile;
 mod editor;
 mod event;
 mod exec;
+mod fade;
 mod io;
 mod kernels;
 mod legacy;
@@ -150,6 +151,7 @@ pub use event::{
     SubBlocks, Ump,
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
+pub use fade::{CrossfadeCurve, Fade};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{
@@ -170,4 +172,13 @@ pub use time::{Due, Offset, Playhead};
 /// before it is captured. `compile` runs this in every debug build.
 pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     compile::verify::verify(plan)
+}
+
+/// Check the crossfades `delta` carries into `plan`, from `prev` (the plan
+/// running before it): each names a key the delta replaces, once, and the
+/// unit it fades from has the shape of the one it fades to in everything but
+/// its tail — ports, latency, in-place acceptance, event resolution.
+/// [`Editor::package`] runs this on every delta it is handed.
+pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
+    compile::verify::verify_fades(prev, plan, delta)
 }

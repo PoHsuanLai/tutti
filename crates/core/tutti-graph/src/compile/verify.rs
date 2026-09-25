@@ -25,12 +25,23 @@
 //!    ops say, record by record — checked against each op directly, not by
 //!    re-running the lowering — so rules 1–6 are about what runs.
 //!
+//! 8. **Fades** ([`verify_fades`], on a plan *and the delta that installs
+//!    it*): a crossfade's outgoing unit runs on the node op's own input slots
+//!    and the blend writes its own output slots, so rules 1–4 already cover
+//!    every slot a fade touches — its only extra buffer is the unit's own
+//!    scratch, outside the arena, never shared. What a fade adds is a claim
+//!    about *two* units under one op: each fade names a key the delta
+//!    replaces (once), and the unit it fades from was compiled with the
+//!    same ports, latency, in-place acceptance and event resolution as the
+//!    one it fades to — so the op, its PDC and its borrows are right for
+//!    both, and the scratch sized from the plan fits the outgoing unit.
+//!
 //! Run by `compile` in every debug build, and callable directly — the tests
 //! run it on every proptest graph.
 
 use crate::io::PortKind;
 use crate::node::InPlaceMask;
-use crate::plan::{Op, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{Delta, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -663,6 +674,54 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
     idx.sort_unstable();
     if idx.windows(2).any(|w| w[0] == w[1]) {
         return Err(VerifyError("two units share a store index".into()));
+    }
+    Ok(())
+}
+
+/// Rule 8: check the fades `delta` carries into `plan`, from `prev` (the plan
+/// running before it). See rule 8 in the module docs.
+///
+/// Written against the two plans' units directly — not through
+/// `Editor::replace`'s check — so a delta built by hand (through
+/// `Editor::package`) gets the same scrutiny as one the editor built.
+pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
+    for (i, &(key, _)) in delta.fades.iter().enumerate() {
+        if delta.fades[..i].iter().any(|&(k, _)| k == key) {
+            return Err(VerifyError(format!("node {} fades twice", key.0)));
+        }
+        let Some(&(old, new)) = delta.replace.iter().find(|(_, n)| n.key == key) else {
+            return Err(VerifyError(format!(
+                "node {} fades, but the delta does not replace it",
+                key.0
+            )));
+        };
+        let was = prev
+            .and_then(|p| p.units.iter().find(|u| u.key == key && u.gen == old.gen))
+            .map(|u| u.shape);
+        let now = plan
+            .units
+            .iter()
+            .find(|u| u.key == key && u.gen == new.gen)
+            .map(|u| u.shape);
+        let (Some(was), Some(now)) = (was, now) else {
+            return Err(VerifyError(format!(
+                "node {} fades between units the plans do not hold",
+                key.0
+            )));
+        };
+        let same = was.audio_in == now.audio_in
+            && was.audio_out == now.audio_out
+            && was.event_in == now.event_in
+            && was.event_out == now.event_out
+            && was.latency == now.latency
+            && was.in_place == now.in_place
+            && was.event_resolution == now.event_resolution;
+        if !same {
+            return Err(VerifyError(format!(
+                "node {} fades from {was:?} to {now:?}: only the tail may differ",
+                key.0
+            )));
+        }
     }
     Ok(())
 }

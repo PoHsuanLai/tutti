@@ -175,7 +175,11 @@ mod tests {
             regions.register(region_id, writer);
 
             let mut state = ChannelPlan::default();
-            state.start_streaming(crate::butler::share_reader(reader), None);
+            state.start_streaming(
+                crate::butler::share_reader(reader),
+                None,
+                tutti_core::SampleRate::SR_48K,
+            );
             plans.insert(i, state);
         }
 

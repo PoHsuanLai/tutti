@@ -17,7 +17,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan};
+use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline};
 use tutti_io::Wave;
@@ -239,7 +239,7 @@ impl Commands {
 /// and the channel-plan map, exposing state reads plus the reader-factory.
 #[derive(Clone)]
 pub struct Status {
-    sample_rate: SampleRate,
+    sample_rate: SessionRate,
     plans: Arc<DashMap<usize, ChannelPlan>>,
 }
 
@@ -249,19 +249,22 @@ pub struct Status {
 impl std::fmt::Debug for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Status")
-            .field("sample_rate", &self.sample_rate)
+            .field("sample_rate", &self.sample_rate.get())
             .finish_non_exhaustive()
     }
 }
 
 impl Status {
-    pub(crate) fn new(sample_rate: SampleRate, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
+    pub(crate) fn new(sample_rate: SessionRate, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
         Self { sample_rate, plans }
     }
 
-    /// Sample rate the system was built with.
+    /// The session rate: the one the streamer was built with, or the one
+    /// [`DiskStreamer::set_sample_rate`](crate::DiskStreamer::set_sample_rate)
+    /// last moved it to. Read live, so a `Status` taken before a device
+    /// restart reports the rate after it.
     pub fn sample_rate(&self) -> SampleRate {
-        self.sample_rate
+        self.sample_rate.get()
     }
 
     /// Build a [`DiskVoice`] for a channel whose butler stream is ready, binding
@@ -270,8 +273,9 @@ impl Status {
     /// Pulls the ring consumer and shared RT state out of the channel's plan and
     /// wraps them in a placement-gated reader. `start_beat` and `duration` are
     /// musical time — the gate converts them to **file frames** using the file's
-    /// own rate, not the session's, which is why the file rate is recovered from
-    /// the plan's [`SrcRatio`](tutti_core::SrcRatio) here rather than assumed.
+    /// own rate, not the session's: the rate the butler recorded when it opened
+    /// the stream, so a session rate that moves later (a device restart) leaves
+    /// the gate's frames where they were.
     ///
     /// Returns `None` while the butler has not installed the link yet; a caller
     /// polls again next frame rather than treating it as a failure.
@@ -282,14 +286,8 @@ impl Status {
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> Option<DiskVoice> {
-        let (inner, rt_state) =
+        let (inner, rt_state, file_sample_rate) =
             crate::butler::control::take_streaming_unit(&self.plans, channel_index)?;
-
-        // file_sr / session_sr is the src_ratio the butler set on the plan; the
-        // reader's placement gate converts transport seconds → file samples with
-        // the file's own rate, so recover it from that ratio.
-        let file_sample_rate =
-            SampleRate(self.sample_rate.get() * rt_state.src_ratio().get() as f64);
 
         Some(DiskVoice::new(
             inner,

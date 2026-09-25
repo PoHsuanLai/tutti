@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tutti_core::RtPublish;
-use tutti_core::{SampleRate, Samples, SrcRatio};
+use tutti_core::{AtomicF64, Ordering, SampleRate, Samples, SrcRatio};
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
@@ -31,6 +31,47 @@ pub(super) struct Handles {
     pub metrics: Arc<Metrics>,
     /// Lock-free subscription to the compensation table. `None` = no PDC wiring.
     pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
+    /// The session rate each stream's [`SrcRatio`] is derived against.
+    pub session_rate: SessionRate,
+}
+
+/// The session (graph) rate, one cell shared by the controller, the butler
+/// and every [`Status`](crate::Status) snapshot.
+///
+/// Shared rather than copied into each because a device restart moves it
+/// (`DiskStreamer::set_sample_rate`): a copy taken at build time is how a
+/// stream kept converting to 44.1 kHz on a 48 kHz device — every streamed clip
+/// ~8.8% sharp and fast, with no error anywhere.
+#[derive(Clone)]
+pub(crate) struct SessionRate(Arc<AtomicF64>);
+
+impl SessionRate {
+    pub(crate) fn new(rate: SampleRate) -> Self {
+        Self(Arc::new(AtomicF64::new(rate.get())))
+    }
+
+    pub(crate) fn get(&self) -> SampleRate {
+        SampleRate(self.0.load(Ordering::SeqCst))
+    }
+
+    /// Move the rate, then re-derive the ratio of every stream that is open.
+    ///
+    /// **Why the ratio is derived under the plan's lock on both sides.**
+    /// `handle_stream_file` reads the rate and sets the ratio while it holds
+    /// the plan's entry; this stores the rate first and then takes each entry.
+    /// So a stream the butler opens concurrently either set its ratio before
+    /// this took its entry (and is re-derived here), or takes the entry after
+    /// this released it, and then reads the new rate. Neither order leaves a
+    /// stream on the old ratio.
+    pub(super) fn set(&self, rate: SampleRate, plans: &DashMap<usize, ChannelPlan>) {
+        self.0.store(rate.get(), Ordering::SeqCst);
+        for plan in plans.iter() {
+            if let Some(link) = &plan.link {
+                plan.rt_state
+                    .set_src_ratio(SrcRatio::for_rates(link.file_rate, rate));
+            }
+        }
+    }
 }
 
 /// Butler-thread-local state. Never shared. Plain data.
@@ -76,7 +117,6 @@ pub(super) fn handle_command(
     cmd: ButlerCommand,
     shared: &Handles,
     config: &BufferConfig,
-    sample_rate: SampleRate,
     local: &mut Local,
 ) {
     match cmd {
@@ -85,14 +125,7 @@ pub(super) fn handle_command(
             file_path,
             offset_samples,
         } => {
-            handle_stream_file(
-                channel_index,
-                file_path,
-                offset_samples,
-                shared,
-                sample_rate,
-                local,
-            );
+            handle_stream_file(channel_index, file_path, offset_samples, shared, local);
         }
         ButlerCommand::StopStreaming { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
@@ -185,7 +218,6 @@ fn handle_stream_file(
     file_path: PathBuf,
     offset_samples: usize,
     shared: &Handles,
-    sample_rate: SampleRate,
     local: &mut Local,
 ) {
     // Probe metadata (frame count / sample rate) for ring sizing + src_ratio
@@ -216,7 +248,9 @@ fn handle_stream_file(
         (wave.len() as u64, wave.sample_rate(), wave.channels())
     };
 
-    let buffer_capacity = buffer_size_for_file(file_length, sample_rate);
+    // Sizing only: a rate that moves before the ratio is set below changes the
+    // ring's depth, never what it plays.
+    let buffer_capacity = buffer_size_for_file(file_length, shared.session_rate.get());
     let region_id = local.mint_region_id();
 
     // The ring carries the file at its OWN width: the streaming tier reads it
@@ -252,12 +286,6 @@ fn handle_stream_file(
 
     shared.plans.entry(channel_index).or_default();
 
-    // Same derivation the in-memory tier uses
-    // (`MemorySource::set_session_sample_rate`), through the one shared
-    // constructor. Hand-rolling the division here instead would leave the two
-    // tiers agreeing only by convention.
-    let src_ratio = SrcRatio::for_rates(file_sr, sample_rate);
-
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
     // fallback path `load_wave` inserted the whole file into the cache, so this
     // protects that resident Wave from being evicted mid-read (a fully-buffered
@@ -268,9 +296,15 @@ fn handle_stream_file(
     let cache_pin = Some(shared.cache.pin(&file_path));
 
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        plan.start_streaming(share_reader(consumer), cache_pin);
+        plan.start_streaming(share_reader(consumer), cache_pin, file_sr);
         plan.pdc_preroll = pdc_preroll;
-        plan.rt_state.set_src_ratio(src_ratio);
+        // Same derivation the in-memory tier uses
+        // (`MemorySource::set_session_sample_rate`), through the one shared
+        // constructor. Hand-rolling the division here instead would leave the
+        // two tiers agreeing only by convention. The rate is read while this
+        // holds the plan, which is what `SessionRate::set` relies on.
+        plan.rt_state
+            .set_src_ratio(SrcRatio::for_rates(file_sr, shared.session_rate.get()));
     }
 }
 

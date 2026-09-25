@@ -17,7 +17,6 @@ use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::Handles;
 use super::step::{ButlerCycle, StepOutcome};
-use tutti_core::SampleRate;
 
 /// The butler thread's main loop; returns only on shutdown.
 ///
@@ -36,10 +35,9 @@ pub(super) async fn butler_loop_async(
     rx: Receiver<ButlerCommand>,
     shared: Handles,
     config: BufferConfig,
-    sample_rate: SampleRate,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut cycle = ButlerCycle::new(config, sample_rate);
+    let mut cycle = ButlerCycle::new(config);
 
     loop {
         if shutdown.load(Ordering::SeqCst) {

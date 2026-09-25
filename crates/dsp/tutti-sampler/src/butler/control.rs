@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use smol::channel::Sender;
-use tutti_core::PlaybackRate;
+use tutti_core::{PlaybackRate, SampleRate};
 
 use super::{ButlerCommand, ChannelPlan, RtState};
 use crate::voice::disk_voice::DiskSource;
@@ -79,18 +79,19 @@ pub(crate) fn set_varispeed(
 }
 
 /// Build a bare `DiskSource` over a channel whose butler link is
-/// ready, alongside the channel's shared [`RtState`]. `None` while the butler
-/// hasn't installed the [`ChannelPlan`] link yet. This is the un-gated consumer
-/// handoff the timeline path wraps in a placement-gated reader (using the
-/// returned `RtState` to recover the file sample rate) and the preview path
-/// uses free-running.
+/// ready, alongside the channel's shared [`RtState`] and the file's own rate.
+/// `None` while the butler hasn't installed the [`ChannelPlan`] link yet. This
+/// is the un-gated consumer handoff the timeline path wraps in a
+/// placement-gated reader (which converts beats to file frames at the file's
+/// rate) and the preview path uses free-running.
 pub(crate) fn take_streaming_unit(
     plans: &Arc<DashMap<usize, ChannelPlan>>,
     channel_index: usize,
-) -> Option<(DiskSource, Arc<RtState>)> {
+) -> Option<(DiskSource, Arc<RtState>, SampleRate)> {
     let plan = plans.get(&channel_index)?;
-    let consumer = plan.link.as_ref().map(|l| l.consumer.clone())?;
+    let link = plan.link.as_ref()?;
+    let (consumer, file_rate) = (link.consumer.clone(), link.file_rate);
     let rt_state = plan.rt_state();
     let unit = DiskSource::new(consumer, Arc::clone(&rt_state));
-    Some((unit, rt_state))
+    Some((unit, rt_state, file_rate))
 }

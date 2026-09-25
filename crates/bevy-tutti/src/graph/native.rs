@@ -158,6 +158,29 @@ impl AudioUnit for Boxed {
     }
 }
 
+/// Why [`AudioGraphRes::replace`](super::AudioGraphRes::replace) did not
+/// take a unit. Only the native backend refuses; `Net` always takes it.
+pub enum ReplaceRefused {
+    /// Not now: the graph is re-preparing (a sample-rate or block-size change
+    /// between its two commits). The unit is handed back, untouched; retry
+    /// once the re-prepare has resumed —
+    /// [`crossfade_audio_node`](super::crossfade_audio_node) keeps it pending
+    /// and does.
+    Busy(Box<dyn AudioUnit>),
+    /// Never: the graph is poisoned (a re-prepare failed with its units out),
+    /// or the node is not in it. The unit was dropped.
+    Failed(String),
+}
+
+impl std::fmt::Debug for ReplaceRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(_) => f.write_str("Busy(..)"),
+            Self::Failed(why) => f.debug_tuple("Failed").field(why).finish(),
+        }
+    }
+}
+
 /// One node's handle, and its controls when it has a settings path.
 struct Entry {
     node: AudioNode,
@@ -344,17 +367,31 @@ impl NativeGraph {
     /// `Editor::insert` instead: the same key, every edge kept, heard as a
     /// swap on the commit's block. Checked here rather than by trying,
     /// because a refused `replace` has already consumed the unit.
+    ///
+    /// Refused, handing `unit` back, while a re-prepare is between its two
+    /// commits (`Editor::replace` would consume it and refuse): the caller
+    /// keeps it and retries once the re-prepare has resumed. Refused for good
+    /// on a poisoned editor, where no unit can ever land again.
     pub(crate) fn replace(
         &mut self,
         node: AudioNode,
         mut unit: Box<dyn AudioUnit>,
         fade: Seconds,
         curve: CrossfadeCurve,
-    ) {
+    ) -> Result<(), ReplaceRefused> {
+        if let Some(cause) = self.editor.poisoned() {
+            return Err(ReplaceRefused::Failed(format!(
+                "the graph is poisoned ({cause}); build a new one"
+            )));
+        }
+        if self.editor.is_repreparing() {
+            return Err(ReplaceRefused::Busy(unit));
+        }
         let k = key(node);
         let Some(entry) = self.nodes.get(&k) else {
-            bevy_log::warn!("native graph: replace names {node:?}, which is not in the graph");
-            return;
+            return Err(ReplaceRefused::Failed(format!(
+                "{node:?} is not in the graph"
+            )));
         };
         let rate = self.editor.prepare().sample_rate();
         let running = self
@@ -379,10 +416,11 @@ impl NativeGraph {
         if fits {
             let fade = Fade::seconds(fade, rate, curve);
             if let Err(e) = self.editor.replace(k, legacy, fade) {
-                // Checked above; a refusal here is this module's bug.
+                // Every refusal `Editor::replace` has is checked above
+                // (poisoned, repreparing, not running, shape); one here is
+                // this module's bug, and the unit is gone with it.
                 debug_assert!(false, "a checked replace was refused: {e}");
-                bevy_log::error!("native graph: replace refused: {e}");
-                return;
+                return Err(ReplaceRefused::Failed(e.to_string()));
             }
         } else {
             let kind = self.editor.spec().topology.nodes[&k].kind.clone();
@@ -392,6 +430,7 @@ impl NativeGraph {
             entry.controls = Some(controls);
         }
         self.edited = true;
+        Ok(())
     }
 
     /// Send `param`'s setting through `node`'s ring, and apply it to its
@@ -639,7 +678,15 @@ impl NativeGraph {
         let Some(controls) = self.nodes.get(&key(node)).and_then(|e| e.controls.as_ref()) else {
             return;
         };
-        let latency = declared_latency(&mut *controls.shadow());
+        // Clamped to what PDC compensates, as the editor clamps a latency it
+        // probes at insert: `set_latency` refuses a figure past it, and a
+        // refused one would never be retried (the poll only fires again when
+        // the plugin's figure moves).
+        let latency = Latency::new(
+            declared_latency(&mut *controls.shadow())
+                .samples()
+                .min(tutti_types::latency::MAX_NODE_LATENCY),
+        );
         if self.node_latency(node) == latency.samples() {
             return;
         }
@@ -884,8 +931,12 @@ mod tests {
         const BUILT_WITH: f32 = 1.0;
 
         fn new() -> Self {
+            Self::at(Self::BUILT_WITH)
+        }
+
+        fn at(drive: f32) -> Self {
             Self {
-                drive: Arc::new(AtomicF32::new(Self::BUILT_WITH)),
+                drive: Arc::new(AtomicF32::new(drive)),
             }
         }
     }
@@ -964,7 +1015,9 @@ mod tests {
     /// - `AudioGraphRes::set_param` called directly;
     /// - `AudioParam` on a param the control-rate driver owns
     ///   (`write_param` → `ModulationMatrix::set_base`): the fork carries the
-    ///   authored **base**. The driver's live offset is the exception — a fork
+    ///   authored **base**; and a param the driver owns with no write at all
+    ///   carries the base its rebuild seeded from `ModParamRange`. The
+    ///   driver's live offset is the exception — a fork
     ///   (an export) runs its own modulation — and the live render shows it is
     ///   there, so the fork's plain base is not the driver doing nothing.
     ///
@@ -977,13 +1030,15 @@ mod tests {
     ///   (the value lands wherever a captured handle points, which the shadow
     ///   never sees) → channel 0 stays at 1;
     /// - `write_param` dropping `set_param_snapshot` after `set_base` (the
-    ///   base reaches only the driver's accumulator) → channel 2 stays at 1.
+    ///   base reaches only the driver's accumulator) → channel 2 stays at 1;
+    /// - the modulation `rebuild` dropping its `set_param_snapshot` of
+    ///   `range.base` → channel 3 stays at 1.
     ///
     /// Channel 1 pins `set_param` itself; a mutation of it is `LegacyControls`'
     /// own (`tutti-graph`'s `legacy` tests), since this crate only calls it.
     #[test]
     fn every_param_write_path_reaches_a_fork() {
-        let mut graph = AudioGraphRes::headless_with(GraphBackend::Native, 0, 3);
+        let mut graph = AudioGraphRes::headless_with(GraphBackend::Native, 0, 4);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
         let mut app = App::new();
         app.insert_resource(graph);
@@ -1003,12 +1058,13 @@ mod tests {
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
         let mut commands = app.world_mut().commands();
-        let knobs = [(); 3].map(|()| commands.spawn_audio_node(Knob::new()).id());
+        let knobs = [(); 4].map(|()| commands.spawn_audio_node(Knob::new()).id());
         commands.insert_resource(
             MasterSources::default()
                 .with(0, PortSource::node(knobs[0]))
                 .with(1, PortSource::node(knobs[1]))
-                .with(2, PortSource::node(knobs[2])),
+                .with(2, PortSource::node(knobs[2]))
+                .with(3, PortSource::node(knobs[3])),
         );
         app.world_mut().flush();
         app.update();
@@ -1042,6 +1098,14 @@ mod tests {
                 .id();
             app.world_mut()
                 .spawn(ModRoute::new(lfo, knobs[2], drive).with_depth(Depth(0.2)));
+            // Path 4: the base the modulation rebuild seeds from the declared
+            // range, with no write at all — 2.5, not the 1 the knob was built
+            // with.
+            app.world_mut()
+                .entity_mut(knobs[3])
+                .insert(ModParamRange::default().with(drive, 2.5, 0.0, 10.0));
+            app.world_mut()
+                .spawn(ModRoute::new(lfo, knobs[3], drive).with_depth(Depth(0.2)));
             app.update();
             app.world_mut()
                 .entity_mut(knobs[2])
@@ -1052,14 +1116,18 @@ mod tests {
 
         let graph = app.world().resource::<AudioGraphRes>();
         let mut fork = graph.fork().expect("every knob is forkable");
-        let mut forked = [0.0f32; 3];
+        let mut forked = [0.0f32; 4];
         fork.tick(&[], &mut forked);
         assert_eq!(forked[0], 4.0, "an AudioParam write reaches the fork");
         assert_eq!(forked[1], 5.0, "a set_param write reaches the fork");
         #[cfg(feature = "modulation")]
         {
             assert_eq!(forked[2], 6.0, "a modulated param's base reaches the fork");
-            let mut live = [0.0f32; 3];
+            assert_eq!(
+                forked[3], 2.5,
+                "the base a modulation rebuild seeds from the range reaches the fork"
+            );
+            let mut live = [0.0f32; 4];
             app.world_mut()
                 .resource_mut::<AudioGraphRes>()
                 .render_frame(&mut live);
@@ -1070,5 +1138,229 @@ mod tests {
                 live[2]
             );
         }
+    }
+
+    /// **A crossfade asked for while the graph re-prepares waits, lands once
+    /// it resumes, and swaps the entity's controls only then** — the graph an
+    /// engine runs (the audio side is taken) changing rate, and a crossfade
+    /// before the executor has handed its units back.
+    ///
+    /// `Editor::replace` refuses while re-preparing and consumes its unit, so
+    /// without the wait the new unit would be lost; binding the new controls
+    /// at request time would leave the entity steering a unit that is not
+    /// playing (or, on a poisoned graph, never will).
+    ///
+    /// Mutations (run):
+    /// - `apply_crossfade` dropping the unit on `Busy` instead of parking it →
+    ///   the old knob plays on, and the final value is 1, not 3;
+    /// - binding the captured controls on `Busy` (and parking the request
+    ///   without them) → while the crossfade waits the entity no longer
+    ///   steers the playing unit (its handle is the pending unit's, then
+    ///   gone), and the seeding fails (under `modulation`, which is what
+    ///   captures a handle).
+    #[test]
+    fn a_crossfade_during_a_re_prepare_lands_after_it() {
+        let mut graph = AudioGraphRes::unattached_with(GraphBackend::Native, 0, 1);
+        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        let mut side = graph.take_audio_side();
+        let mut app = App::new();
+        app.insert_resource(graph);
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins(GraphReconcilePlugin);
+        #[cfg(feature = "modulation")]
+        {
+            app.insert_resource(crate::graph::TransportRes(
+                tutti_core::transport::Transport::new(48_000.0),
+            ));
+            app.add_plugins(crate::modulation::TuttiModulationPlugin);
+            app.world_mut()
+                .resource_mut::<crate::modulation::ModTargetRegistry>()
+                .register::<Knob>();
+        }
+        let knob = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(Knob::new())
+            .id();
+        app.world_mut()
+            .commands()
+            .insert_resource(MasterSources::default().with(0, PortSource::node(knob)));
+        app.world_mut().flush();
+        app.update();
+        let mut out = [0.0f32];
+        side.tick(&[], &mut out);
+        assert_eq!(out[0], Knob::BUILT_WITH, "the knob plays");
+
+        // The rate changes on the running graph: the first half is sent, and
+        // the executor has not run it yet.
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_sample_rate(tutti_core::SampleRate(44_100.0));
+        crate::graph::crossfade_audio_node(
+            &mut app.world_mut().commands(),
+            knob,
+            Box::new(Knob::at(3.0)),
+        );
+        app.world_mut().flush();
+        assert_eq!(
+            app.world()
+                .resource::<crate::graph::PendingCrossfades>()
+                .len(),
+            1,
+            "the crossfade waits for the re-prepare"
+        );
+        // Frame by frame through the re-prepare: the executor checks its units
+        // out (a silent block), the editor sends them back, the executor
+        // resumes. The crossfade still waits until a frame finds the graph
+        // resumed.
+        app.update();
+        side.tick(&[], &mut out);
+        app.update();
+        // Still the old unit's controls: seed its cell through the entity's
+        // handle, and the resumed old knob plays the seed.
+        #[cfg(feature = "modulation")]
+        seed(&app, knob, 7.0);
+        side.tick(&[], &mut out);
+        #[cfg(feature = "modulation")]
+        assert_eq!(out[0], 7.0, "the entity still steers the playing unit");
+
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::graph::PendingCrossfades>()
+                .is_empty(),
+            "landed once the graph resumed"
+        );
+        for _ in 0..512 {
+            side.tick(&[], &mut out);
+        }
+        assert_eq!(out[0], 3.0, "the incoming knob is what sounds");
+        // Its controls are the entity's now.
+        #[cfg(feature = "modulation")]
+        {
+            seed(&app, knob, 8.0);
+            side.tick(&[], &mut out);
+            assert_eq!(out[0], 8.0, "the entity steers the incoming unit");
+        }
+    }
+
+    /// A unit that cannot run above 90 kHz: its `set_sample_rate` panics
+    /// there, which is how a re-prepare poisons an editor.
+    #[derive(Clone)]
+    struct Grenade;
+
+    impl AudioUnit for Grenade {
+        fn set_sample_rate(&mut self, rate: tutti_core::SampleRate) {
+            assert!(rate.get() < 90_000.0, "no such rate");
+        }
+        fn tick(&mut self, _: &[f32], output: &mut [f32]) {
+            output[0] = 0.0;
+        }
+        fn process(&mut self, _: usize, _: &BufferRef, _: &mut BufferMut) {}
+        fn inputs(&self) -> usize {
+            0
+        }
+        fn outputs(&self) -> usize {
+            1
+        }
+        fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
+            let mut out = SignalFrame::new(1);
+            out.set(0, Signal::Latency(0.0));
+            out
+        }
+        fn get_id(&self) -> u64 {
+            0
+        }
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+            self
+        }
+    }
+
+    /// **On a poisoned graph a crossfade is refused and logged**: nothing is
+    /// parked (no frame will ever take it) and the entity's controls are left
+    /// as they were — the incoming unit's are not bound to a node it never
+    /// reached.
+    ///
+    /// Mutation (run): `NativeGraph::replace` answering `Busy` on a poisoned
+    /// graph → the request is parked for good, and this fails.
+    #[test]
+    fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
+        let mut graph = AudioGraphRes::headless_with(GraphBackend::Native, 0, 1);
+        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        let mut app = App::new();
+        app.insert_resource(graph);
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins(GraphReconcilePlugin);
+        #[cfg(feature = "modulation")]
+        {
+            app.insert_resource(crate::graph::TransportRes(
+                tutti_core::transport::Transport::new(48_000.0),
+            ));
+            app.add_plugins(crate::modulation::TuttiModulationPlugin);
+            app.world_mut()
+                .resource_mut::<crate::modulation::ModTargetRegistry>()
+                .register::<Knob>();
+        }
+        let mut commands = app.world_mut().commands();
+        let knob = commands.spawn_audio_node(Knob::new()).id();
+        commands.spawn_audio_node(Grenade);
+        app.world_mut().flush();
+        app.update();
+        // Both halves run here (the executor is local); the second panics in
+        // the grenade's `prepare` and poisons the editor.
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_sample_rate(tutti_core::SampleRate(96_000.0));
+        #[cfg(feature = "modulation")]
+        let before = handle_ptr(&app, knob);
+
+        crate::graph::crossfade_audio_node(
+            &mut app.world_mut().commands(),
+            knob,
+            Box::new(Knob::at(3.0)),
+        );
+        app.world_mut().flush();
+        app.update();
+        assert!(
+            app.world()
+                .resource::<crate::graph::PendingCrossfades>()
+                .is_empty(),
+            "a poisoned graph never takes it, so nothing waits"
+        );
+        #[cfg(feature = "modulation")]
+        assert_eq!(handle_ptr(&app, knob), before, "the controls stayed put");
+    }
+
+    /// The address of `entity`'s captured params, to tell one capture from
+    /// another.
+    #[cfg(feature = "modulation")]
+    fn handle_ptr(app: &App, entity: bevy_ecs::entity::Entity) -> *const () {
+        let handle = app
+            .world()
+            .get::<crate::modulation::ModParamsHandle>(entity)
+            .expect("a registered knob has a handle");
+        std::ptr::from_ref(handle.params()).cast()
+    }
+
+    /// Seed `entity`'s `Drive` through its captured modulation handle: an
+    /// `AtomicTarget` writes its base into the unit's cell as it is built.
+    #[cfg(feature = "modulation")]
+    fn seed(app: &App, entity: bevy_ecs::entity::Entity, value: f32) {
+        let handle = app
+            .world()
+            .get::<crate::modulation::ModParamsHandle>(entity)
+            .expect("a registered knob has a handle");
+        handle
+            .params()
+            .mod_target(
+                tutti_types::ParamAddr::Unit(UnitParam::Drive),
+                value,
+                0.0,
+                10.0,
+            )
+            .expect("a knob answers on Drive");
     }
 }

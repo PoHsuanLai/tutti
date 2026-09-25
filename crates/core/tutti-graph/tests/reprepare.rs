@@ -447,6 +447,8 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
     let mut rig = rig(prep(48_000.0, 64));
     rig.render(&[64, 64]);
     rig.ed.reprepare(prep(48_000.0, 128)).expect("reprepares");
+    // Mutation: `is_repreparing` reading `self.poisoned.is_some()` → false here.
+    assert!(rig.ed.is_repreparing(), "between the two commits");
     let input = vec![1.0f32; 128];
     let mut out = vec![9.0f32; 128];
     rig.exec.process(
@@ -462,6 +464,8 @@ fn between_the_two_commits_the_executor_renders_silence_at_the_new_size() {
         "the clock tracks device time, silent blocks included"
     );
     assert_eq!(rig.ed.commit(), Ok(()), "collects, resumes, then commits");
+    assert!(!rig.ed.is_repreparing(), "resumed");
+    assert_eq!(rig.ed.poisoned(), None);
     rig.exec.process(
         128,
         &Transport::default(),
@@ -549,6 +553,8 @@ fn assert_poisoned(mut ed: Editor, mut exec: Executor, cause: &str) {
         .expect("the first half succeeds");
     exec.apply_pending();
     ed.collect(); // the second half fails here — and must not unwind
+    assert!(ed.poisoned().is_some_and(|c| c.contains(cause)));
+    assert!(!ed.is_repreparing(), "poisoned is not waiting");
     match ed.commit() {
         Err(CommitError::Poisoned { cause: c }) => assert!(c.contains(cause), "{c}"),
         other => panic!("{other:?}"),

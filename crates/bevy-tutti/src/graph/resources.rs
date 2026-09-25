@@ -15,7 +15,7 @@ use tutti_types::{ChannelLayout, SampleRate, UnitParam};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use super::native::{AudioSide, Committed, NativeGraph};
+use super::native::{AudioSide, Committed, NativeGraph, ReplaceRefused};
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -417,16 +417,22 @@ impl AudioGraphRes {
     /// On [`GraphBackend::Native`] the fade needs a running unit of the same
     /// latency to fade from; without one (the node not committed yet, or a
     /// latency change) the new unit lands as a plain swap on the next commit.
+    /// And it can be refused: while the graph re-prepares, with the unit
+    /// handed back ([`ReplaceRefused::Busy`], retry after the re-prepare
+    /// resumes), and for good on a poisoned graph. Swap the captured controls
+    /// only on `Ok` — [`crossfade_audio_node`](crate::graph::crossfade_audio_node)
+    /// does all of this.
     pub fn replace(
         &mut self,
         node: AudioNode,
         unit: Box<dyn AudioUnit>,
         fade: Seconds,
         curve: CrossfadeCurve,
-    ) {
+    ) -> Result<(), ReplaceRefused> {
         match &mut self.0 {
             Backend::Net(net) => {
-                net.crossfade(node.0, tutti_core::net_fade(curve), fade.get(), unit)
+                net.crossfade(node.0, tutti_core::net_fade(curve), fade.get(), unit);
+                Ok(())
             }
             Backend::Native(g) => write(g).replace(node, unit, fade, curve),
         }

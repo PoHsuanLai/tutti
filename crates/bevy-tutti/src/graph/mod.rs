@@ -70,7 +70,7 @@ pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use metering::MeteringRes;
-pub use native::AudioSide;
+pub use native::{AudioSide, ReplaceRefused};
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
 pub use param_ports::{DeclareParamPorts, ParamPortMap};
 pub use plugin::GraphReconcilePlugin;
@@ -79,7 +79,7 @@ pub use pump::{
 };
 pub use resources::{AudioConfig, AudioGraphRes, GraphBackend, GraphSource};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
-pub use spawn::{crossfade_audio_node, InsertAudioNode, SpawnAudioNode};
+pub use spawn::{crossfade_audio_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode};
 pub use tap::AudioTapRes;
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};

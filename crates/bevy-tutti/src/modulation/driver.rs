@@ -144,6 +144,10 @@ pub fn rebuild(
     // must see it anyway so the rebuild has sources to bind.
     changed: Query<Entity, Or<(Changed<ModRoute>, Changed<ModParamRange>)>>,
     mut removed: RemovedComponents<ModRoute>,
+    // The re-seeded base also goes to the node's fork snapshot (below). Both
+    // optional: a host can run modulation over sinks that are not graph nodes.
+    mut graph: Option<ResMut<crate::graph::AudioGraphRes>>,
+    graph_nodes: Query<&tutti_core::AudioNode>,
 ) {
     // Source changes arrive as `collected.dirty` rather than a `Changed<K>`
     // filter: a kind's component type cannot be named here, so each kind
@@ -209,6 +213,16 @@ pub fn rebuild(
                 let Some(target) = resolver.resolve(route.target, route.param, range) else {
                     continue;
                 };
+                // The resolve re-seeds the live base from `range.base` (the
+                // target mirrors it into the node's cell as it is built). A
+                // fork of the node — an export — starts from its shadow, which
+                // that cell write does not reach, so the base goes there too,
+                // as `write_param` sends an authored one.
+                if let (ParamAddr::Unit(param), Some(graph), Ok(node)) =
+                    (route.param, graph.as_mut(), graph_nodes.get(route.target))
+                {
+                    graph.set_param_snapshot(*node, param, range.base);
+                }
                 let id = ModTargetId::next();
                 bus.insert(id, Arc::clone(&target));
                 targets.insert(key, target);

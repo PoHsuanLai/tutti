@@ -246,6 +246,30 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow(backend: GraphBackend)
         Samples(300 + 64),
         "{backend:?}: a changed plugin latency reaches the graph"
     );
+
+    // A figure past what PDC compensates is clamped, not refused: the native
+    // editor refuses one past `MAX_NODE_LATENCY` outright, and the poll would
+    // not ask again until the plugin's figure moved. (`Net` reports the raw
+    // figure here and clamps inside its plan, so this is the native editor's
+    // rule to pin.)
+    //
+    // Mutation (run): dropping the clamp in `refresh_node_latency` → the
+    // native graph keeps 364 and this fails.
+    if backend == GraphBackend::Native {
+        app.world()
+            .get::<PluginShadow>(entity)
+            .and_then(|s| s.controls_for(&AudioNode(node)))
+            .expect("the shadow is for this node")
+            .set_latency(Samples(10_000_000));
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .node_latency(AudioNode(node)),
+            tutti_core::latency::MAX_NODE_LATENCY,
+            "clamped to what PDC compensates"
+        );
+    }
 }
 both_backends!(a_loaded_plugin_is_bound_and_polled_through_its_shadow);
 

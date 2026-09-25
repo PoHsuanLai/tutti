@@ -50,6 +50,16 @@ impl Plugin for GraphReconcilePlugin {
         // Declared wiring: `PortSources` per sink, `MasterSources` for the bus.
         app.add_plugins(crate::graph::GraphWirePlugin);
 
+        // Crossfades that waited out a re-prepare land first thing in the
+        // frame, with the frame's own spawns.
+        app.init_resource::<crate::graph::PendingCrossfades>();
+        app.add_systems(
+            Update,
+            crate::graph::spawn::retry_pending_crossfades
+                .in_set(GraphReconcileSystems::Spawn)
+                .run_if(engine_ready),
+        );
+
         app.add_systems(
             Update,
             commit_graph

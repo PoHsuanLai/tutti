@@ -39,10 +39,11 @@ pub mod topology;
 
 pub mod transport;
 pub use transport::{
-    beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange,
-    MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig,
-    QueueFull, RenderClock, ScheduleFull, Then, Timeline, Transport, TransportClock,
-    TransportCommand, TransportSettings, TransportState, BEAT_PORTS, SCHEDULE_CAPACITY,
+    beat_from_ports, ClickNode, ClickSettings, ClickState, EnvClock, FadeOut, FrozenClock,
+    LoopRange, MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline,
+    OfflineTimelineConfig, QueueFull, RenderClock, ScheduleFull, Then, Timeline, Transport,
+    TransportClock, TransportCommand, TransportSettings, TransportState, BEAT_PORTS,
+    SCHEDULE_CAPACITY,
 };
 // The time a scheduled command names, and the engine's frame clock. Homed in
 // `tutti-types` so the graph's `Editor::schedule` and the transport's

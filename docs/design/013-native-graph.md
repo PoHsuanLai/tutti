@@ -803,7 +803,27 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
 3. **No replace-with-fade** for `crossfade_audio_node` [PR 3].
 4. **No runtime latency change** for a plugin's latency atomic [PR 1].
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
-   hosts read its `BEAT_PORTS` [PR 6].
+   hosts read its `BEAT_PORTS` [PR 6]. **Closed:** `EnvClock` (tutti-core,
+   beside `TransportClock`) is a native `Node` that emits the same
+   `BEAT_PORTS` samples from each block's `Env`: per segment, the host's
+   beat stepped frame by frame with the clock's own arithmetic
+   (`beats_per_sample`, `LoopRange::advance`, `split_beat`), held while
+   stopped. It shares nothing with the transport, so it can sit in any
+   graph; its arrival is zero by construction (no inputs), and a latent
+   consumer is aligned by PDC on its out-edge. Pinned bit-equal to a
+   `Net`'s `TransportClock` across seeks, loop wraps (armed behind
+   included), stop/start and mid-block tempo steps, and `ClickNode` behind
+   it clicks on the same frames. Offline, `OfflineTimeline::graph_block`
+   gives the executor the block's `Transport` (and no changes: the tempo
+   and loop are fixed, a wrap is derived) and `render_graph` processes
+   then advances, so an offline graph reads the clock its samplers read.
+   Found on the way: `ClickNode` gates on the live play flag
+   (`MotionFsm::is_playing`) once per 64-frame chunk. On the graph every
+   chunk runs after the engine's walk has applied the whole block's
+   commands, so a start or stop inside a block gates the click from the
+   block's first frame (a start can click on the held beat before its
+   frame). The beat itself is sample-accurate; the gate should read
+   `Env::transport_at` when `ClickNode` is ported natively (Phase 4).
 6. **No `Fork`** for export [PR 2].
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
@@ -815,7 +835,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
 | 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
 | 5 | tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks; the harness behind a `contract` feature | 4 |
-| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` | #18 |
+| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
 | 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
 | 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |

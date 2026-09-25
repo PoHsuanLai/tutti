@@ -351,8 +351,12 @@ impl AudioUnit for TransportClock {
 
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         self.sample_rate = sample_rate;
-        self.beat_per_sample =
-            super::state::beats_per_sample(self.links.tempo.load(Ordering::Acquire), sample_rate);
+        // The tempo in force, not the one asked: the increment is always
+        // derived from `last_tempo` (see `take_tempo`), which is the tempo a
+        // graph engine reports in its `Env` and an `EnvClock` steps by. A
+        // request inside the hysteresis would otherwise run this clock at a
+        // tempo it does not publish.
+        self.beat_per_sample = super::state::beats_per_sample(self.last_tempo, sample_rate);
     }
 
     #[inline]
@@ -754,6 +758,32 @@ mod tests {
             (output[1] - 0.5).abs() < 0.001,
             "Fractional part should be ~0.5, got {}",
             output[1]
+        );
+    }
+
+    /// A rate change re-derives the per-frame increment from the tempo in
+    /// force, not from a request the hysteresis is holding back: the clock
+    /// keeps running at the tempo it publishes, the one a graph engine's
+    /// `Env` reports and an `EnvClock` steps by.
+    ///
+    /// Mutation (run): derive it from the asked tempo in `set_sample_rate`
+    /// (the old code) → the first step is 120.0005 BPM's → fails.
+    #[test]
+    fn a_rate_change_keeps_the_tempo_in_force() {
+        let (tempo, paused) = create_test_atomics();
+        let in_force = Arc::new(AtomicF64::new(0.0));
+        let mut links = ClockLinks::bare(Arc::clone(&tempo), paused);
+        links.tempo_in_force = Some(Arc::clone(&in_force));
+        let mut clock = TransportClock::new(links, 44100.0);
+        // Inside the hysteresis: asked, but not taken.
+        tempo.store(120.0005, Ordering::Release);
+        clock.set_sample_rate(crate::SampleRate(48_000.0));
+        let mut out = [0.0f32; 2];
+        clock.tick(&[], &mut out);
+        assert_eq!(in_force.load(Ordering::Acquire), 120.0);
+        assert_eq!(
+            clock.current_beat(),
+            Beat(0.0) + super::super::state::beats_per_sample(Bpm(120.0), 48_000.0),
         );
     }
 

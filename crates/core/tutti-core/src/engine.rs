@@ -279,7 +279,11 @@ impl Engine {
     /// can slip in beside it.
     ///
     /// The graph must not also hold a `TransportClock` of its own: two clocks
-    /// would both consume the seek and both write the playhead.
+    /// would both consume the seek and both write the playhead. A node that
+    /// takes the beat as a signal (`ClickNode`, a beat-driven LFO or
+    /// automation lane) is fed by an [`EnvClock`](crate::EnvClock) instead,
+    /// which emits the same samples from the block's `Env` and shares
+    /// nothing.
     ///
     /// Control thread. Allocates the fold scratch
     /// (`MAX_ROOT_CHANNELS × capacity` samples).

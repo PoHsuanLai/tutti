@@ -26,7 +26,8 @@
 //! hear would pass step 3 whether or not `isolate` severed it, so a row
 //! whose control is inaudible fails loudly instead of claiming coverage.
 //!
-//! Every render starts from `reset()` — the fork's own last step — then
+//! Every render starts from `allocate()` and `reset()` — the fork's own
+//! last step — then
 //! the row's [`IsolateRow::excite`] (a note-on, say), then the row's
 //! [`IsolateRow::input`] on every input, through `process` in blocks of
 //! [`MAX_BUFFER_SIZE`] frames at [`SAMPLE_RATE`](super::SAMPLE_RATE).
@@ -185,6 +186,9 @@ impl<U: AudioUnit + Clone + 'static> IsolateRow<U> {
     /// frames of the stimulus.
     fn render(&self, unit: &U) -> Vec<Vec<f32>> {
         let mut unit = unit.clone();
+        // What a graph does before it runs a unit (`Legacy` at prepare):
+        // a clone may leave its block scratch unsized for this hook.
+        unit.allocate();
         unit.reset();
         if let Some(excite) = &self.excite {
             excite(&mut unit);

@@ -574,7 +574,7 @@ impl MemorySource {
     /// Keeps the *current* value: the render must sound like what it was
     /// isolated at, not snap to unity.
     pub(crate) fn isolate_gain(&mut self) {
-        self.gain = Param::new(self.gain.load());
+        self.gain.detach();
     }
 
     /// Set varispeed. Out-of-range and non-finite values are handled by
@@ -2130,5 +2130,21 @@ mod tests {
              follow the live one; expected ~1.0, got {}",
             out[0]
         );
+    }
+
+    /// The same property through the fork contract's harness, the row every
+    /// forkable unit gets (`tutti_graph::contract::IsolateRow`): gain is this
+    /// unit's one live cell. `excite` plays each rendered copy, since the
+    /// harness's `reset` stops it.
+    ///
+    /// Mutation: make `isolate_gain` a no-op → "a live move reached the fork".
+    #[test]
+    fn isolate_snapshots_gain() {
+        tutti_graph::contract::IsolateRow::new("MemorySource", || {
+            MemorySource::new(ramp_wave(48_000, 48_000.0))
+        })
+        .excite(|s| s.play())
+        .control("gain", |s| s.set_gain(Amplitude::new(0.25)))
+        .check();
     }
 }

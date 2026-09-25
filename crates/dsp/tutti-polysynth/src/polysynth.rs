@@ -964,10 +964,21 @@ impl AudioUnit for PolySynth {
     ///    event-free render state, and the allocator is reset to agree the
     ///    slots are free.
     ///
+    /// 3. **Control cells.** The master volume and the unison detune/spread are
+    ///    `Param` cells a host (or a mod target, see `mod_target`) writes while
+    ///    the synth plays. Detached at their current values, so a fork renders
+    ///    the controls it was taken with rather than following live moves.
+    ///
     /// After `isolate()` the synth reads nothing from, and writes nothing into,
     /// the live world — it renders silence until its own (now-empty) inbox feeds
     /// it events, which it never will.
     fn isolate(&mut self) {
+        // Control cells (see #3 above).
+        self.master_volume.detach();
+        if let Some(unison) = &mut self.unison {
+            unison.detach();
+        }
+
         // Fresh private mailbox + source cell, same unit id — severs both the
         // shared inbox (no event theft) and the shared source (clearing here
         // can't disturb the live clip). See [`MidiInPort::isolate`].
@@ -3608,5 +3619,47 @@ mod tests {
             16,
             "the bank's stride disagrees with the engine"
         );
+    }
+
+    /// A fork of the synth renders the master volume and unison it was taken
+    /// with (`tutti_graph::contract::IsolateRow`). `isolate` empties the voices
+    /// and the inbox, so `excite` queues a chord into each rendered copy's
+    /// own (fresh) mailbox.
+    ///
+    /// Mutations (run): drop `self.master_volume.detach()` → "volume" fails
+    /// with "a live move reached the fork"; drop `unison.detach()` → "detune"
+    /// and "spread" fail.
+    #[test]
+    fn isolate_snapshots_volume_and_unison() {
+        tutti_graph::contract::IsolateRow::new("PolySynth (saw, 3-voice unison)", || {
+            let synth = synth(SynthConfig {
+                sample_rate: tutti_core::SampleRate(48_000.0),
+                max_voices: 4,
+                voice_mode: VoiceMode::Poly,
+                oscillator: OscillatorType::Saw,
+                unison: Some(UnisonConfig {
+                    voice_count: 3,
+                    detune_cents: tutti_core::Cents(15.0),
+                    stereo_spread: Spread(0.5),
+                    phase_randomize: false,
+                }),
+                ..Default::default()
+            });
+            synth.set_volume(0.5);
+            synth
+        })
+        .excite(|s| queue_midi(s, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]))
+        .control("volume", |s| s.set_volume(0.9))
+        .control("detune", |s| {
+            s.detune_atomic()
+                .expect("unison")
+                .store(40.0, tutti_core::Ordering::Release)
+        })
+        .control("spread", |s| {
+            s.spread_atomic()
+                .expect("unison")
+                .store(1.0, tutti_core::Ordering::Release)
+        })
+        .check();
     }
 }

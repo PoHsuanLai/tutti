@@ -1629,3 +1629,23 @@ fn stretch_factor_changes_the_source_consumption_rate() {
          saw {slow_seen} vs {fast_seen} (ratio {ratio:.3})"
     );
 }
+
+/// A fork of the stretch unit renders the stretch and pitch it was taken
+/// at: `Clone` already gives every copy fresh control cells (and `isolate`
+/// a fresh bank), so no live move reaches it — pinned through the fork
+/// contract's harness like every forkable unit.
+///
+/// Mutation: in `Unit::clone`, share the cells
+/// (`stretch_factor: Arc::clone(&self.stretch_factor)`, likewise pitch) →
+/// "a live move reached the fork" on the matching control.
+#[test]
+fn isolate_snapshots_stretch_and_pitch() {
+    tutti_graph::contract::IsolateRow::new("stretch::Unit (stereo)", || {
+        let unit = Unit::with_channels(48_000.0, 2usize);
+        unit.set_stretch_factor(StretchFactor::new(1.5));
+        unit
+    })
+    .control("stretch", |u| u.set_stretch_factor(StretchFactor::new(2.0)))
+    .control("pitch", |u| u.set_pitch_cents(Cents::new(300.0)))
+    .check();
+}

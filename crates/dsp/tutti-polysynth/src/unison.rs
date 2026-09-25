@@ -96,6 +96,15 @@ impl UnisonEngine {
         engine
     }
 
+    /// Stop sharing the detune and spread cells with the live engine and its
+    /// mod targets, keeping their current values (see `Param::detach`): the
+    /// half of `PolySynth::isolate` that makes a fork render the unison it
+    /// was taken with.
+    pub fn detach(&mut self) {
+        self.detune.detach();
+        self.spread.detach();
+    }
+
     /// The shared detune atomic (cents), for control-rate modulation.
     pub fn detune_atomic(&self) -> Arc<AtomicF32> {
         self.detune.as_atomic()

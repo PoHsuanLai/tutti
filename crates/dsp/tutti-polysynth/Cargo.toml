@@ -50,6 +50,9 @@ wide = { version = "1.6", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]
+# `IsolateRow`, the fork-snapshot harness. No cycle: `tutti-graph` names
+# only `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }

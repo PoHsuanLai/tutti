@@ -171,7 +171,7 @@ mod tests {
             assert_eq!(pos, data.len() as i64, "tell must follow the write");
 
             let mut new_pos = 0i64;
-            let result = unsafe { ptr.seek(0, kIBSeekSet as i32, &mut new_pos) };
+            let result = unsafe { ptr.seek(0, sdk_enum_i32(kIBSeekSet), &mut new_pos) };
             assert_eq!(result, kResultOk);
             assert_eq!(new_pos, 0);
 

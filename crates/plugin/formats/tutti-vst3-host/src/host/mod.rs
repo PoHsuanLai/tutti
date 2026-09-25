@@ -174,7 +174,7 @@ mod bus_activation_policy_tests {
 
     /// `kAux` is not zero, so a test using `0` for "not main" would be testing
     /// the main path by accident.
-    const K_AUX: i32 = vst3::Steinberg::Vst::BusTypes_::kAux as i32;
+    const K_AUX: i32 = crate::helpers::sdk_enum_i32(vst3::Steinberg::Vst::BusTypes_::kAux);
 
     /// A main bus is activated whether or not it carries the flag.
     ///

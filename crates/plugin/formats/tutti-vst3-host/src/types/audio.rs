@@ -121,7 +121,7 @@ impl Vst3Sample for f64 {
 
 #[cfg(test)]
 mod process_mode_tests {
-    use super::{ProcessMode, ProcessModes_};
+    use super::{sdk_enum_i32, ProcessMode, ProcessModes_};
 
     /// The wire values must be the SDK's, not a re-declared copy. A host that
     /// sends 2 where the plugin reads `kPrefetch` asks for the wrong behaviour
@@ -130,15 +130,15 @@ mod process_mode_tests {
     fn maps_onto_the_sdk_constants() {
         assert_eq!(
             ProcessMode::Realtime.to_vst3(),
-            ProcessModes_::kRealtime as i32
+            sdk_enum_i32(ProcessModes_::kRealtime)
         );
         assert_eq!(
             ProcessMode::Prefetch.to_vst3(),
-            ProcessModes_::kPrefetch as i32
+            sdk_enum_i32(ProcessModes_::kPrefetch)
         );
         assert_eq!(
             ProcessMode::Offline.to_vst3(),
-            ProcessModes_::kOffline as i32
+            sdk_enum_i32(ProcessModes_::kOffline)
         );
     }
 

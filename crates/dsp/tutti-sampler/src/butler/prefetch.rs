@@ -362,9 +362,9 @@ impl RegionOut {
     /// file could not be read there.
     pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
         let channels = self.ring.channels;
-        let ch = self.ring.stride;
         #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
         if let Some(decoder) = self.decoder.as_mut() {
+            let ch = self.ring.stride;
             if decoder.cursor() != at as u64 && decoder.seek(at as u64).is_err() {
                 out.fill(0.0);
                 return false;

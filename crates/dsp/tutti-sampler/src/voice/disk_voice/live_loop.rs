@@ -742,3 +742,51 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
     let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.5, 0.0).render(600);
     assert_same_outside("parallel refill", &got, &want, &[]);
 }
+
+/// **An export fork taken after a loop edit renders the loop the edit ends
+/// on, and agrees with the live voice past its switch**: a fork of the live
+/// voice (isolated, rebound onto a render clock from beat 0, as a graph fork
+/// does) plays the edited loop from the start of its render — the stream's
+/// record holds the loop the butler runs — and, frame for frame, what the
+/// live voice plays once its switch has landed and faded.
+///
+/// Mutation (run): the stream's record not told the new loop (`set_loop`
+/// dropped from `handle_set_stream_loop`) → the fork plays the old loop →
+/// fails.
+#[test]
+fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let (a, b) = (loop_on(1_000.0, 3_000.0, 300), loop_on(200.0, 1_400.0, 100));
+    let mut live = Live::new(&path, a, 1.0);
+    let mut got = live.render(81);
+    let edit = got.len();
+    live.loop_(b);
+    got.extend(live.render(150));
+
+    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let render: tutti_core::transport::OfflineTransport = clock.clone();
+    let mut fork = live.voice.clone();
+    fork.isolate();
+    fork.rebind_offline(&render);
+    fork.reset();
+    fork.set_sample_rate(SampleRate(SR));
+    let input = BufferVec::new(0);
+    let mut output = BufferVec::new(2);
+    let mut forked = Vec::new();
+    for _ in 0..81 + 150 {
+        fork.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        forked.extend((0..BLOCK).map(|i| output.buffer_ref().at_f32(0, i)));
+        clock.advance(BLOCK as i64, SR);
+    }
+    let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
+    assert_same_outside("the fork against the edited loop", &forked, &want, &[]);
+    let settled = edit + BLOCK * 2 + crate::butler::GUARD_FRAMES as usize + FADE + 8;
+    assert_same_outside(
+        "the fork against the live voice past its switch",
+        &forked,
+        &got,
+        &[(0, settled)],
+    );
+}

@@ -2243,7 +2243,12 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   the reader switches at, `RingMap`), which the reader crossfades from — and
   plays alone if it arrives before the rewrite. A second edit in the same
   cycle supersedes a pending switch. A reversed stream's loop edit changes no
-  slot, so it is only stored.
+  slot, so it is only stored. **Decided (review of #48):** the guard's
+  latency near the playhead (about 256 frames, crossfaded, where the memory
+  tier cuts at once) is accepted for live playback, and documented on
+  `LoopSetting::On` and `Command::Loop`. An export fork taken after an edit
+  renders the edited loop from its start (the stream's record holds it), so
+  live and export agree past the switch (`live_loop::a_fork_after_a_loop_edit_renders_the_edited_loop`).
 - **A loop change reads only what it needs** (`RingLoop::capture`): its
   fade's lead-in, and a loop up to 65 536 frames long keeps its body resident
   so a streamed refill does not seek the decoder once per wrap — through the

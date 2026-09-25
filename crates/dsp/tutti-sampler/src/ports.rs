@@ -113,6 +113,10 @@ pub enum Command {
     },
     /// Enable, replace or disable looping. `LoopSetting::On { .. }` maps to
     /// `SetStreamLoop`; `LoopSetting::Off` maps to `ClearStreamLoop`.
+    ///
+    /// A change near the playhead is heard about 256 frames past the block
+    /// being played, crossfaded; one further ahead, exactly where it takes
+    /// effect. See [`LoopSetting::On`] for the whole rule.
     Loop {
         /// Butler channel carrying the stream to loop.
         channel_index: usize,

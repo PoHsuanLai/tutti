@@ -144,7 +144,7 @@ mod time;
 
 pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
-pub use editor::{CommitError, Editor};
+pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
     SubBlocks, Ump,

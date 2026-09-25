@@ -445,6 +445,11 @@ impl Executor {
         }
     }
 
+    /// The command ring's executor end, for the pair check.
+    pub(crate) fn commands(&self) -> &CommandRx {
+        &self.commands
+    }
+
     /// What this executor, and every unit it runs, is prepared for. During a
     /// re-prepare, the old one until the resume commit lands.
     pub fn prepare(&self) -> &Prepare {

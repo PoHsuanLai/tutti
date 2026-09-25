@@ -90,6 +90,67 @@ pub enum CommitError {
         /// What went wrong.
         cause: String,
     },
+    /// The graph has more global outputs than the host running the executor
+    /// can take ([`Limits::max_global_outputs`], set with
+    /// [`Editor::set_limits`]). Nothing was compiled or sent.
+    TooManyOutputs {
+        /// The graph's global outputs.
+        outputs: usize,
+        /// The host's limit.
+        limit: usize,
+    },
+    /// A re-prepare asked for a larger block than the host running the
+    /// executor can take ([`Limits::max_block`]). Nothing was sent; the
+    /// graph runs on at its current `Prepare`.
+    BlockTooLong {
+        /// The `MaxBlock` asked for.
+        max_block: usize,
+        /// The host's limit.
+        limit: usize,
+    },
+}
+
+/// What the host that runs an [`Executor`] can take, enforced by its
+/// [`Editor`] on every later commit and re-prepare, so a graph the host
+/// cannot run is refused on the control thread and never reaches it.
+///
+/// The executor itself takes any graph; a host has buffers of its own. The
+/// engine (`tutti_core::Engine::with_graph`) sets these to its fold
+/// scratch's width and length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Most global outputs a committed graph may have.
+    pub max_global_outputs: usize,
+    /// Largest `MaxBlock` a re-prepare may ask for, in frames.
+    pub max_block: usize,
+}
+
+impl Limits {
+    /// No limit: what an editor starts with.
+    pub const NONE: Limits = Limits {
+        max_global_outputs: usize::MAX,
+        max_block: usize::MAX,
+    };
+
+    fn outputs(&self, outputs: usize) -> Result<(), CommitError> {
+        if outputs > self.max_global_outputs {
+            return Err(CommitError::TooManyOutputs {
+                outputs,
+                limit: self.max_global_outputs,
+            });
+        }
+        Ok(())
+    }
+
+    fn block(&self, max_block: usize) -> Result<(), CommitError> {
+        if max_block > self.max_block {
+            return Err(CommitError::BlockTooLong {
+                max_block,
+                limit: self.max_block,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for CommitError {
@@ -102,6 +163,12 @@ impl std::fmt::Display for CommitError {
             Self::Repreparing => write!(f, "a re-prepare is waiting for its units"),
             Self::Poisoned { cause } => {
                 write!(f, "the editor is poisoned ({cause}); build a new pair")
+            }
+            Self::TooManyOutputs { outputs, limit } => {
+                write!(f, "{outputs} global outputs; the host takes {limit}")
+            }
+            Self::BlockTooLong { max_block, limit } => {
+                write!(f, "a {max_block}-frame MaxBlock; the host takes {limit}")
             }
         }
     }
@@ -130,6 +197,8 @@ pub struct Editor {
     repreparing: Option<Reprepare>,
     /// Why a re-prepare failed with the units out, if one did.
     poisoned: Option<String>,
+    /// What the executor's host can take.
+    limits: Limits,
 }
 
 /// A panic payload as text.
@@ -184,6 +253,7 @@ impl Editor {
             plan: None,
             repreparing: None,
             poisoned: None,
+            limits: Limits::NONE,
         };
         (editor, Executor::new(prepare, cap, queue, back, command_rx))
     }
@@ -192,6 +262,38 @@ impl Editor {
     /// [`reprepare`](Self::reprepare), the new one.
     pub fn prepare(&self) -> &Prepare {
         &self.prepare
+    }
+
+    /// Bound what this editor may send from now on: every later
+    /// [`commit`](Self::commit), [`package`](Self::package) and
+    /// [`reprepare`](Self::reprepare) is refused
+    /// ([`CommitError::TooManyOutputs`], [`CommitError::BlockTooLong`]) past
+    /// them. Refused itself, changing nothing, when what was already sent
+    /// breaks them: the plan sent last, or the `Prepare` in force (or
+    /// pending, mid re-prepare).
+    ///
+    /// Everything reaches the executor through this editor, so a host that
+    /// holds the editor while it sets these knows no commit already sent,
+    /// and none sent later, can exceed them.
+    pub fn set_limits(&mut self, limits: Limits) -> Result<(), CommitError> {
+        self.collect();
+        if let Some(plan) = &self.plan {
+            limits.outputs(plan.global_outputs())?;
+        }
+        limits.block(self.prepare.max_block().get())?;
+        self.limits = limits;
+        Ok(())
+    }
+
+    /// What this editor was bounded to with [`set_limits`](Self::set_limits).
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// Whether `executor` is the one this editor sends to: the two were
+    /// built together by [`Editor::new`].
+    pub fn is_paired_with(&self, executor: &Executor) -> bool {
+        self.commands.same_pair(executor.commands())
     }
 
     /// The graph value.
@@ -384,6 +486,10 @@ impl Editor {
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
+        // A re-prepare recompiles the spec as it stands, so it is a commit
+        // of that spec too.
+        self.limits.block(prepare.max_block().get())?;
+        self.limits.outputs(self.spec.topology.outputs.len())?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
             .map_err(CommitError::Compile)?;
@@ -535,6 +641,7 @@ impl Editor {
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
+        self.limits.outputs(self.spec.topology.outputs.len())?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (plan, delta) = compile(
             &valid,
@@ -580,6 +687,7 @@ impl Editor {
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
+        self.limits.outputs(plan.global_outputs())?;
         self.send(plan, delta, units);
         Ok(())
     }

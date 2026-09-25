@@ -75,6 +75,9 @@
 
 use std::any::Any;
 use std::collections::BTreeSet;
+use std::error::Error;
+use std::fmt;
+use std::sync::Arc;
 
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::NodeKey;
@@ -88,13 +91,69 @@ use crate::spec::EventIn;
 /// a per-node capability the [`Editor`] keeps from insert on. See the `fork`
 /// module's docs (`src/fork.rs`).
 ///
-/// Control thread only, and never touches the live unit — which is on the
-/// audio thread by the time this is called.
+/// Control thread only, and never touches the live unit's audio — which is on
+/// the audio thread by the time this is called. (A source may *ask* the live
+/// unit something over a control channel it already has: a hosted plugin's
+/// source asks the live instance for its saved state.)
 pub trait ForkSource: Send {
     /// A fresh unit for `mode`, sharing no state with the live one: severed
     /// from every live input, rebound onto the offline context in
     /// [`ForkMode::Offline`], and reset. The editor prepares it.
-    fn fork(&self, mode: ForkMode<'_>) -> Box<dyn Node>;
+    ///
+    /// An `Err` fails the whole fork as [`ForkError::Source`], naming the key.
+    /// A source whose copy is a clone cannot fail; one that has to build its
+    /// unit from outside the process — a hosted plugin, loaded afresh and
+    /// handed the live instance's state — can, and must say so rather than
+    /// fall back to anything that shares the live unit.
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause>;
+}
+
+/// Why a [`ForkSource`] could not produce its unit: the source's own error,
+/// kept whole so a caller can downcast it
+/// ([`downcast_ref`](Self::downcast_ref)).
+///
+/// Shared (`Arc`) so that [`ForkError`] stays `Clone`. Two causes are equal
+/// only when they are the **same** error value (`Arc::ptr_eq`): an error type
+/// need not be comparable, and comparing messages would call two different
+/// failures that happen to print alike the same one.
+#[derive(Clone)]
+pub struct ForkCause(Arc<dyn Error + Send + Sync + 'static>);
+
+impl ForkCause {
+    /// Wrap a source's error.
+    pub fn new(error: impl Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(error))
+    }
+
+    /// The error, as the source reported it.
+    pub fn get(&self) -> &(dyn Error + Send + Sync + 'static) {
+        &*self.0
+    }
+
+    /// The error as `T`, if that is what the source reported.
+    pub fn downcast_ref<T: Error + 'static>(&self) -> Option<&T> {
+        self.0.downcast_ref::<T>()
+    }
+}
+
+impl PartialEq for ForkCause {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ForkCause {}
+
+impl fmt::Debug for ForkCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.0, f)
+    }
+}
+
+impl fmt::Display for ForkCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&*self.0, f)
+    }
 }
 
 /// What a fork is for.
@@ -155,24 +214,44 @@ pub enum ForkError {
         /// The node.
         key: NodeKey,
     },
+    /// A node's [`ForkSource`] could not produce its unit — a hosted plugin
+    /// whose fresh instance failed to load, or refused the live instance's
+    /// state. The first such key, in key order. Nothing is kept: every unit
+    /// forked before it is dropped with the half-built pair.
+    Source {
+        /// The node.
+        key: NodeKey,
+        /// The source's error.
+        cause: ForkCause,
+    },
     /// The forked graph did not commit — the spec as the editor holds it is
     /// invalid (an uncommitted edit), or does not compile at the fork's
     /// [`Prepare`] (a feedback delay shorter than its `MaxBlock`).
     Commit(CommitError),
 }
 
-impl std::fmt::Display for ForkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ForkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotForkable { key } => write!(f, "node {key:?} cannot be forked"),
             Self::NoSuchNode { key } => write!(f, "no node at {key:?}"),
             Self::NoOutputs { key } => write!(f, "node {key:?} has no audio outputs"),
+            Self::Source { key, cause } => {
+                write!(f, "node {key:?} could not be forked: {cause}")
+            }
             Self::Commit(e) => write!(f, "the forked graph did not commit: {e}"),
         }
     }
 }
 
-impl std::error::Error for ForkError {}
+impl Error for ForkError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Source { cause, .. } => Some(cause.get()),
+            _ => None,
+        }
+    }
+}
 
 impl Editor {
     /// A new editor/executor pair running a copy of `target` that shares no
@@ -246,7 +325,10 @@ impl Editor {
             Editor::with_event_capacity(prepare, self.event_capacity());
         for (key, source) in sources {
             let kind = &live.topology.nodes[&key].kind;
-            editor.insert(key, kind, source.fork(mode));
+            let unit = source
+                .fork(mode)
+                .map_err(|cause| ForkError::Source { key, cause })?;
+            editor.insert(key, kind, unit);
         }
         let fork = editor.spec_mut();
         fork.topology.inputs = live.topology.inputs;

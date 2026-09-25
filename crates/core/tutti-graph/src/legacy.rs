@@ -176,7 +176,7 @@ use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::editor::Editor;
-use crate::fork::{ForkMode, ForkSource};
+use crate::fork::{ForkCause, ForkMode, ForkSource};
 use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, IntoNode, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask, Status,
@@ -414,7 +414,7 @@ impl ForkSource for LegacyFork {
     /// `isolate` severs the very handles a rebind installs — the other way
     /// round, a transport-aware unit would be rebound and then cut loose, and
     /// render against nothing.
-    fn fork(&self, mode: ForkMode<'_>) -> Box<dyn Node> {
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause> {
         let mut unit = self.from.snapshot();
         unit.isolate();
         if let ForkMode::Offline(ctx) = mode {
@@ -423,7 +423,8 @@ impl ForkSource for LegacyFork {
         unit.reset();
         let mut node = Adapter::new(unit);
         node.pure = self.pure;
-        Box::new(node)
+        // A clone cannot fail.
+        Ok(Box::new(node))
     }
 }
 

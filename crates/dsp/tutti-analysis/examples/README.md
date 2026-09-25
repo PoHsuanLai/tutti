@@ -6,9 +6,9 @@ references — librosa for YIN, pyloudnorm for EBU R128.
 ```bash
 just verify-audio                 # renders + judges everything, this included
 # or directly:
-cargo run --release --manifest-path crates/bevy-tutti/Cargo.toml \
+cargo run --release \
     -p tutti-analysis --example render_analysis_cases -- /tmp/tutti-analysis
-cd crates/tutti && uv run python \
+uv run python \
     crates/dsp/tutti-analysis/examples/verify_analysis.py /tmp/tutti-analysis
 ```
 

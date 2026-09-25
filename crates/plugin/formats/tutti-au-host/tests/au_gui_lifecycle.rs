@@ -27,7 +27,7 @@
 //!
 //! ```bash
 //! # The real run — on the main thread, with the affinity assert armed:
-//! cargo test --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-au-host \
+//! cargo test -p tutti-au-host \
 //!   --test au_gui_lifecycle_main
 //! ```
 //!

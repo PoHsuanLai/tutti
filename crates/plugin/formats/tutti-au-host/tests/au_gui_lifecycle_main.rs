@@ -24,7 +24,7 @@
 //! ## Running
 //!
 //! ```bash
-//! cargo test --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-au-host \
+//! cargo test -p tutti-au-host \
 //!   --test au_gui_lifecycle_main
 //! ```
 //!

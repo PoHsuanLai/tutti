@@ -143,13 +143,9 @@ impl Drop for ProbeEnv {
 
 /// The exact command that builds the missing binary, printed by the panic below.
 ///
-/// Spelled with `--manifest-path` on purpose. A bare `cargo build -p
-/// tutti-plugin-server` fails from the repository root, because tutti is a
-/// **separate workspace** from the app and the app root `exclude`s it — so the
-/// obvious shortening of this string is also the version that does not work, and
-/// the reader would have to know the workspace layout to repair it.
-const BUILD_COMMAND: &str =
-    "cargo build --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-plugin-server";
+/// Run from the repository root, which is the one workspace every crate here
+/// belongs to (`CLAUDE.md`, "Build `plugin-server` first").
+const BUILD_COMMAND: &str = "cargo build -p tutti-plugin-server";
 
 /// The `plugin-server` binary these tests spawn, resolved from `build.rs`'s
 /// candidates.

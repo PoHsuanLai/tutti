@@ -15,6 +15,11 @@ workspace = true
 # No `bevy` feature: nothing here is a component. The adapter that will drive
 # this crate derives what it needs on its own side.
 default = []
+# The sample-accuracy contract suite's harness, `tutti_graph::contract`
+# (doc 013 §6, "Proof"): test support, so off by default. This crate's own
+# tests turn it on through the self dev-dependency below; a node crate adding
+# rows turns it on in its dev-dependency on this crate.
+contract = []
 
 [dependencies]
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
@@ -35,6 +40,9 @@ bytemuck = { version = "1.16", features = ["derive"] }
 ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
+# Turns `contract` on for this crate's own tests (the pattern `tutti-nodes`
+# uses for `testing`).
+tutti-graph = { path = ".", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"
@@ -45,3 +53,6 @@ fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default
 [[bench]]
 name = "graph_render"
 harness = false
+
+[package.metadata.docs.rs]
+features = ["contract"]

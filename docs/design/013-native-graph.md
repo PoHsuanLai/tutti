@@ -444,8 +444,14 @@ place that loses precision to be written out explicitly:
    receives no events, `Block`; SoundFont will be `Frames(8)`). An event edge
    marked with `GraphSpec::require_resolution` into a node that cannot honour
    it is `CompileError::ResolutionTooCoarse`; unmarked edges never are, so
-   the `ParamRamp` edge is the one to mark. The contract suite (Phase 3)
-   checks each node against what it declared.
+   the `ParamRamp` edge is the one to mark. The contract suite (Phase 3,
+   done) checks each node against what it declared. **Decision (PR 5
+   review): a `Frames(n)` node honours an event when its response lands
+   within `n - 1` frames of the exact frame, in either direction**, with no
+   grid origin assumed (a node chunking on its own cursor, as rustysynth
+   does, passes whatever its phase against the blocks); `Block` means
+   within the block the event arrives in. A node finer than it declares
+   passes.
 
 **Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
 recompile with every unit re-prepared on the control thread, in two commits
@@ -462,10 +468,62 @@ shapes no longer compile), the editor is poisoned: the executor stays
 suspended and renders silence forever without panicking, every later call
 returns `CommitError::Poisoned`, and recovery is a new editor/executor pair.
 
-**Proof.** A contract suite in Phase 3: for every node type and every path
-(direct, behind PDC, through a fan-in, across a recompile, across ragged block
-sizes), an event at offset `k` produces output at exactly frame
-`k + latency`. It is mutation-tested per path.
+**Proof (Phase 3, PR 5) — done.** For every row and every path, an
+excitation at frame `F` produces its response at exactly
+`F + arrival + latency`, where `arrival` is the node's compiled arrival and
+`latency` the latency it *declares*: so a node whose DSP drifts from its
+declaration fails every path (the D1–D3 class). The harness is
+`tutti_graph::contract`, behind the `contract` feature (off by default; each
+crate with rows turns it on in a dev-dependency). A `Row` is a node
+constructor, an excitation (an event on an event port, or an audio impulse
+on an audio port), a detector (the first sample above a threshold, or an
+exact expected response) and the output to watch; `contract_tests!` writes
+one `#[test]` per path, so each path fails on its own. Every excitation is
+swept over offsets 0, 1, 63, 64, 100 and 127 of its block, and behind PDC
+also so that the *node* sees each of them. An exact row is checked over the
+whole render (silence but for each expected response), so a duplicated or
+dropped delivery fails like a mistimed one; the recompile paths also check
+that the running plan holds the edit.
+
+- **Paths**, each mutation-tested (the mutation is recorded on its `Path`
+  variant): direct; behind PDC (a latent sibling merges upstream, so the
+  node's arrival is 141 frames, past `MaxBlock`); through an event fan-in
+  (the exciting source second, a later event first); across a recompile (an
+  unrelated insert, and a new generation of the node feeding this one, each
+  committed while the excitation is in flight); ragged blocks (1, 63, 64,
+  65, `MaxBlock`, and a seeded random schedule, direct and behind PDC); an
+  `At::Frame` command; an `At::Beat` command after a timed start inside a
+  block (on the start's frame, a dozen frames on, a quarter beat on).
+- **Rows now**: native event→impulse nodes (`Pulse` at latency 0 and 37,
+  at `Frames(8)` on its own chunk grid, and at `Block`) and a native
+  lookahead (`tutti-graph`); through
+  `Legacy` on the audio-impulse path, `LimiterNode` (mono, and the right
+  channel of a linked stereo pair; 240 frames of lookahead),
+  `ConvolverNode` at mix 0, ½ and 1 (the D3 dry alignment: at mix 0 an
+  undelayed dry half fails every path) and `DelayLineNode` (D1: a 500 ms
+  echo declares no latency and its dry half leaves on the excitation's
+  frame) in `tutti-nodes`; `HrtfBinauralNode` on each ear (D2:
+  `FRAME_LEN - 1` = 511) in `tutti-spatial`. No `Legacy` row failed: D1–D3
+  were already fixed on main, and the rows now hold them.
+- **Engine level** (`tutti-core`, `tests/graph_contract.rs`): through
+  `Engine::with_graph`, a transport started by `MotionFsm::schedule(At::Frame)`
+  mid-block and notes at `At::Beat` 0, 0.001 and ½ into a direct and a
+  PDC'd `Pulse` land on their frames and leave the engine together, under a
+  ragged device schedule.
+- **The harness can fail**: rows that break the contract on purpose are
+  refused: a node a frame off its declaration (direct, behind PDC, random
+  blocks), one that ignores offsets, one declaring `Sample` but quantizing
+  to 8, one declaring `Frames(8)` but 9 frames late, a mispinned latency,
+  an audio row asked for an event path. A fan-in tie at equal offsets goes
+  by source order.
+- **Deferred to Phase 4.** The polysynth, the SoundFont player and plugin
+  instruments take MIDI through a mailbox, out of band: their events are
+  neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
+  calls a unit in 64-frame chunks, and a mailbox offset is relative to
+  whichever chunk polls it), so they cannot honour the contract and get
+  rows when events become their ports. So do the sampler's time-stretch
+  unit (a declared latency not yet rowed) and every other node as it is
+  ported natively; a native port adds its row with the same harness.
 
 ### SIMD and DOD, concretely
 
@@ -868,7 +926,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 2 | tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
 | 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
 | 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
-| 5 | tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks; the harness behind a `contract` feature | 4 |
+| 5 | **Done.** tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks, scheduled `At::Frame`/`At::Beat`; the harness behind a `contract` feature | 4 |
 | 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
 | 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
 | 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |

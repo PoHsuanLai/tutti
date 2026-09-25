@@ -682,6 +682,19 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
         }
     }
 
+    /// Sever the param cells a clone shares (`Clone` takes `handle()`s, so
+    /// the frontend and backend of a `Net` move together), keeping their
+    /// current values — as `MemorySource::isolate_gain` does. After this a
+    /// write to this copy's cutoff, Q or gain never reaches the live filter:
+    /// an offline render does not follow the live controls, and a
+    /// `Legacy::controlled` shadow never moves the live cutoff ahead of its
+    /// settings ring.
+    fn isolate(&mut self) {
+        self.frequency = Param::new(self.frequency.load());
+        self.q = Param::new(self.q.load());
+        self.gain_db = Param::new(self.gain_db.load());
+    }
+
     fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
@@ -747,6 +760,32 @@ impl<F: Real> Clone for SvfFilterNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, make_impulse, process_mono, rms};
+
+    /// A clone shares the param cells (so a `Net`'s frontend and backend move
+    /// together); an isolated clone keeps their values and shares nothing, so
+    /// a write to it never reaches the original.
+    ///
+    /// Mutation: drop any one of the three re-seats in `isolate` → that
+    /// param's write leaks to the original → fails.
+    #[test]
+    fn isolate_severs_the_param_cells_and_keeps_their_values() {
+        let live = SvfFilterNode::<f64>::new(SvfType::LowPass, 500.0, 0.707).with_gain_db(-3.0);
+        let shared = live.clone();
+        shared.set_frequency(600.0);
+        assert_eq!(live.frequency.load(), Hz(600.0), "a clone shares the cells");
+
+        let mut isolated = live.clone();
+        isolated.isolate();
+        assert_eq!(isolated.frequency.load(), Hz(600.0), "values kept");
+        assert_eq!(isolated.q.load(), Q(0.707));
+        assert_eq!(isolated.gain_db.load(), Db(-3.0));
+        isolated.set_frequency(2_000.0);
+        isolated.set_q(3.0);
+        isolated.set_gain_db(6.0);
+        assert_eq!(live.frequency.load(), Hz(600.0));
+        assert_eq!(live.q.load(), Q(0.707));
+        assert_eq!(live.gain_db.load(), Db(-3.0));
+    }
 
     #[test]
     fn test_svf_lowpass_attenuates_high_freq() {

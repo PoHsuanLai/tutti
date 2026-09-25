@@ -280,14 +280,13 @@ impl Reference {
             }
         }
 
-        // Latency, by memoised recursion over direct predecessors.
-        let lat = |k: NodeKey| {
-            self.units[&k]
-                .1
-                .shape()
-                .latency
-                .min(Latency::new(MAX_NODE_LATENCY))
-        };
+        // Latency, by memoised recursion over direct predecessors. Read
+        // from the spec, not the unit: `Editor::set_latency` changes a
+        // node's figure without touching the unit, whose own `shape()` may
+        // lag (`Legacy` caches what it probed). The compiler reads the spec
+        // too, and checks it against the shapes it was handed.
+        let lat =
+            |k: NodeKey| Latency::new(t.nodes[&k].latency).min(Latency::new(MAX_NODE_LATENCY));
         let mut arrival: BTreeMap<NodeKey, Latency> = BTreeMap::new();
         fn arrive(
             k: NodeKey,

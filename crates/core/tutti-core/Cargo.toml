@@ -51,6 +51,11 @@ tutti-node = { version = "0.0.1", path = "../tutti-node" }
 # this crate is the named list in `dsp` — see that module's docs.
 fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false }
 
+# The native graph runtime (doc 013 Phase 2): `Engine` can render a
+# `tutti_graph::Executor` instead of a `NetBackend`. No cycle: tutti-graph
+# depends only on tutti-types and tutti-node.
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
 tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types" }
 

@@ -19,6 +19,7 @@ mod motion;
 mod offline;
 mod settings;
 mod state;
+mod timed;
 
 pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
@@ -31,6 +32,7 @@ pub use state::{
     beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,
     BEAT_PORTS,
 };
+pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
 // host adapter, `bevy_tutti::graph`, not to this crate.

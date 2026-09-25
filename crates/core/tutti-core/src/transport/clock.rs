@@ -143,6 +143,76 @@ impl TransportClock {
         self.current_beat = region.wrap(self.current_beat);
     }
 
+    /// The rate this clock converts tempo to a per-frame increment at.
+    pub(crate) fn sample_rate(&self) -> crate::SampleRate {
+        self.sample_rate
+    }
+
+    /// Take a pending seek and a tempo change, and report the transport from
+    /// this frame on, as a native graph block sees it
+    /// ([`tutti_graph::Transport`]).
+    ///
+    /// The engine's graph backend has no clock node in its graph: it holds a
+    /// `TransportClock` of its own and drives it with this and
+    /// [`advance`](Self::advance), so the playhead a graph node reads in its
+    /// `Env` is computed by the same code, in the same order, as the beat
+    /// this clock emits on its ports in a `Net`. `process` is `begin`, then
+    /// emit-and-advance frame by frame; `begin` + `advance(n)` is the same
+    /// arithmetic without the emit.
+    pub(crate) fn begin(&mut self) -> tutti_graph::Transport {
+        self.apply_pending_seek();
+        self.update_tempo_if_changed();
+        let looping = self
+            .links
+            .loop_span
+            .as_ref()
+            .and_then(LoopSpan::range)
+            .map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            });
+        tutti_graph::Transport {
+            playing: !self.links.paused.load(Ordering::Acquire),
+            tempo: self.last_tempo,
+            beat: self.current_beat,
+            looping,
+        }
+    }
+
+    /// Advance `frames` under `from`, the transport the last
+    /// [`begin`](Self::begin) reported, exactly as `process` would over that
+    /// many frames: the same per-frame increment and loop wrap, then the
+    /// position writeback and the steady-time count.
+    ///
+    /// Takes the play state and loop from `from` rather than re-reading the
+    /// atomics, so a store from the control thread between the two calls
+    /// cannot make the playhead move differently from what the block was
+    /// told.
+    pub(crate) fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
+        if from.playing {
+            match from
+                .looping
+                .and_then(|l| super::LoopRange::new(l.start, l.end))
+            {
+                Some(region) => {
+                    for _ in 0..frames {
+                        self.current_beat += self.beat_per_sample;
+                        self.current_beat = region.wrap(self.current_beat);
+                    }
+                }
+                None => {
+                    for _ in 0..frames {
+                        self.current_beat += self.beat_per_sample;
+                    }
+                }
+            }
+        }
+        if let Some(ref writeback) = self.links.position_writeback {
+            writeback.store(self.current_beat.get(), Ordering::Release);
+        }
+        self.advance_steady_time(frames);
+    }
+
     /// Advance the free-running sample counter.
     ///
     /// Deliberately **not** gated on `paused`: this counts samples the device

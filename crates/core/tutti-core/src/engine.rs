@@ -1,11 +1,53 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
 //! [`Engine`] ticks the DSP graph + transport and renders one output buffer per
-//! block.
+//! block. It renders one of two graph runtimes, chosen at construction:
+//! fundsp's `Net` ([`Engine::new`]) or the native graph's
+//! [`Executor`](tutti_graph::Executor) ([`Engine::with_graph`], doc 013
+//! Phase 2). Both fold the graph's outputs to the device width the same way,
+//! keep the same declick, and apply timestamped transport commands on their
+//! frame.
+//!
+//! # Timestamped transport commands
+//!
+//! [`MotionFsm::schedule`] queues a play, stop, seek, tempo or loop change at
+//! an [`At`]. Each block, the engine walks the commands due in it in time
+//! order and **cuts the block's transport** at each one's frame: the pieces
+//! before and after run under different transports. What a cut means
+//! depends on the runtime:
+//!
+//! - **Graph**: the executor never splits a block (doc 013 §6). The engine
+//!   advances its own clock piece by piece, records each cut as a
+//!   [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
+//!   and renders the whole block once. A node reads the transport at a frame
+//!   with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
+//!   against the piece that reaches their beat.
+//! - **Net**: the engine renders the `Net` piece by piece (it already renders
+//!   in 64-frame chunks, so this breaks no promise), applying the commands
+//!   between pieces; the `TransportClock` inside the net reads them at the
+//!   start of the next piece.
+//!
+//! A block holds at most [`MAX_TRANSPORT_CHANGES`] cuts. A command due past
+//! that lands at the start of the next block and is counted late, like any
+//! command already past due ([`MotionFsm::late_commands`]).
+//!
+//! **Beats** are resolved with the graph's rule (`tutti_graph::Env::due`):
+//! the first frame at or after the beat that playback reaches, the piece's
+//! own transport deciding. A beat continuous playback already crossed is late;
+//! one a seek or loop jumped over waits (`tutti_graph::Playhead`).
+//!
+//! **The declick** fades from the frame its stop or seek lands on. Its
+//! completion (the stop or jump the fade covers) takes effect at the end of
+//! the block it finishes in, as it always has: the output is silent from the
+//! fade's end, so the rest of that block is inaudible whatever the transport
+//! reports there. A later command in the same block that settles the motion
+//! (a `Play`) cancels the fade and its silence from its own frame.
 
-use crate::transport::Declick;
-use crate::transport::MotionFsm;
-use crate::{AudioThreadCell, InterleavedMut, Ordering};
+use tutti_graph::{Due, Env, Executor, Offset, Playhead, TransportChanges, MAX_TRANSPORT_CHANGES};
+use tutti_types::{At, Frame};
+
+use crate::transport::{Declick, MotionFsm, MotionState, TransportClock};
+use crate::{AudioThreadCell, InterleavedMut, Ordering, SampleRate, Samples};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
 use fundsp::prelude::{BufferRef, U8};
@@ -16,10 +58,17 @@ use fundsp::MAX_BUFFER_SIZE;
 /// channels — and the widest output (device) width it folds to. The scratch is
 /// stack-allocated, so this is a fixed ceiling: mono through 7.1. A root or
 /// device wider than this clamps (its extra channels are dropped / silent).
+///
+/// For the native graph the ceiling is harder: the executor must be handed a
+/// buffer for **every** global output, and the engine's scratch holds this
+/// many. A graph with more global outputs renders silence.
 pub const MAX_ROOT_CHANNELS: usize = 8;
 
 /// Type-level [`MAX_ROOT_CHANNELS`], for sizing the scratch [`BufferArray`].
 type MaxRootChannels = U8;
+
+/// The transport as a native graph block sees it.
+type GraphTransport = tutti_graph::Transport;
 
 /// The audio engine: ticks the DSP graph + transport and renders one output
 /// buffer per block from the audio callback.
@@ -27,11 +76,13 @@ type MaxRootChannels = U8;
 /// # What it owns, and what it deliberately does not
 ///
 /// `Engine` is the *audio-thread half* of the runtime and holds only what a
-/// render needs: the transport's [`MotionFsm`], the committed
-/// [`NetBackend`], and a cached [`Declick`]. It owns no graph topology, no
-/// parameter storage and no device configuration — the control thread keeps
-/// fundsp's `Net` frontend and hands changes over by committing, so nothing
-/// here allocates, locks, or edits a graph.
+/// render needs: the transport's [`MotionFsm`], the graph runtime (a committed
+/// [`NetBackend`], or a native [`Executor`] with the clock that feeds its
+/// `Env`), and a cached [`Declick`]. It owns no graph topology, no parameter
+/// storage and no device configuration — the control thread keeps the graph's
+/// editing half (fundsp's `Net` frontend, or the `tutti_graph::Editor`) and
+/// hands changes over by committing, so nothing here allocates, locks, or
+/// edits a graph.
 ///
 /// That split is the reason this is a distinct type rather than a method on the
 /// transport or the graph. Both of those are edited from the control thread;
@@ -42,16 +93,47 @@ type MaxRootChannels = U8;
 /// dropout rather than an error.
 ///
 /// [`process`](Self::process) is the per-block entry point the callback calls:
-/// it drains pending motion, renders through
-/// [`process_segment`](Self::process_segment), then applies any declick fade.
-/// The latter is public separately because it is the pure render — useful to
-/// drive directly in a test or an offline pass, where transport motion and
-/// declicking are not in play.
+/// it drains pending motion, applies timestamped transport commands on their
+/// frames (see the module docs), renders, then applies any declick fade.
+/// [`process_segment`](Self::process_segment) is public separately because it
+/// is the pure render — useful to drive directly in a test or an offline pass,
+/// where transport motion and declicking are not in play.
 pub struct Engine {
     motion: MotionFsm,
-    net_backend: AudioThreadCell<Option<NetBackend>>,
+    backend: AudioThreadCell<Backend>,
     /// Cached from the transport so the fade path avoids a double deref.
     declick: Declick,
+}
+
+/// The graph runtime an engine renders. An enum rather than a trait object:
+/// two variants, matched once per block, keeps the RT path monomorphic.
+enum Backend {
+    Net(NetRender),
+    Graph(GraphRender),
+}
+
+/// fundsp's `Net`, and the transport bookkeeping the engine keeps beside it.
+struct NetRender {
+    backend: NetBackend,
+    /// Frames rendered since the engine was built: the clock `At::Frame`
+    /// names. (The native graph's executor keeps its own.)
+    frame: Frame,
+    playhead: Playhead,
+}
+
+/// The native graph's executor, the clock that feeds its `Env`, and the
+/// planar scratch its outputs land in before the fold.
+struct GraphRender {
+    exec: Executor,
+    /// The engine's playhead. A `Net` carries its `TransportClock` as a node;
+    /// the native graph reads the transport from `Env`, so the engine drives
+    /// the same clock itself ([`TransportClock::begin`] /
+    /// [`TransportClock::advance`]) and the two backends see the same beats.
+    clock: TransportClock,
+    /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
+    scratch: Vec<f32>,
+    stride: usize,
+    playhead: Playhead,
 }
 
 impl Engine {
@@ -64,150 +146,109 @@ impl Engine {
         let declick = motion.declick.clone();
         Self {
             motion,
-            net_backend: AudioThreadCell::new(Some(net_backend)),
+            backend: AudioThreadCell::new(Backend::Net(NetRender {
+                backend: net_backend,
+                frame: Frame::ZERO,
+                playhead: Playhead::new(),
+            })),
+            declick,
+        }
+    }
+
+    /// Build an engine that renders a native graph: `executor`, the audio
+    /// half of a [`tutti_graph::Editor`] pair, whose `Prepare` comes from the
+    /// device configuration (its rate, and the largest block the device
+    /// hands over).
+    ///
+    /// The engine renders whole device blocks through it — no 64-frame
+    /// chunking; a device block longer than the prepared maximum is rendered
+    /// as consecutive graph blocks of at most that — and builds each block's
+    /// `Env` from `transport`: the frame is the executor's clock, which
+    /// tracks device time, and the transport snapshot comes from a
+    /// [`TransportClock`] the engine drives over `transport`'s
+    /// [`clock_links`](crate::Transport::clock_links), so it publishes the
+    /// playhead and steady time as the clock node in a `Net` would.
+    ///
+    /// The graph must not also hold a `TransportClock` of its own: two clocks
+    /// would both consume the seek and both write the playhead.
+    ///
+    /// Control thread. Allocates the fold scratch
+    /// (`MAX_ROOT_CHANNELS × max block` samples).
+    pub fn with_graph(transport: &crate::Transport, executor: Executor) -> Self {
+        let stride = executor.prepare().max_block().get();
+        let rate = executor.prepare().sample_rate();
+        let motion = transport.motion.clone();
+        let declick = motion.declick.clone();
+        Self {
+            motion,
+            backend: AudioThreadCell::new(Backend::Graph(GraphRender {
+                exec: executor,
+                clock: TransportClock::new(transport.clock_links(), rate),
+                scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
+                stride,
+                playhead: Playhead::new(),
+            })),
             declick,
         }
     }
 
     /// Render the whole of `output` — an interleaved device buffer that carries
-    /// its own width.
+    /// its own width — with no transport motion and no declick: the pure
+    /// render.
     ///
-    /// Drives the graph through fundsp's SIMD block path
+    /// For a `Net`, drives the graph through fundsp's SIMD block path
     /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one
-    /// frame at a time. The graph root has no inputs, so the input buffer is
-    /// empty. The root is rendered at its **own** output width (up to
-    /// [`MAX_ROOT_CHANNELS`]) into the stack scratch, then each frame is folded
-    /// to the *output's* width — the device / target width — via the ITU/Dolby
-    /// matrices ([`tutti_types::fold_frame`]): a surround root plays folded to a
-    /// stereo device, or straight through to a matching-width surround device; a
-    /// mono root duplicates into every target channel of a wider output.
+    /// frame at a time; for a native graph, one executor block per device
+    /// block (up to its prepared maximum), under the transport as it stands.
+    /// The graph root has no inputs. The root is rendered at its **own**
+    /// output width (up to [`MAX_ROOT_CHANNELS`]) into scratch, then each
+    /// frame is folded to the *output's* width — the device / target width —
+    /// via the ITU/Dolby matrices ([`tutti_types::fold_frame`]): a surround
+    /// root plays folded to a stereo device, or straight through to a
+    /// matching-width surround device; a mono root duplicates into every
+    /// target channel of a wider output.
     ///
     /// # Three widths are live here; only one is the buffer's
     ///
-    /// The output width (`out_ch`) comes from `output`'s own layout; the root's
-    /// (`root_channels`) from `backend.outputs()`, clamped to the scratch. They are
-    /// different numbers from different sources, and confusing them writes past the
-    /// end of one buffer or reads garbage from the other. The output width arrives
-    /// welded to the buffer it strides, which is what makes the third confusion —
-    /// a width disagreeing with its slice — unrepresentable rather than merely
+    /// The output width (`out_ch`) comes from `output`'s own layout; the
+    /// root's from the graph (`backend.outputs()`, or the plan's global
+    /// outputs), clamped to the scratch. They are different numbers from
+    /// different sources, and confusing them writes past the end of one
+    /// buffer or reads garbage from the other. The output width arrives welded
+    /// to the buffer it strides, which is what makes the third confusion — a
+    /// width disagreeing with its slice — unrepresentable rather than merely
     /// unlikely.
     ///
-    /// The scratch is a stack-allocated [`BufferArray`] sized to
-    /// [`MAX_ROOT_CHANNELS`], **sliced to the root's actual output count** before
-    /// each `process` call. The slicing is load-bearing: `Net::process` iterates
-    /// `output.channels()` and indexes its own `output_edge` table by that
-    /// channel, so handing it a wider buffer than the net's width indexes past
-    /// the end and panics — in release, inside the audio callback. The whole path
-    /// is alloc-free (stack scratch + a stack `[f32; MAX_ROOT_CHANNELS]` frame).
+    /// For a `Net`, the scratch is a stack-allocated [`BufferArray`] sized to
+    /// [`MAX_ROOT_CHANNELS`], **sliced to the root's actual output count**
+    /// before each `process` call. The slicing is load-bearing:
+    /// `Net::process` iterates `output.channels()` and indexes its own
+    /// `output_edge` table by that channel, so handing it a wider buffer than
+    /// the net's width indexes past the end and panics — in release, inside
+    /// the audio callback. The whole path is alloc-free (stack scratch + a
+    /// stack `[f32; MAX_ROOT_CHANNELS]` frame).
     #[inline]
     pub fn process_segment(&self, output: &mut InterleavedMut<'_>) {
-        let Some(ref mut backend) = *self.net_backend.borrow_mut() else {
-            return;
-        };
-        debug_assert!(backend.inputs() == 0);
-
-        // Destructure at the top of the body, per the `Interleaved` rule: the
-        // stride and the frame count are read ONCE here and the loops below
-        // index raw. Nothing inside a loop calls back into the type.
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-
-        // Drain any pending frontend commit BEFORE reading the output arity, so a
-        // just-committed width change (e.g. the master going surround via
-        // `commit_output_arity_change`) is reflected in `outputs()` and the
-        // scratch is sliced to the new width this same block. `process` below
-        // also drains, but it reads the width from the buffer sliced here — so
-        // the pump must happen first. Cheap and RT-safe: it only swaps in an
-        // already-allocated net from the commit queue (no allocation).
-        backend.pump();
-
-        // The root's real width, clamped to what the scratch can hold. A wider
-        // root drops its extra channels (they can't be rendered), but must never
-        // index past the buffer.
-        // NOTE this is the ROOT's width, not the output buffer's. `out_ch`
-        // above is the output's, and it is NOT clamped to MAX_ROOT_CHANNELS —
-        // `fold_frame` writes exactly `out_ch` channels (zero-filling any past
-        // the root width), so a wider-than-8 device simply gets silent extra
-        // channels. Only the render scratch is bounded.
-        let root_channels = backend.outputs().clamp(1, MAX_ROOT_CHANNELS);
-
-        let empty_input = BufferRef::new(&[]);
-        let mut scratch = BufferArray::<MaxRootChannels>::new();
-
-        let mut done = 0;
-        while done < frames {
-            let block = (frames - done).min(MAX_BUFFER_SIZE);
-
-            // Slice to the root's width so `Net::process` iterates exactly the
-            // channels it has edges for.
-            let mut full = scratch.buffer_mut();
-            let mut buffer_mut = full.subset(0, root_channels);
-            backend.process(block, &empty_input, &mut buffer_mut);
-
-            // Fold each planar frame (root_channels wide) to the interleaved
-            // output width. Gather into a stack frame sliced to the root width —
-            // no allocation.
-            for i in 0..block {
-                let mut frame = [0.0f32; MAX_ROOT_CHANNELS];
-                let src = &mut frame[..root_channels];
-                for (c, s) in src.iter_mut().enumerate() {
-                    *s = buffer_mut.channel_f32(c)[i];
+        match &mut *self.backend.borrow_mut() {
+            Backend::Net(net) => {
+                net.backend.pump();
+                render_net(&mut net.backend, output, out_ch, 0, frames);
+                net.frame += Samples(frames);
+            }
+            Backend::Graph(g) => {
+                let mut done = 0;
+                while done < frames {
+                    let len = (frames - done).min(g.block_bound());
+                    let t = g.clock.begin();
+                    g.clock.advance(len, &t);
+                    g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
+                    done += len;
                 }
-                let o = (done + i) * out_ch;
-                tutti_types::fold_frame(src, &mut output[o..o + out_ch]);
-            }
-
-            done += block;
-        }
-    }
-
-    /// Apply the declick fade-out gain ramp to the interleaved output buffer.
-    /// Returns true if the fade completed during this buffer. The ramp is
-    /// per-frame — the same gain applies across every channel of a frame, so it
-    /// works at any width.
-    #[inline]
-    fn apply_declick(&self, output: &mut InterleavedMut<'_>) -> bool {
-        let remaining = self.declick.remaining().get();
-        if remaining == 0 {
-            return false;
-        }
-
-        let total = self.declick.total().get() as f32;
-        if total == 0.0 {
-            return false;
-        }
-
-        // Stride and frame count derived ONCE, above both loops below — the
-        // per-sample loop must not touch the type.
-        let channels = output.stride();
-        let frames = output.len();
-        let output = output.samples_mut();
-        // Both operands are frame counts in one type, so the fade length and
-        // the block length cannot be compared as bare integers by accident.
-        let frames_to_process = remaining.min(frames);
-
-        for i in 0..frames_to_process {
-            let r = remaining - i - 1;
-            let gain = r as f32 / total;
-            for c in 0..channels {
-                output[i * channels + c] *= gain;
             }
         }
-
-        // Silence any remaining frames after the fade completes
-        if frames_to_process < frames {
-            for s in &mut output[frames_to_process * channels..frames * channels] {
-                *s = 0.0;
-            }
-        }
-
-        let new_remaining = remaining.saturating_sub(frames);
-        self.declick
-            .remaining
-            .store(new_remaining as u32, Ordering::Release);
-
-        new_remaining == 0
     }
 
     /// Render one block into `output`, an interleaved device buffer.
@@ -216,15 +257,198 @@ impl Engine {
     /// which cannot disagree with the slice the way a separate `frames`
     /// argument could. The graph root is folded to `output`'s width (the device
     /// / target width) via the ITU/Dolby matrices — see
-    /// [`process_segment`](Self::process_segment). Called once per block from
-    /// the audio callback. RT-safe: no allocation, no locks, no I/O.
+    /// [`process_segment`](Self::process_segment). Untimed motion
+    /// ([`MotionFsm::try_send`]) applies at the block's first frame; scheduled
+    /// commands ([`MotionFsm::schedule`]) on their own frames (module docs).
+    /// Called once per block from the audio callback. RT-safe: no
+    /// allocation, no locks, no I/O.
     #[inline]
     pub fn process(&self, output: &mut InterleavedMut<'_>) {
         self.motion.drain();
-        self.process_segment(output);
+        let out_ch = output.stride();
+        let frames = output.len();
+        let output = output.samples_mut();
+        match &mut *self.backend.borrow_mut() {
+            Backend::Net(net) => {
+                net.backend.pump();
+                let rate = SampleRate(net.backend.sample_rate());
+                let frame0 = net.frame;
+                let mut pieces = NetPieces {
+                    engine: self,
+                    backend: &mut net.backend,
+                    output,
+                    out_ch,
+                    cuts: 0,
+                };
+                let walk = self.walk(frame0, frames, rate, &mut net.playhead, &mut pieces);
+                walk.ramps.apply(output, out_ch, 0);
+                net.frame += Samples(frames);
+                if walk.faded_out {
+                    self.motion.complete_declick();
+                }
+            }
+            Backend::Graph(g) => {
+                let mut done = 0;
+                while done < frames {
+                    let len = (frames - done).min(g.block_bound());
+                    let rate = g.exec.prepare().sample_rate();
+                    if rate != g.clock.sample_rate() {
+                        // A re-prepare changed the rate: the executor has
+                        // rescaled its frame clock; the beat increment
+                        // follows.
+                        AudioUnit::set_sample_rate(&mut g.clock, rate);
+                    }
+                    let frame0 = g.exec.frame();
+                    let mut pieces = GraphPieces {
+                        clock: &mut g.clock,
+                        changes: TransportChanges::NONE,
+                    };
+                    let walk = self.walk(frame0, len, rate, &mut g.playhead, &mut pieces);
+                    let changes = pieces.changes;
+                    g.render(output, out_ch, done, len, &walk.start, &changes);
+                    walk.ramps.apply(output, out_ch, done);
+                    if walk.faded_out {
+                        self.motion.complete_declick();
+                    }
+                    done += len;
+                }
+            }
+        }
+    }
 
-        if self.apply_declick(output) {
-            self.motion.complete_declick();
+    /// Walk one block's scheduled transport commands in time order, running
+    /// each piece between them through `pieces` and planning the declick
+    /// over it. See the module docs for the rules.
+    fn walk(
+        &self,
+        frame0: Frame,
+        frames: usize,
+        rate: SampleRate,
+        playhead: &mut Playhead,
+        pieces: &mut impl Pieces,
+    ) -> Walk {
+        let schedule = self.motion.timed();
+        let mut walk = Walk {
+            start: pieces.begin(),
+            ramps: Ramps::new(),
+            faded_out: false,
+        };
+        let mut t = walk.start;
+        let mut cursor = 0;
+        // The playhead as of the start of the current piece. Each piece is
+        // observed with its real length once it is cut; before that, a copy
+        // observes it with the rest of the block, to answer `crossed`.
+        let mut base = *playhead;
+        schedule.with_pending(|pending| loop {
+            let env = Env {
+                frame: frame0 + Samples(cursor),
+                sample_rate: rate,
+                block_len: Samples(frames - cursor),
+                transport: t,
+                changes: TransportChanges::NONE,
+            };
+            let mut ph = base;
+            ph.observe(&env);
+            // The earliest command due from the cursor on; send order breaks
+            // ties.
+            let mut best: Option<(usize, usize, bool)> = None;
+            for (i, cmd) in pending.iter().enumerate() {
+                let (k, late) = match (cmd.at, env.due(cmd.at)) {
+                    (_, Due::In(k)) => (k.index(), false),
+                    (At::Frame(_), Due::Late) => (0, true),
+                    (At::Beat(b), _) if ph.crossed(b.get()) => (0, true),
+                    _ => continue,
+                };
+                let earlier = best
+                    .is_none_or(|(bk, bi, _)| k < bk || (k == bk && cmd.seq() < pending[bi].seq()));
+                if earlier {
+                    best = Some((k, i, late));
+                }
+            }
+            let Some((k, i, late)) = best else { break };
+            let at = cursor + k;
+            if at > cursor {
+                if !pieces.room() {
+                    // No more cuts fit this block: the rest wait for the
+                    // next one, where they land late.
+                    break;
+                }
+                base.observe(&Env {
+                    block_len: Samples(at - cursor),
+                    ..env
+                });
+                pieces.run(cursor, at, &t);
+                walk.ramps
+                    .push(self.plan_declick(cursor, at, &mut walk.faded_out));
+                cursor = at;
+            }
+            let cmd = pending.swap_remove(i);
+            schedule.release(1);
+            if late {
+                schedule.count_late();
+            }
+            self.motion.apply(cmd.command);
+            if walk.faded_out && !is_declicking(self.motion.motion()) {
+                // The motion settled (a `Play` over a finished fade): the
+                // fade and its silence are over from this frame.
+                walk.faded_out = false;
+            }
+            t = pieces.begin();
+            match Offset::new(cursor, Samples(frames)) {
+                Some(o) if cursor > 0 => pieces.change(o, t),
+                _ => walk.start = t,
+            }
+        });
+        base.observe(&Env {
+            frame: frame0 + Samples(cursor),
+            sample_rate: rate,
+            block_len: Samples(frames - cursor),
+            transport: t,
+            changes: TransportChanges::NONE,
+        });
+        *playhead = base;
+        pieces.run(cursor, frames, &t);
+        walk.ramps
+            .push(self.plan_declick(cursor, frames, &mut walk.faded_out));
+        walk
+    }
+
+    /// Account the declick over frames `start..end` of the block, and say how
+    /// to shape them. `faded_out` is set when the fade reaches zero here, and
+    /// every later piece of the block is then silenced (the fade is still
+    /// covering its stop or jump, which lands at the block's end).
+    #[inline]
+    fn plan_declick(&self, start: usize, end: usize, faded_out: &mut bool) -> Ramp {
+        if *faded_out {
+            return Ramp {
+                start,
+                end,
+                shape: Shape::Silence,
+            };
+        }
+        let remaining = self.declick.remaining().get();
+        let total = self.declick.total().get();
+        if remaining == 0 || total == 0 {
+            return Ramp {
+                start,
+                end,
+                shape: Shape::Unity,
+            };
+        }
+        // Both operands are frame counts, so the fade length and the piece
+        // length cannot be compared as anything else by accident.
+        let frames = end - start;
+        let new_remaining = remaining.saturating_sub(frames);
+        self.declick
+            .remaining
+            .store(new_remaining as u32, Ordering::Release);
+        if new_remaining == 0 {
+            *faded_out = true;
+        }
+        Ramp {
+            start,
+            end,
+            shape: Shape::Fade { remaining, total },
         }
     }
 
@@ -235,7 +459,287 @@ impl Engine {
     /// panics in debug builds on any other, so a new callback thread must be
     /// announced rather than discovered.
     pub fn reset_owners(&self) {
-        self.net_backend.reset_owner();
+        self.backend.reset_owner();
         self.motion.reset_owner();
+    }
+}
+
+/// Whether `motion` is a fade in progress.
+#[inline]
+fn is_declicking(motion: MotionState) -> bool {
+    matches!(
+        motion,
+        MotionState::DeclickToStop | MotionState::DeclickToLocate
+    )
+}
+
+/// What a block's walk leaves for after the render.
+struct Walk {
+    /// The transport at the block's first frame, after the commands that
+    /// landed there.
+    start: GraphTransport,
+    ramps: Ramps,
+    /// A declick reached zero in this block: its stop or jump is due.
+    faded_out: bool,
+}
+
+/// How one piece's gain is shaped.
+#[derive(Clone, Copy)]
+enum Shape {
+    Unity,
+    /// A linear fade from `remaining / total` towards zero, one step a frame;
+    /// frames past the fade's end are silent.
+    Fade {
+        remaining: usize,
+        total: usize,
+    },
+    Silence,
+}
+
+#[derive(Clone, Copy)]
+struct Ramp {
+    start: usize,
+    end: usize,
+    shape: Shape,
+}
+
+/// A block's gain shaping, one ramp per piece — at most one more than the
+/// cuts a block may hold. On the stack.
+struct Ramps {
+    len: usize,
+    items: [Ramp; MAX_TRANSPORT_CHANGES + 1],
+}
+
+impl Ramps {
+    fn new() -> Self {
+        Self {
+            len: 0,
+            items: [Ramp {
+                start: 0,
+                end: 0,
+                shape: Shape::Unity,
+            }; MAX_TRANSPORT_CHANGES + 1],
+        }
+    }
+
+    fn push(&mut self, ramp: Ramp) {
+        // The walk cuts at most `MAX_TRANSPORT_CHANGES` times.
+        self.items[self.len] = ramp;
+        self.len += 1;
+    }
+
+    /// Shape the interleaved `output` (`channels` wide); ramp frames are
+    /// relative to frame `base` of it. The gain is per frame, the same across
+    /// every channel, so it works at any width.
+    fn apply(&self, output: &mut [f32], channels: usize, base: usize) {
+        for r in &self.items[..self.len] {
+            let (from, to) = ((base + r.start) * channels, (base + r.end) * channels);
+            match r.shape {
+                Shape::Unity => {}
+                Shape::Silence => output[from..to].fill(0.0),
+                Shape::Fade { remaining, total } => {
+                    let fading = remaining.min(r.end - r.start);
+                    let total = total as f32;
+                    for i in 0..fading {
+                        let gain = (remaining - i - 1) as f32 / total;
+                        for s in &mut output[from + i * channels..from + (i + 1) * channels] {
+                            *s *= gain;
+                        }
+                    }
+                    output[from + fading * channels..to].fill(0.0);
+                }
+            }
+        }
+    }
+}
+
+/// One runtime's side of a block walk.
+trait Pieces {
+    /// The transport from the current frame on, after the commands applied
+    /// there.
+    fn begin(&mut self) -> GraphTransport;
+    /// Run frames `start..end` of the block under `t`.
+    fn run(&mut self, start: usize, end: usize, t: &GraphTransport);
+    /// Whether another cut fits in this block.
+    fn room(&self) -> bool;
+    /// Record the transport changing to `t` at `at`.
+    fn change(&mut self, at: Offset, t: GraphTransport);
+}
+
+/// The `Net` side: render each piece as it is cut; the transport comes from
+/// the shared atomics, which the net's `TransportClock` reads at the start of
+/// each piece.
+struct NetPieces<'a> {
+    engine: &'a Engine,
+    backend: &'a mut NetBackend,
+    output: &'a mut [f32],
+    out_ch: usize,
+    cuts: usize,
+}
+
+impl Pieces for NetPieces<'_> {
+    fn begin(&mut self) -> GraphTransport {
+        let motion = &self.engine.motion;
+        let settings = motion.settings();
+        // A seek not yet taken by the clock is where it will emit from.
+        let beat = if motion.seek.is_pending() {
+            crate::Beat(motion.seek.target.load(Ordering::Acquire))
+        } else {
+            settings.beat()
+        };
+        GraphTransport {
+            playing: !settings.is_paused(),
+            tempo: settings.tempo(),
+            beat,
+            looping: settings.loop_span.range().map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            }),
+        }
+    }
+
+    fn run(&mut self, start: usize, end: usize, _: &GraphTransport) {
+        render_net(self.backend, self.output, self.out_ch, start, end);
+    }
+
+    fn room(&self) -> bool {
+        self.cuts < MAX_TRANSPORT_CHANGES
+    }
+
+    fn change(&mut self, _: Offset, _: GraphTransport) {
+        self.cuts += 1;
+    }
+}
+
+/// The native graph side: advance the engine's clock over each piece, and
+/// collect the cuts for the block's `Env`; the render happens once, after.
+struct GraphPieces<'a> {
+    clock: &'a mut TransportClock,
+    changes: TransportChanges,
+}
+
+impl Pieces for GraphPieces<'_> {
+    fn begin(&mut self) -> GraphTransport {
+        self.clock.begin()
+    }
+
+    fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
+        self.clock.advance(end - start, t);
+    }
+
+    fn room(&self) -> bool {
+        !self.changes.is_full()
+    }
+
+    fn change(&mut self, at: Offset, t: GraphTransport) {
+        // Cannot fail: `room` was checked before the cut, cuts come in time
+        // order, and one at the same frame replaces.
+        let _ = self.changes.push(at, t);
+    }
+}
+
+impl GraphRender {
+    /// The longest graph block this engine hands the executor: its prepared
+    /// maximum, and never more than the scratch was sized for (a re-prepare
+    /// may raise the maximum after the scratch was built).
+    fn block_bound(&self) -> usize {
+        self.exec.prepare().max_block().get().min(self.stride)
+    }
+
+    /// Render one graph block of `len` frames into frames
+    /// `at..at + len` of `output`, folded from the graph's width to
+    /// `out_ch`.
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        out_ch: usize,
+        at: usize,
+        len: usize,
+        transport: &GraphTransport,
+        changes: &TransportChanges,
+    ) {
+        // Before reading the width: a commit queued this block may change it.
+        self.exec.apply_pending();
+        let width = self.exec.plan().map_or(0, |p| p.global_outputs());
+        let block = &mut output[at * out_ch..(at + len) * out_ch];
+        if width > MAX_ROOT_CHANNELS {
+            // No buffer to hand the executor for the extra channels. The
+            // clock still ran; the graph does not this block.
+            block.fill(0.0);
+            return;
+        }
+        let stride = self.stride;
+        let mut chunks = self.scratch.chunks_mut(stride);
+        let mut outs: [&mut [f32]; MAX_ROOT_CHANNELS] =
+            std::array::from_fn(|_| chunks.next().expect("MAX_ROOT_CHANNELS chunks"));
+        self.exec
+            .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
+        if width == 0 {
+            block.fill(0.0);
+            return;
+        }
+        for i in 0..len {
+            let mut frame = [0.0f32; MAX_ROOT_CHANNELS];
+            let src = &mut frame[..width];
+            for (c, s) in src.iter_mut().enumerate() {
+                *s = outs[c][i];
+            }
+            tutti_types::fold_frame(src, &mut block[i * out_ch..(i + 1) * out_ch]);
+        }
+    }
+}
+
+/// Render frames `start..end` of the interleaved `output` (`out_ch` wide)
+/// through `backend`, in `MAX_BUFFER_SIZE` chunks from `start`.
+///
+/// Destructured by the caller, per the `Interleaved` rule: the stride and the
+/// frame count are read once and the loops below index raw.
+#[inline]
+fn render_net(
+    backend: &mut NetBackend,
+    output: &mut [f32],
+    out_ch: usize,
+    start: usize,
+    end: usize,
+) {
+    debug_assert!(backend.inputs() == 0);
+    // The root's real width, clamped to what the scratch can hold. A wider
+    // root drops its extra channels (they can't be rendered), but must never
+    // index past the buffer.
+    // NOTE this is the ROOT's width, not the output buffer's. `out_ch` is the
+    // output's, and it is NOT clamped to MAX_ROOT_CHANNELS — `fold_frame`
+    // writes exactly `out_ch` channels (zero-filling any past the root
+    // width), so a wider-than-8 device simply gets silent extra channels.
+    // Only the render scratch is bounded. The caller pumped the backend
+    // first, so a just-committed width change is reflected here.
+    let root_channels = backend.outputs().clamp(1, MAX_ROOT_CHANNELS);
+
+    let empty_input = BufferRef::new(&[]);
+    let mut scratch = BufferArray::<MaxRootChannels>::new();
+
+    let mut done = start;
+    while done < end {
+        let block = (end - done).min(MAX_BUFFER_SIZE);
+
+        // Slice to the root's width so `Net::process` iterates exactly the
+        // channels it has edges for.
+        let mut full = scratch.buffer_mut();
+        let mut buffer_mut = full.subset(0, root_channels);
+        backend.process(block, &empty_input, &mut buffer_mut);
+
+        // Fold each planar frame (root_channels wide) to the interleaved
+        // output width. Gather into a stack frame sliced to the root width —
+        // no allocation.
+        for i in 0..block {
+            let mut frame = [0.0f32; MAX_ROOT_CHANNELS];
+            let src = &mut frame[..root_channels];
+            for (c, s) in src.iter_mut().enumerate() {
+                *s = buffer_mut.channel_f32(c)[i];
+            }
+            let o = (done + i) * out_ch;
+            tutti_types::fold_frame(src, &mut output[o..o + out_ch]);
+        }
+
+        done += block;
     }
 }

@@ -41,9 +41,13 @@ pub mod transport;
 pub use transport::{
     beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange,
     MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig,
-    QueueFull, RenderClock, Then, Timeline, Transport, TransportClock, TransportSettings,
-    TransportState, BEAT_PORTS,
+    QueueFull, RenderClock, ScheduleFull, Then, Timeline, Transport, TransportClock,
+    TransportCommand, TransportSettings, TransportState, BEAT_PORTS, SCHEDULE_CAPACITY,
 };
+// The time a scheduled command names, and the engine's frame clock. Homed in
+// `tutti-types` so the graph's `Editor::schedule` and the transport's
+// `MotionFsm::schedule` share one vocabulary.
+pub use tutti_types::{At, Frame};
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
 // here so consumers that already depend on tutti-core need no new dependency.

@@ -26,8 +26,10 @@ use crossbeam_queue::ArrayQueue;
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
+use super::timed::{Schedule, ScheduleFull, TransportCommand};
 use crate::Beat;
 use crate::{AtomicU8, AudioThreadCell};
+use tutti_types::At;
 
 pub use super::fsm::MotionState;
 
@@ -188,6 +190,9 @@ pub struct MotionFsm {
     /// The FSM writes the playhead on a locate, and pausedness tracks motion,
     /// so it needs the settings it publishes into.
     settings: TransportSettings,
+    /// Timestamped commands, applied by the engine on their frame. See
+    /// [`schedule`](Self::schedule).
+    timed: Schedule,
 }
 
 /// Reports the *published* state only. The FSM behind `AudioThreadCell` is
@@ -213,6 +218,86 @@ impl MotionFsm {
             seek: SeekSlot::new(),
             declick: Declick::new(),
             settings,
+            timed: Schedule::new(),
+        }
+    }
+
+    /// Request a transport change **at a time**: a play, stop or seek
+    /// ([`MotionEvent`]), a tempo or a loop edit ([`TransportCommand`]).
+    /// Lock-free, callable from any thread, never allocates.
+    ///
+    /// The engine applies it on its frame, sample-accurately
+    /// ([`Engine::process`](crate::Engine::process)): an [`At::Frame`] on
+    /// the engine's frame clock (frames rendered since it was built), an
+    /// [`At::Beat`] on the first frame at or after that beat once playback
+    /// reaches it, an [`At::NextBlock`] at the next block's first frame. A
+    /// frame already past, or a beat continuous playback already crossed,
+    /// lands at the start of the next block and is counted
+    /// ([`late_commands`](Self::late_commands)). A beat a seek or loop jumped
+    /// over waits until playback reaches it, holding its credit;
+    /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
+    ///
+    /// `Err` when [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands
+    /// are in flight: nothing was sent, and the command is handed back.
+    ///
+    /// The untimed [`try_send`](Self::try_send) and settings stores still
+    /// work and mean `At::NextBlock`; this method has no untimed form of its
+    /// own, so "whenever" is spelled out as `At::NextBlock`.
+    pub fn schedule(
+        &self,
+        at: At,
+        command: impl Into<TransportCommand>,
+    ) -> Result<(), ScheduleFull> {
+        self.timed.send(at, command.into())
+    }
+
+    /// Take back every scheduled command not yet applied, and free their
+    /// credit. Takes effect at the engine's next block.
+    pub fn cancel_scheduled(&self) {
+        self.timed.cancel_all();
+    }
+
+    /// Scheduled commands in flight: sent, and not yet applied or cancelled.
+    pub fn scheduled_outstanding(&self) -> usize {
+        self.timed.outstanding()
+    }
+
+    /// Scheduled commands that were already past due when the engine first
+    /// saw them, and so landed at the start of that block instead of on
+    /// their frame. Never dropped.
+    pub fn late_commands(&self) -> u64 {
+        self.timed.late()
+    }
+
+    /// The timestamped queue, for the engine.
+    pub(crate) fn timed(&self) -> &Schedule {
+        &self.timed
+    }
+
+    /// The settings this machine publishes into, for the engine.
+    pub(crate) fn settings(&self) -> &TransportSettings {
+        &self.settings
+    }
+
+    /// Apply one scheduled command now. **Audio thread only**, as
+    /// [`drain`](Self::drain): a motion change goes through the state
+    /// machine exactly as a drained event does.
+    pub(crate) fn apply(&self, command: TransportCommand) {
+        match command {
+            TransportCommand::Motion(event) => {
+                let result = { self.fsm.borrow_mut().transition(event) };
+                if let Some(result) = result {
+                    self.publish(result);
+                }
+            }
+            TransportCommand::Tempo(bpm) => self.settings.set_tempo(bpm),
+            TransportCommand::Loop(Some(range)) => {
+                self.settings
+                    .loop_span
+                    .set_range(range.start(), range.end());
+                self.settings.loop_span.set_enabled(true);
+            }
+            TransportCommand::Loop(None) => self.settings.loop_span.set_enabled(false),
         }
     }
 

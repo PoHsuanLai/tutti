@@ -116,6 +116,12 @@ impl NetBackend {
         self.handle_messages();
     }
 
+    /// The sample rate of the network running now. The engine converts a
+    /// beat-timed transport command to a frame with it.
+    pub fn sample_rate(&self) -> f64 {
+        self.net.sample_rate()
+    }
+
     fn handle_messages(&mut self) {
         let mut latest_net: Option<Box<Net>> = None;
         #[allow(clippy::while_let_loop)]

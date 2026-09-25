@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **tutti-export renders only the native graph** (design doc 013, Phase 3 PR
+  14). fundsp's `Net` is no longer an export source: the `Net` arm of
+  `RenderGraph`, its conversion from a `Net`, and the `Net`-taking latency
+  and tail queries are removed. What changes for a caller:
+
+  | Was | Now |
+  |---|---|
+  | `RenderGraph::Graph { editor, executor }` | `RenderGraph::new(editor, executor)?`: a struct with private fields, since there is no other kind of graph to render (a one-variant enum would select nothing). `new` refuses (`Error::InvalidConfig`) an editor that does not feed the executor, which used to be found only at render; `RenderGraph::fork` is unchanged |
+  | editing the pair's `editor` / `executor` before a render | `graph.editor()` / `graph.editor_mut()`, then `graph.commit()` (commits and installs the edit on the executor, which is no longer reachable) |
+  | `RenderGraph::Net(net)`, `RenderGraph::from(net)`, or a `Net` passed straight to `render_to_file` / `render_to_buffers` / `render_normalized_to_file` | removed. Build the graph with `tutti_graph::GraphBuilder` (`add_unit` where you had `push(Box::new(..))`; `connect`, `pipe`, `pipe_output` as on `Net`), `build` it at `RenderGraph::prepare(rate)`, and pass `RenderGraph::new(editor, executor)?`. A host exporting a live graph forks it with `RenderGraph::fork` |
+  | the entry points took `impl Into<RenderGraph>` | they take `RenderGraph` |
+  | `tutti_export::reported_latency(&mut net)` | `graph.reported_latency()` on the `RenderGraph`: the compiled plan's worst-case output latency, at the rate the graph was prepared at (the `Net` version answered at the net's last rate, 44.1 kHz for one never rendered, unless re-rated first) |
+  | `tutti_export::reported_tail(&net)` | `graph.reported_tail()`. For a `Net` you still hold elsewhere, `tutti_types::graph_tail(&net)` is the same fold |
+  | `RenderGraph::reported_latency(&mut self)` | `&self` |
+  | bevy-tutti: `if let RenderGraph::Graph { editor, .. } = prepared.graph` in an export `prepare` hook | `prepared.graph.editor_mut()`: `PreparedGraph::graph` is always a native graph, and a hook can no longer swap in a `Net`. The adapter still commits what the hook leaves |
+  | `tutti` umbrella: an export graph needed a direct `tutti-graph` dependency | `tutti::graph` re-exports `tutti-graph` (`tutti::graph::GraphBuilder`) |
+
 - **bevy-tutti runs on the native graph only** (design doc 013, Phase 3 PR
   13). fundsp's `Net` is gone from the adapter: `AudioGraphRes` holds the
   native `tutti-graph` editor, PDC is the compiler's (no delay nodes are

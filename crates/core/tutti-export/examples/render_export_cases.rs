@@ -39,7 +39,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
         .expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 /// A steady tone at −6 dBFS, in stereo.

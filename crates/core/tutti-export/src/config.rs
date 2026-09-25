@@ -28,7 +28,7 @@
 //! **This module is data, and only data.** No method here reads a graph, opens a
 //! file, or decides anything — the derivations live next to the code that needs
 //! them (`render::plan` for frame counts, `encode` for the codec rate). A config
-//! constructible without a `Net` and comparable with `==` is one a caller can
+//! constructible without a graph and comparable with `==` is one a caller can
 //! build up, log, diff, and hand around; one with an "ask the graph" mode is
 //! not.
 
@@ -50,10 +50,10 @@ pub struct RenderConfig {
     /// Leading FRAMES to drop — look-ahead limiters, linear-phase filters.
     ///
     /// A plain count, not a `{ None, Reported, Exact }` enum: an "ask the graph"
-    /// mode would force `RenderPlan::new` to take a `&mut Net` for arithmetic
+    /// mode would force `RenderPlan::new` to take a graph for arithmetic
     /// that is otherwise pure, putting a decision inside a value. Callers that
     /// want the graph's own figure call
-    /// [`reported_latency`](crate::reported_latency) and pass the answer — the
+    /// [`RenderGraph::reported_latency`](crate::RenderGraph::reported_latency) and pass the answer — the
     /// same shape as the clock, for the same reason: the caller knows, so the
     /// caller says.
     pub latency: Samples,
@@ -65,7 +65,7 @@ pub struct RenderConfig {
     /// than `duration_seconds` by exactly this much.
     ///
     /// A plain count, for the same reason `latency` is one. The graph's own
-    /// figure comes from [`reported_tail`](crate::reported_tail), which returns
+    /// figure comes from [`RenderGraph::reported_tail`](crate::RenderGraph::reported_tail), which returns
     /// something a caller must resolve into a number rather than a number
     /// itself — a graph that never decays has no frame count, and neither does
     /// one whose nodes declined to answer. Where to stop is the caller's

@@ -130,7 +130,7 @@ impl Normalize {
     }
 }
 
-/// Render `net`, measure it, apply the resulting gain, and write it to `path`.
+/// Render `graph`, measure it, apply the resulting gain, and write it to `path`.
 ///
 /// **Two passes.** The whole render is held in memory so a gain can be chosen
 /// from it. Use [`render_to_file`](crate::render_to_file) when no gain is
@@ -159,7 +159,7 @@ impl Normalize {
 /// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
 /// true peak folds over every channel.
 pub fn render_normalized_to_file(
-    graph: impl Into<crate::RenderGraph>,
+    graph: crate::RenderGraph,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     normalize: Normalize,

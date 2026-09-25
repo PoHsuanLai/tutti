@@ -48,8 +48,8 @@ render.
 The graph is the native one (`tutti_graph`), built with its `GraphBuilder` and
 prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
 another rate is refused rather than re-rated. A host exporting its live graph
-forks it instead, with `RenderGraph::fork`. A fundsp `Net` still converts
-(`RenderGraph::Net`) until doc 013's Phase 3 removes it.
+forks it instead, with `RenderGraph::fork`. The native graph is the only one
+an export renders: fundsp's `Net` is not accepted (doc 013 Phase 3 PR 14).
 
 ```rust
 use tutti_core::{FrozenClock, Hz, SampleRate};
@@ -67,7 +67,7 @@ let tone = || {
     let osc = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
     g.pipe_output(osc);
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 };
 
 let config = ExportConfig {

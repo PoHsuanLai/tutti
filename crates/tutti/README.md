@@ -42,6 +42,7 @@ assert!(out.iter().any(|&s| s != 0.0));
 | `tutti::core` | `tutti-core` | always |
 | `tutti::types` | `tutti-types` | always |
 | `tutti::dsp` | FunDSP, via `tutti-core` | always |
+| `tutti::graph` | `tutti-graph` | always |
 | `tutti::nodes` | `tutti-nodes` | always |
 | `tutti::node` | `tutti-node` | always |
 | `tutti::device` | `tutti-cpal` | `device` |

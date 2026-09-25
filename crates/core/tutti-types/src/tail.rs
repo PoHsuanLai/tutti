@@ -162,7 +162,7 @@ impl GraphTail {
     /// tail, not an eight-second one.
     ///
     /// ```ignore
-    /// let tail = reported_tail(&net).resolve(Seconds(8.0).to_samples(rate));
+    /// let tail = graph.reported_tail().resolve(Seconds(8.0).to_samples(rate));
     /// ```
     pub fn resolve(self, cap: Samples) -> Samples {
         if self.unbounded {

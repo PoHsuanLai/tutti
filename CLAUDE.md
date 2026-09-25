@@ -13,10 +13,11 @@ section there before you relax or work around a rule.
 once, and events as ports. `Engine` renders it (`Engine::with_graph`), and
 since Phase 3 PR 13 it is `bevy-tutti`'s only runtime: `AudioGraphRes` holds
 an `Editor`, PDC is the compiler's, and export forks the live graph
-(`Editor::fork`). `Net` is left in tutti-export's `RenderGraph::Net` (PR 14),
-tutti-core's `Engine::new(NetBackend)` (PR 15), the nodes' own tests, and
-test-only `Net`-era oracles (bevy-tutti's `net_parity.rs` and the
-`*_net_era` helpers) that go with those. Until the migration lands:
+(`Editor::fork`). tutti-export renders only the native graph (PR 14). `Net`
+is left in tutti-core's `Engine::new(NetBackend)` (PR 15), the nodes' own
+tests, and test-only `Net`-era oracles (bevy-tutti's `net_parity.rs` and the
+`*_net_era` helpers, tutti-export's `graph_source.rs`) that go with it. Until
+the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can

@@ -130,8 +130,8 @@ impl tutti_core::AudioUnit for ChannelSumNode {
     /// A sum is only as early as its latest arrival: the output sample at `n`
     /// holds source `s`'s sample at `n - latency_s` for every `s`, so the
     /// output is not complete until the most-delayed contribution lands. That
-    /// is the figure `AudioUnit::latency` — and through it
-    /// `tutti_export::reported_latency` — needs, so a lookahead limiter or a
+    /// is the figure `AudioUnit::latency` — and through it the graph's PDC
+    /// and an export's latency trim — needs, so a lookahead limiter or a
     /// plugin feeding one side of a bus still counts.
     ///
     /// This used to report `Latency(0)` whatever arrived, which hid every

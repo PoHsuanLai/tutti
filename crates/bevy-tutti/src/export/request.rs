@@ -492,10 +492,10 @@ impl std::fmt::Display for ExportNode {
 ///   and pointing a node at the output, say — policy about what "the export"
 ///   means, which differs per host.
 ///
-/// `graph` is the engine's own [`RenderGraph`], always `RenderGraph::Graph`:
-/// the fork's own editor and executor, already installed. (The enum's `Net`
-/// arm is tutti-export's until its graph-only API, design doc 013 PR 14; this
-/// adapter never builds one since PR 13.) Edit a fork through its `editor`
+/// `graph` is the engine's own [`RenderGraph`]: the fork's own editor and
+/// executor, already installed. It is a native graph and nothing else (since
+/// design doc 013 PR 14 tutti-export renders no `Net`, so a hook cannot swap
+/// one in). Edit a fork through `graph.editor_mut()`
 /// (insert nodes, `spec_mut`); the adapter commits whatever the hook leaves,
 /// and a commit the fork refuses fails the export with the reason. A fork's
 /// units are on its executor by the time the hook runs, so a unit already in

@@ -304,9 +304,9 @@ mid-render (`ExportError`).
 The underlying engine call is also available directly:
 
 ```rust,ignore
-// A `Net` or a native `RenderGraph`, by value, and the clock is mandatory —
-// forgetting the transport is a compile error rather than a silently silent
-// render.
+// A `RenderGraph` (a fork, or a graph built for the render), by value, and
+// the clock is mandatory — forgetting the transport is a compile error rather
+// than a silently silent render.
 let written = tutti_export::render_to_file(graph, &config, &clock, &path)?;
 ```
 

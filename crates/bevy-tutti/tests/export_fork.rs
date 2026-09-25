@@ -5,7 +5,9 @@
 //! Until PR 13 the adapter could also run on fundsp's `Net`, whose export
 //! cloned the net; the tests that held the two to the same answer now hold
 //! the fork to the `Net`-era render, built by hand as a test oracle
-//! ([`chain_net_era`], `synths::poly_node_export_net_era`). The rest pin
+//! ([`chain_net_era`], `synths::poly_node_export_net_era`) and rendered by
+//! [`render_net_era`], as tutti-export's `Net` arm rendered it until PR 14
+//! removed the arm. The rest pin
 //! what only a fork has: it shares nothing with the live graph, it names a
 //! node it cannot copy, it forks a hosted plugin by state transfer.
 //! `export_surface.rs` pins the request/response shape; this file pins the
@@ -21,7 +23,6 @@ use std::sync::{Arc, Mutex};
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_tutti::export::RenderGraph;
 use bevy_tutti::export::{
     ExportClock, ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest,
     ExportSource, ExportTarget,
@@ -157,17 +158,71 @@ fn chain(app: &mut App) -> Entity {
     app.world_mut().spawn(filter).id()
 }
 
+/// Render `net` as tutti-export's `Net` arm (`NetSource` and `drive`) did
+/// until design doc 013's PR 14 removed it: re-rated to the render's rate,
+/// in 64-frame blocks with no input, `clock` advanced after each block
+/// (emit-then-advance), every frame folded onto the config's width by
+/// `fold_frame`, the head trimmed by `render.latency` and the kept span
+/// capped at the duration plus `render.tail`.
+///
+/// **A test oracle, and nothing else**: it lets the `Net`-era oracles below
+/// render without tutti-export's `Net` arm, and goes with them and with
+/// `Engine::new(NetBackend)` (doc 013, PR 15).
+///
+/// Mutation (run): advancing `clock` before `process` (a priming advance)
+/// → `synth_exports_are_bit_identical_to_the_net_era` parts from the fork,
+/// so the oracle is still `NetSource`'s order and not merely some order.
+fn render_net_era(
+    mut net: tutti_core::dsp::Net,
+    config: &ExportConfig,
+    clock: &dyn tutti_export::RenderClock,
+) -> Vec<Vec<f32>> {
+    let rate = config.render.sample_rate;
+    let ch = config.encode.channels.count() as usize;
+    let latency = config.render.latency.get();
+    let output_length = tutti_export::duration_to_frames(config.render.duration_seconds, rate)
+        .get()
+        + config.render.tail.get();
+    let total = output_length + latency;
+
+    net.set_sample_rate(rate);
+    let n_out = net.outputs();
+    let mut scratch = tutti_core::BufferVec::new(n_out.max(1));
+    let mut planes = vec![Vec::with_capacity(output_length); ch];
+    let mut frame = vec![0.0f32; ch];
+    let mut produced = 0;
+    while produced < total {
+        let n = (total - produced).min(tutti_core::MAX_BUFFER_SIZE);
+        let mut out = scratch.buffer_mut();
+        net.process(n, &BufferRef::new(&[]), &mut out);
+        clock.advance(Samples(n));
+        for i in 0..n {
+            let at = produced + i;
+            if at < latency || at - latency >= output_length {
+                continue;
+            }
+            let src: Vec<f32> = (0..n_out).map(|c| out.channel_f32(c)[i]).collect();
+            tutti_types::fold_frame(&src, &mut frame);
+            for (plane, &s) in planes.iter_mut().zip(&frame) {
+                plane.push(s);
+            }
+        }
+        produced += n;
+    }
+    planes
+}
+
 /// The `Net`-era export of [`chain`], as `AudioGraphRes::export` rendered it
 /// on `GraphBackend::Net` before design doc 013's PR 13: the same chain in a
 /// fundsp `Net` at the export's rate; the master a plain `Net::clone`, a node
 /// `clone_isolated`, rebound onto the render's (stopped) timeline and reset;
-/// each rendered by tutti-export's `Net` arm under the renderer's
-/// `FrozenClock`, as `ExportClock::frozen` hands it. Returns the master's
-/// planes and the filter's.
+/// each rendered as tutti-export's `Net` arm rendered it ([`render_net_era`])
+/// under the renderer's `FrozenClock`, as `ExportClock::frozen` hands it.
+/// Returns the master's planes and the filter's.
 ///
 /// **A test oracle, and nothing else**: the adapter lost its `Net` arm in PR
 /// 13, and this keeps the A/B assertion below it used to run. It goes with
-/// tutti-export's `Net` arm (doc 013, PR 14).
+/// the rest of the `Net` fixtures (doc 013, PR 15).
 fn chain_net_era(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     use tutti_core::dsp::{Net, Source};
     let mut net = Net::new(0, 2);
@@ -190,15 +245,8 @@ fn chain_net_era(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
                 loop_range: None,
             },
         ));
-    let render = |net: Net| {
-        tutti_export::render_to_buffers(
-            RenderGraph::from(net),
-            &config(seconds),
-            &tutti_core::transport::FrozenClock,
-        )
-        .expect("the Net era renders")
-        .planes
-    };
+    let render =
+        |net: Net| render_net_era(net, &config(seconds), &tutti_core::transport::FrozenClock);
     let mut node = net
         .clone_isolated(filter)
         .expect("the filter has outputs")
@@ -382,9 +430,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
         .trim_reported_latency()
         .with_prepare(|prepared, _world| {
             let key = prepared.fresh_key();
-            let RenderGraph::Graph { editor, .. } = prepared.graph else {
-                panic!("an export renders a fork");
-            };
+            let editor = prepared.graph.editor_mut();
             editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
             for out in editor.spec_mut().topology.outputs.iter_mut() {
                 *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
@@ -1480,10 +1526,11 @@ mod synths {
     /// `clone_isolated`, rebound onto the render's timeline and reset, then a
     /// `MidiClipSource` of [`clip`] on that timeline installed on the
     /// isolated synth's port (isolating severs it, and nothing else rebinds
-    /// it), rendered by tutti-export's `Net` arm as [`request`] renders.
+    /// it), rendered as tutti-export's `Net` arm rendered it
+    /// ([`render_net_era`]) under [`request`]'s config and the timeline.
     ///
-    /// **A test oracle, and nothing else**; it goes with tutti-export's `Net`
-    /// arm (doc 013, PR 14).
+    /// **A test oracle, and nothing else**; it goes with the rest of the
+    /// `Net` fixtures (doc 013, PR 15).
     fn poly_node_export_net_era() -> Vec<Vec<f32>> {
         use tutti_core::dsp::Net;
         let mut net = Net::new(0, 2);
@@ -1505,13 +1552,7 @@ mod synths {
         let unit = synth.midi_unit_id();
         synth.set_midi_source(Arc::new(MidiClipSource::new(unit, clip(), ctx)));
         let request = request(ExportSource::Master, RATE);
-        tutti_export::render_to_buffers(
-            RenderGraph::from(isolated_net),
-            &request.config,
-            timeline.as_ref(),
-        )
-        .expect("the Net era renders")
-        .planes
+        render_net_era(isolated_net, &request.config, timeline.as_ref())
     }
 
     /// **An export of a synth renders what the `Net`-era export rendered,

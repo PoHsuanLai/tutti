@@ -21,7 +21,8 @@
 //! - live, the `Net` engine (a `TransportClock` node) and the native graph
 //!   engine (`Engine::with_graph`, the voice a `Legacy` node, chunk-major);
 //! - offline, a `Net`-style render (the voice called per 64 frames, then the
-//!   `OfflineTimeline` advanced, as the export's `NetSource` does) and
+//!   `OfflineTimeline` advanced, as tutti-export's `Net` source did until
+//!   doc 013 PR 14) and
 //!   `OfflineTimeline::render_graph` through the native graph.
 //!
 //! Mutations (run):

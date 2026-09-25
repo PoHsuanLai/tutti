@@ -1121,7 +1121,7 @@ impl AudioUnit for MemorySource {
         // `BufferMut` is planar `(channel, index)` with no frame-shaped
         // accessor, so unlike `tick` this one genuinely needs a frame to
         // scatter from. Stack-allocated at the fixed ceiling and used as a
-        // prefix — the house pattern (see `tutti-export`'s `fold_net_frame` and
+        // prefix — the house pattern (see `tutti-export`'s `fold_graph_frame` and
         // the plugin hosts), and the only way to stay alloc-free at a runtime
         // width.
         // Stride derived once per block, above the loops.

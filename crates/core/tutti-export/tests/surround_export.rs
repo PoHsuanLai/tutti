@@ -7,8 +7,8 @@
 //! placed energy — i.e. the surround producer and the multi-channel export path
 //! work together without any DAW/ECS layer.
 //!
-//! The graphs are native (`tutti_graph::GraphBuilder`, rendered through
-//! `RenderGraph::Graph`; doc 013 Phase 3 PR 8), and the mix is
+//! The graphs are native (`tutti_graph::GraphBuilder`, rendered as a
+//! `RenderGraph`; doc 013 Phase 3 PR 8), and the mix is
 //! `tutti_spatial::vbap_mix_parts` wired on the builder — the same units and
 //! edges `build_vbap_mix` puts in a `Net` (`tutti-spatial`'s
 //! `tests/vbap_mix_parts.rs` pins the two bit-identical).
@@ -29,7 +29,7 @@ const RATE: tutti_core::SampleRate = tutti_core::SampleRate(48_000.0);
 fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
     tutti_export::render_to_file(
-        RenderGraph::Graph { editor, executor },
+        RenderGraph::new(editor, executor).expect("built together"),
         &ExportConfig {
             render: RenderConfig {
                 sample_rate: RATE,

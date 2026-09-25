@@ -1,21 +1,29 @@
-//! The native graph backend (`RenderGraph::Graph`, doc 013 Phase 3 PR 7)
-//! against the `Net` backend it will replace.
+//! The native graph's exports against what fundsp's `Net` rendered for the
+//! same units.
 //!
-//! # The oracle is the other backend
+//! # The oracle is a `Net`, rendered here
 //!
-//! This file is the `Net` backend's suite, and deliberately stays on `Net`:
-//! since doc 013 PR 8 every other suite here builds its graphs with
-//! `tutti_graph::GraphBuilder` only, so these equivalences are what still
-//! carry their checks over to the `Net` arm until PR 14 removes it.
+//! Until doc 013 Phase 3 PR 14 this file compared tutti-export's two backends,
+//! `RenderGraph::Net` and the native graph. PR 14 removed the `Net` arm, and
+//! with it `NetSource`, the frame source that rendered a `Net`. The
+//! comparisons stay, as regression pins on the graph: the `Net` side is now
+//! [`net_render`], a **test-only oracle** in this file that renders a
+//! `tutti_core::dsp::Net` exactly as `NetSource` and `drive` did — re-rated
+//! to the render's rate, 64-frame blocks, the clock advanced after each,
+//! every frame folded onto the file's width by `tutti_types::fold_frame`, the
+//! head trimmed by the latency and the kept span capped. It uses nothing of
+//! tutti-export's but its public types, so it compiles without the `Net` arm;
+//! it goes with the rest of the `Net` fixtures (doc 013 PR 15).
 //!
 //! Every case builds one graph twice from the same units — once as a `Net`,
-//! once with `tutti_graph::GraphBuilder` — and asserts the two exports are
-//! **bit-identical**: the same planes out of `render_to_buffers`, the same
-//! bytes out of `render_to_file`. The oracle
+//! once with `tutti_graph::GraphBuilder` — and asserts the two are
+//! **bit-identical**: the same planes, and for the file cases the same bytes
+//! (the `Net`'s planes written by `write_buffers`, which replays them through
+//! the same encoders in 64-frame blocks, as `NetSource` fed them). The oracle
 //! suites beside this file (`oracle_resample.rs`, `dither_stats.rs`,
 //! `surround_export.rs`, `render.rs`'s dBTP cases) check the graph path
-//! against first principles, so equality here carries those checks over to
-//! the `Net` path without restating them.
+//! against first principles; this one checks that the graph still renders
+//! what the `Net` did.
 //!
 //! Equality is exact, not a tolerance, and is portable: both sides run the same
 //! unit code on the same machine, so a libm `sin` that differs across C
@@ -42,11 +50,12 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, Hz, SampleRate};
+use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, BufferRef, BufferVec, Hz, SampleRate};
 use tutti_export::{
-    render_normalized_to_file, render_to_buffers, render_to_file, AudioFormat, BitDepth,
-    ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize, RenderConfig,
-    RenderGraph, Resample, GRAPH_MAX_BLOCK,
+    duration_to_frames, render_normalized_to_file, render_to_buffers, render_to_file,
+    write_buffers, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig,
+    FrozenClock, Normalize, RenderClock, RenderConfig, RenderGraph, Rendered, Resample,
+    GRAPH_MAX_BLOCK,
 };
 use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare};
 use tutti_nodes::testing::{Const, Osc};
@@ -78,7 +87,7 @@ fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
 /// The builder's graph, built for the export.
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph::new(editor, executor).expect("built together")
 }
 
 /// The builder's graph as an export gets it from a live one: built at a
@@ -86,7 +95,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 ///
 /// A fork **resets** every unit it makes (fundsp's sequence: clone, isolate,
 /// rebind, reset), so it is compared against a reset `Net` — which is what
-/// today's export does to the `Net` it clones. Against a fresh one it would
+/// the `Net` export did to the `Net` it cloned. Against a fresh one it would
 /// differ, and not by a bug: a reset `VbapPannerNode` starts on its commanded
 /// bearing where a fresh one glides there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
@@ -102,6 +111,64 @@ fn forked(g: GraphBuilder) -> RenderGraph {
         RATE,
     )
     .expect("every node here is forkable")
+}
+
+/// The test-only `Net` oracle: render `net` as tutti-export's `NetSource`
+/// and `drive` did before doc 013 PR 14 removed them (see the module docs).
+///
+/// Re-rated to the render's rate (a `Net` answers at whatever rate it was
+/// last set to); `RenderPlan`'s frame counts (the kept span is the duration
+/// plus the tail, and the head the latency is trimmed from is rendered on
+/// top); 64-frame blocks, each processed with no input and then the clock
+/// advanced by it (emit-then-advance); each frame gathered from the `Net`'s
+/// real outputs and folded onto the file's width by `fold_frame`.
+///
+/// Mutation (run): advancing `clock` before `process` → both clip-reader
+/// cases part from the graph, so the oracle keeps `NetSource`'s order.
+fn net_render(mut net: Net, config: &ExportConfig, clock: &dyn RenderClock) -> Rendered {
+    const BLOCK: usize = tutti_core::MAX_BUFFER_SIZE;
+    let rate = config.render.sample_rate;
+    let ch = config.encode.channels.count() as usize;
+    let latency = config.render.latency.get();
+    let output_length =
+        duration_to_frames(config.render.duration_seconds, rate).get() + config.render.tail.get();
+    let total = output_length + latency;
+
+    net.set_sample_rate(rate);
+    let n_out = net.outputs();
+    let mut scratch = BufferVec::new(n_out.max(1));
+    let mut planes = vec![Vec::with_capacity(output_length); ch];
+    let mut frame = vec![0.0f32; ch];
+    let mut produced = 0;
+    while produced < total {
+        let n = (total - produced).min(BLOCK);
+        let mut out = scratch.buffer_mut();
+        net.process(n, &BufferRef::new(&[]), &mut out);
+        clock.advance(tutti_types::Samples(n));
+        for i in 0..n {
+            let at = produced + i;
+            if at < latency || at - latency >= output_length {
+                continue;
+            }
+            let src: Vec<f32> = (0..n_out).map(|c| out.channel_f32(c)[i]).collect();
+            tutti_types::fold_frame(&src, &mut frame);
+            for (plane, &s) in planes.iter_mut().zip(&frame) {
+                plane.push(s);
+            }
+        }
+        produced += n;
+    }
+    Rendered {
+        planes,
+        sample_rate: rate,
+    }
+}
+
+/// The look-ahead latency a `Net` reports, as tutti-export's
+/// `reported_latency(&mut Net)` answered it before doc 013 PR 14: asked at
+/// the net's current rate, floored.
+fn net_latency(net: &mut Net) -> Samples {
+    Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
 }
 
 /// A graph built twice from the same units: `(net, builder)`.
@@ -224,21 +291,21 @@ enum Via {
     Forked,
 }
 
-/// Both backends into buffers; asserts the planes are bit-identical, and
-/// returns them.
+/// The graph and the `Net` oracle into buffers; asserts the planes are
+/// bit-identical, and returns them.
 fn same_buffers(pair: Pair, config: &ExportConfig, via: Via) -> Vec<Vec<f32>> {
     let (mut net, g) = pair;
     let graph = match via {
         Via::Built => built(g),
         Via::Forked => {
-            // As the export that clones a `Net` does: re-rate, then reset
+            // As the export that cloned a `Net` did: re-rate, then reset
             // (see `forked`).
             net.set_sample_rate(RATE);
             net.reset();
             forked(g)
         }
     };
-    let a = render_to_buffers(net, config, &FrozenClock).expect("net renders");
+    let a = net_render(net, config, &FrozenClock);
     let b = render_to_buffers(graph, config, &FrozenClock).expect("graph renders");
     assert_eq!(a.sample_rate, b.sample_rate);
     assert_eq!(a.channels(), b.channels());
@@ -260,15 +327,19 @@ fn same_buffers(pair: Pair, config: &ExportConfig, via: Via) -> Vec<Vec<f32>> {
     a.planes
 }
 
-/// Both backends to a file each; asserts the files are byte-identical.
+/// The graph to a file through `write`, and the `Net` oracle's planes to
+/// another through `write_planes` (the same export, from planes already
+/// rendered); asserts the files are byte-identical.
 fn same_file(
     pair: Pair,
+    config: &ExportConfig,
     write: impl Fn(RenderGraph, &std::path::Path) -> tutti_export::Result<tutti_export::Written>,
+    write_planes: impl Fn(&Rendered, &std::path::Path) -> tutti_export::Result<tutti_export::Written>,
 ) -> Vec<u8> {
     let (net, g) = pair;
     let d = tempfile::tempdir().unwrap();
     let (pn, pg) = (d.path().join("net.wav"), d.path().join("graph.wav"));
-    write(net.into(), &pn).expect("net writes");
+    write_planes(&net_render(net, config, &FrozenClock), &pn).expect("net writes");
     write(built(g), &pg).expect("graph writes");
     let (a, b) = (std::fs::read(&pn).unwrap(), std::fs::read(&pg).unwrap());
     assert_eq!(a.len(), b.len(), "the two files differ in length");
@@ -311,9 +382,12 @@ fn a_sine_renders_bit_identically_through_both_backends() {
 fn a_resampled_export_is_byte_identical_through_both_backends() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.resample = Some(Resample::to(SampleRate(44_100.0)));
-    let bytes = same_file(sine(1000.0), |g, p| {
-        render_to_file(g, &cfg, &FrozenClock, p)
-    });
+    let bytes = same_file(
+        sine(1000.0),
+        &cfg,
+        |g, p| render_to_file(g, &cfg, &FrozenClock, p),
+        |r, p| write_buffers(r, &cfg, p),
+    );
     let r = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
     assert_eq!(r.spec().sample_rate, 44_100, "not vacuous: it resampled");
 }
@@ -326,9 +400,19 @@ fn a_resampled_export_is_byte_identical_through_both_backends() {
 fn a_peak_normalized_export_is_byte_identical_through_both_backends() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 1.0;
-    same_file(sine(440.0), |g, p| {
-        render_normalized_to_file(g, &cfg, &FrozenClock, Normalize::peak(Db(-1.0)), p)
-    });
+    let normalize = Normalize::peak(Db(-1.0));
+    same_file(
+        sine(440.0),
+        &cfg,
+        |g, p| render_normalized_to_file(g, &cfg, &FrozenClock, normalize, p),
+        // `render_normalized_to_file`'s own steps on planes already rendered:
+        // measure, apply, write (no resample here to convert first).
+        |r, p| {
+            let mut r = r.clone();
+            r.apply_gain(normalize.gain_for_rendered(&r)?);
+            write_buffers(&r, &cfg, p)
+        },
+    );
 }
 
 /// The dither case: triangular dither to 16 bits, on a DC level between two
@@ -340,9 +424,12 @@ fn a_peak_normalized_export_is_byte_identical_through_both_backends() {
 fn a_dithered_export_is_byte_identical_through_both_backends() {
     let mut cfg = config(BitDepth::Int16, ChannelLayout::STEREO);
     cfg.dither = Dither::Triangular;
-    let bytes = same_file(dc(0.25 + 0.3 / 32_768.0), |g, p| {
-        render_to_file(g, &cfg, &FrozenClock, p)
-    });
+    let bytes = same_file(
+        dc(0.25 + 0.3 / 32_768.0),
+        &cfg,
+        |g, p| render_to_file(g, &cfg, &FrozenClock, p),
+        |r, p| write_buffers(r, &cfg, p),
+    );
     // Not vacuous: the dither moved samples off the one code.
     let s: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(bytes))
         .unwrap()
@@ -403,29 +490,34 @@ fn a_convolver_renders_bit_identically_at_the_graph_block() {
     assert_audible(&planes);
 }
 
-/// The graph reports a lookahead limiter's latency as the `Net` does, and a
+/// The graph reports a lookahead limiter's latency as the `Net` did, and a
 /// render trimmed by it is the `Net`'s trimmed render, sample for sample.
 ///
 /// Mutation (run): `RenderGraph::reported_latency` returning
-/// `Samples::ZERO` for the graph → the figures differ (the limiter reports
-/// 240 frames at 48 kHz).
+/// `Samples::ZERO` → the figures differ (the limiter reports 240 frames at
+/// 48 kHz).
+///
+/// Doc 013 PR 14 dropped one assertion here with the `Net` arm: that
+/// `RenderGraph::Net`'s answer equalled the free `reported_latency(&mut Net)`
+/// — two spellings of the one removed call. The figure itself is now also
+/// pinned analytically: 5 ms of lookahead at 48 kHz is 240 frames.
 #[test]
 fn the_latency_trim_equals_the_net_paths() {
     let (mut net, g) = limited();
-    let mut graph = built(g);
+    let graph = built(g);
     // A `Net` answers at whatever rate it was last set to — 44.1 kHz for
     // one never rendered, where this limiter reports 221 frames, not 240 —
-    // so it is re-rated to the render's first, as a caller must. The graph
+    // so it is re-rated to the render's first, as a caller had to. The graph
     // answers at the rate it was prepared at and cannot be asked early.
     net.set_sample_rate(RATE);
-    let net_latency = RenderGraph::Net(net.clone()).reported_latency();
+    let net_latency = net_latency(&mut net);
     let graph_latency = graph.reported_latency();
-    assert_eq!(net_latency, tutti_export::reported_latency(&mut net));
     assert!(
         net_latency.get() > 0,
         "not vacuous: the limiter looks ahead"
     );
     assert_eq!(graph_latency, net_latency);
+    assert_eq!(graph_latency, Samples(240), "5 ms at 48 kHz");
 
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.latency = graph_latency;
@@ -439,24 +531,27 @@ fn the_latency_trim_equals_the_net_paths() {
     assert_audible(&planes);
 }
 
-/// The graph reports a convolver's tail as the `Net` does, and a render
+/// The graph reports a convolver's tail as the `Net` did, and a render
 /// extended by it is the `Net`'s, sample for sample.
 ///
 /// Mutation (run): `RenderGraph::reported_tail` folding an empty topology
-/// for the graph → `Some(0)` against the convolver's 2999.
+/// → `Some(0)` against the convolver's 2999.
+///
+/// Doc 013 PR 14 dropped one assertion here with the `Net` arm:
+/// `RenderGraph::Net`'s tail equalled the free `reported_tail(&Net)`, both
+/// the one fold this test now calls directly (`graph_tail` over the `Net`).
 #[test]
 fn the_tail_length_equals_the_net_paths() {
     let (net, g) = convolved();
     let graph = built(g);
-    let net_tail = tutti_export::reported_tail(&net);
+    let net_tail = tutti_types::graph_tail(&net);
     assert_eq!(net_tail.samples(), Some(Samples(2999)), "the IR's ring-out");
     assert_eq!(graph.reported_tail(), net_tail);
-    assert_eq!(RenderGraph::Net(net).reported_tail(), net_tail);
 
     let mut cfg = config(BitDepth::Float32, ChannelLayout::MONO);
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     // The latency trim too, so both halves of the gate run together.
-    let mut probe = built(convolved().1);
+    let probe = built(convolved().1);
     cfg.render.latency = probe.reported_latency();
     let planes = same_buffers(convolved(), &cfg, Via::Built);
     assert_eq!(planes[0].len(), 14_462 + 2999);
@@ -491,6 +586,42 @@ fn an_unforkable_node_is_an_export_error_naming_it() {
     assert!(RenderGraph::fork(&live, ForkTarget::Node(fine), ForkMode::Live, RATE).is_ok());
 }
 
+/// An editor that does not feed the executor beside it is refused when the
+/// `RenderGraph` is made, not first at render.
+///
+/// Mutation (run): `RenderGraph::new` skipping `check_paired` → it wraps
+/// the crossed pair.
+#[test]
+fn a_crossed_pair_is_refused_at_construction() {
+    let (editor_a, executor_a) = sine(1000.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let (editor_b, executor_b) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    for (editor, executor) in [(editor_a, executor_b), (editor_b, executor_a)] {
+        let r = RenderGraph::new(editor, executor);
+        assert!(
+            matches!(r, Err(Error::InvalidConfig(_))),
+            "a crossed pair was wrapped"
+        );
+    }
+}
+
+/// An editor swapped in through `editor_mut` after construction is refused
+/// at render: the render keeps the pairing check as a real error.
+///
+/// Mutation (run): drop `check_paired` from `render::with_source` → it
+/// renders the crossed pair.
+#[test]
+fn an_editor_swapped_after_construction_is_refused_at_render() {
+    let mut graph = built(sine(1000.0).1);
+    let (other, _exec) = sine(500.0).1.build(RenderGraph::prepare(RATE)).unwrap();
+    let _live = std::mem::replace(graph.editor_mut(), other);
+    let r = render_to_buffers(
+        graph,
+        &config(BitDepth::Float32, ChannelLayout::STEREO),
+        &FrozenClock,
+    );
+    assert!(matches!(r, Err(Error::InvalidConfig(_))), "{r:?}");
+}
+
 /// A pair prepared at another rate is refused, not rendered at the wrong one.
 ///
 /// Mutation (run): drop the rate check in `GraphSource::new` → it renders.
@@ -501,7 +632,7 @@ fn a_graph_prepared_at_another_rate_is_refused() {
         .build(RenderGraph::prepare(SampleRate(44_100.0)))
         .expect("builds");
     let r = render_to_buffers(
-        RenderGraph::Graph { editor, executor },
+        RenderGraph::new(editor, executor).expect("built together"),
         &config(BitDepth::Float32, ChannelLayout::STEREO),
         &FrozenClock,
     );
@@ -618,6 +749,11 @@ fn render_under(
         .planes
 }
 
+/// [`render_under`] for the `Net` oracle.
+fn net_render_under(net: Net, clock: &OfflineTimeline, width: ChannelLayout) -> Vec<Vec<f32>> {
+    net_render(net, &config(BitDepth::Float32, width), clock).planes
+}
+
 /// The first `(channel, frame)` at which two renders differ, if any.
 fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
     assert_eq!(a.len(), b.len(), "widths differ");
@@ -642,7 +778,7 @@ fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
 /// measured 768 Hz). `RenderClock::render_graph` therefore renders a graph
 /// holding a `Legacy` unit chunk-major, 64 frames across every node with
 /// the clock advanced between (doc 013's `Legacy` compatibility mode), as
-/// `NetSource` renders a `Net`, so the two agree to the bit.
+/// a `Net` was rendered, so the two agree to the bit.
 ///
 /// Why to the bit and not to rounding: the pitched voice runs through the
 /// vocoder, which turns an ulp of beat into far more. Measured with the
@@ -661,7 +797,7 @@ fn a_sampler_voice_renders_bit_identically_at_the_graph_block() {
         let mut net = Net::new(0, 2);
         let id = net.push(Box::new(placed_pool(&net_clock, cents)));
         net.pipe_output(id);
-        let a = render_under(net.into(), &net_clock, ChannelLayout::STEREO);
+        let a = net_render_under(net, &net_clock, ChannelLayout::STEREO);
 
         let graph_clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
@@ -721,7 +857,7 @@ fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
     net.pipe_output(id);
     net.set_sample_rate(RATE);
     net.reset();
-    let a = render_under(net.into(), &net_clock, ChannelLayout::MONO);
+    let a = net_render_under(net, &net_clock, ChannelLayout::MONO);
 
     // Live, the voice follows another clock, somewhere else; the fork
     // re-points it at the render's.

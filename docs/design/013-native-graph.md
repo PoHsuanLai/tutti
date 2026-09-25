@@ -918,14 +918,36 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    block's first frame (a start can click on the held beat before its
    frame). The beat itself is sample-accurate; the gate should read
    `Env::transport_at` when `ClickNode` is ported natively (Phase 4).
-6. **No `Fork`** for export [PR 2].
+6. **No `Fork`** for export [PR 2]. **Closed by PR 2:**
+   `Editor::fork(ForkTarget::{Master, Node(key)}, ForkMode::{Live,
+   Offline(&dyn Any)}, Prepare)` returns a new, installed editor/executor
+   pair that shares no state with the live one. The editor cannot clone a
+   unit the executor owns, so a node hands it a `ForkSource` at insert
+   (`IntoNode::into_parts`, default none); a node without one is
+   `ForkError::NotForkable { key }`, checked before anything is forked.
+   `Legacy` became a builder (it is an `IntoNode`, no longer a `Node`) so
+   every `AudioUnit` hands one over: a `controlled` node forks from its
+   isolated shadow, which holds every setting sent; a plain one from a
+   never-processed clone taken at insert, left un-isolated so a cell it
+   shares is read at fork time (a plain `Legacy` has no other by-value
+   path). Each fork is fundsp's sequence in fundsp's order: clone,
+   `isolate`, `rebind_offline(ctx)` offline only, `reset`. `Node(key)`
+   forks exactly the sub-graph feeding the node (back along audio,
+   feedback and event edges) and points every global output at it by
+   `clone_isolated`'s rule — channel `c` reads port `min(c, outs - 1)`, a
+   **clamp**, unlike `pipe_output`'s wrap; pinned against `Net`. A fork
+   starts silent (no delay rings or feedback state, clock at frame 0),
+   has no controls, and is not itself forkable. A `controlled` fork does
+   not see a value that something other than its controls writes into a
+   shared `Arc` cell after construction (the shadow was isolated then);
+   that is the Phase 4 port's to close with native `ForkSource`s.
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 
 | PR | Scope | Needs |
 |---|---|---|
 | 1 | tutti-graph Legacy parity: never skip by default, with `Legacy::pure`; `Legacy::controlled` returning a settings ring plus a never-processed shadow; `Editor::set_latency` | #18 |
-| 2 | tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
+| 2 | **Done.** tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
 | 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
 | 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
 | 5 | **Done.** tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks, scheduled `At::Frame`/`At::Beat`; the harness behind a `contract` feature | 4 |

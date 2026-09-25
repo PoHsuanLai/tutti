@@ -17,7 +17,7 @@
 //!   while the engine renders, never goes backwards;
 //! - a graph without a `Legacy` unit still renders whole blocks.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_core::transport::{BeatCursor, BeatWindowSync};
@@ -159,20 +159,26 @@ fn shared_cursors_see_no_jump_and_the_playhead_never_goes_backwards() {
 
     // A reader on another thread, as a UI or the mod driver reads the
     // playhead: every value it sees must be at or past the last.
+    // The render is far faster than real time (two seconds in tens of
+    // milliseconds), so a reader left to the scheduler may not run at all
+    // under a loaded test run. Each block therefore waits until the reader
+    // has read again: it is live and spinning when the block renders, and
+    // `reads` counts at least one per block.
     let stop = Arc::new(AtomicBool::new(false));
+    let reads = Arc::new(AtomicU64::new(0));
     let reader = {
-        let (t, stop) = (transport.clone(), Arc::clone(&stop));
+        let (t, stop, reads) = (transport.clone(), Arc::clone(&stop), Arc::clone(&reads));
         std::thread::spawn(move || {
-            let (mut last, mut reads, mut backwards) = (f64::NEG_INFINITY, 0u64, Vec::new());
+            let (mut last, mut backwards) = (f64::NEG_INFINITY, Vec::new());
             while !stop.load(Ordering::Acquire) {
                 let b = t.beat().get();
                 if b < last {
                     backwards.push((last, b));
                 }
                 last = b;
-                reads += 1;
+                reads.fetch_add(1, Ordering::Release);
             }
-            (reads, backwards, last)
+            (backwards, last)
         })
     };
 
@@ -191,16 +197,19 @@ fn shared_cursors_see_no_jump_and_the_playhead_never_goes_backwards() {
             .expect("same shape");
             ed.commit().expect("commits");
         }
+        let seen = reads.load(Ordering::Acquire);
+        while reads.load(Ordering::Acquire) == seen {
+            std::thread::yield_now();
+        }
         engine.process(&mut InterleavedMut::new(
             &mut buf,
             ChannelLayout::from_count(3),
         ));
         ed.collect();
-        // Give the reader a chance to interleave with the render.
-        std::thread::yield_now();
     }
     stop.store(true, Ordering::Release);
-    let (reads, backwards, last) = reader.join().expect("reader");
+    let (backwards, last) = reader.join().expect("reader");
+    let reads = reads.load(Ordering::Acquire);
 
     let jumps = jumps.lock().expect("jumps");
     assert!(
@@ -222,7 +231,7 @@ fn shared_cursors_see_no_jump_and_the_playhead_never_goes_backwards() {
         calls >= 2 * n_blocks * 512 / LEGACY_CHUNK,
         "{calls} probe calls"
     );
-    assert!(reads > 1_000, "{reads} reads");
+    assert!(reads > n_blocks as u64, "{reads} reads");
     assert!((last - 4.0).abs() < 0.1, "the playhead ended at {last}");
     let blocks = blocks.lock().expect("blocks");
     assert!(

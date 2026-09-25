@@ -508,33 +508,58 @@ fn children() -> std::collections::BTreeSet<u32> {
     out
 }
 
-/// **A fork's server is reaped**: once the fork is dropped, and when the fork
-/// fails (`LoadState`), its server is no longer a child of this process, not
-/// even a zombie. This reads `/proc` children rather than `kill -0` on a pid,
-/// because the fork's pid is internal and a leaked child shows up here
-/// whatever it is. Linux only (`/proc/self/task/*/children`); the guard is
-/// the same code on every platform.
+/// **A dropped fork's server is reaped**, on every platform: its pid
+/// (`PluginHandle::server_pid`) names no live process — not even a zombie —
+/// once the fork and its handle are gone, while the live server's still
+/// does. The probe is `clap_probe::is_alive` (`kill(pid, 0)` on Unix,
+/// `GetExitCodeProcess` on Windows), shared with `real_plugin_pressure.rs`.
 ///
-/// Mutation: `std::mem::forget(fork)` on the `LoadState` error path in
-/// `PluginFork::instance` → the refused fork's server stays a child →
-/// fails. Mutation: skip `wait()` in `ProcessGuard::drop` → a zombie stays
-/// listed → fails.
-#[cfg(target_os = "linux")]
+/// Mutation: `std::mem::forget(fork)` instead of dropping it → the server
+/// runs on → fails. Mutation: skip `wait()` in `ProcessGuard::drop` → a
+/// zombie answers `kill(pid, 0)` → fails (Unix).
 #[test]
-fn a_forks_server_is_reaped_when_the_fork_is_dropped_or_fails() {
+fn a_dropped_forks_server_is_reaped() {
     let _lock = exclusive();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
-    let baseline = children();
-    assert!(!baseline.is_empty(), "the live server is a child");
+    let live_pid = probe.handle.server_pid().expect("a subprocess plugin");
 
     let fork = probe
         .client
         .fork_instance(ForkMode::Live)
         .expect("the probe forks");
-    assert_eq!(children().len(), baseline.len() + 1, "the fork's server");
+    let handle = PluginHandle::from_client(&fork);
+    let pid = handle.server_pid().expect("the fork has its own server");
+    assert_ne!(pid, live_pid, "a process of its own");
+    assert!(clap_probe::is_alive(pid), "the fork's server runs");
+    drop(handle);
     drop(fork);
-    assert_eq!(children(), baseline, "a dropped fork's server is reaped");
+    assert!(
+        !clap_probe::is_alive(pid),
+        "a dropped fork's server is reaped"
+    );
+    assert!(
+        clap_probe::is_alive(live_pid),
+        "the live server is untouched"
+    );
+}
+
+/// **A fork that fails is reaped too** (`LoadState`: the fresh instance
+/// started, then refused the state). Its pid never reaches the caller, so
+/// this reads this process's children from `/proc` instead: Linux only
+/// (`/proc/self/task/*/children`). The guard is the same code everywhere.
+///
+/// Mutation: `std::mem::forget(fork)` on the `LoadState` error path in
+/// `PluginFork::instance` → the refused fork's server stays a child →
+/// fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_forks_server_is_reaped() {
+    let _lock = exclusive();
+    let _env = env();
+    let probe = load_probe(SAMPLE_RATE);
+    let baseline = children();
+    assert!(!baseline.is_empty(), "the live server is a child");
 
     let _refuse = ProbeEnv::new().refuse_state_load(true);
     let err = probe.client.fork_instance(ForkMode::Live).err();

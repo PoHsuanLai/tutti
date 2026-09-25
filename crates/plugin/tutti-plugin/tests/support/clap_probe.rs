@@ -368,3 +368,47 @@ pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
     let handle = PluginHandle::from_client(&client);
     LoadedProbe { client, handle }
 }
+
+/// Whether `pid` still names a process that has not been reaped.
+///
+/// Unix: `kill(pid, 0)` checks the pid without sending a signal. A running
+/// orphan answers `Ok`. So does a zombie, which means a missing `wait` is
+/// caught as well as a missing `kill`. A reaped child answers `ESRCH`.
+///
+/// Windows: there are no zombies. A process object lives exactly as long as
+/// some handle to it is open, and the guard's `Child` holds one. After a
+/// correct teardown, `OpenProcess` finds nothing. A leaked guard keeps the
+/// server running, so its exit code reads `STILL_ACTIVE`.
+///
+/// Neither probe can rule out the OS reusing a reaped pid for an unrelated
+/// process. That error goes the loud way (a false leak, never a false pass),
+/// and it needs a pid to wrap round between a drop and this check.
+#[cfg(unix)]
+pub fn is_alive(pid: u32) -> bool {
+    let pid = libc::pid_t::try_from(pid).expect("a pid fits pid_t");
+    // SAFETY: signal 0 performs only the existence and permission check.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    // EPERM: the pid exists but belongs to someone else. It cannot be our
+    // child, but it is not gone, so report it rather than guess.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+pub fn is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: plain Win32 calls on a handle this function opens and closes.
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let queried = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        queried.is_ok() && code == STILL_ACTIVE.0 as u32
+    }
+}

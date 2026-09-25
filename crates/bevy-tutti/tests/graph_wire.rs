@@ -478,11 +478,14 @@ mod graph_wire {
     }
     both_backends!(a_widened_root_survives_a_real_commit);
 
-    /// A *shorter* declaration means undeclared, not "narrow the root".
+    /// A *shorter* declaration silences the channels it dropped, but does not
+    /// narrow the root.
     ///
-    /// Narrowing on a shortened `Vec` would tear down channels the host may own
-    /// imperatively — the same violation `unwire_removed_sources` refuses. It needs
-    /// its own explicit API, not an inference from a length.
+    /// The root is sized to the device; narrowing it on a shortened `Vec` would
+    /// have the engine fold channels the host never asked to lose. Narrowing
+    /// needs its own explicit API, not an inference from a length. What the
+    /// dropped channels read instead is
+    /// `shrinking_the_master_releases_the_dropped_channel`'s claim.
     fn a_shorter_master_declaration_does_not_narrow_the_root(backend: GraphBackend) {
         let mut app = app(backend);
         let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
@@ -501,10 +504,105 @@ mod graph_wire {
         assert_eq!(
             app.world().resource::<AudioGraphRes>().outputs(),
             6,
-            "a shorter declaration is undeclared, not a narrowing instruction"
+            "a shorter declaration is not a narrowing instruction"
         );
     }
     both_backends!(a_shorter_master_declaration_does_not_narrow_the_root);
+
+    /// Shrinking `MasterSources` releases the channel it dropped: the node
+    /// that fed it no longer does, the root keeps its width, and the latency
+    /// plan is the one over the graph that now exists.
+    ///
+    /// Channel 1 is fed through a limiter, so it is the channel that defines
+    /// the graph's latency. Before the fix the dropped channel kept its
+    /// source — nothing declared it any more, so nothing wrote it — and the
+    /// value, one channel short of the root, folded to a different latency
+    /// plan from the engine's (channel 1 still behind the limiter), which
+    /// tripped `rebuild`'s "the engine does not match the value" check on
+    /// both backends. #39's restart test met it only on `Native`, because
+    /// there `Net` carried compensation delays, which skip the plan
+    /// comparison.
+    ///
+    /// Mutation (run): building the value's outputs to the declaration's
+    /// length, as before (`0..graph.outputs().min(master.0.len())`) → the
+    /// consistency check panics on both backends (and #39's disk-clip
+    /// restart test on `Native`).
+    fn shrinking_the_master_releases_the_dropped_channel(backend: GraphBackend) {
+        use tutti_core::Db;
+        use tutti_nodes::LimiterNode;
+
+        let mut app = app(backend);
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let lim = spawn_node(
+            &mut app,
+            LimiterNode::with_channels(ChannelLayout::MONO, Db(0.0), Db(0.0)),
+        );
+        app.world_mut()
+            .entity_mut(lim)
+            .insert(PortSources::from(osc));
+        app.insert_resource(
+            MasterSources::default()
+                .with(0, PortSource::node(osc))
+                .with(1, PortSource::node(lim)),
+        );
+        app.update();
+
+        let lim_id = node_id(&app, lim);
+        let latency = {
+            let graph = app.world().resource::<AudioGraphRes>();
+            assert_eq!(graph.output_source(1), GraphSource::Node(lim_id, 0));
+            let lat = graph.node_latency(lim_id);
+            assert!(lat.get() > 0, "the limiter must report its lookahead");
+            assert_eq!(
+                graph.latency_plan().total(),
+                lat,
+                "channel 1 is the slow path"
+            );
+            lat
+        };
+
+        // The shrink: channel 1 is no longer declared, while `lim` is still
+        // in the graph and still wired from `osc`.
+        app.insert_resource(MasterSources::default().with(0, PortSource::node(osc)));
+        app.update();
+
+        let osc_id = node_id(&app, osc);
+        let graph = app.world().resource::<AudioGraphRes>();
+        assert_eq!(graph.output_source(0), GraphSource::Node(osc_id, 0));
+        assert_eq!(
+            graph.output_source(1),
+            GraphSource::Silence,
+            "{backend:?}: the dropped channel's source is disconnected"
+        );
+        assert_eq!(
+            graph.outputs(),
+            2,
+            "{backend:?}: the root keeps its width; a shrink is not a narrowing"
+        );
+        assert_eq!(
+            graph.source(lim_id, 0),
+            GraphSource::Node(osc_id, 0),
+            "the limiter's own input is still declared, so it is untouched"
+        );
+        let plan = graph.latency_plan();
+        assert_eq!(
+            plan.total(),
+            tutti_core::Samples(0),
+            "{backend:?}: no output reaches the limiter any more (it was {latency:?})"
+        );
+        assert_eq!(
+            plan.channels().len(),
+            2,
+            "{backend:?}: one figure per root channel"
+        );
+
+        // And the value agrees: `LiveGraph` describes the whole root, so the
+        // same fold over it gives the same figures.
+        let live = app.world().resource::<bevy_tutti::graph::LiveGraph>();
+        assert_eq!(live.topology().outputs.len(), 2);
+        assert_eq!(tutti_types::latency::plan(live.topology()), plan);
+    }
+    both_backends!(shrinking_the_master_releases_the_dropped_channel);
 
     /// Channels past `MAX_ROOT_CHANNELS` are refused at the clamp, not silently
     /// dropped one layer down — the render scratch is bounded, so a root wider than

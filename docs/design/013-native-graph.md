@@ -1959,6 +1959,19 @@ Recorded for later:
     edit waits for the re-prepare's second half and lands with the next
     `commit_graph` (the per-channel compensation table then has the new
     width).
+  - **A shrinking `MasterSources` — fixed after #39.** A shorter
+    declaration used to leave the channels past its length undeclared, so
+    the one a host dropped kept its last source, and the value (one channel
+    short of the root) folded to a different latency plan from the engine,
+    tripping `wire::rebuild`'s consistency check on both backends (#39's
+    disk-clip restart test kept channel 1 declared to avoid it). A written
+    `MasterSources` now declares every root channel, a channel past its
+    length as silence (`topology::build`), so a shrink disconnects the
+    dropped channel, the root keeps the device's width, and `LiveGraph` is
+    as wide as the root, so `latency::plan` over it is the graph's.
+    Empty still declares nothing. Pinned by `graph_wire`'s
+    `shrinking_the_master_releases_the_dropped_channel` on both backends;
+    the restart test now shrinks the master for real.
   - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` placed
     events in frames at its build rate) was rebuilt at the new rate:
     `midi::sequence::rebuild` treated a change of `AudioConfig`'s rate as

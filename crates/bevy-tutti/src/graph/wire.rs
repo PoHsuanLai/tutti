@@ -243,6 +243,13 @@ impl PortSources {
 /// keeps whatever it wired through [`AudioGraphRes`] itself. Once written, it is
 /// the single declaration of what reaches the speakers, which is what makes "two
 /// nodes both own the master" unrepresentable rather than a race.
+///
+/// **It declares every root channel, not just the ones its `Vec` reaches.** A
+/// channel past its length is silent, so shrinking the declaration releases
+/// the channels it dropped: replacing a stereo declaration with a one-channel
+/// one disconnects whatever fed channel 1. The root keeps its width — it is the
+/// device's, and a shrink is not a narrowing — while a *longer* declaration
+/// widens it (see [`from_node_at_width`](Self::from_node_at_width)).
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct MasterSources(pub Vec<PortSource>);
 
@@ -433,11 +440,12 @@ pub fn rebuild(
     // stereo root's channels 0-1 with no warning and nothing in the ECS to
     // inspect, and the clamp would read as a bound rather than a policy.
     //
-    // **Widen only, never narrow.** A *shorter* declaration means undeclared
-    // (see `topology::apply`), so narrowing on it would tear down channels the
-    // host may own imperatively — the same violation `unwire_removed_sources`
-    // refuses. Narrowing needs its own explicit API, not an inference from a
-    // `Vec`'s length.
+    // **Widen only, never narrow.** A *shorter* declaration silences the
+    // channels past its length (`topology::build`) and leaves the root at its
+    // width: the root is sized to the device (`engine::build::root_width`),
+    // and narrowing it under the device would make the engine fold channels
+    // the host never asked to lose. Narrowing needs its own explicit API, not
+    // an inference from a `Vec`'s length.
     //
     // Global output arity has none of the per-vertex hazard that makes node
     // arity a respawn: global outputs are sinks, so shrinking cannot dangle a

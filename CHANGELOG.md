@@ -83,7 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `Midi::drain_for_process(block)` / `drain_for_tick()` (tutti-plugin) | `drain_for_process(block, sample_rate)` / `drain_for_tick(sample_rate)` |
 
   `tutti_core::transport::BeatCursor` gained `advance_at(block, rate)` and
-  `unrated(transport)` for such a source. `MidiClipSource`'s offline copy
+  `unrated(transport)` for such a source. bevy-tutti's
+  `midi::sequence::rebuild` no longer rebuilds every installed clip when the
+  device rate changes (#39 did, to re-rate the clip): a re-rated unit
+  already hands its clip the new rate, and the rebuild's all-notes-off could
+  cut a sounding note. `MidiClipSource`'s offline copy
   has no hardware-out tap (an export must not play the clip on external
   MIDI); `MidiSnapshotReader` answers `None` (it is already offline, bound
   to its own timeline).

@@ -426,6 +426,16 @@ impl AudioUnit for VbapPannerNode {
     ///
     /// Dropping `ramp_from` is the other half of the same seating: the
     /// previous block's gains belong to the ramp being discarded.
+    /// Detach the position, spread and width cells (see `Param::detach`), so
+    /// a fork renders the placement it was taken at, not a source moved while
+    /// it runs. Values are kept. The inner panner's own target cells are
+    /// already private to each clone (`Clone` builds a fresh panner).
+    fn isolate(&mut self) {
+        self.target.detach();
+        self.spread.detach();
+        self.width.detach();
+    }
+
     fn reset(&mut self) {
         self.sync_position();
         self.panner.reset_state();

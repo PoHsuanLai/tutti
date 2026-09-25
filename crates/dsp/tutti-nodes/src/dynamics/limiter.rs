@@ -475,6 +475,15 @@ impl AudioUnit for LimiterNode {
         self.channels
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.threshold_db.detach();
+        self.ceiling_db.detach();
+        self.release.detach();
+    }
+
     fn reset(&mut self) {
         self.ring.clear();
         self.envelope = 0.0;
@@ -739,6 +748,13 @@ impl AudioUnit for BrickwallLimiterNode {
 
     fn outputs(&self) -> usize {
         self.channels
+    }
+
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.ceiling_db.detach();
     }
 
     fn reset(&mut self) {}

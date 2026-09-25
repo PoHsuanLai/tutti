@@ -234,6 +234,20 @@ pub struct ClickNode {
     ///
     /// Meaningless while `last_click_onset` is `None`, and never read then.
     latched_until: Beat,
+    /// The live-session flags as they were when this copy was isolated, or
+    /// `None` on a live node, which reads them off `transport` every block.
+    /// See `AudioUnit::isolate` below.
+    frozen: Option<SessionFlags>,
+}
+
+/// The three live-session facts the metronome's modes gate on, captured at
+/// fork time so a fork does not follow the live transport's play, count-in
+/// and record state while it renders.
+#[derive(Clone, Copy, Debug)]
+struct SessionFlags {
+    playing: bool,
+    in_preroll: bool,
+    recording: bool,
 }
 
 impl ClickNode {
@@ -261,6 +275,7 @@ impl ClickNode {
             is_accent: false,
             last_click_onset: None,
             latched_until: Beat(f64::NEG_INFINITY),
+            frozen: None,
         }
     }
 
@@ -317,12 +332,28 @@ impl ClickNode {
     fn should_play(&self) -> bool {
         match self.settings.mode() {
             MetronomeMode::Off => false,
-            MetronomeMode::Always => self.transport.motion.is_playing(),
-            MetronomeMode::PrerollOnly => self.transport.settings.is_in_preroll(),
-            MetronomeMode::RecordingOnly => {
-                self.transport.settings.is_recording() && !self.transport.settings.is_in_preroll()
-            }
+            MetronomeMode::Always => self.playing(),
+            MetronomeMode::PrerollOnly => self.in_preroll(),
+            MetronomeMode::RecordingOnly => self.recording() && !self.in_preroll(),
         }
+    }
+
+    #[inline]
+    fn playing(&self) -> bool {
+        self.frozen
+            .map_or_else(|| self.transport.motion.is_playing(), |f| f.playing)
+    }
+
+    #[inline]
+    fn in_preroll(&self) -> bool {
+        self.frozen
+            .map_or_else(|| self.transport.settings.is_in_preroll(), |f| f.in_preroll)
+    }
+
+    #[inline]
+    fn recording(&self) -> bool {
+        self.frozen
+            .map_or_else(|| self.transport.settings.is_recording(), |f| f.recording)
     }
 
     /// Silence the node and forget the last beat, so resuming re-triggers.
@@ -547,6 +578,32 @@ impl AudioUnit for ClickNode {
             output.set_f32(0, i, sample);
             output.set_f32(1, i, sample);
         }
+    }
+
+    /// Snapshot everything this node reads live, so a fork renders the
+    /// metronome as it was set when it was taken: a fresh [`ClickSettings`]
+    /// holding the current volume, mode and meter (the live `Arc` is shared by
+    /// every clone and by the host that calls `set_volume`/`set_meter`), and
+    /// the transport's play, count-in and record flags frozen at their current
+    /// values. Nothing is written back to either; the node only ever read them.
+    ///
+    /// Runs on the control thread (it allocates, and `meter()`'s borrow is
+    /// released before the fresh cell is built).
+    fn isolate(&mut self) {
+        let fresh = ClickSettings::new();
+        fresh.volume.store(
+            self.settings.volume.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        fresh.set_mode(self.settings.mode());
+        let meter = Arc::new(self.settings.meter().clone());
+        fresh.set_meter(meter);
+        self.settings = Arc::new(fresh);
+        self.frozen = Some(SessionFlags {
+            playing: self.transport.motion.is_playing(),
+            in_preroll: self.transport.settings.is_in_preroll(),
+            recording: self.transport.settings.is_recording(),
+        });
     }
 
     fn reset(&mut self) {
@@ -1262,5 +1319,57 @@ mod tests {
             output[0], 0.0,
             "Click should not play during preroll in RecordingOnly mode"
         );
+    }
+
+    /// The beat pair of a playhead moving at 20 beats a second (48 kHz), so a
+    /// snapshot render crosses several clicks and a bar line.
+    fn fast_beat(ch: usize, frame: usize) -> f32 {
+        let (whole, frac) = split_beat(Beat(frame as f64 / 2_400.0));
+        if ch == 0 {
+            whole
+        } else {
+            frac
+        }
+    }
+
+    /// A fork of the click renders the metronome as it was set when it was
+    /// taken: volume, mode and meter come from a fresh `ClickSettings`, and
+    /// the play flag is frozen, so none of the four live moves below reaches
+    /// it (and each is heard by a fork taken after it).
+    ///
+    /// Mutations (run): drop the `self.settings = Arc::new(fresh)` line →
+    /// volume, mode and meter fail; drop `self.frozen = Some(..)` → "play
+    /// state" fails; build the fresh settings with `ClickSettings::new()`'s
+    /// defaults instead of the current values → the fork is silent (mode
+    /// Off), so every control fails as inaudible.
+    #[test]
+    fn isolate_snapshots_settings_and_session_flags() {
+        tutti_graph::contract::IsolateRow::new("ClickNode", || {
+            let (transport, settings, node) = make_click();
+            playing(&transport);
+            settings.set_mode(MetronomeMode::Always);
+            settings.set_volume(0.5);
+            node
+        })
+        .input(fast_beat)
+        .control("volume", |n| n.settings.set_volume(1.0))
+        .control("mode", |n| n.settings.set_mode(MetronomeMode::Off))
+        .control("meter", |n| {
+            n.settings
+                .set_meter(Arc::new(MeterMap::new([MeterChange::new(
+                    Beat(0.0),
+                    TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                )])))
+        })
+        .control("play state", |n| {
+            let _ = n
+                .transport
+                .motion
+                .try_send(super::super::MotionEvent::Stop {
+                    fade: super::super::FadeOut::Immediate,
+                });
+            n.transport.motion.drain();
+        })
+        .check();
     }
 }

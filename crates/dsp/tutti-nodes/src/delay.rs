@@ -766,6 +766,16 @@ impl AudioUnit for DelayLineNode {
         self.width()
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.delay_time.iter_mut().for_each(Param::detach);
+        self.feedback.detach();
+        self.cross_feedback.detach();
+        self.mix.detach();
+    }
+
     fn reset(&mut self) {
         for d in &mut self.delays {
             d.reset();

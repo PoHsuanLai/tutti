@@ -45,6 +45,14 @@ impl SpatialTarget {
         self.elevation
             .store(Elevation::new_clamped(elevation.into().get()));
     }
+
+    /// Stop sharing both cells with the live node and its UI handles,
+    /// keeping the current bearing (see [`Param::detach`]): what a panner's
+    /// `isolate` calls, so a fork renders the position it was taken at.
+    pub fn detach(&mut self) {
+        self.azimuth.detach();
+        self.elevation.detach();
+    }
 }
 
 impl Default for SpatialTarget {

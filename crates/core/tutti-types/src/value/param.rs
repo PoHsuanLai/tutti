@@ -62,6 +62,22 @@ impl<U: Unit<Raw = f32>> Param<U> {
         }
     }
 
+    /// Stop sharing the cell: replace it with a fresh one holding the
+    /// *current* value. Every other holder of the old cell (the live node, a
+    /// UI handle, a mod target) keeps it; this copy no longer sees their
+    /// writes, and they no longer see this copy's.
+    ///
+    /// This is what `AudioUnit::isolate` calls on each control a node reads,
+    /// so an offline fork renders a snapshot of the controls taken at fork
+    /// time rather than following live knob moves while it runs. Keeping the
+    /// value is the point — a fork that snapped to a default would render
+    /// something nobody heard. Control-thread only: it allocates, like
+    /// [`Param::new`].
+    #[inline]
+    pub fn detach(&mut self) {
+        *self = Self::new(self.load());
+    }
+
     /// Expose the raw atomic for compatibility with existing external APIs
     /// that accept `Arc<AtomicF32>`. This clones the `Arc`; do not call on
     /// the audio thread.
@@ -90,5 +106,33 @@ impl<U: Unit<Raw = f32>> core::fmt::Debug for Param<U> {
         f.debug_struct("Param")
             .field("value", &self.load())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Param;
+    use crate::value::units::Hz;
+
+    /// `detach` keeps the value and cuts the cell both ways.
+    ///
+    /// Mutation: make `detach` a no-op → the live write reaches the detached
+    /// copy and the second `assert_eq!` fails; make it
+    /// `Self::new(U::default())` → the value is lost and the first fails.
+    #[test]
+    fn detach_keeps_the_value_and_severs_the_cell() {
+        let live = Param::new(Hz(440.0));
+        let mut copy = live.handle();
+        copy.detach();
+        assert_eq!(copy.load(), Hz(440.0), "detach keeps the current value");
+
+        live.store(Hz(880.0));
+        assert_eq!(copy.load(), Hz(440.0), "a live write must not reach it");
+        copy.store(Hz(110.0));
+        assert_eq!(
+            live.load(),
+            Hz(880.0),
+            "its write must not reach the live cell"
+        );
     }
 }

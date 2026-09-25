@@ -690,9 +690,9 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     /// `Legacy::controlled` shadow never moves the live cutoff ahead of its
     /// settings ring.
     fn isolate(&mut self) {
-        self.frequency = Param::new(self.frequency.load());
-        self.q = Param::new(self.q.load());
-        self.gain_db = Param::new(self.gain_db.load());
+        self.frequency.detach();
+        self.q.detach();
+        self.gain_db.detach();
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {

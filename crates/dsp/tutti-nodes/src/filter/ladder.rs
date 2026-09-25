@@ -591,6 +591,15 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
         self.width()
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.frequency.detach();
+        self.resonance.detach();
+        self.drive.detach();
+    }
+
     fn reset(&mut self) {
         let zero = F::from_f64(0.0);
         self.stages.fill([zero; 4]);

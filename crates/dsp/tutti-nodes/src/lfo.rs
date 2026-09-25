@@ -350,6 +350,15 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
         1
     }
 
+    /// Detach every control cell this node reads (see `Param::detach`), so
+    /// a fork renders the controls as they were when it was taken, not the
+    /// live knob moves made while it runs. Values are kept.
+    fn isolate(&mut self) {
+        self.frequency.detach();
+        self.depth.detach();
+        self.phase_offset.detach();
+    }
+
     fn reset(&mut self) {
         self.phase = Phase::START;
         // The node owns the modulator's threaded state, so it resets it here to

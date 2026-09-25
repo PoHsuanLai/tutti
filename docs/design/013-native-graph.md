@@ -2,8 +2,9 @@
 
 Status: **in progress** (2026-09-25). The graph crate (`tutti-graph`,
 Phases 1 and 2) has landed, and `Engine` can render it
-([Phase 2](#phase-2--runtime-behind-the-engine), 2b); the Bevy adapter and
-export still build `Net`s until Phase 3. Work that does not need the graph has
+([Phase 2](#phase-2--runtime-behind-the-engine), 2b); the Bevy adapter runs
+on either, behind `GraphBackend` (default `Net`, Phase 3 PR 11), and export
+still builds `Net`s until PR 12. Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -1045,7 +1046,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 8 | **Done.** tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
 | 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
-| 11 | bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
+| 11 | **Done.** bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
 | 12 | bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
@@ -1237,6 +1238,133 @@ reports them. A `replace` not yet committed at that key lands as a plain
 swap. The reference derives the same cut from a spec latency change with no
 new generation (`tests/replace.rs`, `set_latency_cuts_a_fade` and
 `the_reference_cuts_a_fade_on_a_latency_change`).
+
+**PR 11 landed.** `AudioGraphRes` has two runtimes behind its method
+surface, chosen once — `TuttiPlugin::graph_backend` for an engine,
+`headless_with` / `unattached_with` without a device — as
+`GraphBackend::{Net, Native}`, `Net` the default. The native arm
+(`bevy-tutti/src/graph/native.rs`) holds an `Editor` and, until the engine or
+a test takes it, its `Executor`. How each method maps:
+
+- **Nodes** are `Legacy::controlled` (through a forwarding `AudioUnit`
+  wrapper, since `controlled` wants a sized `Clone` unit), never `pure`: an
+  `AudioUnit` says nothing about whether it is a function of its inputs, and
+  a wrong `pure` parks a SoundFont for good. Keyed `NodeKey(node.0.value())`,
+  handles minted with `NodeId::new()`, as PR 10 proposed.
+- **Edges and outputs** are written into `editor.spec_mut()`; silence is no
+  edge.
+- **`set_param`** goes through the node's `LegacyControls` (ring + shadow).
+- **`replace`** is `Editor::replace` with `Fade::seconds`, pre-checked
+  (ports, latency, in-place, resolution against the running shape) because a
+  refused replace consumes its node; with no running unit of that shape it
+  lands as a plain `insert` on the key, every edge kept.
+- **Latency/tail/arity** come from the editor's shapes; `latency_plan` is
+  `latency::plan` over the spec's topology; **`compensate` inserts nothing**:
+  it compiles the spec as the frame's commit will and publishes the plan's
+  `compensation()` / `total_latency()` to `ChannelCompensation` /
+  `GraphLatency` (a test pins them equal to the plan the commit then sends).
+- **`commit`** is `Editor::commit`; `Backpressure` and `Repreparing` keep
+  `GraphDirty` set for a retry next frame, any other refusal is logged (the
+  next edit retries). `commit_graph` collects every frame on the main thread,
+  which frees retired units there and flushes held settings.
+- **A plugin's latency change** reaches the editor from the latency poll
+  (now main-thread, since `set_latency` collects): the node's shadow is
+  re-probed and `Editor::set_latency` moves PDC. The shadow, not the plugin's
+  own figure, because the node's latency is the plugin's **plus** its 64-frame
+  pipeline block, which only the unit adds (`route`).
+- **The engine** (`engine/build.rs`, `assemble`): `Editor::new` +
+  `Engine::with_graph`, an `EnvClock` in place of `TransportClock`, the click
+  wired to it by the same `PortSources`. Building it found a bug on the `Net`
+  path too: the builder left the `Net` at its 44.1 kHz default and
+  `Net::push` re-rates every unit to it, so on a 48 kHz device the beat clock
+  and every unit ran 8.8% fast. The graph is now built at the device rate on
+  both backends.
+
+**The PR 10 leftovers.** `unattached`: on `Native` a `set_param` lands on the
+next rendered block, on every graph — there is no control-side copy for it
+to land on at once. The tests that read a unit's state after a write render a
+frame first (`graph_reconcile`'s `audio_param`), and the one that pokes the
+cell settles the first write before it pokes. `inspect` reads the node's
+shadow. `render_frame` drives the local executor (committing any edit first,
+as `Net`'s tick renders the graph as edited) and panics once the audio side
+is taken. `take_audio_side` returns an `AudioSide` that renders either
+backend. `a_range_edit_reaches_a_live_clamp` renders the chain instead of
+inspecting it: the clamp lives in `ClampBounds`, a cell a native shadow does
+not share once `isolate` snapshots cells (#29). **Export stays `Net`-only**:
+on `Native` it reports `InvalidConfig` naming the backend and PR 12 (no `Net`
+mirror is kept: a second graph to keep in step is the thing this migration
+removes).
+
+**Control writes and forks** (for PR 12). A fork clones each node's shadow,
+so a by-value write that bypasses the settings ring moves the live unit and
+leaves a fork (an export) at the value the unit was built with. Every
+`bevy-tutti` path was audited: `AudioParam` and `AudioGraphRes::set_param` go
+through the ring; a control-rate **modulated** param's authored base is also
+written to the node's shadow (`set_param_snapshot`), both when a param
+write moves it and when the modulation rebuild re-seeds it from
+`ModParamRange`, since live the driver writes `base + Σ layers` and a fork
+runs its own modulation — **live modulation offsets are the exception, by
+design**. A sampler clip's **placement** rides `VoiceNode`'s command queue,
+which `isolate` severs from a copy, so `VoiceNodeHandle` records each
+placement it queues in a control-thread cell the node shares with its
+clones, and `isolate` applies the latest to the copy (review of #32). A unit
+test forks the native graph and checks each path (`graph::native::tests`);
+the placement is pinned in `tutti-sampler`'s `voice_node_commands`. Known
+export limits, each a cell a `Setting` cannot reach:
+
+- **The audio-rate base** (`AudioRateChains::base_cell`) is read by
+  `AtomicSourceNode`, which takes no `Setting`; a fork sees the cell as that
+  node's `isolate` leaves its shadow. Fix: `AtomicSourceNode::set` (a
+  `tutti-nodes` change).
+- **An audio-rate chain's range** (`ClampBounds` on `ParamSumNode`), for the
+  same reason.
+- **Metronome volume and mode** (`MetronomeRes`, `ClickSettings` atomics):
+  live-only; a click is not part of an export.
+- **Hosted plugin parameters** go over the plugin's own transport, and a
+  plugin forks by state transfer (PR 16), which reads the live instance.
+
+**Where the backends differ** (each stated on `GraphBackend`): the
+`set_param` timing above; `inspect` reads a shadow; `render_frame` needs the
+local executor; `replace` fades only between units of one latency, from a
+committed unit (`Net` fades regardless); PDC is spliced `PdcDelay` nodes on
+`Net` and the compiler's on `Native` (so a `Net` channel's source reads a
+delay node, a native one the authored node — the A/B suite's switch test);
+export. **What must match, and does**: the same scene through the whole
+adapter renders bit-identically on both (a latent limiter under PDC,
+per-sample units in unaligned 100-frame blocks, a param write landing on the
+same frame in 256-frame blocks), and the builder's engine clicks the same
+samples on both across a seek (`bevy-tutti/tests/graph_backends.rs`,
+`engine::build::engine_tests`). A crossfade follows one law on both but each
+runtime places its frames on its own grid, so inside the fade they agree to
+two fade steps, and before and after it to the bit. Every graph suite
+(`graph_*`, `mod_*`, `midi_*`, `audio_param`, `capture_controls`,
+`plugin_capture`, `audio_io_pump`, and the crate's unit tests that build a
+graph) runs on both backends through `both_backends!`.
+
+**Review of #32.** `Editor::replace` refuses while a re-prepare is between
+its commits (and on a poisoned editor) and consumes its node. The native
+`replace` asks first (`Editor::is_repreparing`, `Editor::poisoned`) and hands
+the unit back as `ReplaceRefused::Busy`; `crossfade_audio_node` binds the
+incoming unit's captured controls only when the replace lands, parks a busy
+one in `PendingCrossfades` (applied on the first frame after the re-prepare
+resumes) and logs a poisoned refusal, keeping the old controls. The plugin
+latency re-probe clamps to `MAX_NODE_LATENCY`, as the insert-time probe is
+clamped, since `set_latency` refuses a figure past it and the poll would not
+ask again.
+
+**Phase 3 follow-ups** (recorded, not done here):
+
+- **An engine-driven sampler A/B.** `AudioSide::render` renders under a
+  stopped transport, so the A/B suite cannot see a clip reader's clock.
+  Once the `Legacy` per-64-chunk timeline fix for clip readers lands
+  (tutti-core / tutti-export), add a sampler A/B through
+  `Engine::process` at 256- and 512-frame blocks with a rolling transport.
+- **`TuttiDriver::restart` at a new device rate** re-prepares nothing: the
+  graph keeps its old rate (on `Net` its units, on `Native` its `Prepare`),
+  and `AudioConfig` and `Transport` keep the old one too. It predates PR 11
+  and affects both backends; the fix is a restart that re-rates the graph
+  (`AudioGraphRes::set_sample_rate`, an `Editor::reprepare` on `Native`) and
+  republishes `AudioConfig` and the transport's rate.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

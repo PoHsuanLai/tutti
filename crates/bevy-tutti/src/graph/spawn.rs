@@ -12,7 +12,7 @@ use bevy_ecs::system::EntityCommands;
 use tutti_core::AudioNode;
 use tutti_core::AudioUnit;
 
-use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
 
 /// `Commands` extension that adds a unit to the graph and spawns an entity
 /// with `AudioNode(id)` attached.
@@ -160,8 +160,13 @@ fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit:
 ///    [`capture`](crate::graph::capture)), replacing the old unit's: a synth's
 ///    new MIDI port, a filter's new param cells.
 /// 3. Calls [`AudioGraphRes::replace`] with a 5 ms equal-amplitude fade.
-/// 4. Marks [`GraphDirty`] so the per-frame
-///    [`commit_graph`](crate::graph::commit_graph) flushes.
+/// 4. If the graph took it: binds the captured controls and marks
+///    [`GraphDirty`] so the per-frame
+///    [`commit_graph`](crate::graph::commit_graph) flushes. If the graph is
+///    re-preparing (native backend, a rate change between its two commits),
+///    parks unit and controls in [`PendingCrossfades`] and applies them on the
+///    first frame the graph takes them; until then the entity keeps driving
+///    the unit that is still playing. On a poisoned graph, logs and drops.
 ///
 /// The same [`AudioNode`] survives the crossfade — connections to/from this node
 /// stay valid, and any [`PortSources`](crate::graph::PortSources) naming this
@@ -182,32 +187,107 @@ pub fn crossfade_audio_node(
     new_unit: Box<dyn AudioUnit>,
 ) {
     commands.queue(move |world: &mut World| {
-        let Some(node) = world.get::<AudioNode>(entity).copied() else {
+        if world.get::<AudioNode>(entity).is_none() {
             bevy_log::warn!(
                 "crossfade_audio_node: entity {:?} has no AudioNode; nothing to crossfade",
                 entity
             );
             return;
-        };
+        }
         let controls = CapturedControls::capture(world, new_unit.as_ref());
-        let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
-            bevy_log::warn!(
-                "crossfade_audio_node: AudioGraphRes missing; entity {:?} not crossfaded",
+        apply_crossfade(world, entity, new_unit, controls);
+    });
+}
+
+/// Crossfades [`crossfade_audio_node`] could not apply yet, because the graph
+/// was re-preparing (a sample-rate or block-size change between its two
+/// commits). Each keeps its unit and the controls captured from it, and
+/// [`retry_pending_crossfades`] applies it on the first frame the graph takes
+/// it — in request order, so a later crossfade of the same entity still wins.
+///
+/// A resource rather than a component: the entity may be despawned while the
+/// crossfade waits, and the unit then goes with the request, not with an
+/// entity that is gone.
+#[derive(Resource, Default)]
+pub struct PendingCrossfades(Vec<(Entity, Box<dyn AudioUnit>, CapturedControls)>);
+
+impl PendingCrossfades {
+    /// How many crossfades are waiting.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether none are.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Swap `entity`'s unit for `unit` under a 5 ms fade and, **only if the graph
+/// took it**, bind the controls captured from it. On
+/// [`ReplaceRefused::Busy`](crate::graph::ReplaceRefused::Busy) the request is
+/// parked in [`PendingCrossfades`] with the unit handed back; on `Failed` it is
+/// logged and dropped, and the entity keeps the outgoing unit's controls,
+/// which still drive the unit that is still playing.
+fn apply_crossfade(
+    world: &mut World,
+    entity: Entity,
+    unit: Box<dyn AudioUnit>,
+    controls: CapturedControls,
+) {
+    let Some(node) = world.get::<AudioNode>(entity).copied() else {
+        bevy_log::warn!(
+            "crossfade_audio_node: entity {:?} lost its AudioNode; crossfade dropped",
+            entity
+        );
+        return;
+    };
+    let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
+        bevy_log::warn!(
+            "crossfade_audio_node: AudioGraphRes missing; entity {:?} not crossfaded",
+            entity
+        );
+        return;
+    };
+    match graph.replace(
+        node,
+        unit,
+        tutti_core::Seconds(0.005),
+        tutti_core::CrossfadeCurve::EqualAmplitude,
+    ) {
+        Ok(()) => {
+            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
+                dirty.0 = true;
+            }
+            if let Ok(mut e) = world.get_entity_mut(entity) {
+                controls.replace(&mut e, node);
+            }
+        }
+        Err(ReplaceRefused::Busy(unit)) => {
+            world
+                .get_resource_or_init::<PendingCrossfades>()
+                .0
+                .push((entity, unit, controls));
+        }
+        Err(ReplaceRefused::Failed(why)) => {
+            bevy_log::error!(
+                "crossfade_audio_node: entity {:?} not crossfaded: {why}",
                 entity
             );
-            return;
-        };
-        graph.replace(
-            node,
-            new_unit,
-            tutti_core::Seconds(0.005),
-            tutti_core::CrossfadeCurve::EqualAmplitude,
-        );
-        if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-            dirty.0 = true;
         }
-        if let Ok(mut e) = world.get_entity_mut(entity) {
-            controls.replace(&mut e, node);
-        }
-    });
+    }
+}
+
+/// Apply every crossfade that was waiting for a re-prepare, now that the graph
+/// may take it. One still refused as busy goes back on the queue, in order.
+pub fn retry_pending_crossfades(world: &mut World) {
+    let Some(mut pending) = world.get_resource_mut::<PendingCrossfades>() else {
+        return;
+    };
+    if pending.0.is_empty() {
+        return;
+    }
+    for (entity, unit, controls) in std::mem::take(&mut pending.0) {
+        apply_crossfade(world, entity, unit, controls);
+    }
 }

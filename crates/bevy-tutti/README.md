@@ -39,6 +39,11 @@ TuttiPlugin::default()
 
 // Custom I/O
 TuttiPlugin { inputs: 2, outputs: 2, ..Default::default() }
+
+// The native tutti-graph runtime instead of fundsp's `Net` (design doc 013).
+// Same ECS surface; `GraphBackend` lists where the two differ. Export is
+// `Net`-only for now and reports an error on `Native`.
+TuttiPlugin { graph_backend: GraphBackend::Native, ..Default::default() }
                // select device by index
                          // enable MIDI subsystem
 

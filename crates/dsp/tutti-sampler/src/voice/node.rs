@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
-use super::command::{VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
+use super::command::{PlacementRecord, VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use crossbeam_channel::{bounded, Receiver};
@@ -59,6 +59,9 @@ pub struct VoiceNode {
     /// than a branch on every block. `VoicePool` makes the same choice for
     /// [`detached`](super::pool::VoicePool::detached).
     pub(crate) rx: Receiver<VoiceCommand>,
+    /// The last placement the node's handle queued, which `isolate` applies to
+    /// a copy — see [`PlacementRecord`]. Empty for a node with no handle.
+    pub(crate) placement: PlacementRecord,
 }
 
 impl VoiceNode {
@@ -103,6 +106,7 @@ impl VoiceNode {
             // channel and have no handle to give out. See
             // [`with_commands`](Self::with_commands).
             rx: bounded(0).1,
+            placement: PlacementRecord::default(),
         }
     }
 
@@ -132,7 +136,8 @@ impl VoiceNode {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let mut node = Self::with_channels(voice, channels);
         node.rx = rx;
-        (node, VoiceNodeHandle { tx })
+        let placement = Arc::clone(&node.placement);
+        (node, VoiceNodeHandle { tx, placement })
     }
 
     /// Apply every queued command. Runs at the top of each block.
@@ -266,6 +271,9 @@ impl Clone for VoiceNode {
             // The offline render is the case where "exactly one receiver" bites
             // rather than helps — see [`AudioUnit::isolate`].
             rx: self.rx.clone(),
+            // Shared, like the receiver: the record of what the handle asked
+            // for, read by an isolated copy (see `isolate`).
+            placement: Arc::clone(&self.placement),
         }
     }
 }
@@ -401,6 +409,22 @@ impl AudioUnit for VoiceNode {
         // severing in place is both sufficient and the simpler half of the same
         // rule. `a_render_clone_steals_no_commands` pins it.
         self.rx = bounded(0).1;
+        // What the severed queue would have carried: the latest placement the
+        // handle queued. A fork copies a snapshot taken when the node was
+        // inserted (a native graph's shadow) and never drains the queue, so
+        // without this a clip moved since would render at its old position.
+        // Read at isolate time, so a copy isolated again later (a fork of the
+        // snapshot) picks up every move up to then.
+        let placed = *self
+            .placement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((start_beat, duration_beats)) = placed {
+            self.slot
+                .voice
+                .source
+                .apply_placement(start_beat, duration_beats);
+        }
     }
 
     /// Answers for the voice it holds: a memory voice is forkable, a disk

@@ -11,8 +11,9 @@ section there before you relax or work around a rule.
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
 once, and events as ports. `Engine` can already render it
-(`Engine::with_graph`); `bevy-tutti` and export still build `Net`s until
-Phase 3. Until the migration lands:
+(`Engine::with_graph`); `bevy-tutti` runs on either behind
+`GraphBackend` (default `Net`; its suites run on both), and export still
+builds `Net`s until Phase 3 PR 12. Until the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can
@@ -204,7 +205,10 @@ This is current until the native graph flips `bevy-tutti` (doc 013, Phase 3).
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
   `MasterSources` resource declare what feeds each port. The rebuild diffs
-  them against `Net` each frame, and the adapter keeps no shadow state.
+  them against the graph each frame, and the adapter keeps no shadow state.
+- A new graph test in `bevy-tutti` runs on both backends: take a
+  `GraphBackend` and invoke `both_backends!(name)` (`tests/common`, or
+  `crate::graph::both_backends` in unit tests).
 - Keys are sink ports, so fan-in cannot be represented. Summing is a node's
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.

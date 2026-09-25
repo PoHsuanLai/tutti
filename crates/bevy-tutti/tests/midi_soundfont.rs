@@ -13,6 +13,9 @@
 
 #![cfg(all(feature = "midi", feature = "soundfont"))]
 
+#[macro_use]
+mod common;
+
 /// The SoundFont spawner binds its entity to the graph with one handle.
 ///
 /// `promote_pending_soundfonts` used to insert `AudioNode` *and* an
@@ -28,6 +31,7 @@
 /// where a wrong path meant every one of them silently passed without running.
 /// (Was `tests/soundfont_spawn.rs`.)
 mod soundfont_spawn {
+    use bevy_tutti::graph::GraphBackend;
     use std::path::PathBuf;
 
     use bevy_app::prelude::*;
@@ -63,11 +67,11 @@ mod soundfont_spawn {
     }
 
     /// An app with the soundfont plugin and the engine resources its systems gate on.
-    fn app() -> App {
+    fn app(backend: GraphBackend) -> App {
         let mut app = App::new();
         app.add_plugins((bevy_app::TaskPoolPlugin::default(), AssetPlugin::default()));
 
-        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
         app.insert_resource(TransportRes(tutti_core::transport::Transport::new(
             SAMPLE_RATE,
         )));
@@ -104,10 +108,9 @@ mod soundfont_spawn {
 
     /// A triggered soundfont ends up bound to the graph by `AudioNode`, and the
     /// node it names is really there.
-    #[test]
-    fn a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle() {
+    fn a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle(backend: GraphBackend) {
         let asset = soundfont_asset();
-        let mut app = app();
+        let mut app = app(backend);
         let handle = insert_asset(&mut app, asset);
 
         let entity = app
@@ -136,6 +139,7 @@ mod soundfont_spawn {
             "and the pending marker is cleared"
         );
     }
+    both_backends!(a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle);
 
     /// The trigger does not fire twice: a promoted entity keeps its original node.
     ///
@@ -148,10 +152,9 @@ mod soundfont_spawn {
     ///
     /// What this does catch is the failure that matters: a spawner that mints a new
     /// node on a later frame, whatever the cause.
-    #[test]
-    fn a_promoted_soundfont_is_not_rebuilt_every_frame() {
+    fn a_promoted_soundfont_is_not_rebuilt_every_frame(backend: GraphBackend) {
         let asset = soundfont_asset();
-        let mut app = app();
+        let mut app = app(backend);
         let handle = insert_asset(&mut app, asset);
 
         let entity = app
@@ -175,6 +178,7 @@ mod soundfont_spawn {
             "the entity keeps its original node — a re-trigger would mint a new one"
         );
     }
+    both_backends!(a_promoted_soundfont_is_not_rebuilt_every_frame);
 
     /// A promoted soundfont is addressable: the promotion captured its MIDI port
     /// before the unit went into the graph.
@@ -188,10 +192,9 @@ mod soundfont_spawn {
     /// `CapturedControls::default()` instead of `capture.capture(&unit)` fails
     /// this — the player gets its node and no port, and every
     /// `MidiSourceInstall` naming it would resolve to nothing.
-    #[test]
-    fn a_promoted_soundfont_carries_its_midi_port() {
+    fn a_promoted_soundfont_carries_its_midi_port(backend: GraphBackend) {
         let asset = soundfont_asset();
-        let mut app = app();
+        let mut app = app(backend);
         let handle = insert_asset(&mut app, asset);
 
         let entity = app
@@ -211,6 +214,7 @@ mod soundfont_spawn {
             .expect("the promotion captured the unit's MIDI port");
         assert_eq!(target.node(), node, "for the node it promoted");
     }
+    both_backends!(a_promoted_soundfont_carries_its_midi_port);
 }
 
 /// The whole chain, rendered: an ECS declaration produces audible samples.
@@ -228,6 +232,7 @@ mod soundfont_spawn {
 /// where a wrong path meant every one of them silently passed without running.
 /// (Was `tests/midi_soundfont_audio.rs`.)
 mod midi_soundfont_audio {
+    use bevy_tutti::graph::GraphBackend;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -319,7 +324,7 @@ mod midi_soundfont_audio {
     }
 
     /// Set up an app with a real soundfont synth wired to output.
-    fn app_with_soundfont() -> (App, Entity) {
+    fn app_with_soundfont(backend: GraphBackend) -> (App, Entity) {
         let sf = soundfont();
         let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
         settings.enable_reverb_and_chorus = false;
@@ -329,7 +334,7 @@ mod midi_soundfont_audio {
         // Headless, because the Commit-phase `commit_graph` needs an audio side
         // to publish to. We render the control side directly rather than through
         // that — `render_frame` on this side sees the same units.
-        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
@@ -383,9 +388,8 @@ mod midi_soundfont_audio {
     /// The end-to-end claim: `MidiSourceInstall` → `rebuild` → resolved port →
     /// installed clip → engine beat→offset → rustysynth → samples. Silence here
     /// means a break anywhere along it.
-    #[test]
-    fn a_declared_note_produces_audio() {
-        let (mut app, synth) = app_with_soundfont();
+    fn a_declared_note_produces_audio(backend: GraphBackend) {
+        let (mut app, synth) = app_with_soundfont(backend);
         roll(&app);
 
         app.world_mut().spawn(MidiSourceInstall::new(
@@ -402,6 +406,7 @@ mod midi_soundfont_audio {
             "an ECS-declared note must reach the speakers, got RMS {level}"
         );
     }
+    both_backends!(a_declared_note_produces_audio);
 
     /// Silence before the note, sound after — the scheduling is real, not a note
     /// that fires the instant the clip is installed.
@@ -412,9 +417,8 @@ mod midi_soundfont_audio {
     /// The beat is set by hand: it is normally advanced by a `TransportClock` node
     /// the engine adds to the graph, and this test builds a minimal graph holding
     /// only the synth. Setting it is what the audio thread would have done.
-    #[test]
-    fn the_note_waits_for_its_beat() {
-        let (mut app, synth) = app_with_soundfont();
+    fn the_note_waits_for_its_beat(backend: GraphBackend) {
+        let (mut app, synth) = app_with_soundfont(backend);
         roll(&app);
 
         app.world_mut().spawn(MidiSourceInstall::new(
@@ -440,6 +444,7 @@ mod midi_soundfont_audio {
             "the note should sound once its beat arrives: {before} then {after}"
         );
     }
+    both_backends!(the_note_waits_for_its_beat);
 
     /// Live preview still reaches a synth that has a clip installed.
     ///
@@ -447,9 +452,8 @@ mod midi_soundfont_audio {
     /// installed source over the mailbox rather than replacing it. Before that, a
     /// synth playing a clip went deaf to the keyboard, and the pushed events sat in
     /// the mailbox and popped out stale on the next `clear()`.
-    #[test]
-    fn preview_still_sounds_under_an_installed_clip() {
-        let (mut app, synth) = app_with_soundfont();
+    fn preview_still_sounds_under_an_installed_clip(backend: GraphBackend) {
+        let (mut app, synth) = app_with_soundfont(backend);
         roll(&app);
 
         // A clip whose first note is far in the future, so anything audible in the
@@ -486,6 +490,7 @@ mod midi_soundfont_audio {
             "live preview must still sound while a clip is installed, got RMS {previewed}"
         );
     }
+    both_backends!(preview_still_sounds_under_an_installed_clip);
 }
 
 /// A crossfaded synth still plays: MIDI sent the way the inbound phase sends it
@@ -509,21 +514,22 @@ mod midi_soundfont_audio {
 /// - Dropping the `recaptured` arm from the route `rebuild`'s dirty check
 ///   leaves the routes naming the outgoing unit: the route assertion fails.
 mod midi_crossfade {
+    use bevy_tutti::graph::GraphBackend;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use bevy_app::prelude::*;
 
     use bevy_tutti::graph::{
-        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources,
-        SpawnAudioNode, TransportRes,
+        crossfade_audio_node, AudioConfig, AudioGraphRes, AudioSide, GraphReconcilePlugin,
+        MasterSources, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{
         MidiBusRes, MidiRouteRule, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
-    use tutti_core::{AudioUnit, SampleRate};
+    use tutti_core::SampleRate;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
     use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
@@ -556,7 +562,7 @@ mod midi_crossfade {
     }
 
     /// Render `frames` stereo frames from the backend the audio thread would own.
-    fn render(backend: &mut impl AudioUnit, frames: usize) -> Vec<f32> {
+    fn render(backend: &mut AudioSide, frames: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(frames * 2);
         for _ in 0..frames {
             let mut frame = [0.0f32; 2];
@@ -566,10 +572,9 @@ mod midi_crossfade {
         out
     }
 
-    #[test]
-    fn a_crossfaded_synth_is_reached_through_the_bus() {
+    fn a_crossfaded_synth_is_reached_through_the_bus(backend: GraphBackend) {
         let sf = soundfont();
-        let mut graph = AudioGraphRes::unattached(0, 2);
+        let mut graph = AudioGraphRes::unattached_with(backend, 0, 2);
         graph.set_sample_rate(SampleRate(SAMPLE_RATE));
         let mut backend = graph.take_audio_side();
 
@@ -642,4 +647,5 @@ mod midi_crossfade {
             "a note routed to the crossfaded synth must sound, got RMS {level}"
         );
     }
+    both_backends!(a_crossfaded_synth_is_reached_through_the_bus);
 }

@@ -13,6 +13,11 @@
 //! engine that diverged from the value it was just handed would fail the whole
 //! suite rather than only these.
 
+#[macro_use]
+mod common;
+
+use bevy_tutti::graph::GraphBackend;
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
@@ -29,9 +34,9 @@ use tutti_nodes::{ChannelSumNode, LimiterNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
-fn app() -> App {
+fn app(backend: GraphBackend) -> App {
     let mut app = App::new();
-    app.insert_resource(AudioGraphRes::headless(0, 2));
+    app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
     app.insert_resource(AudioEngineState::Running);
     app.add_plugins(GraphReconcilePlugin);
     app
@@ -61,9 +66,8 @@ fn live(app: &App) -> &tutti_types::graph::Topology {
 /// node source fails this on the `Edge::Direct(Source::Node(..))` assertion;
 /// dropping the sink-port index (writing port 0 for every port) fails it on the
 /// `InPort` key, since the map would hold one edge where two are asserted.
-#[test]
-fn a_declaration_becomes_an_edge_in_the_value() {
-    let mut app = app();
+fn a_declaration_becomes_an_edge_in_the_value(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
@@ -88,15 +92,15 @@ fn a_declaration_becomes_an_edge_in_the_value() {
         "both entity-bound nodes are in the value"
     );
 }
+both_backends!(a_declaration_becomes_an_edge_in_the_value);
 
 /// `MasterSources` becomes the value's global outputs, in channel order.
 ///
 /// **Mutation note.** Collecting the outputs in reverse, or dropping the
 /// `min(root_channels)` clamp so an over-long declaration is carried whole,
 /// both fail this.
-#[test]
-fn the_master_declaration_becomes_the_values_outputs() {
-    let mut app = app();
+fn the_master_declaration_becomes_the_values_outputs(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     app.world_mut()
         .insert_resource(MasterSources::mono_from(osc));
@@ -117,6 +121,7 @@ fn the_master_declaration_becomes_the_values_outputs() {
         "both channels take port 0 — `mono_from` is a duplication, and the value says so"
     );
 }
+both_backends!(the_master_declaration_becomes_the_values_outputs);
 
 /// **The hazard `wire.rs`'s module docs used to call undetectable — now
 /// repaired.**
@@ -158,9 +163,8 @@ fn the_master_declaration_becomes_the_values_outputs() {
 /// it. Narrowing `apply` to visit only the sinks whose `PortSources` changed
 /// this frame fails it for the same reason. Removing the imperative
 /// `set_source` fails the middle assertion instead. All three verified.
-#[test]
-fn an_imperative_engine_write_is_repaired_from_the_value() {
-    let mut app = app();
+fn an_imperative_engine_write_is_repaired_from_the_value(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let other = spawn_node(&mut app, Osc::sine(Hz(880.0)));
     let tampered = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
@@ -230,6 +234,7 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
         "the declaration that changed reached the engine as well"
     );
 }
+both_backends!(an_imperative_engine_write_is_repaired_from_the_value);
 
 /// `remove::<AudioNode>()` without despawning the entity takes the node out of
 /// the value.
@@ -255,9 +260,10 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
 /// keep a spec for a node the engine no longer holds. Making `source_of` fall
 /// back to `Source::Zero` for an unresolvable node fails the `edges.is_empty()`
 /// assertion, since the edge would be present as silence rather than absent.
-#[test]
-fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
-    let mut app = app();
+fn removing_the_component_without_despawning_takes_the_node_out_of_the_value(
+    backend: GraphBackend,
+) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
@@ -286,6 +292,7 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
         "the entity itself survives — this is the case despawn does not cover"
     );
 }
+both_backends!(removing_the_component_without_despawning_takes_the_node_out_of_the_value);
 
 /// A crossfade replaces the unit behind an entity and keeps the sink wired to
 /// whatever node the entity now carries.
@@ -300,9 +307,8 @@ fn removing_the_component_without_despawning_takes_the_node_out_of_the_value() {
 /// today, but nothing in the value would then survive the *rebind* case above,
 /// and the edge assertion would name whichever id happened to win. Verified by
 /// checking the key against `key_of(osc)` rather than against a captured value.
-#[test]
-fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
-    let mut app = app();
+fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
@@ -344,6 +350,7 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
         "and the whole edge set is unchanged: a crossfade moves no wire"
     );
 }
+both_backends!(a_crossfade_keeps_the_sink_wired_to_the_entitys_key);
 
 /// PDC shrinks when the latency-bearing node leaves.
 ///
@@ -356,9 +363,8 @@ fn a_crossfade_keeps_the_sink_wired_to_the_entitys_key() {
 /// node (the tempting simplification, since only the shape is "topology") makes
 /// the first `assert!(before > 0)` fail. Leaving a removed node in the value
 /// keeps the compensation at its old figure and fails the shrink assertion.
-#[test]
-fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
-    let mut app = app();
+fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves(backend: GraphBackend) {
+    let mut app = app(backend);
     // Two paths into the master: one through a lookahead limiter, one dry. The
     // dry channel must pre-roll to match, which is the whole figure.
     let dry = spawn_node(&mut app, Const::mono(1.0));
@@ -402,6 +408,7 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
         "and with nothing latency-bearing left, to nothing at all"
     );
 }
+both_backends!(the_latency_plan_shrinks_when_the_latency_bearing_node_leaves);
 
 /// N spawns in one frame end in **one** commit.
 ///
@@ -417,9 +424,8 @@ fn the_latency_plan_shrinks_when_the_latency_bearing_node_leaves() {
 /// statement that exactly one commit consumed all four edits. Removing the
 /// `dirty.0 = true` from `spawn_audio_node` fails the `nodes.len()` assertion
 /// instead, since the wire pass would never run.
-#[test]
-fn many_spawns_in_one_frame_coalesce_into_one_commit() {
-    let mut app = app();
+fn many_spawns_in_one_frame_coalesce_into_one_commit(backend: GraphBackend) {
+    let mut app = app(backend);
     let spawned: Vec<Entity> = (0..4)
         .map(|i| spawn_node(&mut app, Osc::sine(Hz(440.0 * (i + 1) as f32))))
         .collect();
@@ -445,6 +451,7 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
         assert!(live(&app).nodes.contains_key(&key_of(*e)));
     }
 }
+both_backends!(many_spawns_in_one_frame_coalesce_into_one_commit);
 
 /// An entity whose node has not arrived is **absent** from the value, not
 /// present as a placeholder.
@@ -458,9 +465,8 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
 /// the first `assert!(!contains_key)` fail; resolving its edge anyway (dropping
 /// `source_of`'s `topology.nodes.get(&key)?`) makes the `edges.is_empty()`
 /// assertion fail with an edge naming a key that is not in `nodes`.
-#[test]
-fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
-    let mut app = app();
+fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder(backend: GraphBackend) {
+    let mut app = app(backend);
     let pending = app.world_mut().spawn_empty().id();
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
@@ -492,6 +498,7 @@ fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
     );
     assert_eq!(live(&app).edges.len(), 1, "and the edge resolves");
 }
+both_backends!(an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder);
 
 /// The value validates, and reports faults rather than panicking.
 ///
@@ -503,9 +510,8 @@ fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
 /// **Mutation note.** Making `build` emit an edge past a sink's declared input
 /// width (dropping the `min(spec.inputs.count())` clamp) turns this `Ok` into
 /// an `Err` carrying `SinkPortOutOfRange`.
-#[test]
-fn the_value_the_adapter_builds_validates() {
-    let mut app = app();
+fn the_value_the_adapter_builds_validates(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     // Two inputs, one declared: port 1 is undeclared, which is legal.
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
@@ -527,6 +533,7 @@ fn the_value_the_adapter_builds_validates() {
         "the undeclared port is reported, and is not a fault"
     );
 }
+both_backends!(the_value_the_adapter_builds_validates);
 
 /// Re-binding an entity to a different node moves the wire, **even though the
 /// value does not change**.
@@ -551,9 +558,8 @@ fn the_value_the_adapter_builds_validates() {
 /// (`graph_wire::re_binding_an_entity_to_a_new_node_re_derives_the_wire` failed
 /// first). Asserting only that the value is unchanged would pass with the bug
 /// present, which is why the engine read is the assertion that matters here.
-#[test]
-fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
-    let mut app = app();
+fn a_rebind_moves_the_wire_though_the_value_is_unchanged(backend: GraphBackend) {
+    let mut app = app(backend);
     let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
     let sink = spawn_node(&mut app, ChannelSumNode::new(2, ChannelLayout::MONO));
     app.world_mut()
@@ -585,3 +591,4 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
          signal that the mapping the value resolves through has moved"
     );
 }
+both_backends!(a_rebind_moves_the_wire_though_the_value_is_unchanged);

@@ -89,6 +89,11 @@ pub struct TuttiPlugin {
     /// plugin — and any host plugin that schedules against its sets — on a
     /// machine with no sound card.
     pub disabled: bool,
+    /// Which graph runtime the engine renders: fundsp's `Net` (the default)
+    /// or the native `tutti-graph` runtime. See
+    /// [`GraphBackend`](crate::graph::GraphBackend) for where the two differ;
+    /// export is `Net`-only for now.
+    pub graph_backend: crate::graph::GraphBackend,
 }
 
 impl Default for TuttiPlugin {
@@ -98,6 +103,7 @@ impl Default for TuttiPlugin {
             inputs: 0,
             outputs: 2,
             disabled: false,
+            graph_backend: crate::graph::GraphBackend::Net,
         }
     }
 }

@@ -15,6 +15,9 @@
 
 #![cfg(feature = "modulation")]
 
+#[macro_use]
+mod common;
+
 /// The modulation adapter driven end-to-end: a real `App`, a real graph, a real
 /// node, and the node's own atomic checked for movement.
 ///
@@ -25,6 +28,7 @@
 mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
@@ -47,10 +51,10 @@ mod modulation {
 
     /// An app with the reconcile pipeline, a live graph, and modulation — the same
     /// wiring a host gets, minus the audio device.
-    fn app_with_graph() -> (App, Entity) {
+    fn app_with_graph(backend: GraphBackend) -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes::unattached(0, 1));
+        app.insert_resource(AudioGraphRes::unattached_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         // The systems are gated on a running engine; nothing here opens a device,
         // so the state stands in for one.
@@ -118,9 +122,8 @@ mod modulation {
             .store(current + samples, std::sync::atomic::Ordering::Relaxed);
     }
 
-    #[test]
-    fn a_route_moves_the_target_nodes_own_atomic() {
-        let (mut app, target) = app_with_graph();
+    fn a_route_moves_the_target_nodes_own_atomic(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
 
         let lfo = app
@@ -153,13 +156,13 @@ mod modulation {
         }
         assert!(moved, "the LFO should have moved the node's drive atomic");
     }
+    both_backends!(a_route_moves_the_target_nodes_own_atomic);
 
-    #[test]
-    fn an_unregistered_node_type_resolves_to_nothing() {
+    fn an_unregistered_node_type_resolves_to_nothing(backend: GraphBackend) {
         // The registry is what makes resolution possible; without the node type
         // registered a route is inert rather than panicking.
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::unattached(0, 1));
+        app.insert_resource(AudioGraphRes::unattached_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -189,12 +192,12 @@ mod modulation {
             "the node keeps its own value"
         );
     }
+    both_backends!(an_unregistered_node_type_resolves_to_nothing);
 
-    #[test]
-    fn a_param_without_a_declared_range_is_not_modulated() {
+    fn a_param_without_a_declared_range_is_not_modulated(backend: GraphBackend) {
         // `ModParamRange` is how a host says "this is modulatable, over this
         // range". Without it there is no base or clamp to accumulate against.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         let lfo = app
             .world_mut()
             .spawn((
@@ -212,10 +215,10 @@ mod modulation {
 
         assert!(app.world().resource::<ModulationMatrix>().is_empty());
     }
+    both_backends!(a_param_without_a_declared_range_is_not_modulated);
 
-    #[test]
-    fn the_claim_set_reports_which_params_are_modulated() {
-        let (mut app, target) = app_with_graph();
+    fn the_claim_set_reports_which_params_are_modulated(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -237,6 +240,7 @@ mod modulation {
         // A param nobody routed to is the reconciler's to write.
         assert!(!matrix.is_modulated(target, ParamAddr::Unit(UnitParam::Cutoff)));
     }
+    both_backends!(the_claim_set_reports_which_params_are_modulated);
 
     // The two `set_base` tests moved into `modulation/driver.rs` when the method
     // became `pub(crate)` — an integration test cannot reach it. They still build a
@@ -244,12 +248,11 @@ mod modulation {
     // public path they used to stand in for is covered by
     // `an_authored_write_to_a_modulated_param_moves_the_base` in `audio_param.rs`.
 
-    #[test]
-    fn removing_a_route_returns_the_param_to_its_base() {
+    fn removing_a_route_returns_the_param_to_its_base(backend: GraphBackend) {
         // The continuous-value tax: modulation offsets are never "released", so a
         // deleted edge would leave its last offset stuck on the param forever if
         // the stale-layer sweep did not clear it.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -285,12 +288,12 @@ mod modulation {
         );
         assert!(app.world().resource::<ModulationMatrix>().is_empty());
     }
+    both_backends!(removing_a_route_returns_the_param_to_its_base);
 
-    #[test]
-    fn two_routes_onto_one_param_sum_instead_of_overwriting() {
+    fn two_routes_onto_one_param_sum_instead_of_overwriting(backend: GraphBackend) {
         // Distinct layer keys per route are what makes this hold: with a shared key
         // the second route would overwrite the first's contribution in place.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
 
         let mut spawn_square = || {
@@ -316,7 +319,7 @@ mod modulation {
         let two = node_drive(&app, target);
 
         // One route alone, for comparison.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -338,10 +341,10 @@ mod modulation {
             "two routes should push further than one: one={one}, two={two}"
         );
     }
+    both_backends!(two_routes_onto_one_param_sum_instead_of_overwriting);
 
-    #[test]
-    fn a_disabled_route_contributes_nothing() {
-        let (mut app, target) = app_with_graph();
+    fn a_disabled_route_contributes_nothing(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -362,13 +365,13 @@ mod modulation {
         assert!(app.world().resource::<ModulationMatrix>().is_empty());
         assert_eq!(node_drive(&app, target), UNMODULATED_DRIVE);
     }
+    both_backends!(a_disabled_route_contributes_nothing);
 
-    #[test]
-    fn a_steady_transport_does_not_rebuild_the_matrix() {
+    fn a_steady_transport_does_not_rebuild_the_matrix(backend: GraphBackend) {
         // Rebuilding mints fresh sources, and a fresh source starts at phase zero.
         // If a quiet frame rebuilt, every LFO would restart 60 times a second and
         // never advance — so the change-gate is load-bearing, not an optimization.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         declare_drive_range(&mut app, target, 5.0);
         let lfo = app
             .world_mut()
@@ -408,6 +411,7 @@ mod modulation {
             "a quiet frame must not rebuild the matrix"
         );
     }
+    both_backends!(a_steady_transport_does_not_rebuild_the_matrix);
 
     /// Reflection has to reach the *leaves* to be worth anything: an editor showing
     /// a route needs the `Depth` inside it, not just the struct's name. Walking down
@@ -444,11 +448,10 @@ mod modulation {
 
     /// The types are registered, so a scene or an inspector can find them by name
     /// rather than only through a value that already exists.
-    #[test]
-    fn the_components_are_registered_for_reflection() {
+    fn the_components_are_registered_for_reflection(backend: GraphBackend) {
         use bevy_ecs::reflect::AppTypeRegistry;
 
-        let (app, _) = app_with_graph();
+        let (app, _) = app_with_graph(backend);
         let registry = app.world().resource::<AppTypeRegistry>().read();
 
         for name in [
@@ -463,6 +466,7 @@ mod modulation {
             );
         }
     }
+    both_backends!(the_components_are_registered_for_reflection);
 }
 
 /// One LFO modulating another LFO's rate, declared entirely in the ECS.
@@ -481,6 +485,7 @@ mod modulation {
 mod mod_cascade {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
@@ -496,10 +501,10 @@ mod mod_cascade {
     /// The rate the modulated LFO is authored at, and the floor of its range.
     const CARRIER_RATE: f32 = 2.0;
 
-    fn app_with_graph() -> (App, Entity) {
+    fn app_with_graph(backend: GraphBackend) -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes::unattached(0, 1));
+        app.insert_resource(AudioGraphRes::unattached_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -584,9 +589,8 @@ mod mod_cascade {
 
     /// The cell exists only where a route asks for one — it is not spawned onto
     /// every source just in case.
-    #[test]
-    fn only_a_routed_source_gets_a_rate_cell() {
-        let (mut app, _) = app_with_graph();
+    fn only_a_routed_source_gets_a_rate_cell(backend: GraphBackend) {
+        let (mut app, _) = app_with_graph(backend);
         let (carrier, modulator) = spawn_cascade(&mut app);
         app.update();
 
@@ -599,12 +603,12 @@ mod mod_cascade {
             "a source nothing routes at should not carry one"
         );
     }
+    both_backends!(only_a_routed_source_gets_a_rate_cell);
 
     /// The route resolves against a source entity, which carries no `AudioNode` at
     /// all — so this can only have gone through the rate path.
-    #[test]
-    fn a_route_onto_a_sources_rate_resolves() {
-        let (mut app, _) = app_with_graph();
+    fn a_route_onto_a_sources_rate_resolves(backend: GraphBackend) {
+        let (mut app, _) = app_with_graph(backend);
         let (carrier, _) = spawn_cascade(&mut app);
         app.update();
 
@@ -619,15 +623,15 @@ mod mod_cascade {
             "the carrier's rate should be claimed by the matrix"
         );
     }
+    both_backends!(a_route_onto_a_sources_rate_resolves);
 
     /// The end-to-end claim: the driver actually moves the cell the carrier reads.
     ///
     /// Asserting on the cell rather than on some downstream audible effect keeps
     /// the failure legible — if this moves, the cascade is wired; if it does not,
     /// the two halves are looking at different cells.
-    #[test]
-    fn the_modulator_moves_the_carriers_live_rate() {
-        let (mut app, _) = app_with_graph();
+    fn the_modulator_moves_the_carriers_live_rate(backend: GraphBackend) {
+        let (mut app, _) = app_with_graph(backend);
         let (carrier, _) = spawn_cascade(&mut app);
         app.update();
 
@@ -660,6 +664,7 @@ mod mod_cascade {
             "the modulator should have driven the carrier's rate above {CARRIER_RATE}, peaked at {peak}"
         );
     }
+    both_backends!(the_modulator_moves_the_carriers_live_rate);
 
     /// The cascade must reach the *downstream source's phase*, not merely the cell.
     ///
@@ -672,14 +677,13 @@ mod mod_cascade {
     /// So the carrier is pointed at a node's `Drive` and its waveform sampled. A
     /// carrier whose rate is being driven sweeps at a different speed than one at a
     /// fixed 2 Hz, so the two visit measurably different value sets.
-    #[test]
-    fn a_driven_rate_changes_the_carriers_own_output() {
+    fn a_driven_rate_changes_the_carriers_own_output(backend: GraphBackend) {
         /// Sample the drive a `carrier`-driven node reads over a fixed window.
         ///
         /// `cascaded` decides whether the carrier's rate is itself modulated; both
         /// arms are otherwise identical, so any divergence is the cascade.
-        fn drive_trace(cascaded: bool) -> Vec<f32> {
-            let (mut app, target) = app_with_graph();
+        fn drive_trace(backend: GraphBackend, cascaded: bool) -> Vec<f32> {
+            let (mut app, target) = app_with_graph(backend);
 
             let carrier = app
                 .world_mut()
@@ -738,8 +742,8 @@ mod mod_cascade {
             trace
         }
 
-        let plain = drive_trace(false);
-        let cascaded = drive_trace(true);
+        let plain = drive_trace(backend, false);
+        let cascaded = drive_trace(backend, true);
 
         // Both must actually be moving, or "they differ" would be vacuous.
         let spread = |t: &[f32]| {
@@ -764,14 +768,14 @@ mod mod_cascade {
              at its fixed rate and is reading a cell nobody drives"
         );
     }
+    both_backends!(a_driven_rate_changes_the_carriers_own_output);
 
     /// A cascade must survive a rebuild. `collect` reconstructs every `Sourced` when
     /// the declaration changes, so a cell minted during the build would be replaced
     /// and the accumulator left writing an orphan — the exact bug the component
     /// exists to prevent, and one that only shows up on the *second* build.
-    #[test]
-    fn the_cascade_survives_a_rebuild() {
-        let (mut app, target) = app_with_graph();
+    fn the_cascade_survives_a_rebuild(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         let (carrier, _) = spawn_cascade(&mut app);
         app.update();
 
@@ -831,6 +835,7 @@ mod mod_cascade {
             "the cascade should still drive the rate after a rebuild, peaked at {peak}"
         );
     }
+    both_backends!(the_cascade_survives_a_rebuild);
 }
 
 /// A route delivered as a beat-evaluated curve rather than a per-frame scalar.
@@ -847,6 +852,7 @@ mod mod_cascade {
 /// function and sampled by the sink at whatever rate it reads.
 /// (Was `tests/mod_curve_delivery.rs`.)
 mod mod_curve_delivery {
+    use bevy_tutti::graph::GraphBackend;
     use std::sync::{Arc, Mutex};
 
     use bevy_app::prelude::*;
@@ -911,9 +917,9 @@ mod mod_curve_delivery {
 
     const BASE: f32 = 5.0;
 
-    fn app() -> App {
+    fn app(backend: GraphBackend) -> App {
         let mut app = App::new();
-        let mut graph = AudioGraphRes::unattached(0, 1);
+        let mut graph = AudioGraphRes::unattached_with(backend, 0, 1);
         let out = graph.insert(tutti_nodes::DistortionNode::new(
             tutti_nodes::ShapeKind::Tanh,
             1.0,
@@ -964,9 +970,8 @@ mod mod_curve_delivery {
     /// A sink no `AudioUnit` owns is reachable at all — the gap `insert_target`
     /// closes. Without it, resolution needs an `AudioNode` and a registered node
     /// type, so this entity could never have been modulated.
-    #[test]
-    fn a_host_supplied_sink_resolves_without_a_graph_node() {
-        let mut app = app();
+    fn a_host_supplied_sink_resolves_without_a_graph_node(backend: GraphBackend) {
+        let mut app = app(backend);
         let sink = wire(&mut app, false);
         app.update();
 
@@ -975,12 +980,12 @@ mod mod_curve_delivery {
             "the route should have installed a layer on the supplied sink"
         );
     }
+    both_backends!(a_host_supplied_sink_resolves_without_a_graph_node);
 
     /// The payoff: a curve layer varies *between* frames, so a reader sampling
     /// faster than the frame rate sees motion a scalar cannot give it.
-    #[test]
-    fn a_curve_delivered_route_varies_within_a_frame() {
-        let mut app = app();
+    fn a_curve_delivered_route_varies_within_a_frame(backend: GraphBackend) {
+        let mut app = app(backend);
         let sink = wire(&mut app, true);
         app.update();
 
@@ -998,14 +1003,14 @@ mod mod_curve_delivery {
             "a curve layer must trace across the beat with no frames run: {traced:?}"
         );
     }
+    both_backends!(a_curve_delivered_route_varies_within_a_frame);
 
     /// The same route scalar-delivered: one value per frame, frozen between them.
     ///
     /// This is the control for the test above — without it, "the value varied"
     /// could just mean the driver ran.
-    #[test]
-    fn a_scalar_delivered_route_holds_between_frames() {
-        let mut app = app();
+    fn a_scalar_delivered_route_holds_between_frames(backend: GraphBackend) {
+        let mut app = app(backend);
         let sink = wire(&mut app, false);
         app.update();
 
@@ -1017,15 +1022,15 @@ mod mod_curve_delivery {
             "a scalar layer is beat-independent within a frame: {traced:?}"
         );
     }
+    both_backends!(a_scalar_delivered_route_holds_between_frames);
 
     /// Asking for a curve on a sink that only takes scalars must still modulate.
     ///
     /// `AtomicTarget` — every native node's accumulator — declines curves, so the
     /// request has to degrade rather than fail. A route that silently stopped
     /// working when its sink said no would be far worse than a coarser one.
-    #[test]
-    fn a_curve_request_falls_back_when_the_sink_declines() {
-        let mut app = app();
+    fn a_curve_request_falls_back_when_the_sink_declines(backend: GraphBackend) {
+        let mut app = app(backend);
         let param = ParamAddr::Unit(UnitParam::Drive);
 
         // A real graph node, whose `ModParams` hands back an `AtomicTarget`.
@@ -1080,6 +1085,7 @@ mod mod_curve_delivery {
             "a declined curve must fall back to scalar delivery and still modulate, saw {seen:?}"
         );
     }
+    both_backends!(a_curve_request_falls_back_when_the_sink_declines);
 }
 
 /// A modulator kind the adapter has never heard of, driving a real param.
@@ -1093,6 +1099,7 @@ mod mod_curve_delivery {
 mod mod_source {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
@@ -1152,10 +1159,10 @@ mod mod_source {
 
     const BASE_DRIVE: f32 = 5.0;
 
-    fn app_with_node() -> (App, Entity) {
+    fn app_with_node(backend: GraphBackend) -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes::unattached(0, 1));
+        app.insert_resource(AudioGraphRes::unattached_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -1218,9 +1225,8 @@ mod mod_source {
             .store(current + samples, std::sync::atomic::Ordering::Relaxed);
     }
 
-    #[test]
-    fn a_custom_kind_drives_a_param() {
-        let (mut app, target) = app_with_node();
+    fn a_custom_kind_drives_a_param(backend: GraphBackend) {
+        let (mut app, target) = app_with_node(backend);
         app.add_mod_source::<StairSource>();
 
         let source = app
@@ -1263,14 +1269,14 @@ mod mod_source {
         );
         assert!(seen.iter().any(|v| *v < BASE_DRIVE), "one below: {seen:?}");
     }
+    both_backends!(a_custom_kind_drives_a_param);
 
     /// The kind's own parameters must reach the built modulator — otherwise the
     /// registry is just a type-level ceremony over a fixed source.
-    #[test]
-    fn the_kinds_own_config_reaches_the_modulator() {
+    fn the_kinds_own_config_reaches_the_modulator(backend: GraphBackend) {
         let mut depths = Vec::new();
         for amount in [0.25_f32, 1.0] {
-            let (mut app, target) = app_with_node();
+            let (mut app, target) = app_with_node(backend);
             app.add_mod_source::<StairSource>();
 
             let source = app
@@ -1299,6 +1305,7 @@ mod mod_source {
             "amount 1.0 should swing far wider than 0.25: {depths:?}"
         );
     }
+    both_backends!(the_kinds_own_config_reaches_the_modulator);
 
     /// The built-in kind and a custom one coexist: two registered kinds means two
     /// collectors, and both must land in the one registry the routes index into.
@@ -1306,9 +1313,8 @@ mod mod_source {
     /// They drive the *same* param, since a distortion node exposes only `Drive`.
     /// That also exercises the summing path — two sources, two layers, one
     /// accumulator — across a kind boundary.
-    #[test]
-    fn a_built_in_and_a_custom_kind_coexist() {
-        let (mut app, target) = app_with_node();
+    fn a_built_in_and_a_custom_kind_coexist(backend: GraphBackend) {
+        let (mut app, target) = app_with_node(backend);
         app.add_mod_source::<StairSource>();
 
         let lfo = app
@@ -1355,13 +1361,13 @@ mod mod_source {
             "two summed sources should visit more than the stair's own two levels, saw {seen:?}"
         );
     }
+    both_backends!(a_built_in_and_a_custom_kind_coexist);
 
     /// Registering a kind twice must schedule one collector. Two would each push a
     /// source for the same entity; the second would take a registry index no route
     /// points at, and its modulation would silently never apply.
-    #[test]
-    fn registering_a_kind_twice_is_idempotent() {
-        let (mut app, target) = app_with_node();
+    fn registering_a_kind_twice_is_idempotent(backend: GraphBackend) {
+        let (mut app, target) = app_with_node(backend);
         app.add_mod_source::<StairSource>()
             .add_mod_source::<StairSource>();
 
@@ -1396,4 +1402,5 @@ mod mod_source {
             .resource::<ModulationMatrix>()
             .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)));
     }
+    both_backends!(registering_a_kind_twice_is_idempotent);
 }

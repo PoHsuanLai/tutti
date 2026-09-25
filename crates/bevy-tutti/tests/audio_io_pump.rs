@@ -13,6 +13,9 @@
 
 #![cfg(feature = "audio-io")]
 
+#[macro_use]
+mod common;
+
 /// The pump's lifetime, which is the only thing this layer owns.
 ///
 /// `pump` itself is the engine's and is tested there. What is asserted here is
@@ -531,6 +534,7 @@ mod master_record {
 mod io_graph_composition {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
+    use bevy_tutti::graph::GraphBackend;
     use ringbuf::traits::{Producer as _, Split as _};
 
     use bevy_tutti::graph::GraphSource;
@@ -543,9 +547,9 @@ mod io_graph_composition {
     /// An app wired the way `build_into` leaves one, minus the audio device.
     /// Same shape as `graph_wire.rs`'s harness — deliberately, so a difference in
     /// outcome is about the node under test and not the scaffolding.
-    fn app() -> App {
+    fn app(backend: GraphBackend) -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app
@@ -584,9 +588,8 @@ mod io_graph_composition {
     ///
     /// If this fails, `io`'s "no wrapper needed" premise is wrong — the type would
     /// need adapter-side help to reach the graph at all.
-    #[test]
-    fn a_monitor_node_reaches_the_master_like_any_other_node() {
-        let mut app = app();
+    fn a_monitor_node_reaches_the_master_like_any_other_node(backend: GraphBackend) {
+        let mut app = app(backend);
         let (monitor, _prod) = monitor_with_feed(64);
 
         let id = {
@@ -606,15 +609,15 @@ mod io_graph_composition {
             );
         }
     }
+    both_backends!(a_monitor_node_reaches_the_master_like_any_other_node);
 
     /// A monitor can sit *upstream of an effect* rather than only at the master —
     /// the "through effects if you like" the mic docs promise.
     ///
     /// Asserted through `Net::source` on the effect's input port, which is what
     /// makes this about the fan-in declaration and not just about the master.
-    #[test]
-    fn a_monitor_node_can_feed_an_effect_chain() {
-        let mut app = app();
+    fn a_monitor_node_can_feed_an_effect_chain(backend: GraphBackend) {
+        let mut app = app(backend);
         let (monitor, _prod) = monitor_with_feed(64);
 
         let (mon_id, fx_id) = {
@@ -636,6 +639,7 @@ mod io_graph_composition {
             "the effect's input must read from the monitor"
         );
     }
+    both_backends!(a_monitor_node_can_feed_an_effect_chain);
 
     /// Frames pushed by a (simulated) capture callback come out of the graph.
     ///
@@ -644,9 +648,8 @@ mod io_graph_composition {
     /// pass both of them while producing silence — which is exactly the trap
     /// `io`'s module docs warn about, so it deserves an assertion rather than a
     /// paragraph.
-    #[test]
-    fn frames_pushed_by_the_capture_callback_reach_the_graph_output() {
-        let mut app = app();
+    fn frames_pushed_by_the_capture_callback_reach_the_graph_output(backend: GraphBackend) {
+        let mut app = app(backend);
         let (monitor, mut prod) = monitor_with_feed(512);
 
         let id = {
@@ -675,6 +678,7 @@ mod io_graph_composition {
             &out[..4]
         );
     }
+    both_backends!(frames_pushed_by_the_capture_callback_reach_the_graph_output);
 
     /// An *undeclared* monitor is silently dropped — the first trap `io`'s docs
     /// name, pinned as behaviour so the warning cannot quietly stop being true.
@@ -682,9 +686,8 @@ mod io_graph_composition {
     /// The node is in the graph but nothing reads it, so the master stays silent.
     /// This is the failure mode that looks like a connected monitor and produces
     /// nothing.
-    #[test]
-    fn an_undeclared_monitor_produces_silence_at_the_master() {
-        let mut app = app();
+    fn an_undeclared_monitor_produces_silence_at_the_master(backend: GraphBackend) {
+        let mut app = app(backend);
         let (monitor, mut prod) = monitor_with_feed(512);
 
         {
@@ -707,4 +710,5 @@ mod io_graph_composition {
              trap documented in `io`'s module docs has changed shape"
         );
     }
+    both_backends!(an_undeclared_monitor_produces_silence_at_the_master);
 }

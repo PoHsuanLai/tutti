@@ -164,17 +164,19 @@ pub fn compensate_graph(
         return;
     }
 
-    let compensation = graph.compensate();
-    total.0 = compensation.total();
-    published
-        .0
-        .publish(Arc::new(compensation.channels().to_vec()));
+    // `None` only on the native backend, for a graph that does not compile:
+    // its commit refuses it too, so the figures in force are still right.
+    let Some(figures) = graph.compensate() else {
+        return;
+    };
+    total.0 = figures.total;
+    published.0.publish(Arc::new(figures.channels));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::GraphSource;
+    use crate::graph::{both_backends, GraphBackend, GraphSource};
     use tutti_core::{ChannelLayout, Db};
     use tutti_nodes::testing::Const;
     use tutti_nodes::LimiterNode;
@@ -199,8 +201,8 @@ mod tests {
     /// The limiter is the engine's own `LimiterNode`, whose lookahead is what
     /// it reports as latency — so the plan is exercised on the latency-bearing
     /// node the engine ships, not on fundsp's.
-    fn skewed_graph() -> (AudioGraphRes, Samples) {
-        let mut graph = AudioGraphRes::headless(0, 2);
+    fn skewed_graph(backend: GraphBackend) -> (AudioGraphRes, Samples) {
+        let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
         let a = graph.insert(Const::mono(1.0));
         let eff = graph.insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
@@ -220,9 +222,8 @@ mod tests {
         (graph, lat)
     }
 
-    #[test]
-    fn publishes_the_table_when_the_graph_is_dirty() {
-        let (graph, eff_lat) = skewed_graph();
+    fn publishes_the_table_when_the_graph_is_dirty(backend: GraphBackend) {
+        let (graph, eff_lat) = skewed_graph(backend);
         let mut app = test_app(graph);
         app.world_mut().resource_mut::<GraphDirty>().0 = true;
 
@@ -233,6 +234,7 @@ mod tests {
         assert_eq!(table.first().copied(), Some(Samples(0)));
         assert_eq!(table.get(1).copied(), Some(eff_lat));
     }
+    both_backends!(publishes_the_table_when_the_graph_is_dirty);
 
     /// The graph's *total* latency is published too — and it cannot be recovered
     /// from the per-channel table.
@@ -241,9 +243,8 @@ mod tests {
     /// feeds pre-rolls by zero: the figure a DAW displays is exactly the one the
     /// table does not contain. It was computed and discarded for as long as
     /// `GraphLatency` did not exist.
-    #[test]
-    fn publishes_the_graphs_total_latency_not_just_the_per_channel_table() {
-        let (graph, eff_lat) = skewed_graph();
+    fn publishes_the_graphs_total_latency_not_just_the_per_channel_table(backend: GraphBackend) {
+        let (graph, eff_lat) = skewed_graph(backend);
         let mut app = test_app(graph);
         app.world_mut().resource_mut::<GraphDirty>().0 = true;
 
@@ -260,11 +261,11 @@ mod tests {
             "the channel that defines the latency pre-rolls by zero"
         );
     }
+    both_backends!(publishes_the_graphs_total_latency_not_just_the_per_channel_table);
 
     /// A graph where nothing reports latency has no figure to display.
-    #[test]
-    fn a_graph_with_no_latency_reports_none() {
-        let mut graph = AudioGraphRes::headless(0, 2);
+    fn a_graph_with_no_latency_reports_none(backend: GraphBackend) {
+        let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
         let a = graph.insert(Const::mono(1.0));
         graph.set_output_source(0, GraphSource::Node(a, 0));
         graph.set_output_source(1, GraphSource::Node(a, 0));
@@ -276,10 +277,10 @@ mod tests {
         assert!(app.world().resource::<GraphLatency>().is_empty());
         assert_eq!(app.world().resource::<GraphLatency>().0, Samples(0));
     }
+    both_backends!(a_graph_with_no_latency_reports_none);
 
-    #[test]
-    fn does_nothing_while_the_graph_is_clean() {
-        let (graph, _) = skewed_graph();
+    fn does_nothing_while_the_graph_is_clean(backend: GraphBackend) {
+        let (graph, _) = skewed_graph(backend);
         let mut app = test_app(graph);
         // GraphDirty defaults to false — no edits this frame.
 
@@ -288,10 +289,10 @@ mod tests {
         let published = app.world().resource::<ChannelCompensation>();
         assert!(published.0.read().is_empty(), "no table published");
     }
+    both_backends!(does_nothing_while_the_graph_is_clean);
 
-    #[test]
-    fn leaves_the_dirty_flag_for_commit_to_clear() {
-        let (graph, _) = skewed_graph();
+    fn leaves_the_dirty_flag_for_commit_to_clear(backend: GraphBackend) {
+        let (graph, _) = skewed_graph(backend);
         let mut app = test_app(graph);
         app.world_mut().resource_mut::<GraphDirty>().0 = true;
 
@@ -301,6 +302,44 @@ mod tests {
             app.world().resource::<GraphDirty>().0,
             "commit_graph owns clearing the flag"
         );
+    }
+    both_backends!(leaves_the_dirty_flag_for_commit_to_clear);
+
+    /// **On the native backend the published figures are the plan's**: what
+    /// `compensate_graph` publishes in the `Compensate` phase — compiled from
+    /// the spec as the frame's commit will compile it — is exactly the
+    /// `Plan::compensation` / `total_latency` the commit then sends to the
+    /// executor. The two are computed apart (a preview compile, then the
+    /// commit's own), so this is what keeps a pre-roll the sampler reads from
+    /// drifting off the delay the graph applies.
+    ///
+    /// Mutation (run): `NativeGraph::planned_compensation` publishing
+    /// `plan.compensation()` reversed → the table and the sent plan disagree
+    /// on both channels (and the two parametrized publish tests fail on
+    /// `native`).
+    #[test]
+    fn native_publishes_the_compensation_its_commit_sends() {
+        let (graph, eff_lat) = skewed_graph(GraphBackend::Native);
+        let mut app = test_app(graph);
+        app.world_mut().resource_mut::<GraphDirty>().0 = true;
+        app.update();
+        assert!(app.world_mut().resource_mut::<AudioGraphRes>().commit());
+
+        let sent = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .sent_compensation()
+            .expect("the native backend sent a plan");
+        let table = app.world().resource::<ChannelCompensation>().0.read();
+        assert_eq!(&*table, &sent.channels[..], "per-channel pre-roll");
+        assert_eq!(
+            app.world().resource::<GraphLatency>().0,
+            sent.total,
+            "total latency"
+        );
+        assert_eq!(sent.total, eff_lat, "and it is the limiter's lookahead");
+        // Nothing was spliced in to get there: the compiler compensates.
+        assert!(!app.world().resource::<AudioGraphRes>().has_compensation());
     }
 
     // `for_channel_is_zero_outside_the_table` was deleted with the `for_channel`

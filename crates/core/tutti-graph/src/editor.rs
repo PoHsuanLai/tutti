@@ -432,6 +432,20 @@ impl Editor {
         self.out
     }
 
+    /// Whether a [`reprepare`](Self::reprepare) is between its two commits:
+    /// until the next [`collect`](Self::collect) after the executor hands the
+    /// units back, `commit`, `replace`, `set_latency` and `reprepare` refuse
+    /// with [`CommitError::Repreparing`]. A host that must not lose what it
+    /// would pass to one of them (a `replace` consumes its node) asks first.
+    pub fn is_repreparing(&self) -> bool {
+        self.repreparing.is_some()
+    }
+
+    /// Why the editor is poisoned, if it is ([`CommitError::Poisoned`]).
+    pub fn poisoned(&self) -> Option<&str> {
+        self.poisoned.as_deref()
+    }
+
     /// The plan sent last — what the next commit is compiled against.
     pub fn base(&self) -> Option<&Arc<Plan>> {
         self.plan.as_ref()

@@ -102,6 +102,10 @@ tutti-sampler = { path = ".", features = ["test-support"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
+# The native graph, to run a voice through `Legacy::controlled`'s settings
+# ring (doc 013 Phase 3). No cycle: `tutti-graph` names only `tutti-types`
+# and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

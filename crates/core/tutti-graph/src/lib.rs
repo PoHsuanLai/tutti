@@ -179,7 +179,7 @@ pub use event::{
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
-pub use legacy::Legacy;
+pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_SETTINGS_CAPACITY};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
     Scratch, Shape, SilenceMask, Status, Transport, TransportChange, TransportChangeRejected,

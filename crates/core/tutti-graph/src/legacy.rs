@@ -59,6 +59,46 @@
 //! graph; parking an instrument costs its audio. If the lost skip shows up in
 //! a profile, the fix is a contract flag the executor reads, not a scan here.
 //!
+//! # Settings, and the shadow: [`Legacy::controlled`]
+//!
+//! `Net::set(Setting)` reached a unit's [`AudioUnit::set`] on the audio
+//! thread: the frontend enqueued the setting and the backend drained its
+//! queue at the start of each `process` (`fundsp-tutti/src/realnet.rs`,
+//! `handle_messages`). Some units depend on exactly that — the sampler
+//! voice's `set` writes `play.gain`, a plain field, so a write anywhere but on
+//! the copy that renders is lost. The graph has no `Net` to carry it, so
+//! [`Legacy::controlled`] builds the same path per node:
+//!
+//! - a preallocated SPSC **settings ring** ([`LEGACY_SETTINGS_CAPACITY`]
+//!   deep) that the node drains at the start of each call, before the first
+//!   chunk, applying each setting through `AudioUnit::set` in the order sent;
+//! - a **shadow**: a clone of the unit taken at construction, behind an
+//!   `Arc<Mutex<_>>` on the control side, never processed and never locked by
+//!   the audio thread. Every [`LegacyControls::set`] is applied to it as well,
+//!   so it holds the unit's by-value params as the caller last set them — what
+//!   a fork (doc 013, Phase 3 PR 2) clones from — and it shares whatever the
+//!   unit shares through `Arc`s (a voice's command channel, a meter cell), so
+//!   node-specific handles can be read off it, as `bevy-tutti` reads them off
+//!   its frontend `Net` today.
+//!
+//! **A full ring never blocks and never drops.** The setting is *held* on
+//! the control side, coalesced per parameter with anything already held for
+//! it (a later value for the same parameter and address replaces the earlier
+//! one, in place), and sent by the next [`set`](LegacyControls::set) or
+//! [`flush`](LegacyControls::flush) that finds room, ahead of anything newer.
+//! The answer says which happened ([`Delivery`], after doc 011's `Delivered`
+//! minus its "dropped": nothing here is). 64 settings per block per node is
+//! far above what a UI or an automation lane sends; `Net` had 256 for the
+//! whole graph.
+//!
+//! **Timing.** A setting sent between blocks lands on the next block, as it
+//! did through `Net`. `Net`'s backend drained per `process` call, which the
+//! engine made at most 64 frames long; the graph hands a node the whole
+//! block, so a setting that races a block lands at the block's start rather
+//! than at the next 64-frame chunk. A pure node that is parked does not drain
+//! until it is next called — nothing it renders can differ, since it renders
+//! only silence meanwhile; its ring may fill, and holding covers that.
+//!
 //! (Two shapes never reached the park even before this: the executor never
 //! skips a node with no audio inputs, and never one with no outputs at all.
 //! The first covers a 0-input source; the second a sink that exists for its
@@ -66,8 +106,13 @@
 //! a plugin instrument with a sidechain, a vocoder carrier. `Modified` closes
 //! it for every shape at once, without leaning on either rule.)
 
+use std::mem::Discriminant;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_node::buffer::BufferVec;
-use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
+use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::io::Io;
@@ -82,6 +127,121 @@ pub struct Legacy {
     /// Whether the unit's output depends only on its audio inputs, so its
     /// silence may be reported (and the node skipped). See the module docs.
     pure: bool,
+    /// The audio-thread end of [`Legacy::controlled`]'s settings ring.
+    settings: Option<HeapCons<Setting>>,
+}
+
+/// Settings one [`Legacy::controlled`] node's ring holds between two of its
+/// calls. Past that, [`LegacyControls::set`] holds and coalesces on the
+/// control side (see the `legacy` module docs, `src/legacy.rs`).
+pub const LEGACY_SETTINGS_CAPACITY: usize = 64;
+
+/// What became of a [`LegacyControls::set`] or
+/// [`flush`](LegacyControls::flush). Never "dropped": a setting that did not
+/// fit is held, not lost.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Everything sent so far is in the ring: the unit applies it at the
+    /// start of its next call.
+    Queued,
+    /// The ring was full. What did not fit is held on the control side,
+    /// coalesced per parameter, and goes out on the next `set` or `flush`
+    /// that finds room. Transient: call [`flush`](LegacyControls::flush)
+    /// after the executor has run a block. The shadow already has it.
+    Held,
+}
+
+/// Which parameter a [`Setting`] sets: its kind and its address. Two
+/// settings with the same key set the same thing, so the later one wins
+/// when both are held.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SettingKey {
+    kind: Discriminant<Parameter>,
+    address: [(u8, u64); 4],
+}
+
+impl SettingKey {
+    fn of(setting: &Setting) -> Self {
+        // `Setting`'s address is private; walk it the way a structural unit
+        // does, one level per `peel`. Four levels is `Setting`'s own bound.
+        let mut rest = setting.clone();
+        let mut address = [(0u8, 0u64); 4];
+        for level in &mut address {
+            *level = match rest.direction() {
+                Address::Null => (0, 0),
+                Address::Left => (1, 0),
+                Address::Right => (2, 0),
+                Address::Index(i) => (3, i as u64),
+                Address::Node(n) => (4, n.get()),
+            };
+            rest = rest.peel();
+        }
+        Self {
+            kind: std::mem::discriminant(setting.parameter()),
+            address,
+        }
+    }
+}
+
+/// The control side of a [`Legacy::controlled`] node: its settings ring, and
+/// the shadow copy of its unit. Control thread only.
+pub struct LegacyControls<T> {
+    tx: HeapProd<Setting>,
+    /// Settings that did not fit, oldest first, one per parameter.
+    held: Vec<(SettingKey, Setting)>,
+    shadow: Arc<Mutex<T>>,
+}
+
+impl<T: AudioUnit> LegacyControls<T> {
+    /// Send `setting` to the unit, and apply it to the shadow now.
+    ///
+    /// Anything held from before goes first, so settings reach the unit in
+    /// the order they were sent (less the ones a later value for the same
+    /// parameter replaced). Never blocks, never drops.
+    pub fn set(&mut self, setting: Setting) -> Delivery {
+        self.shadow().set(setting.clone());
+        if self.flush() == Delivery::Queued && self.tx.try_push(setting.clone()).is_ok() {
+            return Delivery::Queued;
+        }
+        let key = SettingKey::of(&setting);
+        match self.held.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, old)) => *old = setting,
+            None => self.held.push((key, setting)),
+        }
+        Delivery::Held
+    }
+
+    /// Send what is held, as far as the ring has room.
+    pub fn flush(&mut self) -> Delivery {
+        let sent = self
+            .held
+            .iter()
+            .take_while(|(_, s)| self.tx.try_push(s.clone()).is_ok())
+            .count();
+        self.held.drain(..sent);
+        if self.held.is_empty() {
+            Delivery::Queued
+        } else {
+            Delivery::Held
+        }
+    }
+
+    /// Settings held because the ring was full, one per parameter.
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    /// The shadow: a clone of the unit taken at construction, with every
+    /// setting sent since applied to it. Never processed, never prepared
+    /// (its sample rate is whatever the unit had when it was wrapped). Read
+    /// by-value params and `Arc`-shared handles from it; do not mistake it
+    /// for the unit that renders. A poisoned lock is recovered: the shadow
+    /// renders nothing, so a panic mid-`set` leaves nothing torn that audio
+    /// could hear.
+    pub fn shadow(&self) -> MutexGuard<'_, T> {
+        self.shadow.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl Legacy {
@@ -118,6 +278,27 @@ impl Legacy {
         self.pure
     }
 
+    /// Wrap `unit` with a settings path: the `Net::set` replacement. Returns
+    /// the node and its [`LegacyControls`] — a ring the node drains into
+    /// `AudioUnit::set` at the start of each call, and a never-processed
+    /// shadow clone of `unit` that every setting is also applied to. See
+    /// "Settings, and the shadow" in the module docs (`src/legacy.rs`).
+    ///
+    /// Not [`pure`](Self::pure) unless marked with
+    /// [`assume_pure`](Self::assume_pure).
+    pub fn controlled<T: AudioUnit + Clone + 'static>(unit: T) -> (Self, LegacyControls<T>) {
+        let shadow = Arc::new(Mutex::new(unit.clone()));
+        let (tx, rx) = HeapRb::<Setting>::new(LEGACY_SETTINGS_CAPACITY).split();
+        let mut node = Self::new(unit);
+        node.settings = Some(rx);
+        let controls = LegacyControls {
+            tx,
+            held: Vec::new(),
+            shadow,
+        };
+        (node, controls)
+    }
+
     /// Wrap an already boxed unit.
     pub fn from_box(mut unit: Box<dyn AudioUnit>) -> Self {
         let (ins, outs) = (unit.inputs(), unit.outputs());
@@ -128,6 +309,7 @@ impl Legacy {
             input: BufferVec::new(ins),
             output: BufferVec::new(outs),
             pure: false,
+            settings: None,
         }
     }
 
@@ -176,6 +358,14 @@ impl Node for Legacy {
         let ins = self.shape.audio_in.count() as usize;
         let outs = self.shape.audio_out.count() as usize;
         let frames = io.frames();
+        // Settings first, as `Net`'s backend applied its queue at the start
+        // of `process`. `Setting` owns no heap memory, so neither the pop nor
+        // the drop inside `set` allocates or frees.
+        if let Some(rx) = &mut self.settings {
+            while let Some(setting) = rx.try_pop() {
+                self.unit.set(setting);
+            }
+        }
         let mut start = 0;
         while start < frames {
             let len = (frames - start).min(MAX_BUFFER_SIZE);

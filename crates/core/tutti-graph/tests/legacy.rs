@@ -6,7 +6,10 @@ mod common;
 use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
-use tutti_graph::{Editor, GraphBuilder, Legacy, Node, Transport};
+use tutti_graph::{
+    Delivery, Editor, GraphBuilder, Legacy, LegacyControls, Node, Transport,
+    LEGACY_SETTINGS_CAPACITY,
+};
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -439,4 +442,191 @@ fn a_sink_is_never_parked() {
         exec.process(64, &Transport::default(), &[], &mut []);
     }
     assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
+}
+
+/// Holds up to four by-value params as **plain fields**, set through
+/// `AudioUnit::set` (`Setting::value(v).index(i)`), outputs param 0, and logs
+/// every setting it applies — the shape of the sampler voice's `play.gain`,
+/// whose write is lost anywhere but on the copy that renders. Only the
+/// original logs: a clone (the shadow) does not, so the log is what the
+/// rendering copy applied.
+struct Params {
+    values: [f32; 4],
+    log: Option<Arc<std::sync::Mutex<Vec<(usize, f32)>>>>,
+}
+
+impl Clone for Params {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values,
+            log: None,
+        }
+    }
+}
+
+impl Params {
+    fn new() -> Self {
+        Self {
+            values: [0.0; 4],
+            log: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
+        }
+    }
+}
+
+fn param(index: usize, value: f32) -> tutti_node::Setting {
+    tutti_node::Setting::value(value).index(index)
+}
+
+impl AudioUnit for Params {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        output[0] = self.values[0];
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        _input: &tutti_node::buffer::BufferRef,
+        output: &mut tutti_node::buffer::BufferMut,
+    ) {
+        output.channel_f32_mut(0)[..size].fill(self.values[0]);
+    }
+    fn set(&mut self, setting: tutti_node::Setting) {
+        if let (tutti_node::Parameter::Value(v), tutti_node::Address::Index(i)) =
+            (setting.parameter(), setting.direction())
+        {
+            self.values[i] = *v;
+            if let Some(log) = &self.log {
+                log.lock().unwrap().push((i, *v));
+            }
+        }
+    }
+    fn inputs(&self) -> usize {
+        0
+    }
+    fn outputs(&self) -> usize {
+        1
+    }
+    fn route(
+        &mut self,
+        _input: &tutti_node::signal::SignalFrame,
+        _frequency: f64,
+    ) -> tutti_node::signal::SignalFrame {
+        let mut out = tutti_node::signal::SignalFrame::new(1);
+        out.set(0, tutti_node::signal::Signal::Latency(0.0));
+        out
+    }
+    fn get_id(&self) -> u64 {
+        0x5041_5241
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        0
+    }
+}
+
+/// A `Legacy::controlled` `Params` at key 1, feeding output 0.
+fn controlled_graph() -> (
+    Editor,
+    tutti_graph::Executor,
+    LegacyControls<Params>,
+    Arc<std::sync::Mutex<Vec<(usize, f32)>>>,
+) {
+    let unit = Params::new();
+    let log = Arc::clone(unit.log.as_ref().expect("the original logs"));
+    let (node, controls) = Legacy::controlled(unit);
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    let key = NodeKey(1);
+    ed.insert(key, "params", node);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    (ed, exec, controls, log)
+}
+
+/// **A setting lands on the next block, on the copy that renders, and on the
+/// shadow at once** — the `Net::set` path, for a unit whose `set` writes a
+/// plain field.
+///
+/// Mutation: drop the drain at the top of `Legacy::process` → the level
+/// stays 0 → fails. Mutation: skip `self.shadow().set(..)` in
+/// `LegacyControls::set` → the shadow keeps 0 → fails.
+#[test]
+fn a_controlled_setting_lands_on_the_next_block() {
+    let (_ed, mut exec, mut controls, _log) = controlled_graph();
+    let mut out = vec![0.0f32; 64];
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert!(out.iter().all(|&x| x == 0.0));
+
+    assert_eq!(controls.set(param(0, 0.5)), Delivery::Queued);
+    assert_eq!(
+        controls.shadow().values[0],
+        0.5,
+        "the shadow has it before any block runs"
+    );
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert!(out.iter().all(|&x| x == 0.5), "got {:?}", &out[..4]);
+}
+
+/// **A full ring holds and coalesces, and never drops or reorders.** With no
+/// block run, `LEGACY_SETTINGS_CAPACITY` settings fill the ring; the next ones
+/// are held, one per parameter (a second value for param 1 replaces the
+/// first). After a block has drained the ring, the next `set` sends what is
+/// held *first*, then itself.
+///
+/// Mutation: in `LegacyControls::set`, return `Held` without keeping the
+/// setting → param 2 never arrives → fails. Mutation: push a new held entry
+/// instead of replacing the matching one → the unit sees `(1, 10.0)` →
+/// fails. Mutation: try the new setting before flushing what is held → it
+/// arrives ahead of them → fails.
+#[test]
+fn a_full_ring_holds_and_coalesces_and_never_drops() {
+    let (_ed, mut exec, mut controls, log) = controlled_graph();
+    for k in 0..LEGACY_SETTINGS_CAPACITY {
+        assert_eq!(controls.set(param(0, k as f32)), Delivery::Queued);
+    }
+    assert_eq!(controls.set(param(1, 10.0)), Delivery::Held);
+    assert_eq!(controls.set(param(1, 11.0)), Delivery::Held);
+    assert_eq!(controls.set(param(2, 20.0)), Delivery::Held);
+    assert_eq!(controls.held(), 2, "coalesced per parameter");
+    assert_eq!(controls.shadow().values, [63.0, 11.0, 20.0, 0.0]);
+
+    let mut out = vec![0.0f32; 64];
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert_eq!(log.lock().unwrap().len(), LEGACY_SETTINGS_CAPACITY);
+    assert!(out.iter().all(|&x| x == 63.0));
+
+    assert_eq!(controls.set(param(3, 30.0)), Delivery::Queued);
+    assert_eq!(controls.held(), 0);
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    let log = log.lock().unwrap();
+    assert_eq!(
+        &log[LEGACY_SETTINGS_CAPACITY..],
+        &[(1, 11.0), (2, 20.0), (3, 30.0)],
+        "held settings first, in order, the replaced value never sent"
+    );
+}
+
+/// `flush` sends what is held once there is room, and answers `Queued` only
+/// when nothing is left.
+///
+/// Mutation: make `flush` return `Queued` unconditionally → the first
+/// `flush`, with the ring still full, says `Queued` → fails.
+#[test]
+fn flush_sends_what_is_held() {
+    let (_ed, mut exec, mut controls, log) = controlled_graph();
+    for k in 0..LEGACY_SETTINGS_CAPACITY {
+        let _ = controls.set(param(0, k as f32));
+    }
+    assert_eq!(controls.set(param(1, 1.0)), Delivery::Held);
+    assert_eq!(controls.flush(), Delivery::Held, "still no room");
+    let mut out = vec![0.0f32; 64];
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert_eq!(controls.flush(), Delivery::Queued);
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert_eq!(log.lock().unwrap().last(), Some(&(1, 1.0)));
 }

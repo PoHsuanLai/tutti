@@ -4,6 +4,10 @@
 //! starts and reports, that the result reaches an observer attached at the
 //! spawn site, that a batch spawned in one frame starts one at a time, and that
 //! a request's `prepare` hook reaches the net that is actually rendered.
+//!
+//! On `GraphBackend::Net` only, but for the last test: export renders a `Net`
+//! until doc 013's PR 12 moves it to `Editor::fork`, and on the native backend
+//! it reports that it is not there yet (pinned at the bottom).
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -16,7 +20,7 @@ use bevy_tutti::export::{
     ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
     ExportTarget,
 };
-use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
+use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphBackend};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderConfig,
 };
@@ -24,8 +28,8 @@ use tutti_nodes::testing::{Const, Sink};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so
 /// `clone_isolated` succeeds.
-fn graph_with_one_node() -> (AudioGraphRes, tutti_core::AudioNode) {
-    let mut graph = AudioGraphRes::headless(0, 2);
+fn graph_with_one_node_on(backend: GraphBackend) -> (AudioGraphRes, tutti_core::AudioNode) {
+    let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
     let node = graph.insert(Const::mono(0.5));
     graph.set_outputs_from(node);
     (graph, node)
@@ -49,7 +53,11 @@ fn stereo_config() -> ExportConfig {
 
 /// Build an app with the export plugin and a ready engine.
 fn app_with_engine() -> (App, Entity) {
-    let (graph, node) = graph_with_one_node();
+    app_with_engine_on(GraphBackend::Net)
+}
+
+fn app_with_engine_on(backend: GraphBackend) -> (App, Entity) {
+    let (graph, node) = graph_with_one_node_on(backend);
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.add_plugins(ExportPlugin);
@@ -405,4 +413,51 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
         16,
         "and at the caller's start beat, not beat 0"
     );
+}
+
+/// **On the native backend an export says it is not there yet**, for both
+/// sources, rather than rendering something that is not the live graph: the
+/// request reports an `InvalidConfig` naming the backend and the PR that
+/// brings export to it (doc 013, PR 12), and nothing is left in flight.
+///
+/// Mutation (run): `AudioGraphRes::export_master` cloning an empty `Net` for
+/// the native arm (`Ok(Net::new(0, 2))`) → the master request renders silence
+/// and reports buffers, and this fails on its first source.
+#[test]
+fn on_the_native_backend_an_export_reports_that_it_is_not_there_yet() {
+    for source in ["master", "node"] {
+        let (mut app, node) = app_with_engine_on(GraphBackend::Native);
+        let reason: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+        let seen = Arc::clone(&reason);
+        app.world_mut()
+            .spawn(ExportRequest::new(
+                if source == "master" {
+                    ExportSource::Master
+                } else {
+                    ExportSource::Node(node)
+                },
+                ExportTarget::Buffers,
+                stereo_config(),
+                Arc::new(FrozenClock),
+            ))
+            .observe(move |done: On<ExportDone>| {
+                *seen.lock().unwrap() = Some(match &done.result {
+                    Err(tutti_export::Error::InvalidConfig(why)) => why.to_string(),
+                    other => format!("not refused: {other:?}"),
+                });
+            });
+        let reported = run_until(&mut app, |_| reason.lock().unwrap().is_some());
+        assert!(reported, "{source}: the request never reported");
+        let why = reason.lock().unwrap().clone().unwrap();
+        assert!(
+            why.contains("GraphBackend::Native") && why.contains("PR 12"),
+            "{source}: refused with the reason, got {why:?}"
+        );
+        let mut in_flight = app.world_mut().query::<&ExportInFlight>();
+        assert_eq!(
+            in_flight.iter(app.world()).count(),
+            0,
+            "{source}: nothing in flight"
+        );
+    }
 }

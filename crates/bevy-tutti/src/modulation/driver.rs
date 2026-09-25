@@ -326,6 +326,7 @@ mod tests {
     //! atomic — the visibility changed, not the rigor.
 
     use super::*;
+    use crate::graph::{both_backends, GraphBackend};
     use bevy_app::prelude::*;
 
     use crate::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
@@ -341,12 +342,12 @@ mod tests {
 
     const BASE_DRIVE: f32 = 5.0;
 
-    fn app_with_graph() -> (App, Entity) {
+    fn app_with_graph(backend: GraphBackend) -> (App, Entity) {
         let mut app = App::new();
 
         // `headless`, which has a backend to commit into: this app runs the
         // full reconcile pipeline, and `commit_graph` commits.
-        app.insert_resource(AudioGraphRes::headless(0, 1));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -402,12 +403,11 @@ mod tests {
             .store(current + samples, core::sync::atomic::Ordering::Relaxed);
     }
 
-    #[test]
-    fn set_base_moves_a_modulated_param_without_fighting_the_driver() {
+    fn set_base_moves_a_modulated_param_without_fighting_the_driver(backend: GraphBackend) {
         // The single-writer rule in practice: an authored change lands on the
         // accumulator's base, so the next flush carries it rather than
         // reverting it. Writing the node atomic directly loses it in a frame.
-        let (mut app, target) = app_with_graph();
+        let (mut app, target) = app_with_graph(backend);
         let lfo = app
             .world_mut()
             // A square at zero rate holds a constant offset rather than
@@ -436,10 +436,10 @@ mod tests {
             "base moved 5 -> 8, so the value should follow: {before} -> {after}"
         );
     }
+    both_backends!(set_base_moves_a_modulated_param_without_fighting_the_driver);
 
-    #[test]
-    fn set_base_declines_a_param_it_does_not_own() {
-        let (mut app, target) = app_with_graph();
+    fn set_base_declines_a_param_it_does_not_own(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         app.update();
 
         let matrix = app.world().resource::<ModulationMatrix>();
@@ -448,6 +448,7 @@ mod tests {
             "nothing routes here, so the caller owns the write"
         );
     }
+    both_backends!(set_base_declines_a_param_it_does_not_own);
 
     /// An authored write through [`write_param`](crate::graph::write_param)
     /// survives on a **modulated** param — the branch that routes it to the
@@ -463,9 +464,8 @@ mod tests {
     /// atomic every frame, so a direct write there is overwritten by the next
     /// flush regardless of system order — the two writers touch different
     /// fields of a mutex-guarded `LayeredCurve` and never contend.
-    #[test]
-    fn an_authored_write_through_write_param_survives_modulation() {
-        let (mut app, target) = app_with_graph();
+    fn an_authored_write_through_write_param_survives_modulation(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         let lfo = app
             .world_mut()
             // Zero-rate square: a constant offset, so the base shift stays
@@ -507,6 +507,7 @@ mod tests {
              the write went to the node atomic and the driver overwrote it."
         );
     }
+    both_backends!(an_authored_write_through_write_param_survives_modulation);
 
     /// **A rebuild re-seeds the base from `ModParamRange`, discarding a
     /// `write_param` base.**
@@ -518,9 +519,8 @@ mod tests {
     /// base *without* the document moving (MIDI learn, a plugin writing back)
     /// changes this test, which is the signal to route that writer through
     /// `ModParamRange` too.
-    #[test]
-    fn a_rebuild_reseeds_the_base_from_the_declared_range() {
-        let (mut app, target) = app_with_graph();
+    fn a_rebuild_reseeds_the_base_from_the_declared_range(backend: GraphBackend) {
+        let (mut app, target) = app_with_graph(backend);
         let lfo = app
             .world_mut()
             .spawn((
@@ -580,4 +580,5 @@ mod tests {
              through write_param; got {reseeded} (was {carried} before)"
         );
     }
+    both_backends!(a_rebuild_reseeds_the_base_from_the_declared_range);
 }

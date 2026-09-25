@@ -10,12 +10,16 @@
 
 #![cfg(any(all(feature = "midi", feature = "synth"), feature = "modulation"))]
 
+#[macro_use]
+mod common;
+
 /// MIDI: the captured `MidiTarget` follows the unit through every insertion.
 #[cfg(all(feature = "midi", feature = "synth"))]
 mod midi {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
     use bevy_ecs::system::RunSystemOnce;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{
         crossfade_audio_node, AudioGraphRes, GraphReconcilePlugin, InsertAudioNode, SpawnAudioNode,
@@ -26,11 +30,11 @@ mod midi {
     use tutti_midi_types::MidiUnitId;
     use tutti_polysynth::{PolySynth, SynthConfig};
 
-    fn app() -> App {
+    fn app(backend: GraphBackend) -> App {
         let mut app = App::new();
         // A backend: every insertion path dirties the graph, and the commit
         // asserts one exists.
-        app.insert_resource(AudioGraphRes::headless(0, 2));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app.init_resource::<MidiTargetRegistry>();
@@ -62,9 +66,8 @@ mod midi {
     /// Mutation: making `add_and_bind` bind `CapturedControls::default()`
     /// instead of the captured controls fails this — the entity gets its node
     /// and no port.
-    #[test]
-    fn spawn_audio_node_captures_a_registered_units_port() {
-        let mut app = app();
+    fn spawn_audio_node_captures_a_registered_units_port(backend: GraphBackend) {
+        let mut app = app(backend);
         let (unit, id) = synth();
         let entity = app.world_mut().commands().spawn_audio_node(unit).id();
         app.update();
@@ -74,14 +77,14 @@ mod midi {
         assert_eq!(target.node(), node_of(&app, entity), "for its own node");
         assert_eq!(resolved(&mut app, entity), Some(id));
     }
+    both_backends!(spawn_audio_node_captures_a_registered_units_port);
 
     /// The same capture on the adopt-an-entity path.
     ///
     /// Mutation: as above — both paths share `add_and_bind`, and this pins that
     /// `insert_audio_node` still goes through it.
-    #[test]
-    fn insert_audio_node_captures_a_registered_units_port() {
-        let mut app = app();
+    fn insert_audio_node_captures_a_registered_units_port(backend: GraphBackend) {
+        let mut app = app(backend);
         let (unit, id) = synth();
         let entity = app.world_mut().spawn_empty().id();
         app.world_mut()
@@ -92,6 +95,7 @@ mod midi {
 
         assert_eq!(resolved(&mut app, entity), Some(id));
     }
+    both_backends!(insert_audio_node_captures_a_registered_units_port);
 
     /// A crossfade replaces the unit under a surviving `NodeId`, so it must
     /// replace the captured port too — the staleness that used to be the
@@ -100,9 +104,8 @@ mod midi {
     /// Mutation: deleting the `controls.replace(..)` call in
     /// `crossfade_audio_node` leaves the first synth's id resolving, and fails
     /// the second assertion.
-    #[test]
-    fn a_crossfade_recaptures_from_the_incoming_unit() {
-        let mut app = app();
+    fn a_crossfade_recaptures_from_the_incoming_unit(backend: GraphBackend) {
+        let mut app = app(backend);
         let (first, first_id) = synth();
         let entity = app.world_mut().commands().spawn_audio_node(first).id();
         app.update();
@@ -120,15 +123,15 @@ mod midi {
             "and resolves to the incoming unit's port, not the outgoing one's"
         );
     }
+    both_backends!(a_crossfade_recaptures_from_the_incoming_unit);
 
     /// Crossfading to a unit with no port removes the target rather than leaving
     /// the old one reachable under the new unit's node.
     ///
     /// Mutation: making `CapturedControls::replace` skip the removal when a
     /// control is absent leaves the synth's port resolving, and fails this.
-    #[test]
-    fn a_crossfade_to_a_portless_unit_drops_the_target() {
-        let mut app = app();
+    fn a_crossfade_to_a_portless_unit_drops_the_target(backend: GraphBackend) {
+        let mut app = app(backend);
         let (unit, _) = synth();
         let entity = app.world_mut().commands().spawn_audio_node(unit).id();
         app.update();
@@ -146,14 +149,14 @@ mod midi {
         assert!(app.world().get::<MidiTarget>(entity).is_none());
         assert_eq!(resolved(&mut app, entity), None);
     }
+    both_backends!(a_crossfade_to_a_portless_unit_drops_the_target);
 
     /// Taking the node away takes the captured port with it.
     ///
     /// Mutation: dropping the `drop_captured` call from
     /// `reconcile_node_despawn` leaves the `MidiTarget` on the entity.
-    #[test]
-    fn removing_the_node_drops_the_captured_target() {
-        let mut app = app();
+    fn removing_the_node_drops_the_captured_target(backend: GraphBackend) {
+        let mut app = app(backend);
         let (unit, _) = synth();
         let entity = app.world_mut().commands().spawn_audio_node(unit).id();
         app.update();
@@ -163,15 +166,15 @@ mod midi {
         app.update();
         assert!(app.world().get::<MidiTarget>(entity).is_none());
     }
+    both_backends!(removing_the_node_drops_the_captured_target);
 
     /// An `AudioNode` replaced by hand, with no fresh capture, leaves the old
     /// target behind; resolution must not hand it out for the new node.
     ///
     /// Mutation: dropping the `target.node == node.0` check in
     /// `MidiTargetResolver::port` resolves the leftover port and fails this.
-    #[test]
-    fn a_target_captured_for_another_node_resolves_to_nothing() {
-        let mut app = app();
+    fn a_target_captured_for_another_node_resolves_to_nothing(backend: GraphBackend) {
+        let mut app = app(backend);
         let (unit, id) = synth();
         let entity = app.world_mut().commands().spawn_audio_node(unit).id();
         app.update();
@@ -188,6 +191,7 @@ mod midi {
         );
         assert_eq!(resolved(&mut app, entity), None);
     }
+    both_backends!(a_target_captured_for_another_node_resolves_to_nothing);
 }
 
 /// Modulation: the captured `ModParamsHandle` is what a route binds through.
@@ -195,6 +199,7 @@ mod midi {
 mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::system::RunSystemOnce;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
     use bevy_tutti::modulation::{
@@ -209,9 +214,9 @@ mod modulation {
 
     const BASE: f32 = 5.0;
 
-    fn app() -> App {
+    fn app(backend: GraphBackend) -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless(0, 1));
+        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -230,9 +235,8 @@ mod modulation {
     /// Mutation: making `CapturedControls::from_registries` capture no params
     /// (`params: None`) leaves the drive at its base — the route is well-formed
     /// and binds to nothing.
-    #[test]
-    fn a_route_binds_through_the_params_captured_at_spawn() {
-        let mut app = app();
+    fn a_route_binds_through_the_params_captured_at_spawn(backend: GraphBackend) {
+        let mut app = app(backend);
         let unit = DistortionNode::new(ShapeKind::Tanh, BASE);
         let drive = unit.drive();
         let target = app
@@ -263,15 +267,15 @@ mod modulation {
              drive is still {now}"
         );
     }
+    both_backends!(a_route_binds_through_the_params_captured_at_spawn);
 
     /// Taking the node away drops the handle — and with it the clone of the
     /// unit it holds, which for a convolver or a synth is not small.
     ///
     /// Mutation: dropping the `drop_captured` call from
     /// `reconcile_node_despawn` leaves the handle on the entity.
-    #[test]
-    fn removing_the_node_drops_the_captured_handle() {
-        let mut app = app();
+    fn removing_the_node_drops_the_captured_handle(backend: GraphBackend) {
+        let mut app = app(backend);
         let target = app
             .world_mut()
             .commands()
@@ -284,15 +288,15 @@ mod modulation {
         app.update();
         assert!(app.world().get::<ModParamsHandle>(target).is_none());
     }
+    both_backends!(removing_the_node_drops_the_captured_handle);
 
     /// A handle captured for another node is ignored.
     ///
     /// Mutation: dropping the `handle.node != node.0` check in
     /// `ModTargetResolver::resolve` resolves through the leftover handle and
     /// fails this.
-    #[test]
-    fn a_handle_captured_for_another_node_resolves_to_nothing() {
-        let mut app = app();
+    fn a_handle_captured_for_another_node_resolves_to_nothing(backend: GraphBackend) {
+        let mut app = app(backend);
         let target = app
             .world_mut()
             .commands()
@@ -317,6 +321,7 @@ mod modulation {
         app.world_mut().entity_mut(target).insert(other);
         assert!(!resolves(&mut app), "the leftover handle does not");
     }
+    both_backends!(a_handle_captured_for_another_node_resolves_to_nothing);
 }
 
 /// After a crossfade, everything that reads a captured control reaches the
@@ -342,6 +347,7 @@ mod modulation {
 #[cfg(all(feature = "midi", feature = "synth", feature = "modulation"))]
 mod crossfade_consumers {
     use bevy_app::prelude::*;
+    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{
         crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode,
@@ -370,9 +376,8 @@ mod crossfade_consumers {
         PolySynth::new(SynthConfig::default()).expect("builds a synth")
     }
 
-    #[test]
-    fn a_crossfaded_synth_keeps_its_route_its_modulation_and_its_sequence() {
-        let mut graph = AudioGraphRes::unattached(0, 2);
+    fn a_crossfaded_synth_keeps_its_route_its_modulation_and_its_sequence(backend: GraphBackend) {
+        let mut graph = AudioGraphRes::unattached_with(backend, 0, 2);
         graph.set_sample_rate(SampleRate(SAMPLE_RATE));
         let _backend = graph.take_audio_side();
 
@@ -494,4 +499,5 @@ mod crossfade_consumers {
         );
         assert!(sequenced, "the sequence must play out of the incoming port");
     }
+    both_backends!(a_crossfaded_synth_keeps_its_route_its_modulation_and_its_sequence);
 }

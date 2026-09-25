@@ -664,16 +664,18 @@ impl AudioGraphRes {
         }
     }
 
-    /// `node`'s latency moved at runtime — a hosted plugin's latency cell.
+    /// `node`'s latency may have moved at runtime — a hosted plugin's latency
+    /// cell changed.
     ///
     /// `Net` needs nothing: it re-probes the unit (a clone sharing the cell)
-    /// on every compensation pass. `Native` reads latency from the shape it
-    /// probed at insert, so it is told: `Editor::set_latency`, which moves PDC
-    /// on the next commit without touching the unit.
+    /// on every compensation pass. `Native` holds the latency it probed at
+    /// insert, so it probes the node's shadow again and, if the figure moved,
+    /// hands it to `Editor::set_latency`, which moves PDC on the next commit
+    /// without touching the unit.
     #[cfg(feature = "plugin")]
-    pub(crate) fn set_node_latency(&mut self, node: AudioNode, latency: Samples) {
+    pub(crate) fn refresh_node_latency(&mut self, node: AudioNode) {
         if let Backend::Native(g) = &mut self.0 {
-            write(g).set_node_latency(node, latency);
+            write(g).refresh_node_latency(node);
         }
     }
 

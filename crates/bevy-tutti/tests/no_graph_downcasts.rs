@@ -68,14 +68,14 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
         "tests/mod_audio_rate.rs",
         "downcast_ref / downcast_mut",
-        2,
-        "a_depth_edit_reaches_a_live_shaper and a_range_edit_reaches_a_live_clamp \
-         tick the graph's own ParamShaperNode / ParamSumNode (through \
-         `AudioGraphRes::inspect`) to prove the *rendered* node changed, not the \
-         declaration. Neither node has a control handle that would answer that (the \
-         shaper's LUT is baked at construction), so replacing the read would weaken \
-         the test. They move with the native backend, which can render the chain \
-         instead.",
+        1,
+        "a_depth_edit_reaches_a_live_shaper ticks the graph's own ParamShaperNode \
+         (through `AudioGraphRes::inspect`) to prove the node changed, not the \
+         declaration: the shaper's LUT is baked at construction and has no control \
+         handle. A depth edit rebuilds the shaper, so the inspected copy is the new \
+         unit on both backends (on the native one, its shadow). \
+         a_range_edit_reaches_a_live_clamp renders the chain instead, since its \
+         clamp lives in a cell a native shadow does not share.",
     ),
     (
         "src/midi/endpoint/target.rs",

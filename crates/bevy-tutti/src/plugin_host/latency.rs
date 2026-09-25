@@ -85,11 +85,13 @@ pub struct CompensatedLatency(
 /// rewiring — and `commit_graph` clears the flag after publishing, so this must
 /// run before the `Compensate` phase to be seen in the same frame.
 ///
-/// **On the native backend the graph is also told the figure**
-/// ([`AudioGraphRes::set_node_latency`], which is `Editor::set_latency`). `Net`
-/// re-probes the unit — a clone sharing the plugin's latency cell — on every
-/// compensation pass; the native editor holds the latency it probed at insert,
-/// and the next commit moves PDC to the new one without touching the plugin.
+/// **On the native backend the graph is also told to look again**
+/// ([`AudioGraphRes::refresh_node_latency`], which feeds
+/// `Editor::set_latency`). `Net` re-probes the unit — a clone sharing the
+/// plugin's latency cell — on every compensation pass; the native editor holds
+/// the latency it probed at insert, so it re-probes the node's shadow (the
+/// plugin's figure plus its pipeline block, which only the unit knows) and the
+/// next commit moves PDC to it without touching the plugin.
 /// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
 /// for the reason `commit_graph` is: `Editor::set_latency` collects what the
 /// audio thread retired, which can be a plugin node whose drop tears down an
@@ -128,7 +130,7 @@ pub fn plugin_latency_poll(
         }
 
         if let Some(graph) = graph.as_mut() {
-            graph.set_node_latency(*node, current);
+            graph.refresh_node_latency(*node);
         }
         commands.entity(entity).insert(CompensatedLatency(current));
         dirty.0 = true;
@@ -157,14 +159,15 @@ fn needs_recompensation(compensated: Option<Samples>, current: Samples) -> bool 
 mod tests {
     use super::*;
     use crate::graph::AudioGraphRes;
+    use crate::graph::{both_backends, GraphBackend};
     use crate::AudioEngineState;
     use bevy_app::prelude::*;
 
     /// The poll writes `CompensatedLatency` and raises `GraphDirty`; nothing
     /// else in this app does, so both observations are attributable.
-    fn test_app() -> App {
+    fn test_app(backend: GraphBackend) -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::unattached(0, 2));
+        app.insert_resource(AudioGraphRes::unattached_with(backend, 0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.init_resource::<GraphDirty>();
         app.add_systems(Update, plugin_latency_poll);
@@ -175,9 +178,8 @@ mod tests {
     /// flag — every node in the graph carries `AudioNode`, so a poll that did
     /// not check the type would mark the graph dirty every frame forever and
     /// re-run compensation on a graph nothing had changed.
-    #[test]
-    fn a_non_plugin_node_never_marks_the_graph_dirty() {
-        let mut app = test_app();
+    fn a_non_plugin_node_never_marks_the_graph_dirty(backend: GraphBackend) {
+        let mut app = test_app(backend);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.insert(tutti_nodes::testing::Const::mono(0.0))
@@ -195,6 +197,7 @@ mod tests {
             "nothing should record a compensated latency for a non-plugin node"
         );
     }
+    both_backends!(a_non_plugin_node_never_marks_the_graph_dirty);
 
     /// The decision table for `needs_recompensation(compensated, current)`.
     ///

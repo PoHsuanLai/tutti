@@ -209,6 +209,12 @@ pub(crate) fn key(node: AudioNode) -> NodeKey {
 /// before a replace, because a refused `Editor::replace` consumes its node.
 fn probe_latency(unit: &mut dyn AudioUnit, rate: SampleRate) -> Latency {
     unit.set_sample_rate(rate);
+    declared_latency(unit)
+}
+
+/// `unit.latency()` as `Legacy` declares it: rounded to the nearest frame,
+/// never negative (`Adapter::probe`, whose rounding is `Net`'s own).
+fn declared_latency(unit: &mut dyn AudioUnit) -> Latency {
     Latency::new(Samples(
         unit.latency().unwrap_or(0.0).round().max(0.0) as usize
     ))
@@ -615,14 +621,29 @@ impl NativeGraph {
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
     }
 
-    /// A node's latency moved at runtime (a plugin's latency cell): the next
-    /// commit moves PDC to it without touching the unit.
+    /// A node's latency may have moved at runtime (a plugin's latency cell):
+    /// ask its shadow again, and if the answer differs, move the editor's
+    /// figure (`Editor::set_latency`) so the next commit moves PDC to it,
+    /// without touching the running unit.
+    ///
+    /// Asked of the shadow — a clone of the unit — rather than handed a figure,
+    /// because the node's latency is the *unit's* declaration: a hosted
+    /// plugin's is its own latency cell **plus** the block its pipeline holds
+    /// (`tutti-plugin`'s `route`), and only the unit knows the second term.
+    /// That is how `Net` reads it too (a clone sharing the cell). It holds
+    /// while the unit's `isolate` leaves the latency cell shared with the
+    /// shadow, which `PluginClient`'s does (it isolates nothing: its clones
+    /// share the plugin); `tests/plugin_capture.rs` pins the figure.
     #[cfg(feature = "plugin")]
-    pub(crate) fn set_node_latency(&mut self, node: AudioNode, latency: Samples) {
-        if !self.contains(node) || self.node_latency(node) == latency {
+    pub(crate) fn refresh_node_latency(&mut self, node: AudioNode) {
+        let Some(controls) = self.nodes.get(&key(node)).and_then(|e| e.controls.as_ref()) else {
+            return;
+        };
+        let latency = declared_latency(&mut *controls.shadow());
+        if self.node_latency(node) == latency.samples() {
             return;
         }
-        match self.editor.set_latency(key(node), Latency::new(latency)) {
+        match self.editor.set_latency(key(node), latency) {
             Ok(()) => self.edited = true,
             Err(e) => bevy_log::error!("native graph: latency of {node:?} refused: {e}"),
         }

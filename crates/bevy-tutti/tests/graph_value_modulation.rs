@@ -15,6 +15,11 @@
 
 #![cfg(feature = "modulation")]
 
+#[macro_use]
+mod common;
+
+use bevy_tutti::graph::GraphBackend;
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
@@ -33,9 +38,9 @@ use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 /// An app with the engine's plugins and one ported distortion, ready to
 /// modulate. Mirrors `mod_audio_rate.rs`'s fixture so the two files describe
 /// the same graph.
-fn app_with_target() -> (App, Entity) {
+fn app_with_target(backend: GraphBackend) -> (App, Entity) {
     let mut app = App::new();
-    app.insert_resource(AudioGraphRes::headless(0, 2));
+    app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
     app.insert_resource(AudioEngineState::Running);
     app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
     app.world_mut()
@@ -94,9 +99,8 @@ fn live(app: &App) -> Topology {
 /// (`.with(routes.len() - i, …)`) leaves this green on purpose: the sum is
 /// commutative, so a permutation is not a defect and asserting a fixed
 /// assignment would be over-specifying.
-#[test]
-fn every_shaper_in_a_group_gets_its_own_sum_port() {
-    let (mut app, target) = app_with_target();
+fn every_shaper_in_a_group_gets_its_own_sum_port(backend: GraphBackend) {
+    let (mut app, target) = app_with_target(backend);
     let sources: Vec<Entity> = (0..3).map(|_| spawn_lfo(&mut app)).collect();
 
     for source in &sources {
@@ -169,6 +173,7 @@ fn every_shaper_in_a_group_gets_its_own_sum_port() {
         "the base feeds port 0"
     );
 }
+both_backends!(every_shaper_in_a_group_gets_its_own_sum_port);
 
 /// Despawning a route's **source** retires its half of the chain rather than
 /// leaving the sum fed by a node that no longer exists.
@@ -184,9 +189,8 @@ fn every_shaper_in_a_group_gets_its_own_sum_port() {
 /// value would keep the retired shaper's edge. Making `build` skip its
 /// `graph.contains` guard fails the `validate` assertion, since the value
 /// would carry a node the engine dropped.
-#[test]
-fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value() {
-    let (mut app, target) = app_with_target();
+fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value(backend: GraphBackend) {
+    let (mut app, target) = app_with_target(backend);
     let (a, b) = (spawn_lfo(&mut app), spawn_lfo(&mut app));
 
     for source in [a, b] {
@@ -231,6 +235,7 @@ fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value() {
         "and so did its node"
     );
 }
+both_backends!(despawning_a_mod_source_leaves_no_stale_edge_in_the_value);
 
 /// **The shaping a shaper was built with is carried by the value.**
 ///
@@ -253,11 +258,10 @@ fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value() {
 ///
 /// Making `put_shaping` a no-op fails this at the first assertion (the spec
 /// carries no `shaper.depth`), where the whole-topology comparison did not.
-#[test]
-fn the_value_carries_the_shaping_a_shaper_was_built_with() {
+fn the_value_carries_the_shaping_a_shaper_was_built_with(backend: GraphBackend) {
     use tutti_types::graph::ParamValue;
 
-    let (mut app, target) = app_with_target();
+    let (mut app, target) = app_with_target(backend);
     let lfo = spawn_lfo(&mut app);
     app.world_mut().spawn(
         ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
@@ -298,6 +302,7 @@ fn the_value_carries_the_shaping_a_shaper_was_built_with() {
         "and its curve (Linear)"
     );
 }
+both_backends!(the_value_carries_the_shaping_a_shaper_was_built_with);
 
 /// Two shapings that differ **only** in curve produce different specs.
 ///
@@ -308,12 +313,11 @@ fn the_value_carries_the_shaping_a_shaper_was_built_with() {
 ///
 /// Mutation: collapsing `curve_key` to a constant fails this while leaving the
 /// depth assertions above green, which is why the two are separate tests.
-#[test]
-fn a_curve_only_difference_is_visible_in_the_spec() {
+fn a_curve_only_difference_is_visible_in_the_spec(backend: GraphBackend) {
     use tutti_types::graph::ParamValue;
 
     let curve_index = |curve: tutti_mod::CurveType| {
-        let (mut app, target) = app_with_target();
+        let (mut app, target) = app_with_target(backend);
         let lfo = spawn_lfo(&mut app);
         let mut route = ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
             .with_depth(Depth(0.5))
@@ -347,6 +351,7 @@ fn a_curve_only_difference_is_visible_in_the_spec() {
          edit invisible to the value and the rebuild would be skipped"
     );
 }
+both_backends!(a_curve_only_difference_is_visible_in_the_spec);
 
 /// **An unchanged route is not rebuilt.**
 ///
@@ -358,9 +363,8 @@ fn a_curve_only_difference_is_visible_in_the_spec() {
 ///
 /// Mutation: making `reshape_chain`'s comparison always report "moved" fails
 /// this, by respawning a shaper that did not need it.
-#[test]
-fn an_unchanged_route_keeps_its_shaper() {
-    let (mut app, target) = app_with_target();
+fn an_unchanged_route_keeps_its_shaper(backend: GraphBackend) {
+    let (mut app, target) = app_with_target(backend);
     let lfo = spawn_lfo(&mut app);
     app.world_mut().spawn(
         ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
@@ -394,6 +398,7 @@ fn an_unchanged_route_keeps_its_shaper() {
         "and the value must be unchanged with it"
     );
 }
+both_backends!(an_unchanged_route_keeps_its_shaper);
 
 /// **A changed shaping rebuilds the shaper.**
 ///
@@ -403,9 +408,8 @@ fn an_unchanged_route_keeps_its_shaper() {
 ///
 /// Mutation: making `reshape_chain`'s comparison always report "unchanged"
 /// fails this.
-#[test]
-fn a_changed_shaping_rebuilds_the_shaper() {
-    let (mut app, target) = app_with_target();
+fn a_changed_shaping_rebuilds_the_shaper(backend: GraphBackend) {
+    let (mut app, target) = app_with_target(backend);
     let lfo = spawn_lfo(&mut app);
     let route = app
         .world_mut()
@@ -449,3 +453,4 @@ fn a_changed_shaping_rebuilds_the_shaper() {
          replaced — a sidecar patched by index is exactly what could disagree here"
     );
 }
+both_backends!(a_changed_shaping_rebuilds_the_shaper);

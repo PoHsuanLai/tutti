@@ -21,7 +21,7 @@
 //! reads them once from `clap_entry.init` — before any plugin instance exists,
 //! so no `process()` call can observe a half-configured probe.
 //!
-//! # Why these three and not the whole switch surface
+//! # Why these and not the whole switch surface
 //!
 //! Each of these is a behaviour the *in-process* suites cannot express, because
 //! each is about what the host does when the plugin stops cooperating and the
@@ -36,6 +36,9 @@
 //!   because the gain has to be applied by the same `render_output` the other
 //!   modes go through, and reaching that switch from another process needs the
 //!   same channel.
+//! - the two `clap.state` refusals make a plugin that cannot save, or cannot
+//!   load, its state — what a fork by state transfer must report as an error
+//!   rather than render around.
 //!
 //! The port layout, render mode and the rest stay `extern "C"`: the in-process
 //! suites set them, and adding an environment path for a switch nothing reads
@@ -63,6 +66,18 @@ static RELEASE_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Whether `render_output` scales its result by the probe's fixed gain.
 static APPLY_GAIN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the plain `clap.state` save refuses (returns `false`).
+///
+/// Environment-selected like the rest of this module because the suites that
+/// need it — a plugin fork by state transfer, `tutti-plugin`'s
+/// `clap_fork.rs` — drive the plugin in another process. Only the plain
+/// `clap.state` entry points read these; the `state-context` refusals are the
+/// in-process `extern "C"` switches in `crate::refusal`.
+static REFUSE_STATE_SAVE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the plain `clap.state` load refuses (returns `false`).
+static REFUSE_STATE_LOAD: AtomicBool = AtomicBool::new(false);
 
 /// `process()` calls seen since load, incremented once per block.
 ///
@@ -117,6 +132,12 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_APPLY_GAIN") {
         APPLY_GAIN.store(n != 0, Ordering::SeqCst);
     }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_SAVE") {
+        REFUSE_STATE_SAVE.store(n != 0, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
+        REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
+    }
     // The render mode has an `extern "C"` switch too, and this is the same
     // static — not a second copy. An out-of-process test cannot call that
     // switch (the plugin is in another process), and the mode is what decides
@@ -142,6 +163,16 @@ pub fn switches() -> Switches {
 /// Whether the render path should scale by the `Gain` parameter.
 pub(crate) fn apply_gain() -> bool {
     APPLY_GAIN.load(Ordering::SeqCst)
+}
+
+/// Whether the plain `clap.state` save should refuse.
+pub(crate) fn refuse_state_save() -> bool {
+    REFUSE_STATE_SAVE.load(Ordering::SeqCst)
+}
+
+/// Whether the plain `clap.state` load should refuse.
+pub(crate) fn refuse_state_load() -> bool {
+    REFUSE_STATE_LOAD.load(Ordering::SeqCst)
 }
 
 /// Run the per-block switches. Called first thing in `process()`.

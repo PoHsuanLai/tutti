@@ -323,6 +323,15 @@ impl AudioUnit for InProcessVst2Client {
     /// Never forked: a clone shares the one in-process plugin instance, so a
     /// fork would render through the live plugin's state beside the live
     /// graph. A fork needs a second instance loaded from this one's state.
+    ///
+    /// The subprocess `PluginClient` has that (`host::node::fork`); this node
+    /// does not yet. It would be a second `AEffect` from the same library *in
+    /// this process* — one more image-global the two instances could share —
+    /// and a plugin whose state is not a chunk (`programsAreChunks` clear)
+    /// saves only its current program's parameters, so what "the state" is
+    /// differs per plugin in a way the subprocess formats do not. Until that
+    /// is built and tested against the VST2 probe, a graph holding an
+    /// in-process VST2 plugin is refused (`ForkError::NotForkable`).
     fn forkable(&self) -> bool {
         false
     }

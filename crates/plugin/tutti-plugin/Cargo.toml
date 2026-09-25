@@ -39,6 +39,11 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 # realising those two roles (see util/transport/shm/slab.rs).
 tutti-types = { path = "../../core/tutti-types" }
 
+# The native graph, for a plugin node's own `ForkSource` (fork by state
+# transfer, doc 013 Phase 3 PR 16). No cycle: `tutti-graph` names only
+# `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }
+
 # Parameter range/scaling
 audio-automation = { workspace = true }
 

@@ -164,6 +164,47 @@ impl PluginControls {
         }
     }
 
+    /// Give `fork`'s slots a copy of every per-block source installed here,
+    /// each reading the transport `bind` names and stamped at `fork`'s rate.
+    ///
+    /// Control thread. A copy shares only what a source reads and never
+    /// writes (curves, chord lists, the meter) with the live one: its cursors
+    /// and rate cell are its own, so rendering the fork moves nothing the live
+    /// node reads. A source `bind` has no transport for is left out, and the
+    /// fork drains that slot empty — never a copy still reading the live
+    /// playhead offline.
+    pub(super) fn rebind_sources_into(&self, fork: &PluginControls, bind: &super::fork::Rebind) {
+        let rate = fork.sample_rate();
+        if let Some(src) = self.inputs.transport.source_ref().load_full() {
+            if let Some(reader) = bind.state(src.reader()) {
+                fork.inputs
+                    .transport
+                    .install(Arc::new(src.rebound(reader, rate)));
+            }
+        }
+        if let Some(src) = self.inputs.params.source_ref().load_full() {
+            if let Some(transport) = bind.state(src.transport()) {
+                fork.inputs
+                    .params
+                    .install(Arc::new(src.rebound(transport, rate)));
+            }
+        }
+        if let Some(src) = self.inputs.harmony.source_ref().load_full() {
+            if let Some(timeline) = bind.timeline(src.timeline()) {
+                fork.inputs
+                    .harmony
+                    .install(Arc::new(src.rebound(timeline, rate)));
+            }
+        }
+        if let Some(src) = self.inputs.note_expression.source_ref().load_full() {
+            if let Some(timeline) = bind.timeline(src.timeline()) {
+                fork.inputs
+                    .note_expression
+                    .install(Arc::new(NoteExpressionSource::new(timeline, rate)));
+            }
+        }
+    }
+
     /// Install per-block chord/scale context. See
     /// [`PluginClient::set_harmony_source`](super::PluginClient::set_harmony_source).
     pub fn set_harmony_source(
@@ -320,6 +361,49 @@ mod tests {
              current rate; got {}",
             out.sample_rate
         );
+    }
+
+    /// A fork's transport source reads **the transport its mode names**: the
+    /// offline timeline for an offline fork (never the live playhead), the
+    /// live transport for a live one, and nothing for an offline context that
+    /// is not an `OfflineTransport`. Its rate is the fork's own, and a later
+    /// rate change on the live node does not reach it.
+    ///
+    /// Mutation: make `Rebind::state` return the live reader for `Offline` →
+    /// the offline fork reports the live beat 2.0 → fails. Mutation: return
+    /// it for `Sever` → the severed fork's slot is filled → fails. Mutation:
+    /// share the live source's rate cell in `TransportSource::rebound` → the
+    /// live restamp reaches the fork → fails.
+    #[test]
+    fn a_fork_reads_the_transport_its_mode_names() {
+        use super::super::fork::Rebind;
+        use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+        use tutti_core::Beat;
+
+        let live = controls();
+        let transport = Transport::new(44_100.0);
+        transport.settings.set_beat(2.0);
+        let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
+        live.set_transport_source(transport, meter);
+
+        let offline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: Beat(8.0),
+            ..Default::default()
+        }));
+        let beat_of = |bind: Rebind| {
+            let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
+            live.rebind_sources_into(&fork, &bind);
+            live.restamp(SampleRate(22_050.0));
+            let mut fork = fork;
+            fork.has_transport_source().then(|| {
+                let out = *fork.inputs.transport.drain(CTX, Features::TRANSPORT);
+                assert_eq!(out.sample_rate, 96_000.0, "the fork's own rate");
+                out.position.beats
+            })
+        };
+        assert_eq!(beat_of(Rebind::Offline(Arc::clone(&offline))), Some(8.0));
+        assert_eq!(beat_of(Rebind::Live), Some(2.0));
+        assert_eq!(beat_of(Rebind::Sever), None);
     }
 
     /// Latency and tail written through one handle are read through another.

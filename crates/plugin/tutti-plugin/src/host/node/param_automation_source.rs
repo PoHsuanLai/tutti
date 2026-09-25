@@ -385,6 +385,26 @@ impl ParamAutomationSource {
             .store(sample_rate.into().get(), Ordering::Release);
     }
 
+    /// The same curves, read through `transport` — a source for a forked
+    /// instance (`host::node::fork`). The curves are shared (they are read,
+    /// never written, by a source); the rate cell is the fork's own.
+    pub(crate) fn rebound(
+        &self,
+        transport: Arc<dyn TransportState>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Self {
+        Self {
+            params: Arc::clone(&self.params),
+            transport,
+            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
+        }
+    }
+
+    /// The transport this source reads.
+    pub(crate) fn transport(&self) -> &Arc<dyn TransportState> {
+        &self.transport
+    }
+
     /// The rate `refill` is currently dividing by.
     fn rate(&self) -> SampleRate {
         SampleRate::from(self.sample_rate.load(Ordering::Acquire))

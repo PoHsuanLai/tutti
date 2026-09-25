@@ -85,6 +85,29 @@ impl HarmonySource {
         }
     }
 
+    /// The same chords and scales, read through `transport` with fresh
+    /// cursors — a source for a forked instance (`host::node::fork`). Shares
+    /// only the immutable change lists with `self`, so playing the fork moves
+    /// none of the live source's cursors.
+    pub(crate) fn rebound(
+        &self,
+        transport: Arc<dyn Timeline>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Self {
+        Self {
+            chords: Arc::clone(&self.chords),
+            scales: Arc::clone(&self.scales),
+            beats: BeatCursor::new(transport, sample_rate),
+            chord_cursor: Arc::new(AtomicU64::new(0)),
+            scale_cursor: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// The transport this source reads.
+    pub(crate) fn timeline(&self) -> &Arc<dyn Timeline> {
+        self.beats.timeline()
+    }
+
     /// Update the stamped sample rate live (device / rate switch). Reaches the
     /// running box because the cursor's rate is a shared atomic.
     pub fn set_sample_rate(&self, sample_rate: impl Into<tutti_core::SampleRate>) {

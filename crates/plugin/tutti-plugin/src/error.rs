@@ -187,6 +187,50 @@ pub enum BridgeError {
 /// A host operation's result, erroring as [`BridgeError`].
 pub type Result<T> = std::result::Result<T, BridgeError>;
 
+/// Why a hosted plugin could not be forked by state transfer
+/// ([`PluginClient::fork_instance`](crate::handles::PluginClient::fork_instance)).
+///
+/// Every arm means **no fork exists**: a fresh instance that was started is
+/// shut down with this value, never returned half-restored, and never replaced
+/// by anything that shares the live instance. Which step failed is the arm,
+/// so a host can tell "this plugin cannot save its state" (it will never fork)
+/// from "the fresh instance did not start" (it may on a retry).
+#[derive(Error, Debug)]
+pub enum PluginForkError {
+    /// The live instance did not hand over its state — the plugin cannot save
+    /// it (no state extension, or it refused), or the live bridge is gone.
+    /// Asked before anything is loaded, so this costs no subprocess.
+    #[error("the live instance did not hand over its state: {0}")]
+    SaveState(#[source] StateError),
+
+    /// A fresh instance of the same plugin did not load.
+    #[error("a fresh instance of {} did not load: {source}", path.display())]
+    Load {
+        /// The plugin file the live instance was loaded from.
+        path: PathBuf,
+        /// Why the load failed.
+        #[source]
+        source: BridgeError,
+    },
+
+    /// The file at the live instance's path now holds a different plugin
+    /// (replaced on disk since the live instance loaded). Its state is not
+    /// this plugin's to load.
+    #[error("{} now loads as plugin `{found}`, not `{expected}`", path.display())]
+    Mismatch {
+        /// The plugin file.
+        path: PathBuf,
+        /// The live instance's plugin id.
+        expected: String,
+        /// The id the fresh instance reported.
+        found: String,
+    },
+
+    /// The fresh instance refused the live instance's state.
+    #[error("the fresh instance refused the live instance's state: {0}")]
+    LoadState(#[source] StateError),
+}
+
 /// Widen the lean, format-agnostic [`PluginError`] (what the shared
 /// `PluginFormatHost` trait returns) into the host's richer `BridgeError` at
 /// the IPC boundary. Lets the pipeline/session `?` a trait-method result inside

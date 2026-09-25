@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod error;
-pub use error::{BridgeError, EditorError, LoadStage, Result};
+pub use error::{BridgeError, EditorError, LoadStage, PluginForkError, Result};
 
 mod format;
 mod host;

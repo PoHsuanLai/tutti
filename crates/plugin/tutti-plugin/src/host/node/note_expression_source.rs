@@ -50,6 +50,11 @@ impl NoteExpressionSource {
         }
     }
 
+    /// The transport this source reads.
+    pub(crate) fn timeline(&self) -> &Arc<dyn Timeline> {
+        &self.transport
+    }
+
     /// Fill `out` (cleared first) with this block's note-expression samples.
     ///
     /// Reader deferred: with no note-expression lane storage yet, this clears

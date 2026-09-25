@@ -16,6 +16,7 @@ mod audio_unit;
 mod batcher;
 mod capability_view;
 mod controls;
+mod fork;
 mod harmony_source;
 // `input_slot` / `transport_source` are `pub(crate)` rather than private: the
 // in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
@@ -108,6 +109,10 @@ pub struct PluginClient {
     /// re-injected into routing via [`Midi::emit`]. Cleared at the start of each
     /// `process`; steady-state capacity makes the drain alloc-free.
     midi_out: crate::protocol::MidiEventVec,
+    /// Where this instance came from, so a fork can load another of it
+    /// ([`fork_instance`](Self::fork_instance)). Shared across clones and
+    /// never written.
+    origin: Arc<fork::Origin>,
 }
 
 /// Everything the host produces for one process block, aggregated for the bridge
@@ -285,6 +290,10 @@ impl PluginClient {
         let sample_rate = sample_rate.into();
         // `.get()` at the wire: `launch` hands the rate to the subprocess.
         let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
+        let origin = Arc::new(fork::Origin {
+            config: config.clone(),
+            plugin_path: plugin_path.clone(),
+        });
 
         // Report the FULL input width (main + sidechain/aux input buses) so a
         // fundsp `connect(src, 0, target, 1)` lands on a real sidechain port;
@@ -377,6 +386,7 @@ impl PluginClient {
             io: Batcher::new(inputs, outputs, server.format, max_buffer_size),
             midi: Midi::new(),
             midi_out: crate::protocol::MidiEventVec::new(),
+            origin,
         })
     }
 

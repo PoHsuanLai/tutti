@@ -292,6 +292,24 @@ impl ProbeEnv {
         self
     }
 
+    /// Make the plugin's `clap.state` save refuse.
+    pub fn refuse_state_save(mut self, on: bool) -> Self {
+        self.set(
+            "TUTTI_CLAP_PROBE_REFUSE_STATE_SAVE",
+            u8::from(on).to_string(),
+        );
+        self
+    }
+
+    /// Make the plugin's `clap.state` load refuse.
+    pub fn refuse_state_load(mut self, on: bool) -> Self {
+        self.set(
+            "TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD",
+            u8::from(on).to_string(),
+        );
+        self
+    }
+
     fn set(&mut self, key: &'static str, value: String) {
         // SAFETY: `exclusive()` is held for the whole test, and every test in
         // these suites takes it before touching the environment — so no other

@@ -39,6 +39,7 @@ use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
 use crate::protocol::{MidiEventVec, SampleFormat};
+use std::time::{Duration, Instant};
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, Samples, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
@@ -195,6 +196,10 @@ pub(crate) struct Batcher {
     /// The block whose output is expected on the *next* call, or `None`
     /// when nothing is in flight (start-up, and after a reset).
     expect_seq: Option<u64>,
+    /// `Some` only on an **offline fork** (`host::node::fork`): before
+    /// collecting block N−1, wait up to this long for the server to publish
+    /// it. See [`await_output`](Self::await_output).
+    offline_wait: Option<Duration>,
 }
 
 impl Clone for Batcher {
@@ -209,6 +214,7 @@ impl Clone for Batcher {
         // `None` — because the clone is a different object and the old one may
         // still collect it.
         cloned.next_seq = self.next_seq;
+        cloned.offline_wait = self.offline_wait;
         cloned
     }
 }
@@ -232,6 +238,51 @@ impl Batcher {
             max_block,
             next_seq: 1,
             expect_seq: None,
+            offline_wait: None,
+        }
+    }
+
+    /// Make every collect wait for its block, up to `budget` per block: the
+    /// offline mode of a forked instance.
+    ///
+    /// The pipeline never waits because it runs on the audio thread, where a
+    /// wait is a dropout (module docs). An offline fork runs on a render
+    /// worker with no deadline, as fast as the plugin answers — so there the
+    /// same rule is the defect: a render loop outpaces the subprocess, every
+    /// block it has not published yet reads as silence, and the export is
+    /// mostly silent with no error. Waiting keeps the pipelined shape (submit
+    /// N, collect N−1) and so the declared one-block latency, and makes the
+    /// output a function of the input rather than of scheduling.
+    pub(super) fn set_offline_wait(&mut self, budget: Duration) {
+        self.offline_wait = Some(budget);
+    }
+
+    /// With [`set_offline_wait`](Self::set_offline_wait): block until the
+    /// block this call collects is published, the bridge crashes, or the
+    /// budget runs out. A no-op otherwise, and when nothing is in flight.
+    ///
+    /// A block that is still missing at the budget is collected as silence
+    /// exactly as the live path does, and logged: `process` has no error
+    /// channel, and a plugin taking longer than the bridge's own reply
+    /// timeout (`BridgeConfig::timeout_ms`) per block is one the host already
+    /// treats as unresponsive.
+    fn await_output(&self, bridge: &PluginBridge) {
+        let (Some(budget), Some(seq)) = (self.offline_wait, self.expect_seq) else {
+            return;
+        };
+        let deadline = Instant::now() + budget;
+        while !bridge.is_crashed() && !bridge.audio_buffer().has_output(seq) {
+            if Instant::now() >= deadline {
+                tracing::warn!(
+                    seq,
+                    ?budget,
+                    "offline plugin fork: block not published in time; rendering silence"
+                );
+                return;
+            }
+            // Short, not a spin: this is a worker thread, and the server needs
+            // the core more than this loop does.
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -375,6 +426,7 @@ impl Batcher {
         // Decide what is collectable BEFORE overwriting the input ring with this
         // block — at ring depth 2, block N's input slot is the one block N-2
         // used.
+        self.await_output(bridge);
         let collected = self.collectable(bridge);
 
         let seq = self.next_seq;
@@ -416,6 +468,7 @@ impl Batcher {
         payload: BlockPayload,
         midi_out: &mut MidiEventVec,
     ) {
+        self.await_output(bridge);
         let collected = self.collectable(bridge);
 
         let seq = self.next_seq;

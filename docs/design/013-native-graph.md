@@ -2337,7 +2337,7 @@ stayed at the old rate until the re-prepare resumed, so a disk source that
 seeked in that window pre-rolled by old-rate sample counts (`Net` had
 committed and published before the first block). Now tutti-cpal hands a
 restart hook a `Stopped` — the engine, constructible only while the stream
-is stopped — whose `settle_graph` calls `Engine::settle_graph` (tutti-core,
+is stopped — whose `settle_graph` calls `unsafe fn Engine::settle_graph` (tutti-core,
 new): install the editor's commits and follow the rate with the engine's
 clock and the transport's scheduled commands, exactly as the next block's
 settle would. The hook sets the transport's rate (the rescale mark), then

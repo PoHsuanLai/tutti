@@ -628,18 +628,29 @@ impl Engine {
     /// between its halves (always `true` for a `Net` engine, which has
     /// neither and is left alone).
     ///
-    /// **Only while no callback can run** — a stopped stream, as
-    /// `tutti_cpal`'s restart hook has it: it reaches the executor the audio
-    /// thread otherwise owns. (The cell's debug check panics on a callback
-    /// running at the same time.) A device restart calls it between the two
-    /// halves of `Editor::reprepare` so the re-prepare finishes before the
-    /// first block at the new rate, which then renders the re-prepared graph
-    /// rather than the executor's silent checked-out block (doc 013, Phase 3
-    /// PR 13).
+    /// A device restart calls it between the two halves of
+    /// `Editor::reprepare` so the re-prepare finishes before the first block
+    /// at the new rate, which then renders the re-prepared graph rather than
+    /// the executor's silent checked-out block (doc 013, Phase 3 PR 13).
+    /// Hosts reach it through `tutti_cpal::Stopped::settle_graph`, which only
+    /// a restart hook is handed.
     ///
     /// Allocates nothing itself; a commit it installs was built on the
     /// control side.
-    pub fn settle_graph(&self) -> bool {
+    ///
+    /// # Safety
+    ///
+    /// The caller guarantees that **no audio callback runs [`process`] or
+    /// [`process_segment`] on this engine for the duration of the call** —
+    /// the stream is stopped (dropped, or not yet started). This borrows the
+    /// executor and the transport schedule the audio thread otherwise owns;
+    /// their [`AudioThreadCell`](tutti_types::AudioThreadCell)s catch a
+    /// concurrent borrow only in debug builds, so in release a call racing
+    /// a callback is an unchecked data race.
+    ///
+    /// [`process`]: Self::process
+    /// [`process_segment`]: Self::process_segment
+    pub unsafe fn settle_graph(&self) -> bool {
         match &mut *self.backend.borrow_mut() {
             Backend::Net(_) => true,
             Backend::Graph(graph) => {

@@ -54,7 +54,20 @@ impl Stopped<'_> {
     /// block at the new rate renders the re-prepared graph instead of the
     /// silent block a re-prepare otherwise costs.
     pub fn settle_graph(&self) -> bool {
-        self.state.engine.settle_graph()
+        // SAFETY: `Engine::settle_graph` needs no callback running on this
+        // engine. A `Stopped` is constructed only in
+        // `TuttiDriver::rerate_or_restore` (its field is private to this
+        // module), which only `restart_with` and `restart_on` call, after
+        // `AudioEngine::stop` has dropped the running stream and before
+        // `start_with` opens the next one; the borrow of `self` keeps the
+        // token inside the hook. Dropping the stream is the stop: a
+        // `cpal::Stream`'s callback does not run once its drop returns, and
+        // `ManualRunning`'s drop takes the slot lock a callback renders
+        // under. What this driver's type cannot see is a host rendering the
+        // same `AudioCallbackState` by hand (`process_audio` on a clone of
+        // the `Arc` it handed `from_parts`) during a restart; `from_parts`
+        // documents that the driver's streams are the state's only renderer.
+        unsafe { self.state.engine.settle_graph() }
     }
 }
 
@@ -82,6 +95,13 @@ impl std::fmt::Debug for TuttiDriver {
 
 impl TuttiDriver {
     /// Construct from an opened device and the state its callback will read.
+    ///
+    /// From here on the driver's streams are the only thing that renders
+    /// `callback_state`: a host must not also call
+    /// [`process_audio`](crate::process_audio) on a clone of it. A restart
+    /// relies on that — its hook reaches the engine from the control side
+    /// ([`Stopped::settle_graph`]) because the stream it stopped was the only
+    /// renderer.
     pub fn from_parts(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {
         Self {
             graph_rate: audio_engine.sample_rate(),

@@ -193,6 +193,33 @@ impl MidiUnitIn for MidiClipSource {
         };
         self.emit_window(&window, out)
     }
+
+    /// The same clip, addressed to `unit`, on the render's timeline: the
+    /// event list is shared (it is immutable), the cursor and the beat
+    /// window are fresh, and the rate is this source's until the forked unit
+    /// is prepared ([`set_sample_rate`](MidiUnitIn::set_sample_rate)).
+    ///
+    /// **No hardware-out tap.** A tap forwards every emitted event to an
+    /// external MIDI port; an export that did so would play the clip on the
+    /// hardware while bouncing it, faster than real time.
+    fn rebind_offline(
+        &self,
+        unit: MidiUnitId,
+        ctx: &dyn std::any::Any,
+    ) -> Option<Arc<dyn MidiUnitIn>> {
+        let timeline = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>()?;
+        Some(Arc::new(Self {
+            events: Arc::clone(&self.events),
+            beats: BeatCursor::new(Arc::clone(timeline), self.beats.sample_rate()),
+            cursor: Arc::new(AtomicU64::new(0)),
+            target_unit: unit,
+            out_tap: None,
+        }))
+    }
+
+    fn set_sample_rate(&self, sample_rate: SampleRate) {
+        self.beats.set_sample_rate(sample_rate);
+    }
 }
 
 #[cfg(test)]
@@ -509,5 +536,86 @@ mod tests {
         // Cursor persisted only past the written event; the rest replays.
         let mut buf2 = [MidiEvent::noop(); 4];
         assert_eq!(source.emit_window(&window, &mut buf2), 1);
+    }
+
+    /// A live port playing a clip at 120 BPM with a hardware-out tap, and an
+    /// offline timeline at 90 BPM, 48 kHz, from beat 0.
+    fn live_and_offline() -> (
+        crate::MidiInPort,
+        crate::MidiInPort,
+        tutti_core::transport::OfflineTransport,
+    ) {
+        use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+        let live = crate::MidiInPort::new();
+        let tap = crate::MidiInPort::new();
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
+        live.install(Arc::new(
+            MidiClipSource::new(
+                live.unit_id(),
+                vec![TimedClipEvent {
+                    beat: Beat(1.0),
+                    event: note_on(60, 100),
+                }],
+                transport as Arc<dyn Timeline>,
+                SampleRate(48_000.0),
+            )
+            .with_out_tap(Arc::new(tap.sender())),
+        ));
+        let offline: tutti_core::transport::OfflineTransport =
+            Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(0.0),
+                tempo: Bpm(90.0),
+                sample_rate: SampleRate(48_000.0),
+                loop_range: None,
+            }));
+        (live, tap, offline)
+    }
+
+    /// **A clip rebound for an offline render plays on the fork's port, on
+    /// the render's timeline, and leaves the live clip alone.** Beat 1 at
+    /// 90 BPM and 48 kHz is frame 32 000 (at the live 120 BPM it would be
+    /// 24 000); the live source's cursor is untouched by the fork's poll;
+    /// the fork does not fire the live source's hardware tap; and a context
+    /// that is not an `OfflineTransport` installs nothing.
+    ///
+    /// Mutation (run): the rebound source keeping the live timeline → the
+    /// note lands at 24 000; sharing the live `cursor` → the live poll after
+    /// the fork's emits nothing; keeping `out_tap` → the tap receives the
+    /// note; addressing the copy to the live unit id → the fork's port
+    /// polls nothing.
+    #[test]
+    fn a_clip_rebound_offline_plays_on_the_fork_and_leaves_the_live_clip() {
+        let (live, tap, offline) = live_and_offline();
+        let fork = crate::MidiInPort::new();
+        assert!(!live.rebind_offline_into(&fork, &"not a transport"));
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(fork.poll(40_000, &mut buf), 0, "nothing was installed");
+
+        assert!(live.rebind_offline_into(&fork, &offline));
+        assert_eq!(fork.poll(40_000, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 32_000, "beat 1 at 90 BPM, 48 kHz");
+        assert_eq!(tap.poll(64, &mut buf), 0, "the fork fired the live tap");
+
+        // The live clip still has its note: its cursor was not the fork's.
+        assert_eq!(live.poll(30_000, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 24_000, "beat 1 at 120 BPM, 48 kHz");
+    }
+
+    /// **The rebound clip places its events at the rate its unit is prepared
+    /// at**: a fork launched at the live rate and prepared at an export's
+    /// hears `set_source_sample_rate`, and beat 1 at 90 BPM lands on frame
+    /// 64 000 at 96 kHz.
+    ///
+    /// Mutation (run): `MidiClipSource::set_sample_rate` a no-op (the trait
+    /// default) → 32 000.
+    #[test]
+    fn a_rebound_clip_follows_its_units_rate() {
+        let (live, _tap, offline) = live_and_offline();
+        let fork = crate::MidiInPort::new();
+        assert!(live.rebind_offline_into(&fork, &offline));
+        fork.set_source_sample_rate(SampleRate(96_000.0));
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(fork.poll(70_000, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 64_000);
     }
 }

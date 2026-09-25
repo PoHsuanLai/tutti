@@ -172,6 +172,37 @@ impl MidiInPort {
     pub fn isolate(&mut self) {
         *self = Self::with_unit_id(self.unit_id);
     }
+
+    /// Install on `fork` — a forked unit's own port — an offline copy of the
+    /// source installed here, reading the render's timeline out of `ctx`
+    /// ([`MidiUnitIn::rebind_offline`]). Control thread; reads this port's
+    /// source cell, never its mailbox, so the live unit keeps every event.
+    ///
+    /// Returns whether a source was installed: `false` when none is
+    /// installed here, or the one that is cannot be rebound (it is not a
+    /// function of a timeline, or `ctx` is not an `OfflineTransport`). The
+    /// fork's port is then left as it was, with no source.
+    pub fn rebind_offline_into(&self, fork: &MidiInPort, ctx: &dyn std::any::Any) -> bool {
+        let Some(rebound) = self
+            .source
+            .load()
+            .as_deref()
+            .and_then(|source| source.rebind_offline(fork.unit_id, ctx))
+        else {
+            return false;
+        };
+        fork.install(rebound);
+        true
+    }
+
+    /// Tell the installed source, if any, the rate its unit now runs at
+    /// ([`MidiUnitIn::set_sample_rate`]). Called from a unit's
+    /// `set_sample_rate`; lock-free.
+    pub fn set_source_sample_rate(&self, sample_rate: tutti_core::SampleRate) {
+        if let Some(source) = self.source.load().as_deref() {
+            source.set_sample_rate(sample_rate);
+        }
+    }
 }
 
 impl Default for MidiInPort {

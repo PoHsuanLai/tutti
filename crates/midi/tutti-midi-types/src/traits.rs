@@ -26,6 +26,10 @@
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
 
+use std::sync::Arc;
+
+use tutti_types::SampleRate;
+
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
@@ -133,4 +137,37 @@ pub trait MidiIn: Send + Sync {
 pub trait MidiUnitIn: Send + Sync {
     /// Write `unit_id`'s events for this block into `buffer`; return how many.
     fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+
+    /// A copy of this source for an **offline render**: addressed to `unit`
+    /// (the forked unit's port, which is not the live one's), reading the
+    /// render's timeline out of `ctx` instead of the live transport, and
+    /// sharing no cursor with this one. Control thread, not the audio path.
+    ///
+    /// `ctx` is what `AudioUnit::rebind_offline` is handed — today a
+    /// `&OfflineTransport` (tutti-core); a source downcasts it, and a
+    /// context of any other type rebinds nothing (`None`).
+    ///
+    /// `None` (the default) for a source that is not a function of a
+    /// timeline — a live inbox, an already-offline snapshot — so a fork of
+    /// the unit it feeds carries no source rather than one reading the live
+    /// playhead. Why this exists: a graph fork (design doc 013, `Editor::fork`)
+    /// gives a MIDI-driven unit a fresh port, and an exported instrument
+    /// whose clip did not come with it renders silence.
+    fn rebind_offline(
+        &self,
+        unit: MidiUnitId,
+        ctx: &dyn core::any::Any,
+    ) -> Option<Arc<dyn MidiUnitIn>> {
+        let _ = (unit, ctx);
+        None
+    }
+
+    /// The sample rate the source places events at changed — the unit it
+    /// feeds was re-prepared (a device change, or a fork prepared at an
+    /// export's rate). A beat-domain source converts beats to frame offsets
+    /// at this rate. Lock-free; the default ignores it, for a source with no
+    /// rate of its own.
+    fn set_sample_rate(&self, sample_rate: SampleRate) {
+        let _ = sample_rate;
+    }
 }

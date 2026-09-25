@@ -159,13 +159,13 @@ impl Normalize {
 /// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
 /// true peak folds over every channel.
 pub fn render_normalized_to_file(
-    net: tutti_core::dsp::Net,
+    graph: impl Into<crate::RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     normalize: Normalize,
     path: &Path,
 ) -> Result<Written> {
-    let rendered = render_to_buffers(net, config, clock)?;
+    let rendered = render_to_buffers(graph, config, clock)?;
 
     // Convert first, so what is measured is what is written.
     let (mut rendered, config) = match config.resample {

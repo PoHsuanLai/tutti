@@ -1,9 +1,11 @@
-//! The render source: a `Net` presented as a block-at-a-time frame source.
+//! The render source: a graph presented as a block-at-a-time frame source.
 //!
 //! [`NetSource`] block-renders a `tutti_core::dsp::Net` into interleaved frames
-//! and advances the caller's [`RenderClock`] in lockstep. Everything downstream
-//! — gating, dither, the encoder — pulls from it, so the graph is stepped
-//! exactly once per block no matter which encoder is driving.
+//! and advances the caller's [`RenderClock`] in lockstep; [`GraphSource`] does
+//! the same for a native `tutti_graph` executor (doc 013 Phase 3 PR 7).
+//! Everything downstream — gating, dither, the encoder — pulls from one of
+//! them, so the graph is stepped exactly once per block no matter which encoder
+//! is driving, and the two backends share every stage after the render.
 //!
 //! The frame width is a **runtime** value carried by [`Frames`], never a
 //! `const CH`. A width in the type can only carry one that is a property of the
@@ -22,6 +24,7 @@
 )]
 
 use crate::render::BlockCursor;
+use crate::RenderGraph;
 use tutti_core::transport::RenderClock;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, BufferVec, MAX_BUFFER_SIZE};
 use tutti_types::Samples;
@@ -112,14 +115,29 @@ impl<'a> Frames<'a> {
 /// `fold_frame` — beyond stereo it copies and zero-fills.
 #[inline]
 fn fold_net_frame(net: &BufferMut<'_>, n_out: usize, i: usize, dst: &mut [f32]) {
+    fold_gathered(n_out, |c| net.channel_f32(c)[i], dst);
+}
+
+/// [`fold_net_frame`] for the native graph's planes: frame `i` of `planes`.
+///
+/// The same gather and the same fold, so a graph and a `Net` rendering equal
+/// samples write equal frames at every destination width.
+#[inline]
+fn fold_graph_frame(planes: &[Vec<f32>], i: usize, dst: &mut [f32]) {
+    fold_gathered(planes.len(), |c| planes[c][i], dst);
+}
+
+/// Gather `n_out` source channels (`sample(c)`) and fold them onto `dst`.
+#[inline]
+fn fold_gathered(n_out: usize, sample: impl Fn(usize) -> f32, dst: &mut [f32]) {
     // Stack, sized by the fixed ceiling rather than by the (runtime)
-    // destination width: this is the *source* gather, and the net's output
+    // destination width: this is the *source* gather, and the graph's output
     // width is what it must hold. Heap-allocating it would put a `Vec` in a
     // per-frame loop.
     let mut src = [0.0f32; MAX_NET_CHANNELS];
     let w = n_out.min(MAX_NET_CHANNELS);
     for (c, s) in src.iter_mut().enumerate().take(w) {
-        *s = net.channel_f32(c)[i];
+        *s = sample(c);
     }
     tutti_types::fold_frame(&src[..w], dst);
 }
@@ -162,16 +180,26 @@ impl<'a> NetSource<'a> {
 
 /// Anything that can hand out frames one block at a time.
 ///
-/// Two implementations: [`NetSource`] renders a graph, and [`PlaneSource`]
-/// replays PCM a caller already holds. Both feed the same encoders, so a
-/// normalized export (render → measure → apply → write) shares every codec path
-/// with a streamed one instead of growing a second writer per format.
+/// Three implementations: [`NetSource`] and [`GraphSource`] render a graph, and
+/// [`PlaneSource`] replays PCM a caller already holds. All feed the same
+/// encoders, so a normalized export (render → measure → apply → write) shares
+/// every codec path with a streamed one instead of growing a second writer per
+/// format, and the two graph backends share it with each other.
 pub(crate) trait FrameSource {
     /// Fill `out` — an interleaved buffer `ch` samples per frame — returning how
     /// many **frames** were written.
     fn fill(&mut self, out: &mut [f32], ch: usize) -> usize;
     /// Frames handed out so far.
     fn produced(&self) -> Samples;
+    /// The most frames one [`fill`](Self::fill) produces — what [`drive`]
+    /// sizes its block by.
+    ///
+    /// Per source rather than one crate constant, because the backends differ:
+    /// fundsp's `Net` renders at most `MAX_BUFFER_SIZE` (64) frames a call,
+    /// and the native graph renders whatever `MaxBlock` it was prepared for.
+    /// Pulling the graph 64 frames at a time would run its per-block walk
+    /// sixteen times as often as it needs to.
+    fn max_block(&self) -> usize;
 }
 
 impl FrameSource for NetSource<'_> {
@@ -213,6 +241,149 @@ impl FrameSource for NetSource<'_> {
 
     fn produced(&self) -> Samples {
         self.produced
+    }
+
+    fn max_block(&self) -> usize {
+        MAX_BUFFER_SIZE
+    }
+}
+
+/// The render source for the native graph: a `tutti_graph::Executor` (a
+/// fork, or a pair built for the render) rendered one block at a time.
+///
+/// The counterpart of [`NetSource`], and deliberately the same shape: one
+/// block per [`fill`](FrameSource::fill), folded onto the caller's width by
+/// the same gather, the clock advanced by exactly the frames produced. What
+/// differs is who carries time. A `Net` holds its clock as a node and only
+/// needs the caller's clock advanced; the executor reads the transport from
+/// each block's `Env`, so this hands it one — through
+/// [`RenderClock::render_graph`], which reads the clock's snapshot before the
+/// block and advances it after (`OfflineTimeline::render_graph` is that call
+/// for an offline timeline).
+pub(crate) struct GraphSource<'a> {
+    editor: &'a mut tutti_graph::Editor,
+    executor: &'a mut tutti_graph::Executor,
+    clock: &'a dyn RenderClock,
+    /// Silence for every global input the graph declares: an export renders
+    /// with nothing plugged in, as `NetSource`'s empty input buffer does.
+    silence: Vec<f32>,
+    global_inputs: usize,
+    /// One plane per global output, `max_block` long.
+    planes: Vec<Vec<f32>>,
+    max_block: usize,
+    produced: Samples,
+}
+
+impl<'a> GraphSource<'a> {
+    /// Refuses a pair it cannot render **as configured** rather than rendering
+    /// something else: an editor that does not feed this executor (its
+    /// retirees would never be collected), or an executor prepared at a rate
+    /// other than the render's. `NetSource` re-rates its net instead; an
+    /// executor's units are prepared for one rate on the control side, which
+    /// is what `RenderGraph::prepare` and `RenderGraph::fork` are for.
+    pub(crate) fn new(
+        editor: &'a mut tutti_graph::Editor,
+        executor: &'a mut tutti_graph::Executor,
+        sample_rate: tutti_core::SampleRate,
+        clock: &'a dyn RenderClock,
+    ) -> crate::Result<Self> {
+        if !editor.is_paired_with(executor) {
+            return Err(crate::Error::InvalidConfig(
+                "the graph's editor does not feed its executor; pass the pair built together"
+                    .into(),
+            ));
+        }
+        let prepared = executor.prepare().sample_rate();
+        if prepared.get() != sample_rate.get() {
+            return Err(crate::Error::InvalidConfig(format!(
+                "the graph is prepared at {} Hz and the render is at {} Hz; \
+                 prepare it with `RenderGraph::prepare` or fork it with `RenderGraph::fork`",
+                prepared.get(),
+                sample_rate.get()
+            )));
+        }
+        let max_block = executor.prepare().max_block().get();
+        let topology = &editor.spec().topology;
+        let global_inputs = topology.inputs.count() as usize;
+        let planes = vec![vec![0.0f32; max_block]; topology.outputs.len()];
+        Ok(Self {
+            editor,
+            executor,
+            clock,
+            silence: vec![0.0; max_block],
+            global_inputs,
+            planes,
+            max_block,
+            produced: Samples(0),
+        })
+    }
+}
+
+impl FrameSource for GraphSource<'_> {
+    /// Never starves, for [`NetSource`]'s reason: an offline render is driven
+    /// to a known frame count, so the only `0` is for a zero-length request.
+    fn fill(&mut self, out: &mut [f32], ch: usize) -> usize {
+        debug_assert!(ch > 0, "frame width must be non-zero");
+        let block_size = (out.len() / ch).min(self.max_block);
+        if block_size == 0 {
+            return 0;
+        }
+
+        // Per block, and allocating: the executor takes slice lists, and a
+        // list of borrows cannot live beside the buffers it borrows. Two
+        // short `Vec`s per `max_block` frames, on an offline worker — the
+        // executor's own walk inside `render_graph` stays allocation-free.
+        let inputs: Vec<&[f32]> = (0..self.global_inputs)
+            .map(|_| &self.silence[..block_size])
+            .collect();
+        let mut outputs: Vec<&mut [f32]> = self
+            .planes
+            .iter_mut()
+            .map(|p| &mut p[..block_size])
+            .collect();
+        // Snapshot, process, advance — in that order (emit-then-advance, as
+        // `NetSource` documents for the `Net` path).
+        self.clock
+            .render_graph(self.executor, block_size, &inputs, &mut outputs);
+        // Retired units and returned commits are freed here, on this thread,
+        // as a host's control loop would free them.
+        self.editor.collect();
+
+        for (i, frame) in out[..block_size * ch].chunks_exact_mut(ch).enumerate() {
+            fold_graph_frame(&self.planes, i, frame);
+        }
+        self.produced = Samples(self.produced.get() + block_size);
+        block_size
+    }
+
+    fn produced(&self) -> Samples {
+        self.produced
+    }
+
+    fn max_block(&self) -> usize {
+        self.max_block
+    }
+}
+
+/// Run `f` over the frame source for `graph`, whichever backend it is.
+///
+/// The one place a [`RenderGraph`] becomes a [`FrameSource`], so every entry
+/// point dispatches identically and nothing past this point knows which graph
+/// it is pulling.
+pub(crate) fn with_source<R>(
+    graph: &mut RenderGraph,
+    sample_rate: tutti_core::SampleRate,
+    clock: &dyn RenderClock,
+    f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
+) -> crate::Result<R> {
+    match graph {
+        RenderGraph::Net(net) => f(&mut NetSource::new(net, sample_rate, clock)),
+        RenderGraph::Graph { editor, executor } => f(&mut GraphSource::new(
+            editor,
+            executor,
+            sample_rate,
+            clock,
+        )?),
     }
 }
 
@@ -260,6 +431,11 @@ impl FrameSource for PlaneSource<'_> {
     fn produced(&self) -> Samples {
         self.pos
     }
+
+    /// The planes are already rendered, so the size only paces the encoder.
+    fn max_block(&self) -> usize {
+        MAX_BUFFER_SIZE
+    }
 }
 
 /// Pull the whole render out of `src`, gating each block, handing the kept
@@ -280,9 +456,10 @@ where
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
     }
-    // Heap, not a stack array: at 12 channels a block is 96 KiB. Derived once,
-    // never inside the loop.
-    let mut block = vec![0.0f32; MAX_BUFFER_SIZE * ch];
+    // Heap, not a stack array: at 12 channels a 1024-frame graph block is
+    // 48 KiB. Derived once, never inside the loop.
+    let max_block = src.max_block().max(1);
+    let mut block = vec![0.0f32; max_block * ch];
     let mut kept = Samples(0);
 
     while src.produced() < plan.total {
@@ -292,7 +469,7 @@ where
         let want = plan
             .total
             .remaining_after(src.produced())
-            .min(Samples(MAX_BUFFER_SIZE));
+            .min(Samples(max_block));
         let block_start = src.produced();
         // `want` is a FRAME count and `block` is flat samples, hence `* ch`.
         let n = src.fill(&mut block[..want.get() * ch], ch);

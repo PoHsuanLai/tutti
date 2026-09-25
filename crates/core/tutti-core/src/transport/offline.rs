@@ -245,9 +245,9 @@ impl OfflineTimeline {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
-        let (transport, changes) = self.graph_block();
-        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
-        self.advance(frames);
+        // The trait's, so an export driving any `RenderClock` and a caller
+        // holding this timeline run the one sequence.
+        super::RenderClock::render_graph(self, exec, frames, inputs, outputs);
     }
 }
 
@@ -272,6 +272,10 @@ impl super::RenderClock for OfflineTimeline {
         // The inherent `advance` takes a raw count; this is the same call with
         // the frame-count type at the trait boundary.
         OfflineTimeline::advance(self, frames.get());
+    }
+
+    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+        OfflineTimeline::graph_block(self)
     }
 }
 

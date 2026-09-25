@@ -70,6 +70,27 @@ pub enum Error {
     /// caller asked for was never applied.
     #[error("Cannot measure loudness: {0}")]
     Unmeasurable(String),
+
+    /// A native graph could not be forked for the render because the node at
+    /// `key` cannot be: it handed the editor no fork source (a plugin, a mic
+    /// monitor, a `Legacy` built unforkable), so a copy would drive or share
+    /// the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
+    /// nothing was rendered.
+    ///
+    /// A variant of its own rather than inside [`Fork`](Self::Fork) because it
+    /// is the one a host acts on — "remove or freeze this node" — and the key
+    /// is what it acts on.
+    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a plugin, a mic monitor, or a node built unforkable)")]
+    NotForkable {
+        /// The node, as the live graph keys it.
+        key: tutti_types::NodeKey,
+    },
+
+    /// A native graph could not be forked for the render for any reason other
+    /// than [`NotForkable`](Self::NotForkable): the target node is missing or
+    /// has no outputs, or the forked graph did not commit.
+    #[error("Cannot fork the graph for export: {0}")]
+    Fork(tutti_graph::ForkError),
 }
 
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error

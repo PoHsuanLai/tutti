@@ -22,8 +22,9 @@ use tutti_core::Amplitude;
 use tutti_core::Hz;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    RenderConfig, Resample,
+    RenderConfig, RenderGraph, Resample,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 
 const SR: f64 = 48_000.0;
@@ -32,38 +33,47 @@ const DUR: f64 = 1.0;
 /// resampled case cannot alias it into a different bin and look correct.
 const TONE_HZ: f32 = 1_000.0;
 
+/// `g` as an export renders it: built at [`SR`], the rate every case renders
+/// at (a graph prepared at another rate is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
 /// A steady tone at −6 dBFS, in stereo.
 ///
 /// The amplitude is deliberately not full scale: a resampler's passband ripple
 /// and an encoder's dither both push samples slightly past their input value, and
 /// clipping at the rail would mask that as a flat top rather than reporting it.
-fn tone_net() -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(
+fn tone_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(TONE_HZ))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g)
 }
 
 /// Constant DC — the case whose correct output is knowable exactly.
-fn dc_net(level: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[level, level])));
-    n.pipe_output(id);
-    n
+fn dc_graph(level: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    g.pipe_output(id);
+    built(g)
 }
 
 /// A mono graph, for the upmix/fold cases.
-fn mono_net() -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(
+fn mono_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(TONE_HZ)).with_amplitude(Amplitude(0.5)),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g)
 }
 
 /// A tone near Nyquist for the downsampling case.
@@ -72,15 +82,15 @@ fn mono_net() -> tutti_core::dsp::Net {
 /// above the new Nyquist, so a correct resampler must *filter it out*, and one
 /// with no anti-alias filter will fold it down to an audible ~4 kHz. That
 /// difference is unmissable in a spectrum and invisible to a frame count.
-fn near_nyquist_net() -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(
+fn near_nyquist_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(
         Osc::sine(Hz(18_000.0))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
     ));
-    n.pipe_output(id);
-    n
+    g.pipe_output(id);
+    built(g)
 }
 
 fn base(format: AudioFormat, bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
@@ -109,8 +119,8 @@ fn main() -> tutti_export::Result<()> {
 
     let mut count = 0usize;
     let mut write =
-        |name: String, net: tutti_core::dsp::Net, cfg: &ExportConfig| -> tutti_export::Result<()> {
-            let w = render_to_file(net, cfg, &tutti_export::FrozenClock, &dir.join(&name))?;
+        |name: String, graph: RenderGraph, cfg: &ExportConfig| -> tutti_export::Result<()> {
+            let w = render_to_file(graph, cfg, &tutti_export::FrozenClock, &dir.join(&name))?;
             println!("wrote {name} ({} bytes)", w.bytes);
             count += 1;
             Ok(())
@@ -124,7 +134,7 @@ fn main() -> tutti_export::Result<()> {
     // plays in the sampler's matrix.
     write(
         "dry.wav".into(),
-        tone_net(),
+        tone_graph(),
         &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO),
     )?;
 
@@ -152,7 +162,7 @@ fn main() -> tutti_export::Result<()> {
             }
             write(
                 format!("fmt_{ext}_{tag}.{ext}"),
-                tone_net(),
+                tone_graph(),
                 &base(fmt, depth, ChannelLayout::STEREO),
             )?;
         }
@@ -162,7 +172,7 @@ fn main() -> tutti_export::Result<()> {
     // sample-wise. It ignores bit depth entirely.
     write(
         "fmt_ogg.ogg".into(),
-        tone_net(),
+        tone_graph(),
         &base(
             AudioFormat::OggVorbis(Default::default()),
             BitDepth::Int24,
@@ -184,7 +194,7 @@ fn main() -> tutti_export::Result<()> {
         ] {
             write(
                 format!("dc_{tag}_{ext}_i16.{ext}"),
-                dc_net(level),
+                dc_graph(level),
                 &base(fmt, BitDepth::Int16, ChannelLayout::STEREO),
             )?;
         }
@@ -202,7 +212,7 @@ fn main() -> tutti_export::Result<()> {
     ] {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::STEREO);
         cfg.dither = mode;
-        write(format!("dither_{tag}.wav"), dc_net(0.25), &cfg)?;
+        write(format!("dither_{tag}.wav"), dc_graph(0.25), &cfg)?;
     }
 
     // ---- resampling ------------------------------------------------------
@@ -218,7 +228,7 @@ fn main() -> tutti_export::Result<()> {
     ] {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_core::SampleRate(target)));
-        write(format!("resample_{tag}.wav"), tone_net(), &cfg)?;
+        write(format!("resample_{tag}.wav"), tone_graph(), &cfg)?;
     }
 
     // The anti-alias case. 18 kHz downsampled to 22.05 k is above the new
@@ -226,7 +236,11 @@ fn main() -> tutti_export::Result<()> {
     {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_core::SampleRate(22_050.0)));
-        write("resample_alias_22k05.wav".into(), near_nyquist_net(), &cfg)?;
+        write(
+            "resample_alias_22k05.wav".into(),
+            near_nyquist_graph(),
+            &cfg,
+        )?;
     }
 
     // Every chunk-size preset at one ratio, so a preset that degrades the
@@ -237,7 +251,7 @@ fn main() -> tutti_export::Result<()> {
             target_rate: tutti_core::SampleRate(44_100.0),
             chunk: *chunk,
         });
-        write(format!("chunk_{i}.wav"), tone_net(), &cfg)?;
+        write(format!("chunk_{i}.wav"), tone_graph(), &cfg)?;
     }
 
     // ---- channels --------------------------------------------------------
@@ -247,17 +261,17 @@ fn main() -> tutti_export::Result<()> {
     // itself, rather than against the engine's own coefficients.
     write(
         "chan_mono.wav".into(),
-        mono_net(),
+        mono_graph(),
         &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::MONO),
     )?;
     write(
         "chan_mono_to_quad.wav".into(),
-        mono_net(),
+        mono_graph(),
         &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
     )?;
     write(
         "chan_stereo_to_51.wav".into(),
-        tone_net(),
+        tone_graph(),
         &base(
             AudioFormat::Wav,
             BitDepth::Float32,

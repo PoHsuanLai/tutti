@@ -45,22 +45,34 @@ A config is a struct literal, so a caller states what it means and lets
 so forgetting a transport is a compile error rather than a silently silent
 render.
 
+The graph is the native one (`tutti_graph`), built with its `GraphBuilder` and
+prepared at the render's rate (`RenderGraph::prepare`): a graph prepared at
+another rate is refused rather than re-rated. A host exporting its live graph
+forks it instead, with `RenderGraph::fork`. A fundsp `Net` still converts
+(`RenderGraph::Net`) until doc 013's Phase 3 removes it.
+
 ```rust
-use tutti_core::dsp::Net;
 use tutti_core::{FrozenClock, Hz, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, EncodeConfig, ExportConfig, Flac,
-    RenderConfig,
+    render_to_buffers, render_to_file, AudioFormat, ChannelLayout, EncodeConfig, ExportConfig,
+    Flac, RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
 
-let mut net = Net::new(0, 2);
-let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
-net.pipe_output(tone);
+let rate = SampleRate(48_000.0);
+// A render consumes its graph, so build one per render.
+let tone = || {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let osc = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    g.pipe_output(osc);
+    let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
+    RenderGraph::Graph { editor, executor }
+};
 
 let config = ExportConfig {
     render: RenderConfig {
-        sample_rate: SampleRate(48_000.0),
+        sample_rate: rate,
         // `f64`, not `Seconds`: an f32 cannot carry an hour-long render.
         duration_seconds: 0.5,
         ..Default::default()
@@ -74,14 +86,14 @@ let config = ExportConfig {
 
 // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
 // plane rather than the total sample count.
-let rendered = render_to_buffers(net.clone(), &config, &FrozenClock)
+let rendered = render_to_buffers(tone(), &config, &FrozenClock)
     .expect("a 0.5 s stereo render");
 assert_eq!(rendered.channels(), 2);
 assert_eq!(rendered.frames().get(), 24_000);
 
 // Or straight to a file, which streams — no PCM is held whole.
 let dir = tempfile::tempdir().expect("temp dir");
-let written = render_to_file(net, &config, &FrozenClock, &dir.path().join("master.flac"))
+let written = render_to_file(tone(), &config, &FrozenClock, &dir.path().join("master.flac"))
     .expect("flac encodes");
 assert!(written.bytes > 0, "a finalized export reports its size on disk");
 ```

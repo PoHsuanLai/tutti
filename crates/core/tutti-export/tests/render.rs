@@ -9,26 +9,43 @@
 //! FLAC, Ogg and AIFF unconditionally, and an encoder whose feature is off
 //! returns `UnsupportedFormat` rather than a file. `hound` — which decodes the
 //! results back — is likewise only linked under `wav`.
+//!
+//! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
+//! through `RenderGraph::Graph` (doc 013 Phase 3 PR 8); the `Net` backend's
+//! own behaviour, and its equivalence to this one, is `graph_source.rs`'s.
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 use tutti_core::{Amplitude, AudioUnit, Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
-    ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,
+    ExportConfig, FrozenClock, RenderClock, RenderConfig, RenderGraph, Resample,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
 
-fn net() -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[0.5, 0.5])));
-    n.pipe_output(id);
-    n
+/// The rate [`config`] renders at.
+const RATE: SampleRate = SampleRate(44_100.0);
+
+/// `g`, built for an export at `rate` — which must be the config's render
+/// rate: a graph prepared at another is refused, not re-rated.
+fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
+    let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
+    RenderGraph::Graph { editor, executor }
 }
+
+/// A stereo DC at 0.5, built for an export at `rate`.
+fn dc(rate: SampleRate) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
+    g.pipe_output(id);
+    built(g, rate)
+}
+
 fn config(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(44100.0),
+            sample_rate: RATE,
             duration_seconds: 0.2,
             ..Default::default()
         },
@@ -60,7 +77,7 @@ fn all_four_formats_export() {
     ] {
         let p = d.path().join(format!("a.{ext}"));
         let r = render_to_file(
-            net(),
+            dc(RATE),
             &config(f, bd, ChannelLayout::STEREO),
             &FrozenClock,
             &p,
@@ -81,11 +98,11 @@ fn all_four_formats_export() {
 fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("q.wav");
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(Const::mono(0.5)));
-    n.pipe_output(id);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    g.pipe_output(id);
     render_to_file(
-        n,
+        built(g, RATE),
         &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
         &FrozenClock,
         &p,
@@ -123,8 +140,9 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
         fn advance(&self, frames: tutti_types::Samples) {
             self.0.fetch_add(frames.get(), Ordering::Relaxed);
         }
-        // Only the `Net` path renders here, which never asks; the native
-        // graph's counterpart is `tests/graph_source.rs`.
+        // A stopped transport at beat 0: nothing in this graph reads it.
+        // That the graph is handed the clock's transport block by block is
+        // `graph_source.rs`'s `the_graph_reads_the_render_clocks_transport`.
         fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
             Default::default()
         }
@@ -132,7 +150,7 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
 
     let clock = Arc::new(CountingClock(AtomicUsize::new(0)));
     let out = render_to_buffers(
-        net(),
+        dc(RATE),
         &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO),
         clock.as_ref(),
     )
@@ -152,10 +170,10 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
 #[test]
 fn a_latency_trim_preserves_the_output_length() {
     let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    let untrimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    let untrimmed = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
 
     s.render.latency = tutti_types::Samples(512);
-    let trimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    let trimmed = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
 
     assert_eq!(
         untrimmed.frames(),
@@ -174,11 +192,11 @@ fn a_latency_trim_preserves_the_output_length() {
 #[test]
 fn a_tail_lengthens_the_output_by_exactly_the_tail() {
     let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    let untailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    let untailed = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
 
     let tail = tutti_types::Samples(4096);
     s.render.tail = tail;
-    let tailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    let tailed = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
 
     assert_eq!(
         tailed.frames().get(),
@@ -199,14 +217,13 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 #[test]
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(Const::mono(0.5)));
-    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
-    n.connect(src, 0, conv, 0);
-    n.pipe_output(conv);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    g.connect(src, 0, conv, 0).pipe_output(conv);
 
     assert_eq!(
-        tutti_export::reported_tail(&n).samples(),
+        built(g, RATE).reported_tail().samples(),
         Some(tutti_types::Samples(4095)),
     );
 }
@@ -218,17 +235,17 @@ fn a_convolver_reports_its_ir_ring_out() {
 fn cascaded_convolvers_sum_their_tails() {
     let a = vec![0.5f32; 1024];
     let b = vec![0.5f32; 2048];
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(Const::mono(0.5)));
-    let first = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
-    let second = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
-    n.connect(src, 0, first, 0);
-    n.connect(first, 0, second, 0);
-    n.pipe_output(second);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let first = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
+    let second = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
+    g.connect(src, 0, first, 0)
+        .connect(first, 0, second, 0)
+        .pipe_output(second);
 
     // 1023 + 2047, which is the ring-out of the 3071-sample cascaded response.
     assert_eq!(
-        tutti_export::reported_tail(&n).samples(),
+        built(g, RATE).reported_tail().samples(),
         Some(tutti_types::Samples(3070)),
     );
 }
@@ -285,15 +302,15 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
     }
 
     let ir = vec![0.5f32; 4096];
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(Const::mono(0.5)));
-    let quiet = n.push(Box::new(Unreporting));
-    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
-    n.connect(src, 0, quiet, 0);
-    n.connect(quiet, 0, conv, 0);
-    n.pipe_output(conv);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let quiet = g.add_unit(Box::new(Unreporting));
+    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    g.connect(src, 0, quiet, 0)
+        .connect(quiet, 0, conv, 0)
+        .pipe_output(conv);
 
-    let reported = tutti_export::reported_tail(&n);
+    let reported = built(g, RATE).reported_tail();
     assert_eq!(reported.unknown_nodes(), 1, "one node never answered");
     assert_eq!(
         reported.samples(),
@@ -314,7 +331,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
 /// unreporting node on the output path makes the whole figure unspendable.
 #[test]
 fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
-    let reported = tutti_export::reported_tail(&net());
+    let reported = dc(RATE).reported_tail();
     assert_eq!(reported.unknown_nodes(), 0);
     assert_eq!(reported.samples(), Some(tutti_types::Samples(0)));
 }
@@ -388,14 +405,14 @@ impl AudioUnit for Integrator {
 /// assertion — the graph is then spendable and `resolve` ignores the cap.
 #[test]
 fn resolving_an_unbounded_graph_spends_the_cap() {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let src = n.push(Box::new(Const::frame(&[0.5, 0.5])));
-    let rev = n.push(Box::new(Integrator::default()));
-    n.connect(src, 0, rev, 0);
-    n.connect(src, 1, rev, 1);
-    n.pipe_output(rev);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let src = g.add_unit(Box::new(Const::frame(&[0.5, 0.5])));
+    let rev = g.add_unit(Box::new(Integrator::default()));
+    g.connect(src, 0, rev, 0)
+        .connect(src, 1, rev, 1)
+        .pipe_output(rev);
 
-    let reported = tutti_export::reported_tail(&n);
+    let reported = built(g, RATE).reported_tail();
     let cap = tutti_types::Samples(384_000);
     assert!(
         reported.is_unbounded(),
@@ -413,13 +430,12 @@ fn resolving_an_unbounded_graph_spends_the_cap() {
 #[test]
 fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let src = n.push(Box::new(Const::mono(0.5)));
-    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
-    n.connect(src, 0, conv, 0);
-    n.pipe_output(conv);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    g.connect(src, 0, conv, 0).pipe_output(conv);
 
-    let reported = tutti_export::reported_tail(&n);
+    let reported = built(g, RATE).reported_tail();
     assert_eq!(
         reported.resolve(tutti_types::Samples(384_000)),
         tutti_types::Samples(4095),
@@ -446,7 +462,7 @@ fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
 #[test]
 fn buffers_report_their_own_shape() {
     let out = render_to_buffers(
-        net(),
+        dc(RATE),
         &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
         &FrozenClock,
     )
@@ -467,7 +483,7 @@ fn a_caller_can_compose_normalization() {
     // passed the gate and there is no loudness to normalize toward.
     let mut long = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     long.render.duration_seconds = 2.0;
-    let mut out = render_to_buffers(net(), &long, &FrozenClock).unwrap();
+    let mut out = render_to_buffers(dc(RATE), &long, &FrozenClock).unwrap();
 
     let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::STEREO);
     let flat = out.interleaved();
@@ -518,7 +534,7 @@ fn a_resample_request_reaches_the_file() {
     s.render.duration_seconds = 1.0;
     s.resample = Some(Resample::to(SampleRate(48_000.0)));
 
-    render_to_file(net(), &s, &FrozenClock, &p).unwrap();
+    render_to_file(dc(RATE), &s, &FrozenClock, &p).unwrap();
 
     let rd = hound::WavReader::open(&p).unwrap();
     assert_eq!(
@@ -544,7 +560,7 @@ fn normalized_audio_can_be_written_to_every_format() {
     let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::STEREO);
     s.render.duration_seconds = 1.0;
 
-    let mut audio = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    let mut audio = render_to_buffers(dc(RATE), &s, &FrozenClock).unwrap();
     audio.apply_gain(tutti_types::Db(-6.0));
 
     for (format, ext) in [
@@ -589,7 +605,7 @@ fn a_resample_reaches_every_format_not_just_wav() {
 
     // WAV is the control: it was already correct.
     let p = d.path().join("r.wav");
-    render_to_file(net(), &s, &FrozenClock, &p).unwrap();
+    render_to_file(dc(RATE), &s, &FrozenClock, &p).unwrap();
     let rd = hound::WavReader::open(&p).unwrap();
     assert_eq!(rd.spec().sample_rate, 48_000);
     let wav_frames = rd.into_samples::<i32>().count() / 2;
@@ -602,7 +618,7 @@ fn a_resample_reaches_every_format_not_just_wav() {
     // resample were skipped the file would hold 44100 frames.
     s.encode.format = AudioFormat::Flac(Default::default());
     let pf = d.path().join("r.flac");
-    render_to_file(net(), &s, &FrozenClock, &pf).unwrap();
+    render_to_file(dc(RATE), &s, &FrozenClock, &pf).unwrap();
     let flac_frames = flac_frame_count(&pf);
     assert!(
         (flac_frames as i64 - 48_000).abs() < 512,
@@ -613,7 +629,7 @@ fn a_resample_reaches_every_format_not_just_wav() {
     // Ogg: same property, read from the final page's granule position.
     s.encode.format = AudioFormat::OggVorbis(Default::default());
     let po = d.path().join("r.ogg");
-    render_to_file(net(), &s, &FrozenClock, &po).unwrap();
+    render_to_file(dc(RATE), &s, &FrozenClock, &po).unwrap();
     let ogg_frames = ogg_granule(&po);
     assert!(
         (ogg_frames as i64 - 48_000).abs() < 2048,
@@ -636,7 +652,8 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     let mut render_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     render_cfg.render.sample_rate = tutti_core::SampleRate(96_000.0);
     render_cfg.render.duration_seconds = 1.0;
-    let audio = render_to_buffers(net(), &render_cfg, &FrozenClock).unwrap();
+    let audio =
+        render_to_buffers(dc(render_cfg.render.sample_rate), &render_cfg, &FrozenClock).unwrap();
     assert_eq!(audio.sample_rate.get(), 96_000.0);
 
     // ...then write with a config whose `render` half is left at its DEFAULT
@@ -687,11 +704,11 @@ fn normalized_export_lifts_the_level_toward_the_target() {
     cfg.render.duration_seconds = 2.0;
 
     let plain = d.path().join("plain.wav");
-    render_to_file(net(), &cfg, &FrozenClock, &plain).unwrap();
+    render_to_file(dc(RATE), &cfg, &FrozenClock, &plain).unwrap();
 
     let normalized = d.path().join("normalized.wav");
     render_normalized_to_file(
-        net(),
+        dc(RATE),
         &cfg,
         &FrozenClock,
         Normalize::lufs(Db(-14.0)),
@@ -727,7 +744,14 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
     cfg.render.duration_seconds = 2.0;
 
     let path = d.path().join("peak.wav");
-    render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::peak(Db(-1.0)), &path).unwrap();
+    render_normalized_to_file(
+        dc(RATE),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .unwrap();
 
     let samples: Vec<f32> = hound::WavReader::open(&path)
         .unwrap()
@@ -771,8 +795,14 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
     );
 
     let path = d.path().join("short.wav");
-    render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::lufs(Db(-14.0)), &path)
-        .unwrap();
+    render_normalized_to_file(
+        dc(RATE),
+        &cfg,
+        &FrozenClock,
+        Normalize::lufs(Db(-14.0)),
+        &path,
+    )
+    .unwrap();
 
     let samples: Vec<f32> = hound::WavReader::open(&path)
         .unwrap()
@@ -795,9 +825,9 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
-    let mut n = tutti_core::dsp::Net::new(0, 6);
-    let id = n.push(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
-    n.pipe_output(id);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+    let id = g.add_unit(Box::new(Const::frame(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6])));
+    g.pipe_output(id);
 
     let mut cfg = config(
         AudioFormat::Wav,
@@ -807,8 +837,14 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
     cfg.render.duration_seconds = 2.0;
 
     let path = d.path().join("surround.wav");
-    render_normalized_to_file(n, &cfg, &FrozenClock, Normalize::lufs(Db(-14.0)), &path)
-        .expect("5.1 normalization must not be rejected");
+    render_normalized_to_file(
+        built(g, cfg.render.sample_rate),
+        &cfg,
+        &FrozenClock,
+        Normalize::lufs(Db(-14.0)),
+        &path,
+    )
+    .expect("5.1 normalization must not be rejected");
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 6, "all six channels must survive");
@@ -897,10 +933,10 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
     use tutti_types::Db;
 
     let silence = || {
-        let mut n = tutti_core::dsp::Net::new(0, 2);
-        let id = n.push(Box::new(Const::frame(&[0.0, 0.0])));
-        n.pipe_output(id);
-        n
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+        let id = g.add_unit(Box::new(Const::frame(&[0.0, 0.0])));
+        g.pipe_output(id);
+        built(g, RATE)
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -963,14 +999,14 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     // bug put back. So the phase is load-bearing; the amplitude is not, since
     // peak normalization divides it out.
     let square = || {
-        let mut n = tutti_core::dsp::Net::new(0, 2);
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
         let tone = Osc::sine(Hz(11025.0))
             .with_phase(tutti_core::Phase(0.546))
             .with_amplitude(Amplitude(0.98))
             .with_layout(ChannelLayout::STEREO);
-        let id = n.push(Box::new(tone));
-        n.pipe_output(id);
-        n
+        let id = g.add_unit(Box::new(tone));
+        g.pipe_output(id);
+        built(g, RATE)
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -1022,9 +1058,14 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     cfg.render.sample_rate = tutti_core::SampleRate(4_000_000.0);
     cfg.render.duration_seconds = 0.0005;
 
-    let err =
-        render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::peak(Db(-1.0)), &path)
-            .expect_err("an unmeasurable rate must not report success");
+    let err = render_normalized_to_file(
+        dc(cfg.render.sample_rate),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .expect_err("an unmeasurable rate must not report success");
 
     assert!(
         matches!(err, tutti_export::Error::Unmeasurable(_)),
@@ -1060,15 +1101,15 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
 
         // A net as wide as the file, carrying a distinct constant per channel so
         // a dropped or duplicated channel is visible.
-        let mut n = tutti_core::dsp::Net::new(0, width as usize);
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
-            n.connect_output(id, 0, c);
+            let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+            g.connect_output(id, 0, c);
         }
 
         let p = d.path().join(format!("w{width}.wav"));
         render_to_file(
-            n,
+            built(g, RATE),
             &config(AudioFormat::Wav, BitDepth::Float32, layout),
             &FrozenClock,
             &p,
@@ -1115,14 +1156,14 @@ fn an_odd_width_round_trips_through_buffers() {
     let d = tempfile::tempdir().unwrap();
     for width in [3u16, 5] {
         let layout = ChannelLayout::from(width);
-        let mut n = tutti_core::dsp::Net::new(0, width as usize);
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
         for c in 0..width as usize {
-            let id = n.push(Box::new(Const::mono(0.25)));
-            n.connect_output(id, 0, c);
+            let id = g.add_unit(Box::new(Const::mono(0.25)));
+            g.connect_output(id, 0, c);
         }
 
         let cfg = config(AudioFormat::Wav, BitDepth::Float32, layout);
-        let rendered = render_to_buffers(n, &cfg, &FrozenClock)
+        let rendered = render_to_buffers(built(g, RATE), &cfg, &FrozenClock)
             .unwrap_or_else(|e| panic!("width {width}: render_to_buffers failed: {e}"));
         assert_eq!(rendered.channels(), width as usize);
         assert_eq!(rendered.layout(), layout);
@@ -1141,10 +1182,10 @@ fn an_odd_width_round_trips_through_buffers() {
 fn an_odd_width_survives_a_resample() {
     let d = tempfile::tempdir().unwrap();
     let width = 5u16;
-    let mut n = tutti_core::dsp::Net::new(0, width as usize);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(width));
     for c in 0..width as usize {
-        let id = n.push(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
-        n.connect_output(id, 0, c);
+        let id = g.add_unit(Box::new(Const::mono(0.1 + 0.05 * c as f32)));
+        g.connect_output(id, 0, c);
     }
 
     let mut cfg = config(
@@ -1155,7 +1196,7 @@ fn an_odd_width_survives_a_resample() {
     cfg.resample = Some(Resample::to(48_000.0));
 
     let p = d.path().join("resampled5.wav");
-    render_to_file(n, &cfg, &FrozenClock, &p).expect("a 5-wide resampled export");
+    render_to_file(built(g, RATE), &cfg, &FrozenClock, &p).expect("a 5-wide resampled export");
 
     let reader = hound::WavReader::open(&p).unwrap();
     assert_eq!(reader.spec().channels, width);
@@ -1186,7 +1227,7 @@ fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("zero.wav");
     let err = render_to_file(
-        net(),
+        dc(RATE),
         &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::EMPTY),
         &FrozenClock,
         &p,

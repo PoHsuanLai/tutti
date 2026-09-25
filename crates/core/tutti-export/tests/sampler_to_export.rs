@@ -26,6 +26,22 @@
 //! wrong clock rate) leaves the output emphatically non-zero, so `!= 0.0` cannot
 //! see any of them.
 //!
+//! # The graph renders 64-frame blocks, and why
+//!
+//! The voice runs in the native graph as a `tutti_graph::Legacy`, which calls
+//! it in 64-frame chunks from each block's start, and it reads the timeline
+//! **out of band** — `beat()` on its `Arc`, on every call. The export advances
+//! that timeline once per graph block (`RenderClock::render_graph`). So at
+//! `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024) every chunk of a block
+//! reads the block's first beat and the voice replays its first 64 frames
+//! sixteen times: measured, the dry voice exports at ~768 Hz, not 440. At a
+//! 64-frame `MaxBlock` the clock moves between the voice's calls exactly as a
+//! `Net` render's does (`NetSource` advances it every 64 frames), which is why
+//! [`voice_graph`] prepares at 64. That is a constraint of `Legacy` clip
+//! readers until they read `Env::transport_at` natively (doc 013, Phase 4),
+//! not of these tests; doc 013's PR 8 notes carry it forward to the export
+//! fork (PR 12), which prepares at `GRAPH_MAX_BLOCK`.
+//!
 //! Gated on `wav`, because the assertions decode the exported file through
 //! `hound` — which this crate only links when that feature is on. `wav` is in
 //! `default`, so these run by default.
@@ -46,10 +62,12 @@ use tutti_core::{
 };
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    RenderConfig,
+    RenderConfig, RenderGraph,
 };
+use tutti_graph::{GraphBuilder, Prepare};
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_types::Samples;
 
 const SR: f64 = 48_000.0;
 const BASE_HZ: f32 = 440.0;
@@ -72,12 +90,16 @@ fn tone(frames: usize) -> Arc<Wave> {
     Arc::new(w)
 }
 
-/// A net whose output is one placed sampler voice, plus the clock driving it.
+/// A graph whose output is one placed sampler voice, plus the clock driving it.
 ///
 /// The returned `OfflineTimeline` is handed to `render_to_file` as its
 /// `RenderClock`, so the voice and the render share one clock by construction
 /// rather than by two configs that happen to match.
-fn voice_net(stretch: f32, cents: f32) -> (tutti_core::dsp::Net, Arc<OfflineTimeline>) {
+///
+/// Prepared at a 64-frame `MaxBlock`, not `RenderGraph::prepare`'s: see the
+/// module docs. Mutation (run): prepare with `RenderGraph::prepare(SampleRate(SR))`
+/// → every case fails, the dry voice measuring ~768 Hz.
+fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
         tempo: Bpm(TEMPO),
@@ -116,10 +138,13 @@ fn voice_net(stretch: f32, cents: f32) -> (tutti_core::dsp::Net, Arc<OfflineTime
         },
     );
 
-    let mut net = tutti_core::dsp::Net::new(0, 2);
-    let id = net.push(Box::new(pool));
-    net.pipe_output(id);
-    (net, transport)
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(pool));
+    g.pipe_output(id);
+    let (editor, executor) = g
+        .build(Prepare::new(SampleRate(SR), Samples(64)))
+        .expect("builds");
+    (RenderGraph::Graph { editor, executor }, transport)
 }
 
 fn config(format: AudioFormat) -> ExportConfig {
@@ -229,9 +254,9 @@ fn window(x: &[f32]) -> &[f32] {
 /// Render one case to a WAV and return the measured (frequency, RMS) of the left
 /// channel's settled window.
 fn render_and_measure(dir: &std::path::Path, name: &str, stretch: f32, cents: f32) -> (f64, f64) {
-    let (net, clock) = voice_net(stretch, cents);
+    let (graph, clock) = voice_graph(stretch, cents);
     let path = dir.join(format!("{name}.wav"));
-    render_to_file(net, &config(AudioFormat::Wav), clock.as_ref(), &path).unwrap();
+    render_to_file(graph, &config(AudioFormat::Wav), clock.as_ref(), &path).unwrap();
     let left = read_left(&path);
     let w = window(&left);
     (dominant_hz(w), rms(w))
@@ -361,14 +386,14 @@ fn stretch_and_pitch_compose_independently_through_the_export() {
 #[test]
 fn a_sampler_render_survives_integer_quantization() {
     let d = tempfile::tempdir().unwrap();
-    let (net, clock) = voice_net(1.0, 1200.0);
+    let (graph, clock) = voice_graph(1.0, 1200.0);
     let path = d.path().join("int16.wav");
 
     let mut cfg = config(AudioFormat::Wav);
     cfg.encode.bit_depth = BitDepth::Int16;
     cfg.dither = Dither::Triangular; // the default a real export uses
 
-    render_to_file(net, &cfg, clock.as_ref(), &path).unwrap();
+    render_to_file(graph, &cfg, clock.as_ref(), &path).unwrap();
 
     let reader = hound::WavReader::open(&path).unwrap();
     let channels = reader.spec().channels as usize;

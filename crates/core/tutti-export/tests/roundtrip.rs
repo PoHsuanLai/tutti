@@ -30,23 +30,33 @@
 
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    FrozenClock, RenderConfig,
+    FrozenClock, RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.1;
+
+/// `g`, built for an export at [`SR`] — the rate every config here
+/// renders at (a graph prepared at another is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
 
 /// A graph emitting the constant `level` on both channels.
 ///
 /// DC rather than a tone: every frame has the same known value, so a comparison
 /// failure names the error directly (a scale factor, a truncation) instead of
 /// being smeared across a waveform. The spectral cases live in the Python judge.
-fn dc_net(level: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[level, level])));
-    n.pipe_output(id);
-    n
+fn dc_graph(level: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    g.pipe_output(id);
+    built(g)
 }
 
 fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
@@ -129,7 +139,7 @@ fn a_wav_round_trips_its_samples_at_every_depth() {
         for level in [0.0f32, 0.3, -0.3, 0.75] {
             let path = d.path().join(format!("dc_{bit_depth:?}_{level}.wav"));
             let cfg = config(AudioFormat::Wav, bit_depth);
-            render_to_file(dc_net(level), &cfg, &FrozenClock, &path).unwrap();
+            render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
             let (spec, samples) = read_wav(&path);
             assert_eq!(spec.channels, 2, "{bit_depth:?}: channel count");
@@ -168,7 +178,7 @@ fn full_scale_does_not_wrap() {
         for level in [1.0f32, -1.0] {
             let path = d.path().join(format!("fs_{bit_depth:?}_{level}.wav"));
             let cfg = config(AudioFormat::Wav, bit_depth);
-            render_to_file(dc_net(level), &cfg, &FrozenClock, &path).unwrap();
+            render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
             let (_, samples) = read_wav(&path);
             for (i, &s) in samples.iter().enumerate() {
@@ -193,7 +203,7 @@ fn out_of_range_input_clamps_to_the_rail() {
     for (level, expect) in [(1.8f32, 1.0f32), (-1.8, -1.0)] {
         let path = d.path().join(format!("clamp_{level}.wav"));
         let cfg = config(AudioFormat::Wav, BitDepth::Int16);
-        render_to_file(dc_net(level), &cfg, &FrozenClock, &path).unwrap();
+        render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
         let (_, samples) = read_wav(&path);
         for (i, &s) in samples.iter().enumerate() {
@@ -223,7 +233,7 @@ fn wav_and_flac_quantize_a_sample_identically() {
 
     let wav_path = d.path().join("q.wav");
     render_to_file(
-        dc_net(level),
+        dc_graph(level),
         &config(AudioFormat::Wav, BitDepth::Int16),
         &FrozenClock,
         &wav_path,
@@ -233,7 +243,7 @@ fn wav_and_flac_quantize_a_sample_identically() {
 
     let flac_path = d.path().join("q.flac");
     render_to_file(
-        dc_net(level),
+        dc_graph(level),
         &config(AudioFormat::Flac(Default::default()), BitDepth::Int16),
         &FrozenClock,
         &flac_path,
@@ -271,7 +281,7 @@ fn flac_rejects_float32_instead_of_silently_downgrading() {
     let path = d.path().join("f.flac");
     let cfg = config(AudioFormat::Flac(Default::default()), BitDepth::Float32);
 
-    let err = render_to_file(dc_net(0.5), &cfg, &FrozenClock, &path);
+    let err = render_to_file(dc_graph(0.5), &cfg, &FrozenClock, &path);
     assert!(
         err.is_err(),
         "FLAC + Float32 must be a clean error, not a silent downgrade to 24-bit"
@@ -289,13 +299,13 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("quad.wav");
 
-    let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(Const::mono(0.5)));
-    n.pipe_output(id);
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    g.pipe_output(id);
 
     let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);
     cfg.encode.channels = ChannelLayout::QUAD;
-    render_to_file(n, &cfg, &FrozenClock, &path).unwrap();
+    render_to_file(built(g), &cfg, &FrozenClock, &path).unwrap();
 
     let (spec, samples) = read_wav(&path);
     assert_eq!(spec.channels, 4);
@@ -333,7 +343,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
         cfg.resample = Some(tutti_export::Resample::to(tutti_core::SampleRate(target)));
         cfg.render.duration_seconds = 0.25;
 
-        render_to_file(dc_net(0.4), &cfg, &FrozenClock, &path).unwrap();
+        render_to_file(dc_graph(0.4), &cfg, &FrozenClock, &path).unwrap();
 
         let (spec, samples) = read_wav(&path);
         assert_eq!(spec.sample_rate, target as u32, "header rate");

@@ -30,19 +30,29 @@
 
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
-    FrozenClock, RenderConfig,
+    FrozenClock, RenderConfig, RenderGraph,
 };
+use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
 
 const SR: f64 = 44_100.0;
 /// One LSB at 16-bit in the [-1, 1] float domain.
 const LSB16: f32 = 1.0 / 32_767.0;
 
-fn dc_net(level: f32) -> tutti_core::dsp::Net {
-    let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new(Const::frame(&[level, level])));
-    n.pipe_output(id);
-    n
+/// `g`, built for an export at [`SR`] — the rate every config here
+/// renders at (a graph prepared at another is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .expect("builds");
+    RenderGraph::Graph { editor, executor }
+}
+
+fn dc_graph(level: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    g.pipe_output(id);
+    built(g)
 }
 
 fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
@@ -69,7 +79,7 @@ fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
 /// than a float-tolerance argument.
 fn render_i16(dither: Dither, level: f32, path: &std::path::Path) -> Vec<i32> {
     render_to_file(
-        dc_net(level),
+        dc_graph(level),
         &config(dither, BitDepth::Int16),
         &FrozenClock,
         path,
@@ -281,7 +291,7 @@ fn float32_output_is_never_dithered_at_any_mode() {
     for mode in [Dither::Off, Dither::Rectangular, Dither::Triangular] {
         let path = d.path().join(format!("f32_{mode:?}.wav"));
         render_to_file(
-            dc_net(level),
+            dc_graph(level),
             &config(mode, BitDepth::Float32),
             &FrozenClock,
             &path,
@@ -314,7 +324,7 @@ fn noise_scales_with_the_target_bit_depth() {
     let path = d.path().join("d24.wav");
 
     render_to_file(
-        dc_net(level),
+        dc_graph(level),
         &config(Dither::Triangular, BitDepth::Int24),
         &FrozenClock,
         &path,

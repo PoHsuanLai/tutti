@@ -3,14 +3,19 @@
 //!
 //! # The oracle is the other backend
 //!
-//! Every case builds one graph twice from the same units — once as the `Net`
-//! the existing suites render, once with `tutti_graph::GraphBuilder` — and
-//! asserts the two exports are **bit-identical**: the same planes out of
-//! `render_to_buffers`, the same bytes out of `render_to_file`. The `Net` path
-//! is the one the oracle suites beside this file (`oracle_resample.rs`,
-//! `dither_stats.rs`, `surround_export.rs`, `render.rs`'s dBTP cases) already
-//! check against first principles, so equality here carries those checks over
-//! without restating them.
+//! This file is the `Net` backend's suite, and deliberately stays on `Net`:
+//! since doc 013 PR 8 every other suite here builds its graphs with
+//! `tutti_graph::GraphBuilder` only, so these equivalences are what still
+//! carry their checks over to the `Net` arm until PR 14 removes it.
+//!
+//! Every case builds one graph twice from the same units — once as a `Net`,
+//! once with `tutti_graph::GraphBuilder` — and asserts the two exports are
+//! **bit-identical**: the same planes out of `render_to_buffers`, the same
+//! bytes out of `render_to_file`. The oracle
+//! suites beside this file (`oracle_resample.rs`, `dither_stats.rs`,
+//! `surround_export.rs`, `render.rs`'s dBTP cases) check the graph path
+//! against first principles, so equality here carries those checks over to
+//! the `Net` path without restating them.
 //!
 //! Equality is exact, not a tolerance, and is portable: both sides run the same
 //! unit code on the same machine, so a libm `sin` that differs across C
@@ -171,7 +176,10 @@ fn convolved() -> Pair {
 
 /// Quad VBAP: a source at front-left and one at rear-left, each panned and
 /// summed into a 4-wide master — `build_vbap_mix`'s quad graph (no LFE send),
-/// written out because that helper takes `&mut Net` (doc 013, PR 4 notes).
+/// written out on both sides, so the two backends share nothing here but the
+/// units. (The builder form of the helper, `tutti_spatial::vbap_mix_parts`, is
+/// pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
+/// `surround_export.rs` renders through it.)
 fn quad_vbap() -> Pair {
     use tutti_nodes::ChannelSumNode;
     use tutti_spatial::VbapPannerNode;

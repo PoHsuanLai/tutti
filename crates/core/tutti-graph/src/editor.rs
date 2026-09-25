@@ -67,8 +67,9 @@ use crate::exec::{
     channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY,
 };
 use crate::fade::Fade;
+use crate::fork::ForkSource;
 use crate::legacy::Outbox;
-use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
+use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
@@ -280,6 +281,12 @@ pub struct Editor {
     /// editor, flushed on every `collect`. Weak: dropping a node's controls
     /// unregisters it, pruned on the next `collect`.
     outboxes: Vec<Weak<Mutex<Outbox>>>,
+    /// Where each forkable node's forks come from, handed over at insert
+    /// (see `src/fork.rs`). A key without one is not forkable.
+    forks: BTreeMap<NodeKey, Box<dyn ForkSource>>,
+    /// Events per event slot per block, as the executor was built with: a
+    /// fork gets the same.
+    event_capacity: usize,
 }
 
 /// A panic payload as text.
@@ -339,6 +346,8 @@ impl Editor {
             poisoned: None,
             limits: Limits::NONE,
             outboxes: Vec::new(),
+            forks: BTreeMap::new(),
+            event_capacity: cap,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -434,8 +443,20 @@ impl Editor {
     /// insert at a key takes a fresh generation, even after a
     /// [`remove`](Self::remove) — so a unit can never be mistaken for the one
     /// that used to live at its key.
+    ///
+    /// A node that hands over a [`ForkSource`] ([`IntoNode::into_parts`]) is
+    /// forkable from now on ([`fork`](Self::fork)); one that does not makes
+    /// the key unforkable, even if the unit it replaces was.
     pub fn insert<N: IntoNode>(&mut self, key: NodeKey, kind: &str, node: N) -> N::Controls {
-        let (mut unit, controls) = node.into_node();
+        let NodeParts {
+            node: mut unit,
+            controls,
+            fork,
+        } = node.into_parts();
+        match fork {
+            Some(fork) => self.forks.insert(key, fork),
+            None => self.forks.remove(&key),
+        };
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         self.place(key, kind, unit, shape);
@@ -641,6 +662,7 @@ impl Editor {
         self.pending.remove(&key);
         self.fades.remove(&key);
         self.latency_cuts.remove(&key);
+        self.forks.remove(&key);
     }
 
     /// `Err(Poisoned)` once a re-prepare has failed with its units out.
@@ -702,6 +724,16 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         Ok(())
+    }
+
+    /// Where `key`'s forks come from, if it is forkable.
+    pub(crate) fn fork_source(&self, key: NodeKey) -> Option<&dyn ForkSource> {
+        self.forks.get(&key).map(|f| f.as_ref())
+    }
+
+    /// Events per event slot per block, as the executor was built with.
+    pub(crate) fn event_capacity(&self) -> usize {
+        self.event_capacity
     }
 
     /// Flush `outbox` on every [`collect`](Self::collect) from now on.

@@ -124,6 +124,12 @@
 //!   [`pure`](Legacy::pure), with a `Net::set` replacement
 //!   ([`Legacy::controlled`]: a settings ring and a shadow copy). A unit's
 //!   latency can change at runtime with [`Editor::set_latency`].
+//! - [`Editor::fork`] — a copy of the graph, or of the sub-graph feeding
+//!   one node, that shares no state with the live one: the offline export
+//!   (and live duplicate) that replaces `Net::clone_isolated` +
+//!   `isolate_for_offline` + `reset`. A node is forkable only if it handed
+//!   the editor a [`ForkSource`] at insert ([`IntoNode::into_parts`]);
+//!   every `Legacy` does.
 //!
 //! # Building a graph in a test
 //!
@@ -172,6 +178,7 @@ mod editor;
 mod event;
 mod exec;
 mod fade;
+mod fork;
 mod io;
 mod kernels;
 mod legacy;
@@ -191,12 +198,13 @@ pub use event::{
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
+pub use fork::{ForkError, ForkMode, ForkSource, ForkTarget};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_SETTINGS_CAPACITY};
 pub use node::{
-    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
-    Scratch, Shape, SilenceMask, Status, Transport, TransportChange, TransportChangeRejected,
-    TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
+    ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,
+    Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
+    TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,

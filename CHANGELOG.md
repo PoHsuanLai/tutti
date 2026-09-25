@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bevy-tutti exports fork the native graph** (design doc 013, Phase 3 PR
+  12). On `GraphBackend::Native` an `ExportRequest` renders `Editor::fork`
+  of the live graph — `ExportSource::Master` the whole graph, `Node` the
+  sub-graph feeding it — in `ForkMode::Offline` on the request's offline
+  timeline, through tutti-export's `RenderGraph::Graph`. The live graph is
+  not touched and keeps playing while the render runs. `GraphBackend::Net`
+  exports as before until PR 13 removes it. What changes for a host:
+
+  | Was | Now |
+  |---|---|
+  | `ExportDone::result: tutti_export::Result<ExportOutput>` | `Result<ExportOutput, ExportError>`. `ExportError::Render` wraps the engine's error; `NotForkable`, `ForkSource` and `ForkFailed` name the node as an `ExportNode` (its entity, `Name` and graph key) |
+  | `ExportRequest::with_prepare(\|PreparedNet { net, ctx }, world\| ..)` | `with_prepare(\|PreparedGraph { graph, ctx }, world\| ..)`, `graph: &mut tutti_export::RenderGraph`: `RenderGraph::Net` on `Net`, the fork's own editor and executor on `Native` (the adapter commits what the hook edits) |
+  | `PrepareNet` | `PrepareGraph` |
+  | On `Native`, an export reported `InvalidConfig` ("not yet available") | it renders |
+  | `ExportRequest::offline` ignored for a master export | still ignored on `Net`; on `Native` the master is rebound onto it like a node export |
+
+  - **A native master export renders what the graph is driven to play,
+    from silence**: every node isolated, rebound and reset, where `Net`'s
+    master export was a plain clone keeping the live bindings and running
+    state. The two render the same samples from a graph whose live side has
+    not advanced.
+  - **Hosted plugins are forkable**: `plugin_load_promote` inserts the
+    concrete `PluginClient` (`Plugin::into_client`, new) with its fork
+    source, so a fork loads a fresh instance with the live one's state. An
+    in-process VST2 plugin is still inserted boxed and refuses an export by
+    name.
+  - **A disk-streamed sampler voice refuses a native export** by name
+    (`ExportError::NotForkable`): its seek handle drives the live butler. On
+    `Net` its master export read the live voice's ring from the render
+    thread, and a node export rendered silence.
+  - New on `ExportRequest`, either backend: `trim_reported_latency()` and
+    `with_reported_tail(unbounded)` take the render's latency trim and tail
+    from the graph that is rendered.
+
+- **tutti-plugin: a plugin fork carries its MIDI clip.** An offline
+  `PluginClient` fork copies the clip source installed on the live node's
+  MIDI port onto its own port, with a fresh cursor on the render's timeline,
+  so an exported instrument plays its notes (its live inbox and MIDI-out are
+  still not carried). `PluginClient::fork_source` hands out the fork source
+  `IntoNode` uses, for a host inserting through its own node builder, and a
+  plugin's `set_sample_rate` now restamps its installed MIDI source too.
+
+- **tutti-midi-types: `MidiUnitIn` gained `rebind_offline` and
+  `set_sample_rate`**, both defaulted (`None`, a no-op), so existing
+  implementors compile unchanged. `MidiClipSource` implements both (its
+  rebound copy has no hardware-out tap), and `MidiInPort` gained
+  `rebind_offline_into` and `set_source_sample_rate`.
+
 - **bevy-tutti's `AudioGraphRes` is opaque: its methods are the only way to
   the graph.** The field was `pub Net`; it is private, so `graph.0` no longer
   compiles outside the crate. The graph is still fundsp's `Net` inside. The
@@ -38,8 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `CapturedControls::bind(entity, NodeId)` | `CapturedControls::bind(entity, AudioNode)`, which takes what `insert` returns |
 
   `GraphSource` is new, in `bevy_tutti::graph` and the prelude. `bevy_tutti::Net`
-  stays: an export's `prepare` hook is still handed the `Net` it renders
-  (`PreparedNet`) until export moves to `Fork`.
+  stays: on `GraphBackend::Net` an export's `prepare` hook is still handed
+  the `Net` it renders (as `RenderGraph::Net`, since export moved to `Fork`;
+  see the entry above).
 
 - **bevy-tutti captures a node's controls when the node is inserted, and never
   reaches back into the graph for them.** `MidiTargetRegistry` and

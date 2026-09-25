@@ -35,3 +35,9 @@ macro_rules! both_backends {
         }
     };
 }
+
+/// The reference CLAP plugin and its server, for suites that load one. Not
+/// every suite that pulls `common` in does, hence the `dead_code` allowance.
+#[cfg(feature = "plugin")]
+#[allow(dead_code)]
+pub mod plugin;

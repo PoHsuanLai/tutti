@@ -5,6 +5,8 @@
 //!
 //! ```sh
 //! cargo run -p bevy-tutti --example offline_export --features export,wav
+//! # the same on the native graph, where an export forks the live graph:
+//! cargo run -p bevy-tutti --example offline_export --features export,wav -- --native
 //! ```
 //!
 //! The shape worth noticing: an export is an **entity**. You spawn a request,
@@ -36,8 +38,18 @@ struct FilterNode(Entity);
 fn main() {
     let mut app = App::new();
 
-    // Same headless engine as `graph_wiring`, plus the export plugin.
-    app.insert_resource(AudioGraphRes::headless(0, 2));
+    // Same headless engine as `graph_wiring`, plus the export plugin. On
+    // `--native` the graph is the native one, and each export renders a fork
+    // of it (design doc 013, PR 12) instead of a clone of fundsp's `Net`.
+    let backend = if std::env::args().any(|a| a == "--native") {
+        bevy_tutti::graph::GraphBackend::Native
+    } else {
+        bevy_tutti::graph::GraphBackend::Net
+    };
+    println!("exporting from the {backend:?} graph");
+    let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
+    graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {

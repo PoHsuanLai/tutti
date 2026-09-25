@@ -28,6 +28,7 @@ pub use tutti_cpal::{DeviceInfo, TuttiDriver};
 // bootstrap, so it lives in `crate::io` — one adapter module per engine crate.
 
 // The live graph is `AudioGraphRes`, which keeps its `Net` private. `Net` is
-// still surfaced for the offline side: an export's `prepare` hook is handed the
-// net it renders (`PreparedNet`), and a host reaches that without naming fundsp.
+// still surfaced for the offline side: on `GraphBackend::Net` an export's
+// `prepare` hook is handed the net it renders (`RenderGraph::Net` in
+// `PreparedGraph`), and a host reaches that without naming fundsp.
 pub use tutti_core::dsp::Net;

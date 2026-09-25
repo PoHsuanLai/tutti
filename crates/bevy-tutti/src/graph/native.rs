@@ -18,6 +18,8 @@
 //! | `compensate` | compiles the spec, reads `Plan::compensation` / `total_latency`; inserts nothing |
 //! | `commit` | `Editor::commit`, which collects first |
 //! | `set_node_latency` | `Editor::set_latency` |
+//! | `insert_plugin` | `Legacy::controlled`, handed to the editor with the plugin's own fork source |
+//! | `export` | `Editor::fork` in `ForkMode::Offline`, through `tutti_export::RenderGraph::fork` |
 //!
 //! # Every unit is `controlled`, none `pure`
 //!
@@ -374,6 +376,74 @@ impl NativeGraph {
         );
         self.edited = true;
         node
+    }
+
+    /// Insert a hosted plugin so that a fork of the graph (an export) can
+    /// fork it: `Legacy::controlled`'s node, settings ring and shadow, as
+    /// [`insert`](Self::insert) gives every unit, handed to the editor with
+    /// the plugin's own [`ForkSource`](tutti_graph::ForkSource) (a fork by
+    /// state transfer, `PluginClient::fork_source`).
+    ///
+    /// Not through `insert`: a boxed plugin in a `Legacy` has no fork source
+    /// (its `AudioUnit::forkable` is `false` — its clones share the one
+    /// plugin process), so a fork of any graph holding it would be refused
+    /// as not forkable. Nor through `IntoNode for PluginClient`, which has
+    /// no settings ring and no shadow, and the latency re-probe
+    /// ([`refresh_node_latency`](Self::refresh_node_latency)) and
+    /// [`inspect`](Self::inspect) read the shadow.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn insert_plugin(
+        &mut self,
+        client: Box<tutti_plugin::handles::PluginClient>,
+    ) -> AudioNode {
+        let node = AudioNode(NodeId::new());
+        let fork = client.fork_source();
+        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(client));
+        let parts = tutti_graph::IntoNode::into_parts(legacy);
+        debug_assert!(
+            parts.fork.is_none(),
+            "a plugin forks by state transfer, never by clone"
+        );
+        self.editor.insert(
+            key(node),
+            UNIT_KIND,
+            tutti_graph::NodeParts {
+                node: parts.node,
+                controls: (),
+                fork: Some(fork),
+            },
+        );
+        self.nodes.insert(
+            key(node),
+            Entry {
+                node,
+                controls: Some(controls),
+            },
+        );
+        self.edited = true;
+        node
+    }
+
+    /// A copy of `target` for an offline render at `rate`, sharing no state
+    /// with this graph: `Editor::fork` with `ForkMode::Offline(ctx)`, through
+    /// tutti-export (`RenderGraph::fork`, which prepares it at the render's
+    /// rate and `GRAPH_MAX_BLOCK`). `ctx` is handed over as the
+    /// `&OfflineTransport` itself — the exact type every unit's
+    /// `rebind_offline` downcasts; anything else would rebind nothing,
+    /// silently (`ForkMode::Offline`'s docs).
+    #[cfg(feature = "export")]
+    pub(crate) fn fork_for_export(
+        &self,
+        target: tutti_graph::ForkTarget,
+        ctx: &tutti_core::transport::OfflineTransport,
+        rate: SampleRate,
+    ) -> tutti_export::Result<tutti_export::RenderGraph> {
+        tutti_export::RenderGraph::fork(
+            &self.editor,
+            target,
+            tutti_graph::ForkMode::Offline(ctx),
+            rate,
+        )
     }
 
     /// The beat generator a graph engine needs in place of a

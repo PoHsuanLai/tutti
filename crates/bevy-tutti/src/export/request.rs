@@ -4,9 +4,10 @@
 //! observe [`ExportDone`] on it or watch for [`ExportInFlight`] to clear.
 //!
 //! Everything here is either a Bevy component or a type `tutti-export` already
-//! owns. The adapter mints no export vocabulary of its own — `ExportConfig`,
-//! `Written`, `Rendered`, `Normalize` and `RenderClock` all arrive verbatim
-//! from the engine.
+//! owns — `ExportConfig`, `Written`, `Rendered`, `Normalize`, `RenderClock`
+//! and `RenderGraph` all arrive verbatim from the engine — with one
+//! exception, [`ExportError`]: the engine names a node that failed an export
+//! by its graph key, and only the adapter knows which entity that is.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,15 +15,25 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 
-use tutti_export::{ExportConfig, Normalize, RenderClock, Rendered, Written};
+use tutti_export::{ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written};
+use tutti_graph::{ForkCause, ForkFaultKind};
+use tutti_types::{NodeKey, Samples};
 
 use tutti_core::transport::OfflineTransport;
 
 /// Which audio to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportSource {
-    /// The whole live graph, as the master hears it. One clone of the net, no
-    /// per-node isolation.
+    /// The whole live graph, as the master hears it.
+    ///
+    /// On [`GraphBackend::Native`](crate::graph::GraphBackend::Native) a
+    /// **fork** of the whole graph (`ForkTarget::Master`): every node
+    /// isolated, rebound onto the request's offline timeline and reset, so it
+    /// renders what the graph is *driven* to play from that timeline,
+    /// starting silent — not a copy of what is sounding now. On
+    /// [`GraphBackend::Net`](crate::graph::GraphBackend::Net) one plain clone
+    /// of the net, as every release before: no isolation, the live transport
+    /// bindings and the running state kept (see [`ExportRequest::offline`]).
     Master,
     /// One node's output, isolated from everything downstream of it — "what
     /// does this point in the graph actually sound like".
@@ -35,10 +46,14 @@ pub enum ExportSource {
     ///
     /// # Cost
     ///
-    /// Each of these does one **main-thread deep clone** of the live net
-    /// (`clone_isolated` → `DynClone` of every DSP node) in the frame it
-    /// starts. Running several of those back to back can stall the frame long
-    /// enough to underrun the audio callback — an audible glitch.
+    /// Each export does one **main-thread copy** of the graph in the frame it
+    /// starts: on `Net` a deep clone of the net (`clone_isolated` →
+    /// `DynClone` of every DSP node), on `Native` a fork (a clone of each
+    /// node's shadow — and for a hosted plugin a fresh instance in a new
+    /// `plugin-server` process loaded with the live one's state, which takes
+    /// half a second or more). Running several of those back to back can
+    /// stall the frame long enough to underrun the audio callback — an
+    /// audible glitch.
     ///
     /// That is why only one export starts per frame (see [`ExportInFlight`]).
     /// Requests wait their turn as entities; nothing is dropped. A caller with
@@ -100,15 +115,26 @@ pub struct ExportRequest {
     /// a playhead nothing moves. [`ExportRequest::on_timeline`] sets both at
     /// once and is the way to say it.
     ///
-    /// `None` builds a default at the render's sample rate, 120 BPM, from beat
-    /// 0 — right for a graph with no musical time (an effect tail, a synth
-    /// patch), wrong for anything placed on a timeline.
+    /// `None` builds a default at the device's sample rate, 120 BPM, from
+    /// beat 0 — right for a graph with no musical time (an effect tail, a
+    /// synth patch), wrong for anything placed on a timeline.
     ///
-    /// Ignored for [`ExportSource::Master`], which keeps its live bindings.
+    /// For [`ExportSource::Master`] on `GraphBackend::Net` it is ignored:
+    /// that net keeps its live bindings. On `GraphBackend::Native` the master
+    /// is rebound onto it like any node export.
     pub offline: Option<OfflineTransport>,
-    /// Optional last look at the net before it leaves the main thread — see
-    /// [`PrepareNet`]. Use [`ExportRequest::new`] when there is nothing to do.
-    pub prepare: Option<PrepareNet>,
+    /// Optional last look at the graph before it leaves the main thread —
+    /// see [`PrepareGraph`]. Use [`ExportRequest::new`] when there is nothing
+    /// to do.
+    pub prepare: Option<PrepareGraph>,
+    /// Trim the graph's own reported latency — its compensated look-ahead —
+    /// instead of `config.render.latency`. See
+    /// [`trim_reported_latency`](Self::trim_reported_latency).
+    pub latency_from_graph: bool,
+    /// Render the graph's own reported tail instead of `config.render.tail`,
+    /// with this many frames where the graph reports no finite one. See
+    /// [`with_reported_tail`](Self::with_reported_tail).
+    pub tail_from_graph: Option<Samples>,
 }
 
 impl ExportRequest {
@@ -126,6 +152,8 @@ impl ExportRequest {
             clock,
             offline: None,
             prepare: None,
+            latency_from_graph: false,
+            tail_from_graph: None,
         }
     }
 
@@ -145,12 +173,41 @@ impl ExportRequest {
         self
     }
 
-    /// Attach a hook that runs on the net before the render starts.
+    /// Attach a hook that runs on the graph before the render starts.
     pub fn with_prepare(
         mut self,
-        prepare: impl Fn(PreparedNet, &World) + Send + Sync + 'static,
+        prepare: impl Fn(PreparedGraph, &World) + Send + Sync + 'static,
     ) -> Self {
         self.prepare = Some(Box::new(prepare));
+        self
+    }
+
+    /// Trim the graph's reported latency from the start of the render — the
+    /// figure its PDC aligned every output to (a look-ahead limiter's, a
+    /// hosted plugin's) — in place of `config.render.latency`.
+    ///
+    /// Asked of the graph that is rendered, after the
+    /// [`prepare`](Self::prepare) hook: on `GraphBackend::Native` the forked
+    /// plan's worst-case output latency (`RenderGraph::reported_latency`,
+    /// probed at the render's rate); on `Net` the net's own answer, at the
+    /// net's rate — the live device's, which is the render's unless the
+    /// config asks for another (see `tutti_export::reported_latency`).
+    ///
+    /// A request-side switch rather than a figure because the caller cannot
+    /// know it: the graph it describes is only built when the render starts.
+    pub fn trim_reported_latency(mut self) -> Self {
+        self.latency_from_graph = true;
+        self
+    }
+
+    /// Render the graph's reported tail past `duration_seconds` — a reverb's
+    /// decay, a plugin's declared tail — in place of `config.render.tail`,
+    /// and `unbounded` frames where the graph has no finite answer (a node
+    /// that never decays, or one that never said). Asked like
+    /// [`trim_reported_latency`](Self::trim_reported_latency), of the graph
+    /// that is rendered.
+    pub fn with_reported_tail(mut self, unbounded: Samples) -> Self {
+        self.tail_from_graph = Some(unbounded);
         self
     }
 }
@@ -181,15 +238,15 @@ impl std::fmt::Debug for ExportRequest {
 /// entities, but it is an optimization now, not the safety mechanism.
 #[derive(Component)]
 pub struct ExportInFlight {
-    task: Task<tutti_export::Result<ExportOutput>>,
+    task: Task<Result<ExportOutput, ExportError>>,
 }
 
 impl ExportInFlight {
-    pub(crate) fn new(task: Task<tutti_export::Result<ExportOutput>>) -> Self {
+    pub(crate) fn new(task: Task<Result<ExportOutput, ExportError>>) -> Self {
         Self { task }
     }
 
-    pub(crate) fn poll(&mut self) -> Option<tutti_export::Result<ExportOutput>> {
+    pub(crate) fn poll(&mut self) -> Option<Result<ExportOutput, ExportError>> {
         bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
     }
 
@@ -265,39 +322,128 @@ pub struct ExportDone {
     /// [`ExportInFlight`]; the caller despawns it.
     pub entity: Entity,
     /// What the render produced, or why it failed.
-    pub result: tutti_export::Result<ExportOutput>,
+    pub result: Result<ExportOutput, ExportError>,
 }
 
-/// The net an export is about to render, handed back to the caller for a last
-/// look before it leaves the main thread.
+/// Why an export failed.
+///
+/// The renderer's own errors pass through as [`Render`](Self::Render). The
+/// three that are about **one node** — it cannot be forked, its fork could
+/// not be built, or its fork failed while rendering — name it as an
+/// [`ExportNode`]: its entity and `Name`, not only the graph key the engine
+/// reports, because the entity is what a host can show and act on ("freeze
+/// this track", "remove that mic").
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ExportError {
+    /// Everything that is not about one node: an invalid config, an I/O or
+    /// encoder error, a target node with no outputs, a render the engine
+    /// refused.
+    #[error(transparent)]
+    Render(#[from] tutti_export::Error),
+
+    /// `node` cannot be forked for an offline render, so the graph could not
+    /// be copied (`GraphBackend::Native`): it shares live state a copy would
+    /// share too. A microphone monitor, a **disk-streamed sampler voice**
+    /// (its seek handle drives the live butler), an in-process VST2 plugin,
+    /// a node built unforkable. Nothing was rendered; remove, freeze or
+    /// bounce the node to memory, or export a node that it does not feed.
+    #[error("cannot export: {node} cannot be forked for an offline render (a mic monitor, a disk-streamed voice, an in-process VST2 plugin, or a node built unforkable)")]
+    NotForkable {
+        /// The node.
+        node: ExportNode,
+    },
+
+    /// Forking `node` failed before anything rendered: a hosted plugin whose
+    /// fresh instance did not load, did not match, or could not save or
+    /// load its state. `cause` downcasts to the source's error
+    /// (`tutti_plugin::PluginForkError` for a plugin).
+    #[error("cannot export: forking {node} failed: {cause}")]
+    ForkSource {
+        /// The node.
+        node: ExportNode,
+        /// The fork source's error.
+        cause: ForkCause,
+    },
+
+    /// `node`'s fork failed **while rendering** — a hosted plugin's server
+    /// crashed or stopped answering — so the render holds silence where its
+    /// output belongs from then on. Reported rather than written as a
+    /// success; a file target may already have been written, and is not a
+    /// valid render.
+    #[error("export failed: {node} {kind:?} during the render: {cause}")]
+    ForkFailed {
+        /// The node.
+        node: ExportNode,
+        /// Crashed, or timed out.
+        kind: ForkFaultKind,
+        /// The unit's own account (`tutti_plugin::PluginRenderFault` for a
+        /// plugin).
+        cause: ForkCause,
+    },
+}
+
+/// A graph node an [`ExportError`] is about, as the app knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportNode {
+    /// The entity bound to the node, if one is (`None` for a node the adapter
+    /// inserted itself, such as the engine's beat clock).
+    pub entity: Option<Entity>,
+    /// The entity's `Name`, if it has one.
+    pub name: Option<String>,
+    /// The node's key in the live graph.
+    pub key: NodeKey,
+}
+
+impl std::fmt::Display for ExportNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.name, self.entity) {
+            (Some(name), Some(entity)) => write!(f, "node {name:?} (entity {entity})"),
+            (None, Some(entity)) => write!(f, "the node on entity {entity}"),
+            _ => write!(f, "graph node {:?}", self.key),
+        }
+    }
+}
+
+/// The graph an export is about to render, handed back to the caller for a
+/// last look before it leaves the main thread.
 ///
 /// [`ExportRequest::prepare`] receives this together with `&World`. Two things
 /// need it, and neither is something this crate can do on the caller's behalf:
 ///
-/// - **Filling voices.** An isolated clone is born *empty* — `isolate()` drops
+/// - **Filling voices.** An isolated copy is born *empty* — `isolate()` drops
 ///   the voice pools' command channels and clears their voices, so nothing
 ///   downstream of a sampler makes a sound until something re-inserts them. The
 ///   data needed to do that (which clips exist, their decoded audio) lives in
 ///   the app's ECS.
-/// - **Shaping the output.** Widening the net to the master's channel count and
-///   piping a node to the output, say — policy about what "the export" means,
-///   which differs per host.
+/// - **Shaping the output.** Widening the graph to the master's channel count
+///   and pointing a node at the output, say — policy about what "the export"
+///   means, which differs per host.
 ///
-/// `ctx` is `Some` only for [`ExportSource::Node`], and carries the render's
-/// offline transport: voices built here must bind to it, not to the live one,
-/// or they read a playhead nothing advances. For [`ExportSource::Master`] it is
-/// `None` — that net keeps its live transport bindings, which the caller's own
-/// clock drives.
-pub struct PreparedNet<'a> {
-    /// The net about to be rendered. Mutate it here or not at all — after this
-    /// it moves to the task pool.
-    pub net: &'a mut tutti_core::dsp::Net,
-    /// The render's offline transport, `Some` only for [`ExportSource::Node`].
+/// `graph` is the engine's own [`RenderGraph`]: `RenderGraph::Net` on
+/// `GraphBackend::Net`, and `RenderGraph::Graph` — the fork's own editor and
+/// executor, already installed — on `GraphBackend::Native`. Edit a fork
+/// through its `editor` (insert nodes, `spec_mut`); the adapter commits
+/// whatever the hook leaves, and a commit the fork refuses fails the export
+/// with the reason. A fork's units are on its executor by the time the hook
+/// runs, so a unit already in it cannot be reached to refill: insert a new
+/// one instead.
+///
+/// `ctx` carries the render's offline transport whenever the graph was
+/// rebound onto it — every native fork, and a `Net` node export. Voices built
+/// here must bind to it, not to the live one, or they read a playhead
+/// nothing advances. It is `None` only for a `Net` master export, which keeps
+/// its live transport bindings.
+pub struct PreparedGraph<'a> {
+    /// The graph about to be rendered. Mutate it here or not at all — after
+    /// this it moves to the task pool.
+    pub graph: &'a mut RenderGraph,
+    /// The render's offline transport, when the graph was rebound onto it.
     /// Voices built in the hook must bind to *this*, not the live transport.
     pub ctx: Option<&'a OfflineTransport>,
 }
 
-/// A caller's hook into the net, run on the main thread before the render is
+/// A caller's hook into the graph, run on the main thread before the render is
 /// handed to the pool.
 ///
 /// `&World` is read-only on purpose: preparing a render is a *read* of app
@@ -309,6 +455,6 @@ pub struct PreparedNet<'a> {
 /// registered filler would be one filler for the whole app: two plugins that
 /// both needed one would silently clobber each other, and forgetting to
 /// register it renders silence with no diagnostic. Attaching the hook to the
-/// *request* means the caller that knows what this net needs is the one that
-/// says so.
-pub type PrepareNet = Box<dyn Fn(PreparedNet, &World) + Send + Sync>;
+/// *request* means the caller that knows what this graph needs is the one
+/// that says so.
+pub type PrepareGraph = Box<dyn Fn(PreparedGraph, &World) + Send + Sync>;

@@ -284,9 +284,9 @@ pub fn plugin_load_promote(
 
         let outcome = match result {
             Ok(plugin) => {
-                // Split before the node moves into the graph: `into_parts`
+                // Split before the node moves into the graph: the node
                 // consumes the `Plugin`, and the handle has to outlive it.
-                let (unit, handle) = plugin.into_parts();
+                let handle = plugin.handle().clone();
                 if let Some(blob) = &request.state {
                     // A refusal does **not** abort the load: a plugin sitting at
                     // its defaults is better than no plugin, and the user can
@@ -305,10 +305,24 @@ pub fn plugin_load_promote(
                 // Before the unit moves into the graph: this is the last point
                 // the concrete `PluginClient` is in hand, and the shadow the
                 // binding systems drive (and the MIDI target) come from it.
-                let controls = capture.capture(unit.as_ref());
-                // `insert_boxed`: the unit is already boxed, and `insert` boxes
-                // what it is given.
-                let id = graph.insert_boxed(unit);
+                //
+                // Inserted as the concrete `PluginClient` where it is one, so
+                // the native graph can fork it for an export (by state
+                // transfer; doc 013, PR 12). An in-process VST2 plugin has no
+                // fork source yet: it goes in boxed, and an export of a
+                // native graph holding it is refused, naming it.
+                let (id, controls) = match plugin.into_client() {
+                    Ok(client) => {
+                        let controls = capture.capture(client.as_ref());
+                        (graph.insert_plugin(client), controls)
+                    }
+                    Err(unit) => {
+                        let controls = capture.capture(unit.as_ref());
+                        // `insert_boxed`: the unit is already boxed, and
+                        // `insert` boxes what it is given.
+                        (graph.insert_boxed(unit), controls)
+                    }
+                };
                 edited = true;
 
                 commands

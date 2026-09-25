@@ -170,6 +170,24 @@ impl RtState {
         }
     }
 
+    /// A new state holding this one's playback controls (speed, direction,
+    /// gain, conversion ratio, stretch rate) at their current values, and
+    /// nothing else: no seek, no crossfade, no counters.
+    ///
+    /// What a disk voice severed for an offline render keeps
+    /// (`DiskVoice::isolate`): its controls as a snapshot, like every other
+    /// forked unit's, in a cell no butler and no live voice shares. Control
+    /// thread only; it builds two crossfaders.
+    pub(crate) fn detached(&self) -> Self {
+        let state = Self::new();
+        state.set_speed(self.speed());
+        state.set_direction(self.direction());
+        state.set_gain(self.gain());
+        state.set_src_ratio(self.src_ratio());
+        state.set_stretch_rate(self.stretch_rate());
+        state
+    }
+
     /// The current varispeed. [`PlaybackRate::UNITY`] is normal speed.
     #[inline]
     pub fn speed(&self) -> PlaybackRate {

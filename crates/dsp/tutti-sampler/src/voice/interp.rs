@@ -21,7 +21,7 @@
 use std::sync::Arc;
 use tutti_core::{
     fold_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition, SampleRate, Timeline,
-    TimelineSegment,
+    TimelineSegment, FRAME_TOLERANCE,
 };
 use tutti_io::Wave;
 
@@ -114,8 +114,21 @@ pub fn window_position(
     let beat_offset = (now - start_beat).get().max(0.0);
     let tempo = tempo.get();
     let seconds_offset = beat_offset * 60.0 / tempo;
+    let position = seconds_offset * source_rate.get() * rate.get();
+    // Within a millionth of a whole frame is that frame, by the same
+    // tolerance as the entry above. The clock's beat is its frame count in
+    // closed form, and coming back through seconds lands a hair off the
+    // whole frame it is (frame 128 of a clip at 120 BPM, 48 kHz, came out
+    // 127.99999999999: frame 127 at `t` = 1.0 in `f32`, which the cubic
+    // does not return as frame 128 exactly). Unsnapped, a clip placed on a
+    // beat played its own samples to within an ulp, not exactly.
+    let whole = position.round();
     Some(SamplePosition(
-        seconds_offset * source_rate.get() * rate.get(),
+        if (position - whole).abs() < FRAME_TOLERANCE {
+            whole
+        } else {
+            position
+        },
     ))
 }
 
@@ -175,7 +188,26 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
         out.fill(0.0);
         return;
     }
+    let (taps, frac) = tap_indices(len, position);
+    // Every channel index `interpolate_taps` asks for is `< src_ch`, which is
+    // what keeps `Wave::at` — an unchecked `self.vec[channel][index]` — from
+    // panicking; `tap_indices` keeps the frame index in bounds.
+    interpolate_taps(src_ch, frac, out, |c, t| wave.at(c, taps[t]));
+}
 
+/// The four frames [`read_frame`] interpolates `position` from, in a source
+/// `len` frames long, and the fractional offset between the second and third.
+///
+/// `idx-1, idx, idx+1, idx+2` (where `idx = floor(position)`), each clamped to
+/// the source so its edges reuse the nearest valid frame. Split from
+/// `read_frame` so a source that is not a resident [`Wave`] (the offline disk
+/// reader, which pages the file in) reads the same four frames and runs them
+/// through the same kernel: the two tiers cannot then disagree about which
+/// frames a position means.
+///
+/// `len` must be non-zero.
+#[inline]
+pub(crate) fn tap_indices(len: usize, position: f64) -> ([usize; 4], f32) {
     let idx = position.floor() as usize;
     let frac = position.fract() as f32;
 
@@ -183,25 +215,32 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
     // All four taps clamp to `last`, `im1` included: `saturating_sub` guards
     // only the LOW end, so a `position` past `len` leaves `im1` past the end
     // too, and `Wave::at` is an unchecked index — that is a panic, not a bad
-    // sample. The in-tree caller gates on `position >= len` first, but this is
-    // a `pub` function and must not depend on that.
+    // sample. The in-tree caller gates on `position >= len` first, but
+    // `read_frame` is a `pub` function and must not depend on that.
     let im1 = idx.saturating_sub(1).min(last);
     let i0 = idx.min(last);
     let i1 = (idx + 1).min(last);
     let i2 = (idx + 2).min(last);
+    ([im1, i0, i1, i2], frac)
+}
 
+/// Interpolate one frame into `out` from four taps of a `src_ch`-wide source
+/// (`sample(c, t)` is channel `c` of tap `t`, `t` in `0..4` as
+/// [`tap_indices`] orders them), applying the crate's channel policy (see
+/// [`read_frame`]).
+///
+/// **Writes every element of `out`.** `src_ch` must be non-zero.
+#[inline]
+pub(crate) fn interpolate_taps(
+    src_ch: usize,
+    frac: f32,
+    out: &mut [f32],
+    sample: impl Fn(usize, usize) -> f32,
+) {
     // One interpolated sample from channel `c`. Every caller below derives `c`
-    // from a bound that is `<= src_ch`, which is what keeps `Wave::at` — an
-    // unchecked `self.vec[channel][index]` — from panicking.
-    let tap = |c: usize| {
-        cubic_hermite(
-            wave.at(c, im1),
-            wave.at(c, i0),
-            wave.at(c, i1),
-            wave.at(c, i2),
-            frac,
-        )
-    };
+    // from a bound that is `<= src_ch`.
+    let tap =
+        |c: usize| cubic_hermite(sample(c, 0), sample(c, 1), sample(c, 2), sample(c, 3), frac);
 
     // Mono fans out. Bound: `c` is unused, only channel 0 is read.
     if src_ch == 1 {

@@ -179,6 +179,7 @@ mod tests {
                 crate::butler::share_reader(reader),
                 None,
                 tutti_core::SampleRate::SR_48K,
+                PathBuf::from("test.wav"),
             );
             plans.insert(i, state);
         }

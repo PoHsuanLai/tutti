@@ -321,8 +321,9 @@ impl Voice {
     }
 
     /// Whether [`isolate`](Self::isolate) severs everything this voice
-    /// shares — `AudioUnit::forkable` for the source that backs it (a disk
-    /// voice is not; see `DiskVoice::forkable`).
+    /// shares — `AudioUnit::forkable` for the source that backs it. Both
+    /// tiers answer yes: a disk voice's `isolate` cuts it off from the ring
+    /// and the butler, and its rebind hands it the file to read itself.
     pub fn forkable(&self) -> bool {
         use tutti_core::AudioUnit;
         match &self.source {

@@ -988,7 +988,7 @@ impl MemorySource {
 /// reads a fractional position and must survive a degenerate range. Unifying
 /// them would put a lossy cast on the per-sample read path.
 #[inline]
-fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
+pub(crate) fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
     let len = loop_end - loop_start;
     if len <= 0.0 {
         return loop_start;

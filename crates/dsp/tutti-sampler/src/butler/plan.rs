@@ -55,6 +55,12 @@ pub(crate) struct Link {
     /// (`SessionRate::set`), and a placement gate converts beats to file
     /// frames with it (`Status::take_disk_voice`).
     pub(crate) file_rate: SampleRate,
+    /// The file this stream reads, as the stream was started with it. Kept so
+    /// a fork of a voice on this stream can open the same file itself
+    /// ([`StreamOrigin`](super::control::StreamOrigin)): the region writer
+    /// that also knows it is butler-thread-local, out of any other thread's
+    /// reach.
+    pub(crate) file_path: std::path::PathBuf,
     /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
     /// for exactly the stream's lifetime, so a fully-buffered (hence cold)
     /// stream is never evicted mid-read. `None` when the region streams
@@ -101,12 +107,14 @@ impl ChannelPlan {
     /// stream's lifetime; it is stored in the `Link` and released when
     /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
     /// resident cache entry (incremental disk streaming). `file_rate` is the
-    /// file's own rate (see [`Link::file_rate`]).
+    /// file's own rate (see [`Link::file_rate`]), `file_path` the file (see
+    /// [`Link::file_path`]).
     pub fn start_streaming(
         &mut self,
         consumer: SharedReader,
         cache_pin: Option<StreamPin>,
         file_rate: SampleRate,
+        file_path: std::path::PathBuf,
     ) {
         let (region_id, read_position) = {
             let cell = consumer.load();
@@ -118,6 +126,7 @@ impl ChannelPlan {
             read_position,
             loop_config: None,
             file_rate,
+            file_path,
             _cache_pin: cache_pin,
         });
     }

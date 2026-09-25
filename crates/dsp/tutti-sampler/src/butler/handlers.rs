@@ -296,7 +296,7 @@ fn handle_stream_file(
     let cache_pin = Some(shared.cache.pin(&file_path));
 
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        plan.start_streaming(share_reader(consumer), cache_pin, file_sr);
+        plan.start_streaming(share_reader(consumer), cache_pin, file_sr, file_path);
         plan.pdc_preroll = pdc_preroll;
         // Same derivation the in-memory tier uses
         // (`MemorySource::set_session_sample_rate`), through the one shared

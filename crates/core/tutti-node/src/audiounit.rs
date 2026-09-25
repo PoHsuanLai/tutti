@@ -125,6 +125,26 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
         // The default implementation does nothing.
     }
 
+    /// Whether a clone of this unit, after [`Self::isolate`], may run on
+    /// another thread beside the live one: the graph's fork
+    /// (`tutti_graph::Editor::fork`, the offline export) trusts it.
+    ///
+    /// **`true` is a promise that `isolate` severs all shared mutable
+    /// state** — every channel end, ring, atomic the unit writes, bridge to
+    /// an external process — so that neither the clone's `isolate`, `reset`,
+    /// `set_sample_rate` and `process`, nor the live unit's, can reach the
+    /// other. Read-only shared data (an immutable sample, an IR) is fine.
+    /// Pure-DSP units share nothing, so the default is `true`.
+    ///
+    /// Return `false` from a unit whose clone cannot be severed — a mic
+    /// monitor's ring consumer, a plugin's process bridge — or whose
+    /// `isolate` is known to be incomplete. A fork of a graph holding it is
+    /// then refused (`ForkError::NotForkable`) instead of racing the live
+    /// unit. A unit holding other units answers for all of them.
+    fn forkable(&self) -> bool {
+        true
+    }
+
     /// Set the sample rate of the unit.
     /// The default sample rate is 44100 Hz.
     /// The unit is allowed to reset itself here in response to sample rate changes.

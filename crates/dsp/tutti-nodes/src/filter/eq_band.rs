@@ -163,6 +163,14 @@ impl<F: Real + 'static> AudioUnit for EqBandNode<F> {
         self.svf.set_sample_rate(sample_rate);
     }
 
+    /// Forwarded: the inner SVF's param cells are what a clone shares, and
+    /// `SvfFilterNode::isolate` severs them. Without this the default
+    /// no-op ran, and a fork (or a `Legacy::controlled` shadow) receiving a
+    /// `set` wrote the live band's cells.
+    fn isolate(&mut self) {
+        self.svf.isolate();
+    }
+
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         match self.state {
@@ -228,6 +236,32 @@ impl<F: Real> Clone for EqBandNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, process_mono, rms};
+
+    /// **`isolate` reaches the inner SVF's param cells**: a clone shares
+    /// them, an isolated one has its own, holding the same values.
+    ///
+    /// Mutation: drop `EqBandNode::isolate` (the default does nothing) →
+    /// the isolated band still shares the live cells → fails.
+    #[test]
+    fn isolate_severs_the_inner_filters_cells() {
+        let live = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0);
+        let shared = live.clone();
+        assert!(Arc::ptr_eq(&shared.frequency(), &live.frequency()));
+        let mut isolated = live.clone();
+        isolated.isolate();
+        for (a, b) in [
+            (isolated.frequency(), live.frequency()),
+            (isolated.q(), live.q()),
+            (isolated.gain_db(), live.gain_db()),
+        ] {
+            assert!(!Arc::ptr_eq(&a, &b), "a cell still shared");
+            assert_eq!(
+                a.load(tutti_core::Ordering::Relaxed),
+                b.load(tutti_core::Ordering::Relaxed),
+                "values kept"
+            );
+        }
+    }
 
     #[test]
     fn test_eq_band_f32_variant_compiles_and_runs() {

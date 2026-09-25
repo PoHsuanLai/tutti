@@ -938,6 +938,16 @@ impl AudioUnit for DiskVoice {
         self.was_inside = false;
     }
 
+    /// Not forkable: `isolate` severs `inner`'s ring, but this voice keeps
+    /// its own `Arc<RtState>` (`shared_state`), and the first in-window
+    /// frame after a rebind asks it for a seek (`maybe_seek` →
+    /// `request_seek`) — on the **live** butler, which then repositions the
+    /// live voice's ring. Until `isolate` cuts that handle too, a graph fork
+    /// holding a disk voice is refused rather than glitching live playback.
+    fn forkable(&self) -> bool {
+        false
+    }
+
     /// Re-point the placement gate's clock at the render's transport.
     ///
     /// The gate reads `timeline`'s beat to decide whether this voice is inside
@@ -1201,6 +1211,32 @@ mod tests {
             "a 1x -> 2x change at beat 20 should relocate the read head far past \
              the drift epsilon; it moved {moved} samples"
         );
+    }
+
+    /// **A disk voice refuses to be forked, and so does a `VoiceNode` holding
+    /// one** — `isolate` leaves its own `Arc<RtState>` live, so a fork would
+    /// seek the live butler (see `DiskVoice::forkable`). Pinned by
+    /// `forkable()` rather than by the race itself, which no single-threaded
+    /// assertion here can observe.
+    ///
+    /// Mutation: drop `DiskVoice::forkable` (the default is `true`) → fails.
+    /// Mutation: drop `VoiceNode::forkable`'s forwarding → the node answers
+    /// `true` → fails.
+    #[test]
+    fn a_disk_voice_and_its_node_are_not_forkable() {
+        let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let voice = make_clip_reader(&samples, transport, Beat::new(0.0), None);
+        assert!(!voice.forkable());
+        let node = crate::voice::node::VoiceNode::with_channels(
+            crate::voice::types::Voice {
+                source: crate::voice::types::VoiceSource::Disk(voice),
+                play: crate::voice::types::Playback::default(),
+                channel_index: None,
+            },
+            2usize,
+        );
+        assert!(!node.forkable());
     }
 
     #[test]

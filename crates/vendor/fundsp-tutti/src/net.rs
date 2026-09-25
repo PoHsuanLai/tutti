@@ -1781,6 +1781,12 @@ impl AudioUnit for Net {
         }
     }
 
+    /// Forkable only if every vertex is: a sub-network answers for the
+    /// units inside it, as it forwards `isolate` to them.
+    fn forkable(&self) -> bool {
+        self.vertex.iter().all(|v| v.unit.forkable())
+    }
+
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.tick_2(input, output, &None);
     }

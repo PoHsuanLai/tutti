@@ -320,6 +320,13 @@ impl InProcessVst2Client {
 }
 
 impl AudioUnit for InProcessVst2Client {
+    /// Never forked: a clone shares the one in-process plugin instance, so a
+    /// fork would render through the live plugin's state beside the live
+    /// graph. A fork needs a second instance loaded from this one's state.
+    fn forkable(&self) -> bool {
+        false
+    }
+
     fn inputs(&self) -> usize {
         self.metadata.num_inputs.count() as usize
     }
@@ -468,6 +475,11 @@ impl AudioUnit for InProcessVst2Client {
 }
 
 impl AudioUnit<F64> for InProcessVst2Client {
+    /// As the `f32` impl: a clone shares the live plugin instance.
+    fn forkable(&self) -> bool {
+        false
+    }
+
     fn inputs(&self) -> usize {
         self.metadata.num_inputs.count() as usize
     }

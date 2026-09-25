@@ -8,6 +8,14 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_types::MidiUnitId;
 
 impl AudioUnit for PluginClient {
+    /// Never forked: a clone shares the bridge to the one plugin process, so
+    /// a fork's `reset` and `set_sample_rate` would reach the live plugin and
+    /// its render would drive it beside the live graph. A fork needs a second
+    /// instance loaded from this one's state (doc 013 Phase 3, before PR 12).
+    fn forkable(&self) -> bool {
+        false
+    }
+
     fn inputs(&self) -> usize {
         self.io_ref().inputs
     }
@@ -98,6 +106,11 @@ impl AudioUnit for PluginClient {
 }
 
 impl AudioUnit<F64> for PluginClient {
+    /// As the `f32` impl: a clone shares the live plugin process.
+    fn forkable(&self) -> bool {
+        false
+    }
+
     fn inputs(&self) -> usize {
         self.io_ref().inputs
     }

@@ -158,6 +158,13 @@ impl MicMonitorNode {
 }
 
 impl AudioUnit for MicMonitorNode {
+    /// Never forked: a clone shares the mic ring's consumer (`MicRing`), so a
+    /// fork would take live input frames and race the read index, and there
+    /// is no second consumer to sever it onto — the ring is SPSC.
+    fn forkable(&self) -> bool {
+        false
+    }
+
     fn inputs(&self) -> usize {
         0
     }
@@ -427,5 +434,27 @@ mod tests {
             "downcasting is how a host reaches back to the concrete node"
         );
         assert!(node.as_any_mut().downcast_mut::<MicMonitorNode>().is_some());
+    }
+
+    /// **The mic monitor refuses to be forked.** A clone shares the ring's
+    /// one consumer, so a fork rendering beside the live graph would take
+    /// live frames — the clone below drains what the original then never
+    /// sees, `isolate` or not. A graph fork trusts `forkable()`, so it must
+    /// say `false`.
+    ///
+    /// Mutation: drop the `forkable` override (the default is `true`) →
+    /// fails.
+    #[test]
+    fn a_clone_steals_live_frames_so_it_is_not_forkable() {
+        let (ring, _prod) = ring_with(&[[1.0, 2.0]]);
+        let mut live = MicMonitorNode::new(ring);
+        let mut clone = live.clone();
+        clone.isolate();
+        let mut out = [0.0f32; 2];
+        clone.tick(&[], &mut out);
+        assert_eq!(out, [1.0, 2.0], "the clone read the live ring");
+        live.tick(&[], &mut out);
+        assert_eq!(out, [0.0, 0.0], "and the live node lost the frame");
+        assert!(!live.forkable());
     }
 }

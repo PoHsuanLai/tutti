@@ -319,4 +319,15 @@ impl Voice {
             VoiceSource::Disk(voice) => voice.isolate(),
         }
     }
+
+    /// Whether [`isolate`](Self::isolate) severs everything this voice
+    /// shares — `AudioUnit::forkable` for the source that backs it (a disk
+    /// voice is not; see `DiskVoice::forkable`).
+    pub fn forkable(&self) -> bool {
+        use tutti_core::AudioUnit;
+        match &self.source {
+            VoiceSource::Memory(s) => s.forkable(),
+            VoiceSource::Disk(voice) => voice.forkable(),
+        }
+    }
 }

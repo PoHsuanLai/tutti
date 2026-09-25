@@ -10,8 +10,6 @@
 #[macro_use]
 mod common;
 
-use bevy_tutti::graph::GraphBackend;
-
 use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
@@ -58,9 +56,9 @@ fn note(number: u8, start: Beat, duration: BeatDuration, velocity: u16) -> [Time
 /// widens to through the spec's Min-Center-Max scaler.
 const MF: u16 = 0x8000;
 
-fn app(backend: GraphBackend) -> App {
+fn app() -> App {
     let mut app = App::new();
-    app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
@@ -140,8 +138,9 @@ fn poll(app: &App, entity: Entity, block: usize) -> Vec<MidiEvent> {
 
 /// A note reaches the synth's port with a real frame offset — the thing the old
 /// per-frame path could never do (it left every event at offset 0).
-fn a_scheduled_note_lands_at_a_frame_offset(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn a_scheduled_note_lands_at_a_frame_offset() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
 
@@ -166,15 +165,15 @@ fn a_scheduled_note_lands_at_a_frame_offset(backend: GraphBackend) {
         note_on.frame_offset
     );
 }
-both_backends!(a_scheduled_note_lands_at_a_frame_offset);
 
 /// Two installs naming one synth both play.
 ///
 /// `MidiInPort::install` *replaces* — it holds one source, not a stack — so a
 /// rebuild that installed per-component would silently drop all but the last.
 /// They have to be merged into one clip.
-fn two_installs_on_one_synth_both_sound(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn two_installs_on_one_synth_both_sound() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
 
@@ -199,15 +198,15 @@ fn two_installs_on_one_synth_both_sound(backend: GraphBackend) {
         "both installs must survive the merge, saw {notes:?}"
     );
 }
-both_backends!(two_installs_on_one_synth_both_sound);
 
 /// Editing an install mid-playback must not leave the previous note sounding.
 ///
 /// A rebuild mints a fresh `MidiClipSource` with a fresh cursor, starting at the
 /// current beat — so the outgoing clip's note-off is simply never delivered. The
 /// rebuild has to silence the target itself.
-fn a_rebuild_does_not_hang_the_previous_note(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn a_rebuild_does_not_hang_the_previous_note() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
 
     let install = app
@@ -242,7 +241,6 @@ fn a_rebuild_does_not_hang_the_previous_note(backend: GraphBackend) {
         "a rebuild must silence the target, else the outgoing note hangs: {events:?}"
     );
 }
-both_backends!(a_rebuild_does_not_hang_the_previous_note);
 
 /// **A device restart at a new rate places every installed clip at it.** A
 /// clip that kept the rate it was built with would, built at 48 kHz on a
@@ -259,8 +257,9 @@ both_backends!(a_rebuild_does_not_hang_the_previous_note);
 /// Mutation (run): the clip advancing its beat window at a fixed 48 kHz
 /// instead of the rate it is polled at (`MidiClipSource::sync_to_transport`)
 /// → the note lands at 8 000 → fails.
-fn a_rate_change_places_the_clip_at_the_new_rate(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn a_rate_change_places_the_clip_at_the_new_rate() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
     app.world_mut().spawn(MidiSourceInstall::new(
@@ -286,12 +285,12 @@ fn a_rate_change_places_the_clip_at_the_new_rate(backend: GraphBackend) {
         note_on.frame_offset
     );
 }
-both_backends!(a_rate_change_places_the_clip_at_the_new_rate);
 
 /// Removing the last install naming a target clears its source, so the synth
 /// stops playing rather than looping the old clip forever.
-fn removing_the_last_install_clears_the_source(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn removing_the_last_install_clears_the_source() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
 
@@ -317,7 +316,6 @@ fn removing_the_last_install_clears_the_source(backend: GraphBackend) {
         "a cleared target must not keep playing: {events:?}"
     );
 }
-both_backends!(removing_the_last_install_clears_the_source);
 
 /// Velocity keeps its full 16-bit range end to end.
 ///
@@ -325,8 +323,9 @@ both_backends!(removing_the_last_install_clears_the_source);
 /// fails the moment anything on the install → port path narrows the field. It
 /// caught exactly that once: a `note_on_7bit` call that crushed the value and
 /// widened it back.
-fn velocity_keeps_its_full_width(backend: GraphBackend) {
-    let mut app = app(backend);
+#[test]
+fn velocity_keeps_its_full_width() {
+    let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
 
@@ -354,4 +353,3 @@ fn velocity_keeps_its_full_width(backend: GraphBackend) {
         "the exact values must arrive, not merely differ: {velocities:?}"
     );
 }
-both_backends!(velocity_keeps_its_full_width);

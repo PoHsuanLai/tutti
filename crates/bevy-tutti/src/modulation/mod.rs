@@ -17,7 +17,7 @@
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
-//! let mut graph = AudioGraphRes::unattached(0, 1);
+//! let mut graph = AudioGraphRes::headless(0, 1);
 //! graph.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
@@ -87,7 +87,7 @@
 //! use tutti_types::{Hz, ParamAddr, UnitParam};
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes::unattached(0, 1));
+//! app.insert_resource(AudioGraphRes::headless(0, 1));
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));

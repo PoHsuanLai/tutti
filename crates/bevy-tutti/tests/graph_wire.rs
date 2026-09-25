@@ -16,31 +16,30 @@ mod common;
 /// Wiring declared in the ECS reaches the graph, and stops reaching it when the
 /// declaration goes away.
 ///
-/// Every assertion reads the engine back through `Net::source` /
-/// `Net::output_source` rather than trusting the component, because the diff
+/// Every assertion reads the engine back through `AudioGraphRes::source` /
+/// `AudioGraphRes::output_source` rather than trusting the component, because the diff
 /// this layer performs is only meaningful if the engine is the thing being
 /// compared against.
 /// (Was `tests/graph_wire.rs`.)
 mod graph_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{
         AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
         PortSource, PortSources,
     };
     use bevy_tutti::AudioEngineState;
-    // `outputs()` on `Net` is an `AudioUnit` method — the graph's own arity.
+    // `GraphSource` is the graph's own spelling of what feeds a port.
     use bevy_tutti::graph::GraphSource;
     use tutti_core::AudioNode;
     use tutti_core::{ChannelLayout, Hz};
     use tutti_nodes::testing::{Osc, Through};
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
-    fn app(backend: GraphBackend) -> App {
+    fn app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app
@@ -60,8 +59,9 @@ mod graph_wire {
     }
 
     /// The headline claim: a declaration on the sink reaches the engine.
-    fn a_declared_source_reaches_the_graph(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_declared_source_reaches_the_graph() {
+        let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let filt = spawn_node(&mut app, Through::mono());
 
@@ -76,7 +76,6 @@ mod graph_wire {
             GraphSource::Node(osc_id, 0)
         );
     }
-    both_backends!(a_declared_source_reaches_the_graph);
 
     /// The master bus is one declaration with one value per channel, so two nodes
     /// cannot both claim it.
@@ -85,8 +84,9 @@ mod graph_wire {
     /// `a_second_pipe_output_silently_replaces_the_first`: there, the second caller
     /// silently won. Here there is no second caller to have — a resource holds one
     /// value, and a channel holds one source.
-    fn the_master_bus_has_one_declaration_not_a_race(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn the_master_bus_has_one_declaration_not_a_race() {
+        let mut app = app();
         let a = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let b = spawn_node(&mut app, Osc::sine(Hz(880.0)));
 
@@ -105,15 +105,15 @@ mod graph_wire {
             GraphSource::Node(node_id(&app, b), 0)
         );
     }
-    both_backends!(the_master_bus_has_one_declaration_not_a_race);
 
     /// Removing the declaration silences the ports it claimed.
     ///
     /// The case that is unsolvable imperatively without every call site remembering
     /// what it wired: the entity leaves the rebuild's query, so only the removal
     /// observer can zero those ports.
-    fn removing_the_declaration_silences_the_ports(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn removing_the_declaration_silences_the_ports() {
+        let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
@@ -136,15 +136,15 @@ mod graph_wire {
             "a removed declaration must not leave its last wiring behind"
         );
     }
-    both_backends!(removing_the_declaration_silences_the_ports);
 
     /// A declaration naming an entity whose node arrives later is skipped, then
     /// picked up — without anything about the declaration changing.
     ///
     /// This is what `Added<AudioNode>` in the rebuild's dirty gate is for. Gating on
     /// `Changed<PortSources>` alone would leave the wire unformed forever.
-    fn an_unresolvable_source_is_skipped_then_picked_up(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn an_unresolvable_source_is_skipped_then_picked_up() {
+        let mut app = app();
         let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
 
@@ -175,14 +175,14 @@ mod graph_wire {
              changed, so a gate on `Changed<PortSources>` alone would miss it"
         );
     }
-    both_backends!(an_unresolvable_source_is_skipped_then_picked_up);
 
     /// A node naming itself is skipped with a warning, not a panic.
     ///
     /// `Net::set_source` asserts on a self-connection, and an assert inside a
     /// reconcile system takes the app down over a caller's typo.
-    fn a_self_connection_is_skipped_not_panicked_on(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_self_connection_is_skipped_not_panicked_on() {
+        let mut app = app();
         let filt = spawn_node(&mut app, Through::mono());
 
         app.world_mut()
@@ -197,11 +197,11 @@ mod graph_wire {
             GraphSource::Silence
         );
     }
-    both_backends!(a_self_connection_is_skipped_not_panicked_on);
 
     /// A source port past the node's output count is skipped rather than asserting.
-    fn an_out_of_range_source_port_is_skipped(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn an_out_of_range_source_port_is_skipped() {
+        let mut app = app();
         let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let filt = spawn_node(&mut app, Through::mono());
 
@@ -223,7 +223,6 @@ mod graph_wire {
             GraphSource::Silence
         );
     }
-    both_backends!(an_out_of_range_source_port_is_skipped);
 
     /// Re-binding an entity to a different node re-derives every wire naming it.
     ///
@@ -231,8 +230,9 @@ mod graph_wire {
     /// `NodeId` — and it did not work: the dirty gate was `Added<AudioNode>`, but a
     /// replacement `insert` on an entity that already has the component fires
     /// `Changed` without `Added`. Wires kept pointing at the retired node forever.
-    fn re_binding_an_entity_to_a_new_node_re_derives_the_wire(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn re_binding_an_entity_to_a_new_node_re_derives_the_wire() {
+        let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let filt = spawn_node(&mut app, Through::mono());
         let filt_id = node_id(&app, filt);
@@ -262,14 +262,14 @@ mod graph_wire {
              the wire — otherwise it points at a node nothing renders"
         );
     }
-    both_backends!(re_binding_an_entity_to_a_new_node_re_derives_the_wire);
 
     /// Removing a declaration silences only the ports it claimed.
     ///
     /// The write path clamps to the declared length, so the removal path must too.
     /// Zeroing every input port instead reaches into wiring this layer never made.
-    fn removing_a_declaration_leaves_undeclared_ports_alone(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn removing_a_declaration_leaves_undeclared_ports_alone() {
+        let mut app = app();
         let declared_src = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let foreign_src = spawn_node(&mut app, Osc::sine(Hz(880.0)));
         // Two inputs; the declaration will claim only port 0.
@@ -301,7 +301,112 @@ mod graph_wire {
             "but an undeclared port belongs to whoever wired it"
         );
     }
-    both_backends!(removing_a_declaration_leaves_undeclared_ports_alone);
+
+    /// A lookahead limiter: a node that reports latency, so a path through it
+    /// moves the graph's PDC plan.
+    fn latent() -> tutti_nodes::LimiterNode {
+        tutti_nodes::LimiterNode::with_channels(
+            ChannelLayout::MONO,
+            tutti_core::Db(-6.0),
+            tutti_core::Db(-1.0),
+        )
+    }
+
+    /// **A host that wires the master itself, through a latent node, is left
+    /// alone — and the rebuild's debug check does not panic over it.** An
+    /// empty `MasterSources` declares no output channel, so the value carries
+    /// none; the host wires output 0 from a limiter by hand. The rebuild's
+    /// consistency check used to compare the latency plan of the *whole*
+    /// graph against the value's, and the value — which has no outputs —
+    /// folds to no latency where the graph has the limiter's: a debug build
+    /// panicked over a graph that was right. The check covers only what the
+    /// value declares now.
+    ///
+    /// Mutation (run): `topology::disagreements` comparing
+    /// `latency::plan(want)` against `graph.latency_plan()` again → this
+    /// panics in the rebuild ("the engine does not match the value").
+    #[test]
+    fn a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement() {
+        let mut app = app();
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let lim = spawn_node(&mut app, latent());
+        let (osc_id, lim_id) = (node_id(&app, osc), node_id(&app, lim));
+        // Declared: the limiter's input, so the rebuild runs this frame.
+        app.world_mut()
+            .entity_mut(lim)
+            .insert(PortSources::from(osc));
+        // Undeclared: the master, wired by hand — through the limiter on 0,
+        // dry on 1, so PDC has something to align.
+        {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            assert!(
+                graph.node_latency(lim_id).get() > 0,
+                "the limiter is latent"
+            );
+            graph.set_output_source(0, GraphSource::Node(lim_id, 0));
+            graph.set_output_source(1, GraphSource::Node(osc_id, 0));
+        }
+        app.update();
+
+        let graph = app.world().resource::<AudioGraphRes>();
+        assert_eq!(graph.source(lim_id, 0), GraphSource::Node(osc_id, 0));
+        assert_eq!(
+            graph.output_source(0),
+            GraphSource::Node(lim_id, 0),
+            "the host's master is its own"
+        );
+        assert_eq!(graph.output_source(1), GraphSource::Node(osc_id, 0));
+        assert_eq!(
+            graph.latency_plan().total(),
+            graph.node_latency(lim_id),
+            "and the graph compensates the path the host wired"
+        );
+    }
+
+    /// **A port a short `PortSources` leaves undeclared, wired by hand from a
+    /// latent node, is not a disagreement either.** The sink declares port 0
+    /// and the master declares the sink; the host wires the sink's port 1
+    /// from a limiter. The value has no edge at port 1, so it folds to no
+    /// latency on channel 1 where the graph has the limiter's — the second
+    /// way the whole-graph plan comparison panicked a debug build.
+    ///
+    /// Mutation (run): the whole-graph plan comparison restored in
+    /// `topology::disagreements` → this panics in the rebuild.
+    #[test]
+    fn a_hand_wired_port_behind_a_latent_node_is_not_a_disagreement() {
+        let mut app = app();
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+        let lim = spawn_node(&mut app, latent());
+        let sink = spawn_node(&mut app, Through::new(ChannelLayout::STEREO));
+        let (osc_id, lim_id, sink_id) =
+            (node_id(&app, osc), node_id(&app, lim), node_id(&app, sink));
+        app.world_mut()
+            .entity_mut(lim)
+            .insert(PortSources::from(osc));
+        // Port 0 declared; port 1 left to whoever wires it.
+        app.world_mut()
+            .entity_mut(sink)
+            .insert(PortSources::from(osc));
+        app.world_mut().insert_resource(MasterSources::from(sink));
+        {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            graph.set_source(sink_id, 1, GraphSource::Node(lim_id, 0));
+        }
+        app.update();
+
+        let graph = app.world().resource::<AudioGraphRes>();
+        assert_eq!(graph.source(sink_id, 0), GraphSource::Node(osc_id, 0));
+        assert_eq!(
+            graph.source(sink_id, 1),
+            GraphSource::Node(lim_id, 0),
+            "the undeclared port is the host's"
+        );
+        assert_eq!(
+            graph.latency_plan().total(),
+            graph.node_latency(lim_id),
+            "and the graph compensates the path the host wired"
+        );
+    }
 
     /// A mono node reaches both master channels — via the constructor that says so.
     ///
@@ -309,8 +414,9 @@ mod graph_wire {
     /// source and unresolvable for a mono one. Its doc used to promise `pipe_output`'s
     /// modulo wrapping, which it never did: channel 1 was skipped, leaving whatever
     /// the channel previously held still audible.
-    fn a_mono_source_can_claim_both_master_channels(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_mono_source_can_claim_both_master_channels() {
+        let mut app = app();
         let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
         app.world_mut()
@@ -326,7 +432,6 @@ mod graph_wire {
             "both channels take the mono node's only port"
         );
     }
-    both_backends!(a_mono_source_can_claim_both_master_channels);
 
     /// A stereo master claim replaced by a mono one must not strand the old node.
     ///
@@ -334,8 +439,9 @@ mod graph_wire {
     /// the rebuild skips it, and the *previous* master keeps rendering on the right
     /// — two nodes owning the bus, which is the defect the declarative layer exists
     /// to make impossible.
-    fn replacing_a_stereo_master_with_a_mono_one_releases_both_channels(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn replacing_a_stereo_master_with_a_mono_one_releases_both_channels() {
+        let mut app = app();
         let stereo = spawn_node(&mut app, Through::new(ChannelLayout::STEREO));
         let mono = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
@@ -361,7 +467,6 @@ mod graph_wire {
         );
         assert_eq!(graph.output_source(1), GraphSource::Node(mono_id, 0));
     }
-    both_backends!(replacing_a_stereo_master_with_a_mono_one_releases_both_channels);
 
     /// A rebuild that finds the engine already agreeing writes nothing — it does not
     /// re-set ports that already hold the declared source.
@@ -378,11 +483,12 @@ mod graph_wire {
     /// clears it in the `Commit` set — reading it after `update()` returns shows
     /// `false` whether or not the rebuild wrote, which is how a first version of
     /// this test passed against a deliberately un-diffed rebuild.
-    fn a_rebuild_that_changes_nothing_writes_nothing(backend: GraphBackend) {
+    #[test]
+    fn a_rebuild_that_changes_nothing_writes_nothing() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        let mut app = app(backend);
+        let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let filt = spawn_node(&mut app, Through::mono());
         app.world_mut()
@@ -416,7 +522,6 @@ mod graph_wire {
              forces a commit the frame did not need"
         );
     }
-    both_backends!(a_rebuild_that_changes_nothing_writes_nothing);
 
     // ---------------------------------------------------------------------------
     // A master declaration wider than the root widens the root.
@@ -430,8 +535,9 @@ mod graph_wire {
     /// second half of this test is what makes it a real regression: a fix that
     /// widens the root but leaves the loop clamped passes the arity assertion and
     /// still never wires channel 5.
-    fn a_wider_master_declaration_widens_the_root(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_wider_master_declaration_widens_the_root() {
+        let mut app = app();
         let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
@@ -452,13 +558,13 @@ mod graph_wire {
             );
         }
     }
-    both_backends!(a_wider_master_declaration_widens_the_root);
 
     /// Widening must survive the real commit path. A plain `Net::commit` panics on
     /// an arity change, so this is what proves the arity-permitting commit is
     /// genuinely the one reached.
-    fn a_widened_root_survives_a_real_commit(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_widened_root_survives_a_real_commit() {
+        let mut app = app();
         let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
@@ -476,7 +582,6 @@ mod graph_wire {
             "the commit consumed the dirty flag rather than panicking on the arity change"
         );
     }
-    both_backends!(a_widened_root_survives_a_real_commit);
 
     /// A *shorter* declaration silences the channels it dropped, but does not
     /// narrow the root.
@@ -486,8 +591,9 @@ mod graph_wire {
     /// needs its own explicit API, not an inference from a length. What the
     /// dropped channels read instead is
     /// `shrinking_the_master_releases_the_dropped_channel`'s claim.
-    fn a_shorter_master_declaration_does_not_narrow_the_root(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_shorter_master_declaration_does_not_narrow_the_root() {
+        let mut app = app();
         let wide = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
         app.insert_resource(MasterSources::from_node_at_width(
@@ -507,7 +613,6 @@ mod graph_wire {
             "a shorter declaration is not a narrowing instruction"
         );
     }
-    both_backends!(a_shorter_master_declaration_does_not_narrow_the_root);
 
     /// Shrinking `MasterSources` releases the channel it dropped: the node
     /// that fed it no longer does, the root keeps its width, and the latency
@@ -518,20 +623,21 @@ mod graph_wire {
     /// source — nothing declared it any more, so nothing wrote it — and the
     /// value, one channel short of the root, folded to a different latency
     /// plan from the engine's (channel 1 still behind the limiter), which
-    /// tripped `rebuild`'s "the engine does not match the value" check on
-    /// both backends. #39's restart test met it only on `Native`, because
-    /// there `Net` carried compensation delays, which skip the plan
-    /// comparison.
+    /// tripped `rebuild`'s "the engine does not match the value" check. (That
+    /// check no longer compares whole-graph plans — see
+    /// `a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement` — so
+    /// what catches a regression now is this test's own reading of channel 1.)
     ///
     /// Mutation (run): building the value's outputs to the declaration's
-    /// length, as before (`0..graph.outputs().min(master.0.len())`) → the
-    /// consistency check panics on both backends (and #39's disk-clip
-    /// restart test on `Native`).
-    fn shrinking_the_master_releases_the_dropped_channel(backend: GraphBackend) {
+    /// length, as before (`0..graph.outputs().min(master.0.len())`) → channel
+    /// 1 keeps the limiter → "the dropped channel's source is disconnected"
+    /// fails.
+    #[test]
+    fn shrinking_the_master_releases_the_dropped_channel() {
         use tutti_core::Db;
         use tutti_nodes::LimiterNode;
 
-        let mut app = app(backend);
+        let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let lim = spawn_node(
             &mut app,
@@ -572,12 +678,12 @@ mod graph_wire {
         assert_eq!(
             graph.output_source(1),
             GraphSource::Silence,
-            "{backend:?}: the dropped channel's source is disconnected"
+            "the dropped channel's source is disconnected"
         );
         assert_eq!(
             graph.outputs(),
             2,
-            "{backend:?}: the root keeps its width; a shrink is not a narrowing"
+            "the root keeps its width; a shrink is not a narrowing"
         );
         assert_eq!(
             graph.source(lim_id, 0),
@@ -588,13 +694,9 @@ mod graph_wire {
         assert_eq!(
             plan.total(),
             tutti_core::Samples(0),
-            "{backend:?}: no output reaches the limiter any more (it was {latency:?})"
+            "no output reaches the limiter any more (it was {latency:?})"
         );
-        assert_eq!(
-            plan.channels().len(),
-            2,
-            "{backend:?}: one figure per root channel"
-        );
+        assert_eq!(plan.channels().len(), 2, "one figure per root channel");
 
         // And the value agrees: `LiveGraph` describes the whole root, so the
         // same fold over it gives the same figures.
@@ -602,13 +704,13 @@ mod graph_wire {
         assert_eq!(live.topology().outputs.len(), 2);
         assert_eq!(tutti_types::latency::plan(live.topology()), plan);
     }
-    both_backends!(shrinking_the_master_releases_the_dropped_channel);
 
     /// Channels past `MAX_ROOT_CHANNELS` are refused at the clamp, not silently
     /// dropped one layer down — the render scratch is bounded, so a root wider than
     /// it would report channels that are declarable but never rendered.
-    fn a_master_declaration_cannot_exceed_the_render_scratch(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn a_master_declaration_cannot_exceed_the_render_scratch() {
+        let mut app = app();
         let node = spawn_node(&mut app, Osc::sine(Hz(440.0)));
 
         let mut sources = MasterSources::default();
@@ -623,7 +725,6 @@ mod graph_wire {
             "the root must stay within the render scratch"
         );
     }
-    both_backends!(a_master_declaration_cannot_exceed_the_render_scratch);
 
     // ---------------------------------------------------------------------------
     // The N-wide constructors.
@@ -631,8 +732,9 @@ mod graph_wire {
 
     /// `from_node_at_width` is the identity mapping — every channel straight
     /// through, no wrap, no fold.
-    fn from_node_at_width_maps_every_channel_straight_through(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn from_node_at_width_maps_every_channel_straight_through() {
+        let mut app = app();
         let sink = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
         let src = spawn_node(&mut app, Through::new(ChannelLayout::from(6u16)));
 
@@ -654,13 +756,13 @@ mod graph_wire {
             );
         }
     }
-    both_backends!(from_node_at_width_maps_every_channel_straight_through);
 
     /// At stereo it is exactly `stereo_from`. That equivalence is what lets a
     /// reviewer trust every existing call site is unaffected by the new
     /// constructor's arrival.
-    fn from_node_at_width_at_stereo_is_stereo_from(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn from_node_at_width_at_stereo_is_stereo_from() {
+        let mut app = app();
         let e = spawn_node(&mut app, Through::mono());
 
         assert_eq!(
@@ -668,7 +770,6 @@ mod graph_wire {
             PortSources::stereo_from(e)
         );
     }
-    both_backends!(from_node_at_width_at_stereo_is_stereo_from);
 }
 
 /// Spike: declaring an audio-rate **param** port through `PortSources`.
@@ -682,7 +783,6 @@ mod graph_wire {
 mod param_port_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{
@@ -695,9 +795,9 @@ mod param_port_wire {
     use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
     use tutti_types::UnitParam;
 
-    fn app(backend: GraphBackend) -> App {
+    fn app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app
@@ -720,8 +820,9 @@ mod param_port_wire {
     ///
     /// This is what makes the port space have a single writer — the thing the
     /// imperative form cannot guarantee.
-    fn audio_and_param_ports_are_declared_together(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn audio_and_param_ports_are_declared_together() {
+        let mut app = app();
 
         // A distortion born with its drive port on: inputs are [L, R, drive].
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
@@ -781,7 +882,6 @@ mod param_port_wire {
         );
         assert_eq!(graph.source(sum_id, 0), GraphSource::Node(base_id, 0));
     }
-    both_backends!(audio_and_param_ports_are_declared_together);
 
     /// The clobber the imperative form suffers cannot be expressed here.
     ///
@@ -791,8 +891,9 @@ mod param_port_wire {
     /// the audio ports means editing the same `Vec` that holds the param port, and
     /// a `Vec` shorter than the param index leaves it *undeclared* — untouched, not
     /// zeroed.
-    fn redeclaring_audio_does_not_disturb_the_param_port(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn redeclaring_audio_does_not_disturb_the_param_port() {
+        let mut app = app();
 
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
@@ -850,12 +951,12 @@ mod param_port_wire {
             "and the param edge is untouched — one writer owns the whole port space"
         );
     }
-    both_backends!(redeclaring_audio_does_not_disturb_the_param_port);
 
     /// A param port the declaration does not mention is left alone, exactly as an
     /// unmentioned audio port is. "Undeclared" and "declared silent" stay distinct.
-    fn an_undeclared_param_port_is_untouched(backend: GraphBackend) {
-        let mut app = app(backend);
+    #[test]
+    fn an_undeclared_param_port_is_untouched() {
+        let mut app = app();
 
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
@@ -884,18 +985,16 @@ mod param_port_wire {
             "a short declaration leaves trailing ports undeclared, not silenced"
         );
     }
-    both_backends!(an_undeclared_param_port_is_untouched);
 
     /// The full chain, declared: global input → node audio, and
     /// `base → sum → node.drive_port` for the modulation.
     ///
     /// Structure only, matching this crate's other wiring tests — that the chain
     /// *renders* (drive 9.0 saturating where 1.0 does not) is asserted in
-    /// tutti-nodes' `audio_rate_param_mod`, where a backend-free `Net` can be ticked
-    /// directly. A net with a backend defers to `commit`, so ticking the frontend
-    /// here would prove nothing about what the engine runs.
-    fn the_whole_declared_chain_reaches_the_graph(backend: GraphBackend) {
-        let mut app = app(backend);
+    /// tutti-nodes' `audio_rate_param_mod`.
+    #[test]
+    fn the_whole_declared_chain_reaches_the_graph() {
+        let mut app = app();
         app.insert_resource(MasterSources::default());
 
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
@@ -952,5 +1051,4 @@ mod param_port_wire {
         );
         assert_eq!(graph.source(sum_id, 0), GraphSource::Node(base_id, 0));
     }
-    both_backends!(the_whole_declared_chain_reaches_the_graph);
 }

@@ -24,7 +24,6 @@ mod common;
 mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
@@ -39,9 +38,9 @@ mod mod_audio_rate_reconcile {
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     /// An app with the engine's plugins and one ported distortion, ready to modulate.
-    fn app_with_target(backend: GraphBackend) -> (App, Entity, usize) {
+    fn app_with_target() -> (App, Entity, usize) {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
@@ -113,10 +112,11 @@ mod mod_audio_rate_reconcile {
     ///   is the closer analogue of the original omission (the type answering
     ///   `None` for a param it really ports), and fails on the `expect` above
     ///   it, where the node is asked what port it declares.
-    fn a_bus_strips_volume_and_pan_reach_audio_rate(backend: GraphBackend) {
+    #[test]
+    fn a_bus_strips_volume_and_pan_reach_audio_rate() {
         for (param, label) in [(UnitParam::Volume, "Volume"), (UnitParam::Pan, "Pan")] {
             let mut app = App::new();
-            app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+            app.insert_resource(AudioGraphRes::headless(0, 2));
             app.insert_resource(AudioEngineState::Running);
             app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
             app.world_mut()
@@ -186,10 +186,10 @@ mod mod_audio_rate_reconcile {
             );
         }
     }
-    both_backends!(a_bus_strips_volume_and_pan_reach_audio_rate);
 
-    fn an_audio_rate_route_builds_the_whole_chain(backend: GraphBackend) {
-        let (mut app, target, drive_port) = app_with_target(backend);
+    #[test]
+    fn an_audio_rate_route_builds_the_whole_chain() {
+        let (mut app, target, drive_port) = app_with_target();
         let lfo = spawn_lfo(&mut app);
 
         app.world_mut().spawn(
@@ -249,12 +249,12 @@ mod mod_audio_rate_reconcile {
             "sum → the node's drive port"
         );
     }
-    both_backends!(an_audio_rate_route_builds_the_whole_chain);
 
     /// Two routes on one param share one sum, sized to the group — the constraint
     /// that forces grouping by `(target, param)` before anything is spawned.
-    fn two_routes_on_one_param_share_one_sum(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn two_routes_on_one_param_share_one_sum() {
+        let (mut app, target, _) = app_with_target();
         let (a, b) = (spawn_lfo(&mut app), spawn_lfo(&mut app));
 
         for source in [a, b] {
@@ -283,13 +283,13 @@ mod mod_audio_rate_reconcile {
             "the sum is sized to the group: one base port plus one per route"
         );
     }
-    both_backends!(two_routes_on_one_param_share_one_sum);
 
     /// Deleting the route tears the chain down. Without this a removed route leaves
     /// a sum feeding a stale offset into the node forever — the audio-rate mirror of
     /// the layer-clearing the value path does.
-    fn removing_the_route_retires_the_chain(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn removing_the_route_retires_the_chain() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
 
         let route = app
@@ -321,12 +321,12 @@ mod mod_audio_rate_reconcile {
             "the chain must be retired with its route"
         );
     }
-    both_backends!(removing_the_route_retires_the_chain);
 
     /// A route left at the default (value path) builds nothing. Audio rate is
     /// opt-in, because it costs two idle graph nodes per modulated param.
-    fn a_value_path_route_builds_no_chain(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_value_path_route_builds_no_chain() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
 
         // No `.per_sample()`.
@@ -345,7 +345,6 @@ mod mod_audio_rate_reconcile {
             "and its source must not gain a node it does not need"
         );
     }
-    both_backends!(a_value_path_route_builds_no_chain);
 
     /// **The bug the enum exists to prevent.**
     ///
@@ -358,8 +357,9 @@ mod mod_audio_rate_reconcile {
     /// `at_audio_rate` was invisible to `rebuild`, so every audio-rate route got
     /// both. `ModDelivery` makes the tiers mutually exclusive by construction, and
     /// this pins the driver actually honouring that.
-    fn a_per_sample_route_is_not_also_claimed_by_the_driver(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_per_sample_route_is_not_also_claimed_by_the_driver() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
 
         app.world_mut().spawn(
@@ -386,12 +386,12 @@ mod mod_audio_rate_reconcile {
              two writers on one atomic"
         );
     }
-    both_backends!(a_per_sample_route_is_not_also_claimed_by_the_driver);
 
     /// The complement: a per-frame route *is* the driver's, and builds no chain.
     /// Together these pin the two tiers as mutually exclusive in both directions.
-    fn a_per_frame_route_is_the_drivers_alone(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_per_frame_route_is_the_drivers_alone() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
 
         app.world_mut().spawn(
@@ -411,7 +411,6 @@ mod mod_audio_rate_reconcile {
             "and no graph chain is built for it"
         );
     }
-    both_backends!(a_per_frame_route_is_the_drivers_alone);
 
     /// **A route declared before its sink's node still reaches audio rate.**
     ///
@@ -430,9 +429,10 @@ mod mod_audio_rate_reconcile {
     /// It failed silently, which is why it needed a test rather than a review: the
     /// per-frame fallback is a legal outcome meaning "this sink exposes no port",
     /// and nothing distinguishes it from "the node had not arrived yet".
-    fn a_route_declared_before_its_sinks_node_still_binds(backend: GraphBackend) {
+    #[test]
+    fn a_route_declared_before_its_sinks_node_still_binds() {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
@@ -488,7 +488,6 @@ mod mod_audio_rate_reconcile {
             .clone();
         assert_eq!(chain.port, drive_port);
     }
-    both_backends!(a_route_declared_before_its_sinks_node_still_binds);
 
     /// **Editing a modulated param's authored range must not delete its modulation.**
     ///
@@ -505,8 +504,9 @@ mod mod_audio_rate_reconcile {
     /// A range change is not exotic. `ModParamRange` carries the authored
     /// `base`/`min`/`max`, so any host that mirrors an authored value into it
     /// re-inserts the component on every edit.
-    fn editing_a_range_does_not_drop_the_routes(backend: GraphBackend) {
-        let (mut app, target, _port) = app_with_target(backend);
+    #[test]
+    fn editing_a_range_does_not_drop_the_routes() {
+        let (mut app, target, _port) = app_with_target();
         let lfo = spawn_lfo(&mut app);
         app.world_mut().spawn(
             ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
@@ -540,7 +540,6 @@ mod mod_audio_rate_reconcile {
              registry without refilling it drops every route it cannot resolve"
         );
     }
-    both_backends!(editing_a_range_does_not_drop_the_routes);
 
     /// **`write_param` routes an authored write to the chain's base cell.**
     ///
@@ -560,8 +559,9 @@ mod mod_audio_rate_reconcile {
     /// `tutti-nodes`' `a_wired_param_port_makes_the_node_ignore_its_atomic` pins
     /// that. Asserting on the atomic would pass with the branch removed — the write
     /// lands there, it just does not sound.
-    fn write_param_reaches_an_audio_rate_params_base_cell(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn write_param_reaches_an_audio_rate_params_base_cell() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
         app.world_mut().spawn(
             ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
@@ -608,7 +608,6 @@ mod mod_audio_rate_reconcile {
              port ignores"
         );
     }
-    both_backends!(write_param_reaches_an_audio_rate_params_base_cell);
 
     /// **A range edit reaches a live chain without respawning it.**
     ///
@@ -621,8 +620,9 @@ mod mod_audio_rate_reconcile {
     /// Without the second, the "fix" of respawning the chain would pass while
     /// restarting every LFO's phase, which is the thing the arity check exists to
     /// prevent.
-    fn a_range_edit_reaches_a_live_chain_without_respawning_it(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_range_edit_reaches_a_live_chain_without_respawning_it() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
         app.world_mut().spawn(
             ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
@@ -682,7 +682,6 @@ mod mod_audio_rate_reconcile {
              LFO's phase, which is exactly what the arity check protects"
         );
     }
-    both_backends!(a_range_edit_reaches_a_live_chain_without_respawning_it);
 
     /// **A depth edit on a live route reaches its shaper.**
     ///
@@ -701,8 +700,9 @@ mod mod_audio_rate_reconcile {
     ///   `ModParamRange`'s, which is the regression this shape of fix invites.
     /// - The **LFO's node survived**: the module's anti-respawn note protects the
     ///   modulator's phase, and this pins that a shaper swap does not touch it.
-    fn a_depth_edit_reaches_a_live_shaper(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_depth_edit_reaches_a_live_shaper() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
         let route = app
             .world_mut()
@@ -783,7 +783,6 @@ mod mod_audio_rate_reconcile {
              is what the anti-respawn policy actually protects"
         );
     }
-    both_backends!(a_depth_edit_reaches_a_live_shaper);
 
     /// **A range edit reaches a live chain's clamp.**
     ///
@@ -796,8 +795,9 @@ mod mod_audio_rate_reconcile {
     /// `a_range_edit_reaches_a_live_chain_without_respawning_it` does: rebuilding
     /// the sum would apply the new clamp *and* silently revert the authored base,
     /// so a test that only checked the clamp would bless that trade.
-    fn a_range_edit_reaches_a_live_clamp(backend: GraphBackend) {
-        let (mut app, target, _) = app_with_target(backend);
+    #[test]
+    fn a_range_edit_reaches_a_live_clamp() {
+        let (mut app, target, _) = app_with_target();
         let lfo = spawn_lfo(&mut app);
         app.world_mut().spawn(
             ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
@@ -814,7 +814,7 @@ mod mod_audio_rate_reconcile {
         /// Rendered because the clamp lives in `ClampBounds`, a cell the live
         /// sum shares with the chain, and not in anything a `Setting` carries:
         /// an inspected copy of the node shows it only while that copy shares
-        /// the cell, which the native backend's shadow does not once `isolate`
+        /// the cell, which the node's shadow does not once `isolate`
         /// snapshots cells (#29). The offset on the other port is the LFO
         /// through a 0.5-deep shaper, a few units at most, so a base far past
         /// the max reads back as the max.
@@ -880,7 +880,6 @@ mod mod_audio_rate_reconcile {
              the authored base, trading one frozen value for another"
         );
     }
-    both_backends!(a_range_edit_reaches_a_live_clamp);
 }
 
 /// The two tiers agree: audio-rate modulation sounds like the frame-rate path.

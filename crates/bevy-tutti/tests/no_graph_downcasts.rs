@@ -50,7 +50,8 @@ const PATTERNS: &[Pattern] = &[
     },
     Pattern {
         // `.0.node(` is the spelling through the resource's field; `net.node(`
-        // the one inside `AudioGraphRes`, whose `Net` arm binds it as `net`.
+        // the one on a `Net` bound as `net` (the adapter's own arm, until PR
+        // 13; a test's `Net`-era oracle since).
         name: "raw graph node access (.0.node( / net.node()",
         matches: |l| {
             l.contains(".0.node(")
@@ -72,8 +73,8 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "a_depth_edit_reaches_a_live_shaper ticks the graph's own ParamShaperNode \
          (through `AudioGraphRes::inspect`) to prove the node changed, not the \
          declaration: the shaper's LUT is baked at construction and has no control \
-         handle. A depth edit rebuilds the shaper, so the inspected copy is the new \
-         unit on both backends (on the native one, its shadow). \
+         handle. A depth edit rebuilds the shaper, so the inspected copy (the \
+         node's shadow) is the new unit's. \
          a_range_edit_reaches_a_live_clamp renders the chain instead, since its \
          clamp lives in a cell a native shadow does not share.",
     ),
@@ -106,26 +107,17 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
          an_unrebindable_synth_source_is_a_named_failure and \
          a_host_midi_unit_with_an_unrebindable_source_refuses_by_name downcast an export \
          error's `ForkCause` to the node's own error (the cause's documented \
-         use), not a graph node. native_and_net_synth_exports_are_bit_identical \
-         downcasts the synth in the `Net` export's own clone, inside the \
-         `prepare` hook, to hand it the clip the way a `Net`-era host did: the \
-         reference side of the A/B, gone with the `Net` arm (PR 13).",
+         use), not a graph node. poly_node_export_net_era (the `Net`-era \
+         oracle of synth_exports_are_bit_identical_to_the_net_era) downcasts \
+         the synth in its own isolated `Net` to hand it the clip the way a \
+         `Net`-era host did; it goes with tutti-export's `Net` arm (PR 14).",
     ),
     (
         "tests/export_fork.rs",
         "raw graph node access (.0.node( / net.node()",
         1,
-        "native_and_net_synth_exports_are_bit_identical: the same `Net` \
-         prepare-hook refill, on the export's clone, not the live graph.",
-    ),
-    (
-        "src/graph/resources.rs",
-        "raw graph node access (.0.node( / net.node()",
-        3,
-        "`AudioGraphRes`'s own implementation, the one place the raw graph is: \
-         `inspect` hands a caller `&dyn AudioUnit` (a downcast of it is counted at \
-         the caller), and two reads of `get_id()` recognise PDC delay nodes, which \
-         go with `PdcDelay` itself (PR 13).",
+        "poly_node_export_net_era: the same refill, on the oracle's own isolated \
+         `Net`, never the adapter's graph.",
     ),
 ];
 

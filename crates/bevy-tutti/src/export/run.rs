@@ -22,12 +22,12 @@ use crate::export::request::{
     ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest, ExportSource,
     ExportTarget, PreparedGraph,
 };
-use crate::graph::resources::{ExportRefused, Exported};
+use crate::graph::resources::ExportRefused;
 use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Start the oldest pending [`ExportRequest`], if nothing is already running.
 ///
-/// The expensive part — copying the graph (a `Net` clone, or a native fork) —
+/// The expensive part — copying the graph (a fork) —
 /// happens here, on the main thread, because the copy reads the graph
 /// resource and cannot cross into a `'static` task. That is also why only one
 /// starts per frame; see [`ExportInFlight`].
@@ -130,7 +130,7 @@ pub fn start_exports(world: &mut World) {
         prepare(
             PreparedGraph {
                 graph: &mut graph,
-                ctx: ctx.as_ref(),
+                ctx: &ctx,
             },
             world,
         );
@@ -187,17 +187,16 @@ pub fn start_exports(world: &mut World) {
 }
 
 /// Build the graph this request renders, plus the offline context its nodes
-/// were rebound onto (`None` for a `Net` master export, which keeps the live
-/// transport bindings the caller's own clock drives).
+/// were rebound onto.
 ///
 /// Refuses, with the reason, when the requested node has no outputs — there is
-/// nothing to render from it — and, on the native backend, when a node the
-/// copy needs cannot be forked (named by the caller, [`NodeNames::name`]).
+/// nothing to render from it — and when a node the copy needs cannot be
+/// forked (named by the caller, [`NodeNames::name`]).
 fn prepare_graph(
     graph: &AudioGraphRes,
     nodes: &NodeNames,
     request: &ExportRequest,
-) -> Result<(RenderGraph, Option<OfflineTransport>), tutti_export::Error> {
+) -> Result<(RenderGraph, OfflineTransport), tutti_export::Error> {
     let node = match request.source {
         ExportSource::Master => None,
         // Resolved here rather than stored: see `ExportSource::Node`.
@@ -212,18 +211,10 @@ fn prepare_graph(
     // voices against a 120 BPM playhead stuck at beat 0.
     let ctx: OfflineTransport = request.clock.offline();
 
-    // A `Net` node export and every native fork are isolated, rebound onto
-    // `ctx` and reset; a `Net` master export is a plain clone — see
+    // Every node of the fork is isolated, rebound onto `ctx` and reset — see
     // `AudioGraphRes::export`.
     match graph.export(node, &ctx, request.config.render.sample_rate, &nodes.midi) {
-        Ok(Exported {
-            graph,
-            rebound: true,
-        }) => Ok((graph, Some(ctx))),
-        Ok(Exported {
-            graph,
-            rebound: false,
-        }) => Ok((graph, None)),
+        Ok(graph) => Ok((graph, ctx)),
         Err(ExportRefused::NoOutputs) => Err(invalid(NO_OUTPUTS)),
         Err(ExportRefused::GraphHasNoOutputs) => Err(invalid(GRAPH_HAS_NO_OUTPUTS)),
         Err(ExportRefused::Render(e)) => Err(e),
@@ -342,16 +333,15 @@ pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut E
 /// `build_into`), over a manual stream: the beat clock and the metronome in
 /// the graph, the click wired to the clock and to the master. Every other
 /// export test builds a bare `headless` graph, which has neither — and on
-/// `Native` the clock was once inserted with no fork source, so every
+/// the native graph the clock was once inserted with no fork source, so every
 /// engine-built graph refused a master export as not forkable.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::build::build_on;
     use crate::export::{ExportClock, ExportPlugin};
-    use crate::graph::both_backends;
     use crate::graph::{
-        EngineNodes, GraphBackend, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+        EngineNodes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
     };
     use crate::{AudioEngineState, TuttiPlugin};
     use bevy_app::App;
@@ -363,15 +353,11 @@ mod tests {
 
     const RATE: f64 = 48_000.0;
 
-    /// An engine on `backend` at 48 kHz, the metronome always on and wired
-    /// to the master, the live transport rolling. Returns the app and the
-    /// click's entity.
-    fn engine_app(backend: GraphBackend) -> (App, Entity, tutti_cpal::ManualStream) {
+    /// An engine at 48 kHz, the metronome always on and wired to the master,
+    /// the live transport rolling. Returns the app and the click's entity.
+    fn engine_app() -> (App, Entity, tutti_cpal::ManualStream) {
         let mut app = App::new();
-        let plugin = TuttiPlugin {
-            graph_backend: backend,
-            ..Default::default()
-        };
+        let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
         build_on(
             &plugin,
@@ -431,8 +417,8 @@ mod tests {
         panic!("the export never reported");
     }
 
-    /// **An engine-built graph exports on both backends — the master, the
-    /// click, and the beat clock — and the clock's beat is the render's.**
+    /// **An engine-built graph exports — the master, the click, and the beat
+    /// clock — and the clock's beat is the render's.**
     /// The render's timeline is 120 BPM from beat 0.25 at 48 kHz, so the
     /// clock's whole-beat port (the export's left channel; a node export
     /// clamps the right channel onto its last port, the fraction) reads 0
@@ -441,17 +427,15 @@ mod tests {
     /// not hold) frame by frame, and lands on beat 2 one frame late (the
     /// offline-timeline rounding doc 013 records as a follow-up). The live
     /// transport, rolling since the build, is at another beat: a forked
-    /// clock that read it would not step there. `Native` only: the forked
-    /// `EnvClock` reads the render's `Env`. On `Net` a node export of the
-    /// `TransportClock` starts from beat 0, not from the timeline's 0.25
-    /// (measured: one step, at 24 000) — its rebind severs it at its own
-    /// beat, a `Net` behaviour PR 13 removes with the arm.
+    /// clock that read it would not step there: the forked `EnvClock` reads
+    /// the render's `Env`. (Until PR 13 this ran on `Net` too, where only the
+    /// lengths were asserted: a `Net` node export of the `TransportClock`
+    /// started from beat 0, not from the timeline's 0.25, and a master export
+    /// was a plain clone clicking on the live transport's beats.)
     ///
-    /// What the click itself renders is not asserted. On `Net` a master
-    /// export is a plain clone, which clicks on the **live** transport's
-    /// beats (measured: frames 1 and 24 001) — the behaviour doc 013 PR 12
-    /// replaces. On `Native` the fork is cloned from the click's shadow, taken
-    /// at insert, whose metronome mode is the one it had then (`Off` here):
+    /// What the click itself renders is not asserted. The fork is cloned from
+    /// the click's shadow, taken at insert, whose metronome mode is the one it
+    /// had then (`Off` here):
     /// `MetronomeRes` writes the live node's settings cell, which the shadow
     /// detached from (doc 013, "Metronome volume and mode ... live-only; a
     /// click is not part of an export"). Its session flags are frozen at the
@@ -459,10 +443,11 @@ mod tests {
     /// `isolate_snapshots_settings_and_session_flags` row pins that.
     ///
     /// Mutation (run): `insert_env_clock` inserting `EnvClock` plainly (no
-    /// fork source, as before) → `native` fails on its first export, refused
-    /// as not forkable.
-    fn an_engine_built_graph_exports_and_its_clock_is_the_renders(backend: GraphBackend) {
-        let (mut app, click, _stream) = engine_app(backend);
+    /// fork source, as before) → fails on its first export, refused as not
+    /// forkable.
+    #[test]
+    fn an_engine_built_graph_exports_and_its_clock_is_the_renders() {
+        let (mut app, click, _stream) = engine_app();
         let clock = app.world().resource::<EngineNodes>().clock;
         let timeline = || {
             ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -485,10 +470,7 @@ mod tests {
                 &mut app,
                 ExportRequest::new(source, ExportTarget::Buffers, config, timeline()),
             );
-            assert_eq!(left.len(), RATE as usize, "{backend:?}, {source:?}");
-        }
-        if backend == GraphBackend::Net {
-            return;
+            assert_eq!(left.len(), RATE as usize, "{source:?}");
         }
         let beats = export(
             &mut app,
@@ -520,5 +502,4 @@ mod tests {
             "the clock's whole beats on the render's timeline: {steps:?}, want {want:?}"
         );
     }
-    both_backends!(an_engine_built_graph_exports_and_its_clock_is_the_renders);
 }

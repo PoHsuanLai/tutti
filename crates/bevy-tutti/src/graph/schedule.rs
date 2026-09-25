@@ -5,7 +5,7 @@
 //! coalescing flag ([`GraphDirty`]) that decides whether the frame ends in a
 //! commit.
 //!
-//! None of this has an engine counterpart, and that is the point: `Net` has no
+//! None of this has an engine counterpart, and that is the point: the graph has no
 //! dirty bit and no notion of a frame. Batching a frame's edits into one
 //! `commit()` is the ECS binding's own duty, which is why this state lives here
 //! and dies at the end of the frame.

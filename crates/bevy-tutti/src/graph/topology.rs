@@ -6,7 +6,7 @@
 //! [`MasterSources`] resource — and produces a [`Topology`]. [`apply`] writes
 //! that value into the runtime. [`LiveGraph`] holds the last one applied, so
 //! "did the graph change" is one comparison rather than a port-by-port read of
-//! `Net`.
+//! the graph.
 //!
 //! # What the value owns, and what it does not
 //!
@@ -22,46 +22,25 @@
 //! (widths, latency, tail) — never a `Box<dyn AudioUnit>`, and never a catalog
 //! id it could be rebuilt from.
 //!
-//! That split is forced by the runtime, and the two constraints behind it are
-//! worth stating because they are what a later slice would have to answer:
+//! That split is forced by what a unit is: live state a host built, not a
+//! derived artifact. A hosted plugin's process, the sampler's butler-shared
+//! buffers and a decoded `SoundFontUnit` arrive boxed, and no `kind` string
+//! could reconstruct them; the editor owns each one from its insert to its
+//! removal, and a crossfade replaces one in place under its key.
 //!
-//! 1. **The backend handoff is one-time.** `engine::build_into` calls
-//!    `Net::backend()` once — it `assert!`s `!has_backend()`, moves the vertex
-//!    vector to the audio thread and hands the result to `Engine::new`, which
-//!    parks it with no setter. A `Net` built from scratch by
-//!    [`tutti_core::topology::compile`] has no backend and nowhere to land.
-//! 2. **The frontend `Net` is live mutable state, not a derived artifact.**
-//!    `crossfade_audio_node` queues a `NodeEdit` into `Net::edit_queue` that
-//!    `commit` drains, and a from-scratch rebuild discards it. The sampler's butler-shared buffers and a decoded `SoundFontUnit`
-//!    are in the same position: no `kind` string could reconstruct them.
+//! # Nothing derived is in the graph
 //!
-//! So [`compile`](tutti_core::topology::compile) stays what it is — the
-//! from-scratch path, for a caller with no live backend to preserve (only tests
-//! call it today). This module is the incremental path over a running one.
-//!
-//! # PDC delays are runtime-only, deliberately
-//!
-//! `latency::compensate` splices [`PdcDelay`](tutti_core::PdcDelay) nodes into
-//! the `Net` during [`Compensate`](super::GraphReconcileSystems::Compensate).
-//! They have no entity, so they are not in the value — and minting a `NodeKey`
-//! for them from their `NodeId` would be *actively wrong*, not merely awkward:
-//! `NodeId::new` draws from a global counter, and `clear_delays` destroys and
-//! re-mints every delay on each compensation run. Keyed that way the value would
-//! differ from itself every frame compensation ran, so `want == live` would
-//! never hold and every frame would become a full rebuild.
-//!
-//! They are also *derived*: `compensate` calls `clear_delays` before it plans,
-//! so the plan is always computed over the authored graph — the one the value
-//! describes. Compensation is a fold over the value, and its output does not
-//! belong in its input. [`disagreements`] excludes them for that reason, by the
-//! same `get_id` marker `clear_delays` uses, and skips the latency comparison
-//! entirely while any are live rather than asserting the value against an
-//! output it does not model.
+//! PDC is the compiler's: each commit's plan delays the early paths, and no
+//! node is spliced in to do it (before design doc 013's PR 13, `Net` had
+//! compensation delay nodes with no entity, which the value had to be kept
+//! apart from). So every node in the graph is one a host inserted, and every
+//! edge one the value or a host wrote.
 //!
 //! # Where the shape comes from
 //!
-//! Widths, latency and tail are read off the **live unit** through the `Net`,
-//! because that is the only place they exist. A node's arity is not authored
+//! Widths, latency and tail are read off the editor's shapes — probed from
+//! the **live unit** when it was inserted — because that is the only place
+//! they exist. A node's arity is not authored
 //! anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit`, and the four
 //! sites that push a unit directly (soundfont promotion, plugin load, the
 //! audio-rate chain, the mod-source LFO) take one already built. The unit is the
@@ -104,12 +83,13 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 /// engine into line with it, and by nothing else. Read by tests, and by
 /// anything wanting to ask a question about the graph without a runtime in
 /// hand:
-/// [`tutti_types::latency::plan`] over it is the same fold `compensate_graph`
-/// runs against the `Net`, and
+/// [`tutti_types::latency::plan`] over it is the fold the graph's plans
+/// compensate by, for a graph whose every port the ECS declares (a port a host
+/// wired by hand is not in it; see [`disagreements`]), and
 /// [`Topology::validate`](tutti_types::graph::Topology::validate) reports every
 /// structural fault at once.
 ///
-/// It is **not** what writes `Net`, and not a cache the engine is derived
+/// It is **not** what writes the graph, and not a cache the engine is derived
 /// from. Each rebuild builds a fresh value from the declarations, and
 /// [`apply`] writes that value — every declared port the engine disagrees
 /// with. This is the value applied *last time*; holding it is what makes "did
@@ -149,8 +129,8 @@ pub fn entity_of(key: NodeKey) -> Entity {
 
 /// Build the topology the ECS currently declares.
 ///
-/// Widths, latency and tail come from the **live unit**, read through the
-/// `Net` — the only place they exist today. A node's arity is not authored
+/// Widths, latency and tail come from the **live unit**, as the editor probed
+/// it at insert — the only place they exist today. A node's arity is not authored
 /// anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit` and the four
 /// direct-`add` sites take an already-built unit, so the unit is the sole
 /// author of its own shape.
@@ -352,10 +332,9 @@ fn curve_key(curve: tutti_mod::CurveType) -> (u32, Option<(f32, f32)>) {
 ///
 /// [`rebuild`](super::wire::rebuild) has already decided the graph *changed* —
 /// one value comparison, not a per-port read. This second, per-port comparison
-/// answers a different question: **which** ports changed. `Net` offers only
-/// incremental edits, and writing a port re-invalidates the topological order,
-/// so writing all of them because one moved would make every edit cost a full
-/// reorder.
+/// answers a different question: **which** ports changed, so that a rebuild
+/// that moves nothing leaves the graph clean (no `GraphDirty`, no commit, no
+/// compile).
 ///
 /// It is also what closes the hazard. An imperative engine-side write leaves the
 /// declaration — and therefore the value — untouched, so `want == live` and the
@@ -383,9 +362,9 @@ pub fn apply(
 
     for (at, edge) in &want.edges {
         let Edge::Direct(source) = *edge else {
-            // No `Net` edge kind carries feedback — `tutti_core::topology::compile`
-            // refuses one for the same reason. Unreachable from a value this
-            // adapter builds (`build` emits only `Direct`), and a `continue`
+            // The declaration has no feedback edge: `PortSources` names a
+            // direct source. Unreachable from a value this adapter builds
+            // (`build` emits only `Direct`), and a `continue`
             // rather than an `unreachable!` so a future edge kind cannot become
             // a panic inside a graph rebuild.
             continue;
@@ -453,16 +432,15 @@ fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSour
 /// that two graphs differ.
 ///
 /// It is not redundant with `apply`'s own per-port comparison. `apply` decides
-/// which ports to write; this asks whether
-/// the engine now agrees — including on the fold, which no single port write
-/// can be checked against.
+/// which ports to write; this asks whether the engine now agrees — read back
+/// through the graph's own queries, so a lowering that wrote one thing and
+/// reads back another is caught where it happens.
 ///
 /// # What is compared, and what deliberately is not
 ///
 /// **Compared:** every edge the value declares, against
-/// [`AudioGraphRes::source`]; every output channel, against
-/// [`output_source`](AudioGraphRes::output_source); and the latency plan,
-/// since PDC is the fold with the most to lose from a wrong edge.
+/// [`AudioGraphRes::source`], and every output channel it declares, against
+/// [`output_source`](AudioGraphRes::output_source).
 ///
 /// **Not compared:** a port the value says nothing about. The loop's own
 /// contract is that an undeclared port belongs to whoever wired it — a `Vec`
@@ -471,13 +449,18 @@ fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSour
 /// the engine holds `Zero` there would be asserting the opposite of what
 /// `wire`'s docs promise.
 ///
-/// **Not compared, second class:** the `PdcDelay` nodes compensation splices
-/// in. They have no entity, so they are not in the value, and they *re-point*
-/// edges the value declares — a compensated edge reads `Node(delay, 0)` where
-/// the value says `Node(source, port)`. That is the compensation working, not
-/// a disagreement, so an edge whose engine source is a PDC delay is skipped.
-/// The latency comparison below is the one that would catch compensation going
-/// wrong, and it runs on the pre-compensation plan for both sides.
+/// **Not compared: the latency plan.** It used to be, over the whole graph,
+/// and that was wrong for exactly the graphs the contract above allows: a
+/// host that wires the master itself (an empty `MasterSources`), or a port a
+/// short `PortSources` leaves to it, from a latent node, gives a graph whose
+/// plan the value — which holds only the declared ports — cannot fold to, and
+/// the check panicked a debug build over a graph that was right. Restricted to
+/// the declared ports, the fold is a function of the value's node specs (read
+/// off the same shapes the graph holds) and of the declared edges and
+/// outputs, so it agrees exactly when the two comparisons above find
+/// nothing: it could not fail on its own. What the plan compensates is pinned
+/// against the plan the commit sends (`latency`'s
+/// `publishes_the_compensation_its_commit_sends`).
 pub fn disagreements(
     want: &Topology,
     graph: &AudioGraphRes,
@@ -497,7 +480,7 @@ pub fn disagreements(
             continue;
         };
         let live = graph.source(sink, at.port as usize);
-        if live != expected && !graph.is_compensation(live) {
+        if live != expected {
             faults.push(format!(
                 "node {:?} port {}: value says {expected:?}, engine holds {live:?}",
                 entity_of(at.node),
@@ -511,34 +494,9 @@ pub fn disagreements(
             continue;
         };
         let live = graph.output_source(channel);
-        if live != expected && !graph.is_compensation(live) {
+        if live != expected {
             faults.push(format!(
                 "output {channel}: value says {expected:?}, engine holds {live:?}"
-            ));
-        }
-    }
-
-    // The fold, not just the edges — PDC is the question with the most to lose
-    // from a wrong edge, and it reads a *path*, so a single misdirected source
-    // moves a figure the edge-by-edge comparison above would already have
-    // caught but a partial value would not.
-    //
-    // Skipped once the engine holds compensation delays, and the skip is not a
-    // weakening: `latency::compensate` calls `clear_delays` before it plans, so
-    // the plan it acts on is always over the *authored* graph — the one the
-    // value describes. A compensated `Net` is the plan's output, and comparing
-    // a value against an output it does not model would be asserting the two
-    // disagree by construction.
-    if !graph.has_compensation() {
-        let want_plan = tutti_types::latency::plan(want);
-        let live_plan = graph.latency_plan();
-        if want_plan.channels() != live_plan.channels() || want_plan.total() != live_plan.total() {
-            faults.push(format!(
-                "latency plan: value gives {:?} total {:?}, engine gives {:?} total {:?}",
-                want_plan.channels(),
-                want_plan.total(),
-                live_plan.channels(),
-                live_plan.total()
             ));
         }
     }
@@ -562,7 +520,7 @@ fn spec_of(graph: &AudioGraphRes, node: AudioNode) -> NodeSpec {
 /// One declared port as an [`Edge`], or `None` if it cannot resolve *yet*.
 ///
 /// Mirrors `wire::resolve` arm for arm, including the two refusals: a self-loop
-/// (which `Net::set_source` asserts on) and a source port past the node's
+/// (which `AudioGraphRes::set_source` asserts on) and a source port past the node's
 /// output count. Both are `None` there and must be `None` here, or the value
 /// would claim an edge the engine will never hold.
 fn edge_of(
@@ -588,7 +546,7 @@ fn edge_of(
 /// resolve — no later frame changes either — so silence there would leave a port
 /// unwired forever with nothing said. Those two warn.
 ///
-/// The self-loop refusal is not merely tidy: `Net::set_source` `assert!`s on it,
+/// The self-loop refusal is not merely tidy: `AudioGraphRes::set_source` `assert!`s on it,
 /// so a value carrying one would turn a caller's mistake into a panic inside a
 /// graph rebuild.
 fn source_of(

@@ -9,7 +9,7 @@
 //! # Why a component and not a `spawn_plugin` command
 //!
 //! [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is a command because
-//! `Net::add` returns the `NodeId` *inside* a deferred closure and takes a unit
+//! `AudioGraphRes::insert` returns the node *inside* a deferred closure and takes a unit
 //! that already exists. A load has neither property: it spans frames, and it can
 //! arrive before the catalog is scanned or the engine is up. A one-shot queued
 //! closure has no frame-to-frame residency, so it cannot retry — **the component

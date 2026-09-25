@@ -16,15 +16,12 @@ pub enum Error {
     #[error(transparent)]
     Core(#[from] tutti_core::Error),
 
-    /// The native graph engine refused its graph
-    /// ([`GraphBackend::Native`](crate::graph::GraphBackend::Native)): wraps
+    /// The graph engine refused its graph: wraps
     /// [`tutti_core::GraphEngineError`].
     #[error("graph engine: {0}")]
     Graph(#[from] tutti_core::GraphEngineError),
 
-    /// The native graph refused a re-prepare
-    /// ([`GraphBackend::Native`](crate::graph::GraphBackend::Native)): a
-    /// device restart asked for a block past the engine's capacity, came
+    /// The graph refused a re-prepare: a device restart asked for a block past the engine's capacity, came
     /// while another re-prepare was between its halves, or met a graph that
     /// no longer compiles at the new block. Wraps [`tutti_graph::CommitError`].
     #[error("graph re-prepare: {0}")]

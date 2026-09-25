@@ -25,7 +25,7 @@
 //! let live = unit.drive();
 //! // `unattached`: with no audio side, the write lands on the graph's copy of
 //! // the node at once, so the assertion below can read it.
-//! let mut graph = AudioGraphRes::unattached(0, 1);
+//! let mut graph = AudioGraphRes::headless(0, 1);
 //! let node = graph.insert(unit);
 //! graph.set_sample_rate(SampleRate(48_000.0));
 //!
@@ -200,7 +200,7 @@ pub fn write_param(
 ) {
     // 1. Audio rate: the node reads its port, not its atomic.
     //
-    // A known export limit on the native backend (doc 013, PR 11): the base
+    // A known export limit (doc 013, PR 11): the base
     // node (`AtomicSourceNode`) takes no `Setting`, so this cell write cannot
     // ride its settings ring, and a fork sees the cell as the node's
     // `isolate` leaves its shadow.
@@ -223,7 +223,7 @@ pub fn write_param(
     let _ = entity;
 
     // 3. Unmodulated: the node's own atomic is the value. Through the graph's
-    // settings path — on the native backend the node's ring, which is also
+    // settings path — the node's ring, which is also
     // what its shadow (and so any fork of it) records. Never through a handle
     // captured from the unit: that would move the live unit and leave a fork
     // at the value it was built with.

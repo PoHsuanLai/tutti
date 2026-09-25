@@ -12,7 +12,7 @@
 //! use bevy_tutti::AudioEngineState;
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes::unattached(0, 2));
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
 //! // `AssetPlugin` is a Bevy prerequisite for the subsystems registering

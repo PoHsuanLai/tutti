@@ -87,16 +87,17 @@
 //!
 //! # Which graph is rendered
 //!
-//! On [`GraphBackend::Native`](crate::graph::GraphBackend::Native) an export
-//! renders a **fork** of the live graph (`Editor::fork`, design doc 013 PR 12):
+//! An export renders a **fork** of the live graph (`Editor::fork`, design doc
+//! 013 PR 12):
 //! what the global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
 //! feeding one node for [`ExportSource::Node`], every node isolated, rebound
 //! onto the request's [`ExportClock`] and reset. The live graph is not
 //! touched and keeps playing while the render runs on the pool.
 //!
 //! - **It renders what the graph is driven to play, from silence.** A master
-//!   export on `Net` is a plain clone that keeps the live transport bindings
-//!   and running state (delay lines, a sounding voice); a fork keeps neither.
+//!   export on `Net`, before PR 13, was a plain clone that kept the live
+//!   transport bindings and running state (delay lines, a sounding voice); a
+//!   fork keeps neither.
 //! - **Controls are a snapshot** at the fork: a parameter moved while the
 //!   render runs does not reach it. A modulated parameter renders its
 //!   authored base, not the live modulation (an LFO's offset); a hosted

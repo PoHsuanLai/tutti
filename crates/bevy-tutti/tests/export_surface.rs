@@ -5,9 +5,9 @@
 //! spawn site, that a batch spawned in one frame starts one at a time, and that
 //! a request's `prepare` hook reaches the graph that is actually rendered.
 //!
-//! On both graph backends: a `Net` export clones the net, a native one forks
-//! the graph (`Editor::fork`, design doc 013 PR 12), and the surface is the
-//! same. What only the fork does is `export_fork.rs`'s.
+//! An export forks the graph (`Editor::fork`, design doc 013 PR 12). These
+//! ran on both graph runtimes until PR 13 removed the `Net` one; the surface
+//! did not change. What the fork renders is `export_fork.rs`'s.
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -24,7 +24,7 @@ use bevy_tutti::export::{
     ExportClock, ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest,
     ExportSource, ExportTarget,
 };
-use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphBackend};
+use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
@@ -34,8 +34,8 @@ use tutti_types::graph::{OutPort, Source};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so a copy
 /// of it (a `Net` clone, a native fork) has something to render.
-fn graph_with_one_node_on(backend: GraphBackend) -> (AudioGraphRes, tutti_core::AudioNode) {
-    let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
+fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
+    let mut graph = AudioGraphRes::headless(0, 2);
     let node = graph.insert(Const::mono(0.5));
     graph.set_outputs_from(node);
     (graph, node)
@@ -57,9 +57,9 @@ fn stereo_config() -> ExportConfig {
     }
 }
 
-/// Build an app with the export plugin and a ready engine on `backend`.
-fn app_with_engine_on(backend: GraphBackend) -> (App, Entity) {
-    let (graph, node) = graph_with_one_node_on(backend);
+/// Build an app with the export plugin and a ready engine.
+fn app_with_engine_on() -> (App, Entity) {
+    let (graph, node) = graph_with_one_node_on();
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.add_plugins(ExportPlugin);
@@ -91,8 +91,9 @@ fn run_until(app: &mut App, mut predicate: impl FnMut(&mut World) -> bool) -> bo
 
 /// A spawned request starts (gaining `ExportInFlight`) and finishes (triggering
 /// `ExportDone` with the variant its target asked for).
-fn a_buffers_request_runs_and_reports_planes(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+#[test]
+fn a_buffers_request_runs_and_reports_planes() {
+    let (mut app, _node) = app_with_engine_on();
 
     static CHANNELS: AtomicUsize = AtomicUsize::new(usize::MAX);
     CHANNELS.store(usize::MAX, Ordering::SeqCst);
@@ -121,11 +122,11 @@ fn a_buffers_request_runs_and_reports_planes(backend: GraphBackend) {
         "a stereo request must come back as two planes"
     );
 }
-both_backends!(a_buffers_request_runs_and_reports_planes);
 
 /// The file target writes a real file and reports its path.
-fn a_file_request_writes_and_reports_the_path(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+#[test]
+fn a_file_request_writes_and_reports_the_path() {
+    let (mut app, _node) = app_with_engine_on();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.wav");
 
@@ -158,7 +159,6 @@ fn a_file_request_writes_and_reports_the_path(backend: GraphBackend) {
     );
     assert!(path.exists(), "the file was reported but does not exist");
 }
-both_backends!(a_file_request_writes_and_reports_the_path);
 
 /// `ExportInFlight` marks the whole render: present the frame it starts, gone
 /// once it reports.
@@ -166,8 +166,9 @@ both_backends!(a_file_request_writes_and_reports_the_path);
 /// `start_exports` checks this component to enforce one-at-a-time, so a gap at
 /// either end would let a second render start on top of a live one. It is also
 /// what a caller watches to know an export is running.
-fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+#[test]
+fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
+    let (mut app, _node) = app_with_engine_on();
 
     let entity = app
         .world_mut()
@@ -198,7 +199,6 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it(backend: Gr
         "ExportInFlight never cleared — a caller gating on it would deadlock"
     );
 }
-both_backends!(export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it);
 
 /// A node with no outputs cannot be rendered from; that must be a reported
 /// failure, not a silent drop or a panic on the pool.
@@ -207,8 +207,9 @@ both_backends!(export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it
 /// `Editor::fork` ask the node's own arity — not whether it happens to be
 /// wired), so this needs a genuine sink. A `dc` pushed but left unwired still
 /// has one output and renders fine.
-fn an_unrenderable_node_reports_a_failure(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+#[test]
+fn an_unrenderable_node_reports_a_failure() {
+    let (mut app, _node) = app_with_engine_on();
 
     // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
@@ -240,7 +241,6 @@ fn an_unrenderable_node_reports_a_failure(backend: GraphBackend) {
         "an unrenderable request must still report"
     );
 }
-both_backends!(an_unrenderable_node_reports_a_failure);
 
 /// Several requests spawned in the SAME frame must not all start at once.
 ///
@@ -250,8 +250,9 @@ both_backends!(an_unrenderable_node_reports_a_failure);
 /// spawned in one frame passes it and they all start together — each doing a
 /// main-thread copy of the live graph, back to back, which is what stalls the
 /// audio callback.
-fn a_batch_spawned_in_one_frame_starts_one_at_a_time(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+#[test]
+fn a_batch_spawned_in_one_frame_starts_one_at_a_time() {
+    let (mut app, _node) = app_with_engine_on();
 
     for _ in 0..5 {
         app.world_mut().spawn(ExportRequest::new(
@@ -291,20 +292,20 @@ fn a_batch_spawned_in_one_frame_starts_one_at_a_time(backend: GraphBackend) {
         "every request must eventually start — the limit delays, it does not drop"
     );
 }
-both_backends!(a_batch_spawned_in_one_frame_starts_one_at_a_time);
 
 /// The `prepare` hook runs on the graph that is actually rendered, with the
 /// world readable, before the render leaves the main thread.
 ///
 /// Pinned by *audio*, not by a call counter: a hook that runs against some other
 /// graph, or after the task was spawned, would leave the rendered signal at the
-/// graph's own 0.5 rather than the 0.25 this one writes. On `Native` the hook
+/// graph's own 0.5 rather than the 0.25 this one writes. The hook
 /// edits the fork's editor and does not commit: the adapter does.
 ///
 /// Mutation (run): dropping the adapter's commit of the fork after the hook
-/// (`run.rs`, the `RenderGraph::Graph` arm) → `native` renders 0.5.
-fn a_prepare_hook_reaches_the_graph_that_gets_rendered(backend: GraphBackend) {
-    let (mut app, _node) = app_with_engine_on(backend);
+/// (`run.rs`, the `RenderGraph::Graph` arm) → renders 0.5.
+#[test]
+fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
+    let (mut app, _node) = app_with_engine_on();
 
     // The hook needs something in the world to read, or it could be pinned by a
     // closure capture alone — which would not show that `&World` arrives.
@@ -325,17 +326,13 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered(backend: GraphBackend) {
         // Replace the whole graph's output with a constant read from the world.
         let level = world.resource::<Level>().0;
         let prepared_key = prepared.fresh_key();
-        match prepared.graph {
-            RenderGraph::Net(net) => {
-                net.master(Const::mono(level));
-            }
-            RenderGraph::Graph { editor, .. } => {
-                let key = prepared_key;
-                editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
-                for out in editor.spec_mut().topology.outputs.iter_mut() {
-                    *out = Source::Node(OutPort { node: key, port: 0 });
-                }
-            }
+        let RenderGraph::Graph { editor, .. } = prepared.graph else {
+            panic!("an export renders a fork");
+        };
+        let key = prepared_key;
+        editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
+        for out in editor.spec_mut().topology.outputs.iter_mut() {
+            *out = Source::Node(OutPort { node: key, port: 0 });
         }
     });
 
@@ -363,7 +360,6 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered(backend: GraphBackend) {
          would come back at the 0.5 it was built with"
     );
 }
-both_backends!(a_prepare_hook_reaches_the_graph_that_gets_rendered);
 
 /// **The caller's timeline is what the nodes get rebound onto.**
 ///
@@ -374,10 +370,11 @@ both_backends!(a_prepare_hook_reaches_the_graph_that_gets_rendered);
 /// disagreed: a tap on a 90 BPM project bound its voices to a 120 BPM playhead
 /// that nothing then advanced, which is the silent-playhead failure the
 /// per-node rebind exists to prevent.
-fn the_callers_timeline_is_the_one_nodes_are_rebound_onto(backend: GraphBackend) {
+#[test]
+fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
-    let (mut app, node) = app_with_engine_on(backend);
+    let (mut app, node) = app_with_engine_on();
 
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -399,16 +396,15 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto(backend: GraphBackend)
     )
     // The hook sees the very context the nodes were rebound with.
     .with_prepare(|prepared, _world| {
-        if let Some(transport) = prepared.ctx {
-            // Required for `tempo()`/`beat()` in a default build. Some
-            // feature-gated import already brings the trait into scope under
-            // `--all-features`, where it then reads as redundant — so it is
-            // allowed rather than removed; deleting it breaks the default build.
-            #[allow(unused_imports)]
-            use tutti_core::Timeline;
-            SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
-            SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
-        }
+        let transport = prepared.ctx;
+        // Required for `tempo()`/`beat()` in a default build. Some
+        // feature-gated import already brings the trait into scope under
+        // `--all-features`, where it then reads as redundant — so it is
+        // allowed rather than removed; deleting it breaks the default build.
+        #[allow(unused_imports)]
+        use tutti_core::Timeline;
+        SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
+        SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
     });
 
     app.world_mut().spawn(request);
@@ -431,26 +427,26 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto(backend: GraphBackend)
     );
 }
 
-both_backends!(the_callers_timeline_is_the_one_nodes_are_rebound_onto);
-
-/// **A native master export is rebound onto the caller's timeline too**; a
-/// `Net` one keeps its live bindings and says so with `ctx: None`. The
+/// **A master export is rebound onto the caller's timeline too.** The
 /// behaviour change of doc 013's PR 12, pinned where a host sees it: what
-/// the `prepare` hook is told.
+/// the `prepare` hook is told. (Until PR 13 a `Net` master export kept its
+/// live bindings and said so with `ctx: None`; `ctx` is no longer optional.)
 ///
-/// Mutation (run): the native arm of `AudioGraphRes::export` reporting
-/// `rebound: false` → `native` sees no context.
-fn a_master_export_says_whether_it_was_rebound(backend: GraphBackend) {
+/// Mutation (run): `prepare_graph` handing the hook a context of its own
+/// (`ExportClock::frozen().offline()`) instead of the one the fork was
+/// rebound onto → the hook sees 120 BPM, not 90.
+#[test]
+fn a_master_export_is_rebound_onto_the_callers_timeline() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
-    let (mut app, _node) = app_with_engine_on(backend);
+    let (mut app, _node) = app_with_engine_on();
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_core::Beat(4.0),
         tempo: tutti_core::Bpm(90.0),
         sample_rate: tutti_core::SampleRate(44_100.0),
         loop_range: None,
     }));
-    let seen: Arc<std::sync::Mutex<Option<Option<usize>>>> = Arc::default();
+    let seen: Arc<std::sync::Mutex<Option<usize>>> = Arc::default();
     let hook = Arc::clone(&seen);
     let request = ExportRequest::new(
         ExportSource::Master,
@@ -461,17 +457,12 @@ fn a_master_export_says_whether_it_was_rebound(backend: GraphBackend) {
     .with_prepare(move |prepared, _world| {
         #[allow(unused_imports)]
         use tutti_core::Timeline;
-        *hook.lock().unwrap() = Some(prepared.ctx.map(|t| t.tempo().get().round() as usize));
+        *hook.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
     });
     app.world_mut().spawn(request);
     assert!(
         run_until(&mut app, |_| seen.lock().unwrap().is_some()),
         "the render never started"
     );
-    let want = match backend {
-        GraphBackend::Net => None,
-        GraphBackend::Native => Some(90),
-    };
-    assert_eq!(seen.lock().unwrap().unwrap(), want, "{backend:?}");
+    assert_eq!(*seen.lock().unwrap(), Some(90), "the caller's 90 BPM");
 }
-both_backends!(a_master_export_says_whether_it_was_rebound);

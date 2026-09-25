@@ -29,7 +29,7 @@ pub fn commit_graph(
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
         return;
     };
-    // Every frame, dirty or not: on the native backend this is where the
+    // Every frame, dirty or not: this is where the
     // units the audio thread retired are freed (here, on the main thread, for
     // the reason above) and where settings a full ring held go out.
     let repreparing = graph.is_repreparing();

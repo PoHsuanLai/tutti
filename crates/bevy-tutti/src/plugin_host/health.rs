@@ -293,7 +293,6 @@ pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHeal
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{both_backends, GraphBackend};
     use bevy_app::prelude::*;
     use std::sync::Arc;
     use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress, PluginHandle};
@@ -380,9 +379,9 @@ mod tests {
         )
     }
 
-    fn test_app(backend: GraphBackend) -> App {
+    fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::graph::AudioGraphRes::unattached_with(backend, 0, 2));
+        app.insert_resource(crate::graph::AudioGraphRes::headless(0, 2));
         app.add_systems(Update, plugin_health_poll);
         app
     }
@@ -424,8 +423,9 @@ mod tests {
     /// would pass just as well against a fixed placeholder string, which is
     /// what a host writes the moment the `BridgeError` behind the flag is
     /// dropped instead of carried.
-    fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
+        let mut app = test_app();
         let entity = run(
             &mut app,
             Some("could not connect to plugin-server: No such file or directory"),
@@ -441,7 +441,6 @@ mod tests {
             "the cause must be the engine's latched reason, carried through unchanged"
         );
     }
-    both_backends!(a_dead_plugin_reports_the_engines_cause_not_a_placeholder);
 
     /// A plugin is not written off on the first bad observation.
     ///
@@ -450,9 +449,10 @@ mod tests {
     /// after the failing call returns, so one look can race the publish. Pinned
     /// at every frame below the threshold, because an off-by-one here would
     /// unwire a live plugin.
-    fn a_crash_is_not_declared_until_the_debounce_elapses(backend: GraphBackend) {
+    #[test]
+    fn a_crash_is_not_declared_until_the_debounce_elapses() {
         for frames in 1..DEATHS_BEFORE_DEAD as usize {
-            let mut app = test_app(backend);
+            let mut app = test_app();
             let entity = run(&mut app, Some("stream closed"), frames);
 
             let health = app.world().get::<PluginHealth>(entity).unwrap();
@@ -469,15 +469,15 @@ mod tests {
             );
         }
     }
-    both_backends!(a_crash_is_not_declared_until_the_debounce_elapses);
 
     /// Declaring a plugin dead removes `AudioNode`, which is the whole teardown.
     ///
     /// The `On<Remove, AudioNode>` observers take the node out of the graph and
     /// the sender off the MIDI bus, so this system's only job is the removal. A
     /// status set without it would leave a dead plugin's node still processing.
-    fn declaring_death_unwires_the_node(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn declaring_death_unwires_the_node() {
+        let mut app = test_app();
         let entity = run(&mut app, Some("stream closed"), DEATHS_BEFORE_DEAD as usize);
 
         assert!(
@@ -485,7 +485,6 @@ mod tests {
             "a dead plugin must be unwired by removing AudioNode"
         );
     }
-    both_backends!(declaring_death_unwires_the_node);
 
     /// A plugin the engine reports as alive is never written off, however long
     /// it runs.
@@ -493,8 +492,9 @@ mod tests {
     /// The negative case, and worth its own test: every assertion above fires
     /// only for a backend already reporting a crash, so none of them would
     /// notice a poll that declared death unconditionally.
-    fn a_live_plugin_is_never_declared_dead(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn a_live_plugin_is_never_declared_dead() {
+        let mut app = test_app();
         let entity = run(&mut app, None, DEATHS_BEFORE_DEAD as usize + 5);
 
         let health = app.world().get::<PluginHealth>(entity).unwrap();
@@ -504,7 +504,6 @@ mod tests {
             "a healthy plugin must stay wired"
         );
     }
-    both_backends!(a_live_plugin_is_never_declared_dead);
 
     // ---- snapshots ---------------------------------------------------------
 

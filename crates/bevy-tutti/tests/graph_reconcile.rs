@@ -26,7 +26,6 @@ mod common;
 mod graph_reconcile {
     use bevy_app::App;
     use bevy_ecs::prelude::*;
-    use bevy_tutti::graph::GraphBackend;
 
     use bevy_tutti::graph::{
         commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, AudioGraphRes,
@@ -42,12 +41,11 @@ mod graph_reconcile {
     #[derive(bevy_ecs::prelude::Component, Debug, Clone, Copy, PartialEq)]
     struct Probe(f32);
 
-    /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
-    /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
-    /// to publish into; we never drive audio through it in these tests.
-    fn test_app(backend: GraphBackend) -> App {
+    /// A headless graph (no device), whose commits land on its own audio
+    /// side; we never drive audio through it in these tests.
+    fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
@@ -70,7 +68,8 @@ mod graph_reconcile {
     /// The `engine_ready` gate must keep a plain-`ResMut<AudioGraphRes>` system
     /// from running (and panicking on the missing resource) when the engine
     /// failed to build — and must let it run once the resource is present.
-    fn engine_ready_gates_plain_res_system(backend: GraphBackend) {
+    #[test]
+    fn engine_ready_gates_plain_res_system() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
@@ -95,7 +94,7 @@ mod graph_reconcile {
 
         // Engine built: both the state and the resource it reports on are
         // present, so the gate passes.
-        app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.update();
         assert_eq!(
@@ -104,12 +103,12 @@ mod graph_reconcile {
             "gated system runs once engine present"
         );
     }
-    both_backends!(engine_ready_gates_plain_res_system);
 
     /// `Failed` and `Disabled` must both gate systems off — a disabled engine is
     /// as unable to render as a broken one, and neither may let a plain
     /// `Res<AudioGraphRes>` system through.
-    fn engine_ready_is_false_unless_running(backend: GraphBackend) {
+    #[test]
+    fn engine_ready_is_false_unless_running() {
         for state in [
             AudioEngineState::Failed("no device".into()),
             AudioEngineState::Disabled,
@@ -117,7 +116,7 @@ mod graph_reconcile {
             let mut app = App::new();
             app.insert_resource(state.clone());
             // Present but irrelevant: the state decides, not the resource.
-            app.insert_resource(AudioGraphRes::headless_with(backend, 0, 2));
+            app.insert_resource(AudioGraphRes::headless(0, 2));
 
             let ready = app
                 .world_mut()
@@ -126,7 +125,6 @@ mod graph_reconcile {
             assert!(!ready, "{state:?} must not read as ready");
         }
     }
-    both_backends!(engine_ready_is_false_unless_running);
 
     /// A `World` that never added `TuttiPlugin` has no state at all. The gate
     /// must treat that as not-ready rather than panicking on a missing resource.
@@ -140,8 +138,9 @@ mod graph_reconcile {
         assert!(!ready, "a world with no TuttiPlugin is not ready");
     }
 
-    fn spawn_inserts_audio_node(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn spawn_inserts_audio_node() {
+        let mut app = test_app();
         let mut commands_q = app.world_mut().commands();
         commands_q
             .spawn_audio_node(Osc::sine(Hz(440.0)))
@@ -159,10 +158,10 @@ mod graph_reconcile {
         }
         assert_eq!(count, 1);
     }
-    both_backends!(spawn_inserts_audio_node);
 
-    fn despawn_removes_graph_node(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn despawn_removes_graph_node() {
+        let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
             c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
@@ -177,9 +176,9 @@ mod graph_reconcile {
 
         assert!(!app.world().resource::<AudioGraphRes>().contains(node_id));
     }
-    both_backends!(despawn_removes_graph_node);
 
-    fn late_despawn_converges_within_one_frame(backend: GraphBackend) {
+    #[test]
+    fn late_despawn_converges_within_one_frame() {
         // An `AudioNode` entity despawned by a system running *after* the
         // Commit phase (here: `Last`) must still have its graph node removed
         // and the graph converge (dirty cleared) within one trailing frame.
@@ -190,7 +189,7 @@ mod graph_reconcile {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
-        let mut app = test_app(backend);
+        let mut app = test_app();
 
         // Spawn the node in the normal way (so we can read its NodeId once
         // the spawn command flushed).
@@ -234,7 +233,6 @@ mod graph_reconcile {
             "graph converged: dirty flag cleared after one trailing frame"
         );
     }
-    both_backends!(late_despawn_converges_within_one_frame);
 
     #[test]
     fn sampler_volume_change_writes_through() {
@@ -244,8 +242,9 @@ mod graph_reconcile {
         // The dispatch arm itself is covered by the example.
     }
 
-    fn crossfade_replaces_node_in_place(backend: GraphBackend) {
-        let mut app = test_app(backend);
+    #[test]
+    fn crossfade_replaces_node_in_place() {
+        let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
             c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
@@ -273,7 +272,6 @@ mod graph_reconcile {
             .resource::<AudioGraphRes>()
             .contains(node_id_after));
     }
-    both_backends!(crossfade_replaces_node_in_place);
 }
 
 /// `AudioParam` reconciled into a real graph, asserted on the node's own value.
@@ -284,7 +282,6 @@ mod graph_reconcile {
 /// of the atomic.
 /// (Was `tests/audio_param.rs`.)
 mod audio_param {
-    use bevy_tutti::graph::GraphBackend;
     // The plain-reconcile tests below run in every configuration; the ones that
     // need a modulation driver are gated individually. Gating the whole file would
     // leave the `not(modulation)` branch of the reconciler compiled but never run.
@@ -314,26 +311,20 @@ mod audio_param {
     /// `Drive` on a distortion node — a param with a readable atomic behind it.
     type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 
-    fn app_with_node(backend: GraphBackend) -> (App, Entity) {
+    fn app_with_node() -> (App, Entity) {
         let mut app = App::new();
 
         let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, INITIAL_DRIVE);
         // The node's own drive atomic, shared with every clone of it — what the
         // DSP reads, reachable without asking the graph for its copy.
         let drive = DriveCell(unit.drive());
-        let mut graph = AudioGraphRes::unattached_with(backend, 0, 1);
+        let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        // Deliberately `unattached`. With an audio side, `set_param` enqueues to the audio
-        // thread and the frontend vertex these tests read is never updated — every
-        // assertion would compare against a stale value and the ones expecting "no
-        // change" would pass for the wrong reason. Backend-less, `set` applies
-        // straight to the vertex, which is the same code path the audio thread runs
-        // on the other side of the queue.
-        //
-        // On the native backend there is no vertex: `set` goes into the node's
-        // settings ring and reaches the unit on its next block, whatever the
-        // graph. So `node_drive` renders a frame before it reads — which on
-        // `Net` ticks the vertex and changes nothing a test here reads.
+        // A setting goes into the node's settings ring and reaches the unit on
+        // its next block, on any graph. So `node_drive` renders a frame before
+        // it reads. (On `Net`, before design doc 013's PR 13, these tests used
+        // a graph with no audio side, where a setting applied straight to the
+        // only copy of the node.)
 
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
@@ -370,7 +361,7 @@ mod audio_param {
     struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
 
     /// The node's live drive — what the DSP reads — after one rendered frame,
-    /// so a setting queued for the node has reached it on either backend (see
+    /// so a setting queued for the node has reached it (see
     /// `app_with_node`).
     fn node_drive(app: &mut App, entity: Entity) -> f32 {
         app.world_mut()
@@ -383,8 +374,9 @@ mod audio_param {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
-    fn an_inserted_param_reaches_the_node(backend: GraphBackend) {
-        let (mut app, entity) = app_with_node(backend);
+    #[test]
+    fn an_inserted_param_reaches_the_node() {
+        let (mut app, entity) = app_with_node();
 
         app.world_mut()
             .entity_mut(entity)
@@ -393,10 +385,10 @@ mod audio_param {
 
         assert_eq!(node_drive(&mut app, entity), 4.0);
     }
-    both_backends!(an_inserted_param_reaches_the_node);
 
-    fn a_changed_param_reaches_the_node(backend: GraphBackend) {
-        let (mut app, entity) = app_with_node(backend);
+    #[test]
+    fn a_changed_param_reaches_the_node() {
+        let (mut app, entity) = app_with_node();
         app.world_mut()
             .entity_mut(entity)
             .insert(DriveParam::new(Drive(4.0)));
@@ -409,18 +401,18 @@ mod audio_param {
 
         assert_eq!(node_drive(&mut app, entity), 7.5);
     }
-    both_backends!(a_changed_param_reaches_the_node);
 
     /// Change detection is the whole gate: without it every param would push every
     /// frame, and `Net::set` would enqueue a message per param per frame forever.
-    fn an_unchanged_param_does_not_push(backend: GraphBackend) {
-        let (mut app, entity) = app_with_node(backend);
+    #[test]
+    fn an_unchanged_param_does_not_push() {
+        let (mut app, entity) = app_with_node();
         app.world_mut()
             .entity_mut(entity)
             .insert(DriveParam::new(Drive(4.0)));
         app.update();
-        // The first push lands before the poke. On the native backend it waits
-        // in the node's ring for the next block, and delivered after the poke
+        // The first push lands before the poke. It waits in the node's ring
+        // for the next block, and delivered after the poke
         // it would look exactly like the re-push this test is about.
         assert_eq!(node_drive(&mut app, entity), 4.0);
 
@@ -440,13 +432,13 @@ mod audio_param {
             "an unchanged param must not re-push"
         );
     }
-    both_backends!(an_unchanged_param_does_not_push);
 
     /// The param's address is what distinguishes two params of the same unit, so a
     /// component addressing a param the node does not expose must be inert rather
     /// than landing on some other param.
-    fn a_param_the_node_does_not_expose_is_inert(backend: GraphBackend) {
-        let (mut app, entity) = app_with_node(backend);
+    #[test]
+    fn a_param_the_node_does_not_expose_is_inert() {
+        let (mut app, entity) = app_with_node();
         app.add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>();
 
         app.world_mut().entity_mut(entity).insert(
@@ -460,13 +452,13 @@ mod audio_param {
             "a distortion node has no cutoff; drive must be untouched"
         );
     }
-    both_backends!(a_param_the_node_does_not_expose_is_inert);
 
     /// Registering the same param twice must schedule one system. Two would each
     /// push the same value — harmless to the result, but it doubles the per-frame
     /// cost and makes the schedule depend on how many callers happened to ask.
-    fn registering_a_param_twice_is_idempotent(backend: GraphBackend) {
-        let (mut app, entity) = app_with_node(backend);
+    #[test]
+    fn registering_a_param_twice_is_idempotent() {
+        let (mut app, entity) = app_with_node();
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>()
             .add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
@@ -477,7 +469,6 @@ mod audio_param {
 
         assert_eq!(node_drive(&mut app, entity), 4.0);
     }
-    both_backends!(registering_a_param_twice_is_idempotent);
 
     /// The single-writer rule, which is the reason the claim set exists.
     ///
@@ -487,10 +478,11 @@ mod audio_param {
     /// move the accumulator's *base*, so the authored value rides under the
     /// modulation.
     #[cfg(feature = "modulation")]
-    fn an_authored_write_to_a_modulated_param_moves_the_base(backend: GraphBackend) {
+    #[test]
+    fn an_authored_write_to_a_modulated_param_moves_the_base() {
         // `app_with_node` registers `DistortionNode` for modulation before it
         // binds the node — the registry is read once, at capture.
-        let (mut app, entity) = app_with_node(backend);
+        let (mut app, entity) = app_with_node();
 
         app.world_mut().entity_mut(entity).insert((
             DriveParam::new(Drive(5.0)),
@@ -524,8 +516,6 @@ mod audio_param {
             "base 5 -> 8 should carry through the modulation: {modulated} -> {after}"
         );
     }
-    #[cfg(feature = "modulation")]
-    both_backends!(an_authored_write_to_a_modulated_param_moves_the_base);
 }
 
 /// The tap the audio callback pushes into must be reachable from the ECS.

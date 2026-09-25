@@ -1,13 +1,15 @@
 //! What an export renders, through the whole adapter: a request spawned in the
 //! ECS, rendered on the task pool, reported on its entity.
 //!
-//! On `GraphBackend::Native` an export forks the live graph (`Editor::fork`,
-//! design doc 013 PR 12); on `Net` it clones the net. Where both apply, a
-//! test runs on both and they are held to the same answer; where only the
-//! fork has the property (it shares nothing with the live graph, it names a
-//! node it cannot copy, it forks a hosted plugin by state transfer), the test
-//! is native-only and says why. `export_surface.rs` pins the request/response
-//! shape; this file pins the audio.
+//! An export forks the live graph (`Editor::fork`, design doc 013 PR 12).
+//! Until PR 13 the adapter could also run on fundsp's `Net`, whose export
+//! cloned the net; the tests that held the two to the same answer now hold
+//! the fork to the `Net`-era render, built by hand as a test oracle
+//! ([`chain_net_era`], `synths::poly_node_export_net_era`). The rest pin
+//! what only a fork has: it shares nothing with the live graph, it names a
+//! node it cannot copy, it forks a hosted plugin by state transfer.
+//! `export_surface.rs` pins the request/response shape; this file pins the
+//! audio.
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -24,7 +26,7 @@ use bevy_tutti::export::{
     ExportClock, ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest,
     ExportSource, ExportTarget,
 };
-use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphBackend, GraphSource};
+use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Hz, SignalFrame, Tail, Q};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
@@ -64,9 +66,9 @@ fn app_over(graph: AudioGraphRes) -> App {
     app
 }
 
-/// A graph on `backend` at the export's rate.
-fn graph_on(backend: GraphBackend) -> AudioGraphRes {
-    let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
+/// A graph at the export's rate.
+fn graph_on() -> AudioGraphRes {
+    let mut graph = AudioGraphRes::headless(0, 2);
     graph.set_sample_rate(SampleRate(RATE));
     graph
 }
@@ -134,7 +136,7 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Both backends
+// What a `Net` export also rendered
 // ---------------------------------------------------------------------------
 
 /// A saw through a low-pass on channel 0, the raw saw on channel 1: a master
@@ -155,31 +157,75 @@ fn chain(app: &mut App) -> Entity {
     app.world_mut().spawn(filter).id()
 }
 
-/// **A native export renders what a `Net` export renders, bit for bit**, for
-/// the master and for one node, on a graph whose live side has not run.
+/// The `Net`-era export of [`chain`], as `AudioGraphRes::export` rendered it
+/// on `GraphBackend::Net` before design doc 013's PR 13: the same chain in a
+/// fundsp `Net` at the export's rate; the master a plain `Net::clone`, a node
+/// `clone_isolated`, rebound onto the render's (stopped) timeline and reset;
+/// each rendered by tutti-export's `Net` arm under the renderer's
+/// `FrozenClock`, as `ExportClock::frozen` hands it. Returns the master's
+/// planes and the filter's.
 ///
-/// "Where the rules allow" (doc 013, PR 12): a `Net` master export is a plain
-/// clone that copies the running state (an oscillator's phase, a filter's
-/// memory), and a fork starts reset. With the live side never rendered the
-/// two coincide, so this is the like-for-like pair; on a graph that has been
-/// playing, a `Net` master export continues from the live state and a fork
-/// does not.
-///
-/// Mutation (run): the native arm of `AudioGraphRes::export` forking
-/// `ForkTarget::Master` for a node export → the node's render is the
-/// master's, and the node comparison fails on channel 1 (the saw, not the
-/// filter).
-#[test]
-fn native_and_net_exports_are_bit_identical() {
-    let render = |backend: GraphBackend| {
-        let mut app = app_over(graph_on(backend));
-        let filter = chain(&mut app);
-        let master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
-        let node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
-        (master, node)
+/// **A test oracle, and nothing else**: the adapter lost its `Net` arm in PR
+/// 13, and this keeps the A/B assertion below it used to run. It goes with
+/// tutti-export's `Net` arm (doc 013, PR 14).
+fn chain_net_era(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+    use tutti_core::dsp::{Net, Source};
+    let mut net = Net::new(0, 2);
+    net.set_sample_rate(SampleRate(RATE));
+    let osc = net.push(Box::new(Osc::saw(Hz(110.0))));
+    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
+        SvfType::LowPass,
+        Hz(800.0),
+        Q(1.0),
+    )));
+    net.set_source(filter, 0, Source::Local(osc, 0));
+    net.set_output_source(0, Source::Local(filter, 0));
+    net.set_output_source(1, Source::Local(osc, 0));
+    let ctx: tutti_core::transport::OfflineTransport =
+        Arc::new(tutti_core::transport::OfflineTimeline::new(
+            &tutti_core::transport::OfflineTimelineConfig {
+                start_beat: tutti_core::Beat(0.0),
+                tempo: tutti_core::Bpm(120.0),
+                sample_rate: SampleRate(RATE),
+                loop_range: None,
+            },
+        ));
+    let render = |net: Net| {
+        tutti_export::render_to_buffers(
+            RenderGraph::from(net),
+            &config(seconds),
+            &tutti_core::transport::FrozenClock,
+        )
+        .expect("the Net era renders")
+        .planes
     };
-    let (net_master, net_node) = render(GraphBackend::Net);
-    let (native_master, native_node) = render(GraphBackend::Native);
+    let mut node = net
+        .clone_isolated(filter)
+        .expect("the filter has outputs")
+        .isolate_for_offline(&ctx);
+    node.reset();
+    (render(net.clone()), render(node))
+}
+
+/// **An export renders what the `Net`-era export rendered, bit for bit**, for
+/// the master and for one node, on a graph whose live side has not run (the
+/// `Net` side is [`chain_net_era`]).
+///
+/// "Where the rules allow" (doc 013, PR 12): a `Net` master export was a
+/// plain clone that copied the running state (an oscillator's phase, a
+/// filter's memory), and a fork starts reset. With the live side never
+/// rendered the two coincide, so this is the like-for-like pair.
+///
+/// Mutation (run): `AudioGraphRes::export` forking `ForkTarget::Master` for a
+/// node export → the node's render is the master's, and the node comparison
+/// fails on channel 1 (the saw, not the filter).
+#[test]
+fn exports_are_bit_identical_to_the_net_era() {
+    let mut app = app_over(graph_on());
+    let filter = chain(&mut app);
+    let native_master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
+    let native_node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
+    let (net_master, net_node) = chain_net_era(0.25);
     for (what, net, native) in [
         ("master", &net_master, &native_master),
         ("node", &net_node, &native_node),
@@ -261,8 +307,7 @@ impl AudioUnit for Late {
 /// **`trim_reported_latency` and `with_reported_tail` take the figures from
 /// the graph that is rendered**: the step a `LATE`-frame source makes at its
 /// declared latency lands on frame 0, and the render runs `TAIL` frames
-/// past its duration. Asked of the native plan on `Native`, of the net on
-/// `Net`.
+/// past its duration. Asked of the forked plan.
 ///
 /// The tail is resolved by `GraphTail::resolve`: a finite tail under the cap
 /// is rendered whole, and a graph whose only node never said (`Tail::Unknown`,
@@ -270,11 +315,12 @@ impl AudioUnit for Late {
 /// append silence.
 ///
 /// Mutation (run): `start_exports` ignoring `latency_from_graph` → frame 0
-/// reads 0 on both; ignoring `tail_from_graph` → the render is `TAIL`
-/// frames short on both; resolving the tail as `samples().unwrap_or(cap)`
-/// → the unknown graph renders `cap` extra frames on both.
-fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
-    let mut app = app_over(graph_on(backend));
+/// reads 0; ignoring `tail_from_graph` → the render is `TAIL` frames short;
+/// resolving the tail as `samples().unwrap_or(cap)` → the unknown graph
+/// renders `cap` extra frames.
+#[test]
+fn latency_and_tail_come_from_the_graph() {
+    let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let late = graph.insert(Late { pos: 0 });
@@ -289,14 +335,11 @@ fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
             .with_reported_tail(Samples(48_000)),
     )
     .planes();
-    assert_eq!(planes[0].len(), frames + TAIL, "{backend:?}: the tail");
-    assert_eq!(
-        planes[0][0], 1.0,
-        "{backend:?}: the latency was not trimmed"
-    );
-    assert!(planes[0].iter().all(|&s| s == 1.0), "{backend:?}");
+    assert_eq!(planes[0].len(), frames + TAIL, "the tail");
+    assert_eq!(planes[0][0], 1.0, "the latency was not trimmed");
+    assert!(planes[0].iter().all(|&s| s == 1.0), "a step from frame 0");
 
-    let mut app = app_over(graph_on(backend));
+    let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let unknown = graph.insert(Counter {
@@ -312,10 +355,9 @@ fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
     assert_eq!(
         planes[0].len(),
         frames,
-        "{backend:?}: an unknown tail renders none, not the cap"
+        "an unknown tail renders none, not the cap"
     );
 }
-both_backends!(latency_and_tail_come_from_the_graph);
 
 /// **The latency trimmed is the latency of the graph rendered — after the
 /// `prepare` hook.** The live graph is a latency-free constant; the hook
@@ -326,10 +368,11 @@ both_backends!(latency_and_tail_come_from_the_graph);
 /// Mutation (run): not applying the fork's committed hook edit before the
 /// figures are read (`executor.apply_pending()` after the hook's commit, in
 /// `start_exports`, a no-op) → the fork's plan is still the live graph's
-/// and `native` trims nothing. Mutation (run): reading the latency before
-/// the hook runs → both fail.
-fn the_trim_is_read_after_the_prepare_hook(backend: GraphBackend) {
-    let mut app = app_over(graph_on(backend));
+/// and nothing is trimmed. Mutation (run): reading the latency before the
+/// hook runs → fails.
+#[test]
+fn the_trim_is_read_after_the_prepare_hook() {
+    let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let dc = graph.insert(tutti_nodes::testing::Const::mono(0.5));
@@ -339,28 +382,23 @@ fn the_trim_is_read_after_the_prepare_hook(backend: GraphBackend) {
         .trim_reported_latency()
         .with_prepare(|prepared, _world| {
             let key = prepared.fresh_key();
-            match prepared.graph {
-                RenderGraph::Net(net) => {
-                    net.master(Late { pos: 0 });
-                }
-                RenderGraph::Graph { editor, .. } => {
-                    editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
-                    for out in editor.spec_mut().topology.outputs.iter_mut() {
-                        *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
-                            node: key,
-                            port: 0,
-                        });
-                    }
-                }
+            let RenderGraph::Graph { editor, .. } = prepared.graph else {
+                panic!("an export renders a fork");
+            };
+            editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
+            for out in editor.spec_mut().topology.outputs.iter_mut() {
+                *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+                    node: key,
+                    port: 0,
+                });
             }
         });
     let planes = export(&mut app, request).planes();
     assert_eq!(
         planes[0][0], 1.0,
-        "{backend:?}: trimmed by the live graph's latency, not the rendered one's"
+        "trimmed by the live graph's latency, not the rendered one's"
     );
 }
-both_backends!(the_trim_is_read_after_the_prepare_hook);
 
 /// **An export of a graph with no outputs says so**, for the master and for
 /// a node — not that the node has none.
@@ -368,8 +406,9 @@ both_backends!(the_trim_is_read_after_the_prepare_hook);
 /// Mutation (run): dropping the `outputs() == 0` check in
 /// `AudioGraphRes::export` → the node export reports its node, the master
 /// renders nothing and reports success.
-fn a_graph_with_no_outputs_says_so(backend: GraphBackend) {
-    let mut graph = AudioGraphRes::headless_with(backend, 0, 0);
+#[test]
+fn a_graph_with_no_outputs_says_so() {
+    let mut graph = AudioGraphRes::headless(0, 0);
     graph.set_sample_rate(SampleRate(RATE));
     let mut app = app_over(graph);
     let node = {
@@ -381,13 +420,12 @@ fn a_graph_with_no_outputs_says_so(backend: GraphBackend) {
         match export(&mut app, buffers(source, 0.01)) {
             Got::Other(why) => assert!(
                 why.contains("the graph has no outputs"),
-                "{backend:?}, {source:?}: {why}"
+                "{source:?}: {why}"
             ),
-            other => panic!("{backend:?}, {source:?}: expected a refusal, got {other:?}"),
+            other => panic!("{source:?}: expected a refusal, got {other:?}"),
         }
     }
 }
-both_backends!(a_graph_with_no_outputs_says_so);
 
 /// **A node export on a 90 BPM timeline plays where 90 BPM puts it.** A
 /// sampler voice placed at beat 3 on the live transport, exported on its own
@@ -396,16 +434,17 @@ both_backends!(a_graph_with_no_outputs_says_so);
 /// the clip's own samples from there.
 ///
 /// Mutation (run): `ExportClock::offline` answering the stopped timeline
-/// for a named one → the voice never sounds, on both backends. Mutation
+/// for a named one → the voice never sounds. Mutation
 /// (run): `Stopped::is_rolling` answering `true` → the frozen export of the
 /// voice at beat 0 sounds.
 #[cfg(feature = "sampler")]
-fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
+#[test]
+fn a_node_export_follows_a_90_bpm_timeline() {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_sampler::MemorySource;
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
-    let mut app = app_over(graph_on(backend));
+    let mut app = app_over(graph_on());
     let live = tutti_core::transport::Transport::new(SampleRate(RATE));
     let mut wave = tutti_io::Wave::new(1, RATE);
     for i in 0..RATE as usize {
@@ -460,20 +499,20 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
     const AT: usize = 96_000;
     assert!(
         planes[0][..AT].iter().all(|&s| s == 0.0),
-        "{backend:?}: the voice sounded before beat 3"
+        "the voice sounded before beat 3"
     );
     // From there the clip's frame `k` is the render's frame `AT + k`, from
     // the first: the voice reads the clock once per 64-frame chunk
     // (`Legacy`), and the chunk starting on beat 3 reads exactly beat 3,
     // since the timeline counts frames and derives the beat (doc 013 §6).
     // (It accumulated once, read a hair under 3 there, and the voice entered
-    // a chunk late, at 96 064.) Both backends, since doc 013's chunk-major
-    // mode moves the native clock as `Net`'s moves.
+    // a chunk late, at 96 064.) Doc 013's chunk-major mode moves the graph's
+    // clock per chunk, as `Net`'s moved.
     for k in 0..4_000 {
         let got = planes[0][AT + k];
         assert!(
             (got - tone(k)).abs() < 1e-3,
-            "{backend:?}: frame {k} of the clip read {got}, want {}",
+            "frame {k} of the clip read {got}, want {}",
             tone(k)
         );
     }
@@ -494,14 +533,12 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
     .planes();
     assert!(
         planes[0].iter().all(|&s| s == 0.0),
-        "{backend:?}: a frozen export played the voice"
+        "a frozen export played the voice"
     );
 }
-#[cfg(feature = "sampler")]
-both_backends!(a_node_export_follows_a_90_bpm_timeline);
 
 // ---------------------------------------------------------------------------
-// Native only: what a fork has and a clone does not
+// What a fork has and a `Net` clone did not
 // ---------------------------------------------------------------------------
 
 /// A source that counts frames in a cell its clones **share**, and that its
@@ -555,16 +592,16 @@ impl AudioUnit for Counter {
 /// on without a jump, and the export counts from 0 (a fork is reset) — the
 /// two never shared the counter.
 ///
-/// Native only: a `Net` master export is a plain clone that shares the
+/// A `Net` master export (before PR 13) was a plain clone that shared the
 /// counter with the live net (doc 013, PR 12's behaviour change), and this
-/// test would fail there by design.
+/// test failed there by design.
 ///
 /// Mutation (run): `Boxed::isolate` not forwarding to the unit (so the shadow
 /// a fork is cloned from shares the live cell) → the fork's reset and render
 /// move the live count, which jumps.
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
-    let mut graph = graph_on(GraphBackend::Native);
+    let mut graph = graph_on();
     let node = graph.insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
@@ -653,7 +690,7 @@ impl AudioUnit for Unforkable {
 /// refused as not forkable, naming the mic.
 #[test]
 fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
-    let mut app = app_over(graph_on(GraphBackend::Native));
+    let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let _mic = graph.insert(Unforkable);
@@ -673,7 +710,7 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
 /// `ExportError::Render` → the refusal names no entity.
 #[test]
 fn an_unforkable_node_refuses_the_export_by_name() {
-    let mut app = app_over(graph_on(GraphBackend::Native));
+    let mut app = app_over(graph_on());
     let (mic, osc) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let mic = graph.insert(Unforkable);
@@ -703,14 +740,14 @@ fn an_unforkable_node_refuses_the_export_by_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Native only: a hosted plugin, forked by state transfer
+// A hosted plugin, forked by state transfer
 // ---------------------------------------------------------------------------
 
 /// The reference CLAP plugin through a real `plugin-server`, exported through
 /// a fork: a fresh instance in a server of its own, loaded with the live
-/// one's state (tutti-plugin's `PluginClient::fork_instance`). Native only —
-/// `Net` has no fork, and its master export drives the **live** plugin from
-/// the render thread.
+/// one's state (tutti-plugin's `PluginClient::fork_instance`). (A `Net`
+/// master export, before PR 13, drove the **live** plugin from the render
+/// thread.)
 ///
 /// Build the server first: `cargo build -p tutti-plugin-server`.
 #[cfg(feature = "plugin")]
@@ -760,7 +797,7 @@ mod plugin {
     fn app_with_probe_at(mode: u32, path: std::path::PathBuf) -> (App, Entity) {
         probe_env("TUTTI_PLUGIN_SERVER", plugin_server().display());
         probe_env("TUTTI_CLAP_PROBE_RENDER_MODE", mode);
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         app.insert_resource(TransportRes(Transport::new(RATE)));
         app.insert_resource(MetronomeRes(Arc::new(ClickState::new())));
         app.add_plugins((GraphReconcilePlugin, TuttiHostingPlugin, MidiSequencePlugin));
@@ -1137,8 +1174,8 @@ mod plugin {
 /// Every tempo here is 90 BPM: a beat is 32 000 frames at 48 kHz (64 000 at
 /// 96 kHz), placed to the frame since clips place on integer frames (#40).
 ///
-/// Native only but for the A/B: a `Net` export has no fork, and its synth
-/// plays no clip unless the host refills one (the A/B does, to compare).
+/// A `Net` export had no fork, and its synth played no clip unless the host
+/// refilled one; the `Net`-era oracle here does, to compare.
 #[cfg(all(feature = "midi", feature = "synth", feature = "soundfont"))]
 mod synths {
     use super::*;
@@ -1146,7 +1183,7 @@ mod synths {
     use bevy_tutti::graph::{GraphReconcilePlugin, MasterSources, SpawnAudioNode, TransportRes};
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall, MidiTarget, MidiTargetRegistry};
     use tutti_core::transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
-    use tutti_core::{AudioNode, Beat, Bpm, BufferVec, Seconds, MAX_BUFFER_SIZE};
+    use tutti_core::{Beat, Bpm, BufferVec, Seconds, MAX_BUFFER_SIZE};
     use tutti_midi_runtime::{MidiClipSource, OfflineRebind, TimedMidiEvent};
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -1200,11 +1237,11 @@ mod synths {
         unit
     }
 
-    /// An app on `backend` with the sequencer, both synth types registered
+    /// An app with the sequencer, both synth types registered
     /// for MIDI, and `unit` spawned (`spawn_audio_node`, the path a host
     /// takes) as "Synth", routed to the master.
-    fn app_with(backend: GraphBackend, unit: impl AudioUnit + 'static) -> (App, Entity) {
-        let mut app = app_over(graph_on(backend));
+    fn app_with(unit: impl AudioUnit + 'static) -> (App, Entity) {
+        let mut app = app_over(graph_on());
         app.insert_resource(TransportRes(Transport::new(RATE)));
         app.add_plugins((GraphReconcilePlugin, MidiSequencePlugin));
         app.init_resource::<MidiTargetRegistry>();
@@ -1366,7 +1403,7 @@ mod synths {
     #[test]
     fn an_exported_polysynth_plays_its_clip() {
         for rate in [RATE, 2.0 * RATE] {
-            let (mut app, synth) = app_with(GraphBackend::Native, poly());
+            let (mut app, synth) = app_with(poly());
             install_clip(&mut app, synth);
             let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
             let mut rerated = poly();
@@ -1394,7 +1431,7 @@ mod synths {
     fn an_exported_soundfont_plays_its_clip() {
         let font = font();
         for rate in [RATE, 2.0 * RATE] {
-            let (mut app, synth) = app_with(GraphBackend::Native, sf2(&font, RATE));
+            let (mut app, synth) = app_with(sf2(&font, RATE));
             install_clip(&mut app, synth);
             let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
             let reference = reference(sf2(&font, rate), |s| {
@@ -1405,40 +1442,61 @@ mod synths {
         }
     }
 
-    /// **A native export of a synth renders what a `Net` export renders,
-    /// bit for bit**, once the `Net` export is handed the clip. A `Net` node
-    /// export isolates the synth, which severs its port, and nothing rebinds
-    /// the clip: the `Net`-era host refilled it in the `prepare` hook, which
-    /// this does (a `MidiClipSource` of the same events on the render's
-    /// timeline). The native fork carries it itself.
+    /// The `Net`-era node export of a [`poly`] synth, as
+    /// `AudioGraphRes::export` rendered it on `GraphBackend::Net` before
+    /// design doc 013's PR 13, with the clip a `Net`-era host refilled in the
+    /// `prepare` hook: the synth alone in a fundsp `Net` at `RATE`,
+    /// `clone_isolated`, rebound onto the render's timeline and reset, then a
+    /// `MidiClipSource` of [`clip`] on that timeline installed on the
+    /// isolated synth's port (isolating severs it, and nothing else rebinds
+    /// it), rendered by tutti-export's `Net` arm as [`request`] renders.
+    ///
+    /// **A test oracle, and nothing else**; it goes with tutti-export's `Net`
+    /// arm (doc 013, PR 14).
+    fn poly_node_export_net_era() -> Vec<Vec<f32>> {
+        use tutti_core::dsp::Net;
+        let mut net = Net::new(0, 2);
+        net.set_sample_rate(SampleRate(RATE));
+        let id = net.push(Box::new(poly()));
+        net.pipe_output(id);
+        let timeline = timeline(RATE);
+        let ctx: tutti_core::transport::OfflineTransport = timeline.clone();
+        let mut isolated_net = net
+            .clone_isolated(id)
+            .expect("the synth has outputs")
+            .isolate_for_offline(&ctx);
+        isolated_net.reset();
+        let node = isolated_net.node_mut(id);
+        let synth = node
+            .as_any_mut()
+            .downcast_mut::<PolySynth>()
+            .expect("the synth");
+        let unit = synth.midi_unit_id();
+        synth.set_midi_source(Arc::new(MidiClipSource::new(unit, clip(), ctx)));
+        let request = request(ExportSource::Master, RATE);
+        tutti_export::render_to_buffers(
+            RenderGraph::from(isolated_net),
+            &request.config,
+            timeline.as_ref(),
+        )
+        .expect("the Net era renders")
+        .planes
+    }
+
+    /// **An export of a synth renders what the `Net`-era export rendered,
+    /// bit for bit**, once the `Net`-era export is handed the clip
+    /// ([`poly_node_export_net_era`]). The fork carries the clip itself.
     ///
     /// Mutation (run): `controlled` dropping a unit's own fork source → the
-    /// native render is silent ("the note sounds" fails). Mutation (run): the hook
-    /// installing the clip 0.002 beat (one 64-frame chunk) late → the two
-    /// part at the native onset, frame 32 001.
+    /// render is silent ("the note sounds" fails). Mutation (run): the
+    /// oracle installing the clip 0.002 beat (one 64-frame chunk) late → the
+    /// two part at the onset, frame 32 001.
     #[test]
-    fn native_and_net_synth_exports_are_bit_identical() {
-        let render = |backend: GraphBackend| {
-            let (mut app, synth) = app_with(backend, poly());
-            install_clip(&mut app, synth);
-            let node = app.world().get::<AudioNode>(synth).unwrap().0;
-            let request =
-                request(ExportSource::Node(synth), RATE).with_prepare(move |prepared, _world| {
-                    let RenderGraph::Net(net) = prepared.graph else {
-                        return;
-                    };
-                    let ctx = prepared.ctx.expect("a Net node export is rebound").clone();
-                    let unit = net.node_mut(node);
-                    let synth = unit
-                        .as_any_mut()
-                        .downcast_mut::<PolySynth>()
-                        .expect("the synth");
-                    let id = synth.midi_unit_id();
-                    synth.set_midi_source(Arc::new(MidiClipSource::new(id, clip(), ctx)));
-                });
-            export(&mut app, request).planes()
-        };
-        let (native, net) = (render(GraphBackend::Native), render(GraphBackend::Net));
+    fn synth_exports_are_bit_identical_to_the_net_era() {
+        let (mut app, synth) = app_with(poly());
+        install_clip(&mut app, synth);
+        let native = export(&mut app, request(ExportSource::Node(synth), RATE)).planes();
+        let net = poly_node_export_net_era();
         assert!(
             native[0][..BEAT_48K].iter().all(|&s| s == 0.0),
             "nothing before beat 1"
@@ -1451,7 +1509,7 @@ mod synths {
             assert_eq!(
                 native[c].iter().zip(&net[c]).position(|(a, b)| a != b),
                 None,
-                "channel {c}: the first frame the backends differ"
+                "channel {c}: the first frame the render parts from the Net era's"
             );
         }
     }
@@ -1502,7 +1560,7 @@ mod synths {
                 .install(Arc::new(Unrebindable));
         };
 
-        let (mut app, synth) = app_with(GraphBackend::Native, poly());
+        let (mut app, synth) = app_with(poly());
         unrebindable(&mut app, synth);
         let cause = named(
             export(&mut app, request(ExportSource::Master, RATE)),
@@ -1516,7 +1574,7 @@ mod synths {
             "{cause:?}"
         );
 
-        let (mut app, synth) = app_with(GraphBackend::Native, sf2(&font(), RATE));
+        let (mut app, synth) = app_with(sf2(&font(), RATE));
         unrebindable(&mut app, synth);
         let cause = named(
             export(&mut app, request(ExportSource::Master, RATE)),
@@ -1538,8 +1596,9 @@ mod synths {
 /// fork: the shadow, plus the clip re-installed, rebound, on the fork's own
 /// port), or refuses by name; it is never silent.
 ///
-/// Native only: a `Net` export has no fork (its node export severs the port,
-/// and nothing rebinds the clip — the `Net`-era host refilled it by hand).
+/// (A `Net` export, before PR 13, had no fork: its node export severed the
+/// port, and nothing rebound the clip — the `Net`-era host refilled it by
+/// hand.)
 #[cfg(feature = "midi")]
 mod host_midi {
     use super::*;
@@ -1652,7 +1711,7 @@ mod host_midi {
 
     /// A native app with the sequencer and `Gate` registered for MIDI.
     fn app() -> App {
-        let mut app = app_over(graph_on(GraphBackend::Native));
+        let mut app = app_over(graph_on());
         app.insert_resource(TransportRes(Transport::new(RATE)));
         app.add_plugins((GraphReconcilePlugin, MidiSequencePlugin));
         app.init_resource::<MidiTargetRegistry>();

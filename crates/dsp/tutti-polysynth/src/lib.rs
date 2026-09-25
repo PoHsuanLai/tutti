@@ -51,6 +51,9 @@ pub use synth::{
 };
 
 mod polysynth;
+// `PolySynth::fork_source` / `fork_instance`: the synth in a fork of the
+// native graph (an export), with its clip.
+mod fork;
 pub use polysynth::PolySynth;
 
 mod synth_voice;

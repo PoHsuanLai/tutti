@@ -37,6 +37,11 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
 
+# `ForkSource`, `Legacy`: `PolySynth::fork_source`, the synth's own way into a
+# fork of the native graph (an export), as `tutti-plugin`'s `PluginClient` has
+# one. No cycle: `tutti-graph` names only `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }
+
 # The SVF and ladder coefficient functions. The voice bank runs those two
 # filters' topologies across SIMD lanes and derives its coefficients from the
 # same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.

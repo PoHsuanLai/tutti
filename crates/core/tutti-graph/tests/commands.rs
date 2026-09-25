@@ -754,6 +754,9 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 /// resolved beat → the arrival case lands 20 frames early → fails. Mutation:
 /// in `Env::beat_due`, treat a playhead at or past the loop end as looping
 /// (drop `now < l.end`) → the armed-behind case never lands → fails.
+/// Mutation (run, each side): make the behind-side tolerance in
+/// `Env::beat_due`, or in the reference's `land`, a millionth of a frame again (`<= TOLERANCE`) → the between-frames case lands late
+/// → fails.
 #[test]
 fn beat_resolution_matches_a_hand_computed_table() {
     let cases = vec![
@@ -902,6 +905,43 @@ fn beat_resolution_matches_a_hand_computed_table() {
             sched_at: 0,
             beat: 2.5,
             want: None,
+        },
+        // A beat near the end of block 0 (frames 0..500, 2 000 frames a
+        // beat): the first frame at or after it, and never late.
+        Case {
+            name: "on block 0's last frame",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 3),
+            sched_at: 0,
+            beat: 499.0 / 2000.0,
+            want: Some((499, false)),
+        },
+        Case {
+            // Half a frame before block 1: its first frame at or after is
+            // 500, block 1's first, and block 0 could not deliver it.
+            name: "between block 0's last frame and its end",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 3),
+            sched_at: 0,
+            beat: 499.5 / 2000.0,
+            want: Some((500, false)),
+        },
+        Case {
+            // Within the rounding tolerance of frame 500: frame 500.
+            name: "a rounding error before block 1",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 3),
+            sched_at: 0,
+            beat: (500.0 - 5e-7) / 2000.0,
+            want: Some((500, false)),
+        },
+        Case {
+            name: "on block 1's first frame",
+            arrival: 0,
+            transports: continuous(0.0, 1440.0, 3),
+            sched_at: 0,
+            beat: 500.0 / 2000.0,
+            want: Some((500, false)),
         },
         Case {
             // Loop [1, 2) armed while the playhead is at 2.5, past its end:

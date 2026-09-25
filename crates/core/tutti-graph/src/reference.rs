@@ -1021,10 +1021,11 @@ impl Reference {
                 let reached = pieces.iter().find_map(|&(cut, len, t)| {
                     let tempo = t.tempo.get();
                     let fpb = rate * 60.0 / tempo;
-                    // A beat behind this piece's start by under the rounding
-                    // tolerance is its first frame.
+                    // A beat less than a frame (minus the rounding) behind
+                    // this piece's start is its first frame: a frame at or
+                    // after the beat that the piece before could not reach.
                     let now = t.beat.get();
-                    let b = if t.playing && b < now && (now - b) * fpb <= FRAME_ROUNDING {
+                    let b = if t.playing && b < now && (now - b) * fpb < 1.0 - FRAME_ROUNDING {
                         now
                     } else {
                         b

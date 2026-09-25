@@ -467,13 +467,15 @@ impl Env {
             return Due::NotYet;
         };
         let now = self.transport.beat.get();
-        // The same millionth of a frame the other way: a beat behind the
-        // playhead by less than that is the playhead's own frame, not one it
-        // crossed. A playhead is an accumulated `f64` (a host adding a
-        // per-frame increment 24 000 times lands ~1e-12 beat off), so
-        // without this a beat exactly on a block's first frame could read as
-        // crossed and land late.
-        let beat = if beat < now && (now - beat) * frames_per_beat <= TOLERANCE {
+        // A beat behind the playhead by less than a frame (minus the
+        // tolerance) falls due on this block's first frame. It is the exact
+        // complement of the ahead side: the previous block resolved a beat
+        // `d` frames before its end to offset `ceil(len - d - TOLERANCE)`,
+        // which is inside that block only when `d >= 1 - TOLERANCE`. So a
+        // beat between a block's last frame and its end (or a rounding error
+        // behind an accumulated playhead) is due here, not late, and every
+        // beat lands exactly once.
+        let beat = if beat < now && (now - beat) * frames_per_beat < 1.0 - TOLERANCE {
             now
         } else {
             beat

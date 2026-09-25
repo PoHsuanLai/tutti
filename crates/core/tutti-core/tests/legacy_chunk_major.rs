@@ -284,3 +284,88 @@ fn a_graph_without_legacy_renders_whole_blocks() {
         "without one: the whole device block"
     );
 }
+
+/// **An offline render is chunk-major too.** `RenderClock::render_graph`
+/// (what tutti-export's graph source calls, a block of up to 1 024 frames at
+/// a time) renders a graph holding a `Legacy` unit in blocks of at most
+/// `LEGACY_CHUNK` across every node, the offline timeline advanced between
+/// them: the native node logs only 64-frame blocks, and two `Legacy` clip
+/// readers sharing a cursor on that timeline never see it jump. Removing
+/// the last `Legacy` unit renders the request whole.
+///
+/// The live engine's mode is pinned above; this is its offline twin, which
+/// nothing pinned directly (tutti-core's `env_clock.rs` checks the chunk
+/// size on the live side only).
+///
+/// Mutation (run): `render_graph` ignoring `has_legacy` (the whole-block
+/// path taken regardless) → the native node logs 1 024-frame blocks, and the
+/// cursors see the timeline jump a block per call → fails.
+#[test]
+fn an_offline_render_is_chunk_major_while_a_legacy_unit_is_present() {
+    use tutti_core::{Beat, Bpm, OfflineTimeline, OfflineTimelineConfig, RenderClock};
+
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        start_beat: Beat(0.0),
+        tempo: Bpm(120.0),
+        sample_rate: SampleRate(SR),
+        loop_range: None,
+    }));
+    let jumps = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(0usize));
+    let probe = CursorProbe {
+        cursor: BeatCursor::new(Arc::clone(&timeline) as Arc<dyn Timeline>, SR),
+        jumps: Arc::clone(&jumps),
+        calls: Arc::clone(&calls),
+    };
+    let blocks = Arc::new(Mutex::new(Vec::new()));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
+    ed.insert(NodeKey(1), "clip a", Legacy::new(probe.clone()));
+    ed.insert(NodeKey(2), "clip b", Legacy::new(probe));
+    ed.insert(NodeKey(3), "blocks", BlockLog(Arc::clone(&blocks)));
+    outputs(&mut ed, &[1, 2, 3]);
+    ed.commit().expect("commits");
+
+    let mut planes = vec![vec![0.0f32; 1024]; 3];
+    let render = |exec: &mut tutti_graph::Executor, planes: &mut [Vec<f32>]| {
+        let mut outs: Vec<&mut [f32]> = planes.iter_mut().map(|p| &mut p[..]).collect();
+        RenderClock::render_graph(timeline.as_ref(), exec, 1024, &[], &mut outs);
+    };
+    let n_blocks = 2 * SR as usize / 1024;
+    for _ in 0..n_blocks {
+        render(&mut exec, &mut planes);
+    }
+    let jumps = jumps.lock().expect("jumps");
+    assert!(
+        jumps.is_empty(),
+        "a shared cursor saw the offline timeline jump (call, sync): {:?}",
+        &jumps[..jumps.len().min(8)]
+    );
+    let logged = std::mem::take(&mut *blocks.lock().expect("blocks"));
+    assert_eq!(
+        logged.len(),
+        n_blocks * 1024 / LEGACY_CHUNK,
+        "every chunk ran"
+    );
+    assert!(
+        logged.iter().all(|&n| n == LEGACY_CHUNK),
+        "a graph holding a `Legacy` unit renders offline chunk-major: {:?}",
+        &logged[..logged.len().min(8)]
+    );
+    // Not vacuous: the probes ran every chunk, and the timeline moved two
+    // seconds (four beats at 120 BPM).
+    assert!(*calls.lock().expect("calls") >= 2 * logged.len());
+    assert!((timeline.beat().get() - 4.0).abs() < 0.1);
+
+    // Without a `Legacy` unit: the request whole.
+    ed.remove(NodeKey(1));
+    ed.remove(NodeKey(2));
+    outputs(&mut ed, &[3]);
+    ed.commit().expect("commits");
+    let mut one = vec![vec![0.0f32; 1024]; 1];
+    render(&mut exec, &mut one);
+    assert_eq!(
+        std::mem::take(&mut *blocks.lock().expect("blocks")),
+        vec![1024],
+        "without one: the whole block"
+    );
+}

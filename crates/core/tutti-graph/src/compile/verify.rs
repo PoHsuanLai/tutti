@@ -1258,4 +1258,59 @@ mod tests {
         bad.event_slot_weight[dst as usize] = 1;
         assert!(verify(&bad).unwrap_err().0.contains("capacities"));
     }
+
+    /// Rule 8: a fade must name a key its delta replaces, once, between
+    /// units whose shapes agree in all but the tail.
+    ///
+    /// Mutation: drop the "does not replace it" check → the fade on an
+    /// untouched key passes → fails. Mutation: drop the "twice" check →
+    /// fails. Mutation: compare the tails too → the tail-only change is
+    /// refused → fails. Mutation: drop the in-place comparison → fails.
+    #[test]
+    fn fades_are_checked_against_both_plans() {
+        use crate::fade::{CrossfadeCurve, Fade};
+        let (a, b) = (NodeKey(1), NodeKey(2));
+        let gen = || Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let build = |shape_a: Shape, gen_a: u32, prev: Option<&Plan>| {
+            let mut t = Topology::default();
+            let shapes: Shapes = [(a, shape_a), (b, gen())]
+                .into_iter()
+                .map(|(k, s)| {
+                    t.nodes.insert(
+                        k,
+                        NodeSpec::new("gen", s.audio_in, s.audio_out).with_tail(s.tail),
+                    );
+                    (k, s)
+                })
+                .collect();
+            t.outputs = vec![Source::Node(OutPort { node: a, port: 0 })];
+            let mut spec = GraphSpec::new(t);
+            spec.generations.insert(a, gen_a);
+            let prepare =
+                crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64));
+            compile(&spec.validate().expect("valid"), &shapes, &prepare, prev)
+                .expect("compiles")
+        };
+        let (base, _) = build(gen(), 0, None);
+        let fade = Fade::new(tutti_types::Samples(32), CrossfadeCurve::EqualPower);
+        let check = |shape_a: Shape, fades: Vec<(NodeKey, Fade)>| {
+            let (plan, mut delta) = build(shape_a, 1, Some(&base));
+            delta.fades = fades;
+            verify_fades(Some(&base), &plan, &delta)
+        };
+
+        assert_eq!(check(gen(), vec![(a, fade)]), Ok(()));
+        let tail = gen().with_tail(tutti_types::Tail::Finite(tutti_types::Samples(9)));
+        assert_eq!(check(tail, vec![(a, fade)]), Ok(()), "only the tail differs");
+        let not_replaced = check(gen(), vec![(b, fade)]).unwrap_err();
+        assert!(not_replaced.0.contains("does not replace"), "{not_replaced}");
+        let twice = check(gen(), vec![(a, fade), (a, fade)]).unwrap_err();
+        assert!(twice.0.contains("twice"), "{twice}");
+        let in_place = check(
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_in_place(),
+            vec![(a, fade)],
+        )
+        .unwrap_err();
+        assert!(in_place.0.contains("only the tail"), "{in_place}");
+    }
 }

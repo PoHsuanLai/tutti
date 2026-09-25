@@ -289,7 +289,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
-| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (item 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -363,8 +363,11 @@ place that loses precision to be written out explicitly:
    device time, and a rate change rescales it and every pending `At::Frame`
    to the same wall-clock time (nearest frame). A beat behind the playhead
    by under a millionth of a frame is the playhead's own frame, not a
-   crossed beat: an accumulated playhead lands ~1e-12 beat off, and an
-   on-frame beat must not count as late.
+   crossed beat: a beat and the playhead computed two ways can differ by an
+   ulp, and an on-frame beat must not count as late. (It was written for a
+   playhead that accumulated and landed ~1e-12 beat off; item 6 made the
+   playhead exact wherever the true beat is representable, and the
+   tolerance is now the engine-wide rule, `FRAME_TOLERANCE`.)
 
    **Transport commands (Phase 2b) — done.** `MotionFsm::schedule(At,
    TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`), a
@@ -438,6 +441,22 @@ place that loses precision to be written out explicitly:
      effect: a beat up to one frame *before* a seek or play-start target
      now fires on that target's frame (it is within a frame of where
      playback begins), where it used to wait as jumped over.
+
+   **Decisions taken with the frame-exact playhead** (item 6):
+   - **The frame, not the beat, is what a clock stores**, and a segment
+     restarts on a loop wrap rather than wrapping an ever-growing unwrapped
+     position, so the second pass of a loop is as exact as the first.
+   - **Readers place beats by frame, with `Env::due`'s tolerance**, shared
+     as `first_frame_at_or_after` rather than re-derived per site. A reader
+     that has no session rate (the sampler's gate) measures in its source's
+     frames at unit speed: a millionth of either is far below audibility.
+   - **The MIDI clock keeps its start rule.** On the block playback starts
+     (or continues, or locates) in, a 24-PPQN tick exactly on the first
+     frame is not sent: Start / Continue / Song Position stands for it, as
+     before (its test pins two ticks in the first 2 500 frames). Only
+     continuing blocks changed, where a tick on a block boundary is now sent
+     once, on the next block's first frame, instead of twice or never.
+     Whether a receiver wants that first tick is left open.
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.
@@ -454,6 +473,58 @@ place that loses precision to be written out explicitly:
    does, passes whatever its phase against the blocks); `Block` means
    within the block the event arrives in. A node finer than it declares
    passes.
+6. **The frame is the source of truth for the playhead — done.** Every
+   clock (`TransportClock` in a `Net` and driven by the graph engine,
+   `EnvClock`, `OfflineTimeline`) keeps an integer frame count on a
+   **`TimelineSegment`** (`tutti-types`: origin frame, origin beat, tempo,
+   rate) and derives the beat in closed form, `origin_beat + frames × tempo
+   / (60 × rate)`, never by adding `beats_per_sample`. The shared walker is
+   tutti-core's `FrameClock`. A segment restarts on a seek, a tempo or rate
+   change and a loop wrap (on the first frame whose beat reaches the loop's
+   end, found exactly); a stopped transport does not count frames. The bug
+   it fixes, found in review: at 90 BPM / 48 kHz one frame is 1/32 000
+   beat, which binary cannot represent, so the accumulated offline playhead
+   read `2.999999999999891` on frame 96 000 (exactly beat 3) and
+   `1.0000000000000007` on frame 32 000; a sampler clip at beat 3 entered a
+   64-frame chunk late, and a MIDI clip note at beat 1 landed on frame
+   31 999. Now each `*`, `/`, `+` is one correctly rounded IEEE operation on
+   exact integers, so frame 96 000 is beat 3 to the bit, a clock stepped a
+   frame at a time equals one stepped a block at a time bit for bit, and
+   the result is portable (no libm).
+   - **The graph carries the segment.** `Transport::origin:
+     Option<SegmentOrigin>` is the origin's beat and the frames rolled
+     since it, as of the block's first frame (`None`: the block start is
+     the origin, for a transport built by hand). `EnvClock` continues the
+     host's clock from it with the host's code, so its ports equal a
+     `TransportClock`'s to the bit by construction (it used to accumulate
+     from the block's beat to match an accumulating clock).
+     `Env::transport_at` uses it too: exact up to a loop wrap inside the
+     block, to rounding past one.
+   - **One rule for "which frame".** `first_frame_at_or_after(frames_ahead)
+     = ceil(frames_ahead - FRAME_TOLERANCE)`, the first frame at or after a
+     beat within a millionth of a frame, is the one beat→frame conversion
+     (`TimelineSegment::frame_of`, `reached_by`). `Env::due`, the sampler's
+     placement gate (`window_position`: entered once the start is reached
+     by frame; left once the end is), `BeatWindow::place` (MIDI clips,
+     harmony changes), the MIDI snapshot reader's offsets and the MIDI
+     clock's 24-PPQN ticks all use it and compare integer frames. Tiled
+     blocks then place every beat in exactly one of them: a beat between a
+     block's last frame and its end is the next block's frame 0, where beat
+     comparisons (`beat < end_beat`, then `as u32`) put it on this block's
+     last frame or in neither.
+   - **Not a new unit.** `TimelineSegment` is a value of existing units
+     (`Frame`, `Beat`, `Bpm`, `SampleRate`) with the conversion as its
+     methods; it adds no range or algebra. `beats_per_sample` stays, as the
+     rate a reader divides a beat span by; no clock steps by it.
+   - Tests: the reviewer's figures to the bit (`FrameClock`,
+     `OfflineTimeline`), a long-run property (random tempos, rates and
+     block lengths; both clocks equal the closed form bit-exactly), frame by
+     frame against a block at a time through wraps, and frame-exact entry at
+     90 BPM on every path (a sampler clip at beat 3 first sounds on frame
+     96 000; MIDI notes at beats 1 and 3 land on 32 000 and 96 000; live
+     through the `Net` and graph engines, offline `Net`-style and through
+     `render_graph`), each checking also that the reader read the exact
+     beat. Mutation: reintroducing accumulation fails them.
 
 **Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
 recompile with every unit re-prepared on the control thread, in two commits

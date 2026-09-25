@@ -135,13 +135,14 @@ impl OfflineTimeline {
     /// bit-identical to the in-net `TransportClock` for the unlooped case every
     /// production render uses — see the sample-for-sample test below.
     pub fn advance(&self, samples: usize) {
-        let mut beat = Beat(self.current_beat.load(Ordering::Acquire));
-        beat += self.beats_per_sample * samples as f64;
+        let from = Beat(self.current_beat.load(Ordering::Acquire));
+        let mut beat = from + self.beats_per_sample * samples as f64;
 
         if let Some(region) = self.loop_range {
             // `LoopRange` is non-empty by construction, so `wrap` needs no
-            // guard — the same reason `TransportClock` needs none.
-            beat = region.wrap(beat);
+            // guard — the same reason `TransportClock` needs none. Only a
+            // crossing wraps, as for the clock (`LoopRange::advance`).
+            beat = region.advance(from, beat);
         }
 
         self.current_beat.store(beat.get(), Ordering::Release);

@@ -135,12 +135,13 @@ impl TransportClock {
     }
 
     #[inline]
-    fn apply_loop_wrap(&mut self) {
+    fn apply_loop_wrap(&mut self, from: crate::Beat) {
         let Some(region) = self.links.loop_span.as_ref().and_then(LoopSpan::range) else {
             return;
         };
         // `LoopRange` is non-empty by construction, so `wrap` needs no guard.
-        self.current_beat = region.wrap(self.current_beat);
+        // Only a playhead that crossed the end wraps: see `LoopRange::advance`.
+        self.current_beat = region.advance(from, self.current_beat);
     }
 
     /// The rate this clock converts tempo to a per-frame increment at.
@@ -196,8 +197,8 @@ impl TransportClock {
             {
                 Some(region) => {
                     for _ in 0..frames {
-                        self.current_beat += self.beat_per_sample;
-                        self.current_beat = region.wrap(self.current_beat);
+                        let from = self.current_beat;
+                        self.current_beat = region.advance(from, from + self.beat_per_sample);
                     }
                 }
                 None => {
@@ -298,8 +299,9 @@ impl AudioUnit for TransportClock {
         output[1] = frac;
 
         if !self.links.paused.load(Ordering::Acquire) {
+            let from = self.current_beat;
             self.current_beat += self.beat_per_sample;
-            self.apply_loop_wrap();
+            self.apply_loop_wrap(from);
         }
 
         if let Some(ref writeback) = self.links.position_writeback {
@@ -327,8 +329,8 @@ impl AudioUnit for TransportClock {
                 let (whole, frac) = split_beat(self.current_beat);
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
-                self.current_beat += self.beat_per_sample;
-                self.current_beat = region.wrap(self.current_beat);
+                let from = self.current_beat;
+                self.current_beat = region.advance(from, from + self.beat_per_sample);
             }
         } else {
             for i in 0..size {

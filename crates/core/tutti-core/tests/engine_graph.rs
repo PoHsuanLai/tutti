@@ -706,3 +706,78 @@ fn net_and_graph_see_the_same_beat() {
     assert!(looped.iter().all(|&(_, b, _)| b < 0.08));
     assert!(looped.windows(2).any(|w| w[1].1 < w[0].1), "it wrapped");
 }
+
+/// A loop armed while the playhead is past its end does not jump: playback
+/// runs on, in a `Net`'s clock and in a graph's `Env` alike, until a seek
+/// puts the playhead inside the loop, and from then it wraps (doc 013's
+/// decision, the common DAW behaviour).
+///
+/// Mutation (run): make `LoopRange::advance` wrap whenever `to` is past the
+/// end (the old `wrap`) → the clock jumps into the loop on the frame after
+/// it is armed, the published playhead is inside [1, 2) → fails, and the
+/// graph's `Env` beats (linear, by `transport_at`) disagree with the Net's.
+#[test]
+fn a_loop_armed_behind_the_playhead_does_not_jump() {
+    let net_t = Transport::new(SR);
+    let net_beats = Arc::new(Mutex::new(Vec::new()));
+    let net = net_engine(
+        &net_t,
+        Box::new(Surround {
+            channels: 1,
+            frame: 0,
+        }),
+        Some(Arc::clone(&net_beats)),
+    );
+    let graph_t = Transport::new(SR);
+    let graph_log = Arc::new(Mutex::new(Vec::new()));
+    let (graph, _ed) = graph_engine(
+        &graph_t,
+        512,
+        Gate {
+            log: Some(Arc::clone(&graph_log)),
+        },
+        1,
+    );
+    for t in [&net_t, &graph_t] {
+        let m = &t.motion;
+        m.try_send(MotionEvent::locate_and_play(Beat(3.0)))
+            .expect("room");
+        // Armed at beat ~3.04, behind the playhead.
+        m.schedule(
+            At::Frame(Frame(1_000)),
+            TransportCommand::Loop(LoopRange::new(1.0, 2.0)),
+        )
+        .expect("room");
+        // Into the loop, just before its end: a wrap 2 400 frames later.
+        m.schedule(
+            At::Frame(Frame(20_000)),
+            MotionEvent::Locate {
+                beat: Beat(1.9),
+                fade: FadeOut::Immediate,
+                then: Then::Keep,
+            },
+        )
+        .expect("room");
+    }
+    for _ in 0..50 {
+        render(&net, ChannelLayout::MONO, &[512]);
+        render(&graph, ChannelLayout::MONO, &[512]);
+        assert_eq!(
+            net_t.settings.beat().get().to_bits(),
+            graph_t.settings.beat().get().to_bits()
+        );
+    }
+    let graph_log = graph_log.lock().expect("log");
+    let net_beats = net_beats.lock().expect("log");
+    let beat = |f: usize| graph_log[f].1;
+    // Linear from 3.0 at 1/24 000 beat a frame, loop armed or not.
+    assert!((beat(19_999) - (3.0 + 19_999.0 / 24_000.0)).abs() < 1e-9);
+    for f in [1_001usize, 5_000, 19_999] {
+        let (w, fr) = net_beats[f];
+        assert!(((w as f64 + fr as f64) - beat(f)).abs() < 1e-6, "frame {f}");
+    }
+    // Inside the loop from the seek: wraps at 2.0, 2 400 frames on.
+    assert_eq!(beat(20_000), 1.9);
+    assert!(beat(22_399) > 1.99);
+    assert!(beat(22_401) < 1.01);
+}

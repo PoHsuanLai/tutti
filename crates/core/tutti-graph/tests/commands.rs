@@ -751,7 +751,9 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 /// late at once → fails. Mutation:
 /// in `Env::beat_due`, drop the wrap branch → the loop case never lands →
 /// fails. Mutation: in `Env::due_at_arrival`, drop the arrival shift for a
-/// resolved beat → the arrival case lands 20 frames early → fails.
+/// resolved beat → the arrival case lands 20 frames early → fails. Mutation:
+/// in `Env::beat_due`, treat a playhead at or past the loop end as looping
+/// (drop `now < l.end`) → the armed-behind case never lands → fails.
 #[test]
 fn beat_resolution_matches_a_hand_computed_table() {
     let cases = vec![
@@ -899,6 +901,31 @@ fn beat_resolution_matches_a_hand_computed_table() {
                 .collect(),
             sched_at: 0,
             beat: 2.5,
+            want: None,
+        },
+        Case {
+            // Loop [1, 2) armed while the playhead is at 2.5, past its end:
+            // it does not jump (the doc 013 decision `TransportClock` follows
+            // too), so playback runs on linearly and beat 3.1 is reached
+            // 0.1 beat into block 2 (frame 1 000, beat 3.0).
+            name: "a loop armed behind the playhead: runs on past it",
+            arrival: 0,
+            transports: (0..4)
+                .map(|i| at_beat(2.5 + i as f64 * 0.25, true, 1440.0, Some((1.0, 2.0))))
+                .collect(),
+            sched_at: 0,
+            beat: 3.1,
+            want: Some((1_200, false)),
+        },
+        Case {
+            // The same: the loop's inside is never reached from behind.
+            name: "a loop armed behind the playhead: its inside is not reached",
+            arrival: 0,
+            transports: (0..4)
+                .map(|i| at_beat(2.5 + i as f64 * 0.25, true, 1440.0, Some((1.0, 2.0))))
+                .collect(),
+            sched_at: 0,
+            beat: 1.5,
             want: None,
         },
     ];

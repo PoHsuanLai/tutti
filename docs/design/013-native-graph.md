@@ -983,14 +983,44 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    stream and render silence, and a `VoicePool`'s voices are cleared, so a
    master export renders what the graph is *driven* to play from the
    offline transport, not a copy of what is sounding now. And a graph
-   holding a plugin is `NotForkable` until item 7 lands.
-7. **A plugin cannot be forked** [PR 16, before PR 12]. Its clones share the one
-   plugin process (or in-process instance), so it says `forkable() ==
-   false` and export of a graph containing one is refused explicitly
-   rather than driving the live plugin from the worker. The fix is a fork
-   by **state transfer**: spawn a fresh plugin instance, load the live
-   instance's saved state into it, and rebind it offline — a `ForkSource`
-   for the plugin node, built at bind time.
+   holding a plugin forks only if the plugin was inserted as a
+   `PluginClient` (item 7): PR 12 must insert plugins through
+   `IntoNode for PluginClient`, not as a boxed `AudioUnit` in a `Legacy`.
+7. ~~**A plugin cannot be forked**~~ [PR 16, before PR 12]. Its clones
+   share the one plugin process (or in-process instance), so it says
+   `forkable() == false` and export of a graph containing one is refused
+   explicitly rather than driving the live plugin from the worker. The fix
+   is a fork by **state transfer**. **Closed by PR 16** for out-of-process
+   plugins (`tutti-plugin/src/host/node/fork.rs`):
+   `PluginClient::fork_instance(ForkMode)` asks the live instance for its
+   saved state (the one control call it gets, ordered after every
+   parameter write before it), launches a fresh instance of the same file
+   in a **new plugin-server process** (a server hosts one plugin; a
+   process of its own also keeps a fork's crash and CPU off the live
+   plugin), checks the plugin id, loads the state, and copies each
+   installed per-block source (transport, param automation, harmony, note
+   expression) onto the offline timeline (or the live transport for a
+   `Live` fork; onto nothing for an offline context that is not an
+   `OfflineTransport`). An offline fork is told `RenderMode::Offline`, and
+   its batcher **waits** for each block: the live pipeline never waits,
+   which on a render worker makes every block the subprocess has not
+   finished silent. It keeps the pipelined shape, so the declared latency
+   is the live one's. A fork has a fresh MIDI port (no inbox, clip source
+   or MIDI-out; the `PolySynth::isolate` rule) and no running DSP state.
+   `IntoNode for PluginClient` hands the editor a fork source that calls
+   it; `AudioUnit::forkable()` stays `false`, because its promise is
+   about clone-and-`isolate` and `Legacy` would otherwise fork the node by
+   cloning it. The graph gained the glue: `ForkSource::fork` returns
+   `Result<_, ForkCause>`, and a failure is `ForkError::Source { key,
+   cause }` with the source's error downcastable — the plugin's is a
+   `PluginForkError` (`SaveState`, `Load`, `Mismatch`, `LoadState`). A
+   plugin that cannot save its state is known only when asked, so it fails
+   at fork time with `SaveState`, not at insert as `NotForkable` (the
+   protocol has no load-time "can save state" bit; adding one to
+   `Features` would let a fork refuse up front). **In-process VST2 stays
+   not forkable**: a second `AEffect` from the same library in this
+   process, and non-chunk plugins whose state is only the current
+   program's parameters, need their own design and tests.
 
 **Fork audit, per unit** (every in-tree `impl AudioUnit`; "row" is its
 `IsolateRow` test, "—" where the unit reads no live cell, so there is
@@ -1050,7 +1080,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
-| 16 | tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
+| 16 | **Done.** tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
 
 **PR 7 landed.** Export's entry points (`render_to_file`,
 `render_to_buffers`, `render_normalized_to_file`) take

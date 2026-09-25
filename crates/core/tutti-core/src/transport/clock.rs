@@ -898,4 +898,21 @@ mod tests {
             "expected ~12.0 (8 + 4 beats at 240 BPM), got {beat}"
         );
     }
+
+    /// A fork of the clock steps at the tempo it was taken at: a live tempo
+    /// change must not reach it (`ClockLinks::severed` copies the tempo into
+    /// a fresh cell). The pause flag is deliberately *not* a snapshot — a
+    /// fork always rolls — so it is not a control here.
+    ///
+    /// Mutation: in `ClockLinks::severed`, keep `tempo: Arc::clone(tempo)`
+    /// → "a live move reached the fork".
+    #[test]
+    fn isolate_snapshots_the_tempo() {
+        tutti_graph::contract::IsolateRow::new("TransportClock", || {
+            let (tempo, paused) = create_test_atomics();
+            TransportClock::new(ClockLinks::bare(tempo, paused), 48_000.0)
+        })
+        .control("tempo", |c| c.links.tempo.store(140.0, Ordering::Release))
+        .check();
+    }
 }

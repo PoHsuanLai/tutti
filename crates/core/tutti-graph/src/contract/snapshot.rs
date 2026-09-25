@@ -28,7 +28,7 @@
 //!
 //! Every render starts from `reset()` — the fork's own last step — then
 //! the row's [`IsolateRow::excite`] (a note-on, say), then the row's
-//! stimulus on every input, through `process` in blocks of
+//! [`IsolateRow::input`] on every input, through `process` in blocks of
 //! [`MAX_BUFFER_SIZE`] frames at [`SAMPLE_RATE`](super::SAMPLE_RATE).
 //! Comparisons are within one run on one machine, so bit equality is sound
 //! on every platform.
@@ -82,6 +82,7 @@ pub struct IsolateRow<U> {
     name: String,
     make: Make<U>,
     excite: Option<Poke<U>>,
+    input: fn(usize, usize) -> f32,
     frames: usize,
     controls: Vec<(String, Write<U>)>,
 }
@@ -94,6 +95,7 @@ impl<U: AudioUnit + Clone + 'static> IsolateRow<U> {
             name: name.to_string(),
             make: Box::new(make),
             excite: None,
+            input: stimulus,
             frames: SNAPSHOT_FRAMES,
             controls: Vec::new(),
         }
@@ -105,6 +107,15 @@ impl<U: AudioUnit + Clone + 'static> IsolateRow<U> {
     #[must_use]
     pub fn excite(mut self, excite: impl Fn(&mut U) + 'static) -> Self {
         self.excite = Some(Box::new(excite));
+        self
+    }
+
+    /// Feed `input(channel, frame)` to the unit's inputs instead of the
+    /// default stimulus (a tone under a loud/quiet envelope, plus noise) —
+    /// for a unit whose inputs are not audio, such as a beat pair.
+    #[must_use]
+    pub fn input(mut self, input: fn(usize, usize) -> f32) -> Self {
+        self.input = input;
         self
     }
 
@@ -187,7 +198,7 @@ impl<U: AudioUnit + Clone + 'static> IsolateRow<U> {
             let size = MAX_BUFFER_SIZE.min(self.frames - done);
             for ch in 0..ins {
                 for i in 0..size {
-                    input.set_f32(ch, i, stimulus(ch, done + i));
+                    input.set_f32(ch, i, (self.input)(ch, done + i));
                 }
             }
             unit.process(size, &input.buffer_ref(), &mut output.buffer_mut());
@@ -208,7 +219,7 @@ fn fork<U: AudioUnit + Clone>(unit: &U) -> U {
     fork
 }
 
-/// The row stimulus on input `ch` at `frame`: a tone per channel under a
+/// The default stimulus on input `ch` at `frame`: a tone per channel under a
 /// loud/quiet envelope (so a dynamics unit's threshold, attack and release
 /// all act), plus a little broadband noise (so a filter's cutoff and Q
 /// act on something at every frequency). A control input a unit exposes

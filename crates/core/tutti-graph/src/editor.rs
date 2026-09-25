@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
-use tutti_types::NodeKey;
+use tutti_types::{Latency, NodeKey};
 
 use tutti_types::At;
 
@@ -107,6 +107,11 @@ pub enum CommitError {
         max_block: usize,
         /// The host's limit.
         limit: usize,
+    },
+    /// No node at this key ([`Editor::set_latency`]).
+    NoSuchNode {
+        /// The key.
+        node: NodeKey,
     },
 }
 
@@ -170,6 +175,7 @@ impl std::fmt::Display for CommitError {
             Self::BlockTooLong { max_block, limit } => {
                 write!(f, "a {max_block}-frame MaxBlock; the host takes {limit}")
             }
+            Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
         }
     }
 }
@@ -368,6 +374,49 @@ impl Editor {
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
         controls
+    }
+
+    /// Change `key`'s declared processing latency at runtime — a plugin whose
+    /// latency atomic moved. Takes effect on the next
+    /// [`commit`](Self::commit), like any edit to the spec: it recompiles,
+    /// and PDC delays move to the new figure. **The running unit is not
+    /// touched** — same generation, same state, no replacement — so only the
+    /// compensation changes. Delay rings are retuned by the recompile rule
+    /// ([`reprepare`](Self::reprepare)'s "keeps everything that is still the
+    /// same wire"): a ring whose length changes keeps its most recent
+    /// `min(old, new)` inputs, and a ring whose length does not is untouched,
+    /// so a path whose compensation stays the same does not click.
+    ///
+    /// **Who holds the figure.** A node reports its latency through
+    /// [`Node::shape`], which the editor reads at [`insert`](Self::insert)
+    /// and at every re-prepare. Between those, this call is the authority:
+    /// it writes the spec's [`NodeSpec`] latency and the editor's shape
+    /// entry, which is all the compiler reads, and a running unit's own
+    /// `shape()` may lag (a `Legacy` caches the latency it probed; nothing
+    /// asks it again until it is prepared). A re-prepare asks the unit again
+    /// and its answer replaces this one — a frame count set at the old rate
+    /// is wrong at a new one, and the unit is the one that can convert it.
+    /// A unit that cannot report its own latency must be told again after a
+    /// re-prepare.
+    ///
+    /// Refused with [`CommitError::NoSuchNode`] for a key with no node, and
+    /// with [`CommitError::Repreparing`] between a re-prepare's two commits
+    /// (its second half re-probes every unit and would overwrite this).
+    pub fn set_latency(&mut self, key: NodeKey, latency: Latency) -> Result<(), CommitError> {
+        self.collect();
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        let (Some(node), Some(shape)) = (
+            self.spec.topology.nodes.get_mut(&key),
+            self.shapes.get_mut(&key),
+        ) else {
+            return Err(CommitError::NoSuchNode { node: key });
+        };
+        node.latency = latency.samples();
+        shape.latency = latency;
+        Ok(())
     }
 
     /// Remove `key` and every edge that touches it. Output channels it fed

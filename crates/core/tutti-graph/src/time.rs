@@ -467,6 +467,17 @@ impl Env {
             return Due::NotYet;
         };
         let now = self.transport.beat.get();
+        // The same millionth of a frame the other way: a beat behind the
+        // playhead by less than that is the playhead's own frame, not one it
+        // crossed. A playhead is an accumulated `f64` (a host adding a
+        // per-frame increment 24 000 times lands ~1e-12 beat off), so
+        // without this a beat exactly on a block's first frame could read as
+        // crossed and land late.
+        let beat = if beat < now && (now - beat) * frames_per_beat <= TOLERANCE {
+            now
+        } else {
+            beat
+        };
         let ahead = match self.transport.looping {
             Some(l) if now < l.end.get() && l.start.get() < l.end.get() => {
                 let (start, end) = (l.start.get(), l.end.get());
@@ -946,6 +957,19 @@ mod tests {
         let mut first = e;
         first.changes = TransportChanges::NONE;
         assert_eq!(first.due(At::Beat(Beat(2.0))), Due::NotYet);
+    }
+
+    /// A beat a rounding error behind the playhead is its first frame, not a
+    /// crossed beat; one a whole frame behind is not due.
+    ///
+    /// Mutation: drop the behind-side tolerance in `beat_due` → the first
+    /// assertion reads `NotYet` → fails.
+    #[test]
+    fn a_beat_a_rounding_error_behind_is_the_first_frame() {
+        let e = block(1.0 + 1e-12, 64, true, None);
+        assert_eq!(e.due(At::Beat(Beat(1.0))), Due::In(Offset::ZERO));
+        let e = block(1.0 + 1.0 / 24_000.0, 64, true, None);
+        assert_eq!(e.due(At::Beat(Beat(1.0))), Due::NotYet);
     }
 
     /// A seek inside a rolling block starts a new run: a beat the new run

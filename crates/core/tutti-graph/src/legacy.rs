@@ -28,6 +28,43 @@
 //! - **In place.** The adapter copies each chunk of input into its own buffer
 //!   before the unit runs, so an output that already holds its input is no
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].
+//! - **Silence: no claim unless the caller makes it.** See below.
+//!
+//! # Never skipped, unless [`pure`](Legacy::pure)
+//!
+//! The executor skips an event-free node whose inputs are silent once its
+//! last call was silent and its tail has elapsed (see `Executor`). That is
+//! right for a node whose output depends only on its audio inputs, and wrong
+//! for one fed **out of band** — a SoundFont or a PolySynth steered through a
+//! channel, a plugin instrument driven through its own MIDI queue, a mic
+//! monitor, an `AtomicSourceNode` whose base is 0 until someone writes it.
+//! Skipped once, such a unit is never called again to notice that it has
+//! something to say: parked for good.
+//!
+//! An `AudioUnit` receives no events, so the adapter cannot tell the two
+//! kinds apart, and `Net` never skipped anything. So a `Legacy` makes **no
+//! silence claim** by default: it returns [`Status::Modified`], which leaves
+//! its outputs unflagged and the node running every block, as `Net` ran it.
+//! [`Legacy::pure`] is the opt-in for a unit that *is* a function of its audio
+//! inputs (a filter, a gain, a mixer): it scans what the unit wrote, reports
+//! the silent channels as [`Status::Masked`], and so becomes skippable.
+//!
+//! **Downstream masks come with the skip, not without it.** A default
+//! `Legacy` could scan its output and report silence purely so the nodes
+//! *after* it may skip — but a node with no event inputs that reports silent
+//! outputs is exactly the node the executor parks, and the `Node` contract has
+//! no status for "silent, but keep calling me". So a default `Legacy` does not
+//! scan at all (it saves the scan, too), and a pure filter after it is not
+//! skipped on the silence it cannot see. Losing that skip costs CPU on a quiet
+//! graph; parking an instrument costs its audio. If the lost skip shows up in
+//! a profile, the fix is a contract flag the executor reads, not a scan here.
+//!
+//! (Two shapes never reached the park even before this: the executor never
+//! skips a node with no audio inputs, and never one with no outputs at all.
+//! The first covers a 0-input source; the second a sink that exists for its
+//! side effects. The hazard was a unit *with* audio inputs fed out of band —
+//! a plugin instrument with a sidechain, a vocoder carrier. `Modified` closes
+//! it for every shape at once, without leaning on either rule.)
 
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
@@ -42,12 +79,43 @@ pub struct Legacy {
     shape: Shape,
     input: BufferVec,
     output: BufferVec,
+    /// Whether the unit's output depends only on its audio inputs, so its
+    /// silence may be reported (and the node skipped). See the module docs.
+    pure: bool,
 }
 
 impl Legacy {
-    /// Wrap `unit`.
+    /// Wrap `unit`. It is called every block, silent or not — see "Never
+    /// skipped, unless pure" in the module docs.
     pub fn new(unit: impl AudioUnit + 'static) -> Self {
         Self::from_box(Box::new(unit))
+    }
+
+    /// Wrap a unit whose output is a function of its **audio inputs alone**
+    /// (and its own state, which its declared tail bounds): a filter, a gain,
+    /// a mixer. Its silent outputs are reported, so the executor may skip it
+    /// once its inputs are silent and its tail has elapsed, and nodes after it
+    /// see the silence too.
+    ///
+    /// A claim the caller makes about the unit, and the executor trusts: wrap
+    /// a unit fed any other way — a channel, an atomic, a MIDI queue of its
+    /// own — with [`new`](Self::new), or it falls silent for good the first
+    /// time it is quiet.
+    pub fn pure(unit: impl AudioUnit + 'static) -> Self {
+        Self::new(unit).assume_pure()
+    }
+
+    /// Mark this node [`pure`](Self::pure): for a node built some other way
+    /// ([`from_box`](Self::from_box)). The same claim, with the same
+    /// consequence if it is false.
+    pub fn assume_pure(mut self) -> Self {
+        self.pure = true;
+        self
+    }
+
+    /// Whether this node was declared [`pure`](Self::pure).
+    pub fn is_pure(&self) -> bool {
+        self.pure
     }
 
     /// Wrap an already boxed unit.
@@ -59,6 +127,7 @@ impl Legacy {
             shape,
             input: BufferVec::new(ins),
             output: BufferVec::new(outs),
+            pure: false,
         }
     }
 
@@ -122,9 +191,16 @@ impl Node for Legacy {
             }
             start += len;
         }
-        // Report silence the unit produced, so the executor can skip it
-        // (it has no event inputs, so its tail decides — see `Executor`).
-        // One scan of what was just written; cheap next to the unit.
+        // No claim unless the caller made one for us (see the module docs):
+        // any silence reported here would let the executor park the unit,
+        // and a unit fed out of band would never be called again.
+        if !self.pure {
+            return Status::Modified;
+        }
+        // Pure: report the silence the unit produced, so the executor can
+        // skip it (it has no event inputs, so its tail decides — see
+        // `Executor`). One scan of what was just written; cheap next to the
+        // unit.
         let mut silent = SilenceMask::NONE;
         for c in 0..outs {
             if io

@@ -6,10 +6,15 @@ mod common;
 use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
-use tutti_graph::{GraphBuilder, Legacy, Node};
+use tutti_graph::{Editor, GraphBuilder, Legacy, Node, Transport};
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::NodeKey;
 use tutti_types::{ChannelLayout, Latency, SampleRate, Samples, Tail};
+
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn signal(n: usize) -> Vec<f32> {
     (0..n)
@@ -217,18 +222,19 @@ impl AudioUnit for Half {
     }
 }
 
-/// `Legacy` reports the silence its unit produced, so an `AudioUnit` that
-/// declares a tail is skipped on silent input again — the skip needs the last
-/// output flagged silent, and a `Legacy` that always said `Modified` was
-/// never skipped.
+/// A [`Legacy::pure`] node reports the silence its unit produced, so an
+/// `AudioUnit` that declares a tail is skipped on silent input — the skip
+/// needs the last output flagged silent. (A default `Legacy` makes no such
+/// claim and is never skipped; see the out-of-band test below.)
 ///
-/// Mutation: return `Status::Modified` from `Legacy::process` instead of the
-/// scanned mask → the unit runs every block → fails.
+/// Mutation: build `add_pure_unit` without `assume_pure` → fails.
+/// Mutation: return `Status::Modified` from `Legacy::process` for pure units
+/// too → the unit runs every block → fails.
 #[test]
-fn legacy_reports_silence_so_a_silent_unit_is_skipped() {
+fn a_pure_legacy_reports_silence_so_a_silent_unit_is_skipped() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let key = g.add_unit(Box::new(Half(std::sync::Arc::clone(&calls))));
+    let key = g.add_pure_unit(Box::new(Half(std::sync::Arc::clone(&calls))));
     g.disconnect(key, 0).pipe_output(key);
     let mut r = g.renderer(prepare(64)).expect("commits");
     r.render_input(&[&[0.0; 640]]);
@@ -237,4 +243,200 @@ fn legacy_reports_silence_so_a_silent_unit_is_skipped() {
         1,
         "called once, found silent, then skipped"
     );
+}
+
+/// A unit fed **out of band**: it adds `level` (a shared cell a control
+/// thread writes, as a SoundFont's channel or a plugin's MIDI queue would feed
+/// it) to its audio inputs, and declares `Tail::None` — honest for what its
+/// *inputs* can do, which is exactly why the silence skip would park it.
+#[derive(Clone)]
+struct OutOfBand {
+    inputs: usize,
+    outputs: usize,
+    level: Arc<AtomicU32>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl OutOfBand {
+    fn new(inputs: usize, outputs: usize) -> Self {
+        Self {
+            inputs,
+            outputs,
+            level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl AudioUnit for OutOfBand {
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        let level = f32::from_bits(self.level.load(Ordering::Relaxed));
+        for (c, o) in output.iter_mut().enumerate() {
+            *o = level + input.get(c).copied().unwrap_or(0.0);
+        }
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        input: &tutti_node::buffer::BufferRef,
+        output: &mut tutti_node::buffer::BufferMut,
+    ) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let level = f32::from_bits(self.level.load(Ordering::Relaxed));
+        for c in 0..self.outputs {
+            for i in 0..size {
+                let x = if c < self.inputs {
+                    input.channel_f32(c)[i]
+                } else {
+                    0.0
+                };
+                output.channel_f32_mut(c)[i] = level + x;
+            }
+        }
+    }
+    fn inputs(&self) -> usize {
+        self.inputs
+    }
+    fn outputs(&self) -> usize {
+        self.outputs
+    }
+    fn route(
+        &mut self,
+        _input: &tutti_node::signal::SignalFrame,
+        _frequency: f64,
+    ) -> tutti_node::signal::SignalFrame {
+        let mut out = tutti_node::signal::SignalFrame::new(self.outputs);
+        for c in 0..self.outputs {
+            out.set(c, tutti_node::signal::Signal::Latency(0.0));
+        }
+        out
+    }
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+    fn get_id(&self) -> u64 {
+        0x4f4f_4221
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        0
+    }
+}
+
+/// `node` at key 1, its `inputs` wired to silence, its first output the
+/// graph's; 64-frame blocks.
+fn out_of_band_graph(node: Legacy, inputs: usize) -> (Editor, tutti_graph::Executor) {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    let key = NodeKey(1);
+    ed.insert(key, "oob", node);
+    for port in 0..inputs as u16 {
+        ed.spec_mut()
+            .topology
+            .edges
+            .insert(InPort { node: key, port }, Edge::Direct(Source::Zero));
+    }
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    (ed, exec)
+}
+
+/// **A default `Legacy` fed out of band is heard after any amount of
+/// silence.** Silent for ten blocks, then its cell is written: the next
+/// block carries the level. Run for a unit with an audio input wired to
+/// silence (the live hazard: a plugin instrument with a sidechain) and for a
+/// 0-input source (a SoundFont, a mic monitor).
+///
+/// Mutation: make `Legacy::new` pure (`pure: true` in `from_box`), so it
+/// reports `Masked { silent }` again → the 1-input unit is parked after its
+/// first silent block and stays silent forever → fails. The 0-input case
+/// does not fail on that mutation alone — the executor never skips a node
+/// without audio inputs — and fails when that rule (`!ain.is_empty()` in
+/// `exec.rs`'s `node_op`) is dropped as well: it pins that the two layers
+/// agree, not the adapter alone.
+#[test]
+fn a_default_legacy_fed_out_of_band_is_heard_after_silence() {
+    for inputs in [1usize, 0] {
+        let unit = OutOfBand::new(inputs, 1);
+        let (level, calls) = (Arc::clone(&unit.level), Arc::clone(&unit.calls));
+        let (_ed, mut exec) = out_of_band_graph(Legacy::new(unit), inputs);
+        let mut out = vec![0.0f32; 64];
+        let silence = [0.0f32; 64];
+        let ins: &[&[f32]] = &[&silence];
+        for _ in 0..10 {
+            exec.process(64, &Transport::default(), ins, &mut [&mut out[..]]);
+            assert!(out.iter().all(|&x| x == 0.0));
+        }
+        level.store(0.5f32.to_bits(), Ordering::Relaxed);
+        exec.process(64, &Transport::default(), ins, &mut [&mut out[..]]);
+        assert!(
+            out.iter().all(|&x| x == 0.5),
+            "{inputs}-input unit: the out-of-band level must reach the output \
+             on the next block; got {:?}",
+            &out[..4]
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            11,
+            "{inputs}-input unit: called every block"
+        );
+    }
+}
+
+/// The same unit, declared [`Legacy::pure`], **is** parked — which is what
+/// the declaration means, and why it is opt-in. Pins that `pure` is the
+/// switch, so the test above is not passing because nothing is ever skipped.
+///
+/// Mutation: ignore `pure` in `Legacy::process` (always `Modified`) → the
+/// unit is called every block and the late level is heard → fails.
+#[test]
+fn a_pure_legacy_fed_out_of_band_is_parked() {
+    let unit = OutOfBand::new(1, 1);
+    let (level, calls) = (Arc::clone(&unit.level), Arc::clone(&unit.calls));
+    let (_ed, mut exec) = out_of_band_graph(Legacy::pure(unit), 1);
+    let mut out = vec![0.0f32; 64];
+    let silence = [0.0f32; 64];
+    let ins: &[&[f32]] = &[&silence];
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), ins, &mut [&mut out[..]]);
+    }
+    level.store(0.5f32.to_bits(), Ordering::Relaxed);
+    exec.process(64, &Transport::default(), ins, &mut [&mut out[..]]);
+    assert_eq!(calls.load(Ordering::Relaxed), 1, "called once, then parked");
+    assert!(out.iter().all(|&x| x == 0.0), "and so never heard again");
+}
+
+/// A node with **no outputs** is never parked, even pure with a silent input
+/// and `Tail::None`: it is a sink, called for its side effects (a meter, a
+/// tap), and "every output silent" is vacuous for it.
+///
+/// Mutation: drop the `!(aout.is_empty() && eout.is_empty())` term from
+/// `last_quiet` in `exec.rs`'s `node_op` → called once, then skipped →
+/// fails.
+#[test]
+fn a_sink_is_never_parked() {
+    let unit = OutOfBand::new(1, 0);
+    let calls = Arc::clone(&unit.calls);
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    let key = NodeKey(1);
+    ed.insert(key, "sink", Legacy::pure(unit));
+    // `Source::Zero`, which the executor knows is silent. (A global input is
+    // not flagged silent, so a sink fed one would run regardless.)
+    ed.spec_mut()
+        .topology
+        .edges
+        .insert(InPort { node: key, port: 0 }, Edge::Direct(Source::Zero));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), &[], &mut []);
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
 }

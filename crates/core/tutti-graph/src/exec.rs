@@ -87,7 +87,15 @@
 //! - **for a node without event inputs**, its previous call left every audio
 //!   output flagged silent (it returned `Silent`, `Idle`, or masks covering
 //!   every channel), and its declared tail has elapsed since its inputs went
-//!   quiet. A node never called yet is not quiet.
+//!   quiet. A node never called yet is not quiet. Two shapes are never
+//!   parked this way: a node with **no audio inputs** (a source — silent
+//!   inputs say nothing about it) and a node with **no outputs at all** (a
+//!   sink, which runs only for its side effects — a meter, a tap — and whose
+//!   skip would save no work downstream).
+//!
+//! A node that makes no silence claim ([`Status::Modified`]) is never
+//! parked: that is how `Legacy` stays callable for a unit fed out of band
+//! (see `src/legacy.rs`).
 //!
 //! # Scheduled commands
 //!
@@ -1297,7 +1305,10 @@ fn node_op(
 
     u.last_idle = status == Status::Idle;
     finish(status, frames, ain, aout, rec.in_place, st.arena, st.flags);
-    u.last_quiet = aout.iter().all(|&s| st.flags[s as usize] & SILENT != 0)
+    // A node with no outputs claims nothing by being "all silent": it is a
+    // sink, called for its side effects, and a skip would starve them.
+    u.last_quiet = !(aout.is_empty() && eout.is_empty())
+        && aout.iter().all(|&s| st.flags[s as usize] & SILENT != 0)
         && eout.iter().all(|&s| st.events[s as usize].is_empty());
 }
 

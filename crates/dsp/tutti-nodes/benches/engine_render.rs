@@ -328,7 +328,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
         let f: Box<dyn tutti_graph::Node> = if legacy {
-            Box::new(tutti_graph::Legacy::new(SvfFilterNode::<f64>::new(
+            Box::new(tutti_graph::Legacy::pure(SvfFilterNode::<f64>::new(
                 SvfType::LowPass,
                 Hz(cutoff),
                 Q(0.7),

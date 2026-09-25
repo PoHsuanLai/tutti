@@ -414,7 +414,8 @@ fn a_timed_start_sounds_from_its_exact_frame() {
 /// of beat at 1 001.
 ///
 /// Mutation (run): land every due command at its piece's first frame
-/// (`at = cursor` in the walk) → the clock moves from 769 → fails.
+/// (`at = cursor` in the walk) → the clock starts at its block's first
+/// frame → fails.
 #[test]
 fn a_timed_start_moves_a_net_clock_from_its_exact_frame() {
     let transport = Transport::new(SR);

@@ -93,3 +93,121 @@ fn engine_process_with_metronome_is_allocation_free() {
         }
     });
 }
+
+/// A stereo source that reads the transport per frame from its `Env`, so
+/// the gated loop below exercises `transport_at` and the executor's change
+/// list, not only a render that ignores time.
+struct TransportTone;
+
+impl tutti_graph::Node for TransportTone {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+            .with_events(1, 0)
+            .with_tail(tutti_core::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let env = *cx.env;
+        let bumps = io.events(0).len() as f32;
+        for k in env.offsets() {
+            let t = env.transport_at(k);
+            let v = if t.playing {
+                t.beat.get().fract() as f32
+            } else {
+                0.0
+            } + bumps;
+            io.output(0)[k.index()] = v;
+            io.output(1)[k.index()] = -v;
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// `Engine::process` over the native graph, with timestamped transport
+/// commands (play, seek, tempo, loop, a declick stop) scheduled and landing
+/// inside the gate, and graph notes at beats landing in blocks with transport
+/// changes: the walk, the change list, the executor and the fold never
+/// allocate. Device blocks of 1 024 frames against a 512-frame `MaxBlock`,
+/// so the split into graph blocks runs too.
+///
+/// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → the gate
+/// panics → fails.
+#[test]
+fn graph_engine_with_timed_transport_is_allocation_free() {
+    use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
+    use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump};
+    use tutti_types::graph::{OutPort, Source};
+    use tutti_types::NodeKey;
+
+    let sample_rate = 48_000.0;
+    let transport = Transport::new(sample_rate);
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(sample_rate),
+        tutti_core::Samples(512),
+    ));
+    ed.insert(NodeKey(1), "tone", TransportTone);
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::with_graph(&transport, exec);
+
+    let mut output = vec![0.0f32; 1024 * 2];
+    // Applying the commit allocates; that is the control side's price and
+    // happens before the gate.
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    ed.collect();
+    let to = EventIn {
+        node: NodeKey(1),
+        port: 0,
+    };
+    for b in 0..8 {
+        ed.schedule(
+            At::Beat(Beat(0.25 * b as f64)),
+            to,
+            EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])),
+        )
+        .expect("room");
+    }
+
+    let m = &transport.motion;
+    assert_no_alloc::assert_no_alloc(|| {
+        for round in 0..20u64 {
+            let base = 1024 * (1 + 8 * round);
+            m.schedule(At::Frame(Frame(base + 300)), MotionEvent::Play)
+                .expect("room");
+            m.schedule(
+                At::Frame(Frame(base + 1500)),
+                TransportCommand::Tempo(Bpm(90.0 + round as f64)),
+            )
+            .expect("room");
+            m.schedule(
+                At::Frame(Frame(base + 2100)),
+                TransportCommand::Loop(tutti_core::LoopRange::new(0.0, 4.0)),
+            )
+            .expect("room");
+            m.schedule(At::Beat(Beat(0.5)), MotionEvent::locate(Beat(0.0)))
+                .expect("room");
+            m.schedule(At::Frame(Frame(base + 6000)), MotionEvent::stop())
+                .expect("room");
+            m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
+                .expect("room");
+            for _ in 0..8 {
+                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            }
+            m.cancel_scheduled();
+        }
+    });
+    // The engine really ran every block, through its own clock.
+    assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
+}

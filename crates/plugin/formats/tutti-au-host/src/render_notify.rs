@@ -93,8 +93,8 @@
 //! 3. **Plain atomics, not [`RtPublish`](tutti_types::RtPublish).** Every piece
 //!    of state this module hands to the render thread is a scalar: a parameter
 //!    id, two `f32` endpoints, a frame offset, a duration. `RtPublish` exists
-//!    for state too large to pack into an atomic and costs a thread-local
-//!    lookup plus two `SeqCst` loads plus a slot store — more than the handful
+//!    for state too large to pack into an atomic and costs a slot CAS, a
+//!    `SeqCst` fence and a load plus a slot store — more than the handful
 //!    of loads here, and a category error besides: there is no heap state here
 //!    for an `RtRef` borrow to protect. Same trade [`crate::transport`]'s module
 //!    docs make.

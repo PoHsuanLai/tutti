@@ -50,8 +50,8 @@ are private for that reason; the ones that stay public do so because
 ## What this crate does not own
 
 Anything that renders, decodes, or opens a device. It is the **root leaf** —
-Bevy-free, engine-free, depending only on `smallvec` / `atomic_float` /
-`arc-swap`. The graph is `tutti-core`'s, the device `tutti-cpal`'s, the file
+Bevy-free, engine-free, depending only on `smallvec` / `atomic_float`
+(`RtPublish` is its own `AtomicPtr` protocol, no longer `arc-swap`). The graph is `tutti-core`'s, the device `tutti-cpal`'s, the file
 codecs `tutti-io`'s and `tutti-export`'s. Two consequences make the split
 load-bearing:
 

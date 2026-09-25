@@ -106,7 +106,8 @@ test-features:
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
 # Miri over the non-FFI unsafe: the pointer arithmetic in `tutti-node`'s planar
-# buffers and the aliasing in `tutti-types`' `AudioThreadCell`. See
+# buffers, the aliasing in `tutti-types`' `AudioThreadCell`, and `RtPublish`'s
+# hazard-slot reclamation. See
 # `docs/design/012-unsafe-policy.md` for why these two and not the rest — miri
 # does not execute FFI at all, so the ~95% of this repo's unsafe that is a C ABI
 # is out of its reach by construction, and out-of-process hosting is the
@@ -116,7 +117,21 @@ test-features:
 # and miri has no x86 SSE intrinsics.
 miri:
     cargo +nightly miri test -p tutti-types --lib
+    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
     cargo +nightly miri test -p tutti-node
+
+# The loom models: `RtPublish`'s reclamation protocol (against the shipped code)
+# and the plugin shm header protocol (a replica). `--cfg loom` is global, so
+# each runs on its own target. This is what CI runs: the `RtPublish` models at a
+# preemption bound of 4, about a minute and a half.
+loom:
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+    RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
+
+# The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is
+# always bounded): about 17 minutes. Run it after changing `rt/publish.rs`.
+loom-full:
+    RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
 
 check-jack:
     cargo clippy -p tutti-cpal --features jack --all-targets -- -D warnings

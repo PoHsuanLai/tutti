@@ -141,14 +141,23 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 Non-scalar state handed to the audio thread goes through
 `tutti_types::{RtPublish, RtRef}`. Scalars use `Param<U>`.
 
-- **The audio thread never holds an owning handle to published state.**
-  `read()` returns a `!Send` borrow; `publish()` is control-thread only and
-  frees the old value there.
-- Read once per block, never per sample. Never park an `RtRef` across blocks.
-  Avoid nested reads.
+- **The audio thread never holds an owning handle to published state, and
+  never frees it.** `read()` returns a `!Send` borrow and is wait-free;
+  `publish()` is control-thread only and frees retired values there. This is
+  structural (hazard slots, overflow epochs, and a retirement list only the
+  publisher touches),
+  and the loom model `tutti-types/tests/rt_publish_loom.rs` checks it.
+- Read once per block, never per sample. Never park an `RtRef` across blocks
+  (a parked one delays the free of what it holds). Avoid nested reads: past
+  the cell's slot count they stay safe but pin every value current during
+  their overflow epoch, not just the one they hold.
+- **The design's limit:** once parked overflow `RtRef`s occupy every overflow
+  epoch, each publish's retired value stays pinned and memory grows until they
+  drop. It is unreachable if the rule above is kept. A host can poll
+  `retired_len()` and `epoch_stalls()`; debug builds assert at 1024.
 - Never `publish` from the audio thread.
-- Do not try to prove this with a no-alloc test. The hazard is a race, which is
-  why the guarantee is in the return type.
+- Do not try to prove the race with a no-alloc test. The loom model and miri
+  cover it; a single-threaded gate can only pin the reader's code path.
 - Nullable hot-swap slots (`SharedReader`, `InputSlot`, `Midi::out`) stay on
   `ArcSwapOption`. Control-thread-only cells stay plain.
 

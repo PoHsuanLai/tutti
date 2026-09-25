@@ -25,7 +25,7 @@ question is the other 5%.
 
 ## The non-FFI `unsafe`, in full
 
-There are six sites. Each exists because a safe construct would have cost
+There are seven sites. Each exists because a safe construct would have cost
 something on the audio thread, and each is named here so the list can be
 checked against the tree.
 
@@ -35,6 +35,14 @@ checked against the tree.
   Note its `reset_owner` is a **no-op** and always has been; the cell pins no
   owner thread, and three doc comments that claimed otherwise were corrected
   after a mutation test found the call could be deleted with no effect.
+- **`tutti-types/src/rt/publish.rs`** — `RtPublish`: an `AtomicPtr` holding
+  an `Arc::into_raw` pointer, reclaimed with `Arc::from_raw` by `publish` and
+  `Drop`, and dereferenced by `RtRef` under a hazard-slot protocol. The safe
+  alternative (`ArcSwap`) could, rarely, free on the audio thread; this cannot,
+  and that is the whole reason for it. The dereference's soundness rests on a
+  `SeqCst` fence pair, which is a *concurrency* property — so it is checked by
+  a loom model run against the shipped code (`tests/rt_publish_loom.rs`) as
+  well as by miri over the module's concurrent stress test.
 - **`tutti-types/src/rt/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
   set. x86 SSE control-register intrinsics; there is no safe spelling.
 - **`tutti-node/src/buffer.rs`** — `slice::from_raw_parts{,_mut}` over the
@@ -71,7 +79,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
    drifted into claiming the stronger thing. If the invariant is not
    mechanically checked, say so at the type.
 4. **New non-FFI `unsafe` is a design question, not an implementation
-   detail.** Six sites is small enough to review one at a time; that is worth
+   detail.** Seven sites is small enough to review one at a time; that is worth
    keeping true. Prefer the safe construct and measure before concluding it is
    too slow — the repo's rule is to check the constraint before designing
    around it.
@@ -87,7 +95,11 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   subprocess. This is the reason the 1,519-line figure above is tolerable.
 - **`tutti-shm-model`** is a loom model of the shm header protocol — a
   separate crate because `--cfg loom` is global. That covers the concurrency
-  argument the shm `unsafe` rests on.
+  argument the shm `unsafe` rests on. **`tutti-types/tests/rt_publish_loom.rs`**
+  does the same for `RtPublish`, but against the real code: its atomics switch
+  to loom's under the flag, which that crate's dependency closure tolerates.
+  Both run in the `loom` CI job and `just loom`, the `RtPublish` models at a
+  preemption bound of 4; `just loom-full` runs them exhaustively.
 - **miri**, on the non-FFI crates, via `just miri` and the `miri` CI job.
   Installing a nightly toolchain on the machine that wrote this failed
   repeatedly, so — exactly as with `just check-jack` — CI is the first thing

@@ -16,13 +16,17 @@
 //! *frees* a retired non-scalar value (a `MeterMap`, a routing table). That
 //! property is carried by the type — `RtPublish::read` returns an `RtRef`, a
 //! `!Send` borrow tied to the cell's lifetime, so there is no owning handle for
-//! the callback to be left holding. It is a compile-time guarantee, not a
-//! sampled one, and it cannot be pinned by a no-alloc gate: the hazard is a
-//! race, and a sampling schedule cannot exhaust one. A test that tried anyway
-//! lived here until it was removed — it passed while asserting a property it
-//! structurally could not observe, which reads as coverage and is worse than
-//! nothing. See #34 for the residual case (`RtPublish` wraps `ArcSwap` today,
-//! making RT deallocation very unlikely and bounded rather than impossible).
+//! the callback to be left holding — and by `RtPublish`'s reclamation protocol,
+//! whose reader side has no path to a destructor. It cannot be pinned by a
+//! no-alloc gate here: the hazard is a race, and a sampling schedule cannot
+//! exhaust one. A test that tried anyway lived here until it was removed — it
+//! passed while asserting a property it structurally could not observe, which
+//! reads as coverage and is worse than nothing. The race is covered where it
+//! can be: the loom model `tutti-types/tests/rt_publish_loom.rs` (against the
+//! shipped code; bounded in CI, exhaustive under `just loom-full`) and miri
+//! over `rt::publish`'s stress test. (#34's
+//! residual case — the old `ArcSwap` guard degrading into an owning reference —
+//! is gone with the `ArcSwap`.)
 
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
@@ -38,9 +42,9 @@ use tutti_core::{
 static A: AllocDisabler = AllocDisabler;
 
 /// The metronome reads its meter through an [`RtPublish`], which is the one
-/// non-scalar read on the audio thread. That read is a thread-local lookup plus
-/// two atomic loads, not an allocation — but that is a claim about a
-/// dependency's internals, so it gets pinned here rather than reasoned about.
+/// non-scalar read on the audio thread. That read is a slot CAS, a fence and a
+/// load, not an allocation — but that is a claim about another crate's
+/// internals, so it gets pinned here rather than reasoned about.
 ///
 /// [`RtPublish`]: tutti_types::RtPublish
 ///

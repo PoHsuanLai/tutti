@@ -75,6 +75,13 @@ broken_intra_doc_links = "deny"
 # into one of these, and rustdoc renders it as plain text with no clue why.
 private_intra_doc_links = "deny"
 
+# `cfg(loom)` is set from the command line (`RUSTFLAGS="--cfg loom"`) to run the
+# loom models, so rustc cannot know it is intended and warns on every `#[cfg]`
+# that names it. Declared once here for every member; `tutti-shm-model` declares
+# it for itself because it cannot take the workspace table.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
 # A system's argument list IS its dependency declaration, and a query filter is
 # the query specification — aliasing either behind a type or a SystemParam bundle
 # moves the one thing a reader needs out of the signature.

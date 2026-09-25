@@ -36,16 +36,33 @@ bevy = ["dep:bevy_reflect"]
 smallvec = { version = "1", default-features = false, features = ["const_generics"] }
 # `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
-# `RtPublish` — publish-to-audio-thread cell. The debt-slot strategy is what
-# keeps the read wait-free and the retired value's free on the publisher.
-arc-swap = "1.7"
 serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
 # defines vocabulary, not ECS surface.
 bevy_reflect = { workspace = true, optional = true }
 
+# `RtPublish`'s atomics become loom's under `--cfg loom`, so the model in
+# `tests/rt_publish_loom.rs` checks the shipped protocol rather than a replica.
+# Only that flag pulls this in; a normal build never sees loom.
+#
+#     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+#
+# This can live here, unlike `tutti-shm-model`, because nothing in this crate's
+# dependency closure has `cfg(loom)` support of its own to break under the flag.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [dev-dependencies]
+# The baseline in `benches/rt_publish_read.rs`: `RtPublish` wrapped
+# `ArcSwap` until its reclamation became structural, and the bench measures the
+# read against the `load()` it replaced. Nothing in `src/` uses it.
+arc-swap = "1.7"
+criterion.workspace = true
 assert_no_alloc = { version = "1", default-features = false }
 # The meter `Deserialize` impls are the untrusted-document edge, so they are
 # tested against a real format rather than a hand-rolled deserializer.
 serde_json = "1"
+
+[[bench]]
+name = "rt_publish_read"
+harness = false

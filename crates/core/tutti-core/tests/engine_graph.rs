@@ -113,6 +113,21 @@ impl Node for Gate {
     fn reset(&mut self) {}
 }
 
+/// A constant 1.0, whatever the transport does.
+struct Ones;
+
+impl Node for Ones {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(1.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
 /// One event input; logs the absolute frame of every event it receives.
 struct NoteLog(Arc<Mutex<Vec<u64>>>);
 
@@ -494,7 +509,10 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
 }
 
 /// A timed declick stop starts its fade on its frame, not at the block's
-/// start: full level up to the frame, then the ramp.
+/// start: full level up to the frame, then the ramp. The source is not
+/// transport-gated (the transport itself stops on the frame; see
+/// `a_declick_stop_stops_the_transport_on_its_frame`), so what is measured
+/// is the fade alone.
 ///
 /// Mutation (run): land every due command at its piece's first frame → the
 /// fade starts at the block's first frame → fails. Skip
@@ -502,7 +520,7 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
 #[test]
 fn a_timed_declick_fades_from_its_frame() {
     let transport = Transport::new(SR);
-    let (engine, _ed) = graph_engine(&transport, 256, Gate { log: None }, 1);
+    let (engine, _ed) = graph_engine(&transport, 256, Ones, 1);
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
     m.schedule(At::Frame(Frame(600)), MotionEvent::stop())
@@ -511,7 +529,10 @@ fn a_timed_declick_fades_from_its_frame() {
     assert_eq!(out[599], 1.0);
     assert_eq!(out[600], 479.0 / 480.0);
     assert_eq!(out[600 + 479], 0.0);
-    assert!(out[600 + 480..].iter().all(|&x| x == 0.0));
+    // Silent to the end of the block the fade ends in (1 024..1 280); the
+    // ungated source is back at full level from the next.
+    assert!(out[600 + 480..1_280].iter().all(|&x| x == 0.0));
+    assert_eq!(out[1_280], 1.0);
     assert!(m.is_stopped());
 }
 
@@ -780,4 +801,89 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
     assert_eq!(beat(20_000), 1.9);
     assert!(beat(22_399) > 1.99);
     assert!(beat(22_401) < 1.01);
+}
+
+/// A declick stop at `At::Frame` inside a block stops the **transport** on
+/// that frame; only the audio fades. The graph's `Env` reads the transport
+/// stopped from the frame, a graph `At::Beat` command due after it in the
+/// same block does not fire, and a `Net`'s clock holds on the same frame.
+///
+/// Mutation (run): leave `apply_outcome` out of `publish`'s
+/// `DeclickStarted` arm (the old rule: the transport rolls until the fade
+/// completes) → `Env` reads rolling after frame 600, the beat-0.03 note
+/// fires, the Net clock keeps moving → fails.
+#[test]
+fn a_declick_stop_stops_the_transport_on_its_frame() {
+    // Rolling from frame 256; a declick stop at frame 600, inside the block
+    // 512..768.
+    let transport = Transport::new(SR);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (engine, _ed) = graph_engine(
+        &transport,
+        256,
+        Gate {
+            log: Some(Arc::clone(&log)),
+        },
+        1,
+    );
+    render(&engine, ChannelLayout::MONO, &[256]);
+    let m = &transport.motion;
+    m.schedule(At::Frame(Frame(256)), MotionEvent::Play)
+        .expect("room");
+    m.schedule(At::Frame(Frame(600)), MotionEvent::stop())
+        .expect("room");
+    render(&engine, ChannelLayout::MONO, &[256; 4]);
+    let log = log.lock().expect("log");
+    assert!(log[599].2, "rolling up to the stop");
+    assert!(!log[600].2, "stopped on its frame, while the audio fades");
+    assert_eq!(log[600].1, log[767].1, "the playhead holds");
+
+    // A graph beat command after the stop's frame, in the same block: beat
+    // 400/24 000 would be frame 656 had the transport rolled on.
+    let t2 = Transport::new(SR);
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let (e, mut ed2) = graph_engine(&t2, 256, NoteLog(Arc::clone(&notes)), 1);
+    render(&e, ChannelLayout::MONO, &[256]);
+    ed2.collect();
+    ed2.schedule(
+        At::Beat(Beat(400.0 / FPB as f64)),
+        EventIn {
+            node: NodeKey(1),
+            port: 0,
+        },
+        EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0])),
+    )
+    .expect("room");
+    t2.motion
+        .schedule(At::Frame(Frame(256)), MotionEvent::Play)
+        .expect("room");
+    t2.motion
+        .schedule(At::Frame(Frame(600)), MotionEvent::stop())
+        .expect("room");
+    render(&e, ChannelLayout::MONO, &[256; 8]);
+    assert!(notes.lock().expect("log").is_empty(), "not reached");
+
+    // A Net clock holds on the same frame.
+    let net_t = Transport::new(SR);
+    let beats = Arc::new(Mutex::new(Vec::new()));
+    let net = net_engine(
+        &net_t,
+        Box::new(Surround {
+            channels: 1,
+            frame: 0,
+        }),
+        Some(Arc::clone(&beats)),
+    );
+    net_t
+        .motion
+        .schedule(At::Frame(Frame(256)), MotionEvent::Play)
+        .expect("room");
+    net_t
+        .motion
+        .schedule(At::Frame(Frame(600)), MotionEvent::stop())
+        .expect("room");
+    render(&net, ChannelLayout::MONO, &[256; 4]);
+    let beats = beats.lock().expect("log");
+    assert_ne!(beats[599], beats[600], "moving up to the stop");
+    assert_eq!(beats[601], beats[1_000], "held from the stop");
 }

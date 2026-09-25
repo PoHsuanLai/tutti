@@ -143,6 +143,11 @@ impl TransportFsm {
         self.pending.take()
     }
 
+    /// The outcome the fade in flight completes into, without taking it.
+    pub fn declick_outcome(&self) -> Option<DeclickOutcome> {
+        self.pending
+    }
+
     /// The motion to remember for [`MotionEvent::EndScrub`].
     ///
     /// A declick state must never be remembered: restoring `DeclickToStop` with

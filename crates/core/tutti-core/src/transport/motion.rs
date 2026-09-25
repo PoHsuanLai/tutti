@@ -392,20 +392,34 @@ impl MotionFsm {
 
     fn publish(&self, result: TransitionResult) {
         match result {
-            TransitionResult::MotionChanged(motion) => {
-                self.set_motion(motion);
-                // A settled state change cancels any fade. Retargeting one
-                // declick state to another must NOT clear it — that ramp is
-                // mid-count, and restarting it would step the gain back to
-                // full and click.
-                if !is_declicking(motion) {
-                    self.declick.clear();
+            TransitionResult::MotionChanged(motion) if is_declicking(motion) => {
+                // A fade retargeted in flight. Its ramp is mid-count and must
+                // NOT restart (the gain would step back to full and click),
+                // but its new outcome takes effect on the transport now, as a
+                // fresh fade's does.
+                self.set_mirror(motion);
+                let outcome = { self.fsm.borrow().declick_outcome() };
+                if let Some(outcome) = outcome {
+                    self.apply_outcome(outcome);
                 }
             }
-            TransitionResult::DeclickStarted { motion, frames, .. } => {
+            TransitionResult::MotionChanged(motion) => {
+                // A settled state change cancels any fade.
                 self.set_motion(motion);
-                // Audio keeps playing while the gain ramps to zero.
+                self.declick.clear();
+            }
+            TransitionResult::DeclickStarted {
+                motion,
+                frames,
+                on_complete,
+            } => {
+                // The transport stops or jumps **now**, on the command's
+                // frame; the fade is an audio-only concern (doc 013 §6). The
+                // output ramps to zero over `frames` from here, and the motion
+                // mirror reads the declick state until the fade completes.
+                self.set_mirror(motion);
                 self.declick.start(frames);
+                self.apply_outcome(on_complete);
             }
             TransitionResult::Located { pos, motion } => {
                 self.locate_to(pos);
@@ -415,12 +429,34 @@ impl MotionFsm {
         }
     }
 
-    /// Called by the processor when a declick fade reaches zero: finish the
-    /// action the fade was covering for.
+    /// Put a fade's outcome into effect on the transport: stop the playhead,
+    /// or jump it and leave it rolling or stopped as the outcome says.
+    fn apply_outcome(&self, outcome: DeclickOutcome) {
+        match outcome {
+            DeclickOutcome::Stop => self.settings.paused.store(true, Ordering::Release),
+            DeclickOutcome::Locate { pos, motion } => {
+                self.locate_to(pos);
+                self.settings
+                    .paused
+                    .store(motion == MotionState::Stopped, Ordering::Release);
+            }
+        }
+    }
+
+    /// Publish `motion` to the UI mirror only, leaving the playhead's
+    /// pausedness alone (a declick state is not a playhead state).
+    fn set_mirror(&self, motion: MotionState) {
+        self.motion.store(motion.into(), Ordering::Release);
+    }
+
+    /// Called by the processor when a declick fade reaches zero: settle the
+    /// motion the fade was heading for.
     ///
-    /// Driven by the outcome the FSM parked when the fade started, not by
-    /// reading the published mirror back: the mirror is a projection, so
-    /// dispatching on it lets an FSM/mirror disagreement pass unnoticed.
+    /// The transport itself already stopped or jumped when the fade began
+    /// (see `publish`); what is left is the mirror and the parked outcome.
+    /// Driven by the outcome the FSM parked, not by reading the published
+    /// mirror back: the mirror is a projection, so dispatching on it lets an
+    /// FSM/mirror disagreement pass unnoticed.
     ///
     /// **Audio thread only**, for the same reason as
     /// [`drain`](Self::drain) — it borrows the FSM's cell.
@@ -434,10 +470,7 @@ impl MotionFsm {
 
         match outcome {
             DeclickOutcome::Stop => self.set_motion(MotionState::Stopped),
-            DeclickOutcome::Locate { pos, motion } => {
-                self.locate_to(pos);
-                self.set_motion(motion);
-            }
+            DeclickOutcome::Locate { motion, .. } => self.set_motion(motion),
         }
     }
 }
@@ -544,16 +577,21 @@ mod tests {
         );
     }
 
-    /// The Stop button's fade and its return-to-zero must be ONE event.
+    /// The Stop button's fade and its return-to-zero are ONE event, and the
+    /// transport acts on it at once: the playhead jumps (and stops) on the
+    /// command's frame, and the fade only shapes the audio from there (doc
+    /// 013 §6, the declick decision: a fade is an audio-only concern and
+    /// never delays the transport state a graph sees). Completing the fade
+    /// settles the motion mirror and does **not** jump again.
     ///
-    /// Sent as `Stop` + `Locate(0.0)`, `drain` pops both in one callback, so
-    /// the seek lands immediately while the fade still has samples to run —
-    /// the declick then ramps down audio rendered from the *new* position,
-    /// protecting nothing, and the click it exists to suppress happens unmasked
-    /// at the seek instant. `stop_and_return` carries both halves, so the jump
-    /// waits for silence.
+    /// This replaced a test pinning the opposite rule (the seek waited for
+    /// the fade), which the doc 013 decision reversed.
+    ///
+    /// Mutation: leave `apply_outcome` out of the `DeclickStarted` arm → no
+    /// seek, playhead still 12 → fails. Call `locate_to` again in
+    /// `complete_declick` → a second seek is requested → fails.
     #[test]
-    fn stop_and_return_holds_the_playhead_until_the_fade_ends() {
+    fn stop_and_return_moves_the_playhead_at_once_and_fades_the_audio() {
         let m = fsm();
         let _ = m.try_send(MotionEvent::Play);
         m.drain();
@@ -564,17 +602,32 @@ mod tests {
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
         assert!(m.declick.is_active(), "the fade must be armed");
-        assert_eq!(m.seek.take(), None, "the seek must wait for the fade");
-        assert_eq!(
-            m.settings.beat.load(Ordering::Acquire),
-            12.0,
-            "the playhead must not move while audio is still fading"
-        );
+        assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands now");
+        assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
+        assert!(m.settings.is_paused(), "and the playhead holds there");
 
         m.complete_declick();
-        assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands on silence");
-        assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
+        assert_eq!(m.seek.take(), None, "no second jump");
         assert!(m.is_stopped());
+    }
+
+    /// A declick stop pauses the playhead on its command; the motion mirror
+    /// reads the fade until it completes.
+    ///
+    /// Mutation: store `paused` from the motion (`set_motion`) in the
+    /// `DeclickStarted` arm → `DeclickToStop` is not `Stopped`, so the
+    /// playhead keeps rolling → fails.
+    #[test]
+    fn a_declick_stop_pauses_the_playhead_at_once() {
+        let m = fsm();
+        let _ = m.try_send(MotionEvent::Play);
+        m.drain();
+        let _ = m.try_send(MotionEvent::stop());
+        m.drain();
+        assert_eq!(m.motion(), MotionState::DeclickToStop);
+        assert!(m.settings.is_paused());
+        m.complete_declick();
+        assert!(m.is_stopped() && m.settings.is_paused());
     }
 
     /// Pressing Stop while already stopped has nothing to fade, so it returns

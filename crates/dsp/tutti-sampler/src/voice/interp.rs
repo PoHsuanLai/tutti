@@ -21,10 +21,11 @@
 use std::sync::Arc;
 use tutti_core::{
     fold_frame, snap_to_whole_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition,
-    SampleRate, Timeline, TimelineSegment,
+    SampleRate, Samples, Timeline, TimelineSegment,
 };
 use tutti_io::Wave;
 
+use super::loop_span::{blend, LoopSpan};
 use crate::MAX_SAMPLER_CHANNELS;
 
 /// Where the playhead sits in source samples, or `None` when it is outside the
@@ -123,6 +124,63 @@ pub fn window_position(
     Some(SamplePosition(snap_to_whole_frame(position)))
 }
 
+/// A placed read's position seated from the clock, and how far it has run
+/// since.
+///
+/// The clock moves between calls (per block, or per 64-frame chunk under
+/// `Legacy`), not per frame, and a voice in a `VoiceNode` is read a frame at a
+/// time through `tick`. So a placed read seats where the gate puts the
+/// playhead whenever the clock reads a beat it did not read last time, and
+/// steps from there by the read rate: frame `frames` of the seat is `origin +
+/// rate × frames`. Shared by both tiers that index a file (`MemorySource` and
+/// a forked `DiskVoice`), so the same clock gives them the same positions.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Seat {
+    /// The beat the clock read when the read seated.
+    beat: Beat,
+    /// The file position the gate gave for it.
+    origin: SamplePosition,
+    /// Frames read since.
+    frames: usize,
+}
+
+impl Seat {
+    /// This frame's seat: the last one a frame on while `timeline` still reads
+    /// the beat it seated on, else a fresh one at the position `gate` gives —
+    /// `None` when the gate gives none (outside the window), or the clock is
+    /// stopped.
+    #[inline]
+    pub(crate) fn next(
+        last: Option<Self>,
+        timeline: &dyn Timeline,
+        gate: impl FnOnce() -> Option<SamplePosition>,
+    ) -> Option<Self> {
+        // A stopped clock reads one beat for ever: running on from the last
+        // seat would play through a stop.
+        if !timeline.is_rolling() {
+            return None;
+        }
+        let beat = timeline.beat();
+        match last.filter(|seat| seat.beat == beat) {
+            Some(seat) => Some(Self {
+                frames: seat.frames + 1,
+                ..seat
+            }),
+            None => gate().map(|origin| Self {
+                beat,
+                origin,
+                frames: 0,
+            }),
+        }
+    }
+
+    /// The position this seat reads at, stepping by `rate` per frame.
+    #[inline]
+    pub(crate) fn position(&self, rate: ReadRate) -> SamplePosition {
+        self.origin + rate.advance(Samples(self.frames))
+    }
+}
+
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
 ///
 /// `y1` is the sample at the integer position, `y0`/`y2`/`y3` its neighbours
@@ -199,18 +257,7 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
 /// `len` must be non-zero.
 #[inline]
 pub(crate) fn tap_indices(len: usize, position: f64) -> ([usize; 4], f32) {
-    let mut idx = position.floor() as usize;
-    let mut frac = position.fract() as f32;
-    // A fraction a hair under 1 rounds to 1.0 in `f32`: "frame n, all the
-    // way to n + 1", which the cubic returns as frame n + 1 only to within
-    // an ulp. It *is* frame n + 1 at `t` = 0, where the kernel returns the
-    // tap exactly. (A position n - e inside a block, which no snap on the
-    // block's origin reaches, landed here.)
-    if frac >= 1.0 {
-        idx += 1;
-        frac = 0.0;
-    }
-
+    let (idx, frac) = split_position(position);
     let last = len - 1;
     // All four taps clamp to `last`, `im1` included: `saturating_sub` guards
     // only the LOW end, so a `position` past `len` leaves `im1` past the end
@@ -222,6 +269,59 @@ pub(crate) fn tap_indices(len: usize, position: f64) -> ([usize; 4], f32) {
     let i1 = (idx + 1).min(last);
     let i2 = (idx + 2).min(last);
     ([im1, i0, i1, i2], frac)
+}
+
+/// A position's whole frame and the fraction past it, as every tap layout
+/// ([`tap_indices`], and a loop's, `LoopSpan::taps`) takes them.
+#[inline]
+pub(crate) fn split_position(position: f64) -> (usize, f32) {
+    let mut idx = position.floor() as usize;
+    let mut frac = position.fract() as f32;
+    // A fraction a hair under 1 rounds to 1.0 in `f32`: "frame n, all the
+    // way to n + 1", which the cubic returns as frame n + 1 only to within
+    // an ulp. It *is* frame n + 1 at `t` = 0, where the kernel returns the
+    // tap exactly. (A position n - e inside a block, which no snap on the
+    // block's origin reaches, landed here.)
+    if frac >= 1.0 {
+        idx += 1;
+        frac = 0.0;
+    }
+    (idx, frac)
+}
+
+/// Read one frame of a looped `wave` at `pos` (placed on the loop, `looped`
+/// once it has been round; see [`LoopSpan::taps`]) into `out`, writing every
+/// element: the four frames of the looped sequence, each blended toward its
+/// lead-in inside the crossfade, through the one kernel and channel policy
+/// [`read_frame`] uses.
+///
+/// Silent for an empty wave, as `read_frame` is.
+#[inline]
+pub(crate) fn read_looped_frame(
+    wave: &Arc<Wave>,
+    span: &LoopSpan,
+    pos: f64,
+    looped: bool,
+    out: &mut [f32],
+) {
+    if out.is_empty() {
+        return;
+    }
+    let len = wave.len();
+    let src_ch = wave.channels();
+    if len == 0 || src_ch == 0 {
+        out.fill(0.0);
+        return;
+    }
+    let (taps, frac) = span.taps(len, pos, looped);
+    interpolate_taps(src_ch, frac, out, |c, t| {
+        let tap = taps[t];
+        let tail = wave.at(c, tap.frame);
+        match tap.fade {
+            Some((lead, w)) => blend(tail, wave.at(c, lead), w),
+            None => tail,
+        }
+    });
 }
 
 /// Interpolate one frame into `out` from four taps of a `src_ch`-wide source

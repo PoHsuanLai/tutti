@@ -31,8 +31,9 @@ pub(crate) struct LoopConfig {
     pub(crate) range: (u64, u64),
     /// Crossfade length in **frames**; 0 disables the fade and wraps hard.
     pub(crate) crossfade_frames: usize,
-    /// Cached fadein samples from loop start; avoids re-reading on each loop.
-    /// Flat interleaved at the region ring's width.
+    /// Cached fadein: the frames leading into the loop's start, `[start -
+    /// fade, start)` (`loops::capture_lead_in`); avoids re-reading on each
+    /// loop. Flat interleaved at the region ring's width.
     pub(crate) preloop_buffer: Option<Vec<f32>>,
 }
 
@@ -218,8 +219,11 @@ impl ChannelPlan {
             return LoopStatus::AtEnd(loop_start);
         }
 
-        if loop_cfg.crossfade_frames > 0 {
-            let crossfade_start = loop_end.saturating_sub(loop_cfg.crossfade_frames as u64);
+        // The fade as `handle_loops` runs it: clamped to the lead-in before
+        // the loop's start and to the loop.
+        let fade = super::loops::loop_fade_len(loop_cfg.range, loop_cfg.crossfade_frames);
+        if fade > 0 {
+            let crossfade_start = loop_end - fade as u64;
             if read_pos >= crossfade_start {
                 return LoopStatus::ApproachingEnd;
             }

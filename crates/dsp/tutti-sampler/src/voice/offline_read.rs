@@ -30,11 +30,11 @@
 //! # The same read as the memory tier
 //!
 //! A position is read exactly as `MemorySource` reads one: the four taps
-//! [`tap_indices`] names, through [`interpolate_taps`] (the kernel and the
-//! channel policy `read_frame` uses), silent at and past the end, mirrored the
-//! same way in reverse. A clip exported from disk is therefore the samples
-//! the same clip in memory renders, bit for bit, wherever the two are asked
-//! for the same position.
+//! [`tap_indices`] names (a loop's, `LoopSpan::taps`, on a loop), through
+//! [`interpolate_taps`] (the kernel and the channel policy `read_frame` uses),
+//! silent at and past the end, mirrored the same way in reverse. A clip
+//! exported from disk is therefore the samples the same clip in memory
+//! renders, bit for bit, wherever the two are asked for the same position.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,10 +42,9 @@ use std::sync::Arc;
 use tutti_core::{FaultLatch, SamplePosition};
 use tutti_io::Wave;
 
-use super::interp::{interpolate_taps, read_frame, tap_indices};
-use super::memory_source::wrap_into_loop;
+use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
+use super::loop_span::{blend, LoopSpan};
 use super::types::Direction;
-use super::LoopSetting;
 use crate::butler::control::StreamFile;
 use crate::MAX_SAMPLER_CHANNELS;
 
@@ -139,24 +138,27 @@ impl OfflineRead {
     /// Read file position `pos` (fractional file frames), gain-free, into
     /// `out`, writing every element.
     ///
-    /// Forward, a position at or past the stream's loop end wraps into the
-    /// loop, and the last `crossfade_frames` before the end blend linearly
-    /// into the frames from the loop start, as the butler's loop crossfade
-    /// blends them. Reverse mirrors the position about the file's last frame,
-    /// as the memory tier does (`read_clip_sample_into`), and ignores the
-    /// loop, as the butler's reverse refill does. At or past the end:
-    /// silence, and the file is closed (a forward read past the end of an
-    /// unlooped file has nothing more to read).
+    /// Forward, on a loop, the position is placed on it and read as
+    /// `LoopSpan` has a loop (the fade leads into the loop's start; taps near
+    /// the end wrap through it), as `MemorySource::read_placed_into` reads the
+    /// same loop. Reverse mirrors the position about the file's last frame, as
+    /// the memory tier does, and ignores the loop, as the butler's reverse
+    /// refill does. Silence where the file has nothing to play — forward at or
+    /// past the end, reverse at a position whose mirror is before the first
+    /// frame (`pos >= len`, as forward) — and the file is closed there (there
+    /// is nothing more to read in that direction).
     ///
     /// Blocks on file I/O when the position leaves the resident pages. That
     /// is the point of this type, and why it is only ever built for an
     /// offline render.
     pub(crate) fn read_into(&mut self, pos: SamplePosition, direction: Direction, out: &mut [f32]) {
-        let loop_ = match self.file.loop_ {
-            LoopSetting::On { start, end, .. } if end.get() > start.get() => self.file.loop_,
-            _ => LoopSetting::Off,
+        let span = LoopSpan::from_setting(self.file.loop_);
+        // Past what this direction can play, known without opening the file.
+        let played_out = match direction {
+            Direction::Reverse => true,
+            Direction::Forward => span.is_none(),
         };
-        if !direction.is_reverse() && loop_ == LoopSetting::Off {
+        if played_out {
             if let Some(len) = self.len {
                 if pos.get() >= len as f64 {
                     self.close();
@@ -170,37 +172,20 @@ impl OfflineRead {
             return;
         };
         let len = open.len() as f64;
-        let mut p = pos.get();
-        if direction.is_reverse() {
-            p = (len - 1.0 - p).max(0.0);
-        } else if let LoopSetting::On {
-            start,
-            end,
-            crossfade_frames,
-        } = loop_
-        {
-            let (start, end) = (start.get(), end.get());
-            if p >= end {
-                p = wrap_into_loop(p, start, end);
-            }
-            let fade = (crossfade_frames as f64).min(end - start);
-            let fade_start = end - fade;
-            if fade > 0.0 && p >= fade_start {
-                let into = p - fade_start;
-                let t = (into / fade) as f32;
-                open.read_into(p, out);
-                let mut head = [0.0f32; MAX_SAMPLER_CHANNELS];
-                let head = &mut head[..out.len().min(MAX_SAMPLER_CHANNELS)];
-                open.read_into(start + into, head);
-                // One envelope for every channel, as both crossfades in this
-                // crate use (`StreamingCrossfader`, `LoopCrossfade`).
-                for (s, &h) in out.iter_mut().zip(head.iter()) {
-                    *s = *s * (1.0 - t) + h * t;
+        match (direction, span) {
+            (Direction::Reverse, _) => {
+                if pos.get() >= len {
+                    out.fill(0.0);
+                    return;
                 }
-                return;
+                open.read_into((len - 1.0 - pos.get()).max(0.0), out);
             }
+            (Direction::Forward, Some(span)) => {
+                let (p, looped) = span.place(pos.get());
+                open.read_looped_into(&span, p, looped, out);
+            }
+            (Direction::Forward, None) => open.read_into(pos.get(), out),
         }
-        open.read_into(p, out);
     }
 
     /// Close the file: drop the decoder and its pages. The next read opens it
@@ -328,6 +313,21 @@ impl Open {
             Self::Paged(pages) => pages.read_into(p, out),
         }
     }
+
+    /// Interpolate position `p`, placed on `span` (`looped` once round it),
+    /// into `out` as `read_looped_frame` would from the whole file resident:
+    /// silence at and past the end.
+    fn read_looped_into(&mut self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
+        if p >= self.len() as f64 {
+            out.fill(0.0);
+            return;
+        }
+        match self {
+            // The memory tier's own looped read, on the same kind of wave.
+            Self::Resident(wave) => read_looped_frame(wave, span, p, looped, out),
+            Self::Paged(pages) => pages.read_looped_into(span, p, looped, out),
+        }
+    }
 }
 
 /// A file, decoded into two resident pages of [`PAGE_FRAMES`] as it is read.
@@ -385,6 +385,25 @@ impl Pages {
         let mut frames = [[0.0f32; MAX_SAMPLER_CHANNELS]; 4];
         for (frame, &at) in frames.iter_mut().zip(taps.iter()) {
             frame[..ch].copy_from_slice(&self.frame(at)[..ch]);
+        }
+        interpolate_taps(ch, frac, out, |c, t| frames[t][c]);
+    }
+
+    /// Interpolate position `p` (`< len`), placed on `span`, into `out`: the
+    /// loop's four taps, each blended toward its lead-in inside the fade, as
+    /// `read_looped_frame` blends them.
+    fn read_looped_into(&mut self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
+        let ch = self.channels.min(MAX_SAMPLER_CHANNELS);
+        let (taps, frac) = span.taps(self.len, p, looped);
+        let mut frames = [[0.0f32; MAX_SAMPLER_CHANNELS]; 4];
+        for (frame, tap) in frames.iter_mut().zip(taps.iter()) {
+            frame[..ch].copy_from_slice(&self.frame(tap.frame)[..ch]);
+            if let Some((lead, t)) = tap.fade {
+                let lead = self.frame(lead);
+                for (s, &l) in frame[..ch].iter_mut().zip(lead.iter()) {
+                    *s = blend(*s, l, t);
+                }
+            }
         }
         interpolate_taps(ch, frac, out, |c, t| frames[t][c]);
     }
@@ -453,6 +472,7 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LoopSetting;
     use tutti_core::SampleRate;
 
     const LEN: usize = 100_000;
@@ -520,6 +540,44 @@ mod tests {
                 read.page_loads()
             );
         }
+    }
+
+    /// **The taps wrap through the loop** (doc 013's N2, the disk fork): on a
+    /// hard loop `[10, 20)`, half a frame before the end interpolates frames
+    /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
+    /// ring holds there — not 20, 21 from past it; half a frame into a later
+    /// pass the frame behind is 19; the first pass reaches 10 from 9. Paged,
+    /// through the loop's own tap layout, as the memory tier reads it.
+    ///
+    /// Mutation (run): `LoopSpan::taps` clamping to the file rather than
+    /// wrapping → `value` 20, 21 in the taps at 19.5 → fails.
+    #[test]
+    fn a_loops_taps_wrap_through_its_seam() {
+        use super::super::interp::cubic_hermite;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut read = OfflineRead::new(
+            StreamFile {
+                path: ramp_file(dir.path()),
+                file_rate: SampleRate(48_000.0),
+                loop_: LoopSetting::On {
+                    start: SamplePosition(10.0),
+                    end: SamplePosition(20.0),
+                    crossfade_frames: 0,
+                },
+                resident: None,
+            },
+            Arc::default(),
+        );
+        let mut out = [0.0f32; 1];
+        let mut at = |pos: f64| {
+            read.read_into(SamplePosition(pos), Direction::Forward, &mut out);
+            out[0]
+        };
+        let v = value;
+        assert_eq!(at(19.5), cubic_hermite(v(18), v(19), v(10), v(11), 0.5));
+        assert_eq!(at(30.5), cubic_hermite(v(19), v(10), v(11), v(12), 0.5));
+        assert_eq!(at(10.5), cubic_hermite(v(9), v(10), v(11), v(12), 0.5));
+        assert!(read.page_loads() > 0, "read through the pages");
     }
 
     /// **A forward read past the end of an unlooped file closes it**: there

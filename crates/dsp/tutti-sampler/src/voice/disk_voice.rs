@@ -21,7 +21,7 @@ use tutti_core::{
     ReadRate, SamplePosition, SampleRate, Samples, SrcRatio, Timeline,
 };
 
-use super::interp::cubic_hermite;
+use super::interp::{cubic_hermite, Seat};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
 use super::types::Direction;
@@ -741,24 +741,6 @@ impl std::fmt::Display for OfflineFault {
 
 impl std::error::Error for OfflineFault {}
 
-/// A read position seated from the clock, and how far it has run since.
-///
-/// The clock moves between calls (per block, or per 64-frame chunk under
-/// `Legacy`), not per frame, and a voice in a [`VoiceNode`](super::VoiceNode)
-/// is read a frame at a time through `tick`. So the read seats where the gate
-/// puts the playhead whenever the clock reads a beat it did not read last
-/// time, and steps from there by the read rate: frame `frames` of the seat is
-/// `origin + rate × frames`, the memory tier's own `start + rate × i`.
-#[derive(Clone, Copy, Debug)]
-struct Seat {
-    /// The beat the clock read when the read seated.
-    beat: Beat,
-    /// The file position the gate gave for it.
-    origin: SamplePosition,
-    /// Frames read since.
-    frames: usize,
-}
-
 // Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
 // the `Arc<dyn Timeline>` clock. Print the gate
 // scalars + inner unit; nothing here touches the ring.
@@ -1052,45 +1034,31 @@ impl DiskVoice {
     /// Once the playhead is past the window's end, the file is closed: a
     /// render holding many voices keeps a file open per voice sounding.
     fn offline_frame(&mut self, out: &mut [f32]) {
-        let beat = self.timeline.beat();
-        let seated = self
-            .offline
-            .as_ref()
-            .and_then(|offline| offline.seat)
-            .filter(|seat| seat.beat == beat);
-        let seat = match seated {
-            Some(seat) => Seat {
-                frames: seat.frames + 1,
-                ..seat
-            },
-            None => match super::interp::window_position(
+        let last = self.offline.as_ref().and_then(|offline| offline.seat);
+        let seated = Seat::next(last, self.timeline.as_ref(), || {
+            super::interp::window_position(
                 self.timeline.as_ref(),
                 self.window.start,
                 self.window.duration,
                 self.file_sample_rate,
                 self.offline_window_rate(),
-            ) {
-                Some(origin) => Seat {
-                    beat,
-                    origin,
-                    frames: 0,
-                },
-                None => {
-                    let past = self.window.duration.is_some_and(|duration| {
-                        self.timeline.is_rolling() && beat >= self.window.start + duration
-                    });
-                    if let Some(offline) = self.offline.as_mut() {
-                        offline.seat = None;
-                        if past {
-                            if let Some(read) = offline.read.as_mut() {
-                                read.close();
-                            }
-                        }
+            )
+        });
+        let Some(seat) = seated else {
+            let beat = self.timeline.beat();
+            let past = self.window.duration.is_some_and(|duration| {
+                self.timeline.is_rolling() && beat >= self.window.start + duration
+            });
+            if let Some(offline) = self.offline.as_mut() {
+                offline.seat = None;
+                if past {
+                    if let Some(read) = offline.read.as_mut() {
+                        read.close();
                     }
-                    out.fill(0.0);
-                    return;
                 }
-            },
+            }
+            out.fill(0.0);
+            return;
         };
         let direction = self.shared_state.direction();
         let gain = self.shared_state.gain().get();
@@ -1112,7 +1080,7 @@ impl DiskVoice {
         let rate = speed
             .read_rate(SrcRatio::for_rates(file_rate, render_rate))
             .then(stretch);
-        let pos = seat.origin + rate.advance(Samples(seat.frames));
+        let pos = seat.position(rate);
         offline.seat = Some(seat);
         match offline.read.as_mut() {
             Some(read) => read.read_into(pos, direction, out),

@@ -223,19 +223,17 @@ fn a_fork_at_another_rate_resamples() {
 /// the live stream after the voice was built, which the voice itself never
 /// saw: it plays frames `0..3000`, then `1000..3000` over and over.
 ///
-/// **The crossfaded case pins parity with the current, known-wrong loop
-/// crossfade, not a correct one.** The last 100 frames before the end blend
-/// into the loop's first 100 (`[1000, 1100)`), and after the wrap the loop
-/// plays `[1000, 1100)` again: the head is heard twice, a jump at the wrap.
-/// That is what the butler's loop crossfade and `MemorySource`'s
-/// `LoopCrossfade` both do today, and this asserts the fork does the same;
-/// fixing it for every tier is doc 013's follow-up "loop crossfade replays
-/// its head" (S3), which should change this expectation with it.
+/// Crossfaded, the last 100 frames before the end blend toward the 100 that
+/// lead into the loop's start (`[900, 1000)`), frame `k` of the fade weighing
+/// the lead-in `(k + 1) / 101`, and the wrap then plays 1000: the join is the
+/// file's own step (doc 013's S3; `LoopSpan`). At unit speed on whole frames
+/// every read is a frame of that sequence exactly.
 ///
 /// Mutation (run): the fork reading its loop when the voice was built rather
 /// than when it is rebound (`StreamFile::loop_` forced `Off`) → plays
 /// straight on past 3000 → fails. Mutation (run): the crossfade blend dropped
-/// → the hard-loop values in the fade → fails.
+/// → the hard-loop values in the fade → fails. Mutation (run): the lead-in
+/// `start + k` (the old head replay) → fails.
 #[test]
 fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -272,8 +270,8 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
             let p = at(k);
             let want = if p >= 3_000 - fade {
                 let into = p - (3_000 - fade);
-                let t = into as f32 / fade as f32;
-                value(p) * (1.0 - t) + value(1_000 + into) * t
+                let t = (into + 1) as f32 / (fade + 1) as f32;
+                value(p) * (1.0 - t) + value(1_000 - fade + into) * t
             } else {
                 value(p)
             };
@@ -282,6 +280,111 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
                 "fade {fade}: render frame {k} read {got}, want {want} (loop position {p})"
             );
         }
+    }
+}
+
+/// A mono f32 WAV of `frames` at [`SR`]: a sine of period [`PERIOD`] frames.
+fn write_sine(path: &Path, frames: usize) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: SR as u32,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).expect("writes");
+    for i in 0..frames {
+        let v = (std::f64::consts::TAU * i as f64 / PERIOD as f64).sin() as f32;
+        w.write_sample(v).expect("writes");
+    }
+    w.finalize().expect("writes");
+}
+
+/// The period of [`write_sine`]'s sine, in frames.
+const PERIOD: usize = 100;
+
+/// **A fork's crossfaded loop is continuous at its wrap** (doc 013's S3):
+/// on a sine whose loop points click when cut hard — the loop starts on a
+/// rising zero crossing and ends a quarter period later in the cycle, so the
+/// frame before the wrap is the crest and the one after it zero — no step in
+/// the render is larger than the sine's own (`2 sin(π / PERIOD)`, its slope
+/// at a zero crossing), round the loop three times. The fade leads into the
+/// loop's start, so the join is the sine's own step.
+///
+/// The hard loop is asserted to click first, so the loop points have teeth.
+///
+/// Mutation (run): the lead-in `start + k` in `LoopSpan::fade_at` (the old
+/// head replay: fade into the loop's first frames, then play them again) → a
+/// step far above the sine's own at the wrap → fails. Mutation (run): the fade
+/// dropped (`LoopTap::fade` always `None`) → the hard cut → fails.
+#[test]
+fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("sine.wav");
+    write_sine(&path, 4_000);
+    let mut streamer = streamer_on(&path);
+    let voice = live_voice(&streamer, 0.0);
+    let own = (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 1e-5;
+
+    for (fade, clicks) in [(0usize, true), (256, false)] {
+        streamer
+            .commands()
+            .send(Command::Loop {
+                channel_index: 0,
+                setting: LoopSetting::On {
+                    start: SamplePosition(1_000.0),
+                    end: SamplePosition(3_025.0),
+                    crossfade_frames: fade,
+                },
+            })
+            .expect("the butler is alive");
+        let _ = streamer.step_until_settled(1_000);
+
+        let (clock, ctx) = clock_at(SR);
+        let mut copy = fork(&voice, &ctx, SR);
+        let [l, _] = render(&mut copy, &clock, 3_025 + 3 * 2_025);
+        let (step, at) = l
+            .windows(2)
+            .enumerate()
+            .map(|(i, w)| ((w[1] - w[0]).abs(), i))
+            .fold((0.0f32, 0), |a, b| if b.0 > a.0 { b } else { a });
+        if clicks {
+            assert!(step > 0.9, "the hard loop does not click ({step} at {at})");
+        } else {
+            assert!(
+                step <= own,
+                "fade {fade}: a step of {step} at render frame {at}, larger than the sine's own {own}"
+            );
+        }
+    }
+}
+
+/// **A reversed fork falls silent past the file's first frame** (doc 013's
+/// S1), as a forward one does past its last: the file backwards, then
+/// silence — not frame 0 held as DC.
+///
+/// Mutation (run): `OfflineRead::read_into` without either silence — the
+/// early close of a reversed read at or past `len`, and the reverse arm's own
+/// check (the old `(len - 1 - pos).max(0.0)` alone) → `value(0)` from render
+/// frame `LEN` on → fails. (The early close alone keeps it silent once the
+/// file's length is known; the arm's check covers a first read already past
+/// it.)
+#[test]
+fn a_reversed_fork_is_silent_past_the_first_frame() {
+    const LEN: usize = 5_000;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let streamer = streamer_on(&path);
+    let mut voice = live_voice(&streamer, 0.0);
+    voice.set_direction(tutti_sampler::Direction::Reverse);
+    let (clock, ctx) = clock_at(SR);
+    let mut copy = fork(&voice, &ctx, SR);
+    let [l, _] = render(&mut copy, &clock, LEN + 2_000);
+    for (k, &got) in l[..LEN].iter().enumerate() {
+        assert_eq!(got, value(LEN - 1 - k), "clip frame {k}");
+    }
+    for (k, &got) in l.iter().enumerate().skip(LEN) {
+        assert_eq!(got, 0.0, "clip frame {k}, past the file's first frame");
     }
 }
 
@@ -491,50 +594,147 @@ fn a_fork_follows_a_looping_render_timeline() {
     }
 }
 
-/// **At varispeed a fork is still bit-identical to the memory tier**: the
-/// same file in memory and on disk, placed at beat 1 and played at 1.5×,
-/// render the same samples, bit for bit (matched rates: the memory tier
-/// steps a mismatched-rate file wrongly, doc 013's follow-up).
+/// **A fork is bit-identical to the memory tier**: the same file in memory
+/// and on disk, placed at beat 1, render the same samples, bit for bit, at
+/// every frame of every chunk — the two tiers read through one seat, one
+/// step, one loop and one kernel.
+///
+/// - **At 1.5× varispeed**, on fractional positions.
+/// - **A 24 kHz file at 48 kHz** (a non-unity conversion): the memory tier
+///   used to step by varispeed alone within a chunk (doc 013's placed
+///   `MemorySource` rate follow-up).
+/// - **A crossfaded loop at 1.5×**, through the fade, the seam and many
+///   wraps, on fractional positions: the fade toward the lead-in (S3) and the
+///   taps through the seam (N2). A placed memory voice used to ignore its
+///   loop.
+/// - **Reversed** (the memory voice in a `VoiceNode`, where direction lives),
+///   past the file's first frame into silence (S1).
 ///
 /// Mutation (run): the fork's step not composing varispeed (`speed` →
 /// `PlaybackRate::UNITY` in `offline_frame`'s step) → it parts from memory
-/// inside the first chunk → fails.
+/// inside the first chunk → fails. Mutation (run): the memory tier's step
+/// `read_rate` → `window_rate` (`seated_position`) → the 24 kHz case parts
+/// inside the clip's first chunk → fails. Mutation (run): `MemorySource::read_placed_into`
+/// ignoring the loop → the loop case parts at the first wrap → fails.
+/// Mutation (run): the memory tier's reverse holding frame 0 → the reverse
+/// case parts past the start → fails.
 #[test]
-fn at_varispeed_a_fork_matches_the_memory_tier_bit_for_bit() {
+fn a_fork_matches_the_memory_tier_bit_for_bit() {
     const LEN: usize = 40_000;
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, LEN);
-    let streamer = streamer_on(&path);
-    let mut voice = live_voice(&streamer, 1.0);
-    voice.set_speed(tutti_core::PlaybackRate::new(1.5));
-    let mut wave = tutti_io::Wave::new(2, SR);
-    for i in 0..LEN {
-        wave.push_frame(&[value(i), -value(i)]);
+    struct Case {
+        what: &'static str,
+        file_rate: u32,
+        speed: f32,
+        loop_: LoopSetting,
+        reverse: bool,
     }
-    let (clock, ctx) = clock_at(SR);
-    let mut memory =
-        tutti_sampler::MemorySource::with_transport(Arc::new(wave), ctx.clone(), Beat(1.0), None);
-    memory.set_speed(tutti_core::PlaybackRate::new(1.5));
-    memory.set_sample_rate(SampleRate(SR));
-    let mut copy = fork(&voice, &ctx, SR);
-
-    let input = BufferVec::new(0);
-    let (mut a, mut b) = (BufferVec::new(2), BufferVec::new(2));
-    for chunk in 0..(24_000 + LEN) / CHUNK {
-        copy.process(CHUNK, &input.buffer_ref(), &mut a.buffer_mut());
-        memory.process(CHUNK, &input.buffer_ref(), &mut b.buffer_mut());
-        for c in 0..2 {
-            for i in 0..CHUNK {
-                let (x, y) = (a.buffer_ref().at_f32(c, i), b.buffer_ref().at_f32(c, i));
-                assert_eq!(
-                    x.to_bits(),
-                    y.to_bits(),
-                    "channel {c}, frame {}: disk {x} memory {y}",
-                    chunk * CHUNK + i
-                );
-            }
+    let cases = [
+        Case {
+            what: "1.5x varispeed",
+            file_rate: SR as u32,
+            speed: 1.5,
+            loop_: LoopSetting::Off,
+            reverse: false,
+        },
+        Case {
+            what: "a 24 kHz file at 48 kHz",
+            file_rate: 24_000,
+            speed: 1.0,
+            loop_: LoopSetting::Off,
+            reverse: false,
+        },
+        Case {
+            what: "a crossfaded loop at 1.5x",
+            file_rate: SR as u32,
+            speed: 1.5,
+            loop_: LoopSetting::On {
+                start: SamplePosition(3_000.0),
+                end: SamplePosition(7_001.0),
+                crossfade_frames: 700,
+            },
+            reverse: false,
+        },
+        Case {
+            what: "reversed",
+            file_rate: SR as u32,
+            speed: 1.0,
+            loop_: LoopSetting::Off,
+            reverse: true,
+        },
+    ];
+    for case in cases {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        write_ramp(&path, case.file_rate, LEN);
+        let mut streamer = streamer_on(&path);
+        if case.loop_ != LoopSetting::Off {
+            streamer
+                .commands()
+                .send(Command::Loop {
+                    channel_index: 0,
+                    setting: case.loop_,
+                })
+                .expect("the butler is alive");
+            let _ = streamer.step_until_settled(1_000);
         }
-        clock.advance(CHUNK);
+        let mut voice = live_voice(&streamer, 1.0);
+        voice.set_speed(tutti_core::PlaybackRate::new(case.speed));
+        if case.reverse {
+            voice.set_direction(tutti_sampler::Direction::Reverse);
+        }
+        let mut wave = tutti_io::Wave::new(2, case.file_rate as f64);
+        for i in 0..LEN {
+            wave.push_frame(&[value(i), -value(i)]);
+        }
+        let (clock, ctx) = clock_at(SR);
+        let mut source = tutti_sampler::MemorySource::with_transport(
+            Arc::new(wave),
+            ctx.clone(),
+            Beat(1.0),
+            None,
+        );
+        source.set_speed(tutti_core::PlaybackRate::new(case.speed));
+        source.set_loop_setting(case.loop_);
+        let mut memory: Box<dyn AudioUnit> = if case.reverse {
+            Box::new(VoiceNode::with_channels(
+                Voice {
+                    source: VoiceSource::Memory(source),
+                    play: Playback {
+                        direction: tutti_sampler::Direction::Reverse,
+                        ..Playback::default()
+                    },
+                    channel_index: None,
+                },
+                2usize,
+            ))
+        } else {
+            Box::new(source)
+        };
+        memory.set_sample_rate(SampleRate(SR));
+        let mut copy = fork(&voice, &ctx, SR);
+
+        let input = BufferVec::new(0);
+        let (mut a, mut b) = (BufferVec::new(2), BufferVec::new(2));
+        let mut sounded = 0usize;
+        // Beat 1, then two file lengths: past the end of every case's file.
+        for chunk in 0..(24_000 + 2 * LEN) / CHUNK {
+            copy.process(CHUNK, &input.buffer_ref(), &mut a.buffer_mut());
+            memory.process(CHUNK, &input.buffer_ref(), &mut b.buffer_mut());
+            for c in 0..2 {
+                for i in 0..CHUNK {
+                    let (x, y) = (a.buffer_ref().at_f32(c, i), b.buffer_ref().at_f32(c, i));
+                    assert_eq!(
+                        x.to_bits(),
+                        y.to_bits(),
+                        "{}: channel {c}, frame {}: disk {x} memory {y}",
+                        case.what,
+                        chunk * CHUNK + i
+                    );
+                    sounded += usize::from(x != 0.0);
+                }
+            }
+            clock.advance(CHUNK);
+        }
+        assert!(sounded >= LEN, "{}: the two agreed on silence", case.what);
     }
 }

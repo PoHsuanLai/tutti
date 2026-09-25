@@ -540,6 +540,74 @@ mod tests {
         }
     }
 
+    /// **A voice node reads a placed wave at another rate the same through
+    /// `tick` as through `process`**, with the clock moving once per block: a
+    /// 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on output frame
+    /// `n`, forward and reversed, across every block boundary. `tick` is how a
+    /// `Net` reads a node frame by frame; the slot's read seats on the clock
+    /// and steps from there, as `process` does.
+    ///
+    /// Mutation (run): the slot's `tick` reading `window_position()` per frame
+    /// (the old read, no step) → one file frame per block → fails. Mutation
+    /// (run): the slot's `process` stepping by `window_rate` → a file frame per
+    /// output frame → fails.
+    #[test]
+    fn a_voice_node_reads_a_wave_at_another_rate_by_tick_and_by_process() {
+        const LEN: usize = 4_096;
+        let data: Vec<f32> = (0..LEN).map(|i| (i + 1) as f32).collect();
+        let wave = Arc::new(Wave::from_samples(24_000.0, &data));
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for via_tick in [false, true] {
+                let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+                let sampler = MemorySource::with_transport(
+                    Arc::clone(&wave),
+                    transport.clone(),
+                    Beat::new(0.0),
+                    None,
+                );
+                let mut node = VoiceNode::with_channels(
+                    Voice {
+                        source: VoiceSource::Memory(sampler),
+                        play: Playback {
+                            direction,
+                            ..Playback::default()
+                        },
+                        channel_index: None,
+                    },
+                    1usize,
+                );
+                node.set_sample_rate(SampleRate(48_000.0));
+                let ib = BufferVec::new(1);
+                let mut ob = BufferVec::new(1);
+                let mut out = Vec::new();
+                for _ in 0..8 {
+                    if via_tick {
+                        for _ in 0..64 {
+                            let mut frame = [0.0f32];
+                            node.tick(&[], &mut frame);
+                            out.push(frame[0]);
+                        }
+                    } else {
+                        node.process(64, &ib.buffer_ref(), &mut ob.buffer_mut());
+                        out.extend((0..64).map(|i| ob.buffer_ref().at_f32(0, i)));
+                    }
+                    transport.advance(64, 48_000.0);
+                }
+                for (n, &got) in out.iter().enumerate().skip(4) {
+                    let at = n as f32 / 2.0;
+                    let want = match direction {
+                        Direction::Forward => at + 1.0,
+                        Direction::Reverse => LEN as f32 - at,
+                    };
+                    assert!(
+                        (got - want).abs() < 1e-2,
+                        "{direction:?}, tick {via_tick}: output frame {n} read {got}, want {want}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The **disk** tier must consume its source at the stretched rate too.
     ///
     /// The memory tier's fix scales a cursor; the disk tier has no cursor to

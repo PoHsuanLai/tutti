@@ -13,7 +13,7 @@ use super::memory_source::MemorySource;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use tutti_core::{
     Amplitude, AudioUnit, BufferMut, Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate,
-    Samples, StretchFactor,
+    StretchFactor,
 };
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
@@ -258,19 +258,29 @@ impl PlaybackSlot {
             // (there is no block to spread), but the ring must still drain at
             // the stretched rate or the two disagree about how much source a
             // second of output costs.
-            if let (VoiceSource::Disk(reader), Some(unit)) =
-                (&self.voice.source, self.stretch.as_ref())
-            {
-                reader.set_stretch_rate(unit.input_rate());
+            let stretch_rate = self
+                .stretch
+                .as_ref()
+                .map_or(ReadRate::UNITY, |unit| unit.input_rate());
+            if let VoiceSource::Disk(reader) = &self.voice.source {
+                reader.set_stretch_rate(stretch_rate);
             }
-            read_source_frame_into(&mut self.voice.source, direction, gain, &mut raw[..n]);
+            read_source_frame_into(
+                &mut self.voice.source,
+                direction,
+                gain,
+                stretch_rate,
+                &mut raw[..n],
+            );
             out.fill(0.0);
             if let Some(unit) = &mut self.stretch {
                 unit.tick(&raw[..n], out);
             }
         } else {
             match &mut self.voice.source {
-                VoiceSource::Memory(sampler) => match sampler.window_position() {
+                // Seated and stepped, as `process` reads it: a clock that moves
+                // once per block steps through the block here too.
+                VoiceSource::Memory(sampler) => match sampler.seated_position(ReadRate::UNITY) {
                     Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
                     None => out.fill(0.0),
                 },
@@ -350,16 +360,20 @@ impl PlaybackSlot {
                     // origin and step then disagree within each block as well as
                     // across them.
                     //
-                    // Both come from `stretched_window_position` / the same
-                    // composed rate for exactly that reason — the two must be
-                    // derived together or they drift apart again.
-                    let rate = sampler.window_rate().then(unit.input_rate());
-                    let Some(start_pos) = sampler.stretched_window_position(unit.input_rate())
-                    else {
-                        return;
-                    };
+                    // Both come from `seated_position`, which seats at
+                    // `stretched_window_position` and steps by `read_rate`
+                    // with the same stretch — the two must be derived together
+                    // or they drift apart again. (The step is `read_rate`, not
+                    // the gate's `window_rate`: a file at another rate than the
+                    // session's moves `src_ratio` file frames per output frame.)
+                    let stretch_rate = unit.input_rate();
                     for i in 0..size {
-                        let pos = start_pos + rate.advance(Samples(i));
+                        let Some(pos) = sampler.seated_position(stretch_rate) else {
+                            // Outside the window: nothing to feed, and the filter
+                            // keeps what it holds, as it did when a block
+                            // outside the window returned here whole.
+                            continue;
+                        };
                         read_clip_sample_into(sampler, direction, pos, gain, &mut raw[..n]);
                         frame[..n].fill(0.0);
                         unit.tick(&raw[..n], &mut frame[..n]);
@@ -392,16 +406,16 @@ impl PlaybackSlot {
         } else {
             match &mut self.voice.source {
                 VoiceSource::Memory(sampler) => {
-                    let Some(start_pos) = sampler.window_position() else {
-                        return;
-                    };
-                    // `window_rate`, not a hand-rolled `speed * src_ratio`:
-                    // multiplying the two here double-applies `src_ratio`
-                    // against a gate origin that has already resolved it. The
-                    // named method is what keeps origin and step matched.
-                    let rate = sampler.window_rate();
+                    // Seated at the gate's origin (`window_rate`, varispeed
+                    // alone, in the wave's own frames) and stepped by
+                    // `read_rate` (varispeed and `src_ratio`), per frame: see
+                    // `MemorySource::seated_position`. Stepping by the gate's
+                    // rate read a 24 kHz file on a 48 kHz clock one file frame
+                    // per output frame, then jumped back at every block.
                     for i in 0..size {
-                        let pos = start_pos + rate.advance(Samples(i));
+                        let Some(pos) = sampler.seated_position(ReadRate::UNITY) else {
+                            continue;
+                        };
                         read_clip_sample_into(sampler, direction, pos, gain, &mut frame[..n]);
                         mix_in!(frame, i);
                     }
@@ -438,6 +452,10 @@ impl PlaybackSlot {
 /// Voice/Playback level from `gain` (mirrored from `voice.play.gain`). This
 /// matches the streaming tier, where gain lives in the source's shared state,
 /// and keeps a single, well-defined gain application point per tier.
+///
+/// The read itself — reverse, and a loop — is the source's own
+/// ([`MemorySource::read_placed_into`]), so a bare placed source and one in a
+/// slot read a position the same way.
 #[inline]
 fn read_clip_sample_into(
     sampler: &MemorySource,
@@ -446,14 +464,7 @@ fn read_clip_sample_into(
     gain: Amplitude,
     out: &mut [f32],
 ) {
-    match direction {
-        Direction::Reverse => {
-            let len = sampler.duration_samples() as f64;
-            let reversed = (len - 1.0 - pos.get()).max(0.0);
-            sampler.get_sample_raw_into(reversed, out);
-        }
-        Direction::Forward => sampler.get_sample_raw_into(pos.get(), out),
-    }
+    sampler.read_placed_into(pos, direction, out);
     let g = gain.get();
     for s in out.iter_mut() {
         *s *= g;
@@ -465,16 +476,18 @@ fn read_clip_sample_into(
 /// still owns the read. `gain` scales the in-memory read at the Voice level (see
 /// [`read_clip_sample_into`]); the streaming reader applies its own gain
 /// internally. Writes every element of `out`. Used to feed the stretch filter
-/// (which owns no source) on the hot path.
+/// (which owns no source) on the hot path; `stretch_rate` is the filter's, which
+/// a placed memory read seats and steps by, as `process` does.
 #[inline]
 fn read_source_frame_into(
     source: &mut VoiceSource,
     direction: Direction,
     gain: Amplitude,
+    stretch_rate: ReadRate,
     out: &mut [f32],
 ) {
     match source {
-        VoiceSource::Memory(sampler) => match sampler.window_position() {
+        VoiceSource::Memory(sampler) => match sampler.seated_position(stretch_rate) {
             Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
             None => out.fill(0.0),
         },

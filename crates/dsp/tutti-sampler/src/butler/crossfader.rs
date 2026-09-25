@@ -2,10 +2,11 @@
 //!
 //! Used for both seek and loop crossfades in `RtState` for streaming playback.
 //!
-//! For the in-memory sampler's loop crossfade, see `units::loop_crossfade::LoopCrossfade`.
-//! The two are intentionally separate: streaming has a separate producer (butler thread)
-//! so a lock-free design fits, while the in-memory unit owns its own buffer in `process()`
-//! and the lock-free indirection adds no value.
+//! The in-memory sampler (and a forked disk voice) crossfade a loop without a
+//! buffer at all: they read the fade from the file in place, through
+//! `voice::loop_span::LoopSpan`. Streaming needs one because the audio thread
+//! reads a ring, not the file: the butler captures the tail and the lead-in into
+//! a buffer pair, and the lock-free design hands that pair across.
 
 use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -55,11 +55,14 @@ in both drive paths (`voice/slot.rs`), and all six `stretch_*` cases pass.
 
 ## Two traps, both paid for
 
-**Drive with `process`, not `tick`.** A placed voice derives its position from
-the playhead, which advances once per block. `process` walks the block with
-`offset_in_block`; `tick` has no offset, so 64 calls against one transport
-reading emit the same sample 64 times — a staircase that resamples the source
-downward. The first draft did this and every case failed, *including* `dry`.
+**`tick` once read one sample per block.** A placed voice derives its position
+from the playhead, which advances once per block. `process` walked the block
+with an offset; `tick` had none, so 64 calls against one transport reading
+emitted the same sample 64 times — a staircase that resamples the source
+downward. The first draft drove `tick` and every case failed, *including*
+`dry`. A placed read now seats on the clock and steps through a block through
+either entry point (`MemorySource::seated_position`); the harness still drives
+`process`, as a host does.
 
 **Keep an unprocessed control.** `dry` is what distinguishes "the engine is
 broken" from "the harness is broken". Both times this harness was wrong, `dry`

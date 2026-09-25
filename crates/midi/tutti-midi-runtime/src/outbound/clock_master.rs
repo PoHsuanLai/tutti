@@ -284,21 +284,25 @@ impl ClockMaster {
         // the previous block's end and this block's start round
         // independently, and a boundary tick was sent twice or not at all.
         //
-        // Where playback does not continue the previous block (a start, a
-        // continue, a locate) a tick exactly on the first frame is not sent:
-        // the Start / Continue / Song Position just sent stands for it, as it
-        // always has here.
+        // Where playback starts, continues or locates on a tick boundary, that
+        // tick goes out on the first frame, after the Start / Continue / Song
+        // Position sent above (same offset, later in the queue). MIDI 1.0
+        // (MMA, "System Real Time Messages", Start and Continue): a receiver
+        // begins on the first Timing Clock after Start / Continue, so the
+        // clock of the start beat must be sent; skipping it leaves every
+        // receiving device one tick behind. Off a boundary, the first tick is
+        // the next boundary's.
         let tick_beats = BeatDuration(1.0 / PPQN);
         let max_offset = (block_size - 1) as u32;
-        let continues = !is_edge && !jumped;
         // The tick at or before `beat`: its frame is 0 (on `beat`, within the
-        // rule's tolerance) or before this block (already sent).
+        // rule's tolerance) or before this block (already sent, or behind an
+        // off-tick start).
         let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64;
         loop {
             let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
             let k = first_frame_at_or_after((tick_beat - beat) / beats_per_sample);
             tick_idx += 1;
-            if k < 0 || (k == 0 && !continues) {
+            if k < 0 {
                 continue;
             }
             match u32::try_from(k) {
@@ -604,28 +608,141 @@ mod tests {
         );
     }
 
+    /// Ticks land on their frames, in order, and a start on a tick boundary
+    /// sends that boundary's tick on frame 0.
+    ///
+    /// This pinned two ticks (1000, 2000) until the start tick was fixed:
+    /// MIDI 1.0 (MMA, "System Real Time Messages", Start) has a receiver
+    /// begin on the first Timing Clock after Start, so the clock of beat 0
+    /// must be sent, or every receiver runs one tick behind.
     #[test]
     fn ticks_are_sample_accurate_within_block() {
-        // A block that spans exactly two clock ticks should place them at
-        // distinct, ordered frame offsets inside the block.
+        // A block that spans three clock ticks, the first on its first
+        // frame, places them at distinct, ordered frame offsets.
         let sr = 48_000.0;
         let (cm, transport, cons) = master(Bpm(120.0), sr);
         transport.set_playing(true);
         transport.set_beat(0.0);
         // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
-        // block starting at beat 0 covers tick boundaries at 1000 and 2000.
+        // block starting at beat 0 covers tick boundaries at 0, 1000 and 2000.
         cm.tick(2500);
         let events: Vec<_> = drain_all(&cons)
             .into_iter()
             .filter(|e| is_status(e, 0xF8))
             .collect();
-        assert_eq!(events.len(), 2, "expected 2 ticks in the block");
+        assert_eq!(events.len(), 3, "expected 3 ticks in the block");
         assert!(
-            events[0].frame_offset < events[1].frame_offset,
+            events[0].frame_offset < events[1].frame_offset
+                && events[1].frame_offset < events[2].frame_offset,
             "ticks ordered"
         );
-        assert!((events[0].frame_offset as i64 - 1000).abs() < 4);
-        assert!((events[1].frame_offset as i64 - 2000).abs() < 4);
+        assert_eq!(events[0].frame_offset, 0, "the start beat's tick");
+        assert!((events[1].frame_offset as i64 - 1000).abs() < 4);
+        assert!((events[2].frame_offset as i64 - 2000).abs() < 4);
+    }
+
+    /// Where the first Timing Clock goes, and in what order, for a block that
+    /// does not continue the previous one: the transport message(s), then an
+    /// F8 on frame 0 when the beat sits on a tick boundary, else the first F8
+    /// on the next boundary.
+    fn first_clock(events: &[MidiEvent]) -> (usize, u32) {
+        let i = events
+            .iter()
+            .position(|e| is_status(e, 0xF8))
+            .expect("a timing clock");
+        (i, events[i].frame_offset)
+    }
+
+    /// Start at beat 0, Continue at an on-tick beat, and a locate while
+    /// playing to an on-tick beat: each sends an F8 on frame 0, queued after
+    /// its Start / Continue / Song Position. MIDI 1.0 (MMA, "System Real
+    /// Time Messages", Start, Continue): a receiver begins on the first
+    /// Timing Clock after Start / Continue.
+    ///
+    /// Mutation (run): skip a tick on frame 0 of a block that does not
+    /// continue the last (`k == 0 && (is_edge || jumped)` → `continue`, the
+    /// old rule) → no F8 at offset 0 → fails.
+    #[test]
+    fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
+        let sr = 48_000.0;
+        // Start at beat 0.
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let start = events
+            .iter()
+            .position(|e| is_status(e, 0xFA))
+            .expect("Start");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "Start at beat 0: F8 on frame 0");
+        assert!(start < clock, "the F8 follows Start in the queue");
+
+        // Continue at beat 8 (tick 192).
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(8.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+        let cont = events
+            .iter()
+            .position(|e| is_status(e, 0xFB))
+            .expect("Continue");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "Continue on a tick: F8 on frame 0");
+        assert!(
+            spp < clock && cont < clock,
+            "the F8 follows SPP and Continue"
+        );
+
+        // A locate while playing to beat 4 (tick 96).
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let _ = drain_all(&cons);
+        transport.set_beat(4.0);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "a locate on a tick: F8 on frame 0");
+        assert!(spp < clock, "the F8 follows Song Position");
+    }
+
+    /// Off a tick boundary, the first F8 after a locate or a Continue is the
+    /// next boundary's, on its frame; nothing goes out on frame 0.
+    ///
+    /// Mutation (run): send a tick behind the block's start on frame 0
+    /// (`k < 0` → `k = 0` instead of skipping it) → an F8 at offset 0 →
+    /// fails.
+    #[test]
+    fn an_off_tick_locate_clocks_the_next_boundary() {
+        let sr = 48_000.0;
+        // Half a tick past beat 4: 500 frames to the next boundary at 120
+        // BPM / 48 kHz (a tick is 1000 frames).
+        let off = 4.0 + 0.5 / PPQN;
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let _ = drain_all(&cons);
+        transport.set_beat(off);
+        cm.tick(2048);
+        let events = drain_all(&cons);
+        assert!(events.iter().any(|e| is_status(e, 0xF2)), "a locate");
+        let (_, offset) = first_clock(&events);
+        assert_eq!(offset, 500, "the next boundary's frame");
+
+        // The same off-tick beat as a Continue.
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(off);
+        transport.set_playing(true);
+        cm.tick(2048);
+        let (_, offset) = first_clock(&drain_all(&cons));
+        assert_eq!(offset, 500, "Continue off a tick: the next boundary");
     }
 
     /// Run `blocks` blocks of `block` frames at `rate`, the transport rolling

@@ -450,13 +450,15 @@ place that loses precision to be written out explicitly:
      as `first_frame_at_or_after` rather than re-derived per site. A reader
      that has no session rate (the sampler's gate) measures in its source's
      frames at unit speed: a millionth of either is far below audibility.
-   - **The MIDI clock keeps its start rule.** On the block playback starts
-     (or continues, or locates) in, a 24-PPQN tick exactly on the first
-     frame is not sent: Start / Continue / Song Position stands for it, as
-     before (its test pins two ticks in the first 2 500 frames). Only
-     continuing blocks changed, where a tick on a block boundary is now sent
+   - **The MIDI clock follows MIDI 1.0 at a start.** A receiver begins on
+     the first Timing Clock after Start / Continue (MMA, "System Real Time
+     Messages"), so on the block playback starts, continues or locates in,
+     a start beat on a tick boundary gets its F8 on frame 0, queued after
+     the Start / Continue / Song Position; off a boundary the first F8 is
+     the next boundary's. The old rule skipped that tick (`floor + 1`) and
+     left every receiver one tick behind; its test pinned the skip and now
+     pins the spec. In continuing blocks a tick on a block boundary is sent
      once, on the next block's first frame, instead of twice or never.
-     Whether a receiver wants that first tick is left open.
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.

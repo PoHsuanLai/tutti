@@ -91,9 +91,11 @@ use tutti_core::{AudioUnit, BufferVec, F32};
 /// 0 — the three neighbouring tests' subprocesses, live in their own
 /// processes. It reported a leak that was a race.
 ///
-/// Two things need serializing here and both are process-global: wall clock
-/// (each test paces itself to a real block period, so neighbours halve the
-/// time each subprocess gets) and the `plugin-server` process count.
+/// What still needs serializing is wall clock, which is process-global: each
+/// test paces itself to a real block period, so neighbours halve the time each
+/// subprocess gets. The process count no longer does. The leak test now
+/// probes only the pids it launched itself, so a neighbour's servers are
+/// invisible to it.
 #[cfg(feature = "clap")]
 fn exclusive() -> clap_probe::cross_process_lock::Guard {
     clap_probe::exclusive()
@@ -611,6 +613,31 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 ///
 /// Not a timing test — a resource one. A DAW loads and unloads plugins all
 /// session; leaking one host process per load would be fatal over hours.
+///
+/// # What is observed, and why not a process count
+///
+/// This counted `plugin-server` processes system-wide with `pgrep` and
+/// compared before with after. That had two faults:
+/// - **It could not fail on Windows.** There is no `pgrep` there, the spawn
+///   error fell back to 0, and the leak check compared 0 with 0.
+/// - **It read global state.** A neighbouring test binary's healthy server,
+///   started between the two counts, was counted as this test's leak.
+///   `launch.rs`'s `a_failed_launch_does_not_strand_the_subprocess` documents
+///   the same flake.
+///
+/// Now the test records the pid of every server *it* launched
+/// ([`PluginHandle::server_pid`](tutti_plugin::handles::PluginHandle::server_pid))
+/// and asks the OS about exactly those. No scan is involved, so no other
+/// process's server can be miscounted.
+///
+/// There is no settling delay either. `ProcessGuard::drop` kills and waits
+/// synchronously when the last `Arc` goes, and the unit and the handle are the
+/// only holders. So by the time `drop(handles)` returns, each server is already
+/// reaped.
+///
+/// Mutation: `std::mem::forget` one round's `handles` instead of dropping
+/// them. That server's guard never runs, and this fails naming its pid on
+/// every OS.
 #[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 fn repeated_load_and_drop_leaves_no_subprocesses() {
@@ -620,37 +647,81 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
     // exactly as a third-party plugin does — and `load_n` falls back to it.
     // The guard used to skip this test on every machine without plugins
     // installed, which is every bare checkout.
-    let before = count_plugin_servers();
+    let mut launched = Vec::new();
     for round in 0..8 {
         let Some((mut units, handles)) = load_n(2) else {
             return;
         };
+        for handle in &handles {
+            launched.push(
+                handle
+                    .server_pid()
+                    .expect("every plugin here is out-of-process, so it has a server pid"),
+            );
+        }
         drive_series(&mut units, 4);
         drop(units);
         drop(handles);
         eprintln!("round {round}: dropped");
     }
-    // Teardown is asynchronous (the guard signals, the child exits); give it a
-    // moment before counting rather than racing it.
-    std::thread::sleep(Duration::from_millis(500));
-    let after = count_plugin_servers();
 
+    assert_eq!(launched.len(), 16, "8 rounds of 2 servers each");
+    let survivors: Vec<u32> = launched
+        .iter()
+        .copied()
+        .filter(|&pid| is_alive(pid))
+        .collect();
     assert!(
-        after <= before,
-        "plugin-server count went {before} -> {after} across 8 load/drop rounds — \
-         subprocesses are leaking"
+        survivors.is_empty(),
+        "{} of {} plugin-servers outlived every handle and unit across 8 \
+         load/drop rounds — subprocesses are leaking (pids {survivors:?})",
+        survivors.len(),
+        launched.len(),
     );
 }
 
-#[cfg(any(feature = "clap", feature = "vst3"))]
-fn count_plugin_servers() -> usize {
-    std::process::Command::new("pgrep")
-        .arg("-f")
-        .arg("plugin-server")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
-        .unwrap_or(0)
+/// Whether `pid` still names a process that has not been reaped.
+///
+/// Unix: `kill(pid, 0)` checks the pid without sending a signal. A running
+/// orphan answers `Ok`. So does a zombie, which means a missing `wait` is
+/// caught as well as a missing `kill`. A reaped child answers `ESRCH`.
+///
+/// Windows: there are no zombies. A process object lives exactly as long as
+/// some handle to it is open, and the guard's `Child` holds one. After a
+/// correct teardown, `OpenProcess` finds nothing. A leaked guard keeps the
+/// server running, so its exit code reads `STILL_ACTIVE`.
+///
+/// Neither probe can rule out the OS reusing a reaped pid for an unrelated
+/// process. That error goes the loud way (a false leak, never a false pass),
+/// and it needs a pid to wrap round between a drop and this check.
+#[cfg(all(unix, any(feature = "clap", feature = "vst3")))]
+fn is_alive(pid: u32) -> bool {
+    let pid = libc::pid_t::try_from(pid).expect("a pid fits pid_t");
+    // SAFETY: signal 0 performs only the existence and permission check.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    // EPERM: the pid exists but belongs to someone else. It cannot be our
+    // child, but it is not gone, so report it rather than guess.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(all(windows, any(feature = "clap", feature = "vst3")))]
+fn is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: plain Win32 calls on a handle this function opens and closes.
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let queried = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        queried.is_ok() && code == STILL_ACTIVE.0 as u32
+    }
 }
 
 // ---------------------------------------------------------------------------

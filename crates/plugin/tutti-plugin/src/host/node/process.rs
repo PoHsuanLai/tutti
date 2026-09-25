@@ -26,6 +26,12 @@ impl ProcessGuard {
         }
     }
 
+    /// The OS process id of the guarded `plugin-server`, or `None` for a
+    /// test guard that owns no subprocess.
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.process.as_ref().map(Child::id)
+    }
+
     /// Test-only: create a guard without a real subprocess. Used by
     /// `PluginHandle::from_bridge_and_metadata` in mock-server tests.
     #[cfg(test)]

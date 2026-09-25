@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use tutti_graph::{
     compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
-    Shapes, Status, Transport, Ump, ValidGraph,
+    Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 
@@ -319,8 +319,16 @@ impl Node for TestNode {
             Kind::EnvProbe => {
                 let base =
                     cx.arrival.samples().get() as f32 + cx.env.transport.tempo.get() as f32 * 1e-3;
-                for (i, o) in io.output(0).iter_mut().enumerate() {
-                    *o = ((cx.env.frame.get() + i as u64) % 1000) as f32 * 1e-3 + base;
+                // The transport per frame, changes included, so both
+                // interpreters must hand every node the same `Env`.
+                let env = *cx.env;
+                for (k, o) in env.offsets().zip(io.output(0).iter_mut()) {
+                    let t = env.transport_at(k);
+                    let moving = if t.playing { 0.5 } else { 0.0 };
+                    *o = ((env.frame.get() + k.get() as u64) % 1000) as f32 * 1e-3
+                        + base
+                        + moving
+                        + t.beat.get().fract() as f32;
                 }
                 Status::Modified
             }
@@ -491,6 +499,17 @@ impl Pair {
         input: &[f32],
         transport: &Transport,
     ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+        self.block_with_changes(frames, input, transport, &TransportChanges::NONE)
+    }
+
+    /// `block_at`, with the transport changing inside the block.
+    pub fn block_with_changes(
+        &mut self,
+        frames: usize,
+        input: &[f32],
+        transport: &Transport,
+        changes: &TransportChanges,
+    ) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
         let transport = *transport;
         // Channel `c` of the graph input is the signal scaled by 2^-c: exact,
         // and distinct per channel.
@@ -507,11 +526,13 @@ impl Pair {
         let mut b = vec![vec![0.0f32; frames]; self.outputs];
         {
             let mut outs: Vec<&mut [f32]> = a.iter_mut().map(Vec::as_mut_slice).collect();
-            self.exec.process(frames, &transport, &ins, &mut outs);
+            self.exec
+                .process_with_changes(frames, &transport, changes, &ins, &mut outs);
         }
         {
             let mut outs: Vec<&mut [f32]> = b.iter_mut().map(Vec::as_mut_slice).collect();
-            self.reference.process(frames, &transport, &ins, &mut outs);
+            self.reference
+                .process_with_changes(frames, &transport, changes, &ins, &mut outs);
         }
         // The reference never drops an event; the executor drops past its
         // preallocated capacity. A drop would surface as a divergence far

@@ -150,7 +150,8 @@ pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, Prepare, Resolution,
-    Scratch, Shape, SilenceMask, Status, Transport, MAX_PORTS,
+    Scratch, Shape, SilenceMask, Status, Transport, TransportChange, TransportChangeRejected,
+    TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,

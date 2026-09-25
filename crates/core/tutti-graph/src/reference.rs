@@ -55,6 +55,7 @@ use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, Node, Prepare, SilenceMask, Status, Transport,
+    TransportChanges,
 };
 use crate::plan::DelayKey;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
@@ -491,13 +492,43 @@ impl Reference {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        self.process_with_changes(frames, transport, &TransportChanges::NONE, inputs, outputs);
+    }
+
+    /// Render one block with the transport changing inside it. Same contract
+    /// as `Executor::process_with_changes`.
+    pub fn process_with_changes(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
+        // The block's transport pieces, cut here by hand rather than through
+        // `Env::segments`, so the executor's cut has an independent check.
+        let mut pieces: Vec<(usize, usize, Transport)> = Vec::new();
+        let mut cut = 0;
+        let mut t = *transport;
+        for c in changes.as_slice() {
+            let at = c.at.index().min(frames);
+            if at > cut {
+                pieces.push((cut, at - cut, t));
+                cut = at;
+            }
+            t = c.to;
+        }
+        if frames > cut {
+            pieces.push((cut, frames - cut, t));
+        }
         if let Some(next) = self.suspended {
             // Suspended: silence, the clock counts, the transport moves.
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
-            self.playhead
-                .observe(transport, next.sample_rate().get(), frames);
+            for &(_, len, t) in &pieces {
+                self.playhead.observe(&t, next.sample_rate().get(), len);
+            }
             self.frame += Samples(frames);
             return;
         }
@@ -515,19 +546,22 @@ impl Reference {
             sample_rate: self.prepare.sample_rate(),
             block_len: Samples(frames),
             transport: *transport,
+            changes: *changes,
         };
 
         // Scheduled commands: which land this block, and where. Kept in
         // scheduling order per port; the gather below appends them after the
         // port's own events.
         self.landing.clear();
-        self.playhead
-            .observe(transport, self.prepare.sample_rate().get(), frames);
+        for &(_, len, t) in &pieces {
+            self.playhead
+                .observe(&t, self.prepare.sample_rate().get(), len);
+        }
         let mut waiting = Vec::new();
         for mut cmd in std::mem::take(&mut self.scheduled) {
             // PDC: timeline frame F reaches this sink at F + its arrival.
             let arrival = self.arrival.get(&cmd.to.node).copied().unwrap_or_default();
-            let offset = match self.land(&mut cmd, arrival, transport, frames) {
+            let offset = match self.land(&mut cmd, arrival, &pieces, frames) {
                 None => {
                     waiting.push(cmd);
                     continue;
@@ -960,7 +994,7 @@ impl Reference {
         &self,
         cmd: &mut RefCommand,
         arrival: Latency,
-        t: &Transport,
+        pieces: &[(usize, usize, Transport)],
         frames: usize,
     ) -> Option<Option<Offset>> {
         let start = self.frame.get();
@@ -983,17 +1017,20 @@ impl Reference {
             At::Beat(b) => {
                 let b = b.get();
                 let rate = self.prepare.sample_rate().get();
-                let tempo = t.tempo.get();
-                let tr = traverse(t, tempo, rate, frames);
-                let fpb = rate * 60.0 / tempo;
-                let reached = tr
-                    .segs
-                    .iter()
-                    .find(|&&(from, to, _)| from <= b && b < to)
-                    .map(|&(from, _, frame0)| {
-                        ((b - from) * fpb + frame0 - FRAME_ROUNDING).ceil().max(0.0)
-                    })
-                    .filter(|&k| k < frames as f64);
+                // The first piece of the block whose playback reaches it.
+                let reached = pieces.iter().find_map(|&(cut, len, t)| {
+                    let tempo = t.tempo.get();
+                    let fpb = rate * 60.0 / tempo;
+                    traverse(&t, tempo, rate, len)
+                        .segs
+                        .iter()
+                        .find(|&&(from, to, _)| from <= b && b < to)
+                        .map(|&(from, _, frame0)| {
+                            ((b - from) * fpb + frame0 - FRAME_ROUNDING).ceil().max(0.0)
+                        })
+                        .filter(|&k| k < len as f64)
+                        .map(|k| cut as f64 + k)
+                });
                 match reached {
                     Some(k) => {
                         let f = start + k as u64;

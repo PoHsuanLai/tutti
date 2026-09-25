@@ -868,8 +868,9 @@ impl AudioGraphRes {
     /// and running state (`rebound: false`, and `ctx` is not used); a node
     /// is `clone_isolated`, rebound onto `ctx` and reset.
     ///
-    /// `Err(ExportRefused::NoOutputs)` when `node` has no audio outputs (or
-    /// is not in the graph); a fork refusal (`NotForkable`, a plugin whose
+    /// `Err(ExportRefused::GraphHasNoOutputs)` when the graph has no global
+    /// outputs, and `Err(ExportRefused::NoOutputs)` when `node` has no audio
+    /// outputs (or is not in the graph); a fork refusal (`NotForkable`, a plugin whose
     /// fresh instance did not load) is the renderer's own error.
     #[cfg(feature = "export")]
     pub(crate) fn export(
@@ -878,6 +879,9 @@ impl AudioGraphRes {
         ctx: &OfflineTransport,
         rate: SampleRate,
     ) -> Result<Exported, ExportRefused> {
+        if self.outputs() == 0 {
+            return Err(ExportRefused::GraphHasNoOutputs);
+        }
         match &self.0 {
             Backend::Net(net) => {
                 let Some(node) = node else {
@@ -947,6 +951,8 @@ pub(crate) struct Exported {
 pub(crate) enum ExportRefused {
     /// The target node has no audio outputs, or is not in the graph.
     NoOutputs,
+    /// The graph has no global outputs: nothing any export could render.
+    GraphHasNoOutputs,
     /// The fork was refused: a node cannot be forked, or its fork source
     /// failed.
     Render(tutti_export::Error),

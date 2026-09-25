@@ -97,6 +97,14 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "the PluginClient capture, on the owned unit before insertion.",
     ),
     (
+        "tests/export_fork.rs",
+        "downcast_ref / downcast_mut",
+        2,
+        "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
+         export error's `ForkCause` to the plugin's `PluginForkError` (the \
+         cause's documented use), not a graph node.",
+    ),
+    (
         "src/graph/resources.rs",
         "raw graph node access (.0.node( / net.node()",
         3,

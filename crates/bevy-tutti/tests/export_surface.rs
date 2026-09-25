@@ -19,14 +19,14 @@ use std::sync::Arc;
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
+use bevy_tutti::export::RenderGraph;
 use bevy_tutti::export::{
-    ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
-    ExportTarget,
+    ExportClock, ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest,
+    ExportSource, ExportTarget,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphBackend};
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderConfig,
-    RenderGraph,
+    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
 use tutti_graph::Legacy;
 use tutti_nodes::testing::{Const, Sink};
@@ -102,7 +102,7 @@ fn a_buffers_request_runs_and_reports_planes(backend: GraphBackend) {
             ExportSource::Master,
             ExportTarget::Buffers,
             stereo_config(),
-            Arc::new(FrozenClock),
+            ExportClock::frozen(),
         ))
         .observe(|done: On<ExportDone>| {
             match &done.result {
@@ -140,7 +140,7 @@ fn a_file_request_writes_and_reports_the_path(backend: GraphBackend) {
                 normalize: None,
             },
             stereo_config(),
-            Arc::new(FrozenClock),
+            ExportClock::frozen(),
         ))
         .observe(|done: On<ExportDone>| {
             match &done.result {
@@ -175,7 +175,7 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it(backend: Gr
             ExportSource::Master,
             ExportTarget::Buffers,
             stereo_config(),
-            Arc::new(FrozenClock),
+            ExportClock::frozen(),
         ))
         .id();
 
@@ -225,7 +225,7 @@ fn an_unrenderable_node_reports_a_failure(backend: GraphBackend) {
             ExportSource::Node(orphan),
             ExportTarget::Buffers,
             stereo_config(),
-            Arc::new(FrozenClock),
+            ExportClock::frozen(),
         ))
         .observe(|done: On<ExportDone>| {
             assert!(
@@ -258,7 +258,7 @@ fn a_batch_spawned_in_one_frame_starts_one_at_a_time(backend: GraphBackend) {
             ExportSource::Master,
             ExportTarget::Buffers,
             stereo_config(),
-            Arc::new(FrozenClock),
+            ExportClock::frozen(),
         ));
     }
 
@@ -319,17 +319,18 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered(backend: GraphBackend) {
         ExportSource::Master,
         ExportTarget::Buffers,
         stereo_config(),
-        Arc::new(FrozenClock),
+        ExportClock::frozen(),
     )
     .with_prepare(|prepared, world| {
         // Replace the whole graph's output with a constant read from the world.
         let level = world.resource::<Level>().0;
+        let prepared_key = prepared.fresh_key();
         match prepared.graph {
             RenderGraph::Net(net) => {
                 net.master(Const::mono(level));
             }
             RenderGraph::Graph { editor, .. } => {
-                let key = tutti_types::NodeKey(u64::MAX);
+                let key = prepared_key;
                 editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
                 for out in editor.spec_mut().topology.outputs.iter_mut() {
                     *out = Source::Node(OutPort { node: key, port: 0 });
@@ -394,9 +395,8 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto(backend: GraphBackend)
         ExportSource::Node(node),
         ExportTarget::Buffers,
         stereo_config(),
-        timeline.clone(),
+        ExportClock::timeline(timeline.clone()),
     )
-    .on_timeline(timeline.clone())
     // The hook sees the very context the nodes were rebound with.
     .with_prepare(|prepared, _world| {
         if let Some(transport) = prepared.ctx {
@@ -456,9 +456,8 @@ fn a_master_export_says_whether_it_was_rebound(backend: GraphBackend) {
         ExportSource::Master,
         ExportTarget::Buffers,
         stereo_config(),
-        timeline.clone(),
+        ExportClock::timeline(timeline.clone()),
     )
-    .on_timeline(timeline)
     .with_prepare(move |prepared, _world| {
         #[allow(unused_imports)]
         use tutti_core::Timeline;

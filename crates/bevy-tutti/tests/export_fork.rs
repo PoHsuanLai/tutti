@@ -19,14 +19,15 @@ use std::sync::{Arc, Mutex};
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
+use bevy_tutti::export::RenderGraph;
 use bevy_tutti::export::{
-    ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
-    ExportTarget,
+    ExportClock, ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest,
+    ExportSource, ExportTarget,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphBackend, GraphSource};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Hz, SignalFrame, Tail, Q};
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderConfig,
+    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
@@ -79,6 +80,7 @@ fn graph_on(backend: GraphBackend) -> AudioGraphRes {
 enum Got {
     Planes(Vec<Vec<f32>>),
     NotForkable(ExportNode),
+    ForkSource(ExportNode, bevy_tutti::export::ForkCause),
     ForkFailed(ExportNode, tutti_graph::ForkFaultKind),
     Other(String),
 }
@@ -103,6 +105,9 @@ fn export(app: &mut App, request: ExportRequest) -> Got {
                 Ok(ExportOutput::Buffers(r)) => Got::Planes(r.planes.clone()),
                 Ok(other) => Got::Other(format!("{other:?}")),
                 Err(ExportError::NotForkable { node }) => Got::NotForkable(node.clone()),
+                Err(ExportError::ForkSource { node, cause }) => {
+                    Got::ForkSource(node.clone(), cause.clone())
+                }
                 Err(ExportError::ForkFailed { node, kind, .. }) => {
                     Got::ForkFailed(node.clone(), *kind)
                 }
@@ -124,7 +129,7 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
         source,
         ExportTarget::Buffers,
         config(seconds),
-        Arc::new(FrozenClock),
+        ExportClock::frozen(),
     )
 }
 
@@ -259,9 +264,15 @@ impl AudioUnit for Late {
 /// past its duration. Asked of the native plan on `Native`, of the net on
 /// `Net`.
 ///
+/// The tail is resolved by `GraphTail::resolve`: a finite tail under the cap
+/// is rendered whole, and a graph whose only node never said (`Tail::Unknown`,
+/// every `AudioUnit`'s default) renders none — not the cap, which would
+/// append silence.
+///
 /// Mutation (run): `start_exports` ignoring `latency_from_graph` → frame 0
 /// reads 0 on both; ignoring `tail_from_graph` → the render is `TAIL`
-/// frames short on both.
+/// frames short on both; resolving the tail as `samples().unwrap_or(cap)`
+/// → the unknown graph renders `cap` extra frames on both.
 fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
     let mut app = app_over(graph_on(backend));
     {
@@ -275,7 +286,7 @@ fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
         &mut app,
         buffers(ExportSource::Master, seconds)
             .trim_reported_latency()
-            .with_reported_tail(Samples(0)),
+            .with_reported_tail(Samples(48_000)),
     )
     .planes();
     assert_eq!(planes[0].len(), frames + TAIL, "{backend:?}: the tail");
@@ -284,8 +295,99 @@ fn latency_and_tail_come_from_the_graph(backend: GraphBackend) {
         "{backend:?}: the latency was not trimmed"
     );
     assert!(planes[0].iter().all(|&s| s == 1.0), "{backend:?}");
+
+    let mut app = app_over(graph_on(backend));
+    {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let unknown = graph.insert(Counter {
+            n: Arc::new(AtomicU64::new(0)),
+        });
+        graph.set_outputs_from(unknown);
+    }
+    let planes = export(
+        &mut app,
+        buffers(ExportSource::Master, seconds).with_reported_tail(Samples(4_800)),
+    )
+    .planes();
+    assert_eq!(
+        planes[0].len(),
+        frames,
+        "{backend:?}: an unknown tail renders none, not the cap"
+    );
 }
 both_backends!(latency_and_tail_come_from_the_graph);
+
+/// **The latency trimmed is the latency of the graph rendered — after the
+/// `prepare` hook.** The live graph is a latency-free constant; the hook
+/// puts a `LATE`-frame source on the output. Trimmed by what the hook left,
+/// the source's step lands on frame 0; by the live graph's figure (0), it
+/// would land on frame `LATE`.
+///
+/// Mutation (run): not applying the fork's committed hook edit before the
+/// figures are read (`executor.apply_pending()` after the hook's commit, in
+/// `start_exports`, a no-op) → the fork's plan is still the live graph's
+/// and `native` trims nothing. Mutation (run): reading the latency before
+/// the hook runs → both fail.
+fn the_trim_is_read_after_the_prepare_hook(backend: GraphBackend) {
+    let mut app = app_over(graph_on(backend));
+    {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let dc = graph.insert(tutti_nodes::testing::Const::mono(0.5));
+        graph.set_outputs_from(dc);
+    }
+    let request = buffers(ExportSource::Master, 0.01)
+        .trim_reported_latency()
+        .with_prepare(|prepared, _world| {
+            let key = prepared.fresh_key();
+            match prepared.graph {
+                RenderGraph::Net(net) => {
+                    net.master(Late { pos: 0 });
+                }
+                RenderGraph::Graph { editor, .. } => {
+                    editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
+                    for out in editor.spec_mut().topology.outputs.iter_mut() {
+                        *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
+                            node: key,
+                            port: 0,
+                        });
+                    }
+                }
+            }
+        });
+    let planes = export(&mut app, request).planes();
+    assert_eq!(
+        planes[0][0], 1.0,
+        "{backend:?}: trimmed by the live graph's latency, not the rendered one's"
+    );
+}
+both_backends!(the_trim_is_read_after_the_prepare_hook);
+
+/// **An export of a graph with no outputs says so**, for the master and for
+/// a node — not that the node has none.
+///
+/// Mutation (run): dropping the `outputs() == 0` check in
+/// `AudioGraphRes::export` → the node export reports its node, the master
+/// renders nothing and reports success.
+fn a_graph_with_no_outputs_says_so(backend: GraphBackend) {
+    let mut graph = AudioGraphRes::headless_with(backend, 0, 0);
+    graph.set_sample_rate(SampleRate(RATE));
+    let mut app = app_over(graph);
+    let node = {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        graph.insert(Osc::sine(Hz(220.0)))
+    };
+    let entity = app.world_mut().spawn(node).id();
+    for source in [ExportSource::Master, ExportSource::Node(entity)] {
+        match export(&mut app, buffers(source, 0.01)) {
+            Got::Other(why) => assert!(
+                why.contains("the graph has no outputs"),
+                "{backend:?}, {source:?}: {why}"
+            ),
+            other => panic!("{backend:?}, {source:?}: expected a refusal, got {other:?}"),
+        }
+    }
+}
+both_backends!(a_graph_with_no_outputs_says_so);
 
 /// **A node export on a 90 BPM timeline plays where 90 BPM puts it.** A
 /// sampler voice placed at beat 3 on the live transport, exported on its own
@@ -293,9 +395,10 @@ both_backends!(latency_and_tail_come_from_the_graph);
 /// frame 96 000 (at the default 120 BPM it would be 72 000). Silent before,
 /// the clip's own samples from there.
 ///
-/// Mutation (run): `prepare_graph` building its default 120 BPM timeline
-/// even when the request names one → the voice enters at 72 000, on both
-/// backends.
+/// Mutation (run): `ExportClock::offline` answering the stopped timeline
+/// for a named one → the voice never sounds, on both backends. Mutation
+/// (run): `Stopped::is_rolling` answering `true` → the frozen export of the
+/// voice at beat 0 sounds.
 #[cfg(feature = "sampler")]
 fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
@@ -320,6 +423,22 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
         graph.set_outputs_from(node);
         app.world_mut().spawn(node).id()
     };
+    let zero = {
+        let mut wave = tutti_io::Wave::new(1, RATE);
+        for i in 0..RATE as usize {
+            wave.push_frame(&[tone(i)]);
+        }
+        let source = MemorySource::with_transport(
+            Arc::new(wave),
+            Arc::new(tutti_core::transport::Transport::new(SampleRate(RATE)))
+                as Arc<dyn tutti_core::Timeline>,
+            tutti_core::Beat(0.0),
+            None,
+        );
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let node = graph.insert(source);
+        app.world_mut().spawn(node).id()
+    };
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_core::Beat(0.0),
@@ -333,9 +452,8 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
             ExportSource::Node(voice),
             ExportTarget::Buffers,
             config(2.5),
-            timeline.clone(),
-        )
-        .on_timeline(timeline),
+            ExportClock::timeline(timeline.clone()),
+        ),
     )
     .planes();
     // Beat 3 at 90 BPM is frame 96 000.
@@ -359,6 +477,25 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
             tone(k)
         );
     }
+
+    // A frozen clock rebinds the voice onto a timeline stopped at beat 0: it
+    // plays nothing, rather than loop its first block against a rolling
+    // playhead nothing advances (what a default timeline did before
+    // `ExportClock`). Placed at beat 0 here, where a rolling one would sound.
+    let planes = export(
+        &mut app,
+        ExportRequest::new(
+            ExportSource::Node(zero),
+            ExportTarget::Buffers,
+            config(0.1),
+            ExportClock::frozen(),
+        ),
+    )
+    .planes();
+    assert!(
+        planes[0].iter().all(|&s| s == 0.0),
+        "{backend:?}: a frozen export played the voice"
+    );
 }
 #[cfg(feature = "sampler")]
 both_backends!(a_node_export_follows_a_90_bpm_timeline);
@@ -508,6 +645,25 @@ impl AudioUnit for Unforkable {
     }
 }
 
+/// **A master export forks what the outputs hear**: an unforkable node no
+/// output reaches (an unrouted mic) does not refuse it, and the render is
+/// the routed node's.
+///
+/// Mutation (run): `ForkTarget::Master` forking every node in the spec →
+/// refused as not forkable, naming the mic.
+#[test]
+fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
+    let mut app = app_over(graph_on(GraphBackend::Native));
+    {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let _mic = graph.insert(Unforkable);
+        let dc = graph.insert(tutti_nodes::testing::Const::mono(0.25));
+        graph.set_outputs_from(dc);
+    }
+    let planes = export(&mut app, buffers(ExportSource::Master, 0.01)).planes();
+    assert!(planes[0].iter().all(|&s| s == 0.25));
+}
+
 /// **A node that cannot be forked refuses the export by its entity and
 /// name**, not by a graph key a host cannot map back; and a node export of
 /// a branch it does not feed is not refused (a fork copies only the
@@ -578,8 +734,10 @@ mod plugin {
     use tutti_plugin::catalog::PluginId;
 
     /// The probe's render modes this file drives (`tutti-clap-test-plugin`'s
-    /// `RenderMode`): `out = in + tag(port, ch)`, and a note gate.
+    /// `RenderMode`): `out = in + tag(port, ch)`; `out = in` delayed by the
+    /// 137 frames it reports; and a note gate.
     const TAG_PASSTHROUGH: u32 = 1;
+    const LATENCY: u32 = 3;
     const NOTES: u32 = 4;
 
     /// Set a switch the probe reads when its server starts. A fork's server
@@ -595,6 +753,11 @@ mod plugin {
     /// An engine-less native app with the hosting and sequencing plugins, and
     /// the reference plugin loaded on an entity named "Probe" in `mode`.
     fn app_with_probe(mode: u32) -> (App, Entity) {
+        app_with_probe_at(mode, clap_probe())
+    }
+
+    /// [`app_with_probe`], the plugin loaded from `path`.
+    fn app_with_probe_at(mode: u32, path: std::path::PathBuf) -> (App, Entity) {
         probe_env("TUTTI_PLUGIN_SERVER", plugin_server().display());
         probe_env("TUTTI_CLAP_PROBE_RENDER_MODE", mode);
         let mut app = app_over(graph_on(GraphBackend::Native));
@@ -606,7 +769,7 @@ mod plugin {
             .world_mut()
             .spawn((
                 PluginRequest {
-                    id: PluginId::from_path(clap_probe()),
+                    id: PluginId::from_path(path),
                     sample_rate: SampleRate(RATE),
                     ..Default::default()
                 },
@@ -630,9 +793,14 @@ mod plugin {
 
     /// Feed the probe's two main inputs a constant 0.25.
     fn feed(app: &mut App, probe: Entity) {
+        feed_with(app, probe, Const::mono(0.25));
+    }
+
+    /// Feed the probe's two main inputs `unit`'s output.
+    fn feed_with(app: &mut App, probe: Entity, unit: impl tutti_core::AudioUnit + 'static) {
         let dc = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(Const::mono(0.25))
+            graph.insert(unit)
         };
         let dc = app.world_mut().spawn(dc).id();
         app.world_mut().entity_mut(probe).insert(
@@ -655,18 +823,69 @@ mod plugin {
         app.update();
     }
 
+    /// A ramp: frame `n` is `n / 1024`, exact in `f32` over a render, so
+    /// a render one frame off reads a different value at every frame.
+    #[derive(Clone)]
+    struct Ramp {
+        n: u32,
+    }
+
+    impl tutti_core::AudioUnit for Ramp {
+        fn inputs(&self) -> usize {
+            0
+        }
+        fn outputs(&self) -> usize {
+            1
+        }
+        fn reset(&mut self) {
+            self.n = 0;
+        }
+        fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+            output[0] = self.n as f32 / 1024.0;
+            self.n += 1;
+        }
+        fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+            for i in 0..size {
+                output.set_f32(0, i, self.n as f32 / 1024.0);
+                self.n += 1;
+            }
+        }
+        fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+            SignalFrame::new(1)
+        }
+        fn tail(&mut self) -> Tail {
+            Tail::None
+        }
+        fn get_id(&self) -> u64 {
+            0x4a3b
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
     /// **A graph holding a hosted plugin as an effect exports**, rendered by
-    /// a fork of the plugin: the probe adds its per-channel tag (1 and 2) to
-    /// what it is fed, from the first frame once its pipeline block is
-    /// trimmed.
+    /// a fork of the plugin, and the trim is the delay it applies. In its
+    /// latency mode the probe delays its input by the 137 frames it reports;
+    /// the node adds its 64-frame pipeline block to that, and the export
+    /// trims the plan's 201. Fed a ramp, the render is the ramp from frame 0,
+    /// sample for sample: a trim one frame off in either direction reads the
+    /// neighbouring frame's value everywhere. (A constant input could not
+    /// tell a trim of 64 from one of 201.)
     ///
     /// Mutation (run): `plugin_load_promote` inserting the plugin boxed
     /// (`insert_boxed(plugin.into_unit())`, the path before PR 12) → the
-    /// export is refused as not forkable, naming "Probe".
+    /// export is refused as not forkable, naming "Probe". Mutation (run):
+    /// trimming one frame less than the plan's latency
+    /// (`reported_latency() - 1` in `start_exports`) → every frame reads its
+    /// predecessor.
     #[test]
     fn a_plugin_effect_exports_through_its_fork() {
-        let (mut app, probe) = app_with_probe(TAG_PASSTHROUGH);
-        feed(&mut app, probe);
+        let (mut app, probe) = app_with_probe(LATENCY);
+        feed_with(&mut app, probe, Ramp { n: 0 });
         let planes = match export(
             &mut app,
             buffers(ExportSource::Master, 0.1).trim_reported_latency(),
@@ -674,11 +893,105 @@ mod plugin {
             Got::Planes(p) => p,
             other => panic!("the export failed: {other:?}"),
         };
-        for (c, want) in [(0, 1.25f32), (1, 2.25)] {
-            if let Some(i) = planes[c].iter().position(|&s| s != want) {
-                panic!("channel {c}: frame {i} is {}, want {want}", planes[c][i]);
+        for (c, plane) in planes.iter().enumerate().take(2) {
+            for (i, &got) in plane.iter().enumerate() {
+                let want = i as f32 / 1024.0;
+                assert_eq!(got, want, "channel {c}: frame {i}");
             }
         }
+    }
+
+    /// A MIDI source that is not a function of a timeline: it cannot be
+    /// carried into an offline render (as a live sequencer, or a snapshot
+    /// reader bound to another render, cannot).
+    struct Unrebindable;
+
+    impl tutti_midi_types::MidiUnitIn for Unrebindable {
+        fn poll_unit(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _block: usize,
+            _rate: SampleRate,
+            _buffer: &mut [MidiEvent],
+        ) -> usize {
+            0
+        }
+        fn rebind_offline(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
+            None
+        }
+    }
+
+    /// **A plugin fork that cannot be built fails the export by the
+    /// plugin's entity and name**, before anything renders
+    /// (`ExportError::ForkSource`), with the plugin's own reason:
+    ///
+    /// - the plugin plays a MIDI source that cannot be rebound for an
+    ///   offline render — its notes would render as silence
+    ///   (`PluginForkError::MidiSource`);
+    /// - the plugin's file is gone since it loaded, so no fresh instance
+    ///   loads (`PluginForkError::Load`).
+    ///
+    /// Mutation (run): `PluginFork::instance` ignoring a `NotRebindable`
+    /// answer → the first export renders. Mutation (run): `NodeNames::name`
+    /// passing `ForkSource` through as `ExportError::Render` → no entity
+    /// is named.
+    #[test]
+    fn a_plugin_fork_that_cannot_be_built_is_a_named_failure() {
+        use tutti_plugin::PluginForkError;
+        // The cause, once the failure is checked to name the plugin.
+        let named = |got: Got, what: &str| match got {
+            Got::ForkSource(node, cause) => {
+                assert_eq!(node.name.as_deref(), Some("Probe"), "{what}");
+                cause
+            }
+            other => panic!("{what}: expected a named fork-source failure, got {other:?}"),
+        };
+
+        let (mut app, probe) = app_with_probe(TAG_PASSTHROUGH);
+        app.world()
+            .get::<bevy_tutti::midi::MidiTarget>(probe)
+            .expect("the plugin's MIDI port was captured")
+            .port()
+            .install(Arc::new(Unrebindable));
+        let cause = named(
+            export(&mut app, buffers(ExportSource::Master, 0.05)),
+            "an unrebindable MIDI source",
+        );
+        assert!(
+            matches!(
+                cause.downcast_ref::<PluginForkError>(),
+                Some(PluginForkError::MidiSource)
+            ),
+            "{cause:?}"
+        );
+
+        // A link of our own to the plugin, so removing it touches no other
+        // test's (the suites publish one shared `.clap` link).
+        let shared = clap_probe();
+        let own = shared.with_extension(format!("{}.clap", std::process::id()));
+        let _ = std::fs::remove_file(&own);
+        let real = std::fs::canonicalize(&shared).expect("the reference plugin");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &own).expect("link the plugin");
+        #[cfg(windows)]
+        std::fs::copy(&real, &own).expect("copy the plugin");
+        let (mut app, _probe) = app_with_probe_at(TAG_PASSTHROUGH, own.clone());
+        std::fs::remove_file(&own).expect("remove the plugin's file");
+        let cause = named(
+            export(&mut app, buffers(ExportSource::Master, 0.05)),
+            "a plugin file gone since it loaded",
+        );
+        assert!(
+            matches!(
+                cause.downcast_ref::<PluginForkError>(),
+                Some(PluginForkError::Load { path, .. }) if *path == own
+            ),
+            "{cause:?}"
+        );
     }
 
     /// **An exported plugin instrument plays its notes.** A fork has a fresh
@@ -693,22 +1006,24 @@ mod plugin {
     /// the edges can be asserted to the frame: 32 768 and 65 536 (at the
     /// default 120 BPM, 24 000 and 48 000). At 90 BPM a beat is 32 000
     /// frames, a step binary cannot hold, and the note lands a frame early
-    /// (measured: 32 063 for 32 064) — the clip's rounding, not the export's.
+    /// (measured: 32 063 for 32 064) — `OfflineTimeline` accumulates an `f64`
+    /// beat per chunk, the rounding doc 013 records as a follow-up for its
+    /// own PR; this test keeps to the exact tempo until then.
     ///
     /// Not trimmed: the probe reports 137 frames of latency in every mode
     /// but delays only in its latency mode, so the graph's figure is not
     /// this render's delay.
     ///
     /// Rendered at the device's 48 kHz and at 96 kHz: the fork is launched at
-    /// the live rate and prepared at the render's, and the clip must place
-    /// its notes at the rate the fork renders at (a beat is 65 536 frames
+    /// the live rate and prepared at the render's, and the clip places its
+    /// notes at the rate the fork polls it at (a beat is 65 536 frames
     /// there).
     ///
     /// Mutation (run): dropping the `rebind_offline_into` call in
     /// tutti-plugin's `PluginFork::instance` → the fork renders silence, at
-    /// both rates. Dropping the MIDI port's restamp from tutti-plugin's
-    /// `restamp_source_rates` → at 96 kHz the notes land where 48 kHz puts
-    /// them.
+    /// both rates. The plugin polling its MIDI port at a fixed 48 kHz instead
+    /// of its own rate (`build_block_payload`) → at 96 kHz the notes land
+    /// where 48 kHz puts them.
     #[test]
     fn an_exported_plugin_instrument_plays_its_clip() {
         for rate in [RATE, 2.0 * RATE] {
@@ -750,9 +1065,8 @@ mod plugin {
                     },
                     ..config(1.5)
                 },
-                timeline.clone(),
-            )
-            .on_timeline(timeline),
+                ExportClock::timeline(timeline.clone()),
+            ),
         ) {
             Got::Planes(p) => p,
             other => panic!("the export failed: {other:?}"),

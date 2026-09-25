@@ -27,13 +27,14 @@ pub enum ExportSource {
     /// The whole live graph, as the master hears it.
     ///
     /// On [`GraphBackend::Native`](crate::graph::GraphBackend::Native) a
-    /// **fork** of the whole graph (`ForkTarget::Master`): every node
-    /// isolated, rebound onto the request's offline timeline and reset, so it
+    /// **fork** of what the global outputs hear (`ForkTarget::Master`: a node
+    /// no output reaches is not copied, and need not be forkable): every node
+    /// isolated, rebound onto the request's [`ExportClock`] and reset, so it
     /// renders what the graph is *driven* to play from that timeline,
     /// starting silent — not a copy of what is sounding now. On
     /// [`GraphBackend::Net`](crate::graph::GraphBackend::Net) one plain clone
     /// of the net, as every release before: no isolation, the live transport
-    /// bindings and the running state kept (see [`ExportRequest::offline`]).
+    /// bindings and the running state kept.
     Master,
     /// One node's output, isolated from everything downstream of it — "what
     /// does this point in the graph actually sound like".
@@ -91,6 +92,7 @@ pub enum ExportTarget {
 /// observer added with `.observe()` at the spawn site is the usual way to
 /// handle the result.
 #[derive(Component)]
+#[non_exhaustive]
 pub struct ExportRequest {
     /// Which audio to render — the whole mix, or one node in isolation.
     pub source: ExportSource,
@@ -103,26 +105,10 @@ pub struct ExportRequest {
     /// and so is `resample`, because `render_to_buffers` deliberately does not
     /// resample. Only `channels` and `dither` affect a `Buffers` render.
     pub config: ExportConfig,
-    /// The clock the render advances, one block at a time. Use
-    /// `tutti_export::FrozenClock` for a graph with no time-dependent nodes, or
-    /// an `OfflineTimeline` seeded at the beat you want to render from.
-    pub clock: Arc<dyn RenderClock>,
-    /// The timeline transport-aware nodes are rebound onto, for
-    /// [`ExportSource::Node`].
-    ///
-    /// Normally the *same object* as `clock`: the renderer advances the clock
-    /// and the nodes read this, so two different timelines means the nodes watch
-    /// a playhead nothing moves. [`ExportRequest::on_timeline`] sets both at
-    /// once and is the way to say it.
-    ///
-    /// `None` builds a default at the device's sample rate, 120 BPM, from
-    /// beat 0 — right for a graph with no musical time (an effect tail, a
-    /// synth patch), wrong for anything placed on a timeline.
-    ///
-    /// For [`ExportSource::Master`] on `GraphBackend::Net` it is ignored:
-    /// that net keeps its live bindings. On `GraphBackend::Native` the master
-    /// is rebound onto it like any node export.
-    pub offline: Option<OfflineTransport>,
+    /// The render's time: what the renderer advances, block by block, and
+    /// what every transport-aware node in the rendered graph reads — one
+    /// object, so the two cannot disagree. See [`ExportClock`].
+    pub clock: ExportClock,
     /// Optional last look at the graph before it leaves the main thread —
     /// see [`PrepareGraph`]. Use [`ExportRequest::new`] when there is nothing
     /// to do.
@@ -132,7 +118,7 @@ pub struct ExportRequest {
     /// [`trim_reported_latency`](Self::trim_reported_latency).
     pub latency_from_graph: bool,
     /// Render the graph's own reported tail instead of `config.render.tail`,
-    /// with this many frames where the graph reports no finite one. See
+    /// capped at this many frames. See
     /// [`with_reported_tail`](Self::with_reported_tail).
     pub tail_from_graph: Option<Samples>,
 }
@@ -143,33 +129,26 @@ impl ExportRequest {
         source: ExportSource,
         target: ExportTarget,
         config: ExportConfig,
-        clock: Arc<dyn RenderClock>,
+        clock: ExportClock,
     ) -> Self {
         Self {
             source,
             target,
             config,
             clock,
-            offline: None,
             prepare: None,
             latency_from_graph: false,
             tail_from_graph: None,
         }
     }
 
-    /// Render against `timeline`: the renderer advances it, and every
-    /// transport-aware node is rebound onto it.
-    ///
-    /// Sets both ends from one argument, because they are the same object —
-    /// which is the only configuration that is ever correct. Takes anything that
-    /// is both a [`RenderClock`] and a `Timeline`; `OfflineTimeline` is the
-    /// usual one.
+    /// Render against `timeline`: [`ExportClock::timeline`], set on a
+    /// request already built.
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
         T: RenderClock + tutti_core::Timeline + 'static,
     {
-        self.clock = timeline.clone() as Arc<dyn RenderClock>;
-        self.offline = Some(timeline as OfflineTransport);
+        self.clock = ExportClock::timeline(timeline);
         self
     }
 
@@ -202,13 +181,112 @@ impl ExportRequest {
 
     /// Render the graph's reported tail past `duration_seconds` — a reverb's
     /// decay, a plugin's declared tail — in place of `config.render.tail`,
-    /// and `unbounded` frames where the graph has no finite answer (a node
-    /// that never decays, or one that never said). Asked like
+    /// resolved against `cap` by `GraphTail::resolve`'s rule: a graph that
+    /// never decays renders `cap`; otherwise the tail its nodes reported,
+    /// at most `cap` — a node that said nothing counts as none, not as the
+    /// cap. Asked like
     /// [`trim_reported_latency`](Self::trim_reported_latency), of the graph
     /// that is rendered.
-    pub fn with_reported_tail(mut self, unbounded: Samples) -> Self {
-        self.tail_from_graph = Some(unbounded);
+    pub fn with_reported_tail(mut self, cap: Samples) -> Self {
+        self.tail_from_graph = Some(cap);
         self
+    }
+}
+
+/// The time an export renders in: the clock the renderer advances and the
+/// timeline every transport-aware node reads, as **one** value, so there is
+/// no way to hand a render one and its nodes another (a playhead nothing
+/// moves, or a clock nothing reads).
+///
+/// - [`frozen`](Self::frozen): no musical time — a graph with nothing
+///   placed on a timeline (an effect tail, a synth patch, a test tone). The
+///   renderer's transport is stopped at beat 0, and the nodes are rebound
+///   onto a timeline stopped at beat 0 too: a clip reader plays nothing
+///   rather than replay its first block.
+/// - [`timeline`](Self::timeline): an `OfflineTimeline` (or any clock that
+///   is also a `Timeline`), seeded at the tempo and beat to render from, at
+///   the render's rate. The renderer advances it; the nodes read it.
+///
+/// On `GraphBackend::Net` a master export ignores it for its nodes (the
+/// plain clone keeps the live bindings) and only the renderer advances it.
+#[derive(Clone)]
+pub struct ExportClock(Clock);
+
+#[derive(Clone)]
+enum Clock {
+    Frozen,
+    Timeline {
+        clock: Arc<dyn RenderClock>,
+        timeline: OfflineTransport,
+    },
+}
+
+impl ExportClock {
+    /// No musical time; see the type docs.
+    pub fn frozen() -> Self {
+        Self(Clock::Frozen)
+    }
+
+    /// Render against `timeline`: the renderer advances it, and every
+    /// transport-aware node is rebound onto it. One argument, because they
+    /// are the same object — the only configuration that is ever correct.
+    pub fn timeline<T>(timeline: Arc<T>) -> Self
+    where
+        T: RenderClock + tutti_core::Timeline + 'static,
+    {
+        Self(Clock::Timeline {
+            clock: timeline.clone() as Arc<dyn RenderClock>,
+            timeline: timeline as OfflineTransport,
+        })
+    }
+
+    /// What the renderer advances.
+    pub(crate) fn render_clock(&self) -> Arc<dyn RenderClock> {
+        match &self.0 {
+            Clock::Frozen => Arc::new(tutti_core::transport::FrozenClock),
+            Clock::Timeline { clock, .. } => Arc::clone(clock),
+        }
+    }
+
+    /// What the nodes are rebound onto.
+    pub(crate) fn offline(&self) -> OfflineTransport {
+        match &self.0 {
+            Clock::Frozen => Arc::new(Stopped),
+            Clock::Timeline { timeline, .. } => Arc::clone(timeline),
+        }
+    }
+}
+
+impl Default for ExportClock {
+    /// [`frozen`](Self::frozen).
+    fn default() -> Self {
+        Self::frozen()
+    }
+}
+
+impl std::fmt::Debug for ExportClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Clock::Frozen => f.write_str("ExportClock::Frozen"),
+            Clock::Timeline { .. } => f.write_str("ExportClock::Timeline(..)"),
+        }
+    }
+}
+
+/// [`ExportClock::frozen`]'s timeline: stopped at beat 0, what
+/// `FrozenClock` hands the renderer. Its tempo is never read by a stopped
+/// transport's consumers; 120 BPM is the engine's default.
+struct Stopped;
+
+impl tutti_core::Timeline for Stopped {
+    fn beat(&self) -> tutti_core::Beat {
+        tutti_core::Beat(0.0)
+    }
+    fn tempo(&self) -> tutti_core::Bpm {
+        tutti_core::Bpm(120.0)
+    }
+    fn is_rolling(&self) -> bool {
+        false
     }
 }
 
@@ -219,6 +297,7 @@ impl std::fmt::Debug for ExportRequest {
             .field("source", &self.source)
             .field("target", &self.target)
             .field("config", &self.config)
+            .field("clock", &self.clock)
             .finish_non_exhaustive()
     }
 }
@@ -281,12 +360,11 @@ pub enum ExportOutput {
 /// the spawn site instead, where the surrounding context is still in scope:
 ///
 /// ```rust
-/// use std::sync::Arc;
-///
 /// use bevy_app::prelude::*;
 /// use bevy_ecs::prelude::*;
+/// use bevy_tutti::export::ExportClock;
 /// use bevy_tutti::prelude::*;
-/// use tutti_export::{ExportConfig, FrozenClock};
+/// use tutti_export::ExportConfig;
 ///
 /// /// The panel that asked for the render — the context an observer captures
 /// /// and a polled `Query<&ExportOutput>` would have to look up again.
@@ -299,7 +377,7 @@ pub enum ExportOutput {
 ///             ExportSource::Master,
 ///             ExportTarget::Buffers,
 ///             ExportConfig::default(),
-///             Arc::new(FrozenClock),
+///             ExportClock::frozen(),
 ///         ))
 ///         .observe(move |done: On<ExportDone>, mut commands: Commands| {
 ///             // `view_entity` is captured here, still in scope.
@@ -385,6 +463,7 @@ pub enum ExportError {
 
 /// A graph node an [`ExportError`] is about, as the app knows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ExportNode {
     /// The entity bound to the node, if one is (`None` for a node the adapter
     /// inserted itself, such as the engine's beat clock).
@@ -441,6 +520,19 @@ pub struct PreparedGraph<'a> {
     /// The render's offline transport, when the graph was rebound onto it.
     /// Voices built in the hook must bind to *this*, not the live transport.
     pub ctx: Option<&'a OfflineTransport>,
+}
+
+impl PreparedGraph<'_> {
+    /// A key no node in any graph this adapter builds holds, for a node the
+    /// hook inserts into a fork (`editor.insert(prepared.fresh_key(), ..)`).
+    ///
+    /// Minted as the live graph mints its own (from `NodeId`'s process-wide
+    /// counter), so it cannot collide with a forked node's key, which is its
+    /// live node's; a hand-picked key such as `NodeKey(u64::MAX)` would
+    /// silently replace whatever node holds it.
+    pub fn fresh_key(&self) -> NodeKey {
+        NodeKey(tutti_core::dsp::NodeId::new().value())
+    }
 }
 
 /// A caller's hook into the graph, run on the main thread before the render is

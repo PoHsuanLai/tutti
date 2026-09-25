@@ -19,7 +19,7 @@
 //! use bevy_tutti::graph::AudioConfig;
 //! use tutti_nodes::testing::Const;
 //! use tutti_export::{
-//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock,
+//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig,
 //!     RenderConfig,
 //! };
 //!
@@ -61,7 +61,7 @@
 //!         ExportSource::Master,
 //!         ExportTarget::Buffers,
 //!         config,
-//!         Arc::new(FrozenClock),
+//!         ExportClock::frozen(),
 //!     ))
 //!     .observe(move |done: On<ExportDone>| {
 //!         if let Ok(ExportOutput::Buffers(rendered)) = &done.result {
@@ -89,9 +89,9 @@
 //!
 //! On [`GraphBackend::Native`](crate::graph::GraphBackend::Native) an export
 //! renders a **fork** of the live graph (`Editor::fork`, design doc 013 PR 12):
-//! the whole graph for [`ExportSource::Master`], or exactly the sub-graph
+//! what the global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
 //! feeding one node for [`ExportSource::Node`], every node isolated, rebound
-//! onto the request's offline timeline and reset. The live graph is not
+//! onto the request's [`ExportClock`] and reset. The live graph is not
 //! touched and keeps playing while the render runs on the pool.
 //!
 //! - **It renders what the graph is driven to play, from silence.** A master
@@ -106,8 +106,9 @@
 //!   is rendering offline. Its MIDI clip comes with it, rebound onto the
 //!   render's timeline, so an exported instrument plays its notes; its live
 //!   MIDI inbox does not. The fork launches in the frame the export starts.
-//! - **Some nodes cannot be forked**, and the export is refused naming the
-//!   node's entity ([`ExportError::NotForkable`]): a microphone monitor, an
+//! - **Some nodes cannot be forked**, and an export that needs one (an
+//!   output reaches it) is refused naming the node's entity
+//!   ([`ExportError::NotForkable`]): a microphone monitor, an
 //!   in-process VST2 plugin, and a **disk-streamed sampler voice** — its seek
 //!   handle drives the live butler, so a copy would reposition the live
 //!   stream. (On `Net`, a master export's plain clone read the live voice's
@@ -140,10 +141,17 @@ mod request;
 mod run;
 
 pub use request::{
-    ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest, ExportSource,
-    ExportTarget, PrepareGraph, PreparedGraph,
+    ExportClock, ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest,
+    ExportSource, ExportTarget, PrepareGraph, PreparedGraph,
 };
+
+// The engine types this module's API hands out, so a host names them without
+// depending on the crates they come from: the graph a `prepare` hook edits,
+// and what an `ExportError` carries.
 pub use run::{poll_exports, start_exports};
+pub use tutti_export::RenderGraph;
+pub use tutti_graph::{ForkCause, ForkFaultKind};
+pub use tutti_types::NodeKey;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

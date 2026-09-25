@@ -448,10 +448,19 @@ impl NativeGraph {
 
     /// The beat generator a graph engine needs in place of a
     /// `TransportClock` (`Engine::with_graph` forbids one in the graph).
+    ///
+    /// Forkable by clone (`ForkByClone`): it is a unit struct that reads only
+    /// its block's `Env`, so a clone shares nothing, and a fork's renderer
+    /// hands it the render's transport. Inserted plainly it would have no
+    /// fork source, and every engine-built graph (whose click and beat-driven
+    /// nodes it feeds) would refuse a master export as not forkable.
     pub(crate) fn insert_env_clock(&mut self) -> AudioNode {
         let node = AudioNode(NodeId::new());
-        self.editor
-            .insert(key(node), ENV_CLOCK_KIND, EnvClock::new());
+        self.editor.insert(
+            key(node),
+            ENV_CLOCK_KIND,
+            tutti_graph::ForkByClone(EnvClock::new()),
+        );
         self.nodes.insert(
             key(node),
             Entry {

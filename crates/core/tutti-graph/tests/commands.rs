@@ -755,8 +755,8 @@ fn continuous(from: f64, tempo: f64, blocks: usize) -> Vec<Transport> {
 /// in `Env::beat_due`, treat a playhead at or past the loop end as looping
 /// (drop `now < l.end`) → the armed-behind case never lands → fails.
 /// Mutation (run, each side): make the behind-side tolerance in
-/// `Env::beat_due`, or in the reference's `land`, a millionth of a frame again (`<= TOLERANCE`) → the between-frames case lands late
-/// → fails.
+/// `Env::beat_due`, or in the reference's `land`, a millionth of a frame
+/// again (`<= TOLERANCE`) → the between-frames case lands late → fails.
 #[test]
 fn beat_resolution_matches_a_hand_computed_table() {
     let cases = vec![

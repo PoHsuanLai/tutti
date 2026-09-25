@@ -227,14 +227,25 @@ impl MotionFsm {
     /// Lock-free, callable from any thread, never allocates.
     ///
     /// The engine applies it on its frame, sample-accurately
-    /// ([`Engine::process`](crate::Engine::process)): an [`At::Frame`] on
-    /// the engine's frame clock (frames rendered since it was built), an
-    /// [`At::Beat`] on the first frame at or after that beat once playback
-    /// reaches it, an [`At::NextBlock`] at the next block's first frame. A
-    /// frame already past, or a beat continuous playback already crossed,
-    /// lands at the start of the next block and is counted
-    /// ([`late_commands`](Self::late_commands)). A beat a seek or loop jumped
-    /// over waits until playback reaches it, holding its credit;
+    /// ([`Engine::process`](crate::Engine::process)):
+    ///
+    /// - an [`At::Frame`] on the engine's frame clock. For a graph engine
+    ///   that is the executor's (`tutti_graph::Executor::frame`): it tracks
+    ///   device time, advances while a re-prepare has the graph suspended,
+    ///   and is rescaled to the same wall-clock time on a rate change. For a
+    ///   `Net` engine it is the frames rendered since the engine was built;
+    /// - an [`At::Beat`] on the first frame at or after that beat once
+    ///   playback reaches it;
+    /// - an [`At::NextBlock`] at the next block's first frame.
+    ///
+    /// Commands due on one frame apply in the order they were sent. A frame
+    /// already past, a beat continuous playback already crossed, or a
+    /// command past a block's cut bound
+    /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)) lands
+    /// at the start of the next block and is counted
+    /// ([`late_commands`](Self::late_commands)); an `At::NextBlock` needs no
+    /// cut and is never late. A beat a seek or loop jumped over waits until
+    /// playback reaches it, holding its credit;
     /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
     ///
     /// `Err` when [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) commands

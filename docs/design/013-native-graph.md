@@ -287,7 +287,7 @@ means:
 | Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
-| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block | none by construction; a declick's completion lands at the end of its block (silent by then) |
+| Transport and clips | `Env.frame: Frame` (`u64`), beat as f64, the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block | none by construction (a declick moves the transport on its frame; the fade is audio only) |
 | Plugins | Offsets reach CLAP/VST3, whose event APIs are sample-accurate | the plugin |
 
 **Not sample-accurate, by design, and never to be used for timing:**
@@ -302,7 +302,7 @@ means:
   delivers an event or a `ParamRamp` into a node's event input on its exact
   frame. **Transport commands take the same `At`** (Phase 2b, done):
   `MotionFsm::schedule(At, TransportCommand)` for play, stop, seek, tempo
-  and loop (see item 3). Clip launch has no engine command yet.
+  and loop (see item 3). Clip launch is Phase 3.
 - **Feedback edges** delay by the delay their edge declares, which must be at
   least one `MaxBlock`, as in every DAW. Sample-level feedback belongs inside
   a node.
@@ -389,12 +389,36 @@ place that loses precision to be written out explicitly:
      differential suite runs with changes inside blocks.
    The `Net` path renders the pieces one after another instead, applying
    the commands between them; its `TransportClock` picks them up at the
-   next piece. Beats resolve by the graph's rule on both paths. A command
-   past the 8-cut bound, or already past due, lands at the next block's
-   first frame and is counted (`late_commands`). A declick fades from the
-   frame its stop lands on; its completion (the stop or jump it covers)
-   still lands at the end of that block, where the output is already
-   silent.
+   next piece. Beats resolve by the graph's rule on both paths (the Net
+   path with the tempo its clock actually runs at, `tempo_in_force`, after
+   the clock's hysteresis). A command past the 8-cut bound, or already past
+   due, lands at the next block's first frame and is counted
+   (`late_commands`); an `At::NextBlock` needs no cut and is never late.
+   Commands due on one frame apply in send order. On the Graph path the
+   untimed state (tempo, loop, play state) is read **once** per block; a
+   control-thread store during the block lands at the next one, and only an
+   applied command changes it at a cut. (The Net path's clock reads the
+   atomics at every 64-frame chunk, as it always has.)
+
+   **Decisions taken in review (#18):**
+   - **The declick is audio only.** A declick stop or seek moves the
+     transport on its command's frame (`MotionFsm` applies a fade's outcome
+     when the fade starts or is retargeted); the fade ramps the output to
+     zero from there. So `Env` reads stopped (or jumped) from the command's
+     frame, and a beat command after it in the same block does not fire.
+     The motion mirror reads the declick state until the fade completes.
+     This reverses the earlier rule that a stop-and-return's seek waited
+     for the fade.
+   - **A loop armed behind the playhead does not jump.** A loop whose end
+     is at or behind the playhead takes effect once the playhead is inside
+     `[start, end)`, by a seek or by playing into it from before `start`
+     (`LoopRange::advance` wraps only a crossing). `TransportClock`,
+     `OfflineTimeline` and the graph's `Env::due`/`transport_at`/`Playhead`
+     all follow it; the oracle table pins it.
+   - **A beat between a block's last frame and its end is due at the next
+     block's first frame, not late.** The behind-side tolerance of
+     `Env::due` is the exact complement of the ahead side (under
+     `1 - 1e-6` frame behind), so every beat lands exactly once.
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.
@@ -576,8 +600,8 @@ silence. `Engine` takes the new runtime instead of `NetBackend`
 before flipping anything.
 
 **Status (Phase 2b, 2026-09-25): `Engine` renders an `Executor`.**
-`Engine::with_graph(&Transport, Executor)` sits beside `Engine::new(MotionFsm,
-NetBackend)`; the backend is an enum matched once per block, so the RT path
+`Engine::with_graph(&Transport, &mut Editor, Executor) -> Result` sits beside
+`Engine::new(MotionFsm, NetBackend)`; the backend is an enum matched once per block, so the RT path
 stays monomorphic and allocation-free (`tests/rt_no_alloc_engine.rs`). The
 Graph backend hands the executor whole device blocks (a block past the
 prepared `MaxBlock` becomes consecutive `MaxBlock`-sized graph blocks),
@@ -591,24 +615,28 @@ the beat in `Env` and the beat a `Net`'s clock emits are the same numbers
 commands take `At` (§6, item 3). Nothing else moved: `bevy-tutti` and
 `tutti-export` still build `Net`s, and `Engine::new` behaves as before.
 
-Known divergences, left for Phase 3:
-
-- A graph with more global outputs than `MAX_ROOT_CHANNELS` (8) renders
-  silence: the executor needs a buffer for every output and the scratch has
-  eight. The Net path drops the extra channels instead.
-- A loop armed while the playhead is past its end: `TransportClock` snaps
-  into the loop on the next frame, while `Env::due`/`transport_at` treat a
-  playhead past the loop end as not looping. The next block's start beat
-  (the clock's) is inside the loop again, so the two disagree for one block
-  at most.
+**Limits, never silence.** The executor needs a buffer for every global
+output and the engine's fold scratch holds `MAX_ROOT_CHANNELS` (8), sized
+once for a block capacity: the larger of the prepared `MaxBlock` and 8192
+frames (`DEFAULT_GRAPH_BLOCK_CAPACITY`, tutti-cpal's largest callback), or
+`Engine::with_graph_capacity`'s. So `with_graph` bounds the graph's editor
+(`Editor::set_limits`, new in tutti-graph): every later commit with more
+outputs is `CommitError::TooManyOutputs`, and a re-prepare to a `MaxBlock`
+above the capacity is `CommitError::BlockTooLong`, both on the control
+thread. `with_graph` itself refuses a pair whose editor already sent a wider
+graph, or an executor that is not the editor's. It takes the editor by
+`&mut`, so no commit can slip past the check. Each graph block first
+installs queued commits, so a re-prepare's resume (shrinking or growing
+`MaxBlock`) is adopted on the block it lands in, never at a stale size.
 
 **Engine, Net vs Graph** (`tutti-nodes`' `engine_render` bench, group
 `backend`: the `nodes` shape, a sine into `depth` filters in series, stereo
 device, through the whole `Engine`; criterion medians in µs, Ryzen 9 7950X).
 `graph-legacy` runs the same `Osc` + `SvfFilterNode<f64>` units as `net`
 through `Legacy`; `graph-native` runs a native sine and an `f32` SVF lowpass
-(fundsp's `FixedSvf` arithmetic; there is no native `SvfFilterNode` yet, so
-that row is also cheaper by precision):
+(fundsp's `FixedSvf` arithmetic; there is no native `SvfFilterNode` yet).
+Part of `graph-native`'s advantage is precision, not the runtime: its SVF
+runs in `f32` where `SvfFilterNode<f64>` runs in `f64`.
 
 | depth | frames | net | graph-legacy | graph-native |
 |---|---|---|---|---|
@@ -622,7 +650,7 @@ that row is also cheaper by precision):
 The same units through `Legacy` cost about what `Net` does (within 3% except
 the 128-deep 64-frame row, +11%, where `Legacy`'s copy in and out of fundsp
 buffers is paid 128 times). Native nodes are 4–26% cheaper than `Net`
-through the whole engine.
+through the whole engine, the f32-vs-f64 filter included.
 
 #### Executor overhead (measured)
 
@@ -729,6 +757,9 @@ Revisit it with the parallel executor in Phase 6. There, cache-sized
 passes pay back differently.
 
 ### Phase 3 — flip the adapter
+
+- Clip launch as a timestamped transport command (`At`), with the engine's
+  other transport commands (deferred from Phase 2b).
 
 - `bevy-tutti`: `LiveGraph` diff emits a `Delta` via `compile`; delete
   `topology::apply` port-by-port writes, the `disagreements` shadow, the

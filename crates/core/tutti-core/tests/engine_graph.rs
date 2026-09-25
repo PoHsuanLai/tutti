@@ -630,9 +630,10 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
 /// The beat a graph node reads from `Env` is the beat a `Net`'s
 /// `TransportClock` emits, through a start, a tempo change, a loop, a seek
 /// and timed commands: at every graph block's first frame and every cut,
-/// bit-equal (as the clock's two `f32` ports); everywhere else within
-/// rounding (`transport_at` is closed form, the clock accumulates). The
-/// published playheads agree to the bit.
+/// bit-equal (as the clock's two `f32` ports); everywhere else within 1e-7
+/// beat (`transport_at` is closed form and the clock accumulates, and the
+/// ports carry the fraction as an `f32`, good to ~6e-8). The published
+/// playheads agree to the bit.
 ///
 /// Mutation (run): skip the loop wrap in `TransportClock::advance` → fails
 /// after the loop arms. Hand the executor `TransportChanges::NONE` → the
@@ -718,7 +719,7 @@ fn net_and_graph_see_the_same_beat() {
     for (f, (&(w, fr), &(_, beat, _))) in net_beats.iter().zip(graph_log.iter()).enumerate() {
         let net = w as f64 + fr as f64;
         assert!(
-            (net - beat).abs() < 1e-6,
+            (net - beat).abs() < 1e-7,
             "frame {f}: net {net}, graph {beat}"
         );
     }
@@ -1074,5 +1075,97 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_moves_neither_backend() {
         net_beats[stop],
         net_beats[stop + 1],
         "net holds from {stop}"
+    );
+}
+
+/// Ten minutes of 64-frame blocks through both backends, with a tempo
+/// change and a loop partway: the published playheads, and the beat each
+/// block starts on, stay bit-equal the whole way. Drift between the two
+/// clocks would grow with the run, so a long one is where it shows.
+///
+/// Mutation (run): advance the graph clock by `beat_per_sample × frames` in
+/// one step (closed form) instead of frame by frame → the playheads part
+/// within the first blocks → fails.
+#[test]
+fn net_and_graph_agree_over_ten_minutes() {
+    // Logs only each block's first beat on the graph side, and nothing on
+    // the Net side but its published playhead: 450 000 blocks.
+    struct FirstBeat(Arc<Mutex<f64>>);
+    impl Node for FirstBeat {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            *self.0.lock().expect("log") = cx.env.transport.beat.get();
+            io.output(0).fill(0.0);
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+    let net_t = Transport::new(SR);
+    // A Net with its clock, and no per-frame log.
+    let mut n = Net::new(0, 1);
+    let src = n.push(Box::new(Surround {
+        channels: 1,
+        frame: 0,
+    }));
+    n.connect_output(src, 0, 0);
+    n.push(Box::new(TransportClock::new(net_t.clock_links(), SR)));
+    n.set_sample_rate(SampleRate(SR));
+    let backend = n.backend();
+    Box::leak(Box::new(n));
+    let net = Engine::new(net_t.motion.clone(), backend);
+
+    let graph_t = Transport::new(SR);
+    let first = Arc::new(Mutex::new(0.0));
+    let (graph, _ed) = graph_engine(&graph_t, 64, FirstBeat(Arc::clone(&first)), 1);
+    for t in [&net_t, &graph_t] {
+        t.settings.set_tempo(Bpm(123.0));
+        t.motion.try_send(MotionEvent::Play).expect("room");
+        t.motion
+            .schedule(
+                At::Frame(Frame(48_000 * 200 + 17)),
+                TransportCommand::Tempo(Bpm(91.5)),
+            )
+            .expect("room");
+        t.motion
+            .schedule(
+                At::Frame(Frame(48_000 * 400 + 5)),
+                TransportCommand::Loop(LoopRange::new(800.0, 816.0)),
+            )
+            .expect("room");
+    }
+    let blocks = 48_000 * 600 / 64;
+    let mut net_buf = vec![0.0f32; 64];
+    let mut graph_buf = vec![0.0f32; 64];
+    for i in 0..blocks {
+        let net_start = net_t.settings.beat();
+        net.process(&mut InterleavedMut::new(&mut net_buf, ChannelLayout::MONO));
+        graph.process(&mut InterleavedMut::new(
+            &mut graph_buf,
+            ChannelLayout::MONO,
+        ));
+        // The graph block started on the beat the Net's clock published at
+        // the end of the previous block (its first emitted beat).
+        if i > 0 {
+            assert_eq!(
+                first.lock().expect("log").to_bits(),
+                net_start.get().to_bits(),
+                "block {i}"
+            );
+        }
+        assert_eq!(
+            net_t.settings.beat().get().to_bits(),
+            graph_t.settings.beat().get().to_bits(),
+            "block {i}"
+        );
+    }
+    // Not vacuous: it ran long (~715 beats by the loop's arming, ahead of
+    // the loop, which it then plays into and holds).
+    let end = graph_t.settings.beat().get();
+    assert!(
+        (800.0..816.0).contains(&end),
+        "ends inside the loop, at {end}"
     );
 }

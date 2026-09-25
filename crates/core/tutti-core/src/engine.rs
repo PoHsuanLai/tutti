@@ -535,8 +535,9 @@ impl Engine {
 
     /// Account the declick over frames `start..end` of the block, and say how
     /// to shape them. `faded_out` is set when the fade reaches zero here, and
-    /// every later piece of the block is then silenced (the fade is still
-    /// covering its stop or jump, which lands at the block's end).
+    /// every later piece of the block is then silenced: the output stays down
+    /// to the block's end, where the motion mirror settles (the transport
+    /// itself stopped or jumped when the fade began).
     #[inline]
     fn plan_declick(&self, start: usize, end: usize, faded_out: &mut bool) -> Ramp {
         if *faded_out {
@@ -599,7 +600,7 @@ struct Walk {
     /// landed there.
     start: GraphTransport,
     ramps: Ramps,
-    /// A declick reached zero in this block: its stop or jump is due.
+    /// A declick reached zero in this block: its motion settles at the end.
     faded_out: bool,
 }
 

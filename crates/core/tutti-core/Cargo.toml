@@ -79,6 +79,10 @@ bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_refle
 bevy_reflect = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
+# The same crate as the dependency above, with the sample-accuracy contract
+# harness on (`tests/graph_contract.rs`, doc 013 §6): its `Pulse` and
+# `Latent` nodes are the engine-level rows' sources.
+tutti-graph = { version = "0.0.1", path = "../tutti-graph", features = ["contract"] }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"

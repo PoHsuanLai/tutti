@@ -157,6 +157,8 @@ mod arena;
 mod builder;
 mod command;
 mod compile;
+#[cfg(feature = "contract")]
+pub mod contract;
 mod editor;
 mod event;
 mod exec;

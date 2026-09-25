@@ -426,6 +426,13 @@ jobs:
       - run: cargo doc --workspace --no-deps --exclude fundsp-tutti --exclude rustysynth-tutti
         env:
           RUSTDOCFLAGS: -D warnings
+      # `tutti_graph::contract` (doc 013 §6's harness) is behind the
+      # off-by-default `contract` feature, which only dev-dependencies turn on
+      # — and rustdoc builds none, so the line above never documents it. The
+      # tests and clippy (`--all-targets`) do reach it.
+      - run: cargo doc -p tutti-graph --no-deps --features contract
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why these two crates and not the rest: ~95% of this repo's `unsafe` is a C

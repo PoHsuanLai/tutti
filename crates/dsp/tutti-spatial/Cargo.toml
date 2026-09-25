@@ -55,6 +55,9 @@ criterion.workspace = true
 # plain `cargo nextest run -p tutti-spatial` would report green without having
 # exercised the panner. Same pattern as `tutti-sampler`.
 tutti-spatial = { path = ".", features = ["hrtf"] }
+# The sample-accuracy contract harness (doc 013 §6): `tests/contract.rs` runs
+# the binaural renderer through it.
+tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 
 [[bench]]
 name = "vbap_panner"

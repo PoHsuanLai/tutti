@@ -525,7 +525,7 @@ mod master_record {
 /// they are already the right shape for a host to hold directly. That claim is
 /// only worth anything if a `MicMonitorNode` really does reconcile like any
 /// other node — declared through `PortSources`/`MasterSources`, reached by
-/// `Net::output_source`, and carrying audio once wired.
+/// `AudioGraphRes::output_source`, and carrying audio once wired.
 ///
 /// These read the engine back rather than trusting the component, for the same
 /// reason `graph_wire.rs` does: the diff this layer performs is only meaningful
@@ -613,7 +613,7 @@ mod io_graph_composition {
     /// A monitor can sit *upstream of an effect* rather than only at the master —
     /// the "through effects if you like" the mic docs promise.
     ///
-    /// Asserted through `Net::source` on the effect's input port, which is what
+    /// Asserted through `AudioGraphRes::source` on the effect's input port, which is what
     /// makes this about the fan-in declaration and not just about the master.
     #[test]
     fn a_monitor_node_can_feed_an_effect_chain() {

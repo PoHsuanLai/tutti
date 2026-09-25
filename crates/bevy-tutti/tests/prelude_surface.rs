@@ -96,7 +96,7 @@ fn _surface_compiles() {
     // --- The disk-streaming handle. ---
     //
     // It used to be `SamplerRes` — a name with no referent, since `tutti-sampler`
-    // has no `Sampler` type. Every sibling resource (`AudioGraphRes`, over a `Net`,
+    // has no `Sampler` type. Every sibling resource (`AudioGraphRes`, over the graph,
     // `MeteringRes(MasterMeter)`, `TransportRes(Transport)`) is named for what it
     // holds, and a host that cannot guess the name cannot ask for the resource.
     // A `DiskStreamer` needs a butler thread, so constructing one here would be

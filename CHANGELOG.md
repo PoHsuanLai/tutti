@@ -302,10 +302,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     cannot be rebound fails the fork by name — `tutti_polysynth::Error::MidiSource`
     and `tutti_soundfont::Error::MidiSource` (new variants), reaching a host
     as `ExportError::ForkSource` naming the synth's entity — never silence.
-  - bevy-tutti's native backend hands the editor that source for every
-    `PolySynth` and `SoundFontUnit` it inserts or crossfades in, whatever
-    the path (`spawn_audio_node`, `insert_audio_node`, the soundfont
-    promotion, `AudioGraphRes::insert`).
+  - **Any registered MIDI-receiving unit exports its clip, or refuses by
+    name — never silent.** `MidiTargetRegistry` now captures how a unit
+    forks as well as its port, and bevy-tutti's native backend hands that to
+    the editor: a type's own source (`MidiNode::fork_source`, new and
+    defaulted `None`; the two synths override it), or the generic fork — the
+    node's shadow, with the live port's clip re-installed, rebound, on the
+    fork's port by a hook (`tutti_graph::Legacy::with_fork_hook`, new). A
+    source that cannot be rebound is
+    `bevy_tutti::midi::MidiForkError::NotRebindable`. New
+    `AudioGraphRes::insert_with` / `replace_with` take the unit's
+    `CapturedControls`; every insertion path in the crate uses them. A unit
+    with a captured port pushed with the plain `insert` refuses a native
+    export that holds it (`ExportError::NotForkable`, naming its entity).
   - A `PolySynth` fork reads its `Param` cells (volume, unison detune and
     spread) at the fork, not at insert as the shadow did; `isolate`
     detaches them, so a live move afterwards does not reach the render.

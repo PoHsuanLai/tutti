@@ -443,10 +443,49 @@ impl AudioGraphRes {
 
     /// [`insert`](Self::insert) for a unit that is already boxed (a plugin, a
     /// trait-object factory's product).
+    ///
+    /// For a unit a registry captured a MIDI port from, use
+    /// [`insert_with`](Self::insert_with): pushed this way, a native export
+    /// holding it is refused (`ExportError::NotForkable`), since its fork
+    /// would not carry its clip.
     pub fn insert_boxed(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
+        self.insert_forking(unit, None)
+    }
+
+    /// [`insert_boxed`](Self::insert_boxed) for a unit whose controls were
+    /// captured ([`CapturedControls::capture`](crate::graph::CapturedControls::capture)):
+    /// a unit with a captured MIDI port goes in so that a fork of the native
+    /// graph (an export) carries the clip installed on that port — through
+    /// the type's own fork source, or the generic fork — and refuses by name
+    /// when it cannot, never renders it as silence
+    /// (`MidiNode::fork_source`, with the `midi` feature).
+    ///
+    /// Every insertion path in this crate goes this way. Then
+    /// [`bind`](crate::graph::CapturedControls::bind) `controls` as ever.
+    pub fn insert_with(
+        &mut self,
+        unit: Box<dyn AudioUnit>,
+        controls: &mut crate::graph::CapturedControls,
+    ) -> AudioNode {
+        #[cfg(feature = "midi")]
+        let fork = controls.take_fork();
+        #[cfg(not(feature = "midi"))]
+        let fork = {
+            let _ = controls;
+            None
+        };
+        self.insert_forking(unit, fork)
+    }
+
+    fn insert_forking(
+        &mut self,
+        unit: Box<dyn AudioUnit>,
+        fork: Option<super::native::UnitFork>,
+    ) -> AudioNode {
         match &mut self.0 {
+            // `Net` forks nothing: a `Net` export clones the net.
             Backend::Net(net) => AudioNode(net.push(unit)),
-            Backend::Native(g) => write(g).insert(unit),
+            Backend::Native(g) => write(g).insert(unit, fork),
         }
     }
 
@@ -505,7 +544,8 @@ impl AudioGraphRes {
     /// handed back ([`ReplaceRefused::Busy`], retry after the re-prepare
     /// resumes), and for good on a poisoned graph. Swap the captured controls
     /// only on `Ok` — [`crossfade_audio_node`](crate::graph::crossfade_audio_node)
-    /// does all of this.
+    /// does all of this, with the incoming unit's captured controls
+    /// ([`replace_with`](Self::replace_with)).
     pub fn replace(
         &mut self,
         node: AudioNode,
@@ -513,12 +553,52 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<(), ReplaceRefused> {
+        self.replace_forking(node, unit, fade, curve, &mut None)
+    }
+
+    /// [`replace`](Self::replace) for a unit whose controls were captured,
+    /// forking as [`insert_with`](Self::insert_with) says. The fork is taken
+    /// from `controls` only when the unit lands, so a refused
+    /// ([`ReplaceRefused::Busy`]) unit keeps it for its retry.
+    pub fn replace_with(
+        &mut self,
+        node: AudioNode,
+        unit: Box<dyn AudioUnit>,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+        controls: &mut crate::graph::CapturedControls,
+    ) -> Result<(), ReplaceRefused> {
+        #[cfg(feature = "midi")]
+        {
+            let mut fork = controls.take_fork();
+            let landed = self.replace_forking(node, unit, fade, curve, &mut fork);
+            // Handed back untaken on a refusal: put it back for the retry.
+            if let Some(fork) = fork {
+                controls.put_fork(fork);
+            }
+            landed
+        }
+        #[cfg(not(feature = "midi"))]
+        {
+            let _ = controls;
+            self.replace_forking(node, unit, fade, curve, &mut None)
+        }
+    }
+
+    fn replace_forking(
+        &mut self,
+        node: AudioNode,
+        unit: Box<dyn AudioUnit>,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+        fork: &mut Option<super::native::UnitFork>,
+    ) -> Result<(), ReplaceRefused> {
         match &mut self.0 {
             Backend::Net(net) => {
                 net.crossfade(node.0, tutti_core::net_fade(curve), fade.get(), unit);
                 Ok(())
             }
-            Backend::Native(g) => write(g).replace(node, unit, fade, curve),
+            Backend::Native(g) => write(g).replace(node, unit, fade, curve, fork),
         }
     }
 
@@ -873,11 +953,16 @@ impl AudioGraphRes {
     /// outputs (or is not in the graph); a fork refusal (`NotForkable`, a plugin whose
     /// fresh instance did not load) is the renderer's own error.
     #[cfg(feature = "export")]
+    ///
+    /// `midi` is every node with a captured MIDI port; on `Native` one the
+    /// fork holds that cannot carry its clip refuses the export
+    /// (`NativeGraph::fork_for_export`).
     pub(crate) fn export(
         &self,
         node: Option<AudioNode>,
         ctx: &OfflineTransport,
         rate: SampleRate,
+        midi: &std::collections::BTreeSet<tutti_types::NodeKey>,
     ) -> Result<Exported, ExportRefused> {
         if self.outputs() == 0 {
             return Err(ExportRefused::GraphHasNoOutputs);
@@ -918,7 +1003,7 @@ impl AudioGraphRes {
                     None => tutti_graph::ForkTarget::Master,
                     Some(node) => tutti_graph::ForkTarget::Node(super::native::key(node)),
                 };
-                match read(g).fork_for_export(target, ctx, rate) {
+                match read(g).fork_for_export(target, ctx, rate, midi) {
                     Ok(graph) => Ok(Exported {
                         graph,
                         rebound: true,

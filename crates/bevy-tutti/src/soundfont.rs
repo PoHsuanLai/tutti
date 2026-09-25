@@ -266,8 +266,9 @@ pub fn promote_pending_soundfonts(
 
         // Captured before the unit moves into the graph — the `MidiTarget` that
         // makes this player addressable comes from here.
-        let controls = capture.capture(&unit);
-        let id = graph.insert(unit);
+        // `insert_with` so an export's fork of it plays its clip.
+        let mut controls = capture.capture(&unit);
+        let id = graph.insert_with(Box::new(unit), &mut controls);
         edited = true;
 
         // `AudioNode` is the whole binding: node teardown

@@ -81,8 +81,10 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "src/midi/endpoint/target.rs",
         "downcast_ref / downcast_mut",
         1,
-        "MidiTargetRegistry's capture: a downcast of the *owned* unit before it is \
-         inserted, which is the whole point of capturing — not a graph read.",
+        "MidiTargetRegistry's capture (`as_node`): a downcast of the *owned* unit \
+         before it is inserted, which is the whole point of capturing, and of a \
+         fork's own unit to find the port its clip goes on — never a read of the \
+         live graph.",
     ),
     (
         "src/modulation/target.rs",
@@ -97,19 +99,12 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "the PluginClient capture, on the owned unit before insertion.",
     ),
     (
-        "src/graph/native.rs",
-        "downcast_ref / downcast_mut",
-        2,
-        "`own_fork_source`: a synth's own fork source (PolySynth, SoundFontUnit), \
-         asked of the owned unit before it is inserted — a capture, not a graph \
-         read.",
-    ),
-    (
         "tests/export_fork.rs",
         "downcast_ref / downcast_mut",
-        5,
-        "a_plugin_fork_that_cannot_be_built_is_a_named_failure and \
-         an_unrebindable_synth_source_is_a_named_failure downcast an export \
+        6,
+        "a_plugin_fork_that_cannot_be_built_is_a_named_failure, \
+         an_unrebindable_synth_source_is_a_named_failure and \
+         a_host_midi_unit_with_an_unrebindable_source_refuses_by_name downcast an export \
          error's `ForkCause` to the node's own error (the cause's documented \
          use), not a graph node. native_and_net_synth_exports_are_bit_identical \
          downcasts the synth in the `Net` export's own clone, inside the \

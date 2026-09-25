@@ -138,7 +138,10 @@ pub use endpoint::registration::{
     register_midi_senders, unregister_midi_sender, unregister_removed_midi_target, MidiRegistered,
     MidiRegistrationPlugin,
 };
-pub use endpoint::target::{MidiNode, MidiTarget, MidiTargetRegistry, MidiTargetResolver};
+pub(crate) use endpoint::target::MidiFork;
+pub use endpoint::target::{
+    MidiForkError, MidiNode, MidiTarget, MidiTargetRegistry, MidiTargetResolver,
+};
 
 pub use inbound::route::{
     rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,

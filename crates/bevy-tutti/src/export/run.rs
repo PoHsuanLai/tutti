@@ -215,7 +215,7 @@ fn prepare_graph(
     // A `Net` node export and every native fork are isolated, rebound onto
     // `ctx` and reset; a `Net` master export is a plain clone — see
     // `AudioGraphRes::export`.
-    match graph.export(node, &ctx, request.config.render.sample_rate) {
+    match graph.export(node, &ctx, request.config.render.sample_rate, &nodes.midi) {
         Ok(Exported {
             graph,
             rebound: true,
@@ -252,6 +252,9 @@ fn invalid(reason: impl Into<String>) -> tutti_export::Error {
 struct NodeNames {
     nodes: HashMap<Entity, tutti_core::AudioNode>,
     by_key: HashMap<NodeKey, (Entity, Option<String>)>,
+    /// Every node with a captured MIDI port (its entity's current
+    /// `MidiTarget`): a fork must carry the clip on it, or refuse.
+    midi: std::collections::BTreeSet<NodeKey>,
 }
 
 impl NodeNames {
@@ -268,7 +271,24 @@ impl NodeNames {
                 (entity, name.map(|n| n.as_str().to_owned())),
             );
         }
-        Self { nodes, by_key }
+        #[allow(unused_mut)]
+        let mut midi = std::collections::BTreeSet::new();
+        #[cfg(feature = "midi")]
+        for (node, target) in world
+            .query::<(&tutti_core::AudioNode, &crate::midi::MidiTarget)>()
+            .iter(world)
+        {
+            // A target left over from a node replaced by hand is inert, as
+            // it is to every other reader (`MidiTargetResolver::port`).
+            if target.node() == node.0 {
+                midi.insert(crate::graph::native::key(*node));
+            }
+        }
+        Self {
+            nodes,
+            by_key,
+            midi,
+        }
     }
 
     fn node(&self, entity: Entity) -> Option<tutti_core::AudioNode> {

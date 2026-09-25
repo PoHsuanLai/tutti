@@ -100,7 +100,6 @@ impl ClipProbe {
             UNIT,
             events.iter().copied(),
             Arc::clone(&timeline) as Arc<dyn Timeline>,
-            SampleRate(SR),
         );
         Self {
             source,
@@ -111,7 +110,7 @@ impl ClipProbe {
     }
     fn poll(&self, size: usize) {
         let mut buf = [MidiEvent::noop(); 8];
-        let n = self.source.poll_unit(UNIT, size, &mut buf);
+        let n = self.source.poll_unit(UNIT, size, SampleRate(SR), &mut buf);
         let at = self.frame.fetch_add(size as u64, Ordering::Relaxed);
         let mut hits = self.hits.lock().expect("hits");
         for ev in &buf[..n] {

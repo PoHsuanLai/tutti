@@ -1832,13 +1832,13 @@ Found on the way: the chunk starting exactly on a beat can hold silence and
 a clip reader enter one chunk later (or a MIDI note one frame early), on both
 backends, because `OfflineTimeline` accumulates an `f64` beat per 64-frame
 chunk in steps binary cannot hold (1/32 000 of a beat at 90 BPM, 48 kHz).
-Its own PR, recorded as a follow-up; the plugin instrument test keeps to
-87.890625 BPM (a beat of 2^15 frames, exact) until then, and the forked
-clock's step is asserted to a frame.
+Fixed by #40 (§6 item 6, "the frame is the source of truth"): the plugin
+instrument test runs at 90 BPM again with its edges asserted to the frame,
+and the sampler export test checks the clip from its first frame on beat 3.
 
 Recorded for later:
 
-- **The offline timeline's accumulated beat** (above): its own PR.
+- ~~**The offline timeline's accumulated beat**~~ (above): done in #40.
 - **The fork runs on the main thread**, in the frame the export starts, as
   the `Net` clone did — and a plugin's fork launches a `plugin-server` and
   transfers state (half a second or more), stalling that frame. Moving it

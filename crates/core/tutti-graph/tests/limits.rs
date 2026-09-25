@@ -123,3 +123,35 @@ fn an_editor_knows_its_executor() {
     assert!(ed.is_paired_with(&exec));
     assert!(!ed.is_paired_with(&stranger));
 }
+
+/// Limits only tighten: a looser (or no) limit after a host set one changes
+/// nothing, so no caller can let through a graph the host cannot run.
+///
+/// Mutation (run): take `limits` as given in `set_limits` (no per-field min)
+/// → `Limits::NONE` lifts the bound and the 10-output commit is sent →
+/// fails.
+#[test]
+fn limits_only_tighten() {
+    let (mut ed, _exec) = Editor::new(prep(512));
+    ed.set_limits(LIMITS).expect("nothing sent yet");
+    ed.set_limits(Limits::NONE).expect("a no-op");
+    assert_eq!(ed.limits(), LIMITS);
+    ed.set_limits(Limits {
+        max_global_outputs: 4,
+        max_block: 4096,
+    })
+    .expect("tightens one field");
+    assert_eq!(
+        ed.limits(),
+        Limits {
+            max_global_outputs: 4,
+            max_block: 1024
+        }
+    );
+    ed.insert(NodeKey(1), "wide", Wide(10));
+    wire(&mut ed, 10);
+    assert!(matches!(
+        ed.commit(),
+        Err(CommitError::TooManyOutputs { limit: 4, .. })
+    ));
+}

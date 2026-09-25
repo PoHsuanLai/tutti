@@ -264,7 +264,9 @@ impl Editor {
         &self.prepare
     }
 
-    /// Bound what this editor may send from now on: every later
+    /// Bound what this editor may send from now on, **tightening only**:
+    /// each field becomes the smaller of the one in force and `limits`', so
+    /// `Limits::NONE` changes nothing. Every later
     /// [`commit`](Self::commit), [`package`](Self::package) and
     /// [`reprepare`](Self::reprepare) is refused
     /// ([`CommitError::TooManyOutputs`], [`CommitError::BlockTooLong`]) past
@@ -276,6 +278,16 @@ impl Editor {
     /// holds the editor while it sets these knows no commit already sent,
     /// and none sent later, can exceed them.
     pub fn set_limits(&mut self, limits: Limits) -> Result<(), CommitError> {
+        // Limits only tighten: each field is the smaller of the one in force
+        // and the one asked for, so no caller can undo a host's bound (a
+        // looser one would let through a graph the host's buffers cannot
+        // run).
+        let limits = Limits {
+            max_global_outputs: limits
+                .max_global_outputs
+                .min(self.limits.max_global_outputs),
+            max_block: limits.max_block.min(self.limits.max_block),
+        };
         self.collect();
         if let Some(plan) = &self.plan {
             limits.outputs(plan.global_outputs())?;

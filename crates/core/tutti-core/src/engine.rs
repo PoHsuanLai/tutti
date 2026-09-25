@@ -425,7 +425,8 @@ impl Engine {
                     out_ch,
                     cuts: 0,
                 };
-                let walk = self.walk(frame0, frames, rate, &mut net.playhead, &mut pieces);
+                let aim = self.fader.borrow().aim;
+                let walk = self.walk(frame0, frames, rate, aim, &mut net.playhead, &mut pieces);
                 self.fader
                     .borrow_mut()
                     .apply(&walk.gain, frame0, output, out_ch, 0, frames);
@@ -443,7 +444,8 @@ impl Engine {
                         control: Control::read(self.motion.settings()),
                         changes: TransportChanges::NONE,
                     };
-                    let walk = self.walk(frame0, len, rate, &mut g.playhead, &mut pieces);
+                    let aim = self.fader.borrow().aim;
+                    let walk = self.walk(frame0, len, rate, aim, &mut g.playhead, &mut pieces);
                     let changes = pieces.changes;
                     g.render(output, out_ch, done, len, &walk.start, &changes);
                     self.fader
@@ -458,11 +460,16 @@ impl Engine {
     /// Walk one block's scheduled transport commands in time order, running
     /// each piece between them through `pieces` and planning the declick
     /// gain over the block. See the module docs for the rules.
+    ///
+    /// `aim` is the fader's aim going in: an aim is pushed only where it
+    /// changes, so a block with no command in sight plans nothing and the
+    /// fader skips it.
     fn walk(
         &self,
         frame0: Frame,
         frames: usize,
         rate: SampleRate,
+        mut aim: Option<Frame>,
         playhead: &mut Playhead,
         pieces: &mut impl Pieces,
     ) -> Walk {
@@ -473,7 +480,9 @@ impl Engine {
         };
         // An untimed declicked command drained at the block's start has no
         // lead time: it lands at the first frame.
-        self.settle_declick(&mut walk.gain, 0);
+        if self.settle_declick(&mut walk.gain, 0) {
+            aim = None;
+        }
         let mut t = walk.start;
         let mut cursor = 0;
         // The playhead as of the start of the current piece. Each piece is
@@ -490,8 +499,11 @@ impl Engine {
             };
             // The next declicked command ahead, within one fade of the end of
             // this block: the fade-out that ends on its frame may start here.
-            walk.gain
-                .push(cursor, Gain::Aim(lead_target(pending, &env)));
+            let next = lead_target(pending, &env);
+            if next != aim {
+                walk.gain.push(cursor, Gain::Aim(next));
+                aim = next;
+            }
             let mut ph = base;
             ph.observe(&env);
             // The earliest command due from the cursor on; send order breaks
@@ -531,7 +543,10 @@ impl Engine {
                 schedule.count_late();
             }
             self.motion.apply(cmd.command);
-            self.settle_declick(&mut walk.gain, cursor);
+            if self.settle_declick(&mut walk.gain, cursor) {
+                // A jump clears the fader's aim.
+                aim = None;
+            }
             t = pieces.begin(Some(&cmd.command));
             match Offset::new(cursor, Samples(frames)) {
                 Some(o) if cursor > 0 => pieces.change(o, t),
@@ -555,11 +570,14 @@ impl Engine {
     /// outcome at once), so the fade is the engine's, as gain. Mark the jump
     /// (the fade-out, if it had lead time, ends here; the fade-in starts
     /// here) and settle the machine, whose own ramp the engine does not use.
-    fn settle_declick(&self, gain: &mut GainPlan, at: usize) {
+    /// Returns whether it marked one.
+    fn settle_declick(&self, gain: &mut GainPlan, at: usize) -> bool {
         if is_declicking(self.motion.motion()) {
             gain.push(at, Gain::Jump);
             self.motion.complete_declick();
+            return true;
         }
+        false
     }
 
     /// Reset the audio-thread ownership assertions on both cells.
@@ -728,14 +746,18 @@ impl Fader {
             while next < plan.len && plan.items[next].0 == i {
                 match plan.items[next].1 {
                     Gain::Aim(to) => self.aim = to,
-                    Gain::Jump => jump = true,
+                    // Clears the aim it lands on when read, so an aim at the
+                    // next target pushed after it at this offset survives.
+                    Gain::Jump => {
+                        jump = true;
+                        self.aim = None;
+                    }
                 }
                 next += 1;
             }
             let x = frame0.get() + i as u64;
             if jump {
                 self.gain = 0.0;
-                self.aim = None;
             } else {
                 match self.aim {
                     Some(to) if x >= to.get() => {
@@ -1044,6 +1066,7 @@ mod tests {
             Frame::ZERO,
             512,
             SampleRate(48_000.0),
+            None,
             &mut playhead,
             &mut pieces,
         );
@@ -1055,5 +1078,59 @@ mod tests {
         assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
         // The next block reads it.
         assert_eq!(Control::read(settings).tempo, Bpm(200.0));
+    }
+
+    /// A block with no declicked command in sight plans no gain event, and
+    /// the fader leaves the output untouched: the fast path is reachable.
+    /// A command in sight plans its aim once, not at every walk step.
+    ///
+    /// Mutation (run): push an aim at every walk step regardless of change
+    /// (the reviewed behaviour) → the quiet block's plan is not empty →
+    /// fails.
+    #[test]
+    fn a_quiet_block_plans_no_gain_event() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::with_graph(&transport, &mut ed, exec).expect("empty graph");
+        let _ = transport.motion.try_send(MotionEvent::Play);
+        transport.motion.drain();
+        let mut clock = TransportClock::new(transport.clock_links(), 48_000.0);
+        let settings = engine.motion.settings();
+        let mut pieces = GraphPieces {
+            clock: &mut clock,
+            settings,
+            control: Control::read(settings),
+            changes: TransportChanges::NONE,
+        };
+        let mut playhead = Playhead::new();
+        let walk = engine.walk(
+            Frame::ZERO,
+            512,
+            SampleRate(48_000.0),
+            None,
+            &mut playhead,
+            &mut pieces,
+        );
+        assert_eq!(walk.gain.len, 0, "nothing planned");
+        let mut out = vec![0.25f32; 512];
+        let mut fader = Fader::new();
+        fader.apply(&walk.gain, Frame::ZERO, &mut out, 1, 0, 512);
+        assert!(out.iter().all(|&x| x == 0.25), "untouched");
+
+        // A declicked stop 300 frames into the next block: one aim, at 0.
+        transport
+            .motion
+            .schedule(At::Frame(Frame(812)), crate::MotionEvent::stop())
+            .expect("room");
+        let walk = engine.walk(
+            Frame::ZERO,
+            512,
+            SampleRate(48_000.0),
+            None,
+            &mut playhead,
+            &mut pieces,
+        );
+        assert_eq!(walk.gain.len, 1);
+        assert_eq!(walk.gain.items[0], (0, Gain::Aim(Some(Frame(812)))));
     }
 }

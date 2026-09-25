@@ -432,7 +432,10 @@ place that loses precision to be written out explicitly:
    - **A beat between a block's last frame and its end is due at the next
      block's first frame, not late.** The behind-side tolerance of
      `Env::due` is the exact complement of the ahead side (under
-     `1 - 1e-6` frame behind), so every beat lands exactly once.
+     `1 - 1e-6` frame behind), so every beat lands exactly once. A side
+     effect: a beat up to one frame *before* a seek or play-start target
+     now fires on that target's frame (it is within a frame of where
+     playback begins), where it used to wait as jumped over.
 4. **`io.sub_blocks()` (Phase 2) — done** yields `(range, events_at_range_start)`
    chunks split at event offsets, allocation-free, so a node written against
    it is sample-accurate by construction. The polysynth hand-rolls this today.

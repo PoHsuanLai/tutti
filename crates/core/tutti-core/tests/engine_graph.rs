@@ -1382,3 +1382,77 @@ fn net_and_graph_agree_over_ten_minutes() {
         "ends inside the loop, at {end}"
     );
 }
+
+/// Two declicked commands close together: the second's target is set on the
+/// first's jump frame, so the gain stays at zero from the first frame to the
+/// second and fades in from there, with no step anywhere. Three cases: a
+/// seek at 1 000 then a stop at 1 020; a seek at 900 then a seek at 1 000;
+/// an untimed seek (no lead, the accepted step on its frame) then a timed
+/// one 100 frames on, inside its fade window.
+///
+/// Mutation (run): clear the aim after the inner loop on a jump (the
+/// reviewed order: `if jump { self.aim = None }`) → the aim pushed after the
+/// jump at the same offset is lost, the gain rises and is forced back to 0
+/// at the second command → a step (0.04 and 0.2 in the review's probes) →
+/// fails.
+#[test]
+fn two_declicked_commands_close_together_stay_continuous() {
+    let seek = |beat: f64| MotionEvent::Locate {
+        beat: Beat(beat),
+        fade: FadeOut::Declick,
+        then: Then::Keep,
+    };
+    // (first frame, second frame, whether the second is a stop)
+    for (a, b, stop) in [(1_000u64, 1_020u64, true), (900, 1_000, false)] {
+        let runs = dc_run(12, |m, i| {
+            if i == 0 {
+                m.schedule(At::Frame(Frame(a)), seek(10.0)).expect("room");
+                let second: TransportCommand = if stop {
+                    MotionEvent::stop().into()
+                } else {
+                    seek(20.0).into()
+                };
+                m.schedule(At::Frame(Frame(b)), second).expect("room");
+            }
+        });
+        for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+            let (a, b) = (a as usize, b as usize);
+            assert_eq!(out[a], 0.0, "{backend} {a}/{b}");
+            assert!(
+                out[a..=b].iter().all(|&g| g == 0.0),
+                "{backend}: held at zero"
+            );
+            assert!(out[b + 1] > 0.0, "{backend}: fades in from the second");
+            assert!(
+                max_step(out, &[]) <= FADE_STEP,
+                "{backend} {a}/{b}: continuous"
+            );
+            assert_eq!(t[a].0, 10.0, "{backend}: the first lands on its frame");
+            if stop {
+                assert!(!t[b].1, "{backend}: stopped on its frame");
+            } else {
+                assert_eq!(t[b].0, 20.0, "{backend}: the second lands on its frame");
+            }
+        }
+    }
+
+    // Untimed at block 3's first frame (768), then timed at 868.
+    let runs = dc_run(8, |m, i| {
+        if i == 3 {
+            m.try_send(seek(10.0)).expect("room");
+            m.schedule(At::Frame(Frame(868)), seek(20.0)).expect("room");
+        }
+    });
+    for (backend, (out, t)) in ["net", "graph"].iter().zip(&runs) {
+        assert!(
+            out[768..=868].iter().all(|&g| g == 0.0),
+            "{backend}: held at zero"
+        );
+        assert!(
+            max_step(out, &[768]) <= FADE_STEP,
+            "{backend}: continuous past the jump"
+        );
+        assert_eq!(t[768].0, 10.0, "{backend}");
+        assert_eq!(t[868].0, 20.0, "{backend}");
+    }
+}

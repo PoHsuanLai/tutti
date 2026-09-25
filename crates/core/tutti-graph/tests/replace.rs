@@ -101,8 +101,9 @@ fn a_fade_has_no_step_at_either_end() {
 /// Mutation: `x = (k + 1) / len` in `CrossfadeCurve::gains` → the last fade
 /// frame is already 3 → fails. Mutation: in `fading_node_op`, blend the
 /// whole block (`n = frames`) → the gains are asked past the end → panics
-/// in debug. Mutation: never end a fade (`end_fades` skipped) → the frame
-/// after the fade still blends → fails.
+/// in debug. (Never *ending* a fade leaves this output right — past its
+/// length nothing is blended — and is caught by the retirement and waiting
+/// tests below instead.)
 #[test]
 fn the_fade_is_exactly_its_length() {
     let len = 100;
@@ -168,7 +169,8 @@ impl Node for DropProbe {
 /// `NodeBox` guard panics in debug; the probe would read 2) → fails.
 /// Mutation: in `apply_pending`, send every box back at once (ignore
 /// `holds`) → `in_flight` is 0 while the fade runs, and the fade's end finds
-/// no held box → fails.
+/// no held box → fails. Mutation: never end a fade (skip `end_fades`) → the
+/// outgoing unit never comes back → fails.
 #[test]
 fn the_outgoing_unit_retires_on_the_control_thread() {
     let (mut ed, mut exec) = Editor::new(prepare(128));
@@ -313,9 +315,10 @@ fn a_shape_mismatch_is_refused() {
 /// retires on the control thread. Checked sample for sample against the
 /// rule written out here: gains 1 → 2 over 100 frames, then 2 → 8 over 50.
 ///
-/// Mutation: start a waiting fade at once (in `apply`, fade from the current
-/// incoming unit and drop the running fade's outgoing one) → the output
-/// leaves the 1 → 2 curve at frame 25 → fails. Mutation: in `end_fades`,
+/// Mutation: start a later fade at once (in `apply`, treat a key with a
+/// fade running like one without) → the running fade is lost (and freed on
+/// the audio thread, which the unit box's guard refuses) → fails. Mutation:
+/// in `end_fades`,
 /// never start the waiting fade → the output stays at 2 → fails. Mutation:
 /// let a later replace *not* supersede the waiting one (keep the first) →
 /// the gain ends at 4 → fails.
@@ -392,18 +395,36 @@ impl Node for EventCount {
 /// `SortedEvents`) → it counts the events sent during the fade → fails.
 #[test]
 fn events_go_to_the_incoming_unit_only() {
+    // Events arrive both ways: from an emitter's edge (one every 16 frames)
+    // and as scheduled commands.
     let (mut ed, mut exec) = Editor::new(prepare(64));
     let (old, new) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let emitter = NodeKey(2);
+    ed.insert(
+        emitter,
+        "emit",
+        TestNode::new(Kind::Emitter {
+            period: 16,
+            phase: 0,
+        }),
+    );
     ed.insert(NODE, "count", EventCount(Arc::clone(&old)));
+    let to = EventIn {
+        node: NODE,
+        port: 0,
+    };
+    ed.spec_mut().connect_events(
+        to,
+        tutti_graph::EventEdge::Direct(tutti_graph::EventOut {
+            node: emitter,
+            port: 0,
+        }),
+    );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
         node: NODE,
         port: 0,
     })];
     ed.commit().expect("commits");
-    let to = EventIn {
-        node: NODE,
-        port: 0,
-    };
     let note = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
     let mut out = vec![0.0f32; 64];
     let mut block = |exec: &mut Executor| {
@@ -411,7 +432,7 @@ fn events_go_to_the_incoming_unit_only() {
     };
     ed.schedule(At::NextBlock, to, note).expect("room");
     block(&mut exec);
-    assert_eq!(old.load(Ordering::Relaxed), 1);
+    assert_eq!(old.load(Ordering::Relaxed), 4 + 1);
 
     ed.replace(
         NODE,
@@ -424,8 +445,12 @@ fn events_go_to_the_incoming_unit_only() {
         ed.schedule(At::NextBlock, to, note).expect("room");
         block(&mut exec);
     }
-    assert_eq!(old.load(Ordering::Relaxed), 1, "the outgoing unit heard nothing new");
-    assert_eq!(new.load(Ordering::Relaxed), 3);
+    assert_eq!(
+        old.load(Ordering::Relaxed),
+        5,
+        "the outgoing unit heard nothing new"
+    );
+    assert_eq!(new.load(Ordering::Relaxed), 3 * (4 + 1));
 }
 
 /// A hard edit at a fading key cuts the fade: removing the node, or an

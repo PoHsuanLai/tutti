@@ -133,7 +133,7 @@ mod tests {
     /// strictly inside (0, 1) at both ends — so the fade is exactly `len`
     /// frames with no jump at either end.
     ///
-    /// Mutation: swap the two arms' laws → both sums fail. Mutation:
+    /// Mutation: `g_out = g_in` for equal amplitude → its sum fails. Mutation:
     /// `x = k / len` → frame 0 has `g_in = 0` → fails the strictly-inside
     /// check. Mutation: `x = (k + 1) / len` → frame `len - 1` is at `g_in = 1`
     /// → fails.

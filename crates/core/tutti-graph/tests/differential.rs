@@ -1574,3 +1574,166 @@ proptest! {
         prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
     }
 }
+
+/// Whether a unit of `b` may crossfade from one of `a`: the same shape in
+/// everything but the tail (`Editor::replace`'s rule, spelled out a third
+/// time so the generator does not borrow either implementation's).
+fn fits(a: &Kind, b: &Kind) -> bool {
+    let (a, b) = (shape(a), shape(b));
+    (a.audio_in, a.audio_out, a.event_in, a.event_out, a.latency, a.in_place)
+        == (b.audio_in, b.audio_out, b.event_in, b.event_out, b.latency, b.in_place)
+        && a.event_resolution == b.event_resolution
+}
+
+fn random_fade(rng: &mut Rng) -> tutti_graph::Fade {
+    let curve = if rng.chance(50) {
+        tutti_graph::CrossfadeCurve::EqualPower
+    } else {
+        tutti_graph::CrossfadeCurve::EqualAmplitude
+    };
+    // Mostly shorter than the rounds between edits, often longer, so fades
+    // end mid-block, run across edits, and queue behind each other.
+    tutti_graph::Fade::new(Samples(1 + rng.below(250) as usize), curve)
+}
+
+/// An edit that replaces one to three running nodes with a crossfade — the
+/// same kind with fresh state, or another kind that fits — sometimes on top
+/// of an ordinary `mutate`, which can remove, rewire or regenerate (without a
+/// fade, latency and all) a node that is fading.
+fn mutate_with_fades(desc: &Desc, rng: &mut Rng) -> (Desc, BTreeMap<NodeKey, tutti_graph::Fade>) {
+    let mut d = if rng.chance(40) {
+        mutate(desc, rng)
+    } else {
+        desc.clone()
+    };
+    let mut fades = BTreeMap::new();
+    for _ in 0..1 + rng.below(3) {
+        // Still running as `desc` had it: not removed or regenerated above.
+        let running: Vec<NodeKey> = desc
+            .order
+            .iter()
+            .copied()
+            .filter(|k| {
+                d.kinds.contains_key(k)
+                    && d.spec.generation(*k) == desc.spec.generation(*k)
+                    && !fades.contains_key(k)
+            })
+            .collect();
+        let Some(key) = rng.pick(&running) else { break };
+        let old = desc.kinds[&key].clone();
+        let mut kind = old.clone();
+        if rng.chance(50) {
+            let other = random_kind(rng);
+            if fits(&old, &other) {
+                kind = other;
+            }
+        }
+        let gen = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, gen);
+        d.spec.topology.nodes.insert(key, spec_for(&kind));
+        d.kinds.insert(key, kind);
+        fades.insert(key, random_fade(rng));
+    }
+    (d, fades)
+}
+
+/// Render until the editor has room for another commit — what a host does
+/// on `Backpressure`. A crossfade holds its commit until it ends, so rapid
+/// replaces run out of credit.
+fn wait_for_credit(pair: &mut Pair, frame: &mut u64) {
+    loop {
+        pair.editor.collect();
+        if pair.editor.in_flight() < tutti_graph::QUEUE_CAPACITY {
+            return;
+        }
+        run(pair, &[64], frame);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// Replaces with crossfades, bit for bit against the reference, whose
+    /// fade semantics are its own: eight rounds of edits a random 1–300
+    /// frames apart, each crossfading one to three nodes (every kind, events
+    /// included) over 1–250 frames, so fades end mid-block, run across other
+    /// edits, queue behind a running fade and supersede a waiting one — and
+    /// are cut by a removal or a hard regenerate of their key — under every
+    /// block schedule, ragged ones included. Afterwards every commit a fade
+    /// held has come back.
+    ///
+    /// Mutation: in `Executor::apply`, supersede nothing (keep the first
+    /// waiting fade) → diverges on the first case where two replaces queue.
+    /// The same in `Reference::set_graph_with_fades` → diverges from the
+    /// other side. Mutation: in the reference, blend with the fade's position
+    /// at the block start for every sample (`gains(done, len)`) → diverges.
+    /// Mutation: hand the outgoing unit the node's slot events in the
+    /// executor → an event node's fade diverges.
+    #[test]
+    fn crossfades_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
+        let mut desc = random_graph(seed);
+        let mut pair = Pair::new(MAX_BLOCK);
+        pair.switch(&desc.spec.validate().expect("valid"), &desc.kinds);
+        let mut rng = Rng::new(seed ^ 0xFADE);
+        let mut frame = 0;
+        run(&mut pair, &schedule(which, seed, 100), &mut frame);
+        for round in 0..8u64 {
+            let (next, fades) = mutate_with_fades(&desc, &mut rng);
+            wait_for_credit(&mut pair, &mut frame);
+            pair.switch_with_fades(&next.spec.validate().expect("valid"), &next.kinds, &fades);
+            let frames = 1 + rng.below(300) as usize;
+            run(&mut pair, &schedule(which, seed.wrapping_add(round), frames), &mut frame);
+            desc = next;
+        }
+        // Long enough for every fade, waiting ones included, to end.
+        run(&mut pair, &schedule(which, seed, 8 * 260), &mut frame);
+        pair.editor.collect();
+        prop_assert_eq!(pair.editor.in_flight(), 0, "a commit a fade held never came back");
+    }
+}
+
+/// The fade generator is not vacuous: over a fixed range of seeds, replaces
+/// land while a fade still runs at their key (so they queue, or supersede
+/// one waiting), fades swap in another kind, and fades reach event nodes.
+/// Counted from the generator's own schedule, the way the proptest drives
+/// it (without the credit waits, which only add frames).
+///
+/// Mutation: make `random_fade` 1–2 frames long → no replace lands on a
+/// running fade → fails. Mutation: never swap the kind → fails.
+#[test]
+fn the_fade_generator_covers_what_the_suite_claims() {
+    let (mut overlapping, mut other_kind, mut on_events) = (0, 0, 0);
+    for seed in 0..128u64 {
+        let mut desc = random_graph(seed);
+        let mut rng = Rng::new(seed ^ 0xFADE);
+        let mut frame = 100u64;
+        // Per key, when its latest fade (as generated) would end.
+        let mut ends: BTreeMap<NodeKey, u64> = BTreeMap::new();
+        for _ in 0..8 {
+            let (next, fades) = mutate_with_fades(&desc, &mut rng);
+            for (&k, f) in &fades {
+                if ends.get(&k).is_some_and(|&e| e > frame) {
+                    overlapping += 1;
+                }
+                let end = ends.get(&k).copied().unwrap_or(0).max(frame);
+                ends.insert(k, end + f.duration.get() as u64);
+                if next.kinds[&k] != desc.kinds[&k] {
+                    other_kind += 1;
+                }
+                let s = shape(&next.kinds[&k]);
+                if s.event_in + s.event_out > 0 {
+                    on_events += 1;
+                }
+            }
+            frame += 1 + rng.below(300);
+            desc = next;
+        }
+    }
+    eprintln!("overlapping {overlapping}, other kind {other_kind}, on event nodes {on_events}");
+    assert!(
+        overlapping > 50,
+        "only {overlapping} replaces over a running fade"
+    );
+    assert!(other_kind > 25, "only {other_kind} kind swaps");
+    assert!(on_events > 50, "only {on_events} fades on event nodes");
+}

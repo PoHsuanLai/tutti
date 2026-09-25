@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
+    compile, Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference, Shape,
     Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
@@ -456,10 +456,29 @@ impl Pair {
     /// Switch both to `graph`, building fresh units for whatever is new or
     /// regenerated.
     pub fn switch(&mut self, graph: &ValidGraph, kinds: &BTreeMap<NodeKey, Kind>) {
+        self.switch_with_fades(graph, kinds, &BTreeMap::new());
+    }
+
+    /// `switch`, with the regenerated keys in `fades` crossfading
+    /// (`Editor::replace`'s contract). The executor gets the fades for the
+    /// keys its delta replaces, as `Editor::commit` attaches them; the
+    /// reference gets them all and decides for itself.
+    pub fn switch_with_fades(
+        &mut self,
+        graph: &ValidGraph,
+        kinds: &BTreeMap<NodeKey, Kind>,
+        fades: &BTreeMap<NodeKey, Fade>,
+    ) {
         let shapes = shapes_of(kinds);
-        let (plan, delta) = compile(graph, &shapes, &prepare(self.max_block), self.plan.as_ref())
-            .expect("compiles");
+        let (plan, mut delta) =
+            compile(graph, &shapes, &prepare(self.max_block), self.plan.as_ref())
+                .expect("compiles");
         tutti_graph::verify(&plan).expect("verifies");
+        delta.fades = delta
+            .replace
+            .iter()
+            .filter_map(|&(_, new)| fades.get(&new.key).map(|&f| (new.key, f)))
+            .collect();
         let placed: Vec<NodeKey> = delta
             .insert
             .iter()
@@ -480,7 +499,7 @@ impl Pair {
         // The reference decides for itself what is new, from generations; give
         // it a fresh unit for every key it might need.
         let all = units_for(kinds, graph.topology().nodes.keys().copied());
-        self.reference.set_graph(graph, all);
+        self.reference.set_graph_with_fades(graph, all, fades);
     }
 
     /// Render one block through both; return (executor, reference) outputs.

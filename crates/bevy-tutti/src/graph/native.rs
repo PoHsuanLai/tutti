@@ -9,7 +9,7 @@
 //!
 //! | `AudioGraphRes` | here |
 //! |---|---|
-//! | `insert` | `Legacy::controlled` at a [`NodeKey`] minted from a fresh `NodeId` |
+//! | `insert`, `insert_with` | `Legacy::controlled` at a [`NodeKey`] minted from a fresh `NodeId`, forking as its captured MIDI port asks |
 //! | `set_source`, `set_output_source`, `widen_outputs` | written into `editor.spec_mut()` |
 //! | `set_param` | the node's `LegacyControls` (its settings ring, and its shadow) |
 //! | `replace` | `Editor::replace` with a [`Fade`]; a plain `insert` when there is nothing to fade from |
@@ -63,7 +63,8 @@ use tutti_core::{
     Tail,
 };
 use tutti_graph::{
-    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, Prepare, Resolution, Transport,
+    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, NodeParts, Prepare, Resolution,
+    Transport,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -189,6 +190,12 @@ struct Entry {
     /// `None` for a native node (the beat generator), which takes no
     /// settings and has no `AudioUnit` to inspect.
     controls: Option<LegacyControls<Boxed>>,
+    /// Whether a fork of the unit now at the key carries the MIDI clip on
+    /// its live port: it went in with the fork its captured port asks for
+    /// (`insert_with`), or is a plugin (whose fork source carries its own).
+    /// A node an export reaches that has a captured port and not this is
+    /// refused (`fork_for_export`) — its fork would drop the clip.
+    carries_midi: bool,
 }
 
 /// The executor, while this side still holds it, and what a local render
@@ -243,6 +250,42 @@ fn declared_latency(unit: &mut dyn AudioUnit) -> Latency {
     Latency::new(Samples(
         unit.latency().unwrap_or(0.0).round().max(0.0) as usize
     ))
+}
+
+/// How a unit's fork carries the MIDI clip on its live port, as the MIDI
+/// registry captured it (`CapturedControls`). Without the `midi` feature no
+/// unit has a captured port, and every unit forks from its shadow.
+#[cfg(feature = "midi")]
+pub(crate) type UnitFork = crate::midi::MidiFork;
+/// See the `midi` build's `UnitFork`: here there is none.
+#[cfg(not(feature = "midi"))]
+pub(crate) enum UnitFork {}
+
+/// `unit` as every unit goes in — [`Legacy::controlled`]: its node, settings
+/// ring and shadow — forking as `fork` says: from the unit's own source, or
+/// from the shadow with a hook carrying its MIDI clip (see
+/// `MidiNode::fork_source`). With no `fork`, from the shadow alone, as
+/// `Legacy` forks every forkable unit.
+fn controlled(
+    editor: &mut Editor,
+    unit: Box<dyn AudioUnit>,
+    fork: Option<UnitFork>,
+) -> (NodeParts<()>, LegacyControls<Boxed>) {
+    let (legacy, controls) = Legacy::controlled(editor, Boxed(unit));
+    let parts = match fork {
+        None => tutti_graph::IntoNode::into_parts(legacy),
+        #[cfg(feature = "midi")]
+        Some(UnitFork::Carry(hook)) => {
+            tutti_graph::IntoNode::into_parts(legacy.with_fork_hook(hook))
+        }
+        #[cfg(feature = "midi")]
+        Some(UnitFork::Own(own)) => {
+            let mut parts = tutti_graph::IntoNode::into_parts(legacy);
+            parts.fork = Some(own);
+            parts
+        }
+    };
+    (parts, controls)
 }
 
 impl NativeGraph {
@@ -363,15 +406,19 @@ impl NativeGraph {
 
     // --- Nodes ---
 
-    pub(crate) fn insert(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
+    /// Insert `unit`, forking as `fork` says (see [`controlled`]): the fork
+    /// its captured MIDI port asks for, or `None` for a unit with no port.
+    pub(crate) fn insert(&mut self, unit: Box<dyn AudioUnit>, fork: Option<UnitFork>) -> AudioNode {
         let node = AudioNode(NodeId::new());
-        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(unit));
-        self.editor.insert(key(node), UNIT_KIND, legacy);
+        let carries_midi = fork.is_some();
+        let (parts, controls) = controlled(&mut self.editor, unit, fork);
+        self.editor.insert(key(node), UNIT_KIND, parts);
         self.nodes.insert(
             key(node),
             Entry {
                 node,
                 controls: Some(controls),
+                carries_midi,
             },
         );
         self.edited = true;
@@ -418,6 +465,9 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: Some(controls),
+                // Its fork source carries the clip itself
+                // (`PluginClient::fork_source`).
+                carries_midi: true,
             },
         );
         self.edited = true;
@@ -431,19 +481,39 @@ impl NativeGraph {
     /// `&OfflineTransport` itself — the exact type every unit's
     /// `rebind_offline` downcasts; anything else would rebind nothing,
     /// silently (`ForkMode::Offline`'s docs).
+    ///
+    /// `midi` is every node with a captured MIDI port (its entity's
+    /// `MidiTarget`). One the fork holds that went in **without** the fork
+    /// its port asks for — a host that captured the unit's controls, then
+    /// pushed it with the plain [`insert`](Self::insert) and bound them —
+    /// would fork from its shadow and drop its clip, silently. It refuses
+    /// the export instead (`NotForkable`, naming its entity).
     #[cfg(feature = "export")]
     pub(crate) fn fork_for_export(
         &self,
         target: tutti_graph::ForkTarget,
         ctx: &tutti_core::transport::OfflineTransport,
         rate: SampleRate,
+        midi: &std::collections::BTreeSet<NodeKey>,
     ) -> tutti_export::Result<tutti_export::RenderGraph> {
-        tutti_export::RenderGraph::fork(
+        let graph = tutti_export::RenderGraph::fork(
             &self.editor,
             target,
             tutti_graph::ForkMode::Offline(ctx),
             rate,
-        )
+        )?;
+        if let tutti_export::RenderGraph::Graph { editor, .. } = &graph {
+            // The keys the fork holds are exactly what it forked.
+            let dropped = editor.spec().topology.nodes.keys().find(|k| {
+                self.nodes
+                    .get(k)
+                    .is_some_and(|e| !e.carries_midi && midi.contains(k))
+            });
+            if let Some(&key) = dropped {
+                return Err(tutti_export::Error::NotForkable { key });
+            }
+        }
+        Ok(graph)
     }
 
     /// The beat generator a graph engine needs in place of a
@@ -466,6 +536,7 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: None,
+                carries_midi: false,
             },
         );
         self.edited = true;
@@ -501,12 +572,16 @@ impl NativeGraph {
     /// commits (`Editor::replace` would consume it and refuse): the caller
     /// keeps it and retries once the re-prepare has resumed. Refused for good
     /// on a poisoned editor, where no unit can ever land again.
+    ///
+    /// `fork` is the incoming unit's (see [`insert`](Self::insert)), taken
+    /// only when the unit lands, so a refused unit keeps it for its retry.
     pub(crate) fn replace(
         &mut self,
         node: AudioNode,
         mut unit: Box<dyn AudioUnit>,
         fade: Seconds,
         curve: CrossfadeCurve,
+        fork: &mut Option<UnitFork>,
     ) -> Result<(), ReplaceRefused> {
         if let Some(cause) = self.editor.poisoned() {
             return Err(ReplaceRefused::Failed(format!(
@@ -541,7 +616,9 @@ impl NativeGraph {
                 && s.event_resolution == Resolution::Block
                 && s.latency == probe_latency(unit.as_mut(), rate)
         });
-        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(unit));
+        let fork = fork.take();
+        let carries_midi = fork.is_some();
+        let (legacy, controls) = controlled(&mut self.editor, unit, fork);
         if fits {
             let fade = Fade::seconds(fade, rate, curve);
             if let Err(e) = self.editor.replace(k, legacy, fade) {
@@ -557,6 +634,7 @@ impl NativeGraph {
         }
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.controls = Some(controls);
+            entry.carries_midi = carries_midi;
         }
         self.edited = true;
         Ok(())

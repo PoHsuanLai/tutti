@@ -88,6 +88,75 @@ use tutti_midi_runtime::MidiInPort;
 /// so the clone *is* the node's endpoint for every purpose a consumer has.
 type CaptureFn = fn(&dyn AudioUnit) -> Option<MidiInPort>;
 
+/// One node type's own fork source ([`MidiNode::fork_source`]), if `unit` is
+/// that type.
+type ForkFn = fn(&dyn AudioUnit) -> Option<Box<dyn tutti_graph::ForkSource>>;
+
+/// A registered node type: how to reach its port, and its own fork source.
+#[derive(Clone, Copy)]
+struct Capture {
+    port: CaptureFn,
+    fork: ForkFn,
+}
+
+/// `unit` as a `T`, if it is one: the registry's one downcast, of an owned
+/// unit before insertion (or of a fork's unit, never the live graph's).
+fn as_node<T: 'static>(unit: &dyn AudioUnit) -> Option<&T> {
+    unit.as_any().downcast_ref::<T>()
+}
+
+/// Why a fork of a MIDI-receiving node could not carry the clip its live
+/// node plays (`ExportError::ForkSource`'s cause, for a node with no fork
+/// source of its own). Refused rather than rendered: the export would drop
+/// the notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MidiForkError {
+    /// The live node's port plays a source that cannot be rebound onto an
+    /// offline render (`MidiUnitIn::rebind_offline` answered `None`).
+    #[error("the node plays a MIDI source that cannot be rebound onto an offline render")]
+    NotRebindable,
+    /// The forked unit has no MIDI port to install the clip on. The fork is
+    /// the live unit's type, so this is a registered type whose capture
+    /// answers for one instance and not a clone of it.
+    #[error("the forked node has no MIDI port for its clip")]
+    NoPort,
+}
+
+/// What the registry knows about how a captured unit forks, for the native
+/// graph to hand its editor (`AudioGraphRes::insert_with`).
+pub(crate) enum MidiFork {
+    /// The type's own source ([`MidiNode::fork_source`]), which carries the
+    /// clip itself.
+    Own(Box<dyn tutti_graph::ForkSource>),
+    /// The generic fork: the node's shadow clone, with this hook re-installing
+    /// the live port's clip, rebound, on the fork's own port.
+    Carry(tutti_graph::LegacyForkHook),
+}
+
+/// The generic fork's hook for a unit whose live port is `live`: offline,
+/// find the forked unit's port with `port_of` and rebind the live port's
+/// source onto it (`MidiInPort::rebind_offline_into`). A source that cannot
+/// be rebound is [`MidiForkError::NotRebindable`] — the fork fails by name,
+/// never renders the notes as silence. A live duplicate carries no clip, as a
+/// hosted plugin's does not.
+fn carry_clip(live: MidiInPort, port_of: CaptureFn) -> tutti_graph::LegacyForkHook {
+    use tutti_graph::{ForkCause, ForkMode};
+    Box::new(move |unit, mode| {
+        let ForkMode::Offline(ctx) = mode else {
+            return Ok(());
+        };
+        let fork = port_of(unit).ok_or_else(|| ForkCause::new(MidiForkError::NoPort))?;
+        match live.rebind_offline_into(&fork, ctx) {
+            tutti_midi_runtime::OfflineRebind::NotRebindable => {
+                Err(ForkCause::new(MidiForkError::NotRebindable))
+            }
+            tutti_midi_runtime::OfflineRebind::NoSource
+            | tutti_midi_runtime::OfflineRebind::Rebound => Ok(()),
+        }
+    })
+}
+
 /// The node types this app can address MIDI to.
 ///
 /// Empty by default. An engine that knew every node type would be an engine that
@@ -108,7 +177,7 @@ pub struct MidiTargetRegistry {
     // through `port`, which never consulted it, so a supplied sender was
     // unreachable in practice. `out_sink` cites this as the reason it hands its
     // sink out on request rather than installing it.
-    captures: Vec<CaptureFn>,
+    captures: Vec<Capture>,
 }
 
 impl MidiTargetRegistry {
@@ -120,11 +189,16 @@ impl MidiTargetRegistry {
     ///
     /// Takes effect for units inserted **after** this call — see the module
     /// docs.
+    ///
+    /// Registering a type is also what makes an export of a native graph
+    /// play its clip: a fork of a registered node carries the clip installed
+    /// on its live port (its own [`MidiNode::fork_source`], or the generic
+    /// fork), and a fork that cannot is refused by name — see
+    /// [`MidiNode::fork_source`].
     pub fn register<T: MidiNode + AudioUnit + 'static>(&mut self) -> &mut Self {
-        self.captures.push(|unit| {
-            unit.as_any()
-                .downcast_ref::<T>()
-                .map(|node| node.midi_port().clone())
+        self.captures.push(Capture {
+            port: |unit| as_node::<T>(unit).map(|node| node.midi_port().clone()),
+            fork: |unit| as_node::<T>(unit).and_then(MidiNode::fork_source),
         });
         self
     }
@@ -134,7 +208,20 @@ impl MidiTargetRegistry {
     /// Run on the owned unit **before** it enters the graph; the answer goes on
     /// the entity as a [`MidiTarget`].
     pub fn capture(&self, unit: &dyn AudioUnit) -> Option<MidiInPort> {
-        self.captures.iter().find_map(|c| c(unit))
+        self.captures.iter().find_map(|c| (c.port)(unit))
+    }
+
+    /// [`capture`](Self::capture), and how a fork of the unit carries the
+    /// clip on that port: the type's own source, or the generic fork's hook.
+    pub(crate) fn capture_forking(&self, unit: &dyn AudioUnit) -> Option<(MidiInPort, MidiFork)> {
+        self.captures.iter().find_map(|c| {
+            let port = (c.port)(unit)?;
+            let fork = match (c.fork)(unit) {
+                Some(own) => MidiFork::Own(own),
+                None => MidiFork::Carry(carry_clip(port.clone(), c.port)),
+            };
+            Some((port, fork))
+        })
     }
 }
 
@@ -187,6 +274,25 @@ impl MidiTarget {
 pub trait MidiNode {
     /// This unit's MIDI input endpoint.
     fn midi_port(&self) -> &MidiInPort;
+
+    /// A fork source of this unit's own, for a fork of the native graph (an
+    /// export), taken from the owned unit before it is inserted. `None`, the
+    /// default, is right for most types: the **generic fork** clones the
+    /// node's shadow (every setting sent to it applied), isolates it, and
+    /// re-installs the clip playing on the live port, rebound onto the
+    /// render's timeline, on the fork's own port — so a registered type's
+    /// export plays its clip with nothing more than [`midi_port`](Self::midi_port).
+    /// A source that cannot be rebound fails the export by name
+    /// ([`MidiForkError::NotRebindable`]).
+    ///
+    /// Override for what the generic fork cannot do: the source must carry
+    /// the clip itself (`MidiInPort::rebind_offline_into`, failing on
+    /// `NotRebindable`) — `PolySynth`, whose controls are cells its shadow
+    /// never sees, and `SoundFontUnit`, whose fork renders at the export's
+    /// rate.
+    fn fork_source(&self) -> Option<Box<dyn tutti_graph::ForkSource>> {
+        None
+    }
 }
 
 // Fully-qualified calls, not `self.midi_port()` — the inherent method and the
@@ -196,12 +302,22 @@ impl MidiNode for tutti_soundfont::SoundFontUnit {
     fn midi_port(&self) -> &MidiInPort {
         tutti_soundfont::SoundFontUnit::midi_port(self)
     }
+    /// Renders at the export's rate (`SoundFontUnit::fork_source`).
+    fn fork_source(&self) -> Option<Box<dyn tutti_graph::ForkSource>> {
+        Some(tutti_soundfont::SoundFontUnit::fork_source(self))
+    }
 }
 
 #[cfg(feature = "synth")]
 impl MidiNode for tutti_polysynth::PolySynth {
     fn midi_port(&self) -> &MidiInPort {
         tutti_polysynth::PolySynth::midi_port(self)
+    }
+    /// Reads the synth's control cells at the fork, which its shadow —
+    /// isolated at insert, and reached by no setting (`PolySynth::set` is a
+    /// no-op) — never sees (`PolySynth::fork_source`).
+    fn fork_source(&self) -> Option<Box<dyn tutti_graph::ForkSource>> {
+        Some(tutti_polysynth::PolySynth::fork_source(self))
     }
 }
 

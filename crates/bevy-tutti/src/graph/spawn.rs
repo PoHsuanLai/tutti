@@ -130,9 +130,9 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// The capture comes first because it is the last moment the concrete unit is
 /// in hand — see [`capture`](crate::graph::capture).
 fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit: U, caller: &str) {
-    let controls = CapturedControls::capture(world, &unit);
+    let mut controls = CapturedControls::capture(world, &unit);
     let id = match world.get_resource_mut::<AudioGraphRes>() {
-        Some(mut graph) => graph.insert(unit),
+        Some(mut graph) => graph.insert_with(Box::new(unit), &mut controls),
         None => {
             bevy_log::warn!(
                 "{caller}: AudioGraphRes missing; entity {:?} left without AudioNode",
@@ -233,7 +233,7 @@ fn apply_crossfade(
     world: &mut World,
     entity: Entity,
     unit: Box<dyn AudioUnit>,
-    controls: CapturedControls,
+    mut controls: CapturedControls,
 ) {
     let Some(node) = world.get::<AudioNode>(entity).copied() else {
         bevy_log::warn!(
@@ -249,11 +249,12 @@ fn apply_crossfade(
         );
         return;
     };
-    match graph.replace(
+    match graph.replace_with(
         node,
         unit,
         tutti_core::Seconds(0.005),
         tutti_core::CrossfadeCurve::EqualAmplitude,
+        &mut controls,
     ) {
         Ok(()) => {
             if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {

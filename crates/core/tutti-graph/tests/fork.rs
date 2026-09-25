@@ -278,6 +278,75 @@ fn a_fork_isolates_then_rebinds_then_resets() {
     );
 }
 
+/// **A `Legacy` fork hook runs after the rebind and before the reset, and
+/// its `Err` fails the fork by key with its cause.** The hook doubles
+/// `Bindable`'s binding: offline, the fork renders twice the context (1.5)
+/// only if the hook saw the rebound 0.75 and `reset` then read what it left.
+/// A hook refusing the fork is `ForkError::Source` naming the node.
+///
+/// Mutation (run): the hook called before `rebind_offline` → it doubles no
+/// binding, the fork renders 0.75. Mutation (run): after `reset` → `reset`
+/// read the undoubled 0.75. Mutation (run): its `Err` ignored (`let _ =`) →
+/// the refusing fork succeeds.
+#[test]
+fn a_legacy_fork_hook_runs_between_rebind_and_reset() {
+    let pre = prepare(64);
+    let doubling = |unit: &mut dyn AudioUnit, mode: ForkMode<'_>| {
+        if let ForkMode::Offline(_) = mode {
+            let b = unit.as_any_mut().downcast_mut::<Bindable>().unwrap();
+            b.bound = b.bound.map(|v| v * 2.0);
+        }
+        Ok(())
+    };
+    let (mut ed, _exec) = Editor::new(pre);
+    ed.insert(
+        NodeKey(1),
+        "hooked",
+        Legacy::new(Bindable {
+            outs: 1,
+            level: 0.25,
+            bound: Some(0.25),
+        })
+        .with_fork_hook(doubling),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    let ctx: f32 = 0.75;
+    let (fork, exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
+        .expect("forks");
+    let offline = render(fork, exec, 64);
+    assert!(
+        offline[0].iter().all(|&x| x == 1.5),
+        "{:?}",
+        &offline[0][..4]
+    );
+
+    let (mut ed, _exec) = Editor::new(pre);
+    ed.insert(
+        NodeKey(2),
+        "refusing",
+        Legacy::new(Bindable {
+            outs: 1,
+            level: 0.0,
+            bound: None,
+        })
+        .with_fork_hook(|_, _| Err(ForkCause::new(RefusedState("hook")))),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(2), 0)];
+    let err = ed
+        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
+        .err()
+        .expect("the hook refuses the fork");
+    let ForkError::Source { key, cause } = &err else {
+        panic!("expected ForkError::Source, got {err:?}");
+    };
+    assert_eq!(*key, NodeKey(2));
+    assert_eq!(
+        cause.downcast_ref::<RefusedState>(),
+        Some(&RefusedState("hook"))
+    );
+}
+
 /// **A setting sent after insert is in the fork**, through the shadow: the
 /// fork of a `Legacy::controlled` node clones the shadow, which every
 /// `LegacyControls::set` reaches at once — even one the live node has not

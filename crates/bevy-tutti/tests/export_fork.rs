@@ -1123,3 +1123,701 @@ mod plugin {
         );
     }
 }
+
+/// Built-in synths — `PolySynth` and `SoundFontUnit` — exported through a
+/// fork with the clip a `MidiSourceInstall` put on the live synth's port.
+///
+/// A fork's synth used to be cloned from its `Legacy::controlled` shadow,
+/// whose MIDI port was severed when the node was inserted — before any clip
+/// was installed — so the export rendered silence. Each synth now brings its
+/// own fork source (`PolySynth::fork_source`, `SoundFontUnit::fork_source`),
+/// which `graph::native` hands the editor at insert, and a fork rebinds the
+/// live port's clip onto the render's timeline.
+///
+/// Every tempo here is 90 BPM: a beat is 32 000 frames at 48 kHz (64 000 at
+/// 96 kHz), placed to the frame since clips place on integer frames (#40).
+///
+/// Native only but for the A/B: a `Net` export has no fork, and its synth
+/// plays no clip unless the host refills one (the A/B does, to compare).
+#[cfg(all(feature = "midi", feature = "synth", feature = "soundfont"))]
+mod synths {
+    use super::*;
+
+    use bevy_tutti::graph::{GraphReconcilePlugin, MasterSources, SpawnAudioNode, TransportRes};
+    use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall, MidiTarget, MidiTargetRegistry};
+    use tutti_core::transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
+    use tutti_core::{AudioNode, Beat, Bpm, BufferVec, Seconds, MAX_BUFFER_SIZE};
+    use tutti_midi_runtime::{MidiClipSource, OfflineRebind, TimedMidiEvent};
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
+    use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+
+    /// A beat at 90 BPM and 48 kHz, in frames.
+    const BEAT_48K: usize = 32_000;
+    /// Frames of the note compared against a reference render.
+    const NOTE: usize = 4_096;
+    /// A preset of the test soundfont that is not the default piano, so a
+    /// fork that lost the live unit's preset is heard.
+    const PRESET: i32 = 24;
+
+    /// A saw with an instant attack, built at the live graph's rate.
+    fn poly() -> PolySynth {
+        PolySynth::new(SynthConfig {
+            sample_rate: SampleRate(RATE),
+            oscillator: OscillatorType::Saw,
+            envelope: EnvelopeConfig {
+                attack: Seconds(0.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("the synth builds")
+    }
+
+    /// The repo's committed test soundfont (as `midi_soundfont.rs` finds it).
+    fn font() -> Arc<SoundFont> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("bevy-tutti lives two levels below the repo root")
+            .join("assets/soundfonts/TimGM6mb.sf2");
+        let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
+            panic!(
+                "committed test soundfont missing at {}: {e}",
+                path.display()
+            )
+        });
+        Arc::new(SoundFont::new(&mut file).expect("the test soundfont parses"))
+    }
+
+    /// A SoundFont unit at `rate`, on [`PRESET`].
+    fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
+        let mut settings = SynthesizerSettings::new(rate as i32);
+        settings.enable_reverb_and_chorus = false;
+        let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
+        unit.program_change(0, PRESET);
+        unit
+    }
+
+    /// An app on `backend` with the sequencer, both synth types registered
+    /// for MIDI, and `unit` spawned (`spawn_audio_node`, the path a host
+    /// takes) as "Synth", routed to the master.
+    fn app_with(backend: GraphBackend, unit: impl AudioUnit + 'static) -> (App, Entity) {
+        let mut app = app_over(graph_on(backend));
+        app.insert_resource(TransportRes(Transport::new(RATE)));
+        app.add_plugins((GraphReconcilePlugin, MidiSequencePlugin));
+        app.init_resource::<MidiTargetRegistry>();
+        app.world_mut()
+            .resource_mut::<MidiTargetRegistry>()
+            .register::<PolySynth>()
+            .register::<SoundFontUnit>();
+        let world = app.world_mut();
+        let synth = world
+            .commands()
+            .spawn_audio_node(unit)
+            .insert(Name::new("Synth"))
+            .id();
+        world.commands().insert_resource(MasterSources::from(synth));
+        world.flush();
+        app.update();
+        assert!(
+            app.world().get::<MidiTarget>(synth).is_some(),
+            "the synth's MIDI port was captured"
+        );
+        (app, synth)
+    }
+
+    /// Middle C from beat 1 to beat 2.
+    fn clip() -> Vec<TimedMidiEvent> {
+        vec![
+            TimedMidiEvent::new(Beat(1.0), note_on()),
+            TimedMidiEvent::new(
+                Beat(2.0),
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            ),
+        ]
+    }
+
+    fn note_on() -> MidiEvent {
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+    }
+
+    fn install_clip(app: &mut App, synth: Entity) {
+        app.world_mut().spawn(MidiSourceInstall::new(synth, clip()));
+        app.update();
+    }
+
+    /// A 90 BPM timeline from beat 0 at `rate`.
+    fn timeline(rate: f64) -> Arc<OfflineTimeline> {
+        Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: Beat(0.0),
+            tempo: Bpm(90.0),
+            sample_rate: SampleRate(rate),
+            loop_range: None,
+        }))
+    }
+
+    /// Export `source` for 0.8 s at `rate` against [`timeline`].
+    fn request(source: ExportSource, rate: f64) -> ExportRequest {
+        ExportRequest::new(
+            source,
+            ExportTarget::Buffers,
+            ExportConfig {
+                render: RenderConfig {
+                    sample_rate: SampleRate(rate),
+                    ..config(0.8).render
+                },
+                ..config(0.8)
+            },
+            ExportClock::timeline(timeline(rate)),
+        )
+    }
+
+    /// `unit` fed a note-on at frame 0 through `queue`, rendered in 64-frame
+    /// blocks: what the note sounds like from its first frame, at the unit's
+    /// rate.
+    fn reference<U: AudioUnit>(mut unit: U, queue: impl FnOnce(&U)) -> Vec<f32> {
+        queue(&unit);
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        let mut out = Vec::with_capacity(NOTE);
+        while out.len() < NOTE {
+            unit.process(
+                MAX_BUFFER_SIZE,
+                &input.buffer_ref(),
+                &mut output.buffer_mut(),
+            );
+            out.extend_from_slice(&output.buffer_ref().channel_f32(0)[..MAX_BUFFER_SIZE]);
+        }
+        out
+    }
+
+    /// Assert the render is silent until beat 1 and then, sample for sample,
+    /// `reference` — the note at the render's rate, from its first frame.
+    fn assert_note_at_beat_1(what: &str, rate: f64, planes: &[Vec<f32>], reference: &[f32]) {
+        let beat = BEAT_48K * (rate / RATE) as usize;
+        let lead = reference
+            .iter()
+            .position(|&s| s != 0.0)
+            .unwrap_or_else(|| panic!("{what}: the reference note is silent"));
+        let left = &planes[0];
+        assert_eq!(
+            left.iter().position(|&s| s != 0.0),
+            Some(beat + lead),
+            "{what} at {rate} Hz: the note enters on beat 1"
+        );
+        assert_eq!(
+            &left[beat..beat + NOTE],
+            reference,
+            "{what} at {rate} Hz: from beat 1, the note at the render's rate"
+        );
+    }
+
+    /// The live synth after an export plays its own clip on the **live**
+    /// transport: rolled and seated on beat 1, the live graph sounds the
+    /// note. A fork that shared the live port (not isolated) would have left
+    /// its offline copy installed there — a cursor already past beat 1 on a
+    /// timeline nothing advances — and the live graph would stay silent.
+    fn assert_live_untouched(app: &mut App, synth: Entity) {
+        let port = app
+            .world()
+            .get::<MidiTarget>(synth)
+            .expect("still captured")
+            .port()
+            .clone();
+        let ctx: tutti_core::transport::OfflineTransport = timeline(RATE);
+        assert_eq!(
+            port.rebind_offline_into(&tutti_midi_runtime::MidiInPort::new(), &ctx),
+            OfflineRebind::Rebound,
+            "the live synth still holds a clip"
+        );
+        let transport = app.world().resource::<TransportRes>().clone();
+        let _ = transport.motion.try_send(MotionEvent::Play);
+        transport.motion.drain();
+        transport.settings.set_beat(Beat(1.0));
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let mut heard = false;
+        for _ in 0..4_096 {
+            let mut frame = [0.0f32; 2];
+            graph.render_frame(&mut frame);
+            heard |= frame[0] != 0.0;
+        }
+        assert!(heard, "the live synth plays its clip on the live transport");
+    }
+
+    /// **An exported `PolySynth` plays its clip**, on the render's timeline
+    /// and at the render's rate: a master export at 48 and 96 kHz is silent
+    /// until beat 1 and then, sample for sample, what the synth renders for
+    /// the note re-rated to the render's rate. The live synth keeps its clip
+    /// and its inbox.
+    ///
+    /// Mutation (run): `controlled` dropping a unit's own fork source (the
+    /// synth forked from its `Legacy::controlled` shadow alone, the path
+    /// before this) → the export is silent at both rates. (Its
+    /// `MidiNode::fork_source` answering `None` instead — the generic fork —
+    /// still plays the clip here; what the synth's own source adds, control
+    /// cells read at the fork, is pinned in tutti-polysynth's `fork.rs`.)
+    /// Mutation (run): dropping the
+    /// `rebind_offline_into` call in `PolySynth::fork_instance` → silent.
+    /// Mutation (run): `fork_instance` not isolating the fork (so it shares
+    /// the live port, and its offline clip replaces the live one) → the live
+    /// synth is silent on beat 1 after the export.
+    #[test]
+    fn an_exported_polysynth_plays_its_clip() {
+        for rate in [RATE, 2.0 * RATE] {
+            let (mut app, synth) = app_with(GraphBackend::Native, poly());
+            install_clip(&mut app, synth);
+            let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
+            let mut rerated = poly();
+            rerated.set_sample_rate(SampleRate(rate));
+            let reference = reference(rerated, |s| {
+                s.midi_sender().queue(&[note_on()]);
+            });
+            assert_note_at_beat_1("PolySynth", rate, &planes, &reference);
+            assert_live_untouched(&mut app, synth);
+        }
+    }
+
+    /// **An exported `SoundFontUnit` plays its clip**, on the live unit's
+    /// preset, over the same decoded SoundFont, at the render's rate — a
+    /// 48 kHz unit exported at 96 kHz renders what a unit built at 96 kHz
+    /// does, not the 48 kHz note an octave down at half its frame. The live
+    /// unit keeps its clip and its inbox.
+    ///
+    /// Mutation (run): `controlled` dropping a unit's own fork source →
+    /// silent at both rates. Mutation (run): `RateFollowing::set_sample_rate`
+    /// doing nothing, or the unit's `MidiNode::fork_source` answering `None`
+    /// (the generic fork, at the live rate) → at 96 kHz the 48 kHz unit places
+    /// the note by its own rate, and it enters at frame 64 009 for 64 089.
+    #[test]
+    fn an_exported_soundfont_plays_its_clip() {
+        let font = font();
+        for rate in [RATE, 2.0 * RATE] {
+            let (mut app, synth) = app_with(GraphBackend::Native, sf2(&font, RATE));
+            install_clip(&mut app, synth);
+            let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
+            let reference = reference(sf2(&font, rate), |s| {
+                s.midi_sender().queue(&[note_on()]);
+            });
+            assert_note_at_beat_1("SoundFontUnit", rate, &planes, &reference);
+            assert_live_untouched(&mut app, synth);
+        }
+    }
+
+    /// **A native export of a synth renders what a `Net` export renders,
+    /// bit for bit**, once the `Net` export is handed the clip. A `Net` node
+    /// export isolates the synth, which severs its port, and nothing rebinds
+    /// the clip: the `Net`-era host refilled it in the `prepare` hook, which
+    /// this does (a `MidiClipSource` of the same events on the render's
+    /// timeline). The native fork carries it itself.
+    ///
+    /// Mutation (run): `controlled` dropping a unit's own fork source → the
+    /// native render is silent ("the note sounds" fails). Mutation (run): the hook
+    /// installing the clip 0.002 beat (one 64-frame chunk) late → the two
+    /// part at the native onset, frame 32 001.
+    #[test]
+    fn native_and_net_synth_exports_are_bit_identical() {
+        let render = |backend: GraphBackend| {
+            let (mut app, synth) = app_with(backend, poly());
+            install_clip(&mut app, synth);
+            let node = app.world().get::<AudioNode>(synth).unwrap().0;
+            let request =
+                request(ExportSource::Node(synth), RATE).with_prepare(move |prepared, _world| {
+                    let RenderGraph::Net(net) = prepared.graph else {
+                        return;
+                    };
+                    let ctx = prepared.ctx.expect("a Net node export is rebound").clone();
+                    let unit = net.node_mut(node);
+                    let synth = unit
+                        .as_any_mut()
+                        .downcast_mut::<PolySynth>()
+                        .expect("the synth");
+                    let id = synth.midi_unit_id();
+                    synth.set_midi_source(Arc::new(MidiClipSource::new(id, clip(), ctx)));
+                });
+            export(&mut app, request).planes()
+        };
+        let (native, net) = (render(GraphBackend::Native), render(GraphBackend::Net));
+        assert!(
+            native[0][..BEAT_48K].iter().all(|&s| s == 0.0),
+            "nothing before beat 1"
+        );
+        assert!(
+            native[0][BEAT_48K..].iter().any(|&s| s != 0.0),
+            "the note sounds"
+        );
+        for c in 0..2 {
+            assert_eq!(
+                native[c].iter().zip(&net[c]).position(|(a, b)| a != b),
+                None,
+                "channel {c}: the first frame the backends differ"
+            );
+        }
+    }
+
+    /// A MIDI source that is not a function of a timeline.
+    struct Unrebindable;
+
+    impl tutti_midi_types::MidiUnitIn for Unrebindable {
+        fn poll_unit(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _block: usize,
+            _rate: SampleRate,
+            _buffer: &mut [MidiEvent],
+        ) -> usize {
+            0
+        }
+        fn rebind_offline(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
+            None
+        }
+    }
+
+    /// **A synth playing a MIDI source that cannot be rebound refuses the
+    /// export by its entity and name** (`ExportError::ForkSource`), with the
+    /// synth's own reason, rather than render its notes as silence.
+    ///
+    /// Mutation (run): `PolySynth::fork_instance` and
+    /// `SoundFontUnit::fork_instance` ignoring `NotRebindable` → both
+    /// exports render.
+    #[test]
+    fn an_unrebindable_synth_source_is_a_named_failure() {
+        let named = |got: Got, what: &str| match got {
+            Got::ForkSource(node, cause) => {
+                assert_eq!(node.name.as_deref(), Some("Synth"), "{what}");
+                cause
+            }
+            other => panic!("{what}: expected a named fork-source failure, got {other:?}"),
+        };
+        let unrebindable = |app: &mut App, synth: Entity| {
+            app.world()
+                .get::<MidiTarget>(synth)
+                .unwrap()
+                .port()
+                .install(Arc::new(Unrebindable));
+        };
+
+        let (mut app, synth) = app_with(GraphBackend::Native, poly());
+        unrebindable(&mut app, synth);
+        let cause = named(
+            export(&mut app, request(ExportSource::Master, RATE)),
+            "PolySynth",
+        );
+        assert!(
+            matches!(
+                cause.downcast_ref::<tutti_polysynth::Error>(),
+                Some(tutti_polysynth::Error::MidiSource)
+            ),
+            "{cause:?}"
+        );
+
+        let (mut app, synth) = app_with(GraphBackend::Native, sf2(&font(), RATE));
+        unrebindable(&mut app, synth);
+        let cause = named(
+            export(&mut app, request(ExportSource::Master, RATE)),
+            "SoundFontUnit",
+        );
+        assert!(
+            matches!(
+                cause.downcast_ref::<tutti_soundfont::Error>(),
+                Some(tutti_soundfont::Error::MidiSource)
+            ),
+            "{cause:?}"
+        );
+    }
+}
+
+/// A **host-defined** MIDI-receiving unit — a type bevy-tutti has never heard
+/// of, registered with `MidiTargetRegistry` like any other — exported
+/// through a fork. Its export plays the clip on its live port (the generic
+/// fork: the shadow, plus the clip re-installed, rebound, on the fork's own
+/// port), or refuses by name; it is never silent.
+///
+/// Native only: a `Net` export has no fork (its node export severs the port,
+/// and nothing rebinds the clip — the `Net`-era host refilled it by hand).
+#[cfg(feature = "midi")]
+mod host_midi {
+    use super::*;
+
+    use bevy_tutti::graph::{
+        CapturedControls, GraphReconcilePlugin, MasterSources, SpawnAudioNode, TransportRes,
+    };
+    use bevy_tutti::midi::{
+        MidiForkError, MidiNode, MidiSequencePlugin, MidiSourceInstall, MidiTarget,
+        MidiTargetRegistry,
+    };
+    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
+    use tutti_core::{Beat, Bpm};
+    use tutti_midi_runtime::{MidiInPort, TimedMidiEvent};
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    /// A beat at 90 BPM and 48 kHz, in frames.
+    const BEAT: usize = 32_000;
+
+    /// A note gate: 1.0 while any note is held, from the note-on's own frame
+    /// to the note-off's, 0.0 otherwise. Owns a MIDI port, as a host's
+    /// instrument would; nothing in bevy-tutti names it.
+    #[derive(Clone)]
+    struct Gate {
+        midi: MidiInPort,
+        rate: SampleRate,
+        held: u32,
+        events: Vec<MidiEvent>,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                midi: MidiInPort::new(),
+                rate: SampleRate(RATE),
+                held: 0,
+                events: vec![MidiEvent::noop(); 64],
+            }
+        }
+    }
+
+    impl MidiNode for Gate {
+        fn midi_port(&self) -> &MidiInPort {
+            &self.midi
+        }
+    }
+
+    impl AudioUnit for Gate {
+        fn inputs(&self) -> usize {
+            0
+        }
+        fn outputs(&self) -> usize {
+            1
+        }
+        fn reset(&mut self) {
+            self.held = 0;
+        }
+        /// Severs the live port, as every MIDI unit's must.
+        fn isolate(&mut self) {
+            self.midi.isolate();
+        }
+        fn set_sample_rate(&mut self, rate: SampleRate) {
+            self.rate = rate;
+        }
+        fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+            let n = self.midi.poll(1, self.rate, &mut self.events);
+            for i in 0..n {
+                let e = self.events[i];
+                self.apply(&e);
+            }
+            output[0] = if self.held > 0 { 1.0 } else { 0.0 };
+        }
+        fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+            let n = self.midi.poll(size, self.rate, &mut self.events);
+            let mut events = self.events[..n].to_vec();
+            events.sort_by_key(|e| e.frame_offset);
+            let mut next = 0;
+            for i in 0..size {
+                while next < events.len() && events[next].frame_offset as usize <= i {
+                    self.apply(&events[next]);
+                    next += 1;
+                }
+                output.set_f32(0, i, if self.held > 0 { 1.0 } else { 0.0 });
+            }
+        }
+        fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+            SignalFrame::new(1)
+        }
+        fn get_id(&self) -> u64 {
+            0x6a7e
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    impl Gate {
+        fn apply(&mut self, e: &MidiEvent) {
+            if e.is_note_on() {
+                self.held += 1;
+            } else if e.is_note_off() {
+                self.held = self.held.saturating_sub(1);
+            }
+        }
+    }
+
+    /// A native app with the sequencer and `Gate` registered for MIDI.
+    fn app() -> App {
+        let mut app = app_over(graph_on(GraphBackend::Native));
+        app.insert_resource(TransportRes(Transport::new(RATE)));
+        app.add_plugins((GraphReconcilePlugin, MidiSequencePlugin));
+        app.init_resource::<MidiTargetRegistry>();
+        app.world_mut()
+            .resource_mut::<MidiTargetRegistry>()
+            .register::<Gate>();
+        app
+    }
+
+    /// A gate spawned the way a host spawns a node, routed to the master,
+    /// named "Gate".
+    fn spawned(app: &mut App) -> Entity {
+        let world = app.world_mut();
+        let gate = world
+            .commands()
+            .spawn_audio_node(Gate::new())
+            .insert(Name::new("Gate"))
+            .id();
+        world.commands().insert_resource(MasterSources::from(gate));
+        world.flush();
+        app.update();
+        gate
+    }
+
+    /// Middle C from beat 1 to beat 2, installed as a host does.
+    fn install_clip(app: &mut App, gate: Entity) {
+        let note = |beat: f64, on: bool| {
+            let event = if on {
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+            } else {
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+            };
+            TimedMidiEvent::new(Beat(beat), event)
+        };
+        app.world_mut().spawn(MidiSourceInstall::new(
+            gate,
+            vec![note(1.0, true), note(2.0, false)],
+        ));
+        app.update();
+    }
+
+    /// A 1.5 s master export against a 90 BPM timeline from beat 0.
+    fn request() -> ExportRequest {
+        ExportRequest::new(
+            ExportSource::Master,
+            ExportTarget::Buffers,
+            config(1.5),
+            ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(0.0),
+                tempo: Bpm(90.0),
+                sample_rate: SampleRate(RATE),
+                loop_range: None,
+            }))),
+        )
+    }
+
+    /// **A host's own MIDI unit exports its clip**: registered and spawned,
+    /// with a clip installed on its live port, its native export holds the
+    /// gate open from beat 1 to beat 2 — frames 32 000 to 64 000 — and
+    /// nowhere else. No fork source of its own: the generic fork carries the
+    /// clip.
+    ///
+    /// Mutation (run): the native graph dropping the carry hook
+    /// (`controlled` building `UnitFork::Carry` without `with_fork_hook`) →
+    /// the export is silent. Mutation (run): the hook's `rebind_offline_into`
+    /// installing on a fresh port rather than the fork's (`MidiInPort::new()`
+    /// for `fork`) → silent.
+    #[test]
+    fn a_host_midi_unit_exports_its_clip() {
+        let mut app = app();
+        let gate = spawned(&mut app);
+        install_clip(&mut app, gate);
+        let planes = export(&mut app, request()).planes();
+        let open: Vec<usize> = planes[0]
+            .iter()
+            .enumerate()
+            .filter(|(_, &s)| s != 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!open.is_empty(), "the host's unit rendered no notes");
+        assert_eq!(
+            (open[0], *open.last().unwrap() + 1),
+            (BEAT, 2 * BEAT),
+            "the gate is open from beat 1 to beat 2"
+        );
+        assert_eq!(open.len(), BEAT, "one unbroken note");
+    }
+
+    /// **A MIDI unit pushed without its fork refuses the export by name.** A
+    /// host that captures the unit's controls, then inserts it with the
+    /// plain `AudioGraphRes::insert` and binds them, gets a node whose fork
+    /// would clone the shadow and drop the clip; the export says so
+    /// (`ExportError::NotForkable`, naming "Gate") rather than render silence.
+    ///
+    /// Mutation (run): `NativeGraph::fork_for_export` not checking the
+    /// forked keys against the captured MIDI ports → the export renders, and
+    /// the gate never opens.
+    #[test]
+    fn a_midi_unit_inserted_without_its_fork_refuses_by_name() {
+        let mut app = app();
+        let unit = Gate::new();
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(unit);
+        let mut gate = app.world_mut().spawn(Name::new("Gate"));
+        controls.bind(&mut gate, node);
+        let gate = gate.id();
+        app.insert_resource(MasterSources::from(gate));
+        app.update();
+        install_clip(&mut app, gate);
+        match export(&mut app, request()) {
+            Got::NotForkable(node) => {
+                assert_eq!(node.entity, Some(gate));
+                assert_eq!(node.name.as_deref(), Some("Gate"));
+            }
+            other => panic!("expected a named refusal, got {other:?}"),
+        }
+    }
+
+    /// A MIDI source that is not a function of a timeline.
+    struct Unrebindable;
+
+    impl tutti_midi_types::MidiUnitIn for Unrebindable {
+        fn poll_unit(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _block: usize,
+            _rate: SampleRate,
+            _buffer: &mut [MidiEvent],
+        ) -> usize {
+            0
+        }
+        fn rebind_offline(
+            &self,
+            _unit: tutti_midi_types::MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
+            None
+        }
+    }
+
+    /// **A host's MIDI unit playing a source that cannot be rebound refuses
+    /// the export by name** (`ExportError::ForkSource`,
+    /// `MidiForkError::NotRebindable`), rather than render its notes as
+    /// silence.
+    ///
+    /// Mutation (run): the carry hook answering `Ok` for `NotRebindable` →
+    /// the export renders.
+    #[test]
+    fn a_host_midi_unit_with_an_unrebindable_source_refuses_by_name() {
+        let mut app = app();
+        let gate = spawned(&mut app);
+        app.world()
+            .get::<MidiTarget>(gate)
+            .expect("captured")
+            .port()
+            .install(Arc::new(Unrebindable));
+        match export(&mut app, request()) {
+            Got::ForkSource(node, cause) => {
+                assert_eq!(node.name.as_deref(), Some("Gate"));
+                assert_eq!(
+                    cause.downcast_ref::<MidiForkError>(),
+                    Some(&MidiForkError::NotRebindable)
+                );
+            }
+            other => panic!("expected a named fork-source failure, got {other:?}"),
+        }
+    }
+}

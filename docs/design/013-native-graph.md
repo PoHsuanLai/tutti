@@ -1844,14 +1844,86 @@ Recorded for later:
   transfers state (half a second or more), stalling that frame. Moving it
   off-thread needs `Editor::fork` split into a control-side gather (sources,
   spec) and a build that can run on the worker.
-- **A forked `PolySynth` or `SoundFontUnit` has no clip.** Their MIDI port
-  is severed by `isolate`, and bevy-tutti's `Legacy::controlled` shadow is
-  isolated at insert, so the shadow a fork clones never saw the clip
-  installed on the live port later. The plugin carries its clip because its
-  fork source reads the live port, not a shadow. The fix is the same shape
-  for the synths once they have native fork sources (Phase 4): read the live
-  port's source at fork time and `rebind_offline_into` the fork's.
+- ~~**A forked `PolySynth` or `SoundFontUnit` has no clip.**~~ **Done.**
+  Their MIDI port is severed by `isolate`, and bevy-tutti's
+  `Legacy::controlled` shadow is isolated at insert, so the shadow a fork
+  cloned never saw the clip installed on the live port later: a synth
+  instrument exported silent (a blocker for making `Native` the default,
+  PR 13). Each synth now has a fork source of its own, the plugin's shape,
+  without waiting for native nodes:
+  - `PolySynth::fork_source` / `SoundFontUnit::fork_source` keep a
+    **template** — a clone taken at insert, never processed and *not*
+    isolated, so it shares the live port and `Param` cells. A fork clones
+    it, `isolate`s (a fresh port; the cells detached at their values now),
+    offline `rebind_offline_into`s the live port's source onto the fork's,
+    and resets. `NotRebindable` is `Error::MidiSource` in each crate,
+    reaching a host as `ExportError::ForkSource` naming the entity. Both
+    crates now depend on tutti-graph (as tutti-plugin does; no cycle).
+  - **Any MIDI-receiving unit, generically, and never silent** (review of
+    #42: a first cut asked a closed downcast list in `graph::native`, so a
+    host's own MIDI unit forked from its shadow and exported silent). The
+    registry that captures a unit's port (`MidiTargetRegistry`) now also
+    captures how it forks (`capture_forking`), handed to the native graph
+    through `CapturedControls` (`AudioGraphRes::insert_with` /
+    `replace_with`, which every insertion path in the crate uses):
+    - the **generic fork**: the node's `Legacy::controlled` shadow (every
+      setting applied), plus a hook — `Legacy::with_fork_hook`, new in
+      tutti-graph, run after `isolate` and `rebind_offline`, before `reset`
+      — that finds the fork's own port with the type's registered capture
+      and `rebind_offline_into`s the live port's clip onto it.
+      `NotRebindable` is `bevy_tutti::midi::MidiForkError::NotRebindable`,
+      an `ExportError::ForkSource` naming the entity;
+    - a type's **own** source where the generic fork cannot do its job
+      (`MidiNode::fork_source`, defaulted `None`): `PolySynth` (control
+      cells its shadow never sees) and `SoundFontUnit` (the export's rate).
+    - **the net**: a node with a captured MIDI port (its entity's
+      `MidiTarget`) that went in without its fork — a host that captured the
+      controls, then pushed the unit with the plain `insert` and bound them —
+      refuses a native export that holds it (`ExportError::NotForkable`,
+      naming the entity), checked against the fork's keys in
+      `NativeGraph::fork_for_export`.
+    `graph::native` holds no downcast; the registry's one (`as_node`) is
+    the capture's, already allow-listed. Pinned by `export_fork.rs`
+    `host_midi` (a type bevy-tutti does not name: its clip exports to the
+    frame; pushed without its fork it refuses by name; an unrebindable source
+    refuses by name) and tutti-graph `a_legacy_fork_hook_runs_between_rebind_and_reset`.
+  - **`Param` cells are read at the fork, not at insert.** `PolySynth`'s
+    `set` is a no-op (its controls are cells a host or a modulation target
+    writes), so the shadow held the volume and unison it was built with. The
+    template reads the live cells when forked — base plus any live
+    modulation at that instant, what `Net`'s `isolate` read — and
+    `isolate`'s `Param::detach` keeps a later move out of the render.
+  - **A `SoundFontUnit` fork renders at the export's rate.** RustySynth
+    fixes a unit's rate, so a 96 kHz export of a 48 kHz unit placed and
+    pitched its notes at 48 kHz. The fork's node (`RateFollowing`) re-rates
+    on prepare through `SoundFontUnit::with_sample_rate`, a copy at another
+    rate built on the vendored `Synthesizer::with_sample_rate` (a new
+    synthesizer at the rate with the channel state — bank, patch,
+    controllers — copied, so the preset survives). The decoded SoundFont is
+    shared, never reloaded. A live unit's rate stays fixed
+    (`set_sample_rate_mid_stream_does_not_disturb_rendering` pins it).
+  - Tests (each mutation-run): the crates' `fork.rs` (a fork plays the live
+    clip from beat 1 to the frame, at 48 and 96 kHz for the SoundFont and on
+    its preset; an unrebindable source is the named error; a volume set
+    before the fork is the fork's, one after is not); bevy-tutti
+    `export_fork.rs` `synths` (a master export of each synth at 48 and
+    96 kHz is silent until beat 1 and then, sample for sample, the note a
+    fresh unit at the render's rate plays; the live synth then still plays
+    its own clip on the live transport; a native node export of a
+    `PolySynth` is bit-identical to a `Net` one whose `prepare` hook refills
+    the clip, as a `Net`-era host did; an unrebindable source refuses the
+    export naming "Synth").
 - **Disk voices offline** (above).
+- **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
+  re-prepares the graph, but a live SoundFont unit keeps the rate it was
+  built at (its `set_sample_rate` is a no-op, and a test pins that), so after
+  a 44.1 → 48 kHz restart it plays off pitch and off tempo.
+  `SoundFontUnit::with_sample_rate` (this PR) builds the replacement — same
+  SoundFont, channel state and preset, at the new rate — so the restart hook
+  can crossfade one in per SoundFont node (`AudioGraphRes::replace_with`,
+  with its captured controls, so the new unit's port and fork are bound). It
+  must carry the installed clip across (the new unit's port shares the old
+  one's source cell, as a `with_sample_rate` copy does).
 - **The reference probe reports 137 frames of latency in every mode but
   delays only in its latency mode**; the effect test uses that mode, where
   report and delay agree. The probe's other modes are routing oracles, not

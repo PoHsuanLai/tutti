@@ -67,6 +67,8 @@ approx = "0.5"
 biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
+# `engine_render`'s Graph backend rows: the native graph behind `Engine`.
+tutti-graph = { path = "../../core/tutti-graph" }
 
 # The engine's graph-render bench. It measures `Engine::process`, which is
 # `tutti-core`'s, but it lives here because the graph it renders is built from

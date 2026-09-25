@@ -321,6 +321,68 @@ impl AudioGraphRes {
         }
     }
 
+    /// Refuse, before a device restart stops the stream, a `max_block` the
+    /// graph cannot be re-prepared to: past the engine's block capacity, or
+    /// while a re-prepare is already between its halves, or on a poisoned
+    /// graph (`Native`). `Net` renders any block and takes any.
+    pub(crate) fn check_rerate(
+        &self,
+        max_block: Option<Samples>,
+    ) -> Result<(), tutti_graph::CommitError> {
+        match &self.0 {
+            Backend::Net(_) => Ok(()),
+            Backend::Native(g) => read(g).check_reprepare(max_block),
+        }
+    }
+
+    /// Move a live graph to the device's new `rate` (and, on `Native`, a new
+    /// `max_block`): what a device restart does between the stop and the
+    /// start ([`restart_device`](crate::engine::restart_device)).
+    ///
+    /// - `Net`: [`Net::set_sample_rate`], which re-rates every unit on the
+    ///   control side and marks it changed, so the next commit swaps the
+    ///   *control side's* copies in — the beat clock's among them, which has
+    ///   never run. So the clock is re-seated too: a seek to the live
+    ///   playhead, taken on its first block (unless a seek is already
+    ///   pending, which it takes instead). With no callback running the
+    ///   playhead is exact, and the beat carries on across the restart.
+    ///   Every other unit restarts from its control-side state, as a
+    ///   re-prepare restarts everything time-based. `max_block` is ignored:
+    ///   a `Net` renders any block.
+    /// - `Native`: the first half of `Editor::reprepare`
+    ///   ([`NativeGraph::reprepare`]); the executor adopts it on its next
+    ///   blocks, the engine following the rate on the first of them.
+    ///
+    /// Not committed here; see [`restart_device`](crate::engine::restart_device).
+    pub(crate) fn rerate(
+        &mut self,
+        rate: SampleRate,
+        max_block: Option<Samples>,
+        transport: &tutti_core::Transport,
+    ) -> Result<(), tutti_graph::CommitError> {
+        match &mut self.0 {
+            Backend::Net(net) => {
+                if SampleRate(net.sample_rate()) != rate {
+                    net.set_sample_rate(rate);
+                    if !transport.motion.seek.is_pending() {
+                        transport.motion.seek.request(transport.settings.beat());
+                    }
+                }
+                Ok(())
+            }
+            Backend::Native(g) => write(g).reprepare(rate, max_block),
+        }
+    }
+
+    /// Whether a native re-prepare is between its two commits. Never on
+    /// `Net`.
+    pub(crate) fn is_repreparing(&self) -> bool {
+        match &self.0 {
+            Backend::Net(_) => false,
+            Backend::Native(g) => read(g).is_repreparing(),
+        }
+    }
+
     /// Build the engine over this graph's audio side, which it takes.
     ///
     /// `Net`: `Engine::new` over its backend. `Native`: `Engine::with_graph`

@@ -32,14 +32,24 @@ pub fn commit_graph(
     // Every frame, dirty or not: on the native backend this is where the
     // units the audio thread retired are freed (here, on the main thread, for
     // the reason above) and where settings a full ring held go out.
+    let repreparing = graph.is_repreparing();
     graph.collect();
+    // A native re-prepare resumed in that collect: its units came back with
+    // new shapes (a lookahead is a time, so a rate change moves latencies),
+    // and this frame's `Compensate` ran before it, on the old ones. Keep the
+    // flag for one more frame, so compensation republishes the figures the
+    // resumed plan runs (`ChannelCompensation`, `GraphLatency`).
+    let resumed = repreparing && !graph.is_repreparing();
+    if resumed {
+        dirty.0 = true;
+    }
     if !dirty.0 {
         return;
     }
     // A native commit can be refused for now (commits still in flight, or a
     // re-prepare between its halves): the flag stays set and the whole frame's
     // edits go out on a later frame, together.
-    if graph.commit() {
+    if graph.commit() && !resumed {
         dirty.0 = false;
     }
 }

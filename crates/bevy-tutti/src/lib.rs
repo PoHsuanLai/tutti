@@ -143,7 +143,7 @@ pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingP
 
 // Engine types. `Net` is the offline render's graph (see `engine`'s note); the
 // live one is `graph::AudioGraphRes`.
-pub use engine::{DeviceInfo, Net, TuttiDriver};
+pub use engine::{restart_device, restart_device_on, DeviceInfo, DeviceRestart, Net, TuttiDriver};
 
 /// The crate error, at the crate root: its public position and its file
 /// position agree, which is the workspace convention.

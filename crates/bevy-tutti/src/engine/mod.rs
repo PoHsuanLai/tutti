@@ -11,13 +11,15 @@
 //! recording are not here — they are the live I/O edge, and live in `crate::io`
 //! (compiled with the `audio-io` feature).
 
-mod build;
+pub(crate) mod build;
 pub(crate) mod device_state;
+mod restart;
 mod state;
 
 pub use crate::error::{Error, Result};
 pub use build::build_into;
 pub use device_state::AudioDeviceState;
+pub use restart::{restart_device, restart_device_on, DeviceRestart};
 pub use state::AudioEngineState;
 
 pub use tutti_cpal::{DeviceInfo, TuttiDriver};

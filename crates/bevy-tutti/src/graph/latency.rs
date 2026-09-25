@@ -342,6 +342,58 @@ mod tests {
         assert!(!app.world().resource::<AudioGraphRes>().has_compensation());
     }
 
+    /// **A native re-prepare to a new rate republishes the figures once it
+    /// resumes**, with nothing else marking the graph dirty: the limiter's
+    /// lookahead is a time, so its latency in samples moves with the rate,
+    /// and the resumed plan compensates by the new figure. The frame the
+    /// re-prepare resumes on ran `Compensate` before its `collect`, on the
+    /// old shapes, so `commit_graph` keeps the flag for one more frame.
+    ///
+    /// Mutation (run): `commit_graph` not setting the flag when a re-prepare
+    /// resumes → the 44.1 kHz figure stays published → fails.
+    #[test]
+    fn a_native_re_prepare_republishes_the_figures_once_it_resumes() {
+        let mut graph = AudioGraphRes::unattached_with(GraphBackend::Native, 0, 2);
+        let a = graph.insert(Const::mono(1.0));
+        let eff = graph.insert(LimiterNode::with_channels(
+            ChannelLayout::MONO,
+            Db(-1.0),
+            Db(-0.3),
+        ));
+        graph.set_source(eff, 0, GraphSource::Node(a, 0));
+        graph.set_output_source(0, GraphSource::Node(eff, 0));
+        graph.set_output_source(1, GraphSource::Node(a, 0));
+        let at_44k = graph.node_latency(eff);
+        let mut side = graph.take_audio_side();
+        let mut app = test_app(graph);
+        app.add_plugins(crate::graph::GraphReconcilePlugin);
+        app.world_mut().resource_mut::<GraphDirty>().0 = true;
+        app.update();
+        assert_eq!(app.world().resource::<GraphLatency>().0, at_44k);
+        let mut out = [0.0f32; 2];
+        side.tick(&[], &mut out);
+
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_sample_rate(tutti_core::SampleRate(48_000.0));
+        for _ in 0..3 {
+            side.tick(&[], &mut out);
+            app.update();
+        }
+        let at_48k = app.world().resource::<AudioGraphRes>().node_latency(eff);
+        assert_ne!(at_48k, at_44k, "the lookahead moved in samples");
+        assert_eq!(app.world().resource::<GraphLatency>().0, at_48k);
+        assert_eq!(
+            app.world()
+                .resource::<ChannelCompensation>()
+                .0
+                .read()
+                .get(1),
+            Some(&at_48k),
+            "the dry channel pre-rolls by the new figure"
+        );
+    }
+
     // `for_channel_is_zero_outside_the_table` was deleted with the `for_channel`
     // method it covered. Out-of-range now reads as `Vec::get -> None` at the call
     // site, which is std's guarantee rather than this crate's to test.

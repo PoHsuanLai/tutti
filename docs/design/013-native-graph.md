@@ -1498,12 +1498,49 @@ ask again.
   inserts) with a rolling transport at 256- and 512-frame blocks: `Native`
   matches `Net` bit for bit, and the dry voice is the tone. Rendered in
   whole blocks (no chunk-major mode), `Native` parts from `Net` at frame 64.
-- **`TuttiDriver::restart` at a new device rate** re-prepares nothing: the
-  graph keeps its old rate (on `Net` its units, on `Native` its `Prepare`),
-  and `AudioConfig` and `Transport` keep the old one too. It predates PR 11
-  and affects both backends; the fix is a restart that re-rates the graph
-  (`AudioGraphRes::set_sample_rate`, an `Editor::reprepare` on `Native`) and
-  republishes `AudioConfig` and the transport's rate.
+- **`TuttiDriver::restart` at a new device rate — done.** It re-prepared
+  nothing: the graph kept its old rate (on `Net` its units, on `Native` its
+  `Prepare`), and `AudioConfig` and `Transport` kept the old one too, so the
+  whole graph played off pitch and off tempo. Now:
+  - `tutti-cpal`: `TuttiDriver::restart_with(device, hook)` runs the host's
+    hook between the stop and the start with the new device's `OutputSpec`
+    (`restart_on` is the same over a `ManualStreamDriver`); a failing hook
+    leaves the stream stopped. A plain `restart` refuses a rate change
+    (`Error::RateChanged`, stream stopped), since it can re-rate nothing.
+  - `bevy-tutti`: `restart_device(world, DeviceRestart { device, max_block })`
+    (and the device-free `restart_device_on`). Before stopping it refuses,
+    changing nothing, a `max_block` past the engine's block capacity
+    (`Error::Reprepare(BlockTooLong)`), a re-prepare already between its
+    halves, or a poisoned graph. In the hook: `Net` gets `set_sample_rate`,
+    its beat clock re-seated by a seek to the live playhead (the commit swaps
+    in the control side's never-run copy of every re-rated unit), its
+    compensation recomputed, and is committed before the first block;
+    `Native` gets `Editor::reprepare(Prepare { rate, max_block })`, whose
+    second half lands through `commit_graph` (a crossfade asked for
+    meanwhile waits in `PendingCrossfades`). Then the transport's rate
+    (`Transport::set_sample_rate`, now shared by every clone), `AudioConfig`
+    and the hardware MIDI input's rate.
+  - `tutti-core`'s engine follows the rate itself, on the first block that
+    carries it: on `Graph` the block the re-prepare's **first** commit lands
+    (`Executor::pending_prepare`), which is when the executor rescales its
+    frame clock, so the beat steps at the new rate through the silent block;
+    on `Net` the block a re-rated net is pumped. On both, the engine's frame
+    clock and every scheduled `At::Frame` transport command move to the same
+    wall-clock time (nearest frame; `Schedule::rescale`), #16's rule, with
+    the adoption block as the boundary.
+  - PDC: `commit_graph` keeps `GraphDirty` for one more frame when a native
+    re-prepare resumes in its `collect` (that frame's `Compensate` ran on
+    the old shapes), so `GraphLatency` and `ChannelCompensation` republish
+    the resumed plan's figures.
+
+  Pinned end to end on both backends (`engine::restart`'s tests, over
+  `build_on`, the device-free `build_into`): 44.1 kHz to 48 kHz keeps a
+  1 kHz sine at 48 frames a cycle, the beat continuous, a stop at
+  `At::Frame` on its wall-clock time, and the PDC figures rescaled; a block
+  past the capacity is refused with the old device still playing. Still
+  at the build rate after a restart (no way to change them yet): the
+  sampler's `DiskStreamer` and the MIDI `ClockMaster`; and the graph root
+  is not widened to a wider new device.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

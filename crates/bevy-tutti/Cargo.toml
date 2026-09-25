@@ -39,6 +39,11 @@ tutti-core = { path = "../core/tutti-core", default-features = false, features =
 # surround device config to Stereo on scene load.
 tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
+# The native graph (design doc 013): the second backend behind `AudioGraphRes`,
+# selected by `TuttiPlugin::graph_backend`. `tutti-node` for the forwarding
+# `AudioUnit` wrapper that lets a boxed unit ride `Legacy::controlled`.
+tutti-graph = { path = "../core/tutti-graph" }
+tutti-node = { path = "../core/tutti-node" }
 # tutti-nodes is pure DSP now — its ECS binding moved host-side.
 # The optional features below add convolution / automation DSP on top.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }

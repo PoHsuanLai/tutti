@@ -515,15 +515,15 @@ mod midi_crossfade {
     use bevy_app::prelude::*;
 
     use bevy_tutti::graph::{
-        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources,
-        SpawnAudioNode, TransportRes,
+        crossfade_audio_node, AudioConfig, AudioGraphRes, AudioSide, GraphReconcilePlugin,
+        MasterSources, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{
         MidiBusRes, MidiRouteRule, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
-    use tutti_core::{AudioUnit, SampleRate};
+    use tutti_core::SampleRate;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
     use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
@@ -556,7 +556,7 @@ mod midi_crossfade {
     }
 
     /// Render `frames` stereo frames from the backend the audio thread would own.
-    fn render(backend: &mut impl AudioUnit, frames: usize) -> Vec<f32> {
+    fn render(backend: &mut AudioSide, frames: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(frames * 2);
         for _ in 0..frames {
             let mut frame = [0.0f32; 2];

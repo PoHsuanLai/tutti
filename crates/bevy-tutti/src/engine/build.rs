@@ -16,12 +16,13 @@ use bevy_app::App;
 
 use crate::engine::Result;
 use tutti_core::Arc;
-use tutti_core::{AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock};
-use tutti_core::{Engine, MAX_ROOT_CHANNELS};
+use tutti_core::{AudioNode, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport};
+use tutti_core::{Engine, SampleRate, MAX_ROOT_CHANNELS};
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 use crate::graph::{
-    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
+    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, GraphBackend, MeteringRes, MetronomeRes,
+    TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
@@ -84,28 +85,19 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // sampler subscribes here so the wiring exists either way.
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
-    let mut graph = AudioGraphRes::unattached(inputs, outputs);
-
-    // Transport clock — emits the beat on two ports and writes it back to the
-    // manager's atomic. Beat-driven nodes take those ports as inputs, so the
-    // clock needs a name a host can address; it gets an entity below, like every
-    // other node in the graph.
-    let clock = TransportClock::new(transport.clock_links(), sample_rate);
-    let clock_node = graph.insert(clock);
-
-    // Metronome. It only READS the transport (rolling/recording), so it takes a
-    // read view, not a control handle; the beat itself arrives on its two input
-    // ports from the clock, declared below once both have entities.
-    //
-    // It is NOT wired to the output here, and must not be. `pipe_output` reads
-    // like "mix the click into master" and is not what it does — it overwrites
-    // every global output edge, so the first soundfont to load silently
-    // disconnects the metronome. What the click feeds is the host's
-    // declaration, like every other node; see `graph::wire`.
-    let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
-    let click_node = graph.insert(click);
-
-    let backend = graph.take_backend();
+    let Assembled {
+        graph,
+        engine,
+        clock: clock_node,
+        click: click_node,
+    } = assemble(
+        plugin.graph_backend,
+        sample_rate,
+        inputs,
+        outputs,
+        &transport,
+        &click_settings,
+    )?;
 
     // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
     // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
@@ -115,8 +107,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let midi_route = MidiRoutingTable::new();
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
-
-    let engine = Engine::new(transport.motion.clone(), backend);
 
     // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
     // transport, pushes into its own output ring (independent of the routing
@@ -296,6 +286,72 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// The graph, the engine over its audio side, and the two nodes the engine
+/// builds into it.
+struct Assembled {
+    graph: AudioGraphRes,
+    engine: Engine,
+    /// What the beat ports come from.
+    clock: AudioNode,
+    /// The metronome, its inputs still undeclared.
+    click: AudioNode,
+}
+
+/// Build the graph on `backend`, add the beat clock and the metronome, and
+/// build the engine over its audio side. The device-free half of
+/// [`build_into`], so both backends' engines can be rendered in a test.
+///
+/// **The graph runs at the device's `rate`.** Both backends re-rate every
+/// unit they insert to the graph's rate (`Net::push`, `Legacy`'s prepare), so
+/// a graph left at its default 44.1 kHz would run every node — the beat clock
+/// included — at 44.1 kHz on a 48 kHz device: the clock and every oscillator
+/// about 8.8% slow. (That is what this builder did on `Net` before the rate
+/// was passed here.)
+///
+/// The clock is a `TransportClock` on `Net` and an `EnvClock` on `Native`
+/// ([`AudioGraphRes::insert_beat_clock`]): a graph engine drives its own
+/// `TransportClock` and forbids a second in the graph. Either emits the beat
+/// on the same two ports, so the metronome is wired to it the same way — by
+/// the `PortSources` [`build_into`] declares.
+fn assemble(
+    backend: GraphBackend,
+    rate: SampleRate,
+    inputs: usize,
+    outputs: usize,
+    transport: &Transport,
+    click_settings: &Arc<ClickSettings>,
+) -> Result<Assembled> {
+    let mut graph = AudioGraphRes::with_rate(backend, inputs, outputs, rate);
+
+    // The beat clock — emits the beat on two ports. Beat-driven nodes take
+    // those ports as inputs, so the clock needs a name a host can address; it
+    // gets an entity in `build_into`, like every other node in the graph.
+    let clock = graph.insert_beat_clock(transport);
+
+    // Metronome. It only READS the transport (rolling/recording), so it takes a
+    // read view, not a control handle; the beat itself arrives on its two input
+    // ports from the clock, declared once both have entities.
+    //
+    // It is NOT wired to the output here, and must not be. `pipe_output` reads
+    // like "mix the click into master" and is not what it does — it overwrites
+    // every global output edge, so the first soundfont to load silently
+    // disconnects the metronome. What the click feeds is the host's
+    // declaration, like every other node; see `graph::wire`.
+    let click = graph.insert(ClickNode::with_transport(
+        transport.clone(),
+        click_settings.clone(),
+        rate,
+    ));
+
+    let engine = graph.engine(transport)?;
+    Ok(Assembled {
+        graph,
+        engine,
+        clock,
+        click,
+    })
+}
+
 /// How wide the graph root is built, given what the project asks for and what
 /// the device presents.
 ///
@@ -391,6 +447,131 @@ mod tests {
                 "root_width({project}, {} channels): {why}",
                 device.count()
             );
+        }
+    }
+}
+
+/// The engine [`assemble`] builds, rendered: both backends, from the builder's
+/// own wiring (the beat clock it picks, the click it builds against it).
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+    use crate::graph::GraphSource;
+    use tutti_core::{ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent};
+
+    const RATE: f64 = 48_000.0;
+
+    /// An engine from [`assemble`] at `RATE`, the click fed by the beat clock
+    /// and on both global outputs, rolling from the first block. `frames`
+    /// stereo frames rendered in 512-frame device blocks.
+    ///
+    /// The click's inputs are wired here the way `build_into` declares them
+    /// (`PortSources::stereo_from(clock)`), without an `App`.
+    fn render_click(backend: GraphBackend, frames: usize) -> Vec<f32> {
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = Arc::new(ClickSettings::new());
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_volume(1.0);
+        let Assembled {
+            mut graph,
+            engine,
+            clock,
+            click,
+        } = assemble(backend, SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+        for port in 0..2 {
+            graph.set_source(click, port, GraphSource::Node(clock, port));
+            graph.set_output_source(port, GraphSource::Node(click, port));
+        }
+        assert!(graph.commit(), "{backend:?}: the first commit goes through");
+        transport.motion.try_send(MotionEvent::Play).expect("room");
+        let mut out = Vec::with_capacity(frames * 2);
+        let mut block = vec![0.0f32; 512 * 2];
+        let mut located = false;
+        while out.len() < frames * 2 {
+            // A seek between two blocks, past the first second: the beat
+            // clock has to follow the transport, not just count frames.
+            if !located && out.len() >= 2 * 60_000 {
+                located = true;
+                transport
+                    .motion
+                    .try_send(MotionEvent::Locate {
+                        beat: tutti_core::Beat(0.75),
+                        fade: tutti_core::FadeOut::Immediate,
+                        then: tutti_core::Then::Keep,
+                    })
+                    .expect("room");
+            }
+            engine.process(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+            out.extend_from_slice(&block);
+        }
+        out.truncate(frames * 2);
+        // The graph outlives every render: a `Net` engine renders the backend
+        // its frontend feeds.
+        drop(graph);
+        out
+    }
+
+    /// Frames on which the left channel starts sounding.
+    fn onsets(stereo: &[f32]) -> Vec<usize> {
+        let left: Vec<f32> = stereo.iter().step_by(2).copied().collect();
+        (1..left.len())
+            .filter(|&f| left[f] != 0.0 && left[f - 1] == 0.0)
+            .chain((left.first().is_some_and(|&x| x != 0.0)).then_some(0))
+            .collect()
+    }
+
+    /// **The builder's engine clicks the same samples on both backends.** On
+    /// `Net` the click reads a `TransportClock` in the graph; on `Native` an
+    /// `EnvClock` (the graph engine drives its own `TransportClock` and
+    /// forbids a second), wired to the click the same way. The transport
+    /// starts before the first block, so `ClickNode`'s play gate — read once
+    /// per 64-frame chunk, from the live flag, which on the graph backend is
+    /// already the whole block's (doc 013, gap 5) — opens on the same frame
+    /// on both. A start *inside* a block would open it a block early on
+    /// `Native`; that is `ClickNode`'s gate, not the beat, and is pinned in
+    /// `tutti-core`'s `env_clock` suite.
+    ///
+    /// A seek between two blocks is in the render, because that is where a
+    /// wrong clock shows: a steady transport is counted alike by any clock.
+    ///
+    /// Mutations (run):
+    /// - `AudioGraphRes::insert_beat_clock` inserting a `TransportClock` on
+    ///   `Native` as on `Net` → two clocks consume the one transport's seek,
+    ///   the click's misses it, and the renders part after it;
+    /// - inserting a silent two-port node in its place → no clicks at all.
+    #[test]
+    fn the_click_is_bit_identical_on_both_backends() {
+        let frames = 3 * RATE as usize;
+        let net = render_click(GraphBackend::Net, frames);
+        let native = render_click(GraphBackend::Native, frames);
+        let on = onsets(&net);
+        assert!(
+            on.len() >= 5,
+            "clicks every beat for 3 s at 120 BPM: {on:?}"
+        );
+        assert_eq!(on, onsets(&native), "onset frames");
+        let parted = net
+            .iter()
+            .zip(&native)
+            .position(|(a, b)| a.to_bits() != b.to_bits());
+        assert_eq!(parted, None, "the same samples (first difference at)");
+    }
+
+    /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
+    /// click lands every 24 000 frames. Both backends re-rate every unit they
+    /// insert to the graph's rate, so a graph left at its 44.1 kHz default —
+    /// which is what `build_into` built on `Net` before the rate was passed —
+    /// runs the beat clock 8.8% fast and clicks every 22 050 frames.
+    ///
+    /// Mutation (run): `AudioGraphRes::with_rate` not setting the rate on the
+    /// `Net` it builds → the `Net` run clicks at 22 050 and fails.
+    #[test]
+    fn the_graph_runs_at_the_device_rate() {
+        for backend in [GraphBackend::Net, GraphBackend::Native] {
+            // The click's first sample is `sin(0)`, so it is heard from the
+            // frame after its beat; the spacing is what the rate decides.
+            let on = onsets(&render_click(backend, 50_000));
+            assert_eq!(on, vec![1, 24_001, 48_001], "{backend:?}");
         }
     }
 }

@@ -19,7 +19,7 @@
 //! Three spellings are watched, because the typed accessor is not the only way
 //! to write the downcast: `graph.0.node(id).as_any().downcast_ref::<T>()` is
 //! the same thing by hand. So the scan also counts every `downcast_ref` /
-//! `downcast_mut` and every raw `.0.node(` / `.0.node_mut(` access, and the
+//! `downcast_mut` and every raw `.0.node(` / `net.node(` access, and the
 //! allow-list names the uses that are not graph downcasts.
 //!
 //! It scans comments too. A doc example that downcasts teaches the pattern as
@@ -49,8 +49,15 @@ const PATTERNS: &[Pattern] = &[
         },
     },
     Pattern {
-        name: "raw graph node access (.0.node( / .0.node_mut()",
-        matches: |l| l.contains(".0.node(") || l.contains(".0.node_mut("),
+        // `.0.node(` is the spelling through the resource's field; `net.node(`
+        // the one inside `AudioGraphRes`, whose `Net` arm binds it as `net`.
+        name: "raw graph node access (.0.node( / net.node()",
+        matches: |l| {
+            l.contains(".0.node(")
+                || l.contains(".0.node_mut(")
+                || l.contains("net.node(")
+                || l.contains("net.node_mut(")
+        },
     },
 ];
 
@@ -91,7 +98,7 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
     ),
     (
         "src/graph/resources.rs",
-        "raw graph node access (.0.node( / .0.node_mut()",
+        "raw graph node access (.0.node( / net.node()",
         3,
         "`AudioGraphRes`'s own implementation, the one place the raw graph is: \
          `inspect` hands a caller `&dyn AudioUnit` (a downcast of it is counted at \

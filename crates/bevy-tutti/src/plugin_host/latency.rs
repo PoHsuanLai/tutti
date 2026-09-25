@@ -61,7 +61,7 @@ use bevy_ecs::prelude::*;
 
 use tutti_core::{AudioNode, Samples};
 
-use crate::graph::GraphDirty;
+use crate::graph::{AudioGraphRes, GraphDirty};
 use crate::plugin_host::PluginShadow;
 
 /// The latency the last compensation pass was planned against.
@@ -80,10 +80,20 @@ pub struct CompensatedLatency(
 /// Marks the graph dirty when a plugin's reported latency no longer matches
 /// what compensation was planned against.
 ///
-/// Setting `GraphDirty` is the whole job. `compensate_graph` is gated on that
-/// flag rather than on a graph *edit*, so re-planning needs no rewiring — and
-/// `commit_graph` clears the flag after publishing, so this must run before the
-/// `Compensate` phase to be seen in the same frame.
+/// Setting `GraphDirty` is the whole job on `Net`. `compensate_graph` is gated
+/// on that flag rather than on a graph *edit*, so re-planning needs no
+/// rewiring — and `commit_graph` clears the flag after publishing, so this must
+/// run before the `Compensate` phase to be seen in the same frame.
+///
+/// **On the native backend the graph is also told the figure**
+/// ([`AudioGraphRes::set_node_latency`], which is `Editor::set_latency`). `Net`
+/// re-probes the unit — a clone sharing the plugin's latency cell — on every
+/// compensation pass; the native editor holds the latency it probed at insert,
+/// and the next commit moves PDC to the new one without touching the plugin.
+/// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
+/// for the reason `commit_graph` is: `Editor::set_latency` collects what the
+/// audio thread retired, which can be a plugin node whose drop tears down an
+/// editor window.
 ///
 /// Runs over [`PluginShadow`] rather than over `PluginEmitter`, because the
 /// latency cell belongs to the node and not to the handle. An entity with no
@@ -92,8 +102,10 @@ pub struct CompensatedLatency(
 /// `plugin_host::bind` uses, since a node can lose its plugin identity between
 /// frames.
 pub fn plugin_latency_poll(
+    _main: bevy_ecs::system::NonSendMarker,
     mut commands: Commands,
     dirty: Option<ResMut<GraphDirty>>,
+    mut graph: Option<ResMut<AudioGraphRes>>,
     plugins: Query<(
         Entity,
         &AudioNode,
@@ -115,6 +127,9 @@ pub fn plugin_latency_poll(
             continue;
         }
 
+        if let Some(graph) = graph.as_mut() {
+            graph.set_node_latency(*node, current);
+        }
         commands.entity(entity).insert(CompensatedLatency(current));
         dirty.0 = true;
     }

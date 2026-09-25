@@ -16,6 +16,12 @@ pub enum Error {
     #[error(transparent)]
     Core(#[from] tutti_core::Error),
 
+    /// The native graph engine refused its graph
+    /// ([`GraphBackend::Native`](crate::graph::GraphBackend::Native)): wraps
+    /// [`tutti_core::GraphEngineError`].
+    #[error("graph engine: {0}")]
+    Graph(#[from] tutti_core::GraphEngineError),
+
     /// Audio device failure — enumeration, stream construction, or playback.
     ///
     /// Wraps [`tutti_cpal::Error`], which owns every CPAL concern.

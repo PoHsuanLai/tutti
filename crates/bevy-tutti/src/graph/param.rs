@@ -199,6 +199,11 @@ pub fn write_param(
     value: f32,
 ) {
     // 1. Audio rate: the node reads its port, not its atomic.
+    //
+    // A known export limit on the native backend (doc 013, PR 11): the base
+    // node (`AtomicSourceNode`) takes no `Setting`, so this cell write cannot
+    // ride its settings ring, and a fork sees the cell as the node's
+    // `isolate` leaves its shadow.
     #[cfg(feature = "modulation")]
     if let Some(cell) = chains.base_cell(entity, ParamAddr::Unit(param)) {
         cell.store(value, tutti_core::Ordering::Release);
@@ -206,14 +211,22 @@ pub fn write_param(
     }
 
     // 2. Control rate: the driver owns the atomic, so the value rides the base.
+    // The node's fork snapshot gets the base too: the driver's live composite
+    // never reaches a fork (an export runs its own modulation), and without
+    // this the fork would start from the value the node was built with.
     #[cfg(feature = "modulation")]
     if matrix.set_base(entity, ParamAddr::Unit(param), value) {
+        graph.set_param_snapshot(*node, param, value);
         return;
     }
     #[cfg(not(feature = "modulation"))]
     let _ = entity;
 
-    // 3. Unmodulated: the node's own atomic is the value.
+    // 3. Unmodulated: the node's own atomic is the value. Through the graph's
+    // settings path — on the native backend the node's ring, which is also
+    // what its shadow (and so any fork of it) records. Never through a handle
+    // captured from the unit: that would move the live unit and leave a fork
+    // at the value it was built with.
     graph.set_param(*node, param, value);
 }
 

@@ -95,9 +95,7 @@ pub fn start_exports(world: &mut World) {
         world.get_resource::<AudioGraphRes>(),
         world.get_resource::<AudioConfig>(),
     ) {
-        (Some(graph), Some(config)) => {
-            prepare_net(graph, config, &nodes, &request).ok_or("export target node has no outputs")
-        }
+        (Some(graph), Some(config)) => prepare_net(graph, config, &nodes, &request),
         // Distinguished from the above so the reason is the real one: an export
         // requested against a world with no engine is a different failure than a
         // target that cannot produce audio, and reporting the wrong one sends
@@ -161,14 +159,15 @@ pub fn start_exports(world: &mut World) {
 /// rebound onto (`None` for a master export, which keeps the live transport
 /// bindings the caller's own clock drives).
 ///
-/// Returns `None` when the requested node has no outputs — there is nothing to
-/// render from it.
+/// Refuses, with the reason, when the requested node has no outputs — there is
+/// nothing to render from it — and on the native graph backend, which has no
+/// `Net` to hand out until export moves to `Editor::fork` (doc 013, PR 12).
 fn prepare_net(
     graph: &AudioGraphRes,
     config: &AudioConfig,
     nodes: &HashMap<Entity, tutti_core::AudioNode>,
     request: &ExportRequest,
-) -> Option<(tutti_core::dsp::Net, Option<OfflineTransport>)> {
+) -> Result<(tutti_core::dsp::Net, Option<OfflineTransport>), &'static str> {
     match request.source {
         // The whole graph as-is, keeping its live transport bindings — the
         // caller's own clock is what drives this render.
@@ -179,11 +178,11 @@ fn prepare_net(
         // monitor's input — stay attached to what the audio thread is using.
         // For a master export that is mostly what you want (it is the live mix),
         // but it is not the safety `ExportSource::Node` gets.
-        ExportSource::Master => Some((graph.export_master(), None)),
+        ExportSource::Master => Ok((graph.export_master()?, None)),
 
         ExportSource::Node(entity) => {
             // Resolved here rather than stored: see `ExportSource::Node`.
-            let node = *nodes.get(&entity)?;
+            let node = *nodes.get(&entity).ok_or(NO_OUTPUTS)?;
 
             // The timeline every transport-aware node in the clone is re-seated
             // on. The caller supplies it, because the caller also supplies the
@@ -207,12 +206,16 @@ fn prepare_net(
 
             // Isolated, rebound onto `ctx` and reset — see
             // `AudioGraphRes::export_node`.
-            let net = graph.export_node(node, &ctx)?;
+            let net = graph.export_node(node, &ctx)?.ok_or(NO_OUTPUTS)?;
 
-            Some((net, Some(ctx)))
+            Ok((net, Some(ctx)))
         }
     }
 }
+
+/// Why a node export found nothing to render: the entity is not a node, or
+/// its node has no outputs.
+const NO_OUTPUTS: &str = "export target node has no outputs";
 
 /// Drive in-flight renders; trigger [`ExportDone`] on the ones that finished.
 pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {

@@ -29,9 +29,17 @@ pub fn commit_graph(
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
         return;
     };
+    // Every frame, dirty or not: on the native backend this is where the
+    // units the audio thread retired are freed (here, on the main thread, for
+    // the reason above) and where settings a full ring held go out.
+    graph.collect();
     if !dirty.0 {
         return;
     }
-    graph.commit();
-    dirty.0 = false;
+    // A native commit can be refused for now (commits still in flight, or a
+    // re-prepare between its halves): the flag stays set and the whole frame's
+    // edits go out on a later frame, together.
+    if graph.commit() {
+        dirty.0 = false;
+    }
 }

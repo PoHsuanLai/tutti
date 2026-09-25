@@ -10,6 +10,8 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
+use crate::helpers::sdk_enum_i32;
+
 /// COM-wrapped in-memory stream.
 ///
 /// Construct via [`BStream::new`] or [`BStream::from_data`]; the returned
@@ -107,9 +109,9 @@ impl IBStreamTrait for BStream {
 
     unsafe fn seek(&self, pos: i64, mode: i32, result: *mut i64) -> tresult {
         let seek_from = match mode {
-            m if m == kIBSeekSet as i32 => SeekFrom::Start(pos as u64),
-            m if m == kIBSeekCur as i32 => SeekFrom::Current(pos),
-            m if m == kIBSeekEnd as i32 => SeekFrom::End(pos),
+            m if m == sdk_enum_i32(kIBSeekSet) => SeekFrom::Start(pos as u64),
+            m if m == sdk_enum_i32(kIBSeekCur) => SeekFrom::Current(pos),
+            m if m == sdk_enum_i32(kIBSeekEnd) => SeekFrom::End(pos),
             _ => return kInvalidArgument,
         };
         let mut cursor = self.cursor.lock();

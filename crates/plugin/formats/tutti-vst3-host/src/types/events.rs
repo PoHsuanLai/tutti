@@ -1109,6 +1109,7 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     reason = "SDK controller ordinals < 130; cn is range-checked before narrowing"
 )]
 fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> {
+    use crate::helpers::sdk_enum_i32;
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
     use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
@@ -1117,7 +1118,7 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
     let v2 = (e.value2 as u8) & 0x7F;
     let cn = e.control_number as i32;
 
-    let ev = if cn == kPitchBend as i32 {
+    let ev = if cn == sdk_enum_i32(kPitchBend) {
         // 14-bit: LSB = value, MSB = value2.
         let bend14 = (v1 as u16) | ((v2 as u16) << 7);
         MidiEvent::pitch_bend(
@@ -1125,13 +1126,13 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
             MidiChannel::new(channel),
             midi1_pitch_bend_to_midi2(bend14),
         )
-    } else if cn == kAfterTouch as i32 {
+    } else if cn == sdk_enum_i32(kAfterTouch) {
         MidiEvent::channel_pressure(
             MidiGroup::FIRST,
             MidiChannel::new(channel),
             midi1_cc_to_midi2(v1),
         )
-    } else if cn == kCtrlPolyPressure as i32 {
+    } else if cn == sdk_enum_i32(kCtrlPolyPressure) {
         // value = note, value2 = pressure.
         MidiEvent::poly_pressure(
             MidiGroup::FIRST,

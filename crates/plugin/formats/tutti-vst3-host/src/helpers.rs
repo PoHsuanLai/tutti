@@ -29,3 +29,29 @@ pub(crate) fn cid_to_string(cid: &[u8; 16]) -> String {
 pub(crate) fn guid_as_tuid(guid: &vst3::com_scrape_types::Guid) -> TUID {
     std::array::from_fn(|i| guid[i] as i8)
 }
+
+/// The integer type the `vst3` bindings give every SDK enum constant:
+/// `DefaultEnumType`, which is `c_int` on Windows and `c_uint` everywhere else.
+///
+/// The bindings do not re-export `DefaultEnumType` (their `support` module is
+/// private), so it is named here through `MediaTypes`, one of the public
+/// aliases they define as exactly that type. Naming it through an alias rather
+/// than mirroring the `cfg` means a change in the bindings surfaces as a type
+/// error at [`sdk_enum_i32`]'s call sites, not as a silently stale copy.
+pub(crate) type SdkEnum = vst3::Steinberg::Vst::MediaTypes;
+
+/// Widen an SDK enum constant to the `int32` the ABI fields carrying it use
+/// (`BusInfo::mediaType`, `ProcessSetup::processMode`, `IBStream::seek`'s
+/// `mode`, …).
+///
+/// The one place this crate spells that conversion, so the platform split
+/// lives here rather than at every call site: on Windows `SdkEnum` already *is*
+/// `i32` and the cast is a no-op; elsewhere it is a real `u32 -> i32`. Every
+/// value passed is a small SDK ordinal, so it never wraps.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "a no-op on Windows, where `DefaultEnumType` is `c_int`; load-bearing on every other target"
+)]
+pub(crate) const fn sdk_enum_i32(v: SdkEnum) -> i32 {
+    v as i32
+}

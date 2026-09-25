@@ -47,6 +47,7 @@ use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
+use crate::helpers::sdk_enum_i32;
 use crate::types::{
     to_process_context, AudioBuffer, BufferPtrs, BusInfo as BusInfoWrap, MidiEvent,
     ParameterChanges, PluginInfo, ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents,
@@ -59,7 +60,7 @@ use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{midi_to_mapped_controller, CcRoute, MidiCcMapping};
 use super::{speakers, IComponentExt, K_INPUT, K_OUTPUT};
 
-pub(super) const K_EVENT: i32 = kEvent as i32;
+pub(super) const K_EVENT: i32 = sdk_enum_i32(kEvent);
 
 /// Pre-reserve capacity for output param-change queues. One slot per
 /// distinct param_id the plugin might emit in a single block; growing

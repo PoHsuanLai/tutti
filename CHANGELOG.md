@@ -394,6 +394,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A live disk voice on a looped stream played 576 frames and then
+  silence** (tutti-sampler; design doc 013's follow-up "The live disk
+  loop"). The butler compared the reader's consumed-frame count against the
+  loop's file frames, so once past the loop's end it flushed the ring and
+  rewound on every cycle; separately, its RT loop crossfade replaced the
+  ring's output without consuming it, so the tail it faded out played
+  again. Now the butler writes a looped stream into the ring as the
+  sequence `LoopSpan` defines, the one the memory tier and a forked disk
+  voice read: the fade's frames blended toward their lead-in as they are
+  written, the wrap to `resume` (after the loop's head when the fade went
+  there). The audio thread does no loop logic; it consumes the ring. A live
+  looped voice now matches the memory tier bit for bit at matched rates
+  (unity, 1.5×, 0.75×; crossfaded, hard, and from frame 0) and to 1e-6 at a
+  converted rate, across many wraps, and never flushes while it loops.
+  - The loop is applied in the file's own frames, before the voice
+    resamples, so varispeed and a file at another rate than the session's
+    loop at the same points.
+  - A stream's position counts the file straight on and the loop places it,
+    so a seek target past the loop's end (the placement gate's offset into
+    the clip) and a PDC preroll land where the memory tier plays the same
+    position.
+  - **A loop change is heard at the butler's next cycle**, not when the
+    ring drains (it can hold 30 s): the butler flushes the ring at the frame
+    the reader reads next and refills from there under the new loop, as a
+    seek repositions. Clearing a loop does the same. A reversed stream
+    ignores its loop, as on every tier, so a change there is only stored.
+  - The seek crossfade's fadeout is what the ring was about to play (the
+    sequence from its head, on the loop); it read the file at the reader's
+    consumed-frame count, which is a file frame only for a stream that
+    started at 0 and never moved.
+  - Removed, all crate-private: `LoopStatus`, `ChannelPlan::check_loop_status`,
+    `loops::handle_loops`, `RtState`'s loop crossfade, `WaveIn`'s loop wrap
+    and `wrap_position`.
+
 - **Four tutti-sampler reads were wrong on the memory tier, three of them on
   a forked disk voice too** (design doc 013's follow-ups to "Disk voices
   export": the placed `MemorySource` rate, S1, S3 and N2). Each reached live
@@ -437,10 +471,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `MemorySource` reads a loop's fade from the wave in place: its internal
     crossfade buffer, and that buffer's 4096-frame cap on `crossfade_frames`,
     are gone, and `loop_setting()` returns the crossfade length asked for.
-  - **Not fixed: a live disk voice on a looped stream.** The butler's loop
-    bookkeeping compares a consumed-frame counter against the loop's file
-    frames, so past the loop's end it flushes the ring on every cycle; doc
-    013 records it ("The live disk loop") and the fix.
+  - **Not fixed here: a live disk voice on a looped stream.** Fixed since:
+    the entry above.
 
 - **A synth instrument exported silent on the native graph** (design doc
   013, PR 12's follow-up). A forked `PolySynth` or `SoundFontUnit` was

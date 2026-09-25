@@ -123,6 +123,11 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
         fn advance(&self, frames: tutti_types::Samples) {
             self.0.fetch_add(frames.get(), Ordering::Relaxed);
         }
+        // Only the `Net` path renders here, which never asks; the native
+        // graph's counterpart is `tests/graph_source.rs`.
+        fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+            Default::default()
+        }
     }
 
     let clock = Arc::new(CountingClock(AtomicUsize::new(0)));

@@ -22,6 +22,10 @@ ogg = ["vorbis_rs"]
 thiserror.workspace = true
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
+# The native graph (doc 013): `RenderGraph::Graph` renders a forked
+# `Editor`/`Executor` pair beside the `Net` path. Acyclic: tutti-graph depends
+# only on tutti-types and tutti-node.
+tutti-graph = { path = "../tutti-graph" }
 # EBU R128 loudness measurement lives in tutti-analysis (the crate's
 # Config/State/step analysis home) — `render_normalized_to_file` measures with
 # it. Acyclic: tutti-analysis does NOT depend on tutti-export.

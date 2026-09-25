@@ -88,10 +88,14 @@ pub trait Timeline: Send + Sync {
 /// it: after each block it reports how many frames it produced, and the clock
 /// advances by exactly that much.
 ///
-/// This is the whole contract between a renderer and time. A renderer needs no
-/// other method, which is why this is one method and not a supertrait of
-/// `Timeline` — a caller can advance a clock it cannot read, and the renderer
-/// never reads one.
+/// A renderer driving a `Net` needs nothing else: its clock nodes are inside
+/// the net, so it only ever advances this. A renderer driving the native graph
+/// (`tutti_graph::Executor`) must also *hand* each block a transport, since
+/// the graph's clock is the executor's `Env`, not a node — that is
+/// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
+/// is the one order the two are called in. It is still not a supertrait of
+/// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
+/// report — stopped, at beat zero — without being a timeline anything reads.
 ///
 /// **Advance AFTER processing, never before.** `TransportClock` (the in-net
 /// clock feeding beat-driven nodes) is emit-then-advance: sample 0 of a block
@@ -105,6 +109,41 @@ pub trait RenderClock: Send + Sync {
     ///
     /// Call after the block has been processed, never before.
     fn advance(&self, frames: tutti_types::Samples);
+
+    /// The block about to be rendered as the native graph takes it: the
+    /// transport at the block's first frame, and the changes inside it. Read
+    /// **before** the block is processed, as [`render_graph`](Self::render_graph)
+    /// does.
+    ///
+    /// Required, not defaulted. The obvious default — stopped, at beat zero —
+    /// is right for a clock that does not move and wrong for every clock that
+    /// does: a moving clock that fell back on it would advance its clip readers
+    /// while the graph's `EnvClock` and every `Env` reader held beat zero, a
+    /// desync that renders without an error. A clock that moves must say where
+    /// it is.
+    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
+
+    /// Render one block of `frames` through `exec` under this clock, then
+    /// advance the clock by it: [`graph_block`](Self::graph_block),
+    /// `Executor::process_with_changes`, then [`advance`](Self::advance) —
+    /// the one order that keeps every reader of this clock on the frame the
+    /// graph renders (emit-then-advance, as above).
+    ///
+    /// # Panics
+    ///
+    /// As `Executor::process_with_changes`: if `frames` is zero or past the
+    /// executor's prepared maximum block.
+    fn render_graph(
+        &self,
+        exec: &mut tutti_graph::Executor,
+        frames: usize,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
+        let (transport, changes) = self.graph_block();
+        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
+        self.advance(tutti_types::Samples(frames));
+    }
 }
 
 /// A clock that does not move.
@@ -119,6 +158,14 @@ pub struct FrozenClock;
 
 impl RenderClock for FrozenClock {
     fn advance(&self, _frames: tutti_types::Samples) {}
+
+    /// Stopped at beat zero, every block: "this graph has no transport".
+    fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+        (
+            tutti_graph::Transport::default(),
+            tutti_graph::TransportChanges::NONE,
+        )
+    }
 }
 
 /// A live transport: a [`Timeline`] that also carries the record/loop state a

@@ -990,7 +990,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
 | 5 | **Done.** tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks, scheduled `At::Frame`/`At::Beat`; the harness behind a `contract` feature | 4 |
 | 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
-| 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
+| 7 | **Done.** tutti-export `GraphSource` beside `NetSource`; `RenderGraph { Net, Graph }` at every entry point; `RenderGraph::fork` | 2, 4, 6 |
 | 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
 | 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
@@ -1000,6 +1000,49 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
 | 16 | tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
+
+**PR 7 landed.** Export's entry points (`render_to_file`,
+`render_to_buffers`, `render_normalized_to_file`) take
+`impl Into<RenderGraph>`, an enum of a `Net` (existing callers convert
+unchanged) and an installed `Editor`/`Executor` pair. `GraphSource` renders
+the pair in blocks of its prepared `MaxBlock` — `GRAPH_MAX_BLOCK` (1024) for
+`RenderGraph::prepare(rate)` and `RenderGraph::fork(&live, target, mode,
+rate)` — and folds onto the file width with `NetSource`'s gather, so
+everything after the render (gate, resample, dither, encoders) is one path.
+A pair prepared at another rate is refused (`InvalidConfig`) rather than
+re-rated. `RenderGraph::fork` turns `ForkError::NotForkable { key }` into
+`Error::NotForkable { key }`; any other fork failure is `Error::Fork`.
+`RenderGraph::reported_latency` / `reported_tail` answer for either
+backend: the graph's from `Plan::total_latency` and `graph_tail` over its
+topology, and they go into `RenderConfig` as before, so trim and tail are
+one code path. Glue in tutti-core: `RenderClock` gained a **required**
+`graph_block` (a moving clock that defaulted to "stopped at 0" would desync
+the graph's `Env` from its clip readers silently) and a provided
+`render_graph` — snapshot, `process_with_changes`, advance — which
+`OfflineTimeline::render_graph` now calls. `tests/graph_source.rs` pins the
+two backends bit-identical (byte-identical files) for sine, resample, peak
+normalization, dither, quad VBAP at three widths and a convolver, plus
+latency trim, tail length, the fork error and the clock's transport.
+Found on the way:
+
+- **Which unit is block-sensitive.** The convolver is not: it buffers its
+  partitions internally, so it matches `Net` at any graph block. The VBAP
+  panner is — it ramps its gains across each call — and it is what makes a
+  non-multiple of 64 (1000) differ from `Net`. That is the test that guards
+  `GRAPH_MAX_BLOCK`.
+- **A fork is compared against a reset `Net`.** Through `Editor::fork` every
+  unit is reset (see PR 12 above), and a reset panner starts on its
+  commanded bearing where a fresh one glides there from front-centre. Today's
+  export resets its cloned `Net` too, so that is the like-for-like pair.
+- **`reported_latency(&mut Net)` answers at the net's current rate**, which
+  is 44.1 kHz for a net that was never rendered: a 5 ms lookahead limiter
+  reports 221 frames, not the 240 it trims at 48 kHz. The graph answers at
+  the rate it was prepared at and cannot be asked early. A `Net` caller must
+  re-rate first; PR 14 removes the trap with the `Net` arm.
+
+For PR 8, `tests/graph_source.rs` is the harness to port onto: each fixture
+there is already written twice (`Net`, `GraphBuilder`), and its quad VBAP
+fixture is `build_vbap_mix`'s graph spelled out on the builder.
 
 **PR 4 landed.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
 `push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,

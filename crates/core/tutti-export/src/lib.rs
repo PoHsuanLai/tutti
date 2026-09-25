@@ -12,6 +12,9 @@ pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
 pub use normalize::{render_normalized_to_file, Normalize};
+
+mod graph;
+pub use graph::{RenderGraph, GRAPH_MAX_BLOCK};
 /// Frame-count arithmetic — pure, and public so a caller can size a render
 /// before committing to one.
 pub use render::plan::{beats_to_seconds, duration_to_frames};
@@ -142,6 +145,9 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 
 /// The look-ahead latency `net` reports, as a frame count.
 ///
+/// The `Net` backend's answer; [`RenderGraph::reported_latency`] answers for
+/// either backend.
+///
 /// For a caller that wants `RenderConfig::latency` to be whatever the graph says —
 /// look-ahead limiters, linear-phase filters. It is a function rather than a
 /// `LatencyTrim::Reported` mode on the config because asking a graph is an
@@ -171,6 +177,9 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 }
 
 /// The tail `net` reports — how long it keeps ringing after its input stops.
+///
+/// The `Net` backend's answer; [`RenderGraph::reported_tail`] answers for
+/// either backend.
 ///
 /// For a caller that wants [`RenderConfig::tail`] to be whatever the graph says:
 /// a reverb, a convolver, a hosted plugin that declared a decay. The mirror of
@@ -224,25 +233,29 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
     encode::encode_planes(rendered, config, path)
 }
 
-/// Render `net` and write it to `path`.
+/// Render `graph` and write it to `path`.
 ///
 /// Streams: the encoder pulls the graph one block at a time and no PCM is held
-/// whole. `clock` is advanced once per block, after the net processes — pass
+/// whole. `clock` is advanced once per block, after the graph processes — pass
 /// [`FrozenClock`] for a graph with no time-dependent nodes.
+///
+/// `graph` is either backend ([`RenderGraph`]); a `Net` converts on its own,
+/// so a caller holding one passes it as before.
 pub fn render_to_file(
-    net: tutti_core::dsp::Net,
+    graph: impl Into<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: &Path,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    let mut net = net;
+    let mut graph = graph.into();
     let plan = render::RenderPlan::new(&config.render);
-    let mut src = render::NetSource::new(&mut net, config.render.sample_rate, clock);
-    encode::encode_to_file(&mut src, config.render.sample_rate, &plan, config, path)
+    render::with_source(&mut graph, config.render.sample_rate, clock, |src| {
+        encode::encode_to_file(src, config.render.sample_rate, &plan, config, path)
+    })
 }
 
-/// Render `net` into memory.
+/// Render `graph` (either backend, see [`RenderGraph`]) into memory.
 ///
 /// Applies the same gate as [`render_to_file`], and reports the rate it actually
 /// rendered at.
@@ -263,27 +276,28 @@ pub fn render_to_file(
 /// [`write_buffers`] dithers on the way out, at the real depth and after any
 /// resample — the only point where the LSB is known.
 pub fn render_to_buffers(
-    net: tutti_core::dsp::Net,
+    graph: impl Into<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
     let ch = frame_width(config.encode.channels)?;
-    let mut net = net;
+    let mut graph = graph.into();
     let plan = render::RenderPlan::new(&config.render);
-    let mut src = render::NetSource::new(&mut net, config.render.sample_rate, clock);
 
     // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,
     // and a clone does not carry capacity — every plane would reallocate.
     let mut planes: Vec<Vec<f32>> = (0..ch)
         .map(|_| Vec::with_capacity(plan.output_length.get()))
         .collect();
-    render::drive(&mut src, ch, &plan, |block| {
-        for f in block.iter() {
-            for (plane, &s) in planes.iter_mut().zip(f.iter()) {
-                plane.push(s);
+    render::with_source(&mut graph, config.render.sample_rate, clock, |src| {
+        render::drive(src, ch, &plan, |block| {
+            for f in block.iter() {
+                for (plane, &s) in planes.iter_mut().zip(f.iter()) {
+                    plane.push(s);
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     })?;
 
     Ok(Rendered {

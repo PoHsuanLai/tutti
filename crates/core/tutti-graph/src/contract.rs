@@ -73,7 +73,9 @@ use crate::event::{Event, EventKind};
 use crate::exec::Executor;
 use crate::io::Io;
 use crate::legacy::Legacy;
-use crate::node::{Cx, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges};
+use crate::node::{
+    Cx, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
+};
 use crate::spec::EventIn;
 
 /// The rate every contract graph runs at.
@@ -362,7 +364,12 @@ impl Row {
         excite: Excite,
         detect: Detect,
     ) -> Self {
-        Self::new(name, move || Box::new(Legacy::new(make())), excite, detect)
+        Self::new(
+            name,
+            move || Legacy::new(make()).into_node().0,
+            excite,
+            detect,
+        )
     }
 
     /// Watch output channel `channel` (the first by default).

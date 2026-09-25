@@ -12,8 +12,8 @@ use common::{bits, prepare, Kind, TestNode};
 use fundsp::net::Net;
 use fundsp::prelude32::{lowpass_hz, mul, pass, sine_hz};
 use tutti_graph::{
-    Editor, EventEdge, EventIn, EventOut, ForkError, ForkMode, ForkSource, ForkTarget,
-    GraphBuilder, IntoNode, Legacy, Node, NodeParts, Renderer,
+    CrossfadeCurve, Editor, EventEdge, EventIn, EventOut, Fade, ForkError, ForkMode, ForkSource,
+    ForkTarget, GraphBuilder, IntoNode, Legacy, Node, NodeParts, Renderer,
 };
 use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 use tutti_node::signal::{Signal, SignalFrame};
@@ -601,4 +601,44 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
     assert_eq!(forked[0][0], 0.0, "the fork's ramp starts over");
     assert_eq!(forked[0][47_999], 47_999.0, "and is its own");
     assert!(forked[1].iter().all(|&x| x == 0.75));
+}
+
+/// **A replace moves forking to the new unit**: a fork after
+/// `Editor::replace` forks the incoming unit, a replace with a unit that
+/// hands over no fork source makes the key unforkable, and a *refused*
+/// replace (a different width) changes nothing.
+///
+/// Mutation: leave `forks` alone in `Editor::replace` → the fork renders the
+/// replaced 0.5 → fails. Mutation: update `forks` before the shape check →
+/// the refused two-output unit is forked → renders 0.1 → fails.
+#[test]
+fn a_replace_moves_forking_to_the_new_unit() {
+    let consts = |outs, base| Legacy::new(Consts { outs, base });
+    let fade = Fade::new(Samples(64), CrossfadeCurve::EqualPower);
+    let key = NodeKey(1);
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(key, "consts", consts(1, 0.5));
+    ed.spec_mut().topology.outputs = vec![out(key, 0)];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+
+    ed.replace(key, consts(1, 0.9), fade).expect("same shape");
+    assert!(matches!(
+        ed.replace(key, consts(2, 0.1), fade),
+        Err(tutti_graph::CommitError::FadeShape { .. })
+    ));
+    let (fe, fx) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
+        .expect("forks");
+    let forked = render(fe, fx, 64);
+    assert!(forked[0].iter().all(|&x| x == 0.9), "{:?}", &forked[0][..4]);
+
+    ed.replace(key, consts(1, 0.7).into_node().0, fade)
+        .expect("same shape");
+    assert_eq!(
+        ed.fork(ForkTarget::Master, ForkMode::Live, prepare(64))
+            .err(),
+        Some(ForkError::NotForkable { key })
+    );
 }

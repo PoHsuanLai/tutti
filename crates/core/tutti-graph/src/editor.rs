@@ -489,6 +489,11 @@ impl Editor {
     /// [`remove`](Self::remove) at `key` before the commit takes the fade
     /// back, as does a [`reprepare`](Self::reprepare) (whose units restart
     /// from silence anyway).
+    ///
+    /// Forking follows the new unit, as after an [`insert`](Self::insert):
+    /// its [`ForkSource`] replaces the key's, and a unit that hands none
+    /// over makes the key unforkable. (A fork mid-fade forks the incoming
+    /// unit alone; a fork has no fades.)
     pub fn replace<N: IntoNode>(
         &mut self,
         key: NodeKey,
@@ -506,7 +511,11 @@ impl Editor {
             .map(|u| u.shape)
             .filter(|_| self.spec.topology.nodes.contains_key(&key))
             .ok_or(CommitError::NotRunning { node: key })?;
-        let (mut unit, controls) = node.into_node();
+        let NodeParts {
+            node: mut unit,
+            controls,
+            fork,
+        } = node.into_parts();
         unit.prepare(&self.prepare);
         let shape = unit.shape();
         // Everything the running plan was compiled from but the tail: the
@@ -528,6 +537,13 @@ impl Editor {
             return Err(CommitError::FadeShape { node: key });
         }
         let kind = self.spec.topology.nodes[&key].kind.clone();
+        // As `insert`: the new unit's fork source, or none — a replace with
+        // an unforkable unit makes the key unforkable. Only past the checks,
+        // so a refused replace changes nothing.
+        match fork {
+            Some(fork) => self.forks.insert(key, fork),
+            None => self.forks.remove(&key),
+        };
         self.place(key, &kind, unit, shape);
         self.fades.insert(key, fade);
         Ok(controls)

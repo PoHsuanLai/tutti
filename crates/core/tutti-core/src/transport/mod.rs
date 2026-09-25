@@ -36,7 +36,7 @@ pub use state::{
     beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,
     BEAT_PORTS,
 };
-pub(crate) use timed::Scheduled;
+pub(crate) use timed::{Schedule, Scheduled};
 pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the

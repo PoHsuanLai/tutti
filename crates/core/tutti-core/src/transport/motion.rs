@@ -233,7 +233,11 @@ impl MotionFsm {
     ///   that is the executor's (`tutti_graph::Executor::frame`): it tracks
     ///   device time, advances while a re-prepare has the graph suspended,
     ///   and is rescaled to the same wall-clock time on a rate change. For a
-    ///   `Net` engine it is the frames rendered since the engine was built;
+    ///   `Net` engine it is the samples at the net's current rate since the
+    ///   engine was built, rescaled the same way when a re-rated net is
+    ///   committed. Either way, a command still in flight when the engine
+    ///   adopts a new rate moves to the same wall-clock time (nearest frame);
+    ///   one sent after that is read at the new rate;
     /// - an [`At::Beat`] on the first frame at or after that beat once
     ///   playback reaches it;
     /// - an [`At::NextBlock`] at the next block's first frame.

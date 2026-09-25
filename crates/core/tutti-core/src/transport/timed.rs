@@ -95,6 +95,11 @@ pub(crate) struct Scheduled {
     /// Send order: the tie-break between commands due on one frame, and what
     /// a cancel compares against.
     seq: u64,
+    /// An `At::Frame`'s frame, unrounded: a rate change moves it by
+    /// `new / old` ([`Schedule::rescale`]), and `at` is this rounded to the
+    /// nearest frame, so two changes in a row round once rather than twice
+    /// (the graph executor's `CommandRx::rescale` keeps the same figure).
+    pos: f64,
 }
 
 impl Scheduled {
@@ -113,6 +118,13 @@ pub(crate) struct Schedule {
     /// Every command with a lower `seq` is cancelled.
     cancel_before: Arc<AtomicU64>,
     late: Arc<AtomicU64>,
+    /// The first `seq` sent after the control thread announced a rate change
+    /// ([`mark_rate_change`](Self::mark_rate_change)): a command below it was
+    /// written in the old rate's frames, one at or above it in the new
+    /// one's. `u64::MAX` when nothing was announced, so every command in
+    /// flight is taken to be old (a graph re-rated without telling the
+    /// transport).
+    rescale_before: Arc<AtomicU64>,
     /// The audio thread's list of commands pulled off the ring and not yet
     /// due. Capacity `SCHEDULE_CAPACITY`, reserved here.
     pending: Arc<AudioThreadCell<Vec<Scheduled>>>,
@@ -126,6 +138,7 @@ impl Schedule {
             next_seq: Arc::new(AtomicU64::new(0)),
             cancel_before: Arc::new(AtomicU64::new(0)),
             late: Arc::new(AtomicU64::new(0)),
+            rescale_before: Arc::new(AtomicU64::new(u64::MAX)),
             pending: Arc::new(AudioThreadCell::new(Vec::with_capacity(SCHEDULE_CAPACITY))),
         }
     }
@@ -148,10 +161,19 @@ impl Schedule {
             }
         }
         let seq = self.next_seq.fetch_add(1, Ordering::AcqRel);
+        let pos = match at {
+            At::Frame(f) => f.get() as f64,
+            _ => 0.0,
+        };
         // Cannot fail: the ring holds at most the commands in flight, and the
         // credit just taken keeps those at or under its capacity.
         self.queue
-            .push(Scheduled { at, command, seq })
+            .push(Scheduled {
+                at,
+                command,
+                seq,
+                pos,
+            })
             .expect("credit bounds the ring");
         Ok(())
     }
@@ -190,6 +212,46 @@ impl Schedule {
         pending.retain(|c| c.seq >= cancel_before);
         self.release(before - pending.len());
         f(&mut pending)
+    }
+
+    /// Control thread: the device rate is changing, and every command sent
+    /// from here on is written in the new rate's frames. The boundary
+    /// [`rescale`](Self::rescale) keeps to — doc 013's rule for the
+    /// executor's own schedule (`Editor::reprepare`), where a commit's
+    /// sequence number is the boundary; here it is the send order.
+    pub(crate) fn mark_rate_change(&self) {
+        self.rescale_before
+            .store(self.next_seq.load(Ordering::Acquire), Ordering::Release);
+    }
+
+    /// Audio thread: the engine's frame clock moved to a rate `ratio` times
+    /// the old one (new / old), so every `At::Frame` command written at the
+    /// old rate moves to the same wall-clock time at the new rate, rounded
+    /// to the nearest frame. `At::Beat` and `At::NextBlock` are not in
+    /// frames and stay.
+    ///
+    /// "Written at the old rate" is a command sent before the last
+    /// [`mark_rate_change`](Self::mark_rate_change); one sent after it is
+    /// already in the new rate's frames and is left alone (rescaling it
+    /// would move it twice). With no mark, every command in flight is
+    /// taken to be old. The mark is consumed here, so a later re-rate the
+    /// transport was not told of rescales everything again (untested: every
+    /// path that re-rates here sets the transport's rate, which re-marks).
+    /// Never allocates (see
+    /// [`with_pending`](Self::with_pending)).
+    pub(crate) fn rescale(&self, ratio: f64) {
+        let before = self.rescale_before.swap(u64::MAX, Ordering::AcqRel);
+        self.with_pending(|pending| {
+            for cmd in pending.iter_mut() {
+                if cmd.seq >= before {
+                    continue;
+                }
+                if let At::Frame(_) = cmd.at {
+                    cmd.pos *= ratio;
+                    cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
+                }
+            }
+        });
     }
 
     /// `n` commands left the pending list: applied or cancelled.

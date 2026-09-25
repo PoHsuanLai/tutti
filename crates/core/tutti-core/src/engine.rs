@@ -101,7 +101,7 @@ use tutti_graph::{
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
-use crate::transport::{Scheduled, SCHEDULE_CAPACITY};
+use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
 use tutti_types::{At, Frame};
 
 use crate::transport::{tempo_in_effect, Control};
@@ -212,10 +212,35 @@ enum Backend {
 /// fundsp's `Net`, and the transport bookkeeping the engine keeps beside it.
 struct NetRender {
     backend: NetBackend,
-    /// Frames rendered since the engine was built: the clock `At::Frame`
-    /// names. (The native graph's executor keeps its own.)
+    /// Samples at the current rate since the engine was built: the clock
+    /// `At::Frame` names, rescaled with the rate as the executor's is (the
+    /// native graph's executor keeps its own).
     frame: Frame,
+    /// The rate `frame` counts in: the net's, as of the last block.
+    rate: SampleRate,
     playhead: Playhead,
+}
+
+impl NetRender {
+    /// Follow the rate of the net the last `pump` installed, and return it.
+    ///
+    /// A commit of a re-rated net (`Net::set_sample_rate`, as a device
+    /// restart makes) lands in a `pump`. Time in frames moves with it, as
+    /// the graph executor's does on a re-prepare (doc 013, #16): the frame
+    /// clock and every scheduled `At::Frame` transport command move to the
+    /// same wall-clock time at the new rate, rounded to the nearest frame.
+    /// The beat needs nothing here — the net's own `TransportClock` was
+    /// re-rated with it.
+    fn follow_rate(&mut self, schedule: &Schedule) -> SampleRate {
+        let rate = SampleRate(self.backend.sample_rate());
+        if rate != self.rate {
+            let ratio = rate.get() / self.rate.get();
+            self.frame = Frame((self.frame.get() as f64 * ratio).round() as u64);
+            schedule.rescale(ratio);
+            self.rate = rate;
+        }
+        rate
+    }
 }
 
 /// The native graph's executor, the clock that feeds its `Env`, and the
@@ -243,6 +268,7 @@ impl Engine {
         Self {
             motion,
             backend: AudioThreadCell::new(Backend::Net(NetRender {
+                rate: SampleRate(net_backend.sample_rate()),
                 backend: net_backend,
                 frame: Frame::ZERO,
                 playhead: Playhead::new(),
@@ -383,13 +409,14 @@ impl Engine {
         match &mut *self.backend.borrow_mut() {
             Backend::Net(net) => {
                 net.backend.pump();
+                net.follow_rate(self.motion.timed());
                 render_net(&mut net.backend, output, out_ch, 0, frames);
                 net.frame += Samples(frames);
             }
             Backend::Graph(g) => {
                 let mut done = 0;
                 while done < frames {
-                    let (bound, rate) = g.settle();
+                    let (bound, rate) = g.settle(self.motion.timed());
                     let len = (frames - done).min(bound);
                     let control = Control::read(self.motion.settings());
                     let t = g.clock.begin(&control, true);
@@ -430,7 +457,7 @@ impl Engine {
         match &mut *self.backend.borrow_mut() {
             Backend::Net(net) => {
                 net.backend.pump();
-                let rate = SampleRate(net.backend.sample_rate());
+                let rate = net.follow_rate(self.motion.timed());
                 let frame0 = net.frame;
                 let mut pieces = NetPieces {
                     engine: self,
@@ -449,7 +476,7 @@ impl Engine {
             Backend::Graph(g) => {
                 let mut done = 0;
                 while done < frames {
-                    let (bound, rate) = g.settle();
+                    let (bound, rate) = g.settle(self.motion.timed());
                     let len = (frames - done).min(bound);
                     let frame0 = g.exec.frame();
                     let mut pieces = GraphPieces {
@@ -905,13 +932,30 @@ impl GraphRender {
     /// length below is the new maximum and not a stale one), and follow a
     /// rate change with the clock. Returns the longest block to hand the
     /// executor, and its rate.
-    fn settle(&mut self) -> (usize, SampleRate) {
+    ///
+    /// The rate is followed on the block the re-prepare's **first** commit
+    /// lands, not its resume: from that block the executor counts frames at
+    /// the new rate (it has rescaled its clock and its own `At::Frame`
+    /// commands, `Executor::pending_prepare`), and it renders silence while
+    /// the transport rolls on. So the engine's clock steps the beat at the
+    /// new rate from there too — a clock left at the old one would move the
+    /// playhead by `old / new` of a frame per frame until the resume, a
+    /// jump of the suspended stretch's worth — and the transport's
+    /// frame-timed commands (`schedule`) move with the executor's.
+    fn settle(&mut self, schedule: &Schedule) -> (usize, SampleRate) {
         self.exec.apply_pending();
-        let rate = self.exec.prepare().sample_rate();
-        if rate != self.clock.sample_rate() {
+        let rate = self
+            .exec
+            .pending_prepare()
+            .unwrap_or(self.exec.prepare())
+            .sample_rate();
+        let was = self.clock.sample_rate();
+        if rate != was {
             // A re-prepare changed the rate: the executor has rescaled its
-            // frame clock; the beat increment follows.
+            // frame clock; the beat increment and the transport's own
+            // frame-timed commands follow.
             AudioUnit::set_sample_rate(&mut self.clock, rate);
+            schedule.rescale(rate.get() / was.get());
         }
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.

@@ -47,6 +47,24 @@ use tutti_sampler::DiskStreamer;
 /// On `Err`, nothing is inserted — the `engine_ready` run-condition gates all
 /// engine-dependent systems, so the app proceeds without audio.
 pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
+    build_on(
+        plugin,
+        app,
+        AudioEngine::new(plugin.output_device)?,
+        |audio_engine, state| audio_engine.start(state),
+    )
+}
+
+/// [`build_into`] over an `audio_engine` already opened, started by `start`:
+/// the device-free build, when `audio_engine` is `AudioEngine::from_spec`
+/// and `start` runs it on a `ManualStreamDriver` — every subsystem built and
+/// published as a device would have them, with no sound card.
+pub(crate) fn build_on(
+    plugin: &crate::TuttiPlugin,
+    app: &mut App,
+    mut audio_engine: AudioEngine,
+    start: impl FnOnce(&mut AudioEngine, Arc<AudioCallbackState>) -> tutti_cpal::Result<()>,
+) -> Result<()> {
     // OS MIDI ports are opened iff the `midi-hardware` feature is compiled.
     // Built first so the port manager can be handed to the processor's MIDI
     // input. (Software fan-out via `MidiBus` is always present under `midi`.)
@@ -56,7 +74,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         Some(MidiSession::new(port_manager))
     };
 
-    let mut audio_engine = AudioEngine::new(plugin.output_device)?;
     let sample_rate = audio_engine.sample_rate();
     let channels = audio_engine.channels();
 
@@ -194,7 +211,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         let state = state.with_pre_block(pre_block).with_post_block(post_block);
         Arc::new(state)
     };
-    audio_engine.start(callback_state.clone())?;
+    start(&mut audio_engine, callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
     let disk_streamer = DiskStreamer::new(

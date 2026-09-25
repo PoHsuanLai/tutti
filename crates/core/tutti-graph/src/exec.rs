@@ -633,6 +633,20 @@ impl Executor {
         &self.prepare
     }
 
+    /// The `Prepare` a re-prepare in progress will adopt: `Some` from the
+    /// block its first commit is applied on — the units checked out, and on
+    /// a rate change [`frame`](Self::frame) and every pending frame-timed
+    /// command already rescaled — until its resume lands and
+    /// [`prepare`](Self::prepare) becomes it.
+    ///
+    /// So the rate time is counted in *now* is this one's while it is
+    /// `Some`: a host that keeps a clock beside the executor (the engine's
+    /// transport clock, its own frame-timed commands) follows the rate here,
+    /// on the same block the executor's clock moves, not a resume later.
+    pub fn pending_prepare(&self) -> Option<&Prepare> {
+        self.next_prepare.as_ref()
+    }
+
     /// The plan running now.
     pub fn plan(&self) -> Option<&Arc<Plan>> {
         self.plan.as_ref()

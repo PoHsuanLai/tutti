@@ -293,6 +293,56 @@ impl NativeGraph {
         self.pump_local();
     }
 
+    /// Whether a re-prepare is between its two commits.
+    pub(crate) fn is_repreparing(&self) -> bool {
+        self.editor.is_repreparing()
+    }
+
+    /// Refuse, before a device restart stops anything, a re-prepare to
+    /// `max_block` this graph could not start: past the engine's block
+    /// capacity (the editor's limits, set by `Engine::with_graph`), with one
+    /// already between its halves, or on a poisoned editor. The rest of what
+    /// `Editor::reprepare` checks depends on the new `Prepare` and is left
+    /// to it.
+    pub(crate) fn check_reprepare(&self, max_block: Option<Samples>) -> Result<(), CommitError> {
+        if let Some(cause) = self.editor.poisoned() {
+            return Err(CommitError::Poisoned {
+                cause: cause.to_owned(),
+            });
+        }
+        if self.editor.is_repreparing() {
+            return Err(CommitError::Repreparing);
+        }
+        let limit = self.editor.limits().max_block;
+        match max_block {
+            Some(b) if b.get() > limit => Err(CommitError::BlockTooLong {
+                max_block: b.get(),
+                limit,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Re-prepare every node for `rate` and, if given, `max_block` (else the
+    /// block it has): the first half of `Editor::reprepare`, sent. The
+    /// executor checks its units out on its next block, and a later
+    /// `collect` sends them back re-prepared (every frame's `commit_graph`
+    /// does it). A no-op when neither moves.
+    pub(crate) fn reprepare(
+        &mut self,
+        rate: SampleRate,
+        max_block: Option<Samples>,
+    ) -> Result<(), CommitError> {
+        let current = *self.editor.prepare();
+        let prepare = Prepare::new(rate, max_block.unwrap_or(current.max_block().samples()));
+        if prepare == current {
+            return Ok(());
+        }
+        self.editor.reprepare(prepare)?;
+        self.pump_local();
+        Ok(())
+    }
+
     /// Apply whatever the editor sent to a local executor, and collect what
     /// comes back, until nothing is in flight. A no-op once the executor is
     /// taken. Bounded: a re-prepare is two round trips, anything else one.

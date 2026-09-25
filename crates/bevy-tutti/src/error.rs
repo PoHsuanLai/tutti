@@ -22,6 +22,14 @@ pub enum Error {
     #[error("graph engine: {0}")]
     Graph(#[from] tutti_core::GraphEngineError),
 
+    /// The native graph refused a re-prepare
+    /// ([`GraphBackend::Native`](crate::graph::GraphBackend::Native)): a
+    /// device restart asked for a block past the engine's capacity, came
+    /// while another re-prepare was between its halves, or met a graph that
+    /// no longer compiles at the new block. Wraps [`tutti_graph::CommitError`].
+    #[error("graph re-prepare: {0}")]
+    Reprepare(#[from] tutti_graph::CommitError),
+
     /// Audio device failure — enumeration, stream construction, or playback.
     ///
     /// Wraps [`tutti_cpal::Error`], which owns every CPAL concern.

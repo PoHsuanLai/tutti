@@ -115,6 +115,10 @@
 //! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
 //!   (commits, and timestamped commands), and their back-pressure.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
+//! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
+//!   [`pure`](Legacy::pure), with a `Net::set` replacement
+//!   ([`Legacy::controlled`]: a settings ring and a shadow copy). A unit's
+//!   latency can change at runtime with [`Editor::set_latency`].
 //!
 //! # Building a graph in a test
 //!

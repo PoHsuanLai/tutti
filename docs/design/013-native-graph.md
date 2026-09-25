@@ -941,9 +941,14 @@ suite's `crossfades_are_bit_identical`:
 
 For PR 11: `crossfade_audio_node` maps to
 `Editor::replace(key, unit, Fade::seconds(Seconds(0.005), rate, CrossfadeCurve::EqualAmplitude))`.
-Open for PR 1's `Editor::set_latency`: a runtime latency change at a key
-that is fading has to pick a rule too (the simplest: apply it to the
-incoming unit's plan and let the fade finish misaligned, or cut the fade).
+**`set_latency` × fades (decided across PRs 1 and 3):** a runtime latency
+change at a key that is mid-fade, running or queued, is a hard edit for the
+fade. The next commit carries the key in `Delta::cuts`; the executor retires
+every unit there but the newest through the fade-return ring, and `collect`
+reports them. A `replace` not yet committed at that key lands as a plain
+swap. The reference derives the same cut from a spec latency change with no
+new generation (`tests/replace.rs`, `set_latency_cuts_a_fade` and
+`the_reference_cuts_a_fade_on_a_latency_change`).
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

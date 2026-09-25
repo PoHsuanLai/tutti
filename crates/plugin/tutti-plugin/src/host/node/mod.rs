@@ -15,6 +15,7 @@
 mod audio_unit;
 mod batcher;
 mod capability_view;
+mod controls;
 mod harmony_source;
 // `input_slot` / `transport_source` are `pub(crate)` rather than private: the
 // in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
@@ -49,6 +50,7 @@ pub(crate) use capability_view::is_declined;
 pub use capability_view::{
     HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
 };
+pub use controls::PluginControls;
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
@@ -64,42 +66,34 @@ use crate::error::Result;
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::ipc_client::PluginBridge;
-use crate::host::node::input_slot::{BlockCtx, InputSlot};
-use crate::host::node::transport_source::TransportSource;
+use crate::host::node::input_slot::BlockCtx;
 use crate::host::subprocess;
 use crate::protocol::{
-    Features, LoadedPlugin, Normalized, ParamAddress, ParameterChanges, PluginDescriptor,
-    SampleFormat, TransportInfo,
+    LoadedPlugin, Normalized, ParamAddress, ParameterChanges, PluginDescriptor, SampleFormat,
+    TransportInfo,
 };
 use crate::util::config::BridgeConfig;
-use arc_swap::ArcSwap;
 use batcher::{Batcher, PIPELINE_LATENCY_FRAMES};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tutti_core::{SampleRate, Samples};
 use tutti_plugin_types::PluginTail;
 
-/// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
-/// (all Arc) but get independent `io` and `midi` state (fundsp clones
-/// nodes on graph commit).
+/// Cheap to clone: clones share `bridge`, `process_guard` and every cell in
+/// [`controls`](Self::controls) (all Arc) but get independent `io` and `midi`
+/// scratch (fundsp clones nodes on graph commit).
 #[derive(Clone)]
 pub struct PluginClient {
     bridge: Arc<PluginBridge>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     format: SampleFormat,
-    /// Shared across clones so runtime latency updates are seen by
-    /// whichever clone fundsp is currently processing.
-    latency: Arc<AtomicUsize>,
-    /// Runtime tail, shared across clones for the same reason as `latency`.
-    ///
-    /// An `ArcSwap` rather than an atomic because [`PluginTail`] is a four-arm
-    /// sum whose payload is a `usize` — "unbounded" and "never asked" are not
-    /// numbers, so there is no integer encoding to compare-and-swap that does
-    /// not reintroduce the sentinel the type exists to avoid. Read once per
-    /// block by `AudioUnit::tail`, never per sample.
-    tail: Arc<ArcSwap<PluginTail>>,
+    /// The input slots, latency, tail and sample rate — every cell shared
+    /// across clones, so runtime updates are seen by whichever clone fundsp is
+    /// currently processing, and a host holding [`controls`](Self::controls)
+    /// reaches the running node without it.
+    controls: PluginControls,
     /// Observers for plugin-originated unsolicited events. Shared with
     /// `PluginHandle` so callers can register callbacks via the handle
     /// and still see events driven by the bridge thread.
@@ -114,36 +108,6 @@ pub struct PluginClient {
     /// re-injected into routing via [`Midi::emit`]. Cleared at the start of each
     /// `process`; steady-state capacity makes the drain alloc-free.
     midi_out: crate::protocol::MidiEventVec,
-    inputs: PluginInputs,
-    /// Last-known sample rate, used to stamp a freshly-installed
-    /// [`TransportSource`]. Updated by `AudioUnit::set_sample_rate`.
-    sample_rate: SampleRate,
-}
-
-/// The per-block inputs this plugin consumes, each an [`InputSlot`] sharing its
-/// producer across fundsp graph-commit clones. MIDI is deliberately NOT here —
-/// it has a live-receiver fallback the uniform slot doesn't model (see [`Midi`]).
-#[derive(Clone)]
-struct PluginInputs {
-    harmony: InputSlot<HarmonySource>,
-    params: InputSlot<ParamAutomationSource>,
-    transport: InputSlot<TransportSource>,
-    note_expression: InputSlot<NoteExpressionSource>,
-}
-
-impl PluginInputs {
-    /// Slots with the gates that decide which plugins receive each input:
-    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, note-expression →
-    /// `NOTE_EXPRESSION`, params → universal (empty gate = always send). Matches
-    /// the former per-`drain` feature checks.
-    fn new() -> Self {
-        Self {
-            harmony: InputSlot::new(Features::SEQUENCER_CONTEXT),
-            params: InputSlot::new(Features::empty()),
-            transport: InputSlot::new(Features::TRANSPORT),
-            note_expression: InputSlot::new(Features::NOTE_EXPRESSION),
-        }
-    }
 }
 
 /// Everything the host produces for one process block, aggregated for the bridge
@@ -184,9 +148,9 @@ impl PluginClient {
     }
 
     /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
-    /// [`Midi`]) plus each gated [`InputSlot`] (harmony / params / transport /
+    /// [`Midi`]) plus each gated [`InputSlot`](input_slot::InputSlot) (harmony / params / transport /
     /// note-expression). Every send/gate decision lives in [`InputSlot::drain`]
-    /// keyed on the plugin's [`Features`] — never on the plugin's format. The
+    /// keyed on the plugin's [`Features`](crate::protocol::Features) — never on the plugin's format. The
     /// note-expression slot's producer currently emits nothing (reader deferred),
     /// so it drains empty until a note-expression lane reader is wired in.
     pub(super) fn build_block_payload(&mut self, block_size: usize) -> BlockPayload {
@@ -194,10 +158,15 @@ impl PluginClient {
         let features = self.loaded.features;
         BlockPayload {
             midi: self.midi.drain_for_process(block_size).clone(),
-            params: self.inputs.params.drain(ctx, features).clone(),
-            harmony: self.inputs.harmony.drain(ctx, features).clone(),
-            transport: *self.inputs.transport.drain(ctx, features),
-            note_expression: self.inputs.note_expression.drain(ctx, features).clone(),
+            params: self.controls.inputs.params.drain(ctx, features).clone(),
+            harmony: self.controls.inputs.harmony.drain(ctx, features).clone(),
+            transport: *self.controls.inputs.transport.drain(ctx, features),
+            note_expression: self
+                .controls
+                .inputs
+                .note_expression
+                .drain(ctx, features)
+                .clone(),
         }
     }
 
@@ -206,7 +175,7 @@ impl PluginClient {
     }
 
     /// Hand the plugin's MIDI-out to the post-block phase — but only if the
-    /// plugin declared [`Features::MIDI_OUT`]. Gating the *emit* on the
+    /// plugin declared [`Features::MIDI_OUT`](crate::protocol::Features::MIDI_OUT). Gating the *emit* on the
     /// self-reported capability mirrors how the per-block input feeds gate their
     /// sends on their `Features` bit: a plugin that never advertised MIDI output
     /// has its emission dropped rather than silently re-injected. (Without the
@@ -298,16 +267,7 @@ impl PluginClient {
     /// the source's rate is a shared atomic; a no-op when no source is installed
     /// (it's installed later with the correct rate by the host).
     pub(super) fn restamp_source_rates(&mut self, sample_rate: SampleRate) {
-        self.sample_rate = sample_rate;
-        if let Some(src) = self.inputs.transport.source_ref().load().as_ref() {
-            src.set_sample_rate(sample_rate);
-        }
-        if let Some(src) = self.inputs.harmony.source_ref().load().as_ref() {
-            src.set_sample_rate(sample_rate);
-        }
-        if let Some(src) = self.inputs.params.source_ref().load().as_ref() {
-            src.set_sample_rate(sample_rate);
-        }
+        self.controls.restamp(sample_rate);
     }
 }
 
@@ -344,8 +304,11 @@ impl PluginClient {
 
         // `.get()` because the cell is an `AtomicUsize` — an atomic needs a
         // primitive, so the unit type stops here rather than at a call site.
-        let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples.get()));
-        let tail = Arc::new(ArcSwap::from_pointee(server.loaded.tail));
+        let controls = PluginControls::new(
+            server.loaded.latency_samples,
+            server.loaded.tail,
+            sample_rate,
+        );
         // Sized to what can actually cross the boundary, matching the slab —
         // `slab_layout_for` clamps to `BATCH_SIZE` for the same reason (fundsp
         // never hands a node more than one block). Passing the raw
@@ -364,8 +327,8 @@ impl PluginClient {
         // structural invalidation — it re-plans PDC). Resync signals split by
         // consequence into the refresh (cosmetic) vs invalidate (structural)
         // sinks via `ResyncKind::classify`.
-        let listener_latency = Arc::clone(&latency);
-        let listener_tail = Arc::clone(&tail);
+        let listener_latency = controls.latency_cell();
+        let listener_tail = controls.tail_cell();
         let listener_param_sink = param_sink.clone();
         let listener_refresh_sink = refresh_sink.clone();
         let listener_invalidate_sink = invalidate_sink.clone();
@@ -403,8 +366,10 @@ impl PluginClient {
             descriptor: server.descriptor,
             loaded: server.loaded,
             format: server.format,
-            latency,
-            tail,
+            // No transport source yet — the host installs one via
+            // `set_transport_source` right after load; it's stamped with the
+            // controls' shared `sample_rate` (updated live on device changes).
+            controls,
             param_sink,
             refresh_sink,
             invalidate_sink,
@@ -412,11 +377,6 @@ impl PluginClient {
             io: Batcher::new(inputs, outputs, server.format, max_buffer_size),
             midi: Midi::new(),
             midi_out: crate::protocol::MidiEventVec::new(),
-            // No transport source yet — the host installs one via
-            // `set_transport_source` right after load; it's stamped with
-            // `sample_rate` below (updated live on device rate changes).
-            inputs: PluginInputs::new(),
-            sample_rate,
         })
     }
 
@@ -441,7 +401,7 @@ impl PluginClient {
     ///
     /// RT-safe: one atomic load, no allocation.
     pub fn latency(&self) -> Samples {
-        Samples(self.latency.load(Ordering::Acquire))
+        self.controls.latency()
     }
 
     /// Runtime latency update. RT-safe.
@@ -454,7 +414,7 @@ impl PluginClient {
     /// callback via `PluginHandle::on_invalidate` (latency arrives as
     /// `PluginInvalidation::Latency`) to get notified.
     pub fn set_latency(&self, samples: impl Into<Samples>) {
-        self.latency.store(samples.into().get(), Ordering::Release);
+        self.controls.set_latency(samples);
     }
 
     /// What the plugin currently reports for its tail.
@@ -462,7 +422,7 @@ impl PluginClient {
     /// Starts as the value read at load and tracks runtime changes for formats
     /// that signal them (CLAP).
     pub fn tail(&self) -> PluginTail {
-        **self.tail.load()
+        self.controls.tail()
     }
 
     /// Runtime tail update. RT-safe.
@@ -473,7 +433,19 @@ impl PluginClient {
     /// re-running anything — an offline render reads the tail when it sizes
     /// itself, so a bounce already in flight keeps the length it started with.
     pub fn set_tail(&self, tail: PluginTail) {
-        self.tail.store(Arc::new(tail));
+        self.controls.set_tail(tail);
+    }
+
+    /// A handle on this node's host-side controls — its input slots, latency,
+    /// tail and sample rate — that stays valid after the node moves into a
+    /// graph.
+    ///
+    /// Every cell in it is shared with this node and with every clone of it, so
+    /// a host takes this **before** inserting the node and drives the running
+    /// plugin through it from then on, instead of reaching back into the graph
+    /// for the node. See [`PluginControls`].
+    pub fn controls(&self) -> PluginControls {
+        self.controls.clone()
     }
 
     /// Catalog identity (id, name, vendor, version, native class, editor).
@@ -582,22 +554,13 @@ impl PluginClient {
         scales: impl IntoIterator<Item = TimedScale>,
         transport: impl tutti_core::transport::Timeline + 'static,
     ) {
-        self.inputs.harmony.install(Arc::new(HarmonySource::new(
-            chords,
-            scales,
-            // Erased here, not by the caller: `Transport` implements `Timeline`
-            // and is `Clone`, so an `Arc<dyn …>` at the boundary only asks a
-            // host to spell out a wrapping this can do itself — and asks it
-            // differently from `set_transport_source`, two lines away.
-            Arc::new(transport),
-            self.sample_rate,
-        )));
+        self.controls.set_harmony_source(chords, scales, transport);
     }
 
     /// Drop a previously-installed harmony source. Subsequent blocks feed the
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
-        self.inputs.harmony.clear();
+        self.controls.clear_harmony_source();
     }
 
     /// Install a [`NoteExpressionSource`] that supplies per-block note-expression
@@ -607,20 +570,20 @@ impl PluginClient {
     /// currently drains empty — the rail exists so the data source can be dropped
     /// in without touching the plugin-node wiring.
     pub fn set_note_expression_source(&mut self, source: std::sync::Arc<NoteExpressionSource>) {
-        self.inputs.note_expression.install(source);
+        self.controls.set_note_expression_source(source);
     }
 
     /// Drop a previously-installed note-expression source. Subsequent blocks feed
     /// the plugin empty note-expression.
     pub fn clear_note_expression_source(&mut self) {
-        self.inputs.note_expression.clear();
+        self.controls.clear_note_expression_source();
     }
 
     /// Install a transport reader so the plugin receives a live per-block
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop). Wrapped internally
     /// in a transport source stamped with the current sample rate (updated live
     /// on device changes). The snapshot is only sent to plugins advertising
-    /// [`Features::TRANSPORT`]; others always get a default.
+    /// [`Features::TRANSPORT`](crate::protocol::Features::TRANSPORT); others always get a default.
     ///
     /// `meter` is a separate handle rather than something read off the transport:
     /// meter is a layer over the timeline, not transport state. Passing the same
@@ -631,17 +594,13 @@ impl PluginClient {
         reader: tutti_core::transport::Transport,
         meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
     ) {
-        self.inputs.transport.install(Arc::new(TransportSource::new(
-            Arc::new(reader),
-            meter,
-            self.sample_rate,
-        )));
+        self.controls.set_transport_source(reader, meter);
     }
 
     /// Drop a previously-installed transport reader; subsequent blocks feed the
     /// plugin a default (stopped) transport snapshot.
     pub fn clear_transport_source(&mut self) {
-        self.inputs.transport.clear();
+        self.controls.clear_transport_source();
     }
 
     /// Install sample-accurate per-block [`ParameterChanges`] for the automated
@@ -667,20 +626,14 @@ impl PluginClient {
         params: impl IntoIterator<Item = TimedParam>,
         transport: impl tutti_core::transport::TransportState + 'static,
     ) {
-        self.inputs
-            .params
-            .install(Arc::new(ParamAutomationSource::new(
-                params,
-                Arc::new(transport),
-                self.sample_rate,
-            )));
+        self.controls.set_param_automation_source(params, transport);
     }
 
     /// Drop a previously-installed parameter-automation source; subsequent
     /// blocks feed the plugin empty [`ParameterChanges`] (it keeps its current
     /// parameter values).
     pub fn clear_param_automation_source(&mut self) {
-        self.inputs.params.clear();
+        self.controls.clear_param_automation_source();
     }
 
     /// Build a [`PluginParamTarget`] for one of this plugin's params — a
@@ -706,7 +659,7 @@ impl PluginClient {
     ) -> std::sync::Arc<PluginParamTarget> {
         // param_id is carried by the caller into the `TimedParam` at install
         // time; the target itself only accumulates a value.
-        std::sync::Arc::new(PluginParamTarget::new(base, min, max))
+        self.controls.param_target(_param_id, base, min, max)
     }
 
     /// Drop a previously-installed source override; subsequent ticks

@@ -3,7 +3,7 @@
 //!
 //! This is the irreducible core of bevy-tutti. The order is load-bearing:
 //! `AudioEngine::new` opens CPAL (yielding sample rate + channels), the shared
-//! managers and graph are built from those, `net.backend()` is taken once, the
+//! managers and graph are built from those, the graph's backend is taken once, the
 //! RT processor is assembled, `audio_engine.start()` makes the callback live
 //! (once), then the sampler / soundfont / analysis handles are built sharing
 //! the same managers. The shared manager *instances* never escape — only the
@@ -16,9 +16,7 @@ use bevy_app::App;
 
 use crate::engine::Result;
 use tutti_core::Arc;
-use tutti_core::{
-    dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
-};
+use tutti_core::{AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock};
 use tutti_core::{Engine, MAX_ROOT_CHANNELS};
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
@@ -86,14 +84,14 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // sampler subscribes here so the wiring exists either way.
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
-    let mut net = Net::new(inputs, outputs);
+    let mut graph = AudioGraphRes::unattached(inputs, outputs);
 
     // Transport clock — emits the beat on two ports and writes it back to the
     // manager's atomic. Beat-driven nodes take those ports as inputs, so the
     // clock needs a name a host can address; it gets an entity below, like every
     // other node in the graph.
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
-    let clock_id = net.push(Box::new(clock));
+    let clock_node = graph.insert(clock);
 
     // Metronome. It only READS the transport (rolling/recording), so it takes a
     // read view, not a control handle; the beat itself arrives on its two input
@@ -105,9 +103,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // disconnects the metronome. What the click feeds is the host's
     // declaration, like every other node; see `graph::wire`.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
-    let click_id = net.push(Box::new(click));
+    let click_node = graph.insert(click);
 
-    let backend = net.backend();
+    let backend = graph.take_backend();
 
     // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
     // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
@@ -217,10 +215,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         },
     )?;
 
-    // The net *is* the graph — its backend was taken above, and the sample rate
-    // and channel count it already carries are what `AudioConfig` publishes.
-    let graph = net;
-
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
     // The metronome resource is just the shared click settings — callers set
@@ -233,7 +227,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         sample_rate,
         channels,
     };
-    app.insert_resource(AudioGraphRes(graph));
+    app.insert_resource(graph);
     app.insert_resource(config);
     // Inserted whether or not the app opts into compensation: the sampler already
     // holds a clone of this Arc, so the resource must be *this* one, not a fresh
@@ -252,15 +246,15 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     //
     // The click's *inputs* are declared here: it takes the beat from the clock's
     // two ports, per sample, so each click starts on the frame its beat lands on
-    // rather than on a block boundary. Declared rather than `net.connect`ed so
+    // rather than on a block boundary. Declared rather than `set_source`d so
     // the reconciler owns the edge like every other one — and the edge is also
     // what orders the clock before the click, which two unconnected nodes do not
     // get.
-    let clock_entity = app.world_mut().spawn(tutti_core::AudioNode(clock_id)).id();
+    let clock_entity = app.world_mut().spawn(clock_node).id();
     let click_entity = app
         .world_mut()
         .spawn((
-            tutti_core::AudioNode(click_id),
+            click_node,
             crate::graph::PortSources::stereo_from(clock_entity),
         ))
         .id();

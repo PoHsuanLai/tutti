@@ -40,7 +40,7 @@
 //! subprocess — a fixture bigger than the test, and one that would put a second
 //! construction path under assertions meant for the first. `Net` is also what
 //! `bevy_tutti::graph::latency::compensate_graph` itself drives
-//! (`latency::compensate(&mut graph.0)`), so this exercises the production path
+//! (`AudioGraphRes::compensate`, over the `Net` it keeps), so this exercises the production path
 //! rather than a parallel one. `Net` implements both `LatencyGraph` and
 //! `DelayInsertion` (`fundsp-tutti/src/latency/mod.rs`), which is all the
 //! planner needs.

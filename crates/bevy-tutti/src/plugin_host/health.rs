@@ -381,7 +381,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::graph::AudioGraphRes(tutti_core::dsp::Net::new(0, 2)));
+        app.insert_resource(crate::graph::AudioGraphRes::unattached(0, 2));
         app.add_systems(Update, plugin_health_poll);
         app
     }
@@ -394,13 +394,11 @@ mod tests {
     /// has to be present for the unwire to be observable at all. A `dc` node
     /// stands in for the plugin — nothing here reads what the node computes.
     fn run(app: &mut App, cause: Option<&str>, frames: usize) -> Entity {
-        let id = {
+        let node = {
             let mut graph = app
                 .world_mut()
                 .resource_mut::<crate::graph::AudioGraphRes>();
-            graph
-                .0
-                .push(Box::new(tutti_nodes::testing::Const::mono(0.0)))
+            graph.insert(tutti_nodes::testing::Const::mono(0.0))
         };
         let entity = app
             .world_mut()
@@ -409,7 +407,7 @@ mod tests {
                     handle: handle_reporting(cause),
                 },
                 PluginHealth::default(),
-                tutti_core::AudioNode(id),
+                node,
             ))
             .id();
         for _ in 0..frames {

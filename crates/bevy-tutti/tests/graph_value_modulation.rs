@@ -25,7 +25,6 @@ use bevy_tutti::modulation::{
     ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::Net;
 use tutti_mod::LfoShape;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_types::graph::{Edge, InPort, OutPort, Source, Topology};
@@ -36,7 +35,7 @@ use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 /// the same graph.
 fn app_with_target() -> (App, Entity) {
     let mut app = App::new();
-    app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
     app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
     app.world_mut()
@@ -51,7 +50,7 @@ fn app_with_target() -> (App, Entity) {
     // And its controls, captured from the unit before it moves — the step every
     // insertion path in `bevy_tutti::graph` runs.
     let controls = CapturedControls::capture(app.world(), &dist);
-    let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
+    let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
     let mut target = app.world_mut().spawn((
         ports,
         ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
@@ -183,7 +182,7 @@ fn every_shaper_in_a_group_gets_its_own_sum_port() {
 /// **Mutation note.** Removing `RemovedComponents<AudioNode>` from `rebuild`'s
 /// dirty gate fails this: the pass would not re-run after the despawn, and the
 /// value would keep the retired shaper's edge. Making `build` skip its
-/// `graph.0.contains` guard fails the `validate` assertion, since the value
+/// `graph.contains` guard fails the `validate` assertion, since the value
 /// would carry a node the engine dropped.
 #[test]
 fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value() {

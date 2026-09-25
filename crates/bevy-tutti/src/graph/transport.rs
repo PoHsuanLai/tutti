@@ -171,7 +171,6 @@ pub struct EngineNodes {
     /// use bevy_app::prelude::*;
     /// use bevy_ecs::prelude::*;
     /// use bevy_tutti::prelude::*;
-    /// use tutti_core::dsp::{Net, Source};
     /// use tutti_core::transport::{TransportClock, BEAT_PORTS};
     /// use tutti_nodes::testing::Through;
     ///
@@ -194,14 +193,14 @@ pub struct EngineNodes {
     /// // `build_into` builds the clock and inserts `EngineNodes`; a device-less
     /// // app does the same two steps by hand.
     /// let transport = Transport::new(48_000.0);
-    /// let mut net = Net::with_backend(2);
-    /// let clock_id = net.add(TransportClock::new(transport.clock_links(), 48_000.0));
+    /// let mut graph = AudioGraphRes::headless(0, 2);
+    /// let clock_id = graph.insert(TransportClock::new(transport.clock_links(), 48_000.0));
     ///
     /// let mut app = App::new();
-    /// app.insert_resource(AudioGraphRes(net));
+    /// app.insert_resource(graph);
     /// app.insert_resource(AudioEngineState::Running);
     /// app.add_plugins(GraphReconcilePlugin);
-    /// let clock = app.world_mut().spawn(AudioNode(clock_id)).id();
+    /// let clock = app.world_mut().spawn(clock_id).id();
     /// app.insert_resource(EngineNodes { clock, click: clock });
     /// app.insert_resource(TransportRes(transport));
     /// app.add_systems(Startup, wire_to_clock);
@@ -213,12 +212,12 @@ pub struct EngineNodes {
     ///     .world_mut()
     ///     .query::<&AudioNode>()
     ///     .iter(app.world())
-    ///     .map(|n| n.0)
+    ///     .copied()
     ///     .find(|id| *id != clock_id)
     ///     .unwrap();
     /// let graph = app.world().resource::<AudioGraphRes>();
     /// for port in 0..BEAT_PORTS {
-    ///     assert_eq!(graph.0.source(sink, port), Source::Local(clock_id, port));
+    ///     assert_eq!(graph.source(sink, port), GraphSource::Node(clock_id, port));
     /// }
     /// ```
     ///

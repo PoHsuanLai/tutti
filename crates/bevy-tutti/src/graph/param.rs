@@ -12,9 +12,7 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin};
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::Net;
-//! use tutti_core::AudioUnit as _;
-//! use tutti_core::{AudioNode, SampleRate};
+//! use tutti_core::SampleRate;
 //! use tutti_types::{Drive, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
@@ -25,12 +23,14 @@
 //! // The node's own drive atomic — shared with every clone of the node, so it
 //! // is the cell the DSP reads, wherever the graph keeps the unit.
 //! let live = unit.drive();
-//! let mut net = Net::new(0, 1);
-//! let node = net.push(Box::new(unit));
-//! net.set_sample_rate(SampleRate(48_000.0));
+//! // `unattached`: with no audio side, the write lands on the graph's copy of
+//! // the node at once, so the assertion below can read it.
+//! let mut graph = AudioGraphRes::unattached(0, 1);
+//! let node = graph.insert(unit);
+//! graph.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(graph);
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins(GraphReconcilePlugin);
 //! // Under the `modulation` feature the reconciler asks the matrix whether a
@@ -39,7 +39,7 @@
 //! app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
 //! app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 //!
-//! let entity = app.world_mut().spawn((AudioNode(node), DriveParam::new(Drive(4.0)))).id();
+//! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
 //! app.update();
 //!
 //! // Read the node's own atomic — the cell the DSP reads, not the component.
@@ -48,10 +48,11 @@
 //!
 //! # Why this can be generic at all
 //!
-//! Pushing a param needs no node-type dispatch: `Net::set` carries a
-//! `(param, value)` pair to the addressed node, and the unit's own `set`
-//! decodes it — a unit ignores params it does not own. That is the opposite of
-//! resolving a *modulation target*, which needs the concrete node type (see
+//! Pushing a param needs no node-type dispatch:
+//! [`AudioGraphRes::set_param`] carries a `(param, value)` pair to the
+//! addressed node, and the unit's own `set` decodes it — a unit ignores
+//! params it does not own. That is the opposite of resolving a *modulation
+//! target*, which needs the concrete node type (see
 //! `modulation::target`). Reconciling is uniform; resolving is not.
 //!
 //! # Modulated params
@@ -186,8 +187,8 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 ///
 /// **Hosted plugin parameters do not belong here.** They are runtime-discovered
 /// `u32` ids reached over a different transport (`set_parameter_rt` across the
-/// IPC bridge), not `Net::set` — a different write, not a different address for
-/// the same one.
+/// IPC bridge), not `AudioGraphRes::set_param` — a different write, not a
+/// different address for the same one.
 pub fn write_param(
     graph: &mut AudioGraphRes,
     #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
@@ -197,10 +198,6 @@ pub fn write_param(
     param: UnitParam,
     value: f32,
 ) {
-    // `Net::set` is an `AudioUnit` method; the trait must be in scope to call
-    // it, and nothing else here needs it.
-    use tutti_core::AudioUnit as _;
-
     // 1. Audio rate: the node reads its port, not its atomic.
     #[cfg(feature = "modulation")]
     if let Some(cell) = chains.base_cell(entity, ParamAddr::Unit(param)) {
@@ -217,16 +214,14 @@ pub fn write_param(
     let _ = entity;
 
     // 3. Unmodulated: the node's own atomic is the value.
-    graph
-        .0
-        .set(tutti_core::unit_param::node_setting(node.0, param, value));
+    graph.set_param(*node, param, value);
 }
 
 /// Push every changed [`AudioParam<U, P>`] into its node.
 ///
 /// Change-detection-gated, so a steady frame does no work at all. Values reach
-/// the audio thread through `Net::set`, which enqueues rather than mutating —
-/// the RT-correct path, and the reason no downcast is needed.
+/// the audio thread through `AudioGraphRes::set_param`, which enqueues rather
+/// than mutating — the RT-correct path, and the reason no downcast is needed.
 ///
 /// The write itself is [`write_param`]'s; this system's job is the query and the
 /// `P` → [`UnitParam`] conversion.

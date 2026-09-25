@@ -6,10 +6,9 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 
 /// Runs a graph commit once iff any reconcile system mutated the graph.
 ///
-/// Commits via `Net::commit_output_arity_change`, so a master layout change may
-/// alter the global output arity; that method and `tutti_core`'s
-/// `Engine::process_segment` document the RT-buffer contract this relies on.
-/// Identical to plain `commit()` when the arity is unchanged.
+/// The commit accepts a changed global output arity, so a master layout change
+/// may alter it; `AudioGraphRes::commit`'s docs and `tutti_core`'s
+/// `Engine::process_segment` state the RT-buffer contract this relies on.
 ///
 /// **Pinned to the main thread** via [`NonSendMarker`](bevy_ecs::system::NonSendMarker).
 /// The commit deallocates the previous graph version — which includes any
@@ -33,6 +32,6 @@ pub fn commit_graph(
     if !dirty.0 {
         return;
     }
-    graph.0.commit_output_arity_change();
+    graph.commit();
     dirty.0 = false;
 }

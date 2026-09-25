@@ -533,12 +533,11 @@ mod io_graph_composition {
     use bevy_ecs::prelude::*;
     use ringbuf::traits::{Producer as _, Split as _};
 
+    use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use bevy_tutti::io::{MicMonitorNode, MicRing};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{Net, Source};
     use tutti_core::AudioNode;
-    use tutti_core::AudioUnit as _;
     use tutti_nodes::testing::Through;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
@@ -546,7 +545,7 @@ mod io_graph_composition {
     /// outcome is about the node under test and not the scaffolding.
     fn app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app
@@ -560,8 +559,8 @@ mod io_graph_composition {
         (MicMonitorNode::new(ring), prod)
     }
 
-    fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
-        app.world().get::<AudioNode>(entity).expect("AudioNode").0
+    fn node_id(app: &App, entity: Entity) -> AudioNode {
+        *app.world().get::<AudioNode>(entity).expect("AudioNode")
     }
 
     /// Render `frames` from the graph, per-sample.
@@ -574,7 +573,7 @@ mod io_graph_composition {
         (0..frames)
             .map(|_| {
                 let mut frame = [0.0f32; 2];
-                graph.0.tick(&[], &mut frame);
+                graph.render_frame(&mut frame);
                 frame
             })
             .collect()
@@ -592,17 +591,17 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.add(monitor)
+            graph.insert(monitor)
         };
-        let entity = app.world_mut().spawn(AudioNode(id)).id();
+        let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
         app.update();
 
         let mon_id = node_id(&app, entity);
         for ch in 0..2 {
             assert_eq!(
-                app.world().resource::<AudioGraphRes>().0.output_source(ch),
-                Source::Local(mon_id, ch),
+                app.world().resource::<AudioGraphRes>().output_source(ch),
+                GraphSource::Node(mon_id, ch),
                 "master channel {ch} must read from the monitor node"
             );
         }
@@ -620,10 +619,10 @@ mod io_graph_composition {
 
         let (mon_id, fx_id) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            (graph.0.add(monitor), graph.0.add(Through::mono()))
+            (graph.insert(monitor), graph.insert(Through::mono()))
         };
-        let mon = app.world_mut().spawn(AudioNode(mon_id)).id();
-        let fx = app.world_mut().spawn(AudioNode(fx_id)).id();
+        let mon = app.world_mut().spawn(mon_id).id();
+        let fx = app.world_mut().spawn(fx_id).id();
 
         app.world_mut()
             .entity_mut(fx)
@@ -632,8 +631,8 @@ mod io_graph_composition {
         app.update();
 
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().0.source(fx_id, 0),
-            Source::Local(mon_id, 0),
+            app.world().resource::<AudioGraphRes>().source(fx_id, 0),
+            GraphSource::Node(mon_id, 0),
             "the effect's input must read from the monitor"
         );
     }
@@ -652,9 +651,9 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.add(monitor)
+            graph.insert(monitor)
         };
-        let entity = app.world_mut().spawn(AudioNode(id)).id();
+        let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
         app.update();
 
@@ -692,7 +691,7 @@ mod io_graph_composition {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             // Added to the graph — but never declared to `MasterSources`, which is
             // the step a host forgets.
-            let _ = graph.0.add(monitor);
+            let _ = graph.insert(monitor);
         }
         app.update();
 

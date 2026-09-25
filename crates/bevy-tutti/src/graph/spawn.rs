@@ -1,7 +1,7 @@
 //! Getting a node into the graph, and swapping the unit behind one.
 //!
 //! Both operations queue a deferred world command, for the same reason:
-//! [`Net::add`](tutti_core::dsp::Net::add) returns the `NodeId` *inside* the
+//! [`AudioGraphRes::insert`] returns the node's handle *inside* the
 //! command, so binding it to an entity cannot be done from outside. That is what
 //! makes [`SpawnAudioNode`] irreducible rather than a convenience — it is the
 //! only place the entity↔node binding can be formed.
@@ -31,7 +31,6 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 /// use bevy_app::prelude::*;
 /// use bevy_ecs::prelude::*;
 /// use bevy_tutti::prelude::*;
-/// use tutti_core::dsp::{Net, Source};
 /// use tutti_core::{Hz, Q};
 /// use tutti_nodes::testing::Osc;
 /// use tutti_nodes::{SvfFilterNode, SvfType};
@@ -54,7 +53,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 /// }
 ///
 /// let mut app = App::new();
-/// app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+/// app.insert_resource(AudioGraphRes::headless(0, 2));
 /// app.insert_resource(AudioEngineState::Running);
 /// app.add_plugins(GraphReconcilePlugin);
 /// app.add_systems(Startup, build);
@@ -64,12 +63,12 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 ///     .world_mut()
 ///     .query_filtered::<&AudioNode, With<Filter>>()
 ///     .single(app.world())
-///     .unwrap()
-///     .0;
+///     .copied()
+///     .unwrap();
 /// let graph = app.world().resource::<AudioGraphRes>();
 /// // Port 0 of the filter is fed by the oscillator — the declaration reached
-/// // the engine. Without the `PortSources`, this would still read `Zero`.
-/// assert!(matches!(graph.0.source(filt, 0), Source::Local(_, 0)));
+/// // the engine. Without the `PortSources`, this would still read `Silence`.
+/// assert!(matches!(graph.source(filt, 0), GraphSource::Node(_, 0)));
 /// ```
 ///
 /// The entity is bound to the node via [`AudioNode`] only. A host that needs to
@@ -106,8 +105,8 @@ impl InsertAudioNode for EntityCommands<'_> {
         U: AudioUnit + 'static,
     {
         let entity = self.id();
-        // Same deferred shape as `spawn_audio_node`: `Net::add` returns the id
-        // inside the command, so the binding cannot be observed from outside.
+        // Same deferred shape as `spawn_audio_node`: `AudioGraphRes::insert`
+        // returns the handle inside the command, so the binding cannot be observed from outside.
         self.commands()
             .queue(move |world: &mut World| add_and_bind(world, entity, unit, "insert_audio_node"));
         self
@@ -133,7 +132,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit: U, caller: &str) {
     let controls = CapturedControls::capture(world, &unit);
     let id = match world.get_resource_mut::<AudioGraphRes>() {
-        Some(mut graph) => graph.0.add(unit),
+        Some(mut graph) => graph.insert(unit),
         None => {
             bevy_log::warn!(
                 "{caller}: AudioGraphRes missing; entity {:?} left without AudioNode",
@@ -156,15 +155,15 @@ fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit:
 ///
 /// Queues a deferred world command that:
 ///
-/// 1. Looks up the entity's [`AudioNode(NodeId)`](AudioNode).
+/// 1. Looks up the entity's [`AudioNode`].
 /// 2. Captures `new_unit`'s controls, as every insertion does (see
 ///    [`capture`](crate::graph::capture)), replacing the old unit's: a synth's
 ///    new MIDI port, a filter's new param cells.
-/// 3. Calls [`Net::crossfade`](tutti_core::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
+/// 3. Calls [`AudioGraphRes::replace`] with a 5 ms equal-amplitude fade.
 /// 4. Marks [`GraphDirty`] so the per-frame
 ///    [`commit_graph`](crate::graph::commit_graph) flushes.
 ///
-/// The same `NodeId` survives the crossfade — connections to/from this node
+/// The same [`AudioNode`] survives the crossfade — connections to/from this node
 /// stay valid, and any [`PortSources`](crate::graph::PortSources) naming this
 /// entity keeps resolving. Callers don't need to update any other components;
 /// the captured controls are replaced here.
@@ -198,17 +197,17 @@ pub fn crossfade_audio_node(
             );
             return;
         };
-        graph.0.crossfade(
-            node.0,
-            tutti_core::net_fade(tutti_core::CrossfadeCurve::EqualAmplitude),
-            0.005,
+        graph.replace(
+            node,
             new_unit,
+            tutti_core::Seconds(0.005),
+            tutti_core::CrossfadeCurve::EqualAmplitude,
         );
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }
         if let Ok(mut e) = world.get_entity_mut(entity) {
-            controls.replace(&mut e, node.0);
+            controls.replace(&mut e, node);
         }
     });
 }

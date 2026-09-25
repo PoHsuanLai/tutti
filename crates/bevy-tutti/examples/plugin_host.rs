@@ -45,7 +45,6 @@ use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginRequest, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::Net;
 use tutti_core::transport::{ClickState, Transport};
 use tutti_core::AudioNode;
 use tutti_plugin::catalog::{CatalogConfig, PluginId, Plugins, NO_SCAN_DIRS};
@@ -129,9 +128,7 @@ fn main() {
     // without one has nowhere to publish. A real host gets this from
     // `TuttiPlugin`, which hands the backend to the audio callback; here it is
     // dropped, so nothing renders and commits merely have somewhere to go.
-    let mut net = Net::new(0, 2);
-    let _backend = net.backend();
-    app.insert_resource(AudioGraphRes(net));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE.into(),
         channels: tutti_core::ChannelLayout::STEREO,
@@ -411,11 +408,10 @@ fn report(world: &mut World) {
         let graph = world.resource::<AudioGraphRes>();
         match node {
             Some(n) => {
-                let unit = graph.0.node(n.0);
                 println!(
                     "plugin node io: {} in, {} out",
-                    unit.inputs(),
-                    unit.outputs()
+                    graph.node_inputs(n),
+                    graph.node_outputs(n)
                 );
             }
             None => println!("plugin node io: node not resolvable in the graph"),
@@ -429,7 +425,6 @@ fn report(world: &mut World) {
     // one block later than `process` (frame 127 vs 63), which is why the
     // format-level suites in `tutti-vst3-host` see a shorter dead zone.
     {
-        use tutti_core::AudioUnit as _;
         let mut graph = world.resource_mut::<AudioGraphRes>();
         let mut frame = [0.0f32; 2];
         // Per channel, not one peak: the whole point of a bus/channel tag is
@@ -443,7 +438,7 @@ fn report(world: &mut World) {
         // silent by design, and a peak alone conflates that with a dead plugin.
         let mut first_signal: Option<usize> = None;
         for _ in 0..RENDER_FRAMES {
-            graph.0.tick(&[], &mut frame);
+            graph.render_frame(&mut frame);
             peak[0] = peak[0].max(frame[0].abs());
             peak[1] = peak[1].max(frame[1].abs());
             if first_signal.is_none() && (frame[0] != 0.0 || frame[1] != 0.0) {

@@ -29,7 +29,6 @@ mod graph_reconcile {
         GraphDirty, GraphReconcileSystems, SpawnAudioNode,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::{AudioNode, Hz};
     use tutti_nodes::testing::Osc;
 
@@ -44,7 +43,7 @@ mod graph_reconcile {
     /// to publish into; we never drive audio through it in these tests.
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
@@ -93,7 +92,7 @@ mod graph_reconcile {
 
         // Engine built: both the state and the resource it reports on are
         // present, so the gate passes.
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.update();
         assert_eq!(
@@ -115,7 +114,7 @@ mod graph_reconcile {
             let mut app = App::new();
             app.insert_resource(state.clone());
             // Present but irrelevant: the state decides, not the resource.
-            app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+            app.insert_resource(AudioGraphRes::headless(0, 2));
 
             let ready = app
                 .world_mut()
@@ -153,7 +152,7 @@ mod graph_reconcile {
         for (node, probe) in q.iter(app.world()) {
             count += 1;
             assert_eq!(probe.0, 0.5);
-            assert!(app.world().resource::<AudioGraphRes>().0.contains(node.0));
+            assert!(app.world().resource::<AudioGraphRes>().contains(*node));
         }
         assert_eq!(count, 1);
     }
@@ -167,13 +166,13 @@ mod graph_reconcile {
         };
         app.update();
 
-        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id));
+        let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        assert!(app.world().resource::<AudioGraphRes>().contains(node_id));
 
         app.world_mut().despawn(entity);
         app.update();
 
-        assert!(!app.world().resource::<AudioGraphRes>().0.contains(node_id));
+        assert!(!app.world().resource::<AudioGraphRes>().contains(node_id));
     }
 
     #[test]
@@ -197,8 +196,8 @@ mod graph_reconcile {
             c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
         };
         app.update();
-        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id));
+        let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        assert!(app.world().resource::<AudioGraphRes>().contains(node_id));
 
         // A `Last`-phase system (runs after GraphReconcileSystems::Commit)
         // despawns the entity exactly once.
@@ -224,7 +223,7 @@ mod graph_reconcile {
 
         assert!(app.world().get::<AudioNode>(entity).is_none());
         assert!(
-            !app.world().resource::<AudioGraphRes>().0.contains(node_id),
+            !app.world().resource::<AudioGraphRes>().contains(node_id),
             "late-despawned node removed from graph"
         );
         assert!(
@@ -250,11 +249,10 @@ mod graph_reconcile {
         };
         app.update();
 
-        let node_id_before = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
+        let node_id_before = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert!(app
             .world()
             .resource::<AudioGraphRes>()
-            .0
             .contains(node_id_before));
 
         // Replace with a different oscillator — same NodeId, new unit.
@@ -265,12 +263,11 @@ mod graph_reconcile {
         app.update();
 
         // Same NodeId stays — that's the contract of crossfade.
-        let node_id_after = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
+        let node_id_after = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert_eq!(node_id_before, node_id_after);
         assert!(app
             .world()
             .resource::<AudioGraphRes>()
-            .0
             .contains(node_id_after));
     }
 }
@@ -299,7 +296,6 @@ mod audio_param {
         TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_types::{Drive, Hz, UnitParam};
     // Only the modulation tests below use these.
@@ -314,24 +310,22 @@ mod audio_param {
     type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 
     fn app_with_node() -> (App, Entity) {
-        use tutti_core::AudioUnit as _;
-
         let mut app = App::new();
 
         let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, INITIAL_DRIVE);
         // The node's own drive atomic, shared with every clone of it — what the
         // DSP reads, reachable without asking the graph for its copy.
         let drive = DriveCell(unit.drive());
-        let mut net = Net::new(0, 1);
-        net.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        // Deliberately no `backend()`. With one, `Net::set` enqueues to the audio
+        let mut graph = AudioGraphRes::unattached(0, 1);
+        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        // Deliberately `unattached`. With an audio side, `set_param` enqueues to the audio
         // thread and the frontend vertex these tests read is never updated — every
         // assertion would compare against a stale value and the ones expecting "no
         // change" would pass for the wrong reason. Backend-less, `set` applies
         // straight to the vertex, which is the same code path the audio thread runs
         // on the other side of the queue.
 
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
@@ -350,8 +344,8 @@ mod audio_param {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);
@@ -617,8 +611,8 @@ mod audio_tap {
 /// The nodes the engine builds for itself, and the one edge between them.
 mod engine_nodes {
     use bevy_app::App;
+    use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
-    use tutti_core::dsp::Source;
     use tutti_core::transport::BEAT_PORTS;
     use tutti_core::AudioNode;
 
@@ -635,7 +629,7 @@ mod engine_nodes {
     ///
     /// Mutation: spawning the click with `PortSources::silent()` instead of
     /// `stereo_from(clock_entity)` in `build_into` leaves both ports on
-    /// `Source::Zero` and fails.
+    /// `GraphSource::Silence` and fails.
     #[test]
     #[ignore = "requires an audio device"]
     fn the_click_reads_the_beat_from_the_clock() {
@@ -644,14 +638,14 @@ mod engine_nodes {
         app.update();
 
         let nodes = *app.world().resource::<EngineNodes>();
-        let id_of = |entity| app.world().get::<AudioNode>(entity).unwrap().0;
+        let id_of = |entity| *app.world().get::<AudioNode>(entity).unwrap();
         let (clock, click) = (id_of(nodes.clock), id_of(nodes.click));
 
         let graph = app.world().resource::<AudioGraphRes>();
         for port in 0..BEAT_PORTS {
             assert_eq!(
-                graph.0.source(click, port),
-                Source::Local(clock, port),
+                graph.source(click, port),
+                GraphSource::Node(clock, port),
                 "click beat port {port} must come from the clock's port {port}"
             );
         }

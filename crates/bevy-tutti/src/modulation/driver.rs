@@ -334,7 +334,6 @@ mod tests {
         TuttiModulationPlugin,
     };
     use crate::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
     use tutti_nodes::DistortionNode;
@@ -345,10 +344,9 @@ mod tests {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        // `with_backend`, not `Net::new`: this app runs the full reconcile
-        // pipeline, and `commit_graph` asserts a backend exists. Backend-less
-        // worked only while nothing in the pipeline dirtied the graph.
-        app.insert_resource(AudioGraphRes(Net::with_backend(1)));
+        // `headless`, which has a backend to commit into: this app runs the
+        // full reconcile pipeline, and `commit_graph` commits.
+        app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -363,8 +361,8 @@ mod tests {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);

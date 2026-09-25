@@ -32,7 +32,6 @@ mod modulation {
         ModulationMatrix, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
@@ -51,7 +50,7 @@ mod modulation {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+        app.insert_resource(AudioGraphRes::unattached(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         // The systems are gated on a running engine; nothing here opens a device,
         // so the state stands in for one.
@@ -80,8 +79,8 @@ mod modulation {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);
@@ -160,7 +159,7 @@ mod modulation {
         // The registry is what makes resolution possible; without the node type
         // registered a route is inert rather than panicking.
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+        app.insert_resource(AudioGraphRes::unattached(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -489,7 +488,6 @@ mod mod_cascade {
         ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
     use tutti_nodes::DistortionNode;
@@ -501,7 +499,7 @@ mod mod_cascade {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+        app.insert_resource(AudioGraphRes::unattached(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -530,8 +528,8 @@ mod mod_cascade {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);
@@ -859,7 +857,6 @@ mod mod_curve_delivery {
         TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_mod::{Curve, LayerKey, LayeredCurve, ModTarget};
     use tutti_types::{Beat, BeatDuration, ParamAddr, UnitParam};
@@ -916,13 +913,13 @@ mod mod_curve_delivery {
 
     fn app() -> App {
         let mut app = App::new();
-        let mut net = Net::new(0, 1);
-        let out = net.push(Box::new(tutti_nodes::DistortionNode::new(
+        let mut graph = AudioGraphRes::unattached(0, 1);
+        let out = graph.insert(tutti_nodes::DistortionNode::new(
             tutti_nodes::ShapeKind::Tanh,
             1.0,
-        )));
-        net.pipe_output(out);
-        app.insert_resource(AudioGraphRes(net));
+        ));
+        graph.set_outputs_from(out);
+        app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -1043,7 +1040,7 @@ mod mod_curve_delivery {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(unit))
+            graph.insert(unit)
         };
 
         let mut target = app
@@ -1103,7 +1100,6 @@ mod mod_source {
         ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_mod::Modulator;
     use tutti_nodes::DistortionNode;
@@ -1159,7 +1155,7 @@ mod mod_source {
     fn app_with_node() -> (App, Entity) {
         let mut app = App::new();
 
-        app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+        app.insert_resource(AudioGraphRes::unattached(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -1196,8 +1192,8 @@ mod mod_source {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);

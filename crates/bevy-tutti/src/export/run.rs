@@ -16,7 +16,6 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::AudioUnit;
 use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file};
 
 use crate::export::request::{
@@ -180,12 +179,11 @@ fn prepare_net(
         // monitor's input — stay attached to what the audio thread is using.
         // For a master export that is mostly what you want (it is the live mix),
         // but it is not the safety `ExportSource::Node` gets.
-        ExportSource::Master => Some((graph.0.clone(), None)),
+        ExportSource::Master => Some((graph.export_master(), None)),
 
         ExportSource::Node(entity) => {
             // Resolved here rather than stored: see `ExportSource::Node`.
-            let node = nodes.get(&entity)?;
-            let pending = graph.0.clone_isolated(node.0)?;
+            let node = *nodes.get(&entity)?;
 
             // The timeline every transport-aware node in the clone is re-seated
             // on. The caller supplies it, because the caller also supplies the
@@ -207,16 +205,9 @@ fn prepare_net(
                 })),
             };
 
-            // Isolate (sever live inputs) and rebind (re-point at `ctx`) in the
-            // one order they may happen — see `PendingClone::isolate_for_offline`.
-            let mut net = pending.isolate_for_offline(&ctx);
-
-            // Reset every node's internal state. The clone inherited the live
-            // nodes' filter memory, reverb tails and delay lines as of clone
-            // time; rendering from those would make the result depend on *when*
-            // the render was started — nondeterministic, and it breaks any
-            // cache keyed on "what does this node sound like".
-            net.reset();
+            // Isolated, rebound onto `ctx` and reset — see
+            // `AudioGraphRes::export_node`.
+            let net = graph.export_node(node, &ctx)?;
 
             Some((net, Some(ctx)))
         }

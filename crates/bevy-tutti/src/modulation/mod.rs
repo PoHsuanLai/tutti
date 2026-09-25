@@ -11,18 +11,17 @@
 //! use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::Net;
 //! use tutti_core::AudioUnit as _;
 //! use tutti_core::transport::Transport;
 //! use tutti_core::SampleRate;
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
-//! let mut net = Net::new(0, 1);
-//! net.set_sample_rate(SampleRate(48_000.0));
+//! let mut graph = AudioGraphRes::unattached(0, 1);
+//! graph.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(graph);
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -37,7 +36,7 @@
 //! // controls captured first, then the entity bound to the node.
 //! let unit = DistortionNode::new(ShapeKind::Tanh, 5.0);
 //! let controls = CapturedControls::capture(app.world(), &unit);
-//! let node = app.world_mut().resource_mut::<AudioGraphRes>().0.push(Box::new(unit));
+//! let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(unit);
 //!
 //! let lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
@@ -84,12 +83,11 @@
 //! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::Net;
 //! use tutti_core::transport::Transport;
 //! use tutti_types::{Hz, ParamAddr, UnitParam};
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+//! app.insert_resource(AudioGraphRes::unattached(0, 1));
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -170,7 +168,6 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::{Net, Source};
 //! use tutti_core::transport::{TransportClock, BEAT_PORTS};
 //! use tutti_types::BeatDuration;
 //! use tutti_nodes::{LfoNode, LfoShape};
@@ -185,14 +182,14 @@
 //! }
 //!
 //! let transport = Transport::new(48_000.0);
-//! let mut net = Net::with_backend(2);
-//! let clock_id = net.add(TransportClock::new(transport.clock_links(), 48_000.0));
+//! let mut graph = AudioGraphRes::headless(0, 2);
+//! let clock_id = graph.insert(TransportClock::new(transport.clock_links(), 48_000.0));
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(graph);
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins(GraphReconcilePlugin);
-//! let clock = app.world_mut().spawn(AudioNode(clock_id)).id();
+//! let clock = app.world_mut().spawn(clock_id).id();
 //! app.insert_resource(EngineNodes { clock, click: clock });
 //! app.insert_resource(TransportRes(transport));
 //! app.add_systems(Startup, wire_lfo_to_clock);
@@ -202,12 +199,12 @@
 //!     .world_mut()
 //!     .query::<&AudioNode>()
 //!     .iter(app.world())
-//!     .map(|n| n.0)
+//!     .copied()
 //!     .find(|id| *id != clock_id)
 //!     .unwrap();
 //! let graph = app.world().resource::<AudioGraphRes>();
 //! for port in 0..BEAT_PORTS {
-//!     assert_eq!(graph.0.source(lfo, port), Source::Local(clock_id, port));
+//!     assert_eq!(graph.source(lfo, port), GraphSource::Node(clock_id, port));
 //! }
 //! ```
 //!

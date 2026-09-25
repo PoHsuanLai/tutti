@@ -53,8 +53,8 @@
 //!     // than a drift nobody reports.
 //!     let (_mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)
 //!         .expect("a capture device at the graph rate");
-//!     let id = graph.0.add(monitor);
-//!     let node = commands.spawn(AudioNode(id)).id();
+//!     let id = graph.insert(monitor);
+//!     let node = commands.spawn(id).id();
 //!     // Without this the ring fills and every later frame is discarded, with
 //!     // no error and no counter.
 //!     commands.insert_resource(MasterSources::from(node));

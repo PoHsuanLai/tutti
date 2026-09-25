@@ -306,9 +306,9 @@ pub fn plugin_load_promote(
                 // the concrete `PluginClient` is in hand, and the shadow the
                 // binding systems drive (and the MIDI target) come from it.
                 let controls = capture.capture(unit.as_ref());
-                // `push`, not `add`: the unit is already boxed, and `add` boxes
+                // `insert_boxed`: the unit is already boxed, and `insert` boxes
                 // what it is given.
-                let id = graph.0.push(unit);
+                let id = graph.insert_boxed(unit);
                 edited = true;
 
                 commands

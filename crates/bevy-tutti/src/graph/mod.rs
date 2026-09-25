@@ -52,7 +52,7 @@ pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
-pub use resources::{AudioConfig, AudioGraphRes};
+pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, InsertAudioNode, SpawnAudioNode};
 pub use tap::AudioTapRes;

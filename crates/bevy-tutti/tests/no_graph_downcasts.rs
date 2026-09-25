@@ -60,14 +60,15 @@ const PATTERNS: &[Pattern] = &[
 const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
         "tests/mod_audio_rate.rs",
-        "typed graph accessor (node_as / node_as_mut)",
+        "downcast_ref / downcast_mut",
         2,
         "a_depth_edit_reaches_a_live_shaper and a_range_edit_reaches_a_live_clamp \
-         tick the graph's own ParamShaperNode / ParamSumNode to prove the *rendered* \
-         node changed, not the declaration. Neither node has a control handle that \
-         would answer that (the shaper's LUT is baked at construction), so replacing \
-         the read would weaken the test. They move with the native backend, which \
-         can render the chain instead.",
+         tick the graph's own ParamShaperNode / ParamSumNode (through \
+         `AudioGraphRes::inspect`) to prove the *rendered* node changed, not the \
+         declaration. Neither node has a control handle that would answer that (the \
+         shaper's LUT is baked at construction), so replacing the read would weaken \
+         the test. They move with the native backend, which can render the chain \
+         instead.",
     ),
     (
         "src/midi/endpoint/target.rs",
@@ -89,17 +90,13 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "the PluginClient capture, on the owned unit before insertion.",
     ),
     (
-        "src/graph/topology.rs",
+        "src/graph/resources.rs",
         "raw graph node access (.0.node( / .0.node_mut()",
-        2,
-        "reads `get_id()` through `&dyn AudioUnit` to recognise PDC delay nodes; \
-         no downcast, and it goes with `PdcDelay` itself (PR 13).",
-    ),
-    (
-        "examples/plugin_host.rs",
-        "raw graph node access (.0.node( / .0.node_mut()",
-        1,
-        "prints `inputs()` / `outputs()` through `&dyn AudioUnit`; no downcast.",
+        3,
+        "`AudioGraphRes`'s own implementation, the one place the raw graph is: \
+         `inspect` hands a caller `&dyn AudioUnit` (a downcast of it is counted at \
+         the caller), and two reads of `get_id()` recognise PDC delay nodes, which \
+         go with `PdcDelay` itself (PR 13).",
     ),
 ];
 

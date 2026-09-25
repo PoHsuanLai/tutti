@@ -891,10 +891,15 @@ suite's `crossfades_are_bit_identical`:
   after that fade ends, and a newer replace supersedes a waiting one. Only
   two units ever run, and no swap is a step. A hard edit (remove, `insert`)
   or a re-prepare cuts a fade, keeping the newest unit.
-- **The outgoing unit retires on the control thread**: the commit that
-  started the fade is held by the executor until the fade ends and then
-  returned with the unit in it. A held commit keeps its credit, so a host
-  can see `Backpressure` while several fades run.
+- **The outgoing unit retires on the control thread, and a fade holds no
+  commit** (changed in review: holding the commit until the fade ended let
+  four long fades block every later commit and `reprepare`, and kept a
+  unit removed in the same commit alive for the whole fade). The commit
+  comes back when applied; each crossfade comes back on its own on a
+  fade-return ring (`FADE_CAPACITY` = 256 slots, one reserved per fade when
+  its commit is sent, so the audio thread's push cannot fail) when it
+  ends, is cut or is superseded, and `collect` reports its units' keys —
+  a re-prepare's cut fades included.
 - The reference interpreter implements all of this on its own, sharing only
   the gain law (`CrossfadeCurve::gains`); the verifier's rule 8,
   `verify_fades`, checks every fade a delta carries against both plans and

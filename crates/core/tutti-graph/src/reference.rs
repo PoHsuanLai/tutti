@@ -51,7 +51,11 @@
 //!   fade's incoming unit, on the block after that fade ends. A hard edit at
 //!   the key, or a re-prepare, drops the entry. Only the gain law
 //!   ([`CrossfadeCurve::gains`](crate::CrossfadeCurve::gains)) is shared
-//!   with the executor.
+//!   with the executor. Like every node here, the outgoing unit is handed
+//!   `SilenceMask::NONE` and `ConstantMask::NONE`, where the executor passes
+//!   it (and the incoming unit) the real input masks; a unit that renders
+//!   differently with a hint than without one diverges, which is the
+//!   point.
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 

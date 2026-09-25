@@ -1759,13 +1759,16 @@ fn the_fade_generator_covers_what_the_suite_claims() {
             }
             for (&k, f) in &fades {
                 let len = f.duration.get() as u64;
-                if running.contains_key(&k) {
-                    queued += 1;
-                    if waiting.insert(k, len).is_some() {
-                        superseded += 1;
+                match running.entry(k) {
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        queued += 1;
+                        if waiting.insert(k, len).is_some() {
+                            superseded += 1;
+                        }
                     }
-                } else {
-                    running.insert(k, frame + len);
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(frame + len);
+                    }
                 }
                 if next.kinds[&k] != desc.kinds[&k] {
                     other_kind += 1;
@@ -1787,7 +1790,10 @@ fn the_fade_generator_covers_what_the_suite_claims() {
          on event nodes {on_events}, in place {in_place}"
     );
     assert!(queued > 50, "only {queued} replaces over a running fade");
-    assert!(superseded > 10, "only {superseded} supersedes of a waiting fade");
+    assert!(
+        superseded > 10,
+        "only {superseded} supersedes of a waiting fade"
+    );
     assert!(cut > 10, "only {cut} fades cut by `mutate`");
     assert!(other_kind > 25, "only {other_kind} kind swaps");
     assert!(on_events > 50, "only {on_events} fades on event nodes");

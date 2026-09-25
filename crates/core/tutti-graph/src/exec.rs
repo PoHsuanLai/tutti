@@ -133,12 +133,6 @@
 //! unit must tolerate (a note-off for a note that is not sounding is a
 //! no-op in MIDI).
 
-// `Vec<Box<Commit>>` and `Vec<Box<Crossfade>>` are deliberate: a commit
-// travels the rings as a box and a crossfade lives in a unit as one, and
-// each moves into these lists on the audio thread. Unboxing it there would
-// free the box there.
-#![allow(clippy::vec_box)]
-
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -1353,11 +1347,7 @@ impl Executor {
 /// waiting behind it, if any — from the next block on.
 #[cold]
 #[inline(never)]
-fn end_fades(
-    plan: &Plan,
-    store: &mut [Option<Unit>],
-    fade_back: &mut HeapProd<Box<Crossfade>>,
-) {
+fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<Box<Crossfade>>) {
     for rec in &plan.nodes.recs {
         let Some(u) = store[rec.store as usize].as_mut() else {
             continue;

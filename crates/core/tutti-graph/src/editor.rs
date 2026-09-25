@@ -412,7 +412,12 @@ impl Editor {
     /// - Both units run on the node's inputs for `fade.duration` frames and
     ///   their outputs are blended along `fade.curve`; then the old unit
     ///   retires, on the control thread, through the next
-    ///   [`collect`](Self::collect).
+    ///   [`collect`](Self::collect), which reports its key.
+    /// - The fade holds no commit: the next [`commit`](Self::commit) and
+    ///   [`reprepare`](Self::reprepare) go through while it runs. Each
+    ///   running or waiting fade takes one of [`FADE_CAPACITY`] slots
+    ///   ([`fades_in_flight`](Self::fades_in_flight)) until `collect` drains
+    ///   it.
     /// - New events go to the incoming unit only.
     /// - A replace while a fade runs at `key` waits for it to finish, then
     ///   fades from its incoming unit; a newer one supersedes a waiting one.

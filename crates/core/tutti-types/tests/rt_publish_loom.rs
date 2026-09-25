@@ -163,12 +163,23 @@ impl Drop for Tracked {
     }
 }
 
-/// Exhaustive: no preemption bound. The four models together take a few
-/// minutes in release (about 200 s on the machine that wrote them, dominated
-/// by `nested_reads_overflow` and `two_readers_one_publish`); a bound of 3 finishes in under a second and
-/// was used while developing. Set `LOOM_MAX_PREEMPTIONS` to bound it locally.
+/// Exhaustive: no preemption bound. Every model but one runs this way; see
+/// `model_bounded` for the exception. Set `LOOM_MAX_PREEMPTIONS` to bound all
+/// of them locally (3 finishes the suite in about ten seconds).
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
+}
+
+/// A preemption bound, for the one model whose exhaustive space is out of
+/// reach: `xthread_overflow`, three threads with three reads and two
+/// publishes, did not finish in two hours. Every mutation in the record above
+/// that it catches, it catches at a bound of 3; 4 is one step past that and
+/// takes about a minute and a half.
+fn model_bounded(preemptions: usize, f: impl Fn() + Sync + Send + 'static) {
+    let mut b = loom::model::Builder::new();
+    // An explicit `LOOM_MAX_PREEMPTIONS` wins, as it does for `model`.
+    b.preemption_bound = b.preemption_bound.or(Some(preemptions));
+    b.check(f);
 }
 
 /// The core race: one reader against two back-to-back publishes. The second
@@ -293,7 +304,7 @@ fn two_publishers_and_a_reader() {
 /// an epoch is sealed and (with two epochs) reopened while readers are live.
 #[test]
 fn xthread_overflow() {
-    model(|| {
+    model_bounded(4, || {
         let tracker = Tracker::new(3);
         let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
 

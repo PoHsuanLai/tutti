@@ -445,8 +445,13 @@ place that loses precision to be written out explicitly:
    marked with `GraphSpec::require_resolution` into a node that cannot honour
    it is `CompileError::ResolutionTooCoarse`; unmarked edges never are, so
    the `ParamRamp` edge is the one to mark. The contract suite (Phase 3,
-   done) checks each node against what it declared: `Frames(n)` is held to
-   the first frame of its chunk, `Block` to its block.
+   done) checks each node against what it declared. **Decision (PR 5
+   review): a `Frames(n)` node honours an event when its response lands
+   within `n - 1` frames of the exact frame, in either direction**, with no
+   grid origin assumed (a node chunking on its own cursor, as rustysynth
+   does, passes whatever its phase against the blocks); `Block` means
+   within the block the event arrives in. A node finer than it declares
+   passes.
 
 **Re-prepare (Phase 2) — done.** `Editor::reprepare(Prepare)` is a full
 recompile with every unit re-prepared on the control thread, in two commits
@@ -474,7 +479,11 @@ constructor, an excitation (an event on an event port, or an audio impulse
 on an audio port), a detector (the first sample above a threshold, or an
 exact expected response) and the output to watch; `contract_tests!` writes
 one `#[test]` per path, so each path fails on its own. Every excitation is
-swept over offsets 0, 1, 63, 64, 100 and 127 of its block.
+swept over offsets 0, 1, 63, 64, 100 and 127 of its block, and behind PDC
+also so that the *node* sees each of them. An exact row is checked over the
+whole render (silence but for each expected response), so a duplicated or
+dropped delivery fails like a mistimed one; the recompile paths also check
+that the running plan holds the edit.
 
 - **Paths**, each mutation-tested (the mutation is recorded on its `Path`
   variant): direct; behind PDC (a latent sibling merges upstream, so the
@@ -486,7 +495,8 @@ swept over offsets 0, 1, 63, 64, 100 and 127 of its block.
   `At::Frame` command; an `At::Beat` command after a timed start inside a
   block (on the start's frame, a dozen frames on, a quarter beat on).
 - **Rows now**: native event→impulse nodes (`Pulse` at latency 0 and 37,
-  and at `Frames(8)`) and a native lookahead (`tutti-graph`); through
+  at `Frames(8)` on its own chunk grid, and at `Block`) and a native
+  lookahead (`tutti-graph`); through
   `Legacy` on the audio-impulse path, `LimiterNode` (mono, and the right
   channel of a linked stereo pair; 240 frames of lookahead),
   `ConvolverNode` at mix 0, ½ and 1 (the D3 dry alignment: at mix 0 an
@@ -500,9 +510,12 @@ swept over offsets 0, 1, 63, 64, 100 and 127 of its block.
   mid-block and notes at `At::Beat` 0, 0.001 and ½ into a direct and a
   PDC'd `Pulse` land on their frames and leave the engine together, under a
   ragged device schedule.
-- **The harness can fail**: rows that break the contract on purpose (a node
-  a frame off its declaration, one that ignores offsets, a mispinned
-  latency, an audio row asked for an event path) are refused.
+- **The harness can fail**: rows that break the contract on purpose are
+  refused: a node a frame off its declaration (direct, behind PDC, random
+  blocks), one that ignores offsets, one declaring `Sample` but quantizing
+  to 8, one declaring `Frames(8)` but 9 frames late, a mispinned latency,
+  an audio row asked for an event path. A fan-in tie at equal offsets goes
+  by source order.
 - **Deferred to Phase 4.** The polysynth, the SoundFont player and plugin
   instruments take MIDI through a mailbox, out of band: their events are
   neither PDC-compensated nor stamped against the graph's blocks (`Legacy`

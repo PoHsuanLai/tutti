@@ -38,14 +38,21 @@
 //! cannot quietly turn a PDC path into a direct one), and `latency` is the
 //! node's **declared** [`Shape::latency`]. A node whose DSP delays by more or
 //! less than it declares fails every path — which is the D1–D3 class in doc
-//! 013. An event excitation also honours the node's declared
-//! [`Shape::event_resolution`]: `Sample` is the exact frame, `Frames(n)` the
-//! first frame of the `n`-frame chunk (counted from the block's start) the
-//! event falls in, `Block` anywhere in the block it arrives in.
+//! 013. An event excitation is held to the node's declared
+//! [`Shape::event_resolution`] (doc 013 §6): `Sample` is the exact frame,
+//! `Frames(n)` any frame within `n - 1` of it **in either direction** (no
+//! grid origin is assumed, so a node chunking on its own cursor honours it),
+//! `Block` any frame within the block the event arrives in. A node finer
+//! than it declares passes. An audio impulse is always exact.
+//!
+//! For an [`Detect::Exact`] row the whole render is checked: exact silence
+//! except each expected response, so a duplicated or a dropped delivery
+//! fails as surely as a mistimed one.
 //!
 //! Every excitation is swept over [`OFFSETS`], so the offset inside its block
 //! is 0, 1, either side of a 64-frame `Legacy` chunk boundary, the middle
-//! and the last frame.
+//! and the last frame — and, behind PDC, both where the excitation starts
+//! and where the node sees it.
 //!
 //! # What is not here
 //!
@@ -77,9 +84,13 @@ pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);
 /// node under test chunks by except 64.
 pub const MAX_BLOCK: usize = 128;
 
-/// The latent sibling's latency on the PDC paths: past [`MAX_BLOCK`], so a
-/// block boundary always falls while the excitation is in flight (which is
-/// where the recompile paths commit), and odd, so it moves every offset.
+/// The latent sibling's declared latency on the PDC paths, and so the
+/// node's arrival there. Longer than [`MAX_BLOCK`], so at least one block
+/// boundary falls while an excitation is in the PDC delay (the recompile
+/// paths commit on it). Not a multiple of 64 or of any block size a
+/// schedule uses, so the delay moves an excitation's offset: the harness
+/// therefore puts excitations both where the *source* sees each of
+/// [`OFFSETS`] and where the *node* does.
 pub const SIBLING_LATENCY: usize = 141;
 
 /// Where, inside its block, each excitation is put (under whole
@@ -148,7 +159,7 @@ pub enum Path {
     /// input. Whole [`MAX_BLOCK`] blocks.
     ///
     /// Mutation (run): in `SubBlocks::next`, hand the whole block over as
-    /// one chunk carrying every event → the native event rows apply their
+    /// one chunk carrying every event → the native `Sample` rows apply their
     /// event at offset 0 → every path fails but `Blocks1` (where every
     /// offset is 0). In `Legacy::probe`, declare one frame more than `route`
     /// reports → every `Legacy` row fails every path.
@@ -156,6 +167,16 @@ pub enum Path {
     /// Behind PDC: a latent sibling ([`Latent`], [`SIBLING_LATENCY`])
     /// merges with the excitation's path upstream of the node, so the node's
     /// arrival is [`SIBLING_LATENCY`] and the excitation is delayed to match.
+    /// Excitations are put both where the source and where the node sees
+    /// each of [`OFFSETS`].
+    ///
+    /// Mutation (run): in `EventFifo::pop_due`, hold back an event due on a
+    /// block's last frame to the next block (one frame late, on that frame
+    /// only) → the `Sample` event rows fail this path, both recompile paths,
+    /// `Blocks1`, `Blocks64` and `BlocksMax` (the coarser rows only
+    /// `Blocks1`, where every frame is a last frame). Under whole blocks
+    /// only the node-side offsets reach a block's last frame behind the
+    /// 141-frame delay, so without them this path would pass.
     ///
     /// Mutation (run): in `compile`, treat every audio and event gap as zero
     /// (no `Delay`/`EventDelay` op) → the excitation arrives
@@ -168,19 +189,33 @@ pub enum Path {
     /// event a few frames **later**: usually in the same block, so a merge
     /// that is not by offset hands the node the two out of order.
     ///
+    /// Both responses are expected, the second at `f + gap`, and nothing
+    /// else.
+    ///
     /// Mutation (run): in `merge_into`, take the first source with an event
-    /// left rather than the earliest offset → only this path fails.
+    /// left rather than the earliest offset → only this path fails (not for
+    /// the `Block` row, whose gap is a whole block). Drop the first
+    /// source's events (the later one) → only this path fails, on the
+    /// missing second response. Ties are `tests/contract.rs`'s
+    /// `a_fan_in_tie_goes_by_source_order`.
     EventFanIn,
     /// Behind PDC, with an unrelated node inserted and committed while the
-    /// excitation is in flight (between its frame and its response).
+    /// excitation is in flight (between its frame and its response). After
+    /// the next block the running plan must hold the new node, so the path
+    /// cannot pass having recompiled nothing.
     ///
     /// Mutation (run): in `Executor::rebuild`, carry no delay ring across a
-    /// commit → both recompile paths fail, and nothing else.
+    /// commit → both recompile paths fail, and nothing else. Carry the
+    /// event FIFOs with every queued event doubled (a re-delivery) → the
+    /// event rows fail both recompile paths (`Pulse` *adds*, so a second
+    /// delivery on one frame is a `2.0`). Skip the harness's commit → both
+    /// fail on the plan check.
     RecompileUnrelated,
     /// Behind PDC, with the node that feeds this one (the summing node on
     /// the audio path, the exciting source on the event path) re-inserted
     /// (a new generation) while the excitation is in flight in the delay
-    /// into it.
+    /// into it. After the next block the running plan must carry the
+    /// feeder's new generation.
     ///
     /// Mutation (run): in `Executor::rebuild`, drop the carried ring of any
     /// delay whose sink or source changed generation → only this path fails.
@@ -303,6 +338,12 @@ impl Row {
         excite: Excite,
         detect: Detect,
     ) -> Self {
+        if let Detect::Exact(p) = &detect {
+            assert!(
+                p.first().is_some_and(|&x| x != 0.0),
+                "{name}: an exact response starts with a non-zero sample (it is found by it)"
+            );
+        }
         Self {
             name: name.to_string(),
             make: Box::new(make),
@@ -385,16 +426,39 @@ impl Row {
         } else {
             &[0]
         };
+        // Room before the first excitation for the longest beat lead, in
+        // whole blocks, so every timed start is past the warm-up too.
+        let max = MAX_BLOCK as u64;
+        let lead_room = leads.iter().copied().max().unwrap_or(0).div_ceil(max) * max;
+        let base = WARMUP + lead_room;
         for &topo in topos {
+            let arrival = match topo {
+                Topo::Direct => 0,
+                Topo::Pdc => SIBLING_LATENCY as u64,
+            };
             for &k in &OFFSETS {
-                for &lead in leads {
-                    self.run(path, topo, feed, edit, schedule, k as u64, lead);
+                let k = k as u64;
+                // Each offset where the excitation *starts* (its source's
+                // block, under whole blocks) and, behind PDC, also where the
+                // *node* sees it: `SIBLING_LATENCY` moves every offset, so
+                // without the second the node would never see a block's
+                // first or last frame, or the 64-frame `Legacy` seam.
+                let mut frames = vec![base + k];
+                let at_node = base + (k + max - arrival % max) % max;
+                if at_node != base + k {
+                    frames.push(at_node);
+                }
+                for f in frames {
+                    for &lead in leads {
+                        self.run(path, topo, feed, edit, schedule, f, lead);
+                    }
                 }
             }
         }
     }
 
-    /// One graph, one excitation, one assertion.
+    /// One graph, one excitation (two on the fan-in path), one assertion
+    /// over the whole render.
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
@@ -403,23 +467,33 @@ impl Row {
         feed: Feed,
         edit: Edit,
         schedule: Schedule,
-        k: u64,
+        f: u64,
         lead: u64,
     ) {
-        // The excitation frame. On the beat path it is the command's beat,
-        // `lead` frames after a timed start put `k` into its block.
-        let (start, f) = match feed {
-            Feed::AtBeat => (Some(WARMUP + k), WARMUP + k + lead),
-            _ => (None, WARMUP + k),
+        let node_shape = (self.make)().shape();
+        let gap = self.fan_in_gap(node_shape.event_resolution);
+        // On the fan-in path both events share one block when the gap
+        // allows: the exciting one moves back rather than the later one
+        // spilling into the next block.
+        let max = MAX_BLOCK as u64;
+        let f = if feed == Feed::FanIn && f % max + gap >= max && gap < max {
+            f - gap
+        } else {
+            f
         };
-        let mut rig = self.build(topo, feed, f);
+        // On the beat path `f` is the command's beat, `lead` frames after a
+        // timed start.
+        let start = (feed == Feed::AtBeat).then(|| f - lead);
+        let mut rig = self.build(topo, feed, f, gap);
         let want_arrival = match topo {
             Topo::Direct => 0,
             Topo::Pdc => SIBLING_LATENCY,
         };
         let ctx = format!(
-            "{}: {path:?} ({topo:?}), excitation at frame {f} (offset {k} in whole blocks{})",
+            "{}: {path:?} ({topo:?}), excitation at frame {f} (the node sees offset {} in \
+             whole blocks{})",
             self.name,
+            (f + want_arrival as u64) % max,
             start.map_or(String::new(), |s| format!(", timed start at {s}"))
         );
         assert_eq!(
@@ -457,35 +531,38 @@ impl Row {
             Feed::Source | Feed::FanIn => {}
         }
 
-        let delivered = f + rig.arrival.get() as u64;
+        // Every frame the node is handed an excitation on.
+        let arrival = rig.arrival.get() as u64;
+        let mut delivered = vec![f + arrival];
+        if feed == Feed::FanIn {
+            delivered.push(f + gap + arrival);
+        }
         let pattern_len = match &self.detect {
             Detect::Exact(p) => p.len() as u64,
             Detect::Threshold(_) => 1,
         };
-        let total = delivered
-            + rig.latency.get() as u64
-            + pattern_len
-            + self.fan_in_gap(rig.resolution)
-            + 2 * MAX_BLOCK as u64;
+        let lat = rig.latency.get() as u64;
+        let last = *delivered.last().expect("one at least");
+        let total = last + lat + pattern_len + 3 * max;
         let blocks = schedule.blocks(total);
 
-        // Where the response may start: the delivery frame, moved to what
-        // the node's resolution promises in the block it lands in.
-        let window = {
-            let (bs, be) = block_of(&blocks, delivered);
-            let lat = rig.latency.get() as u64;
-            match (self.excite, rig.resolution) {
-                (Excite::Impulse { .. }, _) | (_, Resolution::Sample) => {
-                    delivered + lat..delivered + lat + 1
-                }
-                (_, Resolution::Frames(n)) => {
-                    let n = u64::from(n.max(1));
-                    let at = bs + (delivered - bs) / n * n;
-                    at + lat..at + lat + 1
-                }
-                (_, Resolution::Block) => bs + lat..be + lat,
-            }
-        };
+        // Where each response may start: `delivered + latency`, within what
+        // the node's resolution promises (doc 013 §6: `Frames(n)` within
+        // `n - 1` frames either way, `Block` within the block it lands in).
+        let expect: Vec<(u64, u64)> = delivered
+            .iter()
+            .map(|&d| {
+                let tolerance = match (self.excite, rig.resolution) {
+                    (Excite::Impulse { .. }, _) | (_, Resolution::Sample) => 0,
+                    (_, Resolution::Frames(n)) => u64::from(n.max(1)) - 1,
+                    (_, Resolution::Block) => {
+                        let (bs, be) = block_of(&blocks, d);
+                        be - bs - 1
+                    }
+                };
+                (d + lat, tolerance)
+            })
+            .collect();
 
         let impulse_port = match self.excite {
             Excite::Impulse { amplitude, .. } => Some(amplitude),
@@ -493,15 +570,18 @@ impl Row {
         };
         let mut out = Vec::with_capacity(total as usize);
         let mut done = 0u64;
+        // `Some(generation before)` from the edit until the block after it
+        // has proved the recompile installed.
+        let mut pending_edit: Option<u32> = None;
         let mut edited = false;
         for &n in &blocks {
             // The edit lands on the first block after the excitation's.
             if edit != Edit::None && !edited && done > f {
                 assert!(
-                    done < window.start,
+                    done < expect[0].0,
                     "{ctx}: no block boundary while the excitation is in flight"
                 );
-                rig.edit(edit, self);
+                pending_edit = Some(rig.edit(edit, self));
                 edited = true;
             }
             let input: Vec<f32> = (done..done + n as u64)
@@ -522,6 +602,9 @@ impl Row {
                 rig.exec
                     .process_with_changes(n, &transport, &changes, &ins, &mut refs);
             }
+            if let Some(before) = pending_edit.take() {
+                rig.assert_installed(edit, before, &ctx);
+            }
             rig.ed.collect();
             out.extend_from_slice(&block[0]);
             done += n as u64;
@@ -538,39 +621,71 @@ impl Row {
                 "{ctx}: the command never landed"
             );
         }
-        self.assert_response(&out, window, &ctx);
+        self.assert_responses(&out, &expect, &ctx);
     }
 
-    fn assert_response(&self, out: &[f32], window: std::ops::Range<u64>, ctx: &str) {
-        let (first, pattern) = match &self.detect {
-            Detect::Threshold(th) => (out.iter().position(|x| x.abs() > *th), None),
-            Detect::Exact(p) => (out.iter().position(|&x| x != 0.0), Some(p)),
-        };
-        let Some(first) = first else {
-            panic!(
-                "{ctx}: no response at all; expected one at frame {}",
-                window.start
-            );
-        };
-        let first = first as u64;
-        assert!(
-            window.contains(&first),
-            "{ctx}: the response starts at frame {first}; the contract puts it at {}{}",
-            window.start,
-            if window.end - window.start > 1 {
-                format!("..{}", window.end)
+    /// Check `out` against the expected responses, each `(exact frame,
+    /// tolerance)` in time order.
+    ///
+    /// A [`Detect::Threshold`] row is held on its first response's start:
+    /// what follows (a limiter's release, an HRIR) is not known sample for
+    /// sample. A [`Detect::Exact`] row is held on the **whole render**: exact
+    /// silence except each expected response, so a duplicate, a missing
+    /// second response or a stray sample anywhere fails.
+    fn assert_responses(&self, out: &[f32], expect: &[(u64, u64)], ctx: &str) {
+        let place = |e: u64, tol: u64| {
+            if tol == 0 {
+                format!("{e}")
             } else {
-                String::new()
+                format!("{e} (within {tol})")
             }
-        );
-        if let Some(p) = pattern {
-            let at = first as usize;
-            let got = &out[at..(at + p.len()).min(out.len())];
-            assert_eq!(
-                got,
-                &p[..],
-                "{ctx}: the response at frame {first} is not the expected one"
+        };
+        let check_start = |got: u64, (e, tol): (u64, u64)| {
+            assert!(
+                got.abs_diff(e) <= tol,
+                "{ctx}: the response starts at frame {got}; the contract puts it at {}",
+                place(e, tol)
             );
+        };
+        match &self.detect {
+            Detect::Threshold(th) => {
+                let first = out.iter().position(|x| x.abs() > *th);
+                let Some(first) = first else {
+                    panic!(
+                        "{ctx}: no response at all; expected one at frame {}",
+                        place(expect[0].0, expect[0].1)
+                    );
+                };
+                check_start(first as u64, expect[0]);
+            }
+            Detect::Exact(p) => {
+                let mut cursor = 0usize;
+                for &(e, tol) in expect {
+                    let Some(at) = out[cursor..].iter().position(|&x| x != 0.0) else {
+                        panic!(
+                            "{ctx}: a response is missing; expected one at frame {}",
+                            place(e, tol)
+                        );
+                    };
+                    let at = cursor + at;
+                    check_start(at as u64, (e, tol));
+                    let got = &out[at..(at + p.len()).min(out.len())];
+                    assert_eq!(
+                        got,
+                        &p[..],
+                        "{ctx}: the response at frame {at} is not the expected one"
+                    );
+                    cursor = at + p.len();
+                }
+                if let Some(extra) = out[cursor..].iter().position(|&x| x != 0.0) {
+                    panic!(
+                        "{ctx}: an extra response at frame {} (value {}); the contract \
+                         expects silence after the last one",
+                        cursor + extra,
+                        out[cursor + extra]
+                    );
+                }
+            }
         }
     }
 
@@ -587,24 +702,25 @@ impl Row {
         }
     }
 
-    /// How much later the fan-in's first source sends its event: past the
-    /// expected response and into the next resolution chunk, so it can
-    /// neither hide nor pre-empt the exciting one when the merge is right —
-    /// and close enough to share its block at most offsets, so a merge that
-    /// is not by offset hands the node the two out of order.
+    /// How much later the fan-in's first source sends its event: far
+    /// enough that the two responses cannot overlap or swap even with each
+    /// at the far edge of its resolution's tolerance, and near enough to
+    /// share a block (see `run`), so a merge that is not by offset hands the
+    /// node the two out of order.
     fn fan_in_gap(&self, resolution: Resolution) -> u64 {
         let p = match &self.detect {
             Detect::Exact(p) => p.len() as u64,
             Detect::Threshold(_) => 1,
         };
-        let chunk = match resolution {
-            Resolution::Frames(n) => u64::from(n.max(1)),
-            Resolution::Sample | Resolution::Block => 1,
+        let tolerance = match resolution {
+            Resolution::Sample => 0,
+            Resolution::Frames(n) => u64::from(n.max(1)) - 1,
+            Resolution::Block => MAX_BLOCK as u64 - 1,
         };
-        p + chunk
+        p + 2 * tolerance + 1
     }
 
-    fn build(&self, topo: Topo, feed: Feed, f: u64) -> Rig {
+    fn build(&self, topo: Topo, feed: Feed, f: u64, gap: u64) -> Rig {
         let node = (self.make)();
         let shape = node.shape();
         let audio = matches!(self.excite, Excite::Impulse { .. });
@@ -657,10 +773,7 @@ impl Row {
                     feeder = Some((e, FeederKind::Emitter(Frame(f), kind)));
                 }
                 Feed::FanIn => {
-                    let late = g.add(Emitter::new(
-                        Frame(f + self.fan_in_gap(shape.event_resolution)),
-                        kind,
-                    ));
+                    let late = g.add(Emitter::new(Frame(f + gap), kind));
                     let e = g.add(Emitter::new(Frame(f), kind));
                     g.event_connect(late, 0, n, p).event_connect(e, 0, n, p);
                 }
@@ -710,7 +823,14 @@ struct Rig {
 }
 
 impl Rig {
-    fn edit(&mut self, edit: Edit, row: &Row) {
+    /// Make the edit and commit it. Returns the generation the node it
+    /// proves itself on had before: the feeder's, or 0 for the unrelated
+    /// insert (which had none).
+    fn edit(&mut self, edit: Edit, row: &Row) -> u32 {
+        let before = match (edit, self.feeder) {
+            (Edit::Regenerate, Some((key, _))) => self.ed.spec().generation(key),
+            _ => 0,
+        };
         match edit {
             Edit::None => {}
             Edit::Unrelated => {
@@ -741,6 +861,28 @@ impl Rig {
         self.ed
             .commit()
             .unwrap_or_else(|e| panic!("{}: the mid-stream commit failed: {e}", row.name));
+        before
+    }
+
+    /// After the first block past an edit: the executor runs the edited
+    /// plan, so a recompile path cannot pass having recompiled nothing.
+    fn assert_installed(&self, edit: Edit, before: u32, ctx: &str) {
+        let plan = self.exec.plan().expect("a plan");
+        match edit {
+            Edit::None => {}
+            Edit::Unrelated => assert!(
+                plan.unit(UNRELATED).is_some(),
+                "{ctx}: the unrelated insert is not in the running plan"
+            ),
+            Edit::Regenerate => {
+                let (key, _) = self.feeder.expect("checked at the edit");
+                let now = plan.unit(key).expect("the feeder is in the plan").gen;
+                assert!(
+                    now > before,
+                    "{ctx}: the feeder is still generation {now} in the running plan"
+                );
+            }
+        }
     }
 }
 
@@ -815,16 +957,22 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
 
 // ---- the harness's own nodes -------------------------------------------------
 
-/// An event-driven impulse: every event on its one event input produces one
-/// sample of `1.0` on its one audio output, exactly [`latency`](Self::new)
-/// frames after the frame the event takes effect on.
+/// An event-driven impulse: every event on its one event input adds one
+/// sample of `1.0` to its one audio output, [`latency`](Self::new) frames
+/// after the frame the event takes effect on. *Adds*: two events on one
+/// frame are one sample of `2.0`, so a duplicated delivery is visible.
 ///
-/// Written against [`Io::sub_blocks`](crate::Io::sub_blocks), so it is
-/// sample-accurate by construction: this is the native row, and the source
-/// the engine-level rows play. With
-/// [`with_resolution`](Self::with_resolution) it honours offsets only as
-/// finely as it declares (an event takes effect on the first frame of its
-/// `n`-frame chunk).
+/// Written against [`Io::sub_blocks`](crate::Io::sub_blocks), so at
+/// [`Resolution::Sample`] (the default) it is sample-accurate by
+/// construction: this is the native row, and the source the engine-level
+/// rows play. [`with_resolution`](Self::with_resolution) makes it as coarse
+/// as it declares:
+///
+/// - `Frames(n)`: an event takes effect at the start of the node's **own**
+///   next `n`-frame chunk (a grid of its own, offset from the graph's
+///   blocks, as an engine that renders in fixed chunks would be) — up to
+///   `n - 1` frames late;
+/// - `Block`: at its block's first frame.
 #[derive(Clone, Debug)]
 pub struct Pulse {
     latency: Latency,
@@ -838,6 +986,10 @@ pub struct Pulse {
 /// How many impulses a [`Pulse`] holds in flight.
 const PULSE_PENDING: usize = 16;
 
+/// Where a `Frames(n)` [`Pulse`]'s own chunk grid starts: frame 3, so it
+/// lines up with no block boundary a schedule of the usual sizes makes.
+const PULSE_GRID_PHASE: u64 = 3;
+
 impl Pulse {
     /// A pulse delayed by `latency`, declared as its [`Shape::latency`].
     pub fn new(latency: Latency) -> Self {
@@ -849,8 +1001,8 @@ impl Pulse {
         }
     }
 
-    /// This pulse, taking each event on the first frame of the
-    /// `resolution` chunk it falls in, and declaring so.
+    /// This pulse, honouring offsets only as finely as `resolution` (see
+    /// the type docs), and declaring so.
     #[must_use]
     pub fn with_resolution(mut self, resolution: Resolution) -> Self {
         self.resolution = resolution;
@@ -872,17 +1024,18 @@ impl Node for Pulse {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let block = cx.env.frame.get();
         for (range, events) in io.sub_blocks(0) {
+            let t = block + range.start as u64;
             let at = match self.resolution {
-                Resolution::Sample | Resolution::Block => range.start,
+                Resolution::Sample => t,
                 Resolution::Frames(n) => {
-                    let n = n.max(1) as usize;
-                    range.start / n * n
+                    let n = u64::from(n.max(1));
+                    t + (n - (t + PULSE_GRID_PHASE) % n) % n
                 }
+                Resolution::Block => block,
             };
             for _ in events {
                 if self.len < PULSE_PENDING {
-                    self.pending[self.len] =
-                        block + at as u64 + self.latency.samples().get() as u64;
+                    self.pending[self.len] = at + self.latency.samples().get() as u64;
                     self.len += 1;
                 }
             }
@@ -897,7 +1050,7 @@ impl Node for Pulse {
                 // An impulse already past (never, for a node called every
                 // block) is dropped rather than written late.
                 if t >= block {
-                    out[(t - block) as usize] = 1.0;
+                    out[(t - block) as usize] += 1.0;
                 }
                 self.len -= 1;
                 self.pending[i] = self.pending[self.len];

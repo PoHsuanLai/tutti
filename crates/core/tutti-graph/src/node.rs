@@ -85,13 +85,15 @@ pub struct Shape {
 pub enum Resolution {
     /// Every event takes effect on its exact frame.
     Sample,
-    /// Events take effect on the first frame of the `n`-frame chunk they fall
-    /// in, counted from the block's start. `n` is at least 1; `Frames(1)`
+    /// Every event takes effect within `n - 1` frames of its exact frame,
+    /// in either direction (doc 013 §6). No chunk grid is assumed, so a node
+    /// that renders in `n`-frame chunks on its own cursor, whatever its
+    /// phase against the blocks, honours it. `n` is at least 1; `Frames(1)`
     /// promises what `Sample` does.
     Frames(u32),
-    /// Events take effect somewhere in the block they arrive in — whatever
-    /// the offset. Also the resolution of a node with no event inputs, whose
-    /// promise is vacuous.
+    /// Events take effect somewhere in the block they arrive in, whatever
+    /// the offset: within one block of the exact frame. Also the resolution
+    /// of a node with no event inputs, whose promise is vacuous.
     Block,
 }
 

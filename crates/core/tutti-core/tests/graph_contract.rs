@@ -69,24 +69,26 @@ fn onsets(engine: &Engine, blocks: &[usize]) -> [Vec<u64>; 2] {
     hits
 }
 
-/// A timed start mid-block, and notes at beat 0 (the start's own frame, in
-/// the start's block), beat 1/1000 (24 frames on, still in it) and beat 1/2:
-/// both paths sound every note at `start + beat + D`, on one frame, under a
-/// ragged device schedule.
+/// A timed start inside a 256-frame device block, and notes at beat 0 (the
+/// start's own frame), beat 1/1000 (24 frames on, in the start's block
+/// unless the start is near its end) and beat 1/2: both paths sound every
+/// note at `start + beat + D`, on one frame. The start is at offset 0, 1,
+/// 132 and 255 of the fourth 256-frame block (its first, second, a middle
+/// and its last frame); ragged device blocks follow.
 ///
 /// Mutation (run): in the engine, hand the executor
 /// `TransportChanges::NONE` → the start is heard at the next block's first
-/// frame, the two in-block notes land late (at that frame) → fails. In
-/// `CommandRx::gather`, resolve every command at arrival zero → the PDC
-/// path's notes leave `D` early, ahead of the direct path's → fails. Land
-/// every due command at offset 0 of its block → fails. In `compile`, give
-/// every global output channel zero alignment → the direct path leaves `D`
-/// early at the output → fails.
+/// frame, and every note at beat 0 lands there → fails for the starts at
+/// offsets 1, 132 and 255, and passes at offset 0 (where the start *is* the
+/// block's first frame, so no change inside the block is needed); checked
+/// one start at a time. In `CommandRx::gather`, resolve every command at
+/// arrival zero → the PDC path's notes leave `D` early, ahead of the direct
+/// path's → fails. Land every due command at offset 0 of its block → fails.
+/// In `compile`, give every global output channel zero alignment → the
+/// direct path leaves `D` early at the output → fails.
 #[test]
 fn beat_notes_after_a_timed_start_leave_both_paths_on_one_frame() {
-    // A start at several offsets into a 256-frame block, including its first
-    // and last frames; ragged blocks after the first few.
-    for start in [1_024u64, 1_025, 1_100, 1_279] {
+    for start in [768u64, 769, 900, 1_023] {
         let transport = Transport::new(SR);
         let (engine, mut ed, direct, pdc) = engine(&transport, 256);
         let beats = [0.0, 0.001, 0.5];

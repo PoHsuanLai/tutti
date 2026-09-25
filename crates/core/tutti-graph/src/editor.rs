@@ -282,8 +282,10 @@ pub struct Editor {
     /// unregisters it, pruned on the next `collect`.
     outboxes: Vec<Weak<Mutex<Outbox>>>,
     /// Where each forkable node's forks come from, handed over at insert
-    /// (see `src/fork.rs`). A key without one is not forkable.
-    forks: BTreeMap<NodeKey, Box<dyn ForkSource>>,
+    /// (see `src/fork.rs`), with the generation of the unit that handed it
+    /// over. A key without one is not forkable, and neither is one whose
+    /// generation has moved on without a new source (`fork` checks).
+    forks: BTreeMap<NodeKey, (u32, Box<dyn ForkSource>)>,
     /// Events per event slot per block, as the executor was built with: a
     /// fork gets the same.
     event_capacity: usize,
@@ -453,13 +455,9 @@ impl Editor {
             controls,
             fork,
         } = node.into_parts();
-        match fork {
-            Some(fork) => self.forks.insert(key, fork),
-            None => self.forks.remove(&key),
-        };
         unit.prepare(&self.prepare);
         let shape = unit.shape();
-        self.place(key, kind, unit, shape);
+        self.place(key, kind, unit, shape, fork);
         controls
     }
 
@@ -540,18 +538,21 @@ impl Editor {
         // As `insert`: the new unit's fork source, or none — a replace with
         // an unforkable unit makes the key unforkable. Only past the checks,
         // so a refused replace changes nothing.
-        match fork {
-            Some(fork) => self.forks.insert(key, fork),
-            None => self.forks.remove(&key),
-        };
-        self.place(key, &kind, unit, shape);
+        self.place(key, &kind, unit, shape, fork);
         self.fades.insert(key, fade);
         Ok(controls)
     }
 
     /// Write a prepared unit at `key` with a fresh generation — the common
     /// half of [`insert`](Self::insert) and [`replace`](Self::replace).
-    fn place(&mut self, key: NodeKey, kind: &str, unit: Box<dyn Node>, shape: Shape) {
+    fn place(
+        &mut self,
+        key: NodeKey,
+        kind: &str,
+        unit: Box<dyn Node>,
+        shape: Shape,
+        fork: Option<Box<dyn ForkSource>>,
+    ) {
         // A later placement at a key takes an earlier fade back: the fade
         // was for the unit this one supersedes.
         self.fades.remove(&key);
@@ -577,6 +578,12 @@ impl Editor {
         self.spec.generations.insert(key, gen);
         self.shapes.insert(key, shape);
         self.pending.insert(key, unit);
+        // The unit's fork source, or none: a unit that hands none over makes
+        // the key unforkable, even if the one it supersedes was.
+        match fork {
+            Some(fork) => self.forks.insert(key, (gen, fork)),
+            None => self.forks.remove(&key),
+        };
     }
 
     /// Change `key`'s declared processing latency at runtime — a plugin whose
@@ -742,9 +749,10 @@ impl Editor {
         Ok(())
     }
 
-    /// Where `key`'s forks come from, if it is forkable.
-    pub(crate) fn fork_source(&self, key: NodeKey) -> Option<&dyn ForkSource> {
-        self.forks.get(&key).map(|f| f.as_ref())
+    /// Where `key`'s forks come from, and the generation of the unit that
+    /// handed it over, if it is forkable.
+    pub(crate) fn fork_source(&self, key: NodeKey) -> Option<(u32, &dyn ForkSource)> {
+        self.forks.get(&key).map(|(gen, f)| (*gen, f.as_ref()))
     }
 
     /// Events per event slot per block, as the executor was built with.

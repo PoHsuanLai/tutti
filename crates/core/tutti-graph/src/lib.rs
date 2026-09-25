@@ -129,7 +129,8 @@
 //!   (and live duplicate) that replaces `Net::clone_isolated` +
 //!   `isolate_for_offline` + `reset`. A node is forkable only if it handed
 //!   the editor a [`ForkSource`] at insert ([`IntoNode::into_parts`]);
-//!   every `Legacy` does.
+//!   a `Legacy` does unless its unit says it cannot be forked
+//!   (`AudioUnit::forkable`: a mic monitor, a plugin).
 //!
 //! # Building a graph in a test
 //!

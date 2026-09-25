@@ -642,13 +642,17 @@ pub trait Node: Send + 'static {
 /// forkable unless it says it is**, and a fork of a graph containing it is
 /// [`ForkError::NotForkable`](crate::ForkError::NotForkable) naming its key
 /// rather than a copy that shares state with the live one. [`Legacy`](crate::Legacy)
-/// implements it for every `AudioUnit`.
+/// implements it for every `AudioUnit` whose `forkable()` is true.
 pub trait IntoNode {
     /// What the caller keeps: `Param<U>` handles, `RtPublish` cells, or `()`.
     type Controls;
 
     /// Split into the unit the executor will own and the handles the caller
     /// keeps.
+    ///
+    /// This drops any fork source. A type that wraps another `IntoNode`
+    /// must forward [`into_parts`](Self::into_parts) too, not only this, or
+    /// the node it wraps silently stops being forkable.
     fn into_node(self) -> (Box<dyn Node>, Self::Controls);
 
     /// [`into_node`](Self::into_node), plus the node's

@@ -20,7 +20,9 @@
 //! contains it is [`ForkError::NotForkable`] naming its key — never a copy
 //! that quietly shares its state with the live node.
 //!
-//! [`Legacy`](crate::Legacy) gives every `AudioUnit` one. Its fork is, per
+//! [`Legacy`](crate::Legacy) gives one to every `AudioUnit` that says it can be
+//! forked (`AudioUnit::forkable`, a promise that `isolate` severs all its
+//! shared mutable state — the fork trusts it). Its fork is, per
 //! fundsp's own sequence, a clone of the unit, then `AudioUnit::isolate`
 //! (severs whatever live input the clone shares: a MIDI inbox, a command
 //! channel, a param cell), then — offline only — `AudioUnit::rebind_offline`
@@ -101,11 +103,15 @@ pub enum ForkMode<'a> {
     /// A live duplicate: isolated and reset, still bound to whatever
     /// transport the node was bound to.
     Live,
-    /// An offline render: isolated, then rebound onto `ctx` — opaque here,
-    /// and downcast by each unit that needs it, as
-    /// `AudioUnit::rebind_offline` has always taken it (tutti-core's
-    /// `OfflineTransport` is the context the engine's units read) — then
-    /// reset.
+    /// An offline render: isolated, then rebound onto `ctx`, then reset.
+    ///
+    /// `ctx` is opaque here and downcast by each unit that needs it, as
+    /// `AudioUnit::rebind_offline` has always taken it. It must be **the
+    /// exact type the units downcast** — today a `&OfflineTransport`
+    /// (tutti-core), the value itself, not a reference to a reference or
+    /// the timeline inside it. A context of any other type is not an
+    /// error: every rebind silently does nothing, and transport-aware units
+    /// render against a playhead nothing advances.
     Offline(&'a dyn Any),
 }
 
@@ -122,9 +128,17 @@ pub enum ForkTarget {
 /// Why [`Editor::fork`] failed. Nothing was built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForkError {
-    /// A node the fork needs has no [`ForkSource`]: it was inserted as
-    /// something that did not hand one over (a native node, or a boxed
-    /// `dyn Node`). The first such key, in key order.
+    /// A node the fork needs has no [`ForkSource`] for the unit now at its
+    /// key: it was inserted as something that did not hand one over (a
+    /// native node, a boxed `dyn Node`, a `Legacy` built
+    /// [`unforkable`](crate::Legacy::unforkable) or whose unit says
+    /// `AudioUnit::forkable() == false` — a mic monitor, a plugin), or its
+    /// generation moved on without a new source. The first such key, in
+    /// key order.
+    ///
+    /// A `Legacy`'s forkability means **trusting `AudioUnit::isolate`**: the
+    /// unit's `forkable()` promises that `isolate` severs all its shared
+    /// mutable state, and the fork is only as separate as that promise.
     NotForkable {
         /// The node.
         key: NodeKey,
@@ -134,8 +148,9 @@ pub enum ForkError {
         /// The key.
         key: NodeKey,
     },
-    /// [`ForkTarget::Node`] names a node with no audio outputs: there is
-    /// nothing to render from it (`Net::clone_isolated` returned `None`).
+    /// [`ForkTarget::Node`] names a node with no audio outputs, or the graph
+    /// has no global outputs to point at it: there is nothing to render
+    /// (`Net::clone_isolated` returned `None` for the first).
     NoOutputs {
         /// The node.
         key: NodeKey,
@@ -188,7 +203,7 @@ impl Editor {
                     return Err(ForkError::NoSuchNode { key });
                 };
                 let outs = shape.audio_out.count();
-                if outs == 0 {
+                if outs == 0 || live.topology.outputs.is_empty() {
                     return Err(ForkError::NoOutputs { key });
                 }
                 // `Net::clone_isolated`'s rule: clamp, not wrap (module docs).
@@ -208,7 +223,21 @@ impl Editor {
         let mut sources = Vec::with_capacity(keys.len());
         for &key in &keys {
             match self.fork_source(key) {
-                Some(source) => sources.push((key, source)),
+                Some((gen, source)) if gen == live.generation(key) => sources.push((key, source)),
+                Some((gen, _)) => {
+                    // Every path that places a unit (insert, replace) sets
+                    // or clears its source with the generation it assigns,
+                    // so this is a generation moved some other way (a
+                    // caller writing `spec_mut().generations`, a `package`
+                    // placing units the editor never saw). Forking the old
+                    // unit would be a copy of something no longer there.
+                    debug_assert!(
+                        false,
+                        "fork source for {key:?} is from generation {gen}, the spec is at {}",
+                        live.generation(key)
+                    );
+                    return Err(ForkError::NotForkable { key });
+                }
                 None => return Err(ForkError::NotForkable { key }),
             }
         }

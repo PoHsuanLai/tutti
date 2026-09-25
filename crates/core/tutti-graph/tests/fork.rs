@@ -608,9 +608,10 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
 /// hands over no fork source makes the key unforkable, and a *refused*
 /// replace (a different width) changes nothing.
 ///
-/// Mutation: leave `forks` alone in `Editor::replace` → the fork renders the
-/// replaced 0.5 → fails. Mutation: update `forks` before the shape check →
-/// the refused two-output unit is forked → renders 0.1 → fails.
+/// Mutation: pass no fork source to `place` from `Editor::replace` → the
+/// fork after a forkable replace is `NotForkable` → fails. (Writing the
+/// source before the shape check, which the refused replace would expose,
+/// is no longer expressible: `place` writes it, past the checks.)
 #[test]
 fn a_replace_moves_forking_to_the_new_unit() {
     let consts = |outs, base| Legacy::new(Consts { outs, base });
@@ -640,5 +641,289 @@ fn a_replace_moves_forking_to_the_new_unit() {
         ed.fork(ForkTarget::Master, ForkMode::Live, prepare(64))
             .err(),
         Some(ForkError::NotForkable { key })
+    );
+}
+
+/// Stands in for a mic monitor: a clone shares the consumer end of a ring
+/// (`Arc<Mutex<VecDeque>>` here), so a fork would take live frames, and no
+/// `isolate` can sever an SPSC consumer onto a second one. It says so.
+#[derive(Clone)]
+struct MicLike {
+    outs: usize,
+    ring: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+}
+
+impl AudioUnit for MicLike {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        output[0] = self.ring.lock().unwrap().pop_front().unwrap_or(0.0);
+    }
+    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        let mut ring = self.ring.lock().unwrap();
+        for x in &mut output.channel_f32_mut(0)[..size] {
+            *x = ring.pop_front().unwrap_or(0.0);
+        }
+    }
+    fn forkable(&self) -> bool {
+        false
+    }
+    probe_boilerplate!();
+}
+
+/// Stands in for a plugin client: a clone shares the bridge to the one
+/// plugin process, and `reset` goes over it — a fork's reset would reach the
+/// live plugin. It says so.
+#[derive(Clone)]
+struct PluginLike {
+    outs: usize,
+    bridge: Arc<AtomicU32>,
+}
+
+impl AudioUnit for PluginLike {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        output[0] = self.bridge.load(Ordering::Relaxed) as f32;
+    }
+    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        let v = self.bridge.load(Ordering::Relaxed) as f32;
+        output.channel_f32_mut(0)[..size].fill(v);
+    }
+    fn reset(&mut self) {
+        self.bridge.store(0, Ordering::Relaxed);
+    }
+    fn forkable(&self) -> bool {
+        false
+    }
+    probe_boilerplate!();
+}
+
+/// **A unit that says it cannot be forked is not**, however it is wrapped:
+/// a mic-like unit (shared ring consumer), a plugin-like unit (shared
+/// bridge), a mic-like unit inside a `Net` used as a node, and any unit
+/// built `Legacy::unforkable` are all `NotForkable` — and the refusal comes
+/// before any fork is made, so the live plugin-like unit's bridge is never
+/// reset.
+///
+/// Mutation: ignore `forkable()` in `Legacy::into_parts` → the mic and
+/// plugin forks succeed (and the plugin's bridge is zeroed) → fails.
+/// Mutation: drop `Net::forkable`'s forwarding → the wrapped mic forks →
+/// fails. Mutation: ignore the `unforkable` flag → fails.
+#[test]
+fn a_unit_that_is_not_forkable_is_refused() {
+    let pre = prepare(64);
+    let refused = |node: Legacy| {
+        let (mut ed, _exec) = Editor::new(pre);
+        ed.insert(NodeKey(1), "unit", node);
+        ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+        ed.fork(ForkTarget::Master, ForkMode::Live, pre).err()
+    };
+    let not = Some(ForkError::NotForkable { key: NodeKey(1) });
+    let mic = || MicLike {
+        outs: 1,
+        ring: Arc::new(std::sync::Mutex::new([0.5f32; 8].into())),
+    };
+    assert_eq!(refused(Legacy::new(mic())), not, "mic-like");
+
+    let bridge = Arc::new(AtomicU32::new(3));
+    let plugin = PluginLike {
+        outs: 1,
+        bridge: Arc::clone(&bridge),
+    };
+    assert_eq!(refused(Legacy::new(plugin)), not, "plugin-like");
+    assert_eq!(
+        bridge.load(Ordering::Relaxed),
+        3,
+        "the live bridge untouched"
+    );
+
+    let mut net = Net::new(0, 1);
+    let id = net.push(Box::new(mic()));
+    net.pipe_output(id);
+    assert_eq!(refused(Legacy::new(net)), not, "inside a Net");
+
+    let consts = || Consts { outs: 1, base: 0.5 };
+    assert_eq!(
+        refused(Legacy::new(consts()).unforkable()),
+        not,
+        "opted out"
+    );
+    assert_eq!(refused(Legacy::new(consts())), None);
+}
+
+/// **A fork source from an older generation is refused**, loudly: if the
+/// spec's generation at a key moved on without a new source (written
+/// through `spec_mut`, or by a `package` placing units the editor never
+/// saw), forking would copy a unit that is no longer there. Debug builds
+/// assert; release builds return `NotForkable`.
+///
+/// Mutation: drop the generation comparison in `Editor::fork` → the fork
+/// succeeds → fails (both builds).
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "is from generation 0"))]
+fn a_fork_source_from_an_older_generation_is_refused() {
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::new(pre);
+    ed.insert(
+        NodeKey(1),
+        "consts",
+        Legacy::new(Consts { outs: 1, base: 0.5 }),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
+    ed.spec_mut().generations.insert(NodeKey(1), 7);
+    assert_eq!(
+        ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
+        Some(ForkError::NotForkable { key: NodeKey(1) })
+    );
+}
+
+/// A parameter in an `Arc` cell a clone shares — `SvfFilterNode`'s shape:
+/// its param handles write the cell, `isolate` copies the value into a cell
+/// of its own. Outputs the value.
+#[derive(Clone)]
+struct CellParam {
+    outs: usize,
+    value: Arc<AtomicU32>,
+}
+
+impl AudioUnit for CellParam {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        output[0] = f32::from_bits(self.value.load(Ordering::Relaxed));
+    }
+    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        let v = f32::from_bits(self.value.load(Ordering::Relaxed));
+        output.channel_f32_mut(0)[..size].fill(v);
+    }
+    fn isolate(&mut self) {
+        let v = self.value.load(Ordering::Relaxed);
+        self.value = Arc::new(AtomicU32::new(v));
+    }
+    probe_boilerplate!();
+}
+
+/// **A plain `Legacy` reads a shared cell at fork time**, not at insert:
+/// its insert-time copy is deliberately not isolated, so a value a handle
+/// writes into the unit's cell after insert is what the fork gets — and the
+/// fork's own cell is severed, so a later write reaches only the live unit.
+///
+/// Mutation: isolate the insert-time clone in `Legacy::into_parts` → the
+/// fork renders the insert-time 0.2 → fails. Mutation: drop the fork's
+/// `isolate` → the write after the fork reaches it → fails.
+#[test]
+fn a_plain_legacy_reads_shared_cells_at_fork_time() {
+    let cell = Arc::new(AtomicU32::new(0.2f32.to_bits()));
+    let (mut ed, _exec) = Editor::new(prepare(64));
+    ed.insert(
+        NodeKey(1),
+        "cell",
+        Legacy::new(CellParam {
+            outs: 1,
+            value: Arc::clone(&cell),
+        }),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    cell.store(0.8f32.to_bits(), Ordering::Relaxed);
+    let (fe, fx) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
+        .expect("forks");
+    let mut r = Renderer::new(fe, fx);
+    assert!(r.render(64)[0].iter().all(|&x| x == 0.8));
+    cell.store(0.1f32.to_bits(), Ordering::Relaxed);
+    assert!(r.render(64)[0].iter().all(|&x| x == 0.8), "severed");
+}
+
+/// **A fork carries the spec's parameter values, the editor's event
+/// capacity, and only the resolution marks inside what it forks.** The
+/// emitter writes an event every frame into slots the live editor sized for
+/// 8 per block, so the fork drops some, as the live graph would; the mark
+/// on the sibling edge (outside a `Node` fork) is left behind, or the fork
+/// could not commit.
+///
+/// Mutation: drop the params copy in `Editor::fork` → fails. Mutation: fork
+/// with `DEFAULT_EVENT_CAPACITY` → nothing dropped → fails. Mutation: copy
+/// `required_resolution` unfiltered → the fork's commit fails
+/// (`RequirementWithoutEdge`) → fails. Mutation: drop the copy → the kept
+/// mark is missing → fails.
+#[test]
+fn a_fork_carries_params_event_capacity_and_its_own_marks() {
+    use tutti_graph::Resolution;
+    use tutti_types::graph::ParamValue;
+    let (emit, fold, emit2, fold2) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
+    let pre = prepare(64);
+    let (mut ed, _exec) = Editor::with_event_capacity(pre, 8);
+    let emitter = || {
+        Native(Kind::Emitter {
+            period: 1,
+            phase: 0,
+        })
+    };
+    ed.insert(emit, "emit", emitter());
+    ed.insert(fold, "fold", Native(Kind::Consumer { inputs: 1 }));
+    ed.insert(emit2, "emit", emitter());
+    ed.insert(fold2, "fold", Native(Kind::Consumer { inputs: 1 }));
+    let spec = ed.spec_mut();
+    spec.topology.outputs = vec![out(fold, 0), out(fold2, 0)];
+    for (e, f) in [(emit, fold), (emit2, fold2)] {
+        let at = EventIn { node: f, port: 0 };
+        let from = EventOut { node: e, port: 0 };
+        spec.connect_events(at, EventEdge::Direct(from));
+        spec.require_resolution(at, from, Resolution::Sample);
+    }
+    spec.topology
+        .nodes
+        .get_mut(&fold)
+        .expect("inserted")
+        .params
+        .insert("drive".into(), ParamValue::Scalar(0.3));
+
+    let (fe, mut fx) = ed
+        .fork(ForkTarget::Node(fold), ForkMode::Live, pre)
+        .expect("forks");
+    assert_eq!(
+        fe.spec().topology.nodes[&fold].params,
+        ed.spec().topology.nodes[&fold].params
+    );
+    let mark = (
+        EventIn {
+            node: fold,
+            port: 0,
+        },
+        EventOut {
+            node: emit,
+            port: 0,
+        },
+    );
+    assert_eq!(
+        fe.spec()
+            .required_resolution
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![mark]
+    );
+    let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+    fx.process(
+        64,
+        &tutti_graph::Transport::default(),
+        &[],
+        &mut [&mut l[..], &mut r[..]],
+    );
+    assert!(fx.dropped_events() > 0, "the fork has the live capacity");
+}
+
+/// **A node fork of a graph with no global outputs is `NoOutputs`**, not an
+/// empty fork that renders nothing.
+///
+/// Mutation: drop the `outputs.is_empty()` check → `Ok` → fails.
+#[test]
+fn a_node_fork_with_no_global_outputs_is_no_outputs() {
+    let (mut ed, _exec) = Editor::new(prepare(64));
+    ed.insert(
+        NodeKey(1),
+        "consts",
+        Legacy::new(Consts { outs: 1, base: 0.5 }),
+    );
+    assert_eq!(
+        ed.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare(64))
+            .err(),
+        Some(ForkError::NoOutputs { key: NodeKey(1) })
     );
 }

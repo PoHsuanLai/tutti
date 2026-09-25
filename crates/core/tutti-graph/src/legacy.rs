@@ -115,8 +115,16 @@
 //!
 //! [`Legacy`] is a builder, not the node: inserting it
 //! ([`IntoNode::into_parts`]) hands the editor the node *and* a
-//! [`ForkSource`], so every `AudioUnit` is forkable ([`Editor::fork`]) from
-//! day one. A fork follows fundsp's sequence (`PendingClone::isolate_for_offline`
+//! [`ForkSource`], so an `AudioUnit` is forkable ([`Editor::fork`]) from day
+//! one **if it says so**: `AudioUnit::forkable()`, default `true`, is the
+//! unit's promise that its `isolate` severs all its shared mutable state.
+//! The fork trusts that promise and nothing else. A unit that cannot keep it
+//! answers `false` — `MicMonitorNode` (its clone shares the ring consumer),
+//! `PluginClient` and `InProcessVst2Client` (clones share the plugin) — and
+//! so does any unit holding one (`Net` asks its vertices); the node is then
+//! inserted without a fork source, and a fork that needs it is
+//! [`ForkError::NotForkable`](crate::ForkError::NotForkable).
+//! [`Legacy::unforkable`] opts a node out explicitly. A fork follows fundsp's sequence (`PendingClone::isolate_for_offline`
 //! then `Net::reset`): clone, `AudioUnit::isolate`, `AudioUnit::rebind_offline`
 //! for an offline fork, `AudioUnit::reset`. What it clones depends on how the
 //! node was built:
@@ -142,6 +150,16 @@
 //!   `controlled` for every forkable node was the alternative; it would make
 //!   export refuse every node the adapter builds with [`Legacy::new`] until
 //!   each was rebuilt, for no state that a plain node can have.)
+//!
+//! **The memory cost.** Either way a forkable `Legacy` keeps a second deep
+//! copy of its unit for as long as it is in the graph (the shadow, or the
+//! insert-time clone). For most units that is a few hundred bytes of
+//! coefficients and state; for one that owns large buffers by value it is
+//! all of them again — a `ConvolverNode` copies its IR spectra, megabytes
+//! per long reverb, and a delay line its ring. Units that share such data
+//! read-only through an `Arc` (a sampler's `Wave`) cost nothing extra.
+//! Doc 013 Phase 4 moves the convolver's IR to `Arc` spectra; until then a
+//! host short on memory can build such a node [`unforkable`](Legacy::unforkable).
 //!
 //! A node built with [`IntoNode::into_node`] (a bare `Box<dyn Node>`) has no
 //! fork source and is not forkable. A fork's own nodes have none either: a
@@ -176,6 +194,8 @@ pub struct Legacy {
     /// Where forks come from when not from a clone taken at insert: the
     /// shadow of a [`Legacy::controlled`] node.
     fork_from: Option<Box<dyn Snapshot>>,
+    /// Opted out of forking ([`Legacy::unforkable`]).
+    unforkable: bool,
 }
 
 /// The node a [`Legacy`] runs as.
@@ -436,6 +456,16 @@ impl Legacy {
         self
     }
 
+    /// Insert this node without a fork source, whatever its unit's
+    /// `AudioUnit::forkable` says: a fork that needs it is
+    /// [`ForkError::NotForkable`](crate::ForkError::NotForkable). For a unit
+    /// whose `isolate` the caller does not trust, or one too large to keep
+    /// a second copy of (see "Forking" in the module docs).
+    pub fn unforkable(mut self) -> Self {
+        self.unforkable = true;
+        self
+    }
+
     /// Whether this node was declared [`pure`](Self::pure).
     pub fn is_pure(&self) -> bool {
         self.node.pure
@@ -482,6 +512,7 @@ impl Legacy {
         Self {
             node: Adapter::new(unit),
             fork_from: None,
+            unforkable: false,
         }
     }
 
@@ -509,6 +540,15 @@ impl IntoNode for Legacy {
     /// [`controlled`](Legacy::controlled) node, from a clone of the unit
     /// taken now for any other (see "Forking" in the module docs).
     fn into_parts(self) -> NodeParts<()> {
+        // The unit's promise, or the caller's opt-out: without it there is
+        // no source, and a fork that needs this node is refused.
+        if self.unforkable || !self.node.unit.forkable() {
+            return NodeParts {
+                node: Box::new(self.node),
+                controls: (),
+                fork: None,
+            };
+        }
         let from = match self.fork_from {
             Some(shadow) => shadow,
             None => Box::new(self.node.unit.clone()) as Box<dyn Snapshot>,

@@ -813,7 +813,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 1 | tutti-graph Legacy parity: never skip by default, with `Legacy::pure`; `Legacy::controlled` returning a settings ring plus a never-processed shadow; `Editor::set_latency` | #18 |
 | 2 | tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
 | 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
-| 4 | tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper | #18 |
+| 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
 | 5 | tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks; the harness behind a `contract` feature | 4 |
 | 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` | #18 |
 | 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
@@ -825,6 +825,25 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
+
+**PR 4 landed.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
+`push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,
+`connect_output`, `set_source`, `set_output`, `pass_through`, `disconnect`,
+`pipe` for `pipe_all`, `pipe_input`, `pipe_output`, `chain`/`chain_unit`)
+plus `feedback` and `event_connect`, which `Net` has no counterpart for. It
+holds a `GraphSpec` and the units, nothing else, and `build(Prepare)` goes
+through `Editor::insert` + `commit`, so it is not a second graph model.
+`Renderer` drives the executor in blocks with a supplied transport and
+returns planar or interleaved output. `tests/legacy.rs` builds through it.
+Two notes for PR 8:
+
+- The fan-out rules are `Net`'s, checked against `Net` itself over a grid
+  of widths (`tests/builder.rs`): port `c` reads `c % width`, so stereo into
+  six **wraps** (L R L R L R) rather than clamping, and a node with no
+  outputs feeds silence.
+- `tutti_spatial::build_vbap_mix` takes `&mut Net`, so the
+  `surround_export` fixtures need a builder-side form of it before they
+  can port.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

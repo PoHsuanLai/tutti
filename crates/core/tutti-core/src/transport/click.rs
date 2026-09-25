@@ -192,7 +192,8 @@ pub type ClickState = ClickSettings;
 /// The metronome, as a graph node.
 ///
 /// Inputs: the beat, on [`BEAT_PORTS`] ports — wire them from the
-/// [`TransportClock`](super::TransportClock)'s outputs 0 and 1. Outputs: the
+/// [`TransportClock`](super::TransportClock)'s outputs 0 and 1 (on a native
+/// graph, an [`EnvClock`](super::EnvClock)'s: the same samples). Outputs: the
 /// click, stereo. The beat arrives as a signal so each onset starts on its exact frame.
 ///
 /// Takes the live [`Transport`] concretely rather than a

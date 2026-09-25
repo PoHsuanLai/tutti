@@ -211,3 +211,80 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     // The engine really ran every block, through its own clock.
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
+
+/// The metronome on the native graph: an `EnvClock` feeding `ClickNode`
+/// (through `Legacy`), with timestamped seeks, tempo and loop changes
+/// landing inside blocks, so `EnvClock` walks several segments per block.
+/// Neither the clock's segment walk nor the click's meter read allocates.
+///
+/// Mutation (run): collect `env.segments()` into a `Vec` in
+/// `EnvClock::process` → the gate panics → fails.
+#[test]
+fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
+    use tutti_core::{At, Beat, Bpm, EnvClock, Frame, MotionEvent, TransportCommand};
+    use tutti_graph::{Editor, Legacy, Prepare};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
+    use tutti_types::NodeKey;
+
+    let sample_rate = 48_000.0;
+    let transport = Transport::new(sample_rate);
+    let settings = Arc::new(ClickSettings::new());
+    settings.set_mode(MetronomeMode::Always);
+    settings.set_volume(1.0);
+    let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
+
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(sample_rate),
+        tutti_core::Samples(512),
+    ));
+    let (clock, sink) = (NodeKey(1), NodeKey(2));
+    ed.insert(clock, "clock", EnvClock::new());
+    ed.insert(sink, "click", Legacy::new(click));
+    let topology = &mut ed.spec_mut().topology;
+    for port in 0..2 {
+        topology.edges.insert(
+            InPort { node: sink, port },
+            Edge::Direct(Source::Node(OutPort { node: clock, port })),
+        );
+    }
+    topology.outputs = (0..2)
+        .map(|port| Source::Node(OutPort { node: sink, port }))
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+
+    let mut output = vec![0.0f32; 1024 * 2];
+    // Applying the commit allocates; that is the control side's price.
+    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    ed.collect();
+    let _ = transport.motion.try_send(MotionEvent::Play);
+
+    let m = &transport.motion;
+    let mut clicked = false;
+    assert_no_alloc::assert_no_alloc(|| {
+        for round in 0..20u64 {
+            let base = 1024 * (1 + 8 * round);
+            m.schedule(
+                At::Frame(Frame(base + 300)),
+                TransportCommand::Tempo(Bpm(110.0 + round as f64)),
+            )
+            .expect("room");
+            m.schedule(
+                At::Frame(Frame(base + 1500)),
+                TransportCommand::Loop(tutti_core::LoopRange::new(0.0, 2.0)),
+            )
+            .expect("room");
+            m.schedule(At::Beat(Beat(1.75)), MotionEvent::locate(Beat(0.9)))
+                .expect("room");
+            m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
+                .expect("room");
+            for _ in 0..8 {
+                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+                clicked |= output.iter().any(|&s| s != 0.0);
+            }
+            m.cancel_scheduled();
+        }
+    });
+    // Not vacuous: the click sounded inside the gate.
+    assert!(clicked, "the metronome clicked");
+}

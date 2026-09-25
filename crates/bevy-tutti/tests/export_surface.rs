@@ -326,9 +326,9 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
         // Replace the whole graph's output with a constant read from the world.
         let level = world.resource::<Level>().0;
         let prepared_key = prepared.fresh_key();
-        let RenderGraph { editor, .. } = prepared.graph else {
-            panic!("an export renders a fork");
-        };
+        // Named through `bevy_tutti::export`, the path a host uses.
+        let graph: &mut RenderGraph = prepared.graph;
+        let editor = &mut graph.editor;
         let key = prepared_key;
         editor.insert(key, "test:level", Legacy::pure(Const::mono(level)));
         for out in editor.spec_mut().topology.outputs.iter_mut() {

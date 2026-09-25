@@ -189,11 +189,11 @@ fn beat(p: (f32, f32)) -> f64 {
 ///   behind the playhead at frame 4 000 jumps into [1, 2);
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
 ///
-/// Not caught, and not claimed: reading the closed form
-/// `env.transport_at(k)` instead of accumulating. It differs from the clock
-/// in the last `f64` bits, which the `f32` split at the ports rounds away
-/// (it survived this test); `EnvClock` accumulates so the ports equal the
-/// clock's by construction rather than by that rounding.
+/// Not caught, and not claimed: reading `env.transport_at(k)` instead of
+/// continuing the clock's segment. It is the same closed form up to a loop
+/// wrap and agrees to rounding past one, which the `f32` split at the ports
+/// rounds away; `EnvClock` runs the clock's own code (`FrameClock`) so the
+/// ports equal the clock's by construction rather than by that rounding.
 #[test]
 fn env_clock_emits_what_transport_clock_emits() {
     let net_t = Transport::new(SR);
@@ -544,12 +544,12 @@ fn an_offline_render_sees_the_live_engine_transport() {
             "block {i}"
         );
         assert!(
-            (o.beat.get() - l.beat.get()).abs() < 1e-9,
+            (o.beat().get() - l.beat().get()).abs() < 1e-9,
             "block {i}: offline {}, live {}",
-            o.beat.get(),
-            l.beat.get()
+            o.beat().get(),
+            l.beat().get()
         );
-        wrapped |= i > 0 && l.beat < live_log[i - 1].transport.beat;
+        wrapped |= i > 0 && l.beat() < live_log[i - 1].transport.beat();
     }
 
     // Chunk-major: no block past `LEGACY_CHUNK`, on either side.
@@ -575,7 +575,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
         .zip(live_polls.iter().zip(off_polls.iter()))
         .enumerate()
     {
-        let want = env.transport.beat.get();
+        let want = env.transport.beat().get();
         assert!(
             (o - want).abs() < 1e-9 && (l - want).abs() < 1e-9,
             "block {i} (at frame {}): live polled {l}, offline {o}, the Env says {want}",
@@ -584,7 +584,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     }
 
     // Not vacuous: it started on bar 2, it rolled, and it wrapped.
-    assert_eq!(off_log[0].transport.beat, Beat(BAR_2));
+    assert_eq!(off_log[0].transport.beat(), Beat(BAR_2));
     assert!(off_log[0].transport.playing);
     assert!(wrapped, "the loop wrapped");
     // The timeline stands after the last block, where the live clock does.

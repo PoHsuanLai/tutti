@@ -19,7 +19,10 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{fold_frame, Beat, BeatDuration, ReadRate, SamplePosition, SampleRate, Timeline};
+use tutti_core::{
+    fold_frame, Beat, BeatDuration, Frame, ReadRate, SamplePosition, SampleRate, Timeline,
+    TimelineSegment,
+};
 use tutti_io::Wave;
 
 use crate::MAX_SAMPLER_CHANNELS;
@@ -35,7 +38,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 ///
 /// Position is **derived** from the playhead, never accumulated here — the same
 /// model `tutti_core`'s transport uses, where `TransportClock` is the one node
-/// that advances time (`current_beat += beat_per_sample`) and everything
+/// that advances time (it counts frames and derives the beat from them) and everything
 /// downstream reads the result. A voice that also carried a read cursor would be
 /// a second, competing clock, and the two would drift apart the moment the
 /// transport looped, seeked, or changed tempo.
@@ -66,6 +69,18 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// Returns `None` when the transport is stopped, the playhead is before
 /// `start_beat`, past `duration`, or the tempo is non-positive.
 ///
+/// # Reached by frame, not by comparing beats
+///
+/// "Has the playhead reached `start_beat`?" is the engine's one beat→frame
+/// rule ([`TimelineSegment::reached_by`], doc 013 §6): the voice enters on
+/// the first frame at or after its start, within a millionth of a frame. A
+/// bare `beat < start` puts a clip whose start is exactly on the playhead's
+/// frame, but whose `f64` came out an ulp later than the clock's, a whole
+/// 64-frame call late. The window's end is the same rule, so a voice leaves
+/// on the frame its successor enters. The frames are the source's own at unit
+/// speed (`source_rate`): the gate sees no session rate, and a millionth of
+/// either kind of frame is far below anything audible.
+///
 /// Pure arithmetic: no allocation, no locks — safe from `tick`/`process` hot
 /// paths.
 #[inline]
@@ -79,19 +94,25 @@ pub fn window_position(
     if !transport.is_rolling() {
         return None;
     }
-    let beat_offset = transport.beat().get() - start_beat.get();
-    if beat_offset < 0.0 {
+    let tempo = transport.tempo();
+    if tempo.get() <= 0.0 {
+        return None;
+    }
+    let now = transport.beat();
+    // The playhead's frame is frame zero of this segment.
+    let playhead = TimelineSegment::new(Frame::ZERO, now, tempo, source_rate);
+    if !playhead.reached_by(Frame::ZERO, start_beat) {
         return None;
     }
     if let Some(dur) = duration {
-        if beat_offset >= dur.get() {
+        if playhead.reached_by(Frame::ZERO, start_beat + dur) {
             return None;
         }
     }
-    let tempo = transport.tempo().get();
-    if tempo <= 0.0 {
-        return None;
-    }
+    // Reached within the tolerance may be a hair before `start_beat`: that
+    // is the start itself.
+    let beat_offset = (now - start_beat).get().max(0.0);
+    let tempo = tempo.get();
     let seconds_offset = beat_offset * 60.0 / tempo;
     Some(SamplePosition(
         seconds_offset * source_rate.get() * rate.get(),

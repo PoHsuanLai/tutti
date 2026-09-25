@@ -23,7 +23,7 @@ mod settings;
 mod state;
 mod timed;
 
-pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
+pub use beat_window::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub(crate) use clock::{tempo_in_effect, Control};

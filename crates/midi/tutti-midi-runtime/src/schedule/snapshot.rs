@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_core::{Beat, BeatDuration};
+use tutti_core::{first_frame_at_or_after, Beat, BeatDuration};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
@@ -189,6 +189,14 @@ impl MidiSnapshot {
     /// `timing` is `Some(beats_per_sample)` to stamp frame offsets, `None` to
     /// leave each event's own offset alone.
     ///
+    /// Timed, the range is decided by frame, not by comparing beats: an event
+    /// is in it when the frame playback reaches it on
+    /// ([`first_frame_at_or_after`], doc 013 §6) is at or after the range's
+    /// first frame and before the frame that reaches `end_beat`, and that
+    /// frame's distance from the start is its offset. So an event exactly on
+    /// a range boundary lands once, on its frame, where a floored offset put
+    /// an event an ulp short of its frame a frame early.
+    ///
     /// The rate alone is sufficient: an origin would only ever be a copy of
     /// `start_beat`, and a same-typed pair with no field names is exactly the
     /// shape that gets swapped silently. [`BeatDuration`] names it as a *span*
@@ -212,19 +220,32 @@ impl MidiSnapshot {
 
         let mut pos = cursor.load(Ordering::Relaxed);
 
-        while pos < events.len() && events[pos].beat < start_beat {
+        // Frames from `start_beat` to where playback reaches `beat`, when
+        // the range is timed by a usable rate.
+        let frame_of = |beat: Beat| {
+            timing
+                .filter(|&bps| bps > BeatDuration(0.0))
+                .map(|bps| first_frame_at_or_after((beat - start_beat) / bps))
+        };
+        // Before the range: behind its first frame (or, untimed, its beat).
+        let before = |beat: Beat| frame_of(beat).map_or(beat < start_beat, |k| k < 0);
+        let end = frame_of(end_beat);
+        let inside = |beat: Beat| match (frame_of(beat), end) {
+            (Some(k), Some(end)) => k < end,
+            _ => beat < end_beat,
+        };
+
+        while pos < events.len() && before(events[pos].beat) {
             pos += 1;
         }
 
         let mut written = 0;
-        while pos < events.len() && events[pos].beat < end_beat && written < out.len() {
+        while pos < events.len() && inside(events[pos].beat) && written < out.len() {
             let mut ev = events[pos].event;
-            if let Some(beats_per_sample) = timing {
-                if beats_per_sample > BeatDuration(0.0) {
-                    let beat_delta = (events[pos].beat - start_beat).max(BeatDuration(0.0));
-                    let sample_delta = beat_delta / beats_per_sample;
-                    ev.frame_offset = sample_delta as u32;
-                }
+            if let Some(k) = frame_of(events[pos].beat) {
+                // Not before the range (skipped above), so not negative; a
+                // range longer than `u32` frames saturates.
+                ev.frame_offset = u32::try_from(k.max(0)).unwrap_or(u32::MAX);
             }
             out[written] = ev;
             written += 1;

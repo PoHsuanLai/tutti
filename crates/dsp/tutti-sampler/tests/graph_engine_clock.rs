@@ -363,8 +363,8 @@ fn a_loop_wrap_plays_as_through_the_net() {
 /// reads the target at the chunk's first frame, 53 frames early. From the
 /// next chunk both play the target at its frame. After the locate the two
 /// grids differ (`Net` chunks from the locate's frame), so they read the
-/// accumulated beat at different frames and differ in the low bits, not in
-/// what they play.
+/// beat at different frames and differ in the low bits, not in what they
+/// play.
 #[test]
 fn a_scheduled_locate_lands_on_its_chunk() {
     let at = 10_037;

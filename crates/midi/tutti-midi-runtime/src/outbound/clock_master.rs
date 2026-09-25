@@ -30,13 +30,13 @@
 //! - **MTC quarter-frames** (0xF1) at frame-rate×4, cycling the 8 SMPTE nibbles
 //!   (when `send_mtc` is set).
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
-use tutti_core::{Beat, BeatDuration, SampleRate};
+use tutti_core::{first_frame_at_or_after, Beat, BeatDuration, SampleRate};
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -91,11 +91,21 @@ pub struct ClockMaster {
     /// sample rate moved in between, and comparing with this block's called
     /// that a seek.
     prev_advance: AtomicF64,
-    /// Fractional SMPTE-frame phase carried across blocks (in quarter-frames),
-    /// so MTC emission stays on the wall-clock grid regardless of block size.
-    mtc_qf_phase: AtomicF64,
-    /// Which of the 8 MTC quarter-frame nibbles is emitted next (0-7).
-    mtc_piece: AtomicU8,
+    /// The MTC quarter-frame grid, in closed form rather than accumulated
+    /// (doc 013 §6, "the frame is the source of truth"): quarter-frame `k`
+    /// (counted from the last transport edge or locate, so `k & 7` is its
+    /// nibble) is due `mtc_lead + (k - mtc_base) × rate / (4 × fps)` frames
+    /// into the current grid segment, whose frames `mtc_frames` counts. A
+    /// rate or fps change starts a new segment at the next quarter-frame due,
+    /// with its lead rescaled to the same wall-clock time; an edge or locate
+    /// restarts at quarter-frame 0 on the block's first frame.
+    mtc_base: AtomicU64,
+    /// The next quarter-frame to emit (see `mtc_base`).
+    mtc_next: AtomicU64,
+    /// Frames rolled in the current grid segment.
+    mtc_frames: AtomicU64,
+    /// Where quarter-frame `mtc_base` is due in the segment, in frames.
+    mtc_lead: AtomicF64,
 }
 
 impl crate::block::pre_block::BlockClock for ClockMaster {
@@ -125,8 +135,10 @@ impl ClockMaster {
             prev_playing: AtomicBool::new(false),
             prev_beat: AtomicF64::new(0.0),
             prev_advance: AtomicF64::new(0.0),
-            mtc_qf_phase: AtomicF64::new(0.0),
-            mtc_piece: AtomicU8::new(0),
+            mtc_base: AtomicU64::new(0),
+            mtc_next: AtomicU64::new(0),
+            mtc_frames: AtomicU64::new(0),
+            mtc_lead: AtomicF64::new(0.0),
         }
     }
 
@@ -153,9 +165,10 @@ impl ClockMaster {
     /// The 24-PPQN ticks are placed from the transport's beat, so from the
     /// next block they land on the new rate's frames — at 120 BPM a tick
     /// every 1 000 frames at 48 kHz, not the 918.75 of 44.1 kHz, which would
-    /// run the receiving gear ~8.8% fast. The MTC quarter-frame phase is the
-    /// one figure carried across blocks in frames, so it is rescaled to the
-    /// same wall-clock time: the next quarter-frame stays where it was due.
+    /// run the receiving gear ~8.8% fast. The MTC quarter-frame grid is
+    /// counted in frames, so it starts a new segment at the next
+    /// quarter-frame due, rescaled to the same wall-clock time: that
+    /// quarter-frame stays where it was due.
     ///
     /// `&self`, lock-free: the master is shared with the audio thread. A
     /// non-positive rate is stored as given, and `tick` then emits nothing.
@@ -163,10 +176,46 @@ impl ClockMaster {
         let new = sample_rate.into().get();
         let old = self.sample_rate.swap(new, Ordering::AcqRel);
         if old > 0.0 && new > 0.0 {
-            let phase = self.mtc_qf_phase.load(Ordering::Acquire);
-            self.mtc_qf_phase
-                .store(phase * new / old, Ordering::Release);
+            self.rebase_mtc(old, self.fps(), new);
         }
+    }
+
+    /// The MTC frame rate in force.
+    fn fps(&self) -> SmpteFrameRate {
+        SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire))
+    }
+
+    /// Frames from the MTC grid segment's first frame to quarter-frame `k`,
+    /// at `rate` and `fps`: closed form, never accumulated.
+    fn mtc_due(&self, k: u64, rate: f64, fps: SmpteFrameRate) -> f64 {
+        let base = self.mtc_base.load(Ordering::Acquire);
+        let lead = self.mtc_lead.load(Ordering::Acquire);
+        lead + (k.saturating_sub(base) as f64 * rate) / (fps.fps() * 4.0)
+    }
+
+    /// Start a new MTC grid segment at the next quarter-frame due, the
+    /// frames left until it rescaled from `old_rate`/`old_fps` to the same
+    /// wall-clock time at `new_rate` (a quarter-frame already due stays
+    /// due). `old_fps` only places the pending one: a new fps spaces the
+    /// ones after it.
+    fn rebase_mtc(&self, old_rate: f64, old_fps: SmpteFrameRate, new_rate: f64) {
+        let next = self.mtc_next.load(Ordering::Acquire);
+        let at = self.mtc_frames.load(Ordering::Acquire) as f64;
+        let left = self.mtc_due(next, old_rate, old_fps) - at;
+        self.mtc_base.store(next, Ordering::Release);
+        self.mtc_lead
+            .store(left * new_rate / old_rate, Ordering::Release);
+        self.mtc_frames.store(0, Ordering::Release);
+    }
+
+    /// Restart the MTC grid at quarter-frame 0 (piece 0, what a decoder
+    /// needs to lock) on the next block's first frame: a transport edge or
+    /// a locate.
+    fn restart_mtc(&self) {
+        self.mtc_base.store(0, Ordering::Release);
+        self.mtc_next.store(0, Ordering::Release);
+        self.mtc_frames.store(0, Ordering::Release);
+        self.mtc_lead.store(0.0, Ordering::Release);
     }
 
     /// The rate [`tick`](Self::tick) places events at.
@@ -188,6 +237,13 @@ impl ClockMaster {
     /// reset the quarter-frame phase, so a receiver sees the new rate from the
     /// next complete 8-piece cycle.
     pub fn set_mtc_fps(&self, fps: SmpteFrameRate) {
+        let old = self.fps();
+        let rate = self.sample_rate.load(Ordering::Acquire);
+        if rate > 0.0 && old != fps {
+            // The pending quarter-frame keeps its time; the new fps spaces
+            // the ones after it.
+            self.rebase_mtc(rate, old, rate);
+        }
         self.mtc_fps.store(fps as u8, Ordering::Release);
     }
 
@@ -228,9 +284,8 @@ impl ClockMaster {
                 ));
                 self.emit(MidiEvent::continue_msg(self.group));
             }
-            // Realign the tick + MTC phase to the (possibly non-zero) start beat.
-            self.mtc_qf_phase.store(0.0, Ordering::Release);
-            self.mtc_piece.store(0, Ordering::Release);
+            // Realign the MTC grid to the (possibly non-zero) start beat.
+            self.restart_mtc();
         } else if !playing && was_playing {
             self.emit(MidiEvent::stop(self.group));
             return;
@@ -260,39 +315,56 @@ impl ClockMaster {
                 .swap(expected_advance.get(), Ordering::AcqRel),
         );
         let is_edge = playing && !was_playing;
-        if !is_edge && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS)
-        {
+        let jumped = !is_edge
+            && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS);
+        if jumped {
             self.emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
             ));
-            self.mtc_qf_phase.store(0.0, Ordering::Release);
-            self.mtc_piece.store(0, Ordering::Release);
+            self.restart_mtc();
         }
 
         // --- 24-PPQN clock ticks --------------------------------------------
-        // Emit a 0xF8 at every 1/24-beat boundary inside the block window
-        // [beat, beat + expected_advance), sample-accurate. `tick_beats` is the
-        // clock-tick spacing in beats (1/24). The walk starts at the first tick
-        // boundary strictly after `beat` and steps forward.
+        // Emit a 0xF8 at every 1/24-beat boundary playback reaches inside this
+        // block, on its frame. `tick_beats` is the clock-tick spacing in beats
+        // (1/24).
+        //
+        // Placed by the engine's one beat→frame rule
+        // (`first_frame_at_or_after`, doc 013 §6) and compared as integer
+        // frames, not as beats against `beat + expected_advance`: a tick on
+        // a block boundary is reached on the next block's first frame (offset
+        // `block_size` here, 0 there), so it goes out once. Comparing beats,
+        // the previous block's end and this block's start round
+        // independently, and a boundary tick was sent twice or not at all.
+        //
+        // Where playback starts, continues or locates on a tick boundary, that
+        // tick goes out on the first frame, after the Start / Continue / Song
+        // Position sent above (same offset, later in the queue). MIDI 1.0
+        // (MMA, "System Real Time Messages", Start and Continue): a receiver
+        // begins on the first Timing Clock after Start / Continue, so the
+        // clock of the start beat must be sent; skipping it leaves every
+        // receiving device one tick behind. Off a boundary, the first tick is
+        // the next boundary's.
         let tick_beats = BeatDuration(1.0 / PPQN);
-        let end_beat = beat + expected_advance;
         let max_offset = (block_size - 1) as u32;
-        // First tick index strictly *after* `beat`. `floor + 1` skips a boundary
-        // sitting exactly on `beat`, which the tail of the previous block
-        // already emitted — `ceil` would re-send it.
-        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64 + 1;
+        // The tick at or before `beat`: its frame is 0 (on `beat`, within the
+        // rule's tolerance) or before this block (already sent, or behind an
+        // off-tick start).
+        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64;
         loop {
             let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
-            if tick_beat >= end_beat {
-                break;
-            }
-            let sample_offset = ((tick_beat - beat) / beats_per_sample) as u32;
-            self.emit(
-                MidiEvent::timing_clock(self.group)
-                    .with_frame_offset(sample_offset.min(max_offset)),
-            );
+            let k = first_frame_at_or_after((tick_beat - beat) / beats_per_sample);
             tick_idx += 1;
+            if k < 0 {
+                continue;
+            }
+            match u32::try_from(k) {
+                Ok(k) if k <= max_offset => {
+                    self.emit(MidiEvent::timing_clock(self.group).with_frame_offset(k));
+                }
+                _ => break,
+            }
         }
 
         // --- MTC quarter-frames ---------------------------------------------
@@ -315,53 +387,54 @@ impl ClockMaster {
         beat: Beat,
         max_offset: u32,
     ) {
-        let fps = SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire));
-        let qf_per_sec = fps.fps() * 4.0;
-        let samples_per_qf = sample_rate.get() / qf_per_sec;
-        if samples_per_qf <= 0.0 {
+        let fps = self.fps();
+        let rate = sample_rate.get();
+        if !(fps.fps() > 0.0 && rate > 0.0) {
             return;
         }
 
-        // `mtc_qf_phase` carries *samples remaining until the next quarter-frame
-        // boundary*. It's reset to 0 on transport edges/seeks, so the first
-        // boundary after a (re)start lands at sample 0 — guaranteeing the first
-        // emitted piece is 0, which is exactly what the decoder needs to lock.
-        let mut next_qf = self.mtc_qf_phase.load(Ordering::Acquire);
-        let mut piece = self.mtc_piece.load(Ordering::Acquire);
+        // Where the block starts on the grid segment, and the next
+        // quarter-frame to send. Each one's frame is derived from its index
+        // in closed form (`mtc_due`), never by adding a quarter-frame's
+        // length to a carried phase, so the grid does not drift however
+        // long it runs. An edge or locate restarts it at quarter-frame 0 on
+        // the block's first frame: piece 0 first, which is what a decoder
+        // needs to lock.
+        let at = self.mtc_frames.load(Ordering::Acquire);
+        let mut next = self.mtc_next.load(Ordering::Acquire);
 
-        // Seconds-per-beat for converting beat → wall-clock SMPTE.
-        //
-        // Deliberately the reciprocal of `beats_per_sample` rather than
-        // `BeatDuration::to_seconds`: that method's own doc records the
-        // `(tempo/60)/sample_rate` association as load-bearing, and routing
-        // this through it would re-associate the arithmetic. It also returns
-        // f32 `Seconds`, and SMPTE is one of the named f64 carve-outs.
+        // Seconds-per-beat for converting beat → wall-clock SMPTE: the
+        // reciprocal of `beats_per_sample`, the rate every reader in the
+        // engine divides by, rather than `BeatDuration::to_seconds`, which
+        // returns f32 `Seconds` (SMPTE is one of the named f64 carve-outs).
         let secs_per_beat = if beats_per_sample > BeatDuration(0.0) {
-            1.0 / (beats_per_sample.get() * sample_rate.get())
+            1.0 / (beats_per_sample.get() * rate)
         } else {
             0.0
         };
 
-        // Walk quarter-frame boundaries within [0, block_size).
-        while next_qf < block_size as f64 {
-            let qf_sample = next_qf.max(0.0);
+        // Quarter-frames due inside [0, block_size), each on the frame it
+        // falls in (the floor of its position, as the MTC grid always was).
+        loop {
+            let qf_sample = (self.mtc_due(next, rate, fps) - at as f64).max(0.0);
+            if qf_sample >= block_size as f64 {
+                break;
+            }
             let sample_offset = (qf_sample as u32).min(max_offset);
             // Wall-clock time at this quarter-frame → SMPTE, then nibble.
             let block_beat = beat + beats_per_sample * qf_sample;
             let seconds = block_beat.get() * secs_per_beat;
             let tc = seconds_to_smpte(seconds, fps);
-            let nibble = mtc_nibble(&tc, piece, fps);
+            let nibble = mtc_nibble(&tc, (next & 0x07) as u8, fps);
             self.emit(
                 MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset),
             );
-            piece = (piece + 1) & 0x07;
-            next_qf += samples_per_qf;
+            next += 1;
         }
 
-        // Roll the boundary into the next block's sample frame.
-        self.mtc_qf_phase
-            .store(next_qf - block_size as f64, Ordering::Release);
-        self.mtc_piece.store(piece, Ordering::Release);
+        self.mtc_next.store(next, Ordering::Release);
+        self.mtc_frames
+            .store(at + block_size as u64, Ordering::Release);
     }
 }
 
@@ -590,28 +663,141 @@ mod tests {
         );
     }
 
+    /// Ticks land on their frames, in order, and a start on a tick boundary
+    /// sends that boundary's tick on frame 0.
+    ///
+    /// This pinned two ticks (1000, 2000) until the start tick was fixed:
+    /// MIDI 1.0 (MMA, "System Real Time Messages", Start) has a receiver
+    /// begin on the first Timing Clock after Start, so the clock of beat 0
+    /// must be sent, or every receiver runs one tick behind.
     #[test]
     fn ticks_are_sample_accurate_within_block() {
-        // A block that spans exactly two clock ticks should place them at
-        // distinct, ordered frame offsets inside the block.
+        // A block that spans three clock ticks, the first on its first
+        // frame, places them at distinct, ordered frame offsets.
         let sr = 48_000.0;
         let (cm, transport, cons) = master(Bpm(120.0), sr);
         transport.set_playing(true);
         transport.set_beat(0.0);
         // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
-        // block starting at beat 0 covers tick boundaries at 1000 and 2000.
+        // block starting at beat 0 covers tick boundaries at 0, 1000 and 2000.
         cm.tick(2500);
         let events: Vec<_> = drain_all(&cons)
             .into_iter()
             .filter(|e| is_status(e, 0xF8))
             .collect();
-        assert_eq!(events.len(), 2, "expected 2 ticks in the block");
+        assert_eq!(events.len(), 3, "expected 3 ticks in the block");
         assert!(
-            events[0].frame_offset < events[1].frame_offset,
+            events[0].frame_offset < events[1].frame_offset
+                && events[1].frame_offset < events[2].frame_offset,
             "ticks ordered"
         );
-        assert!((events[0].frame_offset as i64 - 1000).abs() < 4);
-        assert!((events[1].frame_offset as i64 - 2000).abs() < 4);
+        assert_eq!(events[0].frame_offset, 0, "the start beat's tick");
+        assert!((events[1].frame_offset as i64 - 1000).abs() < 4);
+        assert!((events[2].frame_offset as i64 - 2000).abs() < 4);
+    }
+
+    /// Where the first Timing Clock goes, and in what order, for a block that
+    /// does not continue the previous one: the transport message(s), then an
+    /// F8 on frame 0 when the beat sits on a tick boundary, else the first F8
+    /// on the next boundary.
+    fn first_clock(events: &[MidiEvent]) -> (usize, u32) {
+        let i = events
+            .iter()
+            .position(|e| is_status(e, 0xF8))
+            .expect("a timing clock");
+        (i, events[i].frame_offset)
+    }
+
+    /// Start at beat 0, Continue at an on-tick beat, and a locate while
+    /// playing to an on-tick beat: each sends an F8 on frame 0, queued after
+    /// its Start / Continue / Song Position. MIDI 1.0 (MMA, "System Real
+    /// Time Messages", Start, Continue): a receiver begins on the first
+    /// Timing Clock after Start / Continue.
+    ///
+    /// Mutation (run): skip a tick on frame 0 of a block that does not
+    /// continue the last (`k == 0 && (is_edge || jumped)` → `continue`, the
+    /// old rule) → no F8 at offset 0 → fails.
+    #[test]
+    fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
+        let sr = 48_000.0;
+        // Start at beat 0.
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let start = events
+            .iter()
+            .position(|e| is_status(e, 0xFA))
+            .expect("Start");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "Start at beat 0: F8 on frame 0");
+        assert!(start < clock, "the F8 follows Start in the queue");
+
+        // Continue at beat 8 (tick 192).
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(8.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+        let cont = events
+            .iter()
+            .position(|e| is_status(e, 0xFB))
+            .expect("Continue");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "Continue on a tick: F8 on frame 0");
+        assert!(
+            spp < clock && cont < clock,
+            "the F8 follows SPP and Continue"
+        );
+
+        // A locate while playing to beat 4 (tick 96).
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let _ = drain_all(&cons);
+        transport.set_beat(4.0);
+        cm.tick(512);
+        let events = drain_all(&cons);
+        let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+        let (clock, offset) = first_clock(&events);
+        assert_eq!(offset, 0, "a locate on a tick: F8 on frame 0");
+        assert!(spp < clock, "the F8 follows Song Position");
+    }
+
+    /// Off a tick boundary, the first F8 after a locate or a Continue is the
+    /// next boundary's, on its frame; nothing goes out on frame 0.
+    ///
+    /// Mutation (run): send a tick behind the block's start on frame 0
+    /// (`k < 0` → `k = 0` instead of skipping it) → an F8 at offset 0 →
+    /// fails.
+    #[test]
+    fn an_off_tick_locate_clocks_the_next_boundary() {
+        let sr = 48_000.0;
+        // Half a tick past beat 4: 500 frames to the next boundary at 120
+        // BPM / 48 kHz (a tick is 1000 frames).
+        let off = 4.0 + 0.5 / PPQN;
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(0.0);
+        transport.set_playing(true);
+        cm.tick(512);
+        let _ = drain_all(&cons);
+        transport.set_beat(off);
+        cm.tick(2048);
+        let events = drain_all(&cons);
+        assert!(events.iter().any(|e| is_status(e, 0xF2)), "a locate");
+        let (_, offset) = first_clock(&events);
+        assert_eq!(offset, 500, "the next boundary's frame");
+
+        // The same off-tick beat as a Continue.
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
+        transport.set_beat(off);
+        transport.set_playing(true);
+        cm.tick(2048);
+        let (_, offset) = first_clock(&drain_all(&cons));
+        assert_eq!(offset, 500, "Continue off a tick: the next boundary");
     }
 
     /// Run `blocks` blocks of `block` frames at `rate`, the transport rolling
@@ -743,6 +929,41 @@ mod tests {
             "{}",
             spacing(&after)
         );
+    }
+
+    /// **The MTC grid is closed form.** Quarter-frame `k` goes out on frame
+    /// `floor(k × rate / (4 × fps))`, however many blocks it took to get
+    /// there: at 29.97 fps and 44.1 kHz a quarter-frame is 367.867… frames,
+    /// which binary cannot represent, and a carried phase that adds it
+    /// block after block drifts off the grid.
+    ///
+    /// Mutation (run): carry the phase (quarter-frame `k + 1` due at `k`'s
+    /// position plus one quarter-frame's length, accumulated) → some
+    /// quarter-frame whose exact position is a hair past a whole frame lands
+    /// a frame early → fails.
+    #[test]
+    fn the_mtc_grid_is_closed_form() {
+        let rate = 44_100.0;
+        let fps = SmpteFrameRate::Fps2997Ndf;
+        let (cm, transport, cons) = master(Bpm(120.0), rate);
+        cm.set_send_mtc(true);
+        cm.set_mtc_fps(fps);
+        transport.set_playing(true);
+        let (mut beat, mut frame) = (0.0, 0);
+        let events = run_at(
+            &cm,
+            &transport,
+            &cons,
+            rate,
+            (512, 6_000),
+            (&mut beat, &mut frame),
+        );
+        let quarters = of(&events, 0xF1);
+        assert!(quarters.len() > 8_000, "{} quarter-frames", quarters.len());
+        for (k, &at) in quarters.iter().enumerate() {
+            let due = ((k as f64 * rate) / (fps.fps() * 4.0)).floor() as u64;
+            assert_eq!(at, due, "quarter-frame {k}");
+        }
     }
 
     #[test]

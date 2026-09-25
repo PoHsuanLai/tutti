@@ -462,14 +462,14 @@ fn a_node_export_follows_a_90_bpm_timeline(backend: GraphBackend) {
         planes[0][..AT].iter().all(|&s| s == 0.0),
         "{backend:?}: the voice sounded before beat 3"
     );
-    // From there the clip's frame `k` is the render's frame `AT + k`. The
-    // voice reads the clock once per 64-frame chunk (`Legacy`), and the
-    // chunk starting on beat 3 reads a beat the timeline accumulated a
-    // chunk at a time in steps of 0.002, which binary cannot hold exactly:
-    // there the voice holds silence, and enters on the next chunk in place
-    // (clip frame 64 at render frame 96 064). Both backends do, since
-    // doc 013's chunk-major mode moves the native clock as `Net`'s moves.
-    for k in 64..4_000 {
+    // From there the clip's frame `k` is the render's frame `AT + k`, from
+    // the first: the voice reads the clock once per 64-frame chunk
+    // (`Legacy`), and the chunk starting on beat 3 reads exactly beat 3,
+    // since the timeline counts frames and derives the beat (doc 013 §6).
+    // (It accumulated once, read a hair under 3 there, and the voice entered
+    // a chunk late, at 96 064.) Both backends, since doc 013's chunk-major
+    // mode moves the native clock as `Net`'s moves.
+    for k in 0..4_000 {
         let got = planes[0][AT + k];
         assert!(
             (got - tone(k)).abs() < 1e-3,
@@ -1001,14 +1001,13 @@ mod plugin {
     /// from beat 1 to beat 2 of the render's timeline, heard one pipeline
     /// block (64 frames) later, and nowhere else.
     ///
-    /// At 87.890625 BPM and 48 kHz a beat is exactly 32 768 frames (2^15), so
-    /// every beat the timeline accumulates, 64 frames at a time, is exact and
-    /// the edges can be asserted to the frame: 32 768 and 65 536 (at the
-    /// default 120 BPM, 24 000 and 48 000). At 90 BPM a beat is 32 000
-    /// frames, a step binary cannot hold, and the note lands a frame early
-    /// (measured: 32 063 for 32 064) — `OfflineTimeline` accumulates an `f64`
-    /// beat per chunk, the rounding doc 013 records as a follow-up for its
-    /// own PR; this test keeps to the exact tempo until then.
+    /// At 90 BPM and 48 kHz a beat is 32 000 frames, a per-frame step binary
+    /// cannot hold, and the edges are asserted to the frame: 32 000 and
+    /// 64 000 (at the default 120 BPM, 24 000 and 48 000). The timeline
+    /// counts frames and derives the beat, and the clip places by frame
+    /// (doc 013 §6); when the timeline accumulated, the note landed a frame
+    /// early (measured: 32 063 for 32 064), and this test ran at 87.890625
+    /// BPM, where a beat is exactly 2^15 frames, to dodge it.
     ///
     /// Not trimmed: the probe reports 137 frames of latency in every mode
     /// but delays only in its latency mode, so the graph's figure is not
@@ -1016,7 +1015,7 @@ mod plugin {
     ///
     /// Rendered at the device's 48 kHz and at 96 kHz: the fork is launched at
     /// the live rate and prepared at the render's, and the clip places its
-    /// notes at the rate the fork polls it at (a beat is 65 536 frames
+    /// notes at the rate the fork polls it at (a beat is 64 000 frames
     /// there).
     ///
     /// Mutation (run): dropping the `rebind_offline_into` call in
@@ -1049,7 +1048,7 @@ mod plugin {
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: tutti_core::Beat(0.0),
-            tempo: tutti_core::Bpm(87.890625),
+            tempo: tutti_core::Bpm(90.0),
             sample_rate: SampleRate(rate),
             loop_range: None,
         }));
@@ -1084,7 +1083,7 @@ mod plugin {
         // The plugin's batcher holds one block: what it is sent in block `k`
         // it returns in block `k + 1`.
         const PIPELINE: usize = 64;
-        let beat = 32_768 * (rate / RATE) as usize;
+        let beat = 32_000 * (rate / RATE) as usize;
         let (on, off) = (open[0], *open.last().unwrap() + 1);
         assert_eq!(
             (on, off),

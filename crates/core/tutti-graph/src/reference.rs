@@ -1030,7 +1030,7 @@ struct Traversal {
 
 /// What `t` traverses in `len` frames at `tempo` and `rate`.
 fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
-    let beat = t.beat.get();
+    let beat = t.beat().get();
     let usable = |x: f64| x.is_finite() && x > 0.0;
     if !t.playing || !usable(tempo) || !usable(rate) {
         return Traversal { segs: Vec::new() };
@@ -1069,7 +1069,7 @@ fn traverse(t: &Transport, tempo: f64, rate: f64, len: usize) -> Traversal {
 /// The beat intervals a playhead at `t.beat` covers moving `dist` beats
 /// forward, wrapping at `t`'s loop.
 fn walk(t: &Transport, dist: f64) -> Vec<(f64, f64)> {
-    let (mut pos, mut left) = (t.beat.get(), dist.max(0.0));
+    let (mut pos, mut left) = (t.beat().get(), dist.max(0.0));
     let mut path = Vec::new();
     while left > 0.0 {
         match t.looping {
@@ -1106,7 +1106,7 @@ struct RefPlayhead {
 impl RefPlayhead {
     /// Record the block about to be rendered.
     fn observe(&mut self, t: &Transport, rate: f64, len: usize) {
-        let now = t.beat.get();
+        let now = t.beat().get();
         let walked = self.last.and_then(|(p, prate, plen)| {
             if p.looping != t.looping {
                 return None;
@@ -1137,7 +1137,7 @@ impl RefPlayhead {
                 .fold(STILL, f64::max);
             // Every distance that would put the playhead at `now`: straight
             // there, or round the loop once, twice, ...
-            let from = p.beat.get();
+            let from = p.beat().get();
             let mut distances = vec![now - from];
             if let Some(l) = p.looping {
                 let (start, end) = (l.start.get(), l.end.get());
@@ -1174,7 +1174,7 @@ impl RefPlayhead {
             .any(|&(from, to)| from <= beat && beat < to);
         let reached_again = self.now.is_some_and(|t| {
             t.looping.is_some_and(|l| {
-                beat >= l.start.get() && beat < l.end.get() && beat >= t.beat.get()
+                beat >= l.start.get() && beat < l.end.get() && beat >= t.beat().get()
             })
         });
         traversed && !reached_again
@@ -1220,7 +1220,7 @@ impl Reference {
                     // A beat less than a frame (minus the rounding) behind
                     // this piece's start is its first frame: a frame at or
                     // after the beat that the piece before could not reach.
-                    let now = t.beat.get();
+                    let now = t.beat().get();
                     let b = if t.playing && b < now && (now - b) * fpb < 1.0 - FRAME_ROUNDING {
                         now
                     } else {

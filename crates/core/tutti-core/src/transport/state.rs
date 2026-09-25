@@ -44,13 +44,20 @@ pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
 
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.
 ///
-/// The conversion every beat-driven consumer needs: the clock caches it per
-/// buffer, `BeatWindow` derives a block's span from it, `OfflineTimeline`
-/// precomputes it once.
+/// The per-frame rate a reader needs to place a beat inside a block
+/// (`BeatWindow`, the MIDI clock, automation sampling): a beat span divided
+/// by it is a frame distance, which the engine's one placement rule
+/// ([`first_frame_at_or_after`](tutti_types::first_frame_at_or_after)) turns
+/// into a frame, its tolerance absorbing the rate's rounding.
 ///
-/// The association is load-bearing: `(tempo / 60) / sample_rate`, **not**
-/// `tempo / (60 * sample_rate)`. The two round differently, and the offline
-/// timeline is pinned to agree with the clock sample-for-sample.
+/// **No clock steps by it.** A playhead that adds this per frame or per block
+/// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
+/// frame 96 000, which is beat 3): the clocks count frames and derive the
+/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment),
+/// doc 013 §6).
+///
+/// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
+/// by it divides by the same `f64`.
 #[inline]
 pub fn beats_per_sample(
     tempo: impl Into<crate::Bpm>,
@@ -107,82 +114,10 @@ impl Default for SeekSlot {
     }
 }
 
-/// A loop region on the timeline: `start..end`, guaranteed non-empty and
-/// correctly ordered.
-///
-/// The check lives in the constructor, so `None` means "not a usable loop"
-/// rather than "a loop you must validate". A consumer holding one of these
-/// needs no `end > start` guard of its own, and `wrap` relies on exactly that.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LoopRange {
-    start: Beat,
-    end: Beat,
-}
-
-impl LoopRange {
-    /// Build a region, or `None` if it is empty or inverted.
-    pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
-        let (start, end) = (start.into(), end.into());
-        (end > start).then_some(Self { start, end })
-    }
-
-    /// First beat of the region, inclusive.
-    #[inline]
-    pub fn start(&self) -> Beat {
-        self.start
-    }
-
-    /// One past the last beat of the region, exclusive.
-    #[inline]
-    pub fn end(&self) -> Beat {
-        self.end
-    }
-
-    /// Length in beats. Always positive, by construction.
-    #[inline]
-    pub fn len(&self) -> BeatDuration {
-        self.end - self.start
-    }
-
-    /// Whether `beat` falls in `[start, end)`. The end beat is *not* contained
-    /// — it is the first beat of the next pass.
-    #[inline]
-    pub fn contains(&self, beat: Beat) -> bool {
-        beat >= self.start && beat < self.end
-    }
-
-    /// Where a playhead that moved forward from `from` to `to` lands under
-    /// this loop: wrapped back into the region when the move crossed the end,
-    /// and **unchanged when `from` was already at or past the end**.
-    ///
-    /// Arming a loop whose end is at or behind the playhead does not jump
-    /// (the common DAW behaviour, and doc 013's decision): the loop takes
-    /// effect once the playhead is inside it, by a seek or by playing into it
-    /// from before `start`. The native graph reads a transport the same way
-    /// (`tutti_graph::Env::due` and `transport_at` treat a playhead at or past
-    /// the loop end as not looping), so the two agree.
-    #[inline]
-    pub fn advance(&self, from: Beat, to: Beat) -> Beat {
-        if from < self.end {
-            self.wrap(to)
-        } else {
-            to
-        }
-    }
-
-    /// Wrap `beat` back into the region, preserving overshoot.
-    ///
-    /// The remainder needs no zero guard because `len()` is positive by
-    /// construction. `rem_euclid` rather than `%` so a beat below `start` wraps
-    /// *into* the region instead of landing outside it on the negative side.
-    #[inline]
-    pub fn wrap(&self, beat: Beat) -> Beat {
-        if beat < self.end {
-            return beat;
-        }
-        self.start + (beat - self.start).rem_euclid(self.len())
-    }
-}
+// `LoopRange` moved to `tutti-types` (beside `FrameClock`, the walker that
+// wraps with it, which the graph's `Env::transport_at` shares). Re-exported
+// here so its engine paths stay.
+pub use tutti_types::LoopRange;
 
 /// The loop region, and whether looping is armed.
 ///
@@ -484,35 +419,6 @@ mod tests {
         assert!(!declick.is_active());
         // Total is retained so a fade's length stays inspectable.
         assert_eq!(declick.total.load(Ordering::Acquire), 480);
-    }
-
-    /// Only a move that crosses the end wraps; a playhead already at or past
-    /// the end runs on, and one from before the start wraps at the end.
-    ///
-    /// Mutation: wrap regardless of `from` → the past-the-end case jumps to
-    /// 5.5 → fails.
-    #[test]
-    fn loop_range_advance_wraps_only_a_crossing() {
-        let r = LoopRange::new(4.0, 8.0).unwrap();
-        assert_eq!(r.advance(Beat(7.5), Beat(8.5)), Beat(4.5), "crossed");
-        assert_eq!(r.advance(Beat(9.0), Beat(9.5)), Beat(9.5), "armed behind");
-        assert_eq!(r.advance(Beat(8.0), Beat(8.5)), Beat(8.5), "from the end");
-        assert_eq!(r.advance(Beat(2.0), Beat(8.25)), Beat(4.25), "from before");
-    }
-
-    #[test]
-    fn loop_range_wrap_preserves_overshoot() {
-        let r = LoopRange::new(4.0, 8.0).unwrap();
-
-        // Inside the region: untouched.
-        assert_eq!(r.wrap(Beat(6.0)), Beat(6.0));
-        // One beat past the end wraps to one beat past the start.
-        assert_eq!(r.wrap(Beat(9.0)), Beat(5.0));
-        // Exactly at the end wraps to the start.
-        assert_eq!(r.wrap(Beat(8.0)), Beat(4.0));
-        // More than one length past still lands inside.
-        let far = r.wrap(Beat(4.0 + 4.0 * 3.5));
-        assert!(far.get() >= 4.0 && far.get() < 8.0, "got {far:?}");
     }
 
     #[test]

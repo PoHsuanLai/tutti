@@ -80,7 +80,7 @@ impl Node for Clocked {
             io.output(1)[k.index()] = env.block_len.get() as f32;
             let t = env.transport_at(k);
             io.output(2)[k.index()] =
-                if t.playing { 1.0 } else { 0.0 } + t.beat.get().fract() as f32 * 0.5;
+                if t.playing { 1.0 } else { 0.0 } + t.beat().get().fract() as f32 * 0.5;
         }
         Status::Modified
     }
@@ -105,7 +105,7 @@ impl Node for Gate {
             let t = env.transport_at(k);
             io.output(0)[k.index()] = if t.playing { 1.0 } else { 0.0 };
             if let Some(log) = log.as_mut() {
-                log.push((env.frame_at(k).get(), t.beat.get(), t.playing));
+                log.push((env.frame_at(k).get(), t.beat().get(), t.playing));
             }
         }
         Status::Modified
@@ -439,15 +439,17 @@ fn a_timed_start_moves_a_net_clock_from_its_exact_frame() {
 /// beat 10.5 (half a beat after the seek to 10) is frame 36 000.
 ///
 /// The seek's beat falls on a block's first frame, where the engine's
-/// accumulated playhead sits ~1e-12 beat past it: it must land there without
-/// counting as late.
+/// playhead is exactly beat 1 (it counts frames and derives the beat, doc
+/// 013 §6): it must land there, on that frame, without counting as late.
 ///
 /// Mutation (run): land every due command at its piece's first frame
 /// (`at = cursor` in the walk) → the stop lands at its block's start →
 /// fails. Hand the executor `TransportChanges::NONE` → fails. Drop
-/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. Drop the
-/// behind-side rounding tolerance in `Env::beat_due` → the seek counts late
-/// → fails (observed before that tolerance existed).
+/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. (Dropping
+/// the behind-side rounding tolerance in `Env::beat_due` failed this test
+/// while the playhead accumulated and sat ~1e-12 beat past beat 1; with the
+/// playhead exact it no longer does, and tutti-graph's
+/// `a_beat_a_rounding_error_behind_is_the_first_frame` pins the tolerance.)
 #[test]
 fn beat_timed_seek_and_stop_land_on_their_frames() {
     let transport = Transport::new(SR);
@@ -505,7 +507,7 @@ impl Node for DcLog {
         let mut log = self.0.lock().expect("log");
         for k in env.offsets() {
             let t = env.transport_at(k);
-            log.push((env.frame_at(k).get(), t.beat.get(), t.playing));
+            log.push((env.frame_at(k).get(), t.beat().get(), t.playing));
             io.output(0)[k.index()] = 1.0;
         }
         Status::Modified
@@ -1269,15 +1271,16 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_moves_neither_backend() {
     }
     let graph_log = graph_log.lock().expect("log");
     let net_beats = net_beats.lock().expect("log");
-    // Beat 10 is frame 240 000 at 120 BPM; the playhead, accumulated frame
-    // by frame, reaches it a millionth of a frame late or so, so the stop
-    // may land one frame on. What must hold is that both backends stop on
-    // the same frame.
+    // Beat 10 is frame 240 000 at 120 BPM (the 120.0005 asked is inside the
+    // clock's hysteresis). The playhead counts frames and derives the beat,
+    // so it is exactly beat 10 there and the stop lands on that frame. (It
+    // accumulated once, reached beat 10 a millionth of a frame late, and the
+    // stop was allowed one frame on.)
     let stop = graph_log
         .iter()
         .position(|&(_, _, playing)| !playing)
         .expect("the graph stopped");
-    assert!((240_000..=240_001).contains(&stop), "graph stops at {stop}");
+    assert_eq!(stop, 240_000, "graph stops on beat 10's frame");
     // The Net clock moves on its last rolling frame and holds from the stop.
     assert_ne!(
         net_beats[stop - 1],
@@ -1296,9 +1299,10 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_moves_neither_backend() {
 /// block starts on, stay bit-equal the whole way. Drift between the two
 /// clocks would grow with the run, so a long one is where it shows.
 ///
-/// Mutation (run): advance the graph clock by `beat_per_sample × frames` in
-/// one step (closed form) instead of frame by frame → the playheads part
-/// within the first blocks → fails.
+/// Mutation (run): advance the graph engine's clock by accumulating
+/// (`beat + beats_per_sample × frames`, a new segment each block) while the
+/// `Net`'s steps frame by frame in closed form → the playheads part within
+/// the first blocks → fails.
 #[test]
 fn net_and_graph_agree_over_ten_minutes() {
     // Logs only each block's first beat on the graph side, and nothing on
@@ -1310,7 +1314,7 @@ fn net_and_graph_agree_over_ten_minutes() {
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-            *self.0.lock().expect("log") = cx.env.transport.beat.get();
+            *self.0.lock().expect("log") = cx.env.transport.beat().get();
             io.output(0).fill(0.0);
             Status::Modified
         }

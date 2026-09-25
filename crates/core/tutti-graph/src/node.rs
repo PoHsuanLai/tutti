@@ -21,7 +21,9 @@
 //!   offsets is the node's job (doc 013 §4: an out-of-process plugin's declared
 //!   pipeline latency is only constant if it sees whole blocks).
 
-use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
+use tutti_types::{
+    Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, SampleRate, Samples, SegmentOrigin, Tail,
+};
 
 use crate::fork::ForkSource;
 use crate::io::Io;
@@ -423,23 +425,115 @@ pub struct LoopRange {
 pub struct Transport {
     /// Whether the transport is rolling.
     pub playing: bool,
-    /// Tempo.
+    /// Tempo. A [counted](Self::counted) position's beat is derived at it.
     pub tempo: Bpm,
-    /// The beat at the first frame of the block.
-    pub beat: Beat,
     /// Loop points, when looping.
     pub looping: Option<LoopRange>,
+    /// Where the block's first frame is: a bare beat, or a frame count on the
+    /// host's segment. Private, so the beat and the frame count it is derived
+    /// from cannot disagree: [`beat`](Self::beat) *computes* the beat of a
+    /// counted position.
+    position: Position,
+}
+
+/// A transport's position at the block's first frame. See
+/// [`Transport::beat`] and [`Transport::origin`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Position {
+    /// A beat, with the block's first frame its own origin: a transport
+    /// built by hand, or read back from a published beat.
+    At(Beat),
+    /// A frame count on the host's segment (doc 013 §6, "the frame is the
+    /// source of truth"): the beat is derived from it, at the transport's
+    /// tempo.
+    Counted(SegmentOrigin),
+}
+
+impl Transport {
+    /// A transport at `beat`, the block's first frame its own origin.
+    pub const fn new(playing: bool, tempo: Bpm, beat: Beat, looping: Option<LoopRange>) -> Self {
+        Self {
+            playing,
+            tempo,
+            looping,
+            position: Position::At(beat),
+        }
+    }
+
+    /// A transport whose position is a host's frame count: `origin` (the
+    /// beat at its segment's first frame, the frames rolled since, and their
+    /// rate), moving at `tempo`. A host that counts frames derives its beat
+    /// in closed form from the same origin, never by accumulating a
+    /// per-frame step, so frame 96 000 at 90 BPM / 48 kHz is beat 3 to the
+    /// bit; a node that walks the block frame by frame (tutti-core's
+    /// `EnvClock`, [`Env::transport_at`]) continues the host's
+    /// [`FrameClock`] from here and lands on the host's bits.
+    pub const fn counted(
+        playing: bool,
+        tempo: Bpm,
+        origin: SegmentOrigin,
+        looping: Option<LoopRange>,
+    ) -> Self {
+        Self {
+            playing,
+            tempo,
+            looping,
+            position: Position::Counted(origin),
+        }
+    }
+
+    /// This transport, at `beat` instead (the block's first frame its own
+    /// origin): a seek, as a hand-built block states one.
+    pub const fn at_beat(self, beat: Beat) -> Self {
+        Self {
+            position: Position::At(beat),
+            ..self
+        }
+    }
+
+    /// The beat at the block's first frame: the one given, or, for a
+    /// counted position, the one its frame count derives at
+    /// [`tempo`](Self::tempo).
+    pub fn beat(&self) -> Beat {
+        match self.position {
+            Position::At(beat) => beat,
+            Position::Counted(origin) => FrameClock::from_origin(origin, self.tempo).beat(),
+        }
+    }
+
+    /// The host's frame count, when the position is counted.
+    pub fn origin(&self) -> Option<SegmentOrigin> {
+        match self.position {
+            Position::At(_) => None,
+            Position::Counted(origin) => Some(origin),
+        }
+    }
+
+    /// The clock this transport's position is, to walk the block with: the
+    /// host's [`FrameClock`] for a counted position (at the rate its origin
+    /// carries), or a clock starting at [`beat`](Self::beat) at
+    /// `block_rate` for a bare one. `block_rate` is the block's
+    /// ([`Env::sample_rate`]); a counted origin's rate is the host's, and
+    /// the two agree whenever a host is consistent (debug-asserted).
+    pub fn clock(&self, block_rate: SampleRate) -> FrameClock {
+        match self.position {
+            Position::At(beat) => FrameClock::new(beat, self.tempo, block_rate),
+            Position::Counted(origin) => {
+                debug_assert_eq!(
+                    origin.sample_rate, block_rate,
+                    "a counted transport at another rate than its block"
+                );
+                FrameClock::from_origin(origin, self.tempo)
+            }
+        }
+    }
 }
 
 impl Default for Transport {
-    /// Stopped at beat zero, 120 BPM, not looping.
+    /// Stopped at beat zero, 120 BPM, not looping, the block start its own
+    /// origin.
     fn default() -> Self {
-        Self {
-            playing: false,
-            tempo: Bpm(120.0),
-            beat: Beat(0.0),
-            looping: None,
-        }
+        Self::new(false, Bpm(120.0), Beat(0.0), None)
     }
 }
 
@@ -516,12 +610,7 @@ impl TransportChanges {
         len: 0,
         items: [TransportChange {
             at: Offset::ZERO,
-            to: Transport {
-                playing: false,
-                tempo: Bpm(120.0),
-                beat: Beat(0.0),
-                looping: None,
-            },
+            to: Transport::new(false, Bpm(120.0), Beat(0.0), None),
         }; MAX_TRANSPORT_CHANGES],
     };
 

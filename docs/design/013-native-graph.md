@@ -937,12 +937,21 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    butler through, so it says `false` (and a `VoiceNode` answers for its
    voice); `VoicePool::isolate` left its beat cursor shared (now dropped,
    and rebuilt on the render's transport by `rebind_offline`);
-   `EqBandNode` never forwarded `isolate` to its SVF (now it does). Two
-   known limits stay: `stretch::Unit::isolate` reads the live bank's
+   `EqBandNode` never forwarded `isolate` to its SVF (now it does). One
+   known limit stays: `stretch::Unit::isolate` reads the live bank's
    `AudioThreadCell` from the forking thread to copy its geometry (as
-   `clone_isolated` always did; debug builds can trip the cell's guard),
-   and most effects share `Param` cells they only read, so a render
-   follows live control moves made while it runs rather than a snapshot.
+   `clone_isolated` always did; debug builds can trip the cell's guard).
+   **A fork renders a snapshot of the controls.** The cells a unit only
+   *reads* — `Param`s, a mute flag, clamp bounds, a click's settings — are
+   shared mutable state too (a UI handle or a mod target writes them), so
+   every forkable unit's `isolate` detaches them at their current values
+   (`Param::detach`); a render no longer follows live control moves made
+   while it runs. `tutti_graph::contract::IsolateRow` pins it per control
+   (fork, render, move the control live through `&U`, render again: equal;
+   fork again: different, so the control is audible and the row can fail);
+   every unit with a live cell has a row, and each row was seen to fail
+   with its `detach` removed. The per-unit verdicts are in the table after
+   this list.
    The editor stores each source with the generation it came from,
    and a fork refuses (and debug-asserts on) a source whose generation the
    spec has moved past. A `controlled` node forks from its
@@ -958,8 +967,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    starts silent (no delay rings or feedback state, clock at frame 0),
    has no controls, and is not itself forkable. A `controlled` fork does
    not see a value that something other than its controls writes into a
-   shared `Arc` cell after construction (the shadow was isolated then);
-   that is the Phase 4 port's to close with native `ForkSource`s. Every
+   shared `Arc` cell after construction (the shadow was isolated then, and
+   since every unit's `isolate` detaches its control cells, that now
+   includes a UI handle's `Param` writes: drive a `controlled` node through
+   its settings ring); that is the Phase 4 port's to close with native
+   `ForkSource`s. Every
    forkable `Legacy` keeps a second deep copy of its unit for its lifetime
    (the shadow or the insert-time clone): negligible for most units,
    megabytes for a convolver, which copies its IR spectra (Phase 4 moves
@@ -979,6 +991,45 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    by **state transfer**: spawn a fresh plugin instance, load the live
    instance's saved state into it, and rebind it offline — a `ForkSource`
    for the plugin node, built at bind time.
+
+**Fork audit, per unit** (every in-tree `impl AudioUnit`; "row" is its
+`IsolateRow` test, "—" where the unit reads no live cell, so there is
+nothing to move):
+
+| Unit | Crate | Shared mutable state a clone holds | `isolate` | `forkable` | Row |
+|---|---|---|---|---|---|
+| `SvfFilterNode` | tutti-nodes | cutoff, Q, gain `Param`s | detaches all | yes | `isolate_snapshots::svf` |
+| `EqBandNode` | tutti-nodes | its SVF's cells | forwards to the SVF | yes | `eq_band` |
+| `LadderFilterNode` | tutti-nodes | cutoff, resonance, drive | detaches all | yes | `ladder` |
+| `CompressorNode` | tutti-nodes | threshold, knee, ratio, attack, release, makeup | detaches all | yes | `compressor` |
+| `GateNode` | tutti-nodes | threshold, attack, hold, release, range | detaches all | yes | `gate` |
+| `LimiterNode` | tutti-nodes | threshold, ceiling, release | detaches all | yes | `limiter` |
+| `BrickwallLimiterNode` | tutti-nodes | ceiling | detaches | yes | `brickwall_limiter` |
+| `DelayLineNode` | tutti-nodes | per-channel delay time, feedback, cross-feedback, mix | detaches all | yes | `delay_line` |
+| `DistortionNode` | tutti-nodes | drive | detaches | yes | `distortion` |
+| `ModulatorNode<M>` (`LfoNode`) | tutti-nodes | frequency, depth, phase offset (`M` is plain data) | detaches all | yes | `lfo` |
+| `ModDelayNode` | tutti-nodes | rate, depth, feedback, mix | detaches all | yes | `chorus` |
+| `PhaserNode` | tutti-nodes | rate, depth, feedback, mix | detaches all | yes | `phaser` |
+| `ConvolverNode` | tutti-nodes | mix, gain (the IR is read-only) | detaches both | yes | `convolver` |
+| `BusStripNode` | tutti-nodes | volume, pan, mute flag | detaches all, fresh mute | yes | `bus_strip` |
+| `ParamSumNode` | tutti-nodes | clamp bounds | fresh bounds | yes | `param_sum` |
+| `AtomicSourceNode` | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
+| `ParamShaperNode`, `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
+| `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
+| `VbapPannerNode` | tutti-spatial | azimuth, elevation, spread, width (the inner panner's cells are private per clone) | detaches all | yes | `vbap` |
+| `HrtfBinauralNode` | tutti-spatial | azimuth, elevation, blend | detaches all | yes | `hrtf` |
+| `ClickNode` | tutti-core | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
+| `TransportClock` | tutti-core | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
+| `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
+| `stretch::Unit` | tutti-sampler | the vocoder bank (stretch and pitch cells are private per clone) | fresh bank | yes | `isolate_snapshots_stretch_and_pitch` |
+| `VoiceNode` | tutti-sampler | command channel, cursor, its voice and stretch | severs all | as its voice | — (controls arrive as commands; `a_render_clone_steals_no_commands`) |
+| `VoicePool` | tutti-sampler | command channel, voices, butler, cursor | severs all, voices cleared | yes | — |
+| `DiskSource` | tutti-sampler | ring consumer, `RtState` | stops, drops `RtState`: renders silence | yes | — |
+| `DiskVoice` | tutti-sampler | its own `Arc<RtState>` seeks the live butler | — | **no** | — |
+| `PolySynth` | tutti-polysynth | MIDI inbox and source; master volume, unison detune and spread | fresh port, voices cleared, cells detached | yes | `isolate_snapshots_volume_and_unison` |
+| `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
+| `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
+| `PluginClient`, `InProcessVst2Client` | tutti-plugin | the plugin | — | **no** (item 7) | — |
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 

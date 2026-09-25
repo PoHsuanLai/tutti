@@ -229,7 +229,11 @@ fn fork<U: AudioUnit + Clone>(unit: &U) -> U {
 /// act on something at every frequency). A control input a unit exposes
 /// as a port reads it too; rows use constructors without such ports.
 fn stimulus(ch: usize, frame: usize) -> f32 {
-    let envelope = if (frame / 1024) % 2 == 0 { 0.9 } else { 0.05 };
+    let envelope = if (frame / 1024).is_multiple_of(2) {
+        0.9
+    } else {
+        0.05
+    };
     let hz = 110.0 * (ch + 2) as f32;
     let phase = frame as f32 * hz / SAMPLE_RATE.get() as f32;
     let tone = (core::f32::consts::TAU * phase).sin();

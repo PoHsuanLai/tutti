@@ -292,10 +292,11 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// tempo step, a seek and a loop wrap, landing inside blocks.
 ///
 /// The transport rolls throughout. `ClickNode` gates on the live play flag,
-/// read once per 64-frame chunk; on the graph backend the chunks run after
-/// the block's commands are applied, so a mid-block start or stop gates it
-/// by chunk, not by frame. That is `ClickNode`'s own resolution (a native
-/// port is Phase 4), not the beat's.
+/// read once per 64-frame chunk; on the graph backend every chunk runs after
+/// the whole block's commands are applied, so a mid-block start or stop
+/// gates it from the block's first frame, not on its frame. That is
+/// `ClickNode`'s own gate (doc 013, gap 5; fixed by its native port), not
+/// the beat's.
 ///
 /// Mutation (run): hold the first segment's transport for the whole block in
 /// `EnvClock` (ignore `segments`) → the clicks after the seek at 30 000 land

@@ -55,14 +55,15 @@ use tutti_types::{ChannelLayout, Frame, NodeKey, Samples};
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
 use crate::legacy::Legacy;
-use crate::node::{IntoNode, Node, Prepare, Shape, Transport};
+use crate::node::{IntoNode, NodeParts, Prepare, Shape, Transport};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphSpec};
 
-/// One unit waiting for [`GraphBuilder::build`].
+/// One unit waiting for [`GraphBuilder::build`], with its fork source, so a
+/// built graph forks like one inserted by hand ([`Editor::fork`]).
 struct Pending {
     key: NodeKey,
     kind: String,
-    unit: Box<dyn Node>,
+    unit: NodeParts<()>,
 }
 
 /// Builds a [`GraphSpec`] and its units with `Net`'s calls, then hands both
@@ -144,14 +145,23 @@ impl GraphBuilder {
 
     /// Add a node, unwired, and return its controls with its key.
     pub fn add_with_controls<N: IntoNode>(&mut self, node: N) -> (NodeKey, N::Controls) {
-        let (unit, controls) = node.into_node();
+        let NodeParts {
+            node,
+            controls,
+            fork,
+        } = node.into_parts();
+        let unit = NodeParts {
+            node,
+            controls: (),
+            fork,
+        };
         (self.insert(std::any::type_name::<N>(), unit), controls)
     }
 
     /// Add a fundsp `AudioUnit`, unwired, running through [`Legacy`] — the
     /// port of `Net::push(Box::new(unit))`. Its kind is `"legacy"`.
     pub fn add_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        self.insert("legacy", Box::new(Legacy::from_box(unit)))
+        self.insert("legacy", Legacy::from_box(unit).into_parts())
     }
 
     /// [`add_unit`](Self::add_unit) for a unit whose output is a function of
@@ -159,12 +169,12 @@ impl GraphBuilder {
     /// [`Legacy::pure`]: its silence is reported, so it may be skipped. A
     /// unit fed any other way belongs in `add_unit`, which never skips it.
     pub fn add_pure_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        self.insert("legacy", Box::new(Legacy::from_box(unit).assume_pure()))
+        self.insert("legacy", Legacy::from_box(unit).assume_pure().into_parts())
     }
 
-    fn insert(&mut self, kind: &str, unit: Box<dyn Node>) -> NodeKey {
+    fn insert(&mut self, kind: &str, unit: NodeParts<()>) -> NodeKey {
         let key = NodeKey(self.units.len() as u64);
-        let shape = unit.shape();
+        let shape = unit.node.shape();
         self.spec.topology.nodes.insert(
             key,
             NodeSpec::new(kind, shape.audio_in, shape.audio_out)
@@ -433,8 +443,7 @@ impl GraphBuilder {
     /// taking output source `c % outputs`. Either way the node then feeds
     /// every global output ([`pipe_output`](Self::pipe_output)).
     pub fn chain<N: IntoNode<Controls = ()>>(&mut self, node: N) -> NodeKey {
-        let (unit, ()) = node.into_node();
-        let key = self.insert(std::any::type_name::<N>(), unit);
+        let key = self.insert(std::any::type_name::<N>(), node.into_parts());
         self.link(key);
         key
     }

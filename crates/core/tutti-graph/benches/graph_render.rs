@@ -41,7 +41,9 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use fundsp::net::{Net, NodeId};
 use fundsp::prelude32::{lowpass_hz, sine_hz};
-use tutti_graph::{Cx, Editor, Executor, Io, Legacy, Node, Prepare, Shape, Status, Transport};
+use tutti_graph::{
+    Cx, Editor, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status, Transport,
+};
 use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 use tutti_node::signal::{Signal, SignalFrame};
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
@@ -370,7 +372,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
                 dt: 0.0,
             })
         } else {
-            Box::new(Legacy::new(sine_hz(440.0)))
+            Legacy::new(sine_hz(440.0)).into_node().0
         }
     };
     let lowpass = |i: usize| -> Box<dyn Node> {
@@ -379,7 +381,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
         } else {
             // Pure: a filter is a function of its input, so it keeps the
             // silence scan the table in doc 013 measured.
-            Box::new(Legacy::pure(lowpass_hz(cutoff(i), 0.7)))
+            Legacy::pure(lowpass_hz(cutoff(i), 0.7)).into_node().0
         }
     };
     let wire = |ed: &mut Editor, sink: NodeKey, port: u16, from: Source| {
@@ -409,7 +411,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
             let s: Box<dyn Node> = if native {
                 Box::new(NativeSum(width))
             } else {
-                Box::new(Legacy::pure(SumUnit(width)))
+                Legacy::pure(SumUnit(width)).into_node().0
             };
             ed.insert(sum, "sum", s);
             for i in 0..width {
@@ -429,7 +431,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
                 let nop: Box<dyn Node> = if native {
                     Box::new(NativeNop)
                 } else {
-                    Box::new(Legacy::pure(NopUnit { copy: true }))
+                    Legacy::pure(NopUnit { copy: true }).into_node().0
                 };
                 ed.insert(k, "nop", nop);
                 wire(&mut ed, k, 0, from);

@@ -21,7 +21,7 @@ use tutti_core::{
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
     Transport, TransportClock, TransportCommand,
 };
-use tutti_graph::{Cx, Editor, Env, Executor, Io, Legacy, Node, Prepare, Shape, Status};
+use tutti_graph::{Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
 
@@ -132,7 +132,7 @@ fn net_engine(transport: &Transport, sink: Box<dyn AudioUnit>) -> Engine {
 
 /// Wire an `EnvClock` at key 1 into `sink` (key 2)'s two inputs, and `sink`'s
 /// `width` outputs to the globals.
-fn wire_clock(ed: &mut Editor, sink: impl Node, width: u16) {
+fn wire_clock(ed: &mut Editor, sink: impl IntoNode<Controls = ()>, width: u16) {
     const CLOCK: NodeKey = NodeKey(1);
     const SINK: NodeKey = NodeKey(2);
     ed.insert(CLOCK, "clock", EnvClock::new());
@@ -151,7 +151,11 @@ fn wire_clock(ed: &mut Editor, sink: impl Node, width: u16) {
 }
 
 /// A graph engine over `transport`: an `EnvClock` feeding `sink`.
-fn graph_engine(transport: &Transport, sink: impl Node, width: u16) -> (Engine, Editor) {
+fn graph_engine(
+    transport: &Transport,
+    sink: impl IntoNode<Controls = ()>,
+    width: u16,
+) -> (Engine, Editor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     wire_clock(&mut ed, sink, width);
     let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");

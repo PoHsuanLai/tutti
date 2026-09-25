@@ -24,7 +24,7 @@ use tutti_core::{
     Transport, TransportClock, TransportCommand,
 };
 use tutti_graph::{
-    Cx, Editor, EventIn, EventKind, Executor, Io, Node, Prepare, Shape, Status, Ump,
+    Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
@@ -272,7 +272,7 @@ fn net_engine(
 fn graph_engine(
     transport: &Transport,
     max_block: usize,
-    node: impl Node,
+    node: impl IntoNode<Controls = ()>,
     width: u16,
 ) -> (Engine, Editor) {
     let (mut ed, exec) = Editor::new(prepare(max_block));

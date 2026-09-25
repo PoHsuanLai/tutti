@@ -290,10 +290,8 @@ fn graph_engine(
 /// executor's own frame clock, the transport as it stands, and a fold that is
 /// the identity at equal width.
 ///
-/// Mutation: render the Graph backend in 64-frame chunks → channel 1 reads 64
-/// → fails. Advance the executor twice per block (or hand it the engine's
-/// own frame counter from 1) → channel 0 differs → fails. Swap two channels
-/// in the fold → fails.
+/// Mutation (run): cap the Graph backend's block at 64 frames
+/// (`block_bound`) → channel 1 reads 64 → fails.
 #[test]
 fn graph_engine_render_is_bit_identical_to_the_executor() {
     let blocks = [64usize, 256, 100, 1024, 1, 512];
@@ -330,11 +328,9 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
 /// graph), stereo and 5.1, to stereo and 5.1 devices, rolling and then
 /// stopped with a declick fade mid-run — bit-identical output.
 ///
-/// Mutation: copy channel `c` straight across instead of `fold_frame` in the
-/// graph render → the 6→2 case fails. Skip `walk.ramps.apply` for the graph
-/// → the fade differs → fails. Start the graph's fade one frame late
-/// (`remaining - i` in the ramp) → fails for both, so run each mutation on
-/// one side only.
+/// Mutation (run): copy channel `c` straight across instead of `fold_frame`
+/// in the graph render → the 6→2 case fails. Skip `walk.ramps.apply` for the
+/// graph → the fade differs → fails.
 #[test]
 fn fold_and_declick_match_the_net_path() {
     let blocks = [256usize, 256, 300, 64, 128, 512, 256];
@@ -393,9 +389,10 @@ fn fold_and_declick_match_the_net_path() {
 /// non-silent sample of a transport-gated graph — is exactly that frame, in
 /// the middle of a block.
 ///
-/// Mutation: apply every due command at its block's first frame (ignore the
-/// offset in the walk) → the first sound is at 768 → fails. Drop the changes
-/// from the executor call → the graph hears the start a block late → fails.
+/// Mutation (run): land every due command at its piece's first frame
+/// (`at = cursor` in the walk) → fails. Hand the executor
+/// `TransportChanges::NONE` → the graph hears the start a block late →
+/// fails. Drop `schedule.release` → the credit stays held → fails.
 #[test]
 fn a_timed_start_sounds_from_its_exact_frame() {
     let transport = Transport::new(SR);
@@ -416,8 +413,8 @@ fn a_timed_start_sounds_from_its_exact_frame() {
 /// through frame 1 000 (emit-then-advance) and has moved one frame's worth
 /// of beat at 1 001.
 ///
-/// Mutation: in the Net walk, run the piece after the cut before applying
-/// the command → the clock starts a piece late → fails.
+/// Mutation (run): land every due command at its piece's first frame
+/// (`at = cursor` in the walk) → the clock moves from 769 → fails.
 #[test]
 fn a_timed_start_moves_a_net_clock_from_its_exact_frame() {
     let transport = Transport::new(SR);
@@ -448,17 +445,19 @@ fn a_timed_start_moves_a_net_clock_from_its_exact_frame() {
 /// accumulated playhead sits ~1e-12 beat past it: it must land there without
 /// counting as late.
 ///
-/// Mutation: land beats at their piece's first frame (`k = 0` in the walk) →
-/// fails. Drop `schedule.release` → `scheduled_outstanding` stays 2 → fails.
-/// Drop the behind-side rounding tolerance in `Env::beat_due` → the seek
-/// counts late → fails (observed before that tolerance existed).
+/// Mutation (run): land every due command at its piece's first frame
+/// (`at = cursor` in the walk) → the stop lands at its block's start →
+/// fails. Hand the executor `TransportChanges::NONE` → fails. Drop
+/// `schedule.release` → `scheduled_outstanding` stays 2 → fails. Drop the
+/// behind-side rounding tolerance in `Env::beat_due` → the seek counts late
+/// → fails (observed before that tolerance existed).
 #[test]
 fn beat_timed_seek_and_stop_land_on_their_frames() {
     let transport = Transport::new(SR);
     let log = Arc::new(Mutex::new(Vec::new()));
     let (engine, _ed) = graph_engine(
         &transport,
-        500,
+        700,
         Gate {
             log: Some(Arc::clone(&log)),
         },
@@ -477,7 +476,10 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
     .expect("room");
     m.schedule(At::Beat(Beat(10.5)), MotionEvent::stop_now())
         .expect("room");
-    render(&engine, ChannelLayout::MONO, &[500; 80]);
+    // 500-frame blocks put the seek on a block's first frame; 700-frame ones
+    // put the stop inside a block.
+    render(&engine, ChannelLayout::MONO, &[500; 48]);
+    render(&engine, ChannelLayout::MONO, &[700; 30]);
 
     let log = log.lock().expect("log");
     let at = |f: u64| log[f as usize];
@@ -495,8 +497,9 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
 /// A timed declick stop starts its fade on its frame, not at the block's
 /// start: full level up to the frame, then the ramp.
 ///
-/// Mutation: plan the whole block's declick before the walk (the old
-/// single-ramp path) → the fade starts at the block's first frame → fails.
+/// Mutation (run): land every due command at its piece's first frame → the
+/// fade starts at the block's first frame → fails. Skip
+/// `walk.ramps.apply` for the graph → fails.
 #[test]
 fn a_timed_declick_fades_from_its_frame() {
     let transport = Transport::new(SR);
@@ -516,8 +519,7 @@ fn a_timed_declick_fades_from_its_frame() {
 /// A command whose frame is already past lands at the next block's first
 /// frame and is counted late, never dropped.
 ///
-/// Mutation: drop `count_late` → fails. Treat `Due::Late` as not yet → the
-/// command never lands → fails.
+/// Mutation (run): drop `schedule.count_late()` → fails.
 #[test]
 fn a_past_frame_lands_at_once_and_is_counted() {
     let transport = Transport::new(SR);
@@ -535,8 +537,8 @@ fn a_past_frame_lands_at_once_and_is_counted() {
 /// Tempo and loop changes at a frame: the beat advances at the old tempo up
 /// to it and the new one after, and a loop armed at a frame wraps from then.
 ///
-/// Mutation: apply `TransportCommand::Tempo` at the block start → the beat
-/// at frame 1 200 is off → fails.
+/// Mutation (run): land every due command at its piece's first frame → the
+/// tempo changes at 1 024, not 1 200 → fails.
 #[test]
 fn tempo_and_loop_change_on_their_frames() {
     let transport = Transport::new(SR);
@@ -577,10 +579,10 @@ fn tempo_and_loop_change_on_their_frames() {
 /// at beats land on the frames playback reaches them — beat 0 on the start
 /// frame itself, beat 0.5 half a beat later.
 ///
-/// Mutation: hand the executor no transport changes (`process` instead of
-/// `process_with_changes`) → beat 0 is not reached in the start's block, and
-/// lands late at the next block's first frame → fails. Drop the segment walk
-/// in `Env::due` → the same.
+/// Mutation (run): hand the executor `TransportChanges::NONE` → beat 0 is
+/// not reached in the start's block, and lands late at the next block's
+/// first frame → fails. Land every due command at its piece's first frame →
+/// fails.
 #[test]
 fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
     let transport = Transport::new(SR);
@@ -611,9 +613,10 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
 /// rounding (`transport_at` is closed form, the clock accumulates). The
 /// published playheads agree to the bit.
 ///
-/// Mutation: advance the graph clock by `beats_per_sample × n` instead of
-/// frame by frame → the published playheads differ → fails. Skip the loop
-/// wrap in `TransportClock::advance` → fails after the loop arms.
+/// Mutation (run): skip the loop wrap in `TransportClock::advance` → fails
+/// after the loop arms. Hand the executor `TransportChanges::NONE` → the
+/// per-frame beats differ after a cut → fails. Land every due command at its
+/// piece's first frame → fails.
 #[test]
 fn net_and_graph_see_the_same_beat() {
     let net_t = Transport::new(SR);

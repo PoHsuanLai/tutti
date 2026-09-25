@@ -99,7 +99,7 @@ use tutti_types::NodeKey;
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
-use crate::node::{Node, Prepare};
+use crate::node::{IntoNode, Node, NodeParts, Prepare};
 use crate::spec::EventIn;
 
 /// Produces a fresh unit for a fork of the graph its node was inserted into:
@@ -269,7 +269,10 @@ pub enum ForkMode<'a> {
 /// What [`Editor::fork`] copies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForkTarget {
-    /// The whole graph, global outputs as they are.
+    /// The graph as the global outputs hear it, outputs as they are: every
+    /// node an output reaches, walking back along audio, feedback and event
+    /// edges. A node no output reaches is not forked, and need not be
+    /// forkable.
     Master,
     /// The sub-graph feeding this node, with every global output reading it
     /// (see "`ForkTarget::Node`" in the `fork` module's docs).
@@ -345,6 +348,70 @@ impl Error for ForkError {
     }
 }
 
+/// A native [`Node`] inserted **forkably, by clone**: its [`IntoNode`] hands
+/// the editor a [`ForkSource`] that clones the node as it was inserted, then
+/// [`reset`](Node::reset)s it.
+///
+/// For a node whose `Clone` shares nothing with the original — no `Arc` cell,
+/// no channel end, no handle onto live state — so a clone *is* a fork. The
+/// wrapper is the caller's promise of that, as `AudioUnit::forkable` is a
+/// `Legacy` unit's: the blanket `IntoNode for N: Node` hands no fork source,
+/// because a `Clone` bound alone says nothing about sharing. A generator that
+/// reads only its block's [`Env`](crate::Env) (tutti-core's `EnvClock`)
+/// needs no rebinding offline: the fork's renderer hands it the render's
+/// transport.
+///
+/// ```
+/// use tutti_graph::{Editor, ForkByClone, ForkMode, ForkTarget, Prepare};
+/// # use tutti_graph::{Cx, Io, Node, Shape, Status};
+/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// # #[derive(Clone)]
+/// # struct Silence;
+/// # impl Node for Silence {
+/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn prepare(&mut self, _: &Prepare) {}
+/// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
+/// #     fn reset(&mut self) {}
+/// # }
+/// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
+/// let (mut editor, _exec) = Editor::new(prepare);
+/// editor.insert(NodeKey(1), "silence", ForkByClone(Silence));
+/// editor.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
+///     tutti_types::graph::OutPort { node: NodeKey(1), port: 0 },
+/// )];
+/// assert!(editor.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare).is_ok());
+/// ```
+#[derive(Clone, Debug)]
+pub struct ForkByClone<N>(pub N);
+
+/// [`ForkByClone`]'s source: the node as inserted, never processed.
+struct CloneFork<N>(N);
+
+impl<N: Node + Clone + Send + 'static> ForkSource for CloneFork<N> {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        let mut node = self.0.clone();
+        node.reset();
+        Ok(Forked::new(Box::new(node)))
+    }
+}
+
+impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
+    type Controls = ();
+
+    fn into_node(self) -> (Box<dyn Node>, ()) {
+        (Box::new(self.0), ())
+    }
+
+    fn into_parts(self) -> NodeParts<()> {
+        let fork = CloneFork(self.0.clone());
+        NodeParts {
+            node: Box::new(self.0),
+            controls: (),
+            fork: Some(Box::new(fork)),
+        }
+    }
+}
+
 impl Editor {
     /// A new editor/executor pair running a copy of `target` that shares no
     /// state with this graph, prepared for `prepare`, already installed (the
@@ -365,8 +432,16 @@ impl Editor {
     ) -> Result<(Editor, Executor), ForkError> {
         let live = self.spec();
         let (keys, outputs) = match target {
+            // What the global outputs hear, and nothing else: a node no
+            // output reaches renders nothing into the fork, so it is neither
+            // copied nor asked to be forkable (an unrouted mic monitor does
+            // not refuse the export; an unrouted plugin launches no server).
+            // The same reachability `graph_tail` folds over.
             ForkTarget::Master => (
-                live.topology.nodes.keys().copied().collect::<BTreeSet<_>>(),
+                self.upstream(live.topology.outputs.iter().filter_map(|s| match s {
+                    Source::Node(p) => Some(p.node),
+                    _ => None,
+                })),
                 live.topology.outputs.clone(),
             ),
             ForkTarget::Node(key) => {
@@ -386,7 +461,7 @@ impl Editor {
                         })
                     })
                     .collect();
-                (self.upstream(key), outputs)
+                (self.upstream([key]), outputs)
             }
         };
         // Every source first, so a refusal forks nothing (a fork may clone a
@@ -482,12 +557,12 @@ impl Editor {
         Ok(())
     }
 
-    /// `key` and every node that feeds it, walking back along audio,
+    /// `roots` and every node that feeds them, walking back along audio,
     /// feedback and event edges.
-    fn upstream(&self, key: NodeKey) -> BTreeSet<NodeKey> {
+    fn upstream(&self, roots: impl IntoIterator<Item = NodeKey>) -> BTreeSet<NodeKey> {
         let spec = self.spec();
-        let mut seen = BTreeSet::from([key]);
-        let mut stack = vec![key];
+        let mut seen: BTreeSet<NodeKey> = roots.into_iter().collect();
+        let mut stack: Vec<NodeKey> = seen.iter().copied().collect();
         while let Some(node) = stack.pop() {
             let audio = spec
                 .topology

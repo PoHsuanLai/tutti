@@ -253,7 +253,12 @@ impl OfflineRead {
 /// file that cannot seek), or paged in through a decoder.
 enum Open {
     Resident(Arc<Wave>),
-    /// Boxed: a decoder and two pages' bookkeeping, against an `Arc`.
+    /// Boxed: a decoder and two pages' bookkeeping, against an `Arc`. With
+    /// no codec compiled in nothing builds one (`open_path` fails first).
+    #[cfg_attr(
+        not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
+        allow(dead_code)
+    )]
     Paged(Box<Pages>),
 }
 

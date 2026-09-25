@@ -25,10 +25,28 @@
 //!   block, with the delays resized in the same commit; on `Native` once the
 //!   re-prepare resumes (see `commit_graph`).
 //!
+//! **On `Net`, a re-rate loses every unit's live state** (a limitation of
+//! `Net`, not of the restart): `Net::set_sample_rate` marks every vertex
+//! changed, so the commit swaps in the control side's copies, which have
+//! never run. A voice mid-note, a reverb or delay tail, filter memory, an
+//! LFO's phase all start from where the control-side copy was built. A
+//! hosted plugin keeps its instance — a `PluginClient` clone shares the
+//! bridge and the plugin process, and its `set_sample_rate` re-rates that
+//! same process — but loses its batching scratch. The native backend keeps
+//! every unit instance across a re-prepare and resets only time-based state
+//! (`Editor::reprepare`'s rule).
+//!
+//! **Recovery after a failed hook:** the stream is left stopped, and the
+//! driver keeps the old spec and graph rate (`TuttiDriver::graph_rate`). A
+//! restart onto the old device at the old rate — `restart_device` with it,
+//! or a plain `TuttiDriver::restart` — moves nothing and plays again.
+//!
 //! Not re-rated here, and recorded in design doc 013: the sampler's disk
 //! streamer and the MIDI clock master each keep the rate they were built
 //! with (neither has a way to change it yet), and the graph root is not
-//! widened to a wider new device.
+//! widened to a wider new device — so [`AudioConfig::channels`] keeps the
+//! width the graph outputs, not the new device's (the engine folds to the
+//! device's width either way).
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -65,6 +83,12 @@ pub struct DeviceRestart {
 /// (`commands.queue(|world: &mut World| { … })`): it takes the world because
 /// the driver is `NonSend` and the hook writes several resources at once.
 ///
+/// **On [`GraphBackend::Net`] a rate change resets every unit's live
+/// state** — voices, tails, filter memory, LFO phase — because the commit
+/// swaps in never-run control-side copies (see the module docs). Hosted
+/// plugins keep their instance. `Native` keeps every unit and resets only
+/// what is time-based.
+///
 /// # Errors
 ///
 /// - [`Error::Reprepare`] **before the stream stops**, changing nothing,
@@ -76,7 +100,8 @@ pub struct DeviceRestart {
 /// - [`Error::Reprepare`] from the re-prepare itself (a graph that no
 ///   longer compiles at the new block): the stream is then left **stopped**
 ///   (`TuttiDriver::restart_with`), since nothing may play at a rate the
-///   graph was not moved to. Restart again with another `max_block`.
+///   graph was not moved to. Restart again with another `max_block`, or
+///   onto the old device and rate, which moves nothing and plays again.
 pub fn restart_device(world: &mut World, request: DeviceRestart) -> Result<()> {
     restart(world, request.max_block, |driver, world| {
         driver.restart_with(request.device, |spec| {
@@ -126,9 +151,16 @@ fn restart(
     let Some(mut driver) = world.remove_non_send::<TuttiDriver>() else {
         return Err(not_built());
     };
-    let result = run(&mut driver, world);
+    // The driver goes back whatever `run` does, a panic included: a world
+    // left without it has no stream to restart ever again.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(&mut driver, &mut *world)
+    }));
     world.insert_non_send(driver);
-    result
+    match result {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 fn not_built() -> Error {
@@ -179,9 +211,14 @@ fn rerate(world: &mut World, spec: &OutputSpec, max_block: Option<Samples>) -> R
     if let Some(io) = world.get_resource::<crate::midi::MidiIoRes>() {
         io.ports().set_sample_rate(rate);
     }
+    // The graph's width, not the new device's: the root is not widened on
+    // a restart (doc 013), and the engine folds it to whatever the device is.
+    let channels = world
+        .get_resource::<AudioConfig>()
+        .map_or(spec.channels, |c| c.channels);
     world.insert_resource(AudioConfig {
         sample_rate: rate,
-        channels: spec.channels,
+        channels,
     });
     Ok(())
 }
@@ -300,7 +337,10 @@ mod tests {
     ///   480-frame block (on `Native` that block is the re-prepare's silent
     ///   one, and the transport rolls through it at the new rate);
     /// - the stop keeps its wall-clock time: it lands 0.5 s after the
-    ///   restart, on beat 3.0;
+    ///   restart, on frame 72 000 (beat 3.0 to the frame);
+    /// - a play scheduled *after* the restart, at 48 kHz frame 84 000, is
+    ///   not rescaled a second time when the engine adopts the rate: it
+    ///   lands on its frame (beat 3.5 half a beat later, to the frame);
     /// - `AudioConfig`, the transport's rate, and the PDC figures
     ///   (`GraphLatency`, the dry channel's pre-roll) are the new ones —
     ///   the limiter's lookahead is a time, so its latency in samples moved.
@@ -313,6 +353,8 @@ mod tests {
     ///   beat restarts from 0 → fails;
     /// - `rerate` not republishing `AudioConfig` (or not setting the
     ///   transport's rate) → fails on each;
+    /// - `Schedule::rescale` ignoring the `mark_rate_change` boundary → the
+    ///   play at 84 000 moves to ~91 429 → beat ~3.19 → fails;
     /// - `rerate` not compensating on `Net` → the figures are the old ones
     ///   until the next frame's `compensate_graph` → `Net` fails the check
     ///   made before the first block; `commit_graph` clearing the flag on
@@ -358,23 +400,40 @@ mod tests {
             );
         }
 
+        // Sent after the restart, before the first block at the new rate:
+        // already in 48 kHz frames (1.75 s of wall clock), so the rate's
+        // adoption must leave it where it is.
+        t.motion
+            .schedule(At::Frame(Frame(84_000)), MotionEvent::Play)
+            .expect("room");
+
         let mut after = play(&mut app, &new, 480, 1);
         assert!(
             (t.settings.beat().get() - 2.02).abs() < 1e-9,
             "{backend:?}: the beat carries on from 2.0 at the new rate, not from {}",
             t.settings.beat().get()
         );
-        after.extend(play(&mut app, &new, 480, 99));
+        after.extend(play(&mut app, &new, 480, 54));
+        // One frame of 48 kHz is 1/24 000 of a beat: 1e-9 pins the frame.
+        assert!(t.motion.is_stopped(), "{backend:?}: the stop landed");
+        assert!(
+            (t.settings.beat().get() - 3.0).abs() < 1e-9,
+            "{backend:?}: the stop lands on 1.5 s of wall clock, frame 72 000 \
+             (beat 3), not at beat {}",
+            t.settings.beat().get()
+        );
+        after.extend(play(&mut app, &new, 480, 45));
+        assert!(t.motion.is_playing(), "{backend:?}: the later play landed");
+        assert!(
+            (t.settings.beat().get() - 3.5).abs() < 1e-9,
+            "{backend:?}: rolling again from frame 84 000, 12 000 frames to go \
+             (beat 3.5), not beat {}",
+            t.settings.beat().get()
+        );
         assert!(
             (period(&after[4_800..]) - 48.0).abs() < 0.01,
             "{backend:?}: 1 kHz at 48 kHz, measured {}",
             period(&after[4_800..])
-        );
-        assert!(t.motion.is_stopped(), "{backend:?}: the stop landed");
-        assert!(
-            (t.settings.beat().get() - 3.0).abs() < 1e-4,
-            "{backend:?}: 1.5 s of wall clock is beat 3, stopped at {}",
-            t.settings.beat().get()
         );
 
         let new_latency = latency_of(&app, lim);
@@ -420,11 +479,77 @@ mod tests {
         );
         assert!(play(&mut app, &old, 441, 10).iter().any(|&x| x != 0.0));
 
-        // Within it, the same restart goes through.
+        // Within it, the same restart goes through — onto a 5.1 device,
+        // whose width `AudioConfig` does not take: the root stays stereo
+        // (it is not widened on a restart), and the engine folds.
         let (driver, new) = ManualStreamDriver::new();
-        restart_device_on(app.world_mut(), spec_at(NEW), driver, Some(Samples(2_048)))
+        let surround = OutputSpec::new(
+            SampleRate(NEW),
+            ChannelLayout::from(6usize),
+            tutti_cpal::cpal::SampleFormat::F32,
+        );
+        restart_device_on(app.world_mut(), surround, driver, Some(Samples(2_048)))
             .expect("at a block the engine holds");
         assert!(new.is_open());
+        // Mutation (run): `rerate` publishing `spec.channels` → 6 → fails.
+        assert_eq!(
+            app.world().resource::<AudioConfig>().channels,
+            ChannelLayout::STEREO
+        );
+    }
+
+    /// **After a hook fails, a restart onto the old device and rate plays
+    /// again.** The hook fails with the stream stopped (here: the
+    /// transport resource is gone, so it cannot re-rate); the driver keeps
+    /// the old spec and graph rate, and `AudioConfig` is untouched. Then a
+    /// restart at 44.1 kHz moves nothing and renders the 1 kHz sine at 44.1
+    /// frames a cycle.
+    ///
+    /// Mutation (run): `TuttiDriver::rerate_or_restore` adopting the new
+    /// rate on failure → the driver claims 48 kHz → fails.
+    fn a_restart_after_a_failed_hook_recovers_on_the_old_device(backend: GraphBackend) {
+        let (mut app, old, _, _) = engine_app(backend);
+        let t = app
+            .world_mut()
+            .remove_resource::<TransportRes>()
+            .expect("built");
+        let (driver, new) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_at(NEW), driver, None)
+            .expect_err("the hook cannot re-rate");
+        assert!(!old.is_open() && !new.is_open(), "left stopped");
+        let driver = app.world().non_send::<TuttiDriver>();
+        assert_eq!(driver.graph_rate(), SampleRate(OLD), "{backend:?}");
+        assert_eq!(driver.spec().sample_rate, SampleRate(OLD), "{backend:?}");
+        assert_eq!(
+            app.world().resource::<AudioConfig>().sample_rate,
+            SampleRate(OLD)
+        );
+
+        app.world_mut().insert_resource(t);
+        let (driver, back) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_at(OLD), driver, None).expect("recovers");
+        assert!(back.is_open());
+        let out = play(&mut app, &back, 441, 20);
+        assert!(
+            (period(&out[4_410..]) - 44.1).abs() < 0.01,
+            "{backend:?}: plays again at 44.1 kHz"
+        );
+    }
+    both_backends!(a_restart_after_a_failed_hook_recovers_on_the_old_device);
+
+    /// **The driver goes back into the world even if the restart panics**:
+    /// a world left without it has no stream to restart again.
+    ///
+    /// Mutation (run): `restart` calling `run` without `catch_unwind` → the
+    /// panic skips the reinsert → the driver is gone → fails.
+    #[test]
+    fn a_panicking_restart_puts_the_driver_back() {
+        let (mut app, _old, _, _) = engine_app(GraphBackend::Net);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = restart(app.world_mut(), None, |_, _| panic!("mid-restart"));
+        }));
+        assert!(caught.is_err(), "the panic propagates");
+        assert!(app.world().get_non_send::<TuttiDriver>().is_some());
     }
 
     /// **A crossfade asked for while the restart's re-prepare is between its

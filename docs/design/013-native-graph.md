@@ -1505,8 +1505,12 @@ ask again.
   - `tutti-cpal`: `TuttiDriver::restart_with(device, hook)` runs the host's
     hook between the stop and the start with the new device's `OutputSpec`
     (`restart_on` is the same over a `ManualStreamDriver`); a failing hook
-    leaves the stream stopped. A plain `restart` refuses a rate change
-    (`Error::RateChanged`, stream stopped), since it can re-rate nothing.
+    leaves the stream stopped, and the driver keeps the old spec and its
+    `graph_rate` (the rate the graph runs at: the build's, then only what a
+    hook returned `Ok` for). A plain `restart` refuses a device whose rate
+    differs from `graph_rate` (`Error::RateChanged`, stream stopped), so a
+    second attempt onto the same device is refused too; a restart onto the
+    old device and rate recovers.
   - `bevy-tutti`: `restart_device(world, DeviceRestart { device, max_block })`
     (and the device-free `restart_device_on`). Before stopping it refuses,
     changing nothing, a `max_block` past the engine's block capacity
@@ -1519,15 +1523,19 @@ ask again.
     second half lands through `commit_graph` (a crossfade asked for
     meanwhile waits in `PendingCrossfades`). Then the transport's rate
     (`Transport::set_sample_rate`, now shared by every clone), `AudioConfig`
-    and the hardware MIDI input's rate.
+    and the hardware MIDI input's rate. `AudioConfig::channels` keeps the
+    graph's width. The driver is put back in the world even if the restart
+    panics.
   - `tutti-core`'s engine follows the rate itself, on the first block that
     carries it: on `Graph` the block the re-prepare's **first** commit lands
     (`Executor::pending_prepare`), which is when the executor rescales its
     frame clock, so the beat steps at the new rate through the silent block;
     on `Net` the block a re-rated net is pumped. On both, the engine's frame
     clock and every scheduled `At::Frame` transport command move to the same
-    wall-clock time (nearest frame; `Schedule::rescale`), #16's rule, with
-    the adoption block as the boundary.
+    wall-clock time (nearest frame; `Schedule::rescale`), #16's rule. The
+    boundary is the send order at `Transport::set_sample_rate`
+    (`Schedule::mark_rate_change`): a command scheduled after the restart
+    set the new rate is already in its frames and is not rescaled again.
   - PDC: `commit_graph` keeps `GraphDirty` for one more frame when a native
     re-prepare resumes in its `collect` (that frame's `Compensate` ran on
     the old shapes), so `GraphLatency` and `ChannelCompensation` republish
@@ -1537,10 +1545,22 @@ ask again.
   `build_on`, the device-free `build_into`): 44.1 kHz to 48 kHz keeps a
   1 kHz sine at 48 frames a cycle, the beat continuous, a stop at
   `At::Frame` on its wall-clock time, and the PDC figures rescaled; a block
-  past the capacity is refused with the old device still playing. Still
+  past the capacity is refused with the old device still playing.
+
+  **A `Net` limitation:** a re-rate on `Net` loses every unit's live state
+  (voices mid-note, tails, filter memory, LFO phase), because
+  `Net::set_sample_rate` marks every vertex changed and the commit swaps in
+  the control side's never-run copies. A hosted plugin keeps its instance
+  (a `PluginClient` clone shares the bridge and the plugin process, and its
+  `set_sample_rate` re-rates that process); only its batching scratch
+  resets. `Native` keeps every unit instance across a re-prepare and resets
+  only time-based state.
+
+  Still
   at the build rate after a restart (no way to change them yet): the
   sampler's `DiskStreamer` and the MIDI `ClockMaster`; and the graph root
-  is not widened to a wider new device.
+  is not widened to a wider new device (a follow-up; until then
+  `AudioConfig::channels` keeps the graph's width and the engine folds).
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

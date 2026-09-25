@@ -88,9 +88,17 @@ impl Transport {
     /// adopts it (`Engine::process`), which is where a frame count turns into
     /// beats. A host changing device rate calls this beside re-rating the
     /// graph — `bevy_tutti`'s device restart does both.
+    ///
+    /// A change also marks the boundary for the transport's frame-timed
+    /// commands: one scheduled (`MotionFsm::schedule`) after this call is
+    /// taken to be in the new rate's frames, and the engine leaves it alone
+    /// when it adopts the rate; one scheduled before is rescaled to its
+    /// wall-clock time. Call it before scheduling against the new rate.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        self.sample_rate
-            .store(sample_rate.into().get(), Ordering::Release);
+        let rate = sample_rate.into().get();
+        if self.sample_rate.swap(rate, Ordering::AcqRel) != rate {
+            self.motion.timed().mark_rate_change();
+        }
     }
 
     /// Frames one beat spans at the current tempo, rounded to the nearest

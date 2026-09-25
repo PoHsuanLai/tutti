@@ -38,6 +38,12 @@ pub struct DeviceInfo {
 pub struct TuttiDriver {
     audio_engine: AudioEngine,
     callback_state: Arc<AudioCallbackState>,
+    /// The rate the graph runs at: the device's at build, then only what a
+    /// restart hook returned `Ok` for. Kept apart from the spec, which a
+    /// restart resolves to the new device's config before its hook runs —
+    /// comparing against that would let a second plain `restart` onto the
+    /// same new-rate device find "no change" and start over the old graph.
+    graph_rate: tutti_core::SampleRate,
 }
 
 // Hand-rolled: `AudioCallbackState` holds the RT-side graph handles and is not
@@ -54,9 +60,18 @@ impl TuttiDriver {
     /// Construct from an opened device and the state its callback will read.
     pub fn from_parts(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {
         Self {
+            graph_rate: audio_engine.sample_rate(),
             audio_engine,
             callback_state,
         }
+    }
+
+    /// The rate the graph runs at, as far as this driver knows: the device's
+    /// when it was built, then the rate of the last restart whose hook
+    /// returned `Ok` (a plain [`restart`](Self::restart) keeps it, since it
+    /// refuses any other). What a plain `restart` compares a device against.
+    pub fn graph_rate(&self) -> tutti_core::SampleRate {
+        self.graph_rate
     }
 
     /// Is the audio stream currently running?
@@ -94,8 +109,7 @@ impl TuttiDriver {
     /// [`restart_with`](Self::restart_with) to re-rate the graph between
     /// the stop and the start. Otherwise what [`AudioEngine::start`] reports.
     pub fn restart(&mut self, device_index: Option<usize>) -> Result<()> {
-        let graph = self.audio_engine.sample_rate();
-        self.restart_with(device_index, refuse_rate_change(graph))
+        self.restart_with(device_index, refuse_rate_change(self.graph_rate))
     }
 
     /// [`restart`](Self::restart), with `rerate` run between the stop and the
@@ -107,7 +121,10 @@ impl TuttiDriver {
     /// returned `Ok`, so the first block at the new rate renders the
     /// re-rated graph. A hook that fails leaves the stream **stopped** and
     /// its error returned: nothing plays at a rate the graph was not moved
-    /// to.
+    /// to. Its `Ok` is the claim that the graph now runs at the spec's rate
+    /// ([`graph_rate`](Self::graph_rate)); after a failure the driver keeps
+    /// the old rate and the old [`spec`](Self::spec), so a later restart
+    /// onto the old device and rate (a plain `restart` of it) recovers.
     ///
     /// # Errors
     ///
@@ -121,8 +138,9 @@ impl TuttiDriver {
         self.audio_engine.stop();
         self.callback_state.reset_owners();
         self.audio_engine.set_device(device_index);
+        let old = self.audio_engine.spec().clone();
         let device = self.audio_engine.resolve()?;
-        rerate(self.audio_engine.spec())?;
+        self.rerate_or_restore(old, rerate)?;
         self.audio_engine.start_with(
             self.callback_state.clone(),
             crate::CpalDriver::from_device(device),
@@ -152,11 +170,32 @@ impl TuttiDriver {
     {
         self.audio_engine.stop();
         self.callback_state.reset_owners();
+        let old = self.audio_engine.spec().clone();
         self.audio_engine.set_spec(spec);
-        rerate(self.audio_engine.spec())?;
+        self.rerate_or_restore(old, rerate)?;
         self.audio_engine
             .start_with(self.callback_state.clone(), driver)?;
         Ok(())
+    }
+
+    /// Run a restart's hook against the resolved spec. `Ok` adopts its rate
+    /// as the graph's; an error puts `old` back, so neither the spec nor the
+    /// graph rate claims a rate the graph was not moved to.
+    fn rerate_or_restore<E>(
+        &mut self,
+        old: crate::OutputSpec,
+        rerate: impl FnOnce(&crate::OutputSpec) -> core::result::Result<(), E>,
+    ) -> core::result::Result<(), E> {
+        match rerate(self.audio_engine.spec()) {
+            Ok(()) => {
+                self.graph_rate = self.audio_engine.spec().sample_rate;
+                Ok(())
+            }
+            Err(e) => {
+                self.audio_engine.set_spec(old);
+                Err(e)
+            }
+        }
     }
 
     /// The configuration of the stream that is playing, or that would be:
@@ -257,8 +296,13 @@ mod tests {
     /// (`restart` itself needs a device to resolve). At the same rate it
     /// starts.
     ///
-    /// Mutation (run): `refuse_rate_change` answering `Ok` regardless → the
-    /// 48 kHz restart starts the stream over the 44.1 kHz graph → fails.
+    /// Mutations (run): `refuse_rate_change` answering `Ok` regardless → the
+    /// 48 kHz restart starts the stream over the 44.1 kHz graph → fails;
+    /// `rerate_or_restore` adopting the rate (or keeping the new spec) on
+    /// failure → the second attempt compares 48 kHz with 48 kHz and starts
+    /// → fails. (Checking against `spec().sample_rate` instead of
+    /// `graph_rate` is equivalent while a failure restores the spec; it
+    /// fails here only together with the restore removed.)
     #[test]
     fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
         let transport = Transport::new(44_100.0);
@@ -272,17 +316,34 @@ mod tests {
         let mut driver = TuttiDriver::from_parts(AudioEngine::from_spec(spec_at(44_100.0)), state);
         let graph = SampleRate(44_100.0);
 
-        let (d, stream) = ManualStreamDriver::new();
-        let err = driver
-            .restart_on(spec_at(48_000.0), d, refuse_rate_change(graph))
-            .expect_err("a new rate is refused");
-        assert!(matches!(
-            err,
-            crate::Error::RateChanged { device, graph: g }
-                if device == SampleRate(48_000.0) && g == graph
-        ));
-        assert!(!driver.is_running(), "nothing plays at the wrong rate");
-        assert!(!stream.is_open());
+        // Twice onto the same 48 kHz device: the second attempt must not
+        // find the first one's resolved spec and call it "no change".
+        for attempt in 0..2 {
+            let (d, stream) = ManualStreamDriver::new();
+            let err = driver
+                .restart_on(
+                    spec_at(48_000.0),
+                    d,
+                    refuse_rate_change(driver.graph_rate()),
+                )
+                .expect_err("a new rate is refused");
+            assert!(
+                matches!(
+                    err,
+                    crate::Error::RateChanged { device, graph: g }
+                        if device == SampleRate(48_000.0) && g == graph
+                ),
+                "attempt {attempt}: {err}"
+            );
+            assert!(!driver.is_running(), "nothing plays at the wrong rate");
+            assert!(!stream.is_open());
+            assert_eq!(driver.graph_rate(), graph, "the graph did not move");
+            assert_eq!(
+                driver.spec().sample_rate,
+                graph,
+                "the spec does not claim the refused rate"
+            );
+        }
 
         let (d, stream) = ManualStreamDriver::new();
         driver

@@ -122,8 +122,9 @@ miri:
 
 # The loom models: `RtPublish`'s reclamation protocol (against the shipped code)
 # and the plugin shm header protocol (a replica). `--cfg loom` is global, so
-# each runs on its own target. The `RtPublish` models are exhaustive and take a
-# few minutes; `LOOM_MAX_PREEMPTIONS=3` bounds them to under a second.
+# each runs on its own target. The `RtPublish` suite is exhaustive bar one
+# model and takes about 17 minutes; `LOOM_MAX_PREEMPTIONS=3` bounds it to
+# about ten seconds.
 loom:
     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
     RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release

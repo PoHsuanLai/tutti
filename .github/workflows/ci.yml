@@ -475,9 +475,10 @@ jobs:
   # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
   # its own target only, never the workspace.
   #
-  # Release, because loom explores every interleaving in-process and the
-  # `RtPublish` models are exhaustive (no preemption bound): a few minutes
-  # optimized, far longer in debug.
+  # Release, because loom explores every interleaving in-process. Five of the
+  # six `RtPublish` models are exhaustive (no preemption bound) and the sixth
+  # runs at a bound of 4; the suite takes about 17 minutes optimized on the
+  # machine that wrote it, dominated by `nested_reads_overflow`.
   loom:
     name: loom
     runs-on: ubuntu-latest

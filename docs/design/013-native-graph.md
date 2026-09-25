@@ -805,7 +805,27 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    `Editor::replace`, below.
 4. **No runtime latency change** for a plugin's latency atomic [PR 1].
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
-   hosts read its `BEAT_PORTS` [PR 6].
+   hosts read its `BEAT_PORTS` [PR 6]. **Closed:** `EnvClock` (tutti-core,
+   beside `TransportClock`) is a native `Node` that emits the same
+   `BEAT_PORTS` samples from each block's `Env`: per segment, the host's
+   beat stepped frame by frame with the clock's own arithmetic
+   (`beats_per_sample`, `LoopRange::advance`, `split_beat`), held while
+   stopped. It shares nothing with the transport, so it can sit in any
+   graph; its arrival is zero by construction (no inputs), and a latent
+   consumer is aligned by PDC on its out-edge. Pinned bit-equal to a
+   `Net`'s `TransportClock` across seeks, loop wraps (armed behind
+   included), stop/start and mid-block tempo steps, and `ClickNode` behind
+   it clicks on the same frames. Offline, `OfflineTimeline::graph_block`
+   gives the executor the block's `Transport` (and no changes: the tempo
+   and loop are fixed, a wrap is derived) and `render_graph` processes
+   then advances, so an offline graph reads the clock its samplers read.
+   Found on the way: `ClickNode` gates on the live play flag
+   (`MotionFsm::is_playing`) once per 64-frame chunk. On the graph every
+   chunk runs after the engine's walk has applied the whole block's
+   commands, so a start or stop inside a block gates the click from the
+   block's first frame (a start can click on the held beat before its
+   frame). The beat itself is sample-accurate; the gate should read
+   `Env::transport_at` when `ClickNode` is ported natively (Phase 4).
 6. **No `Fork`** for export [PR 2].
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
@@ -815,9 +835,9 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 1 | tutti-graph Legacy parity: never skip by default, with `Legacy::pure`; `Legacy::controlled` returning a settings ring plus a never-processed shadow; `Editor::set_latency` | #18 |
 | 2 | tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
 | 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
-| 4 | tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper | #18 |
+| 4 | **Done.** tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper (`Renderer`) | #18 |
 | 5 | tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks; the harness behind a `contract` feature | 4 |
-| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` | #18 |
+| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` (done) | #18 |
 | 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
 | 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
@@ -827,6 +847,25 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
+
+**PR 4 landed.** `GraphBuilder` speaks `Net`'s calls (`add_unit` for
+`push(Box::new(..))`, `add` for a native node, `connect`, `connect_input`,
+`connect_output`, `set_source`, `set_output`, `pass_through`, `disconnect`,
+`pipe` for `pipe_all`, `pipe_input`, `pipe_output`, `chain`/`chain_unit`)
+plus `feedback` and `event_connect`, which `Net` has no counterpart for. It
+holds a `GraphSpec` and the units, nothing else, and `build(Prepare)` goes
+through `Editor::insert` + `commit`, so it is not a second graph model.
+`Renderer` drives the executor in blocks with a supplied transport and
+returns planar or interleaved output. `tests/legacy.rs` builds through it.
+Two notes for PR 8:
+
+- The fan-out rules are `Net`'s, checked against `Net` itself over a grid
+  of widths (`tests/builder.rs`): port `c` reads `c % width`, so stereo into
+  six **wraps** (L R L R L R) rather than clamping, and a node with no
+  outputs feeds silence.
+- `tutti_spatial::build_vbap_mix` takes `&mut Net`, so the
+  `surround_export` fixtures need a builder-side form of it before they
+  can port.
 
 **PR 3 landed: `Editor::replace(key, node, Fade { duration, curve })`.**
 The rules (`tutti-graph/src/fade.rs`), each pinned by a test in

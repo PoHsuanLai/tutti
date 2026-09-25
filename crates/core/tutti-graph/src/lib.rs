@@ -121,6 +121,32 @@
 //!   control thread, and a replace during a fade waits for it.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //!
+//! # Building a graph in a test
+//!
+//! Test authors, examples and simple hosts: start from [`GraphBuilder`]. It
+//! speaks `Net`'s calls (`add_unit` for `push`, `connect`, `pipe_input`,
+//! `pipe_output`, `chain`, …, with `Net`'s fan-out rules), builds the
+//! [`Editor`]/[`Executor`] pair through the public editor API, and its
+//! [`Renderer`] drives the executor block by block and hands back planar or
+//! interleaved output. It is not a second graph model: all it produces is a
+//! [`GraphSpec`] and the units it names, and what it builds is exactly what
+//! a host writing that spec by hand would get.
+//!
+//! ```
+//! # use fundsp::prelude32::lowpass_hz;
+//! use tutti_graph::{GraphBuilder, Prepare};
+//! use tutti_types::{ChannelLayout, SampleRate, Samples};
+//!
+//! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+//! let lp = g.add_unit(Box::new(lowpass_hz(700.0, 0.8)));
+//! g.pipe_input(lp).pipe_output(lp);
+//! let mut r = g
+//!     .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
+//!     .expect("builds");
+//! let out = r.render_input(&[&[1.0; 1_000]]);
+//! assert!(out[0][999] > 0.9); // a lowpass passes DC
+//! ```
+//!
 //! # Import paths
 //!
 //! Every module is private; every public item is re-exported here, so
@@ -133,6 +159,7 @@
 #![forbid(unsafe_code)]
 
 mod arena;
+mod builder;
 mod command;
 mod compile;
 mod editor;
@@ -148,6 +175,7 @@ mod reference;
 mod spec;
 mod time;
 
+pub use builder::{GraphBuilder, Renderer};
 pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
 pub use editor::{CommitError, Editor, Limits};

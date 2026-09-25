@@ -4,7 +4,8 @@
 //! loop region, recording) that anyone may store into; [`MotionFsm`] holds the
 //! state machine that may reject or defer a play/stop/locate. [`Transport`] is
 //! the two halves as one handle, and [`TransportClock`] is the graph node that
-//! turns them into a per-sample beat signal.
+//! turns them into a per-sample beat signal. [`EnvClock`] is the same signal
+//! on the native graph, read from each block's `Env`.
 //!
 //! The traits below are the read side: [`Timeline`] is what a node consults,
 //! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
@@ -13,6 +14,7 @@
 mod beat_window;
 mod click;
 mod clock;
+mod env_clock;
 pub(crate) mod fsm;
 mod handle;
 mod motion;
@@ -25,6 +27,7 @@ pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub(crate) use clock::{tempo_in_effect, Control};
+pub use env_clock::EnvClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};

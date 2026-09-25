@@ -194,6 +194,61 @@ impl OfflineTimeline {
     pub fn loop_range(&self) -> Option<LoopRange> {
         self.loop_range
     }
+
+    /// The block about to be rendered, as a native graph executor takes it:
+    /// the transport at the block's first frame, and the changes inside it.
+    ///
+    /// The transport is this timeline at its current playhead: rolling (an
+    /// offline render always is), at its tempo, looping over its region.
+    /// There are never changes: the tempo and the loop are fixed for the
+    /// render, and a loop wrap inside the block is not a change: the graph
+    /// derives it from the snapshot, as it does live
+    /// ([`Env::transport_at`](tutti_graph::Env::transport_at), and
+    /// [`EnvClock`](super::EnvClock) frame by frame). A render with a
+    /// tempo map would put its tempo steps here.
+    ///
+    /// Read **before** the block is processed and advance after, as
+    /// [`render_graph`](Self::render_graph) does: the snapshot's beat is the
+    /// block's first frame, the one clip readers and samplers holding this
+    /// timeline read during the block (see [`RenderClock`](super::RenderClock)).
+    pub fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
+        let transport = tutti_graph::Transport {
+            playing: true,
+            tempo: self.tempo,
+            beat: self.beat(),
+            looping: self.loop_range.map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            }),
+        };
+        (transport, tutti_graph::TransportChanges::NONE)
+    }
+
+    /// Render one block of `frames` through `exec` under this timeline, then
+    /// advance the timeline by it: [`graph_block`](Self::graph_block),
+    /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
+    /// then [`advance`](Self::advance), in the one order that keeps every
+    /// reader of this timeline on the frame the graph renders.
+    ///
+    /// The graph's frames and this timeline's beats both start where they
+    /// stand: the executor keeps its own frame clock, and the beat is this
+    /// timeline's playhead (seat it with [`seek_to`](Self::seek_to)).
+    ///
+    /// # Panics
+    ///
+    /// As `Executor::process_with_changes`: if `frames` is zero or past the
+    /// executor's prepared maximum block.
+    pub fn render_graph(
+        &self,
+        exec: &mut tutti_graph::Executor,
+        frames: usize,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
+        let (transport, changes) = self.graph_block();
+        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
+        self.advance(frames);
+    }
 }
 
 impl super::Timeline for OfflineTimeline {

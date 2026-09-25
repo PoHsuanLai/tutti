@@ -353,8 +353,11 @@ fn a_node_without_a_fork_source_is_not_forkable() {
         "upstream of the target"
     );
 
+    // Routed to an output: a master fork forks only what the outputs reach
+    // (`a_master_fork_holds_only_what_the_outputs_reach`).
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(1), "boxed", Legacy::new(mul(2.0)).into_node().0);
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
         Some(ForkError::NotForkable { key: NodeKey(1) })
@@ -362,6 +365,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
 
     let (mut ed, _exec) = Editor::new(pre);
     ed.insert(NodeKey(3), "legacy", Legacy::new(mul(2.0)));
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0)];
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
     ed.insert(NodeKey(3), "boxed", Legacy::new(mul(2.0)).into_node().0);
     assert_eq!(
@@ -1096,5 +1100,112 @@ fn a_node_fork_with_no_global_outputs_is_no_outputs() {
         ed.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare(64))
             .err(),
         Some(ForkError::NoOutputs { key: NodeKey(1) })
+    );
+}
+
+/// A native ramp: its output is the frame count since its last `reset`
+/// (or the value it was built with), kept in a plain field, so a `Clone`
+/// shares nothing.
+#[derive(Clone)]
+struct Ramp {
+    n: f32,
+}
+
+impl Node for Ramp {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_tail(tutti_types::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _p: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for s in io.output(0).iter_mut() {
+            *s = self.n;
+            self.n += 1.0;
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {
+        self.n = 0.0;
+    }
+}
+
+/// **A native node inserted as `ForkByClone` forks, from reset; the same
+/// node inserted plainly does not.** The ramp is built at 7 and the live one
+/// runs 300 frames first, so a fork that kept either would not start at 0.
+///
+/// Mutation (run): `ForkByClone::into_parts` handing no fork source → the
+/// fork is `NotForkable`. Mutation (run): `CloneFork::fork` not calling
+/// `reset` → the fork starts at 7.
+#[test]
+fn a_fork_by_clone_node_forks_from_reset() {
+    let (mut ed, exec) = Editor::new(prepare(256));
+    ed.insert(
+        NodeKey(1),
+        "ramp",
+        tutti_graph::ForkByClone(Ramp { n: 7.0 }),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    ed.commit().unwrap();
+    let mut live = Renderer::new(ed, exec);
+    let before = live.render(300);
+    assert_eq!(
+        before[0][0], 7.0,
+        "the live node runs from where it was built"
+    );
+    let (fork_ed, fork_exec) = live
+        .editor()
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(256))
+        .expect("a ForkByClone node forks");
+    let forked = render(fork_ed, fork_exec, 4);
+    assert_eq!(forked[0], vec![0.0, 1.0, 2.0, 3.0]);
+
+    let (mut plain, _exec) = Editor::new(prepare(256));
+    plain.insert(NodeKey(1), "ramp", Ramp { n: 0.0 });
+    plain.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    assert_eq!(
+        plain
+            .fork(ForkTarget::Master, ForkMode::Live, prepare(256))
+            .err(),
+        Some(ForkError::NotForkable { key: NodeKey(1) })
+    );
+}
+
+/// **`ForkTarget::Master` forks what the outputs hear, and nothing else.** An
+/// unforkable node no output reaches (an unrouted mic monitor, say) does not
+/// refuse the fork and is not in it; a forkable one no output reaches is
+/// not copied either. Once routed, the unforkable node refuses the fork.
+///
+/// Mutation (run): `ForkTarget::Master` forking every key in the spec (the
+/// rule before) → `NotForkable { key: 2 }`.
+#[test]
+fn a_master_fork_holds_only_what_the_outputs_reach() {
+    let (mut ed, _exec) = Editor::new(prepare(256));
+    ed.insert(
+        NodeKey(1),
+        "ramp",
+        tutti_graph::ForkByClone(Ramp { n: 0.0 }),
+    );
+    ed.insert(NodeKey(2), "mic", Legacy::new(sine_hz(440.0)).unforkable());
+    ed.insert(
+        NodeKey(3),
+        "idle",
+        tutti_graph::ForkByClone(Ramp { n: 0.0 }),
+    );
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
+    let (fork, _fork_exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare(256))
+        .expect("the unrouted, unforkable node is not asked");
+    let keys: Vec<NodeKey> = fork.spec().topology.nodes.keys().copied().collect();
+    assert_eq!(keys, vec![NodeKey(1)]);
+
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(2), 0)];
+    assert_eq!(
+        ed.fork(ForkTarget::Master, ForkMode::Live, prepare(256))
+            .err(),
+        Some(ForkError::NotForkable { key: NodeKey(2) })
     );
 }

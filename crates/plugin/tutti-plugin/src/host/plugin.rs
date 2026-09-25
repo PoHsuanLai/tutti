@@ -429,6 +429,32 @@ impl Plugin {
         let handle = self.handle.clone();
         (self.into_unit(), handle)
     }
+
+    /// The node as the concrete out-of-process [`PluginClient`], for a host
+    /// inserting it into a native graph: a `PluginClient` hands the editor
+    /// the fork source that forks it by state transfer
+    /// ([`IntoNode`](tutti_graph::IntoNode), or
+    /// [`PluginClient::fork_source`]), so an export can fork a graph holding
+    /// it. [`into_unit`](Self::into_unit)'s `Box<dyn AudioUnit>` cannot: a
+    /// boxed unit forks only by clone-and-`isolate`, which a plugin refuses
+    /// (`forkable() == false`).
+    ///
+    /// `Err` carries the node as [`into_unit`](Self::into_unit) would hand it
+    /// over, for a plugin that is not a `PluginClient` — an in-process VST2
+    /// instance, which has no fork source yet; a fork of a graph holding it
+    /// is refused as not forkable. Clone the [`handle`](Self::handle) first
+    /// if the control surface is needed after this.
+    ///
+    /// Boxed, like the backend holding it: a `PluginClient` is ~15 KiB.
+    pub fn into_client(
+        self,
+    ) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_core::AudioUnit>> {
+        match self.backend {
+            Backend::Subprocess(c) => Ok(c),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => Err(c),
+        }
+    }
 }
 
 #[cfg(test)]

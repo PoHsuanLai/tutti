@@ -66,7 +66,6 @@ fn synth(transport: &Transport) -> PolySynth {
         s.midi_port().unit_id(),
         events,
         Arc::new(transport.clone()) as Arc<dyn Timeline>,
-        SampleRate(SR),
     )));
     s
 }

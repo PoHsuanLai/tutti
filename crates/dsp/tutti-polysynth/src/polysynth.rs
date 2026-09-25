@@ -201,7 +201,8 @@ impl PolySynth {
     }
 
     fn poll_count(&mut self, block_size: usize) -> usize {
-        self.midi.poll(block_size, &mut self.midi_buffer)
+        self.midi
+            .poll(block_size, self.bank.sample_rate(), &mut self.midi_buffer)
     }
 
     fn poll_midi_events(&mut self) {
@@ -1344,12 +1345,25 @@ mod tests {
         note: u8,
     }
     impl MidiUnitIn for NoteOnceSource {
-        fn poll_unit(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
+        fn poll_unit(
+            &self,
+            _unit: MidiUnitId,
+            _block: usize,
+            _rate: tutti_core::SampleRate,
+            buffer: &mut [MidiEvent],
+        ) -> usize {
             if buffer.is_empty() {
                 return 0;
             }
             buffer[0] = ev_note_on(0, self.note, 100);
             1
+        }
+        fn rebind_offline(
+            &self,
+            _unit: MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn MidiUnitIn>> {
+            None
         }
     }
 

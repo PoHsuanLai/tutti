@@ -31,7 +31,9 @@ use std::sync::Mutex;
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_param_value, clap_event_transport, CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value,
+    clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
+    CLAP_EVENT_PARAM_VALUE,
 };
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
@@ -375,6 +377,7 @@ unsafe extern "C" fn plugin_reset(plugin: *const clap_plugin) {
     // tail no longer emerges — the observable that distinguishes a host which
     // calls `reset` from one which does not.
     clear_delay_lines();
+    *NOTE_GATE.lock().unwrap_or_else(|e| e.into_inner()) = NoteGate::SILENT;
 }
 
 unsafe extern "C" fn plugin_process(
@@ -1008,6 +1011,16 @@ pub enum RenderMode {
     /// The delay line is per-`(port, channel)` and persists across blocks, so
     /// an impulse fed in block 0 emerges at a known absolute sample index.
     Latency = 3,
+    /// A note gate: every output channel holds the velocity of the latest
+    /// note-on while any note is held, and `0.0` once every held note is
+    /// released, each change landing on its event's `time`. Input is ignored.
+    ///
+    /// The instrument oracle: a host that delivers no notes renders silence,
+    /// and one that delivers them late or early moves the gate's edges, so a
+    /// render's first non-zero frame is where the first note-on reached the
+    /// plugin. Reads CLAP note events and MIDI-1 note messages alike, so it
+    /// holds whichever dialect the host negotiated.
+    Notes = 4,
 }
 
 impl RenderMode {
@@ -1016,6 +1029,7 @@ impl RenderMode {
             1 => Self::TagPassthrough,
             2 => Self::TagOnly,
             3 => Self::Latency,
+            4 => Self::Notes,
             _ => Self::Inert,
         }
     }
@@ -1046,6 +1060,92 @@ static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
     lines: [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS],
     cursor: 0,
 });
+
+/// [`RenderMode::Notes`]' state across blocks: how many notes are held, and
+/// the velocity of the latest note-on.
+#[derive(Clone, Copy, Debug)]
+struct NoteGate {
+    held: u32,
+    level: f32,
+}
+
+impl NoteGate {
+    const SILENT: Self = Self {
+        held: 0,
+        level: 0.0,
+    };
+
+    fn apply(&mut self, change: NoteChange) {
+        match change {
+            NoteChange::On(velocity) => {
+                self.held += 1;
+                self.level = velocity;
+            }
+            NoteChange::Off => self.held = self.held.saturating_sub(1),
+        }
+    }
+
+    fn level(&self) -> f32 {
+        if self.held > 0 {
+            self.level
+        } else {
+            0.0
+        }
+    }
+}
+
+static NOTE_GATE: Mutex<NoteGate> = Mutex::new(NoteGate::SILENT);
+
+/// A note event, as the gate reads it.
+#[derive(Clone, Copy, Debug)]
+enum NoteChange {
+    /// A note-on at this velocity, `[0, 1]`.
+    On(f32),
+    Off,
+}
+
+/// The `index`-th note event in `p`'s input list, counting only note events
+/// (CLAP `NOTE_ON`/`NOTE_OFF`, and MIDI-1 `0x9n`/`0x8n`, a `0x9n` at velocity
+/// 0 being an off), with its `time`. `None` past the last one.
+///
+/// # Safety
+/// `p` must be the live `clap_process` the host passed to `process`.
+unsafe fn note_event(p: &clap_process, index: usize) -> Option<(u32, NoteChange)> {
+    let list = p.in_events;
+    if list.is_null() {
+        return None;
+    }
+    let (size_fn, get_fn) = ((*list).size?, (*list).get?);
+    let mut seen = 0;
+    for i in 0..size_fn(list) {
+        let hdr_ptr = get_fn(list, i);
+        if hdr_ptr.is_null() {
+            continue;
+        }
+        let hdr: &clap_event_header = &*hdr_ptr;
+        let change = match hdr.type_ {
+            CLAP_EVENT_NOTE_ON => {
+                let note = &*(hdr_ptr as *const clap_event_note);
+                NoteChange::On(note.velocity as f32)
+            }
+            CLAP_EVENT_NOTE_OFF => NoteChange::Off,
+            CLAP_EVENT_MIDI => {
+                let midi = &*(hdr_ptr as *const clap_event_midi);
+                match (midi.data[0] & 0xF0, midi.data[2]) {
+                    (0x90, 0) | (0x80, _) => NoteChange::Off,
+                    (0x90, velocity) => NoteChange::On(f32::from(velocity) / 127.0),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        if seen == index {
+            return Some((hdr.time, change));
+        }
+        seen += 1;
+    }
+    None
+}
 
 /// Clear the latency-mode delay lines — the probe's whole cross-block
 /// processing state. Shared by the test-facing export below and by
@@ -1098,6 +1198,8 @@ unsafe fn render_output(p: &clap_process) {
     // Every slot advances the same shared cursor, so snapshot the block's
     // start and let each slot walk from there.
     let cursor_start = delay.as_ref().map(|d| d.cursor).unwrap_or(0);
+    // The note gate as the previous block left it, for the same reason.
+    let gate_start = *NOTE_GATE.lock().unwrap_or_else(|e| e.into_inner());
 
     for port in 0..p.audio_outputs_count {
         let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
@@ -1138,6 +1240,23 @@ unsafe fn render_output(p: &clap_process) {
                         dst[i] = src.map(|s| s[i]).unwrap_or(0.0) + tag;
                     }
                 }
+                RenderMode::Notes => {
+                    // Every channel replays the block's events from the gate
+                    // as it stood at the block's start, so each writes the
+                    // same edges; the gate is advanced once, below.
+                    let mut gate = gate_start;
+                    let mut next = 0;
+                    for (i, sample) in dst.iter_mut().enumerate() {
+                        while let Some((time, change)) = note_event(p, next) {
+                            if time as usize > i {
+                                break;
+                            }
+                            gate.apply(change);
+                            next += 1;
+                        }
+                        *sample = gate.level();
+                    }
+                }
                 RenderMode::Latency => {
                     let Some(d) = delay.as_mut() else { continue };
                     // Derive the slot from `(port, ch)` rather than counting
@@ -1166,6 +1285,15 @@ unsafe fn render_output(p: &clap_process) {
     if let Some(d) = delay.as_mut() {
         let len = d.lines[0].len();
         d.cursor = (cursor_start + frames) % len;
+    }
+    if mode == RenderMode::Notes {
+        let mut gate = gate_start;
+        let mut next = 0;
+        while let Some((_, change)) = note_event(p, next) {
+            gate.apply(change);
+            next += 1;
+        }
+        *NOTE_GATE.lock().unwrap_or_else(|e| e.into_inner()) = gate;
     }
 
     // GAIN: scale what the mode just wrote, sample by sample, honouring each

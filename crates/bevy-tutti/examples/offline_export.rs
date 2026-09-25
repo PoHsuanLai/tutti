@@ -5,6 +5,8 @@
 //!
 //! ```sh
 //! cargo run -p bevy-tutti --example offline_export --features export,wav
+//! # the same on the native graph, where an export forks the live graph:
+//! cargo run -p bevy-tutti --example offline_export --features export,wav -- --native
 //! ```
 //!
 //! The shape worth noticing: an export is an **entity**. You spawn a request,
@@ -36,8 +38,18 @@ struct FilterNode(Entity);
 fn main() {
     let mut app = App::new();
 
-    // Same headless engine as `graph_wiring`, plus the export plugin.
-    app.insert_resource(AudioGraphRes::headless(0, 2));
+    // Same headless engine as `graph_wiring`, plus the export plugin. On
+    // `--native` the graph is the native one, and each export renders a fork
+    // of it (design doc 013, PR 12) instead of a clone of fundsp's `Net`.
+    let backend = if std::env::args().any(|a| a == "--native") {
+        bevy_tutti::graph::GraphBackend::Native
+    } else {
+        bevy_tutti::graph::GraphBackend::Net
+    };
+    println!("exporting from the {backend:?} graph");
+    let mut graph = AudioGraphRes::headless_with(backend, 0, 2);
+    graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
@@ -110,7 +122,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
 
     // ── 1. The whole mix, normalized, to a file ───────────────────────────
     //
-    // `Master` renders the graph as the speakers hear it. `FrozenClock` is the
+    // `Master` renders the graph as the speakers hear it. A frozen clock is the
     // honest clock for this graph — nothing in it reads musical time — and
     // saying so is a choice rather than an omission.
     let mix_path = dir.join("bevy-tutti-mix.wav");
@@ -123,7 +135,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
                 normalize: Some(Normalize::lufs(Db(-14.0))),
             },
             config(),
-            Arc::new(tutti_export::FrozenClock),
+            ExportClock::frozen(),
         ))
         .observe(report);
 
@@ -133,7 +145,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     // the filter actually sound like" rather than its contribution to the mix.
     //
     // An isolated clone is rebound onto an offline timeline, seeded at the
-    // session's real tempo. `on_timeline` sets the clock the renderer advances
+    // session's real tempo. `ExportClock::timeline` is the clock the renderer advances
     // AND the timeline the nodes read, from one argument — they are the same
     // object, and any other arrangement is a bug.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -144,17 +156,14 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     }));
 
     commands
-        .spawn(
-            ExportRequest::new(
-                // The entity, like every other edge in this crate — no
-                // unwrapping an `AudioNode` to get at an id.
-                ExportSource::Node(filter.0),
-                ExportTarget::Buffers,
-                config(),
-                timeline.clone(),
-            )
-            .on_timeline(timeline),
-        )
+        .spawn(ExportRequest::new(
+            // The entity, like every other edge in this crate — no
+            // unwrapping an `AudioNode` to get at an id.
+            ExportSource::Node(filter.0),
+            ExportTarget::Buffers,
+            config(),
+            ExportClock::timeline(timeline.clone()),
+        ))
         .observe(report);
 }
 

@@ -222,6 +222,14 @@ impl BeatCursor {
         }
     }
 
+    /// A cursor over `transport` that holds **no** sample rate: it is only
+    /// advanced with [`advance_at`](Self::advance_at), which is handed the
+    /// rate each block. [`advance`](Self::advance) on it emits nothing (its
+    /// rate is zero, which the window refuses).
+    pub fn unrated(transport: Arc<dyn Timeline>) -> Self {
+        Self::new(transport, SampleRate(0.0))
+    }
+
     /// This block's beat window, advancing the cursor.
     ///
     /// `None` when nothing should be emitted — the transport is paused, or the
@@ -231,13 +239,22 @@ impl BeatCursor {
     ///
     /// RT-safe: `&self`, no allocation, no locks.
     pub fn advance(&self, block_size: usize) -> Option<(BeatWindow, BeatWindowSync)> {
+        self.advance_at(block_size, self.sample_rate())
+    }
+
+    /// [`advance`](Self::advance) at `sample_rate`, handed in by the caller
+    /// rather than read from the cursor: for a source polled by a unit that
+    /// knows its own rate each block (a MIDI clip, polled through its unit's
+    /// port), so no copy of the rate is kept to fall out of step with the
+    /// unit's. Build such a cursor with [`unrated`](Self::unrated).
+    pub fn advance_at(
+        &self,
+        block_size: usize,
+        sample_rate: SampleRate,
+    ) -> Option<(BeatWindow, BeatWindowSync)> {
         let mut last = Beat(self.last_beat.load(crate::Ordering::Acquire));
-        let out = BeatWindow::from_timeline(
-            self.transport.as_ref(),
-            self.sample_rate(),
-            block_size,
-            &mut last,
-        );
+        let out =
+            BeatWindow::from_timeline(self.transport.as_ref(), sample_rate, block_size, &mut last);
         // Stored unconditionally: `from_timeline` writes `last` on the paused
         // path too, so an early return here would drop that update and make the
         // resume look like a jump.

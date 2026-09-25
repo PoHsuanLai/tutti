@@ -12,8 +12,9 @@ section there before you relax or work around a rule.
 `Topology` value, a pure compiler producing an immutable plan, units stored
 once, and events as ports. `Engine` can already render it
 (`Engine::with_graph`); `bevy-tutti` runs on either behind
-`GraphBackend` (default `Net`; its suites run on both), and export still
-builds `Net`s until Phase 3 PR 12. Until the migration lands:
+`GraphBackend` (default `Net`; its suites run on both). On `Native`, export
+forks the live graph (`Editor::fork`, Phase 3 PR 12); on `Net` it still
+clones the `Net`, until PR 13 deletes that arm. Until the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can

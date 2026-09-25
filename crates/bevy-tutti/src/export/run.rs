@@ -10,26 +10,27 @@
 //! it, and a way to hear about it.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file};
+use tutti_core::transport::OfflineTransport;
+use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file, RenderGraph};
+use tutti_types::NodeKey;
 
 use crate::export::request::{
-    ExportDone, ExportInFlight, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    PreparedNet,
+    ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest, ExportSource,
+    ExportTarget, PreparedGraph,
 };
+use crate::graph::resources::{ExportRefused, Exported};
 use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Start the oldest pending [`ExportRequest`], if nothing is already running.
 ///
-/// The expensive part — cloning and isolating the net — happens here, on the
-/// main thread, because the clone borrows the graph resource and cannot cross
-/// into a `'static` task. That is also why only one starts per frame; see
-/// [`ExportInFlight`].
+/// The expensive part — copying the graph (a `Net` clone, or a native fork) —
+/// happens here, on the main thread, because the copy reads the graph
+/// resource and cannot cross into a `'static` task. That is also why only one
+/// starts per frame; see [`ExportInFlight`].
 ///
 /// Exclusive because a request's `prepare` hook is handed `&World`: preparing a
 /// render reads arbitrary app state (which clips exist, their decoded audio),
@@ -56,7 +57,7 @@ pub fn start_exports(world: &mut World) {
     // Exactly one request per frame — `next()`, not a loop. This is the half
     // that serializes a *batch* spawned in one frame; the check above is the
     // half that stops the next frame starting on top of a still-running render.
-    // Each start deep-clones the live net on this thread, so neither half is
+    // Each start copies the live graph on this thread, so neither half is
     // redundant.
     //
     // No `Added<>` — the component's *presence* is the pending flag, and taking
@@ -76,14 +77,11 @@ pub fn start_exports(world: &mut World) {
         return;
     };
 
-    // Snapshot the node bindings before the resource borrows: `prepare_net`
-    // needs to resolve an entity to its `NodeId`, and an exclusive system
-    // cannot hold a `Query` across the `world.resource` borrows below.
-    let nodes: HashMap<Entity, tutti_core::AudioNode> = world
-        .query::<(Entity, &tutti_core::AudioNode)>()
-        .iter(world)
-        .map(|(e, n)| (e, *n))
-        .collect();
+    // Snapshot the node bindings before the resource borrows: the source
+    // entity resolves to its node here, and a failure names its node by
+    // entity and `Name`. An exclusive system cannot hold a `Query` across the
+    // `world.resource` borrows below.
+    let nodes = NodeNames::of(world);
 
     // Fallible rather than `world.resource::<_>()`: both come from
     // `engine::build_into`, while the `engine_ready` gate on this system only
@@ -95,20 +93,20 @@ pub fn start_exports(world: &mut World) {
         world.get_resource::<AudioGraphRes>(),
         world.get_resource::<AudioConfig>(),
     ) {
-        (Some(graph), Some(config)) => prepare_net(graph, config, &nodes, &request),
+        (Some(graph), Some(_)) => prepare_graph(graph, &nodes, &request),
         // Distinguished from the above so the reason is the real one: an export
         // requested against a world with no engine is a different failure than a
         // target that cannot produce audio, and reporting the wrong one sends
         // whoever reads it looking at the wrong thing.
-        _ => Err("no audio engine to export from"),
+        _ => Err(invalid("no audio engine to export from")),
     };
 
-    let (mut net, ctx) = match prepared {
+    let (mut graph, ctx) = match prepared {
         Ok(prepared) => prepared,
-        Err(reason) => {
+        Err(e) => {
             world.trigger(ExportDone {
                 entity,
-                result: Err(tutti_export::Error::InvalidConfig(reason.into())),
+                result: Err(nodes.name(e)),
             });
             return;
         }
@@ -116,106 +114,196 @@ pub fn start_exports(world: &mut World) {
 
     let ExportRequest {
         target,
-        config: export_config,
+        config: mut export_config,
         clock,
         prepare,
+        latency_from_graph,
+        tail_from_graph,
         ..
     } = request;
+    let clock = clock.render_clock();
 
-    // The caller's last look at the net, on the main thread, with the world
-    // still readable. An isolated clone is born empty, so a sampler-fed tap
+    // The caller's last look at the graph, on the main thread, with the world
+    // still readable. An isolated copy is born empty, so a sampler-fed tap
     // that skips this renders silence.
     if let Some(prepare) = prepare.as_ref() {
         prepare(
-            PreparedNet {
-                net: &mut net,
+            PreparedGraph {
+                graph: &mut graph,
                 ctx: ctx.as_ref(),
             },
             world,
         );
     }
+    // A fork's editor holds whatever the hook edited, uncommitted: send it,
+    // and apply it here so the render's first block already runs it.
+    if let RenderGraph::Graph { editor, executor } = &mut graph {
+        if let Err(e) = editor.commit() {
+            world.trigger(ExportDone {
+                entity,
+                result: Err(ExportError::Render(invalid(format!(
+                    "the prepare hook left the forked graph uncommittable: {e}"
+                )))),
+            });
+            return;
+        }
+        executor.apply_pending();
+        editor.collect();
+    }
+
+    // The graph's own figures, asked of the graph that is rendered — after
+    // the hook, which may have changed it.
+    if latency_from_graph {
+        export_config.render.latency = graph.reported_latency();
+    }
+    if let Some(cap) = tail_from_graph {
+        // `resolve`, not `samples().unwrap_or(cap)`: a graph with a node that
+        // never said (`Tail::Unknown`, the default) is spent at what the
+        // others reported, not at the cap — which would append silence.
+        export_config.render.tail = graph.reported_tail().resolve(cap);
+    }
 
     let task = AsyncComputeTaskPool::get().spawn(async move {
-        match target {
+        let rendered = match target {
             ExportTarget::File {
                 path,
                 normalize: None,
-            } => render_to_file(net, &export_config, clock.as_ref(), &path).map(ExportOutput::File),
+            } => {
+                render_to_file(graph, &export_config, clock.as_ref(), &path).map(ExportOutput::File)
+            }
             ExportTarget::File {
                 path,
                 normalize: Some(normalize),
-            } => render_normalized_to_file(net, &export_config, clock.as_ref(), normalize, &path)
+            } => render_normalized_to_file(graph, &export_config, clock.as_ref(), normalize, &path)
                 .map(ExportOutput::File),
             ExportTarget::Buffers => {
-                render_to_buffers(net, &export_config, clock.as_ref()).map(ExportOutput::Buffers)
+                render_to_buffers(graph, &export_config, clock.as_ref()).map(ExportOutput::Buffers)
             }
-        }
+        };
+        rendered.map_err(|e| nodes.name(e))
     });
 
     world.entity_mut(entity).insert(ExportInFlight::new(task));
 }
 
-/// Build the net this request renders, plus the offline context its nodes were
-/// rebound onto (`None` for a master export, which keeps the live transport
-/// bindings the caller's own clock drives).
+/// Build the graph this request renders, plus the offline context its nodes
+/// were rebound onto (`None` for a `Net` master export, which keeps the live
+/// transport bindings the caller's own clock drives).
 ///
 /// Refuses, with the reason, when the requested node has no outputs — there is
-/// nothing to render from it — and on the native graph backend, which has no
-/// `Net` to hand out until export moves to `Editor::fork` (doc 013, PR 12).
-fn prepare_net(
+/// nothing to render from it — and, on the native backend, when a node the
+/// copy needs cannot be forked (named by the caller, [`NodeNames::name`]).
+fn prepare_graph(
     graph: &AudioGraphRes,
-    config: &AudioConfig,
-    nodes: &HashMap<Entity, tutti_core::AudioNode>,
+    nodes: &NodeNames,
     request: &ExportRequest,
-) -> Result<(tutti_core::dsp::Net, Option<OfflineTransport>), &'static str> {
-    match request.source {
-        // The whole graph as-is, keeping its live transport bindings — the
-        // caller's own clock is what drives this render.
-        //
-        // NOTE: this is a plain `Clone`, so it does *not* go through
-        // `PendingClone` and nothing is isolated. Nodes that share live state
-        // through `Clone` rather than copying it — a disk voice's ring, a mic
-        // monitor's input — stay attached to what the audio thread is using.
-        // For a master export that is mostly what you want (it is the live mix),
-        // but it is not the safety `ExportSource::Node` gets.
-        ExportSource::Master => Ok((graph.export_master()?, None)),
+) -> Result<(RenderGraph, Option<OfflineTransport>), tutti_export::Error> {
+    let node = match request.source {
+        ExportSource::Master => None,
+        // Resolved here rather than stored: see `ExportSource::Node`.
+        ExportSource::Node(entity) => Some(nodes.node(entity).ok_or_else(|| invalid(NOT_A_NODE))?),
+    };
 
-        ExportSource::Node(entity) => {
-            // Resolved here rather than stored: see `ExportSource::Node`.
-            let node = *nodes.get(&entity).ok_or(NO_OUTPUTS)?;
+    // The timeline every transport-aware node in the copy is re-seated on:
+    // the request's clock, which is the same object the renderer advances
+    // (`ExportClock`), or a timeline stopped at beat 0 for a frozen one.
+    // Never manufactured here from anything else: a default rolling timeline
+    // nothing advances is how a tap on a 90 BPM project once rendered its
+    // voices against a 120 BPM playhead stuck at beat 0.
+    let ctx: OfflineTransport = request.clock.offline();
 
-            // The timeline every transport-aware node in the clone is re-seated
-            // on. The caller supplies it, because the caller also supplies the
-            // `clock` the renderer advances and the two must be the same object
-            // — `RenderClock` is advance-only, so there is no reading one back
-            // out of the other. Manufacturing one here is what made a tap on a
-            // 90 BPM project rebind its voices to a 120 BPM playhead that
-            // nothing then advanced.
-            let ctx: OfflineTransport = match request.offline.clone() {
-                Some(timeline) => timeline,
-                // No transport named: a default at the render's own rate. Right
-                // for a graph with no musical time, and the reason `on_timeline`
-                // is worth calling for anything else.
-                None => Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                    start_beat: 0.0.into(),
-                    tempo: 120.0.into(),
-                    sample_rate: config.sample_rate,
-                    loop_range: None,
-                })),
-            };
-
-            // Isolated, rebound onto `ctx` and reset — see
-            // `AudioGraphRes::export_node`.
-            let net = graph.export_node(node, &ctx)?.ok_or(NO_OUTPUTS)?;
-
-            Ok((net, Some(ctx)))
-        }
+    // A `Net` node export and every native fork are isolated, rebound onto
+    // `ctx` and reset; a `Net` master export is a plain clone — see
+    // `AudioGraphRes::export`.
+    match graph.export(node, &ctx, request.config.render.sample_rate) {
+        Ok(Exported {
+            graph,
+            rebound: true,
+        }) => Ok((graph, Some(ctx))),
+        Ok(Exported {
+            graph,
+            rebound: false,
+        }) => Ok((graph, None)),
+        Err(ExportRefused::NoOutputs) => Err(invalid(NO_OUTPUTS)),
+        Err(ExportRefused::GraphHasNoOutputs) => Err(invalid(GRAPH_HAS_NO_OUTPUTS)),
+        Err(ExportRefused::Render(e)) => Err(e),
     }
 }
 
-/// Why a node export found nothing to render: the entity is not a node, or
-/// its node has no outputs.
-const NO_OUTPUTS: &str = "export target node has no outputs";
+/// Why a node export found nothing to render: its node has no audio outputs.
+const NO_OUTPUTS: &str = "export target node has no audio outputs";
+
+/// Why a node export found nothing to render: the entity is not bound to a
+/// graph node.
+const NOT_A_NODE: &str = "export target entity is not a graph node";
+
+/// Why an export found nothing to render: the graph has no global outputs.
+const GRAPH_HAS_NO_OUTPUTS: &str = "the graph has no outputs to export";
+
+fn invalid(reason: impl Into<String>) -> tutti_export::Error {
+    tutti_export::Error::InvalidConfig(reason.into())
+}
+
+/// Every entity bound to a graph node, by entity and by node key — what
+/// resolves an [`ExportSource::Node`] to its node, and what names a node an
+/// export failed on. Taken on the main thread when the render starts, and
+/// moved into the render task (a fork can fail mid-render, long after the
+/// world was last readable).
+struct NodeNames {
+    nodes: HashMap<Entity, tutti_core::AudioNode>,
+    by_key: HashMap<NodeKey, (Entity, Option<String>)>,
+}
+
+impl NodeNames {
+    fn of(world: &mut World) -> Self {
+        let mut nodes = HashMap::new();
+        let mut by_key = HashMap::new();
+        for (entity, node, name) in world
+            .query::<(Entity, &tutti_core::AudioNode, Option<&Name>)>()
+            .iter(world)
+        {
+            nodes.insert(entity, *node);
+            by_key.insert(
+                crate::graph::native::key(*node),
+                (entity, name.map(|n| n.as_str().to_owned())),
+            );
+        }
+        Self { nodes, by_key }
+    }
+
+    fn node(&self, entity: Entity) -> Option<tutti_core::AudioNode> {
+        self.nodes.get(&entity).copied()
+    }
+
+    fn export_node(&self, key: NodeKey) -> ExportNode {
+        let (entity, name) = self
+            .by_key
+            .get(&key)
+            .map_or((None, None), |(e, n)| (Some(*e), n.clone()));
+        ExportNode { entity, name, key }
+    }
+
+    /// `e`, with the node it is about named by entity and `Name`.
+    fn name(&self, e: tutti_export::Error) -> ExportError {
+        match e {
+            tutti_export::Error::NotForkable { key } => ExportError::NotForkable {
+                node: self.export_node(key),
+            },
+            tutti_export::Error::Fork(tutti_graph::ForkError::Source { key, cause }) => {
+                ExportError::ForkSource {
+                    node: self.export_node(key),
+                    cause,
+                }
+            }
+            tutti_export::Error::ForkFailed { key, kind, cause } => ExportError::ForkFailed {
+                node: self.export_node(key),
+                kind,
+                cause,
+            },
+            other => ExportError::Render(other),
+        }
+    }
+}
 
 /// Drive in-flight renders; trigger [`ExportDone`] on the ones that finished.
 pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {
@@ -228,4 +316,189 @@ pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut E
             .remove::<ExportInFlight>()
             .trigger(move |entity: Entity| ExportDone { entity, result });
     }
+}
+
+/// Exports from an engine as a host builds one (`build_on`, the device-free
+/// `build_into`), over a manual stream: the beat clock and the metronome in
+/// the graph, the click wired to the clock and to the master. Every other
+/// export test builds a bare `headless` graph, which has neither — and on
+/// `Native` the clock was once inserted with no fork source, so every
+/// engine-built graph refused a master export as not forkable.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::build::build_on;
+    use crate::export::{ExportClock, ExportPlugin};
+    use crate::graph::both_backends;
+    use crate::graph::{
+        EngineNodes, GraphBackend, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+    };
+    use crate::{AudioEngineState, TuttiPlugin};
+    use bevy_app::App;
+    use std::sync::{Arc, Mutex};
+    use tutti_core::transport::{MetronomeMode, OfflineTimeline, OfflineTimelineConfig};
+    use tutti_core::{Beat, Bpm, ChannelLayout, MotionEvent, SampleRate};
+    use tutti_cpal::{AudioEngine, ManualStreamDriver, OutputSpec};
+    use tutti_export::{ExportConfig, RenderConfig};
+
+    const RATE: f64 = 48_000.0;
+
+    /// An engine on `backend` at 48 kHz, the metronome always on and wired
+    /// to the master, the live transport rolling. Returns the app and the
+    /// click's entity.
+    fn engine_app(backend: GraphBackend) -> (App, Entity, tutti_cpal::ManualStream) {
+        let mut app = App::new();
+        let plugin = TuttiPlugin {
+            graph_backend: backend,
+            ..Default::default()
+        };
+        let (driver, stream) = ManualStreamDriver::new();
+        build_on(
+            &plugin,
+            &mut app,
+            AudioEngine::from_spec(OutputSpec::new(
+                SampleRate(RATE),
+                ChannelLayout::STEREO,
+                tutti_cpal::cpal::SampleFormat::F32,
+            )),
+            |engine, state| engine.start_with(state, driver),
+        )
+        .expect("builds with no device");
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            GraphReconcilePlugin,
+            ExportPlugin,
+        ));
+        let click = app.world().resource::<EngineNodes>().click;
+        app.insert_resource(MasterSources::from(click));
+        app.world()
+            .resource::<MetronomeRes>()
+            .0
+            .set_mode(MetronomeMode::Always);
+        let _ = app
+            .world()
+            .resource::<TransportRes>()
+            .motion
+            .try_send(MotionEvent::Play);
+        for _ in 0..4 {
+            app.update();
+            stream.render_block(256).expect("the stream is open");
+        }
+        (app, click, stream)
+    }
+
+    /// Spawn `request`, tick until it reports, return the left channel.
+    fn export(app: &mut App, request: ExportRequest) -> Vec<f32> {
+        let slot: Arc<Mutex<Option<Result<Vec<f32>, String>>>> = Arc::default();
+        let seen = Arc::clone(&slot);
+        app.world_mut()
+            .spawn(request)
+            .observe(move |done: On<ExportDone>| {
+                *seen.lock().unwrap() = Some(match &done.result {
+                    Ok(ExportOutput::Buffers(r)) => Ok(r.planes[0].clone()),
+                    Ok(other) => Err(format!("{other:?}")),
+                    Err(e) => Err(e.to_string()),
+                });
+            });
+        for _ in 0..4000 {
+            app.update();
+            if let Some(got) = slot.lock().unwrap().take() {
+                return got.unwrap_or_else(|e| panic!("the export failed: {e}"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the export never reported");
+    }
+
+    /// **An engine-built graph exports on both backends — the master, the
+    /// click, and the beat clock — and the clock's beat is the render's.**
+    /// The render's timeline is 120 BPM from beat 0.25 at 48 kHz, so the
+    /// clock's whole-beat port (the export's left channel; a node export
+    /// clamps the right channel onto its last port, the fraction) reads 0
+    /// until frame 18 000, 1 until 42 000, then 2 — to a frame: the clock
+    /// accumulates `beats_per_sample` (1/24 000 of a beat, which binary does
+    /// not hold) frame by frame, and lands on beat 2 one frame late (the
+    /// offline-timeline rounding doc 013 records as a follow-up). The live
+    /// transport, rolling since the build, is at another beat: a forked
+    /// clock that read it would not step there. `Native` only: the forked
+    /// `EnvClock` reads the render's `Env`. On `Net` a node export of the
+    /// `TransportClock` starts from beat 0, not from the timeline's 0.25
+    /// (measured: one step, at 24 000) — its rebind severs it at its own
+    /// beat, a `Net` behaviour PR 13 removes with the arm.
+    ///
+    /// What the click itself renders is not asserted. On `Net` a master
+    /// export is a plain clone, which clicks on the **live** transport's
+    /// beats (measured: frames 1 and 24 001) — the behaviour doc 013 PR 12
+    /// replaces. On `Native` the fork is cloned from the click's shadow, taken
+    /// at insert, whose metronome mode is the one it had then (`Off` here):
+    /// `MetronomeRes` writes the live node's settings cell, which the shadow
+    /// detached from (doc 013, "Metronome volume and mode ... live-only; a
+    /// click is not part of an export"). Its session flags are frozen at the
+    /// fork from the live transport, and tutti-core's
+    /// `isolate_snapshots_settings_and_session_flags` row pins that.
+    ///
+    /// Mutation (run): `insert_env_clock` inserting `EnvClock` plainly (no
+    /// fork source, as before) → `native` fails on its first export, refused
+    /// as not forkable.
+    fn an_engine_built_graph_exports_and_its_clock_is_the_renders(backend: GraphBackend) {
+        let (mut app, click, _stream) = engine_app(backend);
+        let clock = app.world().resource::<EngineNodes>().clock;
+        let timeline = || {
+            ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(0.25),
+                tempo: Bpm(120.0),
+                sample_rate: SampleRate(RATE),
+                loop_range: None,
+            })))
+        };
+        let config = ExportConfig {
+            render: RenderConfig {
+                sample_rate: SampleRate(RATE),
+                duration_seconds: 1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for source in [ExportSource::Master, ExportSource::Node(click)] {
+            let left = export(
+                &mut app,
+                ExportRequest::new(source, ExportTarget::Buffers, config, timeline()),
+            );
+            assert_eq!(left.len(), RATE as usize, "{backend:?}, {source:?}");
+        }
+        if backend == GraphBackend::Net {
+            return;
+        }
+        let beats = export(
+            &mut app,
+            ExportRequest::new(
+                ExportSource::Node(clock),
+                ExportTarget::Buffers,
+                config,
+                timeline(),
+            ),
+        );
+        let steps: Vec<(usize, f32)> = std::iter::once((0, beats[0]))
+            .chain(
+                beats
+                    .windows(2)
+                    .enumerate()
+                    .filter(|(_, w)| w[0] != w[1])
+                    .map(|(i, w)| (i + 1, w[1])),
+            )
+            .collect();
+        let want = [(0, 0.0), (18_000, 1.0), (42_000, 2.0)];
+        assert!(
+            steps.len() == want.len()
+                && steps
+                    .iter()
+                    .zip(want)
+                    .all(|(&(at, beat), (want_at, want_beat))| {
+                        beat == want_beat && at.abs_diff(want_at) <= 1
+                    }),
+            "the clock's whole beats on the render's timeline: {steps:?}, want {want:?}"
+        );
+    }
+    both_backends!(an_engine_built_graph_exports_and_its_clock_is_the_renders);
 }

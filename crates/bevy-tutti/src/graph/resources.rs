@@ -119,8 +119,12 @@ impl GraphSource {
 ///   regardless).
 /// - **Compensation** is inserted as `PdcDelay` nodes on `Net`; on `Native`
 ///   the compiler compensates every commit and nothing is inserted.
-/// - **Export** (`ExportRequest`) is `Net`-only in this release: on `Native`
-///   it reports an error (doc 013, PR 12 moves it to `Editor::fork`).
+/// - **Export** (`ExportRequest`) forks on `Native` (`Editor::fork`, doc
+///   013 PR 12): every node, the master included, is isolated, rebound onto
+///   the export's offline timeline and reset, and a node that cannot be
+///   forked (a mic monitor, a disk voice, an in-process VST2 plugin) refuses
+///   the export by name. `Net` clones: a master export keeps the live
+///   bindings and running state. See `crate::export`.
 /// - **Block-oriented units** (a convolver's FFT, a plugin's batcher) run in
 ///   `Legacy`'s 64-frame chunks from the start of each native block, so a
 ///   render in blocks that are not a multiple of 64 can differ from `Net` by
@@ -446,6 +450,22 @@ impl AudioGraphRes {
         }
     }
 
+    /// [`insert_boxed`](Self::insert_boxed) for a hosted plugin, keeping the
+    /// concrete `PluginClient` so the native backend can hand the editor its
+    /// fork source (a fork by state transfer): an export of a graph holding a
+    /// plugin inserted as a boxed unit is refused as not forkable. `Net`
+    /// needs nothing — it forks nothing — and boxes it as before.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn insert_plugin(
+        &mut self,
+        client: Box<tutti_plugin::handles::PluginClient>,
+    ) -> AudioNode {
+        match &mut self.0 {
+            Backend::Net(net) => AudioNode(net.push(client)),
+            Backend::Native(g) => write(g).insert_plugin(client),
+        }
+    }
+
     /// Take `node` out of the graph. Every edge to and from it reads silence
     /// afterwards, so a sink still naming it is left silent rather than
     /// dangling.
@@ -708,10 +728,10 @@ impl AudioGraphRes {
 
     /// A live duplicate of the whole graph that shares no state with it,
     /// rendered through its own [`AudioSide`]: `Editor::fork` on `Native`,
-    /// each node forked from its shadow. What an export will render from once
-    /// it moves to `Editor::fork` (doc 013, PR 12), so a test can check today
-    /// that a control write reaches it. `None` on `Net` (whose export clones
-    /// the `Net`), or when a node cannot be forked.
+    /// each node forked from its shadow — what an export renders from
+    /// (offline, through [`export`](Self::export)), so a test can check that
+    /// a control write reaches it. `None` on `Net` (whose export clones the
+    /// `Net`), or when a node cannot be forked.
     #[cfg(test)]
     pub(crate) fn fork(&self) -> Option<AudioSide> {
         match &self.0 {
@@ -830,54 +850,113 @@ impl AudioGraphRes {
 
     // --- Export ---
 
-    /// The whole graph as an offline copy, keeping its live transport
-    /// bindings. See `export::run::prepare_net`. `Net` only in this release.
+    /// The graph an export renders: `node`'s sub-graph, or the whole graph
+    /// for `None`, as a [`tutti_export::RenderGraph`] sharing no state with
+    /// this one. Main thread; the render then runs on a worker. See
+    /// `export::run::start_exports`.
+    ///
+    /// **`Native`**: `Editor::fork` (`ForkTarget::Master` or
+    /// `ForkTarget::Node`) in `ForkMode::Offline(ctx)`, prepared at `rate`.
+    /// Every node is forked from its shadow — isolated, rebound onto `ctx`,
+    /// reset — **the master included**: a master export renders what the
+    /// graph is driven to play from `ctx`, starting silent, not a copy of
+    /// what is sounding now (doc 013, PR 12). Returns [`Exported::rebound`]
+    /// `true`.
+    ///
+    /// **`Net`** (until PR 13 deletes it), as every release before: the
+    /// master is a plain `Net::clone` keeping its live transport bindings
+    /// and running state (`rebound: false`, and `ctx` is not used); a node
+    /// is `clone_isolated`, rebound onto `ctx` and reset.
+    ///
+    /// `Err(ExportRefused::GraphHasNoOutputs)` when the graph has no global
+    /// outputs, and `Err(ExportRefused::NoOutputs)` when `node` has no audio
+    /// outputs (or is not in the graph); a fork refusal (`NotForkable`, a plugin whose
+    /// fresh instance did not load) is the renderer's own error.
     #[cfg(feature = "export")]
-    pub(crate) fn export_master(&self) -> Result<Net, &'static str> {
-        match &self.0 {
-            Backend::Net(net) => Ok(net.clone()),
-            Backend::Native(_) => Err(EXPORT_NOT_NATIVE),
-        }
-    }
-
-    /// An offline copy rendering `node`'s outputs, isolated from live inputs,
-    /// rebound onto `ctx` and reset. `Ok(None)` when `node` has no outputs.
-    /// `Net` only in this release.
-    #[cfg(feature = "export")]
-    pub(crate) fn export_node(
+    pub(crate) fn export(
         &self,
-        node: AudioNode,
+        node: Option<AudioNode>,
         ctx: &OfflineTransport,
-    ) -> Result<Option<Net>, &'static str> {
-        let Backend::Net(net) = &self.0 else {
-            return Err(EXPORT_NOT_NATIVE);
-        };
-        let Some(pending) = net.clone_isolated(node.0) else {
-            return Ok(None);
-        };
-        // Isolate (sever live inputs) and rebind (re-point at `ctx`) in the
-        // one order they may happen — see `PendingClone::isolate_for_offline`.
-        let mut net = pending.isolate_for_offline(ctx);
-        // Reset every node's internal state. The clone inherited the live
-        // nodes' filter memory, reverb tails and delay lines as of clone
-        // time; rendering from those would make the result depend on *when*
-        // the render was started — nondeterministic, and it breaks any
-        // cache keyed on "what does this node sound like".
-        net.reset();
-        Ok(Some(net))
+        rate: SampleRate,
+    ) -> Result<Exported, ExportRefused> {
+        if self.outputs() == 0 {
+            return Err(ExportRefused::GraphHasNoOutputs);
+        }
+        match &self.0 {
+            Backend::Net(net) => {
+                let Some(node) = node else {
+                    // NOTE: a plain `Clone`, so nothing is isolated. Nodes
+                    // that share live state through `Clone` rather than
+                    // copying it — a disk voice's ring, a mic monitor's input
+                    // — stay attached to what the audio thread is using, and
+                    // the render reads the live transport. That is the `Net`
+                    // master export as it always was; `Native` forks instead.
+                    return Ok(Exported {
+                        graph: net.clone().into(),
+                        rebound: false,
+                    });
+                };
+                let pending = net.clone_isolated(node.0).ok_or(ExportRefused::NoOutputs)?;
+                // Isolate (sever live inputs) and rebind (re-point at `ctx`)
+                // in the one order they may happen — see
+                // `PendingClone::isolate_for_offline`.
+                let mut net = pending.isolate_for_offline(ctx);
+                // Reset every node's internal state. The clone inherited the
+                // live nodes' filter memory, reverb tails and delay lines as
+                // of clone time; rendering from those would make the result
+                // depend on *when* the render was started — nondeterministic,
+                // and it breaks any cache keyed on "what does this node sound
+                // like".
+                net.reset();
+                Ok(Exported {
+                    graph: net.into(),
+                    rebound: true,
+                })
+            }
+            Backend::Native(g) => {
+                let target = match node {
+                    None => tutti_graph::ForkTarget::Master,
+                    Some(node) => tutti_graph::ForkTarget::Node(super::native::key(node)),
+                };
+                match read(g).fork_for_export(target, ctx, rate) {
+                    Ok(graph) => Ok(Exported {
+                        graph,
+                        rebound: true,
+                    }),
+                    Err(tutti_export::Error::Fork(
+                        tutti_graph::ForkError::NoOutputs { .. }
+                        | tutti_graph::ForkError::NoSuchNode { .. },
+                    )) => Err(ExportRefused::NoOutputs),
+                    Err(e) => Err(ExportRefused::Render(e)),
+                }
+            }
+        }
     }
 }
 
-/// Why an export on the native backend fails in this release.
-///
-/// Export renders a `Net` today, and the native graph has none to hand out.
-/// Doc 013's PR 12 moves export to `Editor::fork`; until then the export is
-/// refused explicitly rather than rendered from something that is not the
-/// live graph.
+/// What [`AudioGraphRes::export`] hands the render.
 #[cfg(feature = "export")]
-pub(crate) const EXPORT_NOT_NATIVE: &str =
-    "export is not yet available on GraphBackend::Native (design doc 013, PR 12); \
-     build the graph on GraphBackend::Net to export";
+pub(crate) struct Exported {
+    /// The graph to render.
+    pub(crate) graph: tutti_export::RenderGraph,
+    /// Whether its transport-aware nodes were rebound onto the export's
+    /// offline context — every native fork, and a `Net` node export — or keep
+    /// their live bindings (a `Net` master export).
+    pub(crate) rebound: bool,
+}
+
+/// Why [`AudioGraphRes::export`] built nothing.
+#[cfg(feature = "export")]
+#[derive(Debug)]
+pub(crate) enum ExportRefused {
+    /// The target node has no audio outputs, or is not in the graph.
+    NoOutputs,
+    /// The graph has no global outputs: nothing any export could render.
+    GraphHasNoOutputs,
+    /// The fork was refused: a node cannot be forked, or its fork source
+    /// failed.
+    Render(tutti_export::Error),
+}
 
 #[cfg(test)]
 mod tests {

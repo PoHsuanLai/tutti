@@ -30,7 +30,7 @@ pub mod post_block;
 pub mod pre_block;
 pub mod registry;
 
-pub use port::MidiInPort;
+pub use port::{MidiInPort, OfflineRebind};
 pub use post_block::{MidiOutSink, MidiPostBlock, MIDI_OUT_LATENCY_BLOCKS};
 pub use pre_block::{BlockClock, MidiPreBlock, MpeModeRequest};
 pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};

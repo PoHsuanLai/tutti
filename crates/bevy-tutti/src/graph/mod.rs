@@ -31,7 +31,7 @@ pub mod commit;
 pub mod despawn;
 pub mod latency;
 pub mod metering;
-mod native;
+pub(crate) mod native;
 pub mod param;
 pub mod param_ports;
 pub mod plugin;

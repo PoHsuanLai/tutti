@@ -109,10 +109,10 @@ let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
 let reader = MidiSnapshotReader::new(snapshot, Arc::clone(&timeline));
 
 let mut block = [MidiEvent::noop(); 8];
-assert_eq!(reader.poll_unit(synth, 512, &mut block), 0); // no beats crossed yet
+assert_eq!(reader.poll_unit(synth, 512, SampleRate(48_000.0), &mut block), 0); // no beats crossed yet
 
 timeline.advance(24_000); // half a beat at 120 BPM / 48 kHz
-assert_eq!(reader.poll_unit(synth, 512, &mut block), 1);
+assert_eq!(reader.poll_unit(synth, 512, SampleRate(48_000.0), &mut block), 1);
 assert_eq!(block[0].note(), Some(60));
 ```
 

@@ -29,10 +29,11 @@ use tutti_midi_types::{MidiOut, MidiUnitIn};
 /// `.into()` from a `(beat, event)` tuple, or the field literal (`beat`/`event`).
 pub type TimedClipEvent = super::snapshot::TimedMidiEvent;
 
-/// MIDI clip player. Constructed with a sorted-by-beat event list,
-/// a transport reader, and the audio sample rate. Events are emitted
-/// when their beat falls inside the block range covered by a
-/// `poll_into` call.
+/// MIDI clip player. Constructed with a sorted-by-beat event list and a
+/// transport reader. Events are emitted when their beat falls inside the
+/// block range covered by a `poll_unit` call, placed at the rate the polling
+/// unit hands in with the block (it holds no rate of its own to fall out of
+/// step with its unit's).
 ///
 /// Cheap to clone — internal state shares atomic cursors so the
 /// graph commit's clone of the parent unit doesn't restart playback.
@@ -69,7 +70,6 @@ impl MidiClipSource {
         target_unit: MidiUnitId,
         events: impl IntoIterator<Item = TimedClipEvent>,
         transport: Arc<dyn Timeline>,
-        sample_rate: SampleRate,
     ) -> Self {
         let mut v: Vec<TimedClipEvent> = events.into_iter().collect();
         v.sort_by(|a, b| {
@@ -79,7 +79,7 @@ impl MidiClipSource {
         });
         Self {
             events: v.into(),
-            beats: BeatCursor::new(transport, sample_rate),
+            beats: BeatCursor::unrated(transport),
             cursor: Arc::new(AtomicU64::new(0)),
             target_unit,
             out_tap: None,
@@ -129,11 +129,11 @@ impl MidiClipSource {
     ///
     /// Returns `None` when nothing should be emitted this block — the
     /// transport is paused, or the tempo/sample-rate is non-positive.
-    fn sync_to_transport(&self, block_size: usize) -> Option<BeatWindow> {
+    fn sync_to_transport(&self, block_size: usize, sample_rate: SampleRate) -> Option<BeatWindow> {
         // `BeatCursor` owns the paused check, the seek epsilon, the tempo guard,
         // the offset clamp, and publishing the cursor; all that is left here is
         // the clip-specific part — rewinding on a backwards jump.
-        let (window, sync) = self.beats.advance(block_size)?;
+        let (window, sync) = self.beats.advance_at(block_size, sample_rate)?;
         if sync == BeatWindowSync::Rewound {
             self.rewind_to(window.start_beat);
         }
@@ -181,17 +181,46 @@ impl MidiUnitIn for MidiClipSource {
     /// The `unit_id` check against `target_unit` is the selector contract, not a
     /// redundant guard: a clip is addressed to one unit, and polling it for
     /// another must yield nothing.
-    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, out: &mut [MidiEvent]) -> usize {
+    fn poll_unit(
+        &self,
+        unit_id: MidiUnitId,
+        block_size: usize,
+        sample_rate: SampleRate,
+        out: &mut [MidiEvent],
+    ) -> usize {
         if unit_id != self.target_unit {
             return 0;
         }
         if block_size == 0 || out.is_empty() || self.events.is_empty() {
             return 0;
         }
-        let Some(window) = self.sync_to_transport(block_size) else {
+        let Some(window) = self.sync_to_transport(block_size, sample_rate) else {
             return 0;
         };
         self.emit_window(&window, out)
+    }
+
+    /// The same clip, addressed to `unit`, on the render's timeline: the
+    /// event list is shared (it is immutable), the cursor and the beat
+    /// window are fresh, and the rate is whatever the forked unit polls it
+    /// at (none is copied).
+    ///
+    /// **No hardware-out tap.** A tap forwards every emitted event to an
+    /// external MIDI port; an export that did so would play the clip on the
+    /// hardware while bouncing it, faster than real time.
+    fn rebind_offline(
+        &self,
+        unit: MidiUnitId,
+        ctx: &dyn std::any::Any,
+    ) -> Option<Arc<dyn MidiUnitIn>> {
+        let timeline = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>()?;
+        Some(Arc::new(Self {
+            events: Arc::clone(&self.events),
+            beats: BeatCursor::unrated(Arc::clone(timeline)),
+            cursor: Arc::new(AtomicU64::new(0)),
+            target_unit: unit,
+            out_tap: None,
+        }))
     }
 }
 
@@ -203,6 +232,11 @@ mod tests {
     use tutti_core::BeatDuration;
     use tutti_core::Bpm;
     use tutti_midi_types::{MidiChannel, MidiGroup};
+
+    /// The rate the clip tests poll at.
+    const SR: SampleRate = SampleRate(44_100.0);
+    /// The rate the offline-rebind tests poll at.
+    const SR48: SampleRate = SampleRate(48_000.0);
 
     /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {
@@ -249,8 +283,7 @@ mod tests {
     fn emits_event_at_correct_frame_offset() {
         let unit = MidiUnitId::new(1);
         let transport = Arc::new(TestTransport::new(Bpm(120.0)));
-        // 120 BPM @ 44.1kHz → 22050 samples/beat → ~22.05 samples per 0.001 beat.
-        let sample_rate = SampleRate::from(44100.0);
+        // 120 BPM @ 44.1kHz (`SR`) → 22050 samples/beat.
 
         let events = vec![
             TimedClipEvent {
@@ -262,16 +295,11 @@ mod tests {
                 event: note_on(64, 100),
             },
         ];
-        let source = MidiClipSource::new(
-            unit,
-            events,
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            sample_rate,
-        );
+        let source = MidiClipSource::new(unit, events, Arc::clone(&transport) as Arc<dyn Timeline>);
 
         // First block: cover [0.0, 1.0) beats = [0, 22050) samples.
         let mut buf = [MidiEvent::noop(); 8];
-        let n = source.poll_unit(unit, 22050, &mut buf);
+        let n = source.poll_unit(unit, 22050, SR, &mut buf);
         assert_eq!(n, 2);
         assert_eq!(buf[0].frame_offset, 0);
         // Second event at beat 0.5 → 11025 samples.
@@ -282,7 +310,7 @@ mod tests {
         );
 
         // Polling again at the same beat: cursor advanced, no new events.
-        let n2 = source.poll_unit(unit, 22050, &mut buf);
+        let n2 = source.poll_unit(unit, 22050, SR, &mut buf);
         assert_eq!(n2, 0);
     }
 
@@ -298,10 +326,9 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_unit(other, 1024, &mut buf), 0);
+        assert_eq!(source.poll_unit(other, 1024, SR, &mut buf), 0);
     }
 
     #[test]
@@ -316,10 +343,9 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_unit(unit, 1024, &mut buf), 0);
+        assert_eq!(source.poll_unit(unit, 1024, SR, &mut buf), 0);
     }
 
     #[test]
@@ -339,19 +365,18 @@ mod tests {
                 },
             ],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         );
 
         let mut buf = [MidiEvent::noop(); 4];
 
         // First block @ beat 0
-        assert_eq!(source.poll_unit(unit, 22050, &mut buf), 2);
+        assert_eq!(source.poll_unit(unit, 22050, SR, &mut buf), 2);
         // Move forward — cursor exhausted, nothing emitted.
         transport.set_beat(2.0);
-        assert_eq!(source.poll_unit(unit, 22050, &mut buf), 0);
+        assert_eq!(source.poll_unit(unit, 22050, SR, &mut buf), 0);
         // Seek back to start — events should fire again.
         transport.set_beat(0.0);
-        assert_eq!(source.poll_unit(unit, 22050, &mut buf), 2);
+        assert_eq!(source.poll_unit(unit, 22050, SR, &mut buf), 2);
     }
 
     #[test]
@@ -378,13 +403,12 @@ mod tests {
                 },
             ],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         )
         .with_out_tap(Arc::new(sender));
 
         // Poll one block wide enough to cover both events.
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_unit(unit, 22050, &mut buf), 2);
+        assert_eq!(source.poll_unit(unit, 22050, SR, &mut buf), 2);
 
         // The tap received the *same* events the synth did, sample-stamped.
         let mut tapped = [MidiEvent::noop(); 4];
@@ -414,10 +438,9 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_unit(unit, 22050, &mut buf), 1);
+        assert_eq!(source.poll_unit(unit, 22050, SR, &mut buf), 1);
     }
 
     // --- isolated-half tests for the poll_into decomposition ----------------
@@ -436,7 +459,6 @@ mod tests {
                 },
             ],
             Arc::clone(transport) as Arc<dyn Timeline>,
-            SampleRate::from(44100.0),
         )
     }
 
@@ -451,13 +473,15 @@ mod tests {
         // resuming lower would not register as a backwards jump.
         transport.playing.store(false, Ordering::Release);
         transport.set_beat(3.0);
-        assert!(source.sync_to_transport(512).is_none());
+        assert!(source.sync_to_transport(512, SR).is_none());
 
         // Playing, and *below* the paused watermark → a window, and the
         // backwards jump is detected.
         transport.playing.store(true, Ordering::Release);
         transport.set_beat(0.5);
-        let w = source.sync_to_transport(22050).expect("playing → window");
+        let w = source
+            .sync_to_transport(22050, SR)
+            .expect("playing → window");
         assert_eq!(w.start_beat, Beat(0.5));
         assert!(w.end_beat > Beat(0.5));
 
@@ -466,12 +490,12 @@ mod tests {
         // the next sync must rewind the cursor so the events replay.
         let mut buf = [MidiEvent::noop(); 8];
         transport.set_beat(0.0);
-        let _ = source.poll_unit(MidiUnitId::new(1), 44100, &mut buf); // drains both
+        let _ = source.poll_unit(MidiUnitId::new(1), 44100, SR, &mut buf); // drains both
         transport.set_beat(2.0);
-        let _ = source.sync_to_transport(22050); // last_beat now ~2.0
+        let _ = source.sync_to_transport(22050, SR); // last_beat now ~2.0
         assert!(source.cursor.load(Ordering::Relaxed) >= 2);
         transport.set_beat(0.0); // genuine backward seek
-        let _ = source.sync_to_transport(22050);
+        let _ = source.sync_to_transport(22050, SR);
         assert_eq!(
             source.cursor.load(Ordering::Relaxed),
             0,
@@ -483,7 +507,7 @@ mod tests {
     fn sync_to_transport_rejects_bad_tempo() {
         let transport = Arc::new(TestTransport::new(Bpm(0.0))); // zero tempo
         let source = one_note_source(&transport);
-        assert!(source.sync_to_transport(512).is_none());
+        assert!(source.sync_to_transport(512, SR).is_none());
     }
 
     // NOTE: `emit_window`'s beat→frame mapping is pinned publicly by
@@ -509,5 +533,110 @@ mod tests {
         // Cursor persisted only past the written event; the rest replays.
         let mut buf2 = [MidiEvent::noop(); 4];
         assert_eq!(source.emit_window(&window, &mut buf2), 1);
+    }
+
+    /// A live port playing a clip at 120 BPM with a hardware-out tap, and an
+    /// offline timeline at 90 BPM, 48 kHz, from beat 0.
+    fn live_and_offline() -> (
+        crate::MidiInPort,
+        crate::MidiInPort,
+        tutti_core::transport::OfflineTransport,
+    ) {
+        use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+        let live = crate::MidiInPort::new();
+        let tap = crate::MidiInPort::new();
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
+        live.install(Arc::new(
+            MidiClipSource::new(
+                live.unit_id(),
+                vec![TimedClipEvent {
+                    beat: Beat(1.0),
+                    event: note_on(60, 100),
+                }],
+                transport as Arc<dyn Timeline>,
+            )
+            .with_out_tap(Arc::new(tap.sender())),
+        ));
+        let offline: tutti_core::transport::OfflineTransport =
+            Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(0.0),
+                tempo: Bpm(90.0),
+                sample_rate: SampleRate(48_000.0),
+                loop_range: None,
+            }));
+        (live, tap, offline)
+    }
+
+    /// **A clip rebound for an offline render plays on the fork's port, on
+    /// the render's timeline, and leaves the live clip alone.** Beat 1 at
+    /// 90 BPM and 48 kHz is frame 32 000 (at the live 120 BPM it would be
+    /// 24 000); the live source's cursor is untouched by the fork's poll;
+    /// the fork does not fire the live source's hardware tap; a context that
+    /// is not an `OfflineTransport` installs nothing and says so; and a port
+    /// with no source says that instead.
+    ///
+    /// Mutation (run): the rebound source keeping the live timeline → the
+    /// note lands at 24 000; sharing the live `cursor` → the live poll after
+    /// the fork's emits nothing; keeping `out_tap` → the tap receives the
+    /// note; addressing the copy to the live unit id → the fork's port
+    /// polls nothing; `rebind_offline_into` answering `NoSource` for a
+    /// source that did not rebind → the first assertion fails.
+    #[test]
+    fn a_clip_rebound_offline_plays_on_the_fork_and_leaves_the_live_clip() {
+        use crate::OfflineRebind;
+        let (live, tap, offline) = live_and_offline();
+        let fork = crate::MidiInPort::new();
+        assert_eq!(
+            live.rebind_offline_into(&fork, &"not a transport"),
+            OfflineRebind::NotRebindable
+        );
+        assert_eq!(
+            crate::MidiInPort::new().rebind_offline_into(&fork, &offline),
+            OfflineRebind::NoSource
+        );
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(
+            fork.poll(40_000, SR48, &mut buf),
+            0,
+            "nothing was installed"
+        );
+
+        assert_eq!(
+            live.rebind_offline_into(&fork, &offline),
+            OfflineRebind::Rebound
+        );
+        assert_eq!(fork.poll(40_000, SR48, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 32_000, "beat 1 at 90 BPM, 48 kHz");
+        assert_eq!(
+            tap.poll(64, SR48, &mut buf),
+            0,
+            "the fork fired the live tap"
+        );
+
+        // The live clip still has its note: its cursor was not the fork's.
+        assert_eq!(live.poll(30_000, SR48, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 24_000, "beat 1 at 120 BPM, 48 kHz");
+    }
+
+    /// **A clip places its events at the rate its unit polls it at, and a
+    /// fork's rate does not reach the live clip.** The fork polled at 96 kHz
+    /// puts beat 1 at 90 BPM on frame 64 000; the live clip, polled at
+    /// 48 kHz after it, still puts beat 1 at 120 BPM on frame 24 000. No rate
+    /// is stored in either source, so neither can be left behind by the
+    /// other.
+    ///
+    /// Mutation (run): `MidiClipSource::sync_to_transport` advancing with a
+    /// fixed 48 kHz instead of the rate it is handed → the fork's note lands
+    /// at 32 000.
+    #[test]
+    fn a_clip_follows_the_rate_its_unit_polls_it_at() {
+        let (live, _tap, offline) = live_and_offline();
+        let fork = crate::MidiInPort::new();
+        let _ = live.rebind_offline_into(&fork, &offline);
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(fork.poll(70_000, SampleRate(96_000.0), &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 64_000);
+        assert_eq!(live.poll(30_000, SR48, &mut buf), 1);
+        assert_eq!(buf[0].frame_offset, 24_000, "the live clip's rate");
     }
 }

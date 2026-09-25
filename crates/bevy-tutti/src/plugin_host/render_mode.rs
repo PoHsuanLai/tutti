@@ -284,8 +284,9 @@ mod tests {
     /// still the thing being rendered.
     fn dummy_in_flight() -> ExportInFlight {
         ExportInFlight::new(
-            bevy_tasks::AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new)
-                .spawn(async { Err(tutti_export::Error::InvalidConfig("test fixture".into())) }),
+            bevy_tasks::AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new).spawn(async {
+                Err(tutti_export::Error::InvalidConfig("test fixture".into()).into())
+            }),
         )
     }
 }

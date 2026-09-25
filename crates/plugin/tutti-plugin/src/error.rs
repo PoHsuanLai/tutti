@@ -234,6 +234,16 @@ pub enum PluginForkError {
     /// The fresh instance refused the live instance's state.
     #[error("the fresh instance refused the live instance's state: {0}")]
     LoadState(#[source] StateError),
+
+    /// The live instance plays a MIDI source (installed on its port) that
+    /// cannot be carried into an offline render: it is not a function of a
+    /// timeline (`MidiUnitIn::rebind_offline` answered `None`). The fork
+    /// would render without the notes it feeds, so it is refused instead.
+    #[error(
+        "the live instance plays a MIDI source that cannot be rebound for an offline \
+         render; its notes would render as silence"
+    )]
+    MidiSource,
 }
 
 /// How a forked plugin instance failed **while rendering** — the cause behind

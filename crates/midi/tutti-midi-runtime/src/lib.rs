@@ -44,7 +44,7 @@ mod sysex;
 
 pub use block::{
     BlockClock, MidiBus, MidiInPort, MidiMailbox, MidiOutSink, MidiPostBlock, MidiPreBlock,
-    MidiReceiver, MidiSender, MpeModeRequest, MIDI_OUT_LATENCY_BLOCKS,
+    MidiReceiver, MidiSender, MpeModeRequest, OfflineRebind, MIDI_OUT_LATENCY_BLOCKS,
 };
 pub use negotiate::{
     CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,

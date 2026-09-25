@@ -9,6 +9,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bevy-tutti exports fork the native graph** (design doc 013, Phase 3 PR
+  12). On `GraphBackend::Native` an `ExportRequest` renders `Editor::fork`
+  of the live graph — `ExportSource::Master` what the global outputs hear,
+  `Node` the sub-graph feeding it — in `ForkMode::Offline` on the request's
+  timeline, through tutti-export's `RenderGraph::Graph`. The live graph is
+  not touched and keeps playing while the render runs. `GraphBackend::Net`
+  exports as before until PR 13 removes it. What changes for a host:
+
+  | Was | Now |
+  |---|---|
+  | `ExportRequest::new(source, target, config, Arc::new(FrozenClock))` | `ExportRequest::new(source, target, config, ExportClock::frozen())` |
+  | `ExportRequest::new(.., timeline.clone()).on_timeline(timeline)` | `ExportRequest::new(.., ExportClock::timeline(timeline))` (`on_timeline` still sets it on a built request) |
+  | `ExportRequest::clock: Arc<dyn RenderClock>` and `offline: Option<OfflineTransport>` | one field, `clock: ExportClock`: the renderer's clock and the nodes' timeline are one object, so they cannot disagree. A frozen clock rebinds the nodes onto a timeline stopped at beat 0 (a clip reader plays nothing), not a default rolling one nothing advances |
+  | `ExportRequest` and its fields constructed with a struct literal | `#[non_exhaustive]` (new fields `clock`, `latency_from_graph`, `tail_from_graph`): build with `ExportRequest::new` |
+  | `ExportDone::result: tutti_export::Result<ExportOutput>` | `Result<ExportOutput, ExportError>`. `ExportError::Render` wraps the engine's error; `NotForkable`, `ForkSource` and `ForkFailed` name the node as an `ExportNode` (its entity, `Name` and graph key; `#[non_exhaustive]`) |
+  | `ExportRequest::with_prepare(\|PreparedNet { net, ctx }, world\| ..)` | `with_prepare(\|PreparedGraph { graph, ctx }, world\| ..)`, `graph: &mut RenderGraph`: `RenderGraph::Net` on `Net`, the fork's own editor and executor on `Native` (the adapter commits what the hook edits; `PreparedGraph::fresh_key` names a node the hook inserts) |
+  | `PrepareNet` | `PrepareGraph` |
+  | On `Native`, an export reported `InvalidConfig` ("not yet available") | it renders |
+  | "export target node has no outputs" for a graph with no outputs | "the graph has no outputs to export", for either source; an entity with no node is "export target entity is not a graph node" |
+
+  - **A native master export renders what the graph is driven to play,
+    from silence**: every node isolated, rebound and reset, where `Net`'s
+    master export was a plain clone keeping the live bindings and running
+    state. The two render the same samples from a graph whose live side has
+    not advanced.
+  - **An engine-built graph forks**: the native beat clock (`EnvClock`) is
+    inserted with a fork source (`tutti_graph::ForkByClone`, new), so a
+    graph holding it — every graph `build_into` makes — exports.
+  - **Hosted plugins are forkable**: `plugin_load_promote` inserts the
+    concrete `PluginClient` (`Plugin::into_client`, new) with its fork
+    source, so a fork loads a fresh instance with the live one's state. An
+    in-process VST2 plugin is still inserted boxed and refuses an export by
+    name.
+  - **A disk-streamed sampler voice refuses a native export** by name
+    (`ExportError::NotForkable`): its seek handle drives the live butler. On
+    `Net` its master export read the live voice's ring from the render
+    thread, and a node export rendered silence.
+  - New on `ExportRequest`, either backend: `trim_reported_latency()` and
+    `with_reported_tail(cap)` take the render's latency trim and tail from
+    the graph that is rendered, after the `prepare` hook. The tail resolves
+    by `GraphTail::resolve`: a node that never said renders no tail, not the
+    cap.
+  - `bevy_tutti::export` re-exports `RenderGraph`, `ForkCause`,
+    `ForkFaultKind` and `NodeKey`, the engine types its API hands out.
+
+- **tutti-graph: `ForkTarget::Master` forks what the global outputs
+  reach**, walking back along audio, feedback and event edges, and nothing
+  else. A node no output reaches is not copied and need not be forkable
+  (an unrouted mic monitor no longer refuses a master fork; an unrouted
+  plugin launches no server). `ForkByClone<N>` inserts a native `Node` whose
+  `Clone` shares nothing with a fork source that clones and resets it.
+
+- **tutti-plugin: a plugin fork carries its MIDI clip.** An offline
+  `PluginClient` fork copies the clip source installed on the live node's
+  MIDI port onto its own port, with a fresh cursor on the render's timeline,
+  so an exported instrument plays its notes (its live inbox and MIDI-out are
+  still not carried). A source that cannot be rebound fails the fork with
+  `PluginForkError::MidiSource` (new) instead of rendering its notes as
+  silence. `PluginClient::fork_source` hands out the fork source `IntoNode`
+  uses, for a host inserting through its own node builder.
+
+- **tutti-midi-types / tutti-midi-runtime: a MIDI source is handed its
+  unit's rate, and says whether it survives an offline render.** Breaking:
+
+  | Was | Now |
+  |---|---|
+  | `MidiUnitIn::poll_unit(unit, block, buf)` | `poll_unit(unit, block, sample_rate, buf)`: the polling unit's rate for the block, so no source keeps a copy of it to fall out of step |
+  | — | `MidiUnitIn::rebind_offline(unit, ctx) -> Option<Arc<dyn MidiUnitIn>>`, **required**: an offline copy on the render's timeline, or `None` for a source that cannot be carried |
+  | `MidiInPort::poll(block, buf)` | `poll(block, sample_rate, buf)` |
+  | — | `MidiInPort::rebind_offline_into(fork, ctx) -> OfflineRebind` (`NoSource`, `Rebound`, `NotRebindable`) |
+  | `MidiClipSource::new(unit, events, transport, sample_rate)` | `MidiClipSource::new(unit, events, transport)`: it places events at the rate it is polled at |
+  | `Midi::drain_for_process(block)` / `drain_for_tick()` (tutti-plugin) | `drain_for_process(block, sample_rate)` / `drain_for_tick(sample_rate)` |
+
+  `tutti_core::transport::BeatCursor` gained `advance_at(block, rate)` and
+  `unrated(transport)` for such a source. bevy-tutti's
+  `midi::sequence::rebuild` no longer rebuilds every installed clip when the
+  device rate changes (#39 did, to re-rate the clip): a re-rated unit
+  already hands its clip the new rate, and the rebuild's all-notes-off could
+  cut a sounding note. `MidiClipSource`'s offline copy
+  has no hardware-out tap (an export must not play the clip on external
+  MIDI); `MidiSnapshotReader` answers `None` (it is already offline, bound
+  to its own timeline).
+
 - **bevy-tutti's `AudioGraphRes` is opaque: its methods are the only way to
   the graph.** The field was `pub Net`; it is private, so `graph.0` no longer
   compiles outside the crate. The graph is still fundsp's `Net` inside. The
@@ -38,8 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `CapturedControls::bind(entity, NodeId)` | `CapturedControls::bind(entity, AudioNode)`, which takes what `insert` returns |
 
   `GraphSource` is new, in `bevy_tutti::graph` and the prelude. `bevy_tutti::Net`
-  stays: an export's `prepare` hook is still handed the `Net` it renders
-  (`PreparedNet`) until export moves to `Fork`.
+  stays: on `GraphBackend::Net` an export's `prepare` hook is still handed
+  the `Net` it renders (as `RenderGraph::Net`, since export moved to `Fork`;
+  see the entry above).
 
 - **bevy-tutti captures a node's controls when the node is inserted, and never
   reaches back into the graph for them.** `MidiTargetRegistry` and

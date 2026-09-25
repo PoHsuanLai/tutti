@@ -64,7 +64,16 @@ impl tutti_midi_types::MidiUnitIn for MidiSnapshotReader {
     ///
     /// [`MidiUnitIn`]: tutti_midi_types::MidiUnitIn
     /// [`MidiIn`]: tutti_midi_types::MidiIn
-    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    ///
+    /// `sample_rate` is not read: the snapshot places events by its own
+    /// `OfflineTimeline`'s `beats_per_sample`, the rate the render runs at.
+    fn poll_unit(
+        &self,
+        unit_id: MidiUnitId,
+        block_size: usize,
+        _sample_rate: tutti_core::SampleRate,
+        buffer: &mut [MidiEvent],
+    ) -> usize {
         let current_beat = self.timeline.beat();
         let last_beat = Beat(self.last_poll_beat.load(Ordering::Acquire));
 
@@ -105,6 +114,19 @@ impl tutti_midi_types::MidiUnitIn for MidiSnapshotReader {
                 .store(current_beat.get(), Ordering::Release);
         }
         count
+    }
+
+    /// Not rebindable: a snapshot reader is already an offline source, bound
+    /// to the one `OfflineTimeline` it was built over, with per-unit cursors
+    /// it advances as it is polled. A render that wants its events builds
+    /// its own reader over its own timeline; carrying this one into a fork
+    /// would read a timeline nothing advances.
+    fn rebind_offline(
+        &self,
+        _unit: MidiUnitId,
+        _ctx: &dyn std::any::Any,
+    ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
+        None
     }
 }
 
@@ -157,27 +179,52 @@ mod tests {
         let block = samples_per_beat as usize; // pretend each call covers one beat-sized block
 
         // At beat 0, nothing yet (no advance)
-        let count = reader.poll_unit(unit_id, block, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            block,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 0);
 
         // Advance to beat 0.5 — should get event at beat 0
         timeline.advance((0.5 * samples_per_beat) as usize);
-        let count = reader.poll_unit(unit_id, block, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            block,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 1);
 
         // Advance to beat 1.5 — should get event at beat 1
         timeline.advance((1.0 * samples_per_beat) as usize);
-        let count = reader.poll_unit(unit_id, block, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            block,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 1);
 
         // Advance to beat 3.0 — should get event at beat 2
         timeline.advance((1.5 * samples_per_beat) as usize);
-        let count = reader.poll_unit(unit_id, block, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            block,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 1);
 
         // No more events
         timeline.advance((1.0 * samples_per_beat) as usize);
-        let count = reader.poll_unit(unit_id, block, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            block,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 0);
     }
 
@@ -205,18 +252,24 @@ mod tests {
 
         // First poll: buffer holds only 2 → overflow.
         let mut small = [MidiEvent::noop(); 2];
-        assert_eq!(reader.poll_unit(unit_id, 22050, &mut small), 2);
+        assert_eq!(
+            reader.poll_unit(unit_id, 22050, tutti_core::SampleRate(44_100.0), &mut small),
+            2
+        );
 
         // Second poll at the SAME beat: the remaining event must surface.
         let mut rest = [MidiEvent::noop(); 8];
         assert_eq!(
-            reader.poll_unit(unit_id, 22050, &mut rest),
+            reader.poll_unit(unit_id, 22050, tutti_core::SampleRate(44_100.0), &mut rest),
             1,
             "the overflowed event must be delivered, not dropped"
         );
 
         // No further events at this beat.
-        assert_eq!(reader.poll_unit(unit_id, 22050, &mut rest), 0);
+        assert_eq!(
+            reader.poll_unit(unit_id, 22050, tutti_core::SampleRate(44_100.0), &mut rest),
+            0
+        );
     }
 
     #[test]
@@ -227,7 +280,12 @@ mod tests {
 
         let mut buffer = [MidiEvent::noop(); 16];
         timeline.advance(1000);
-        let count = reader.poll_unit(MidiUnitId::new(999), 1024, &mut buffer);
+        let count = reader.poll_unit(
+            MidiUnitId::new(999),
+            1024,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 0);
     }
 
@@ -254,7 +312,12 @@ mod tests {
         timeline.advance(samples_per_beat);
 
         let mut buffer = [MidiEvent::noop(); 8];
-        let count = reader.poll_unit(unit_id, samples_per_beat, &mut buffer);
+        let count = reader.poll_unit(
+            unit_id,
+            samples_per_beat,
+            tutti_core::SampleRate(44_100.0),
+            &mut buffer,
+        );
         assert_eq!(count, 3);
 
         // First event sits at the head of the block.

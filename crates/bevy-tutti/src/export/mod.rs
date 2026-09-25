@@ -19,7 +19,7 @@
 //! use bevy_tutti::graph::AudioConfig;
 //! use tutti_nodes::testing::Const;
 //! use tutti_export::{
-//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock,
+//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig,
 //!     RenderConfig,
 //! };
 //!
@@ -61,7 +61,7 @@
 //!         ExportSource::Master,
 //!         ExportTarget::Buffers,
 //!         config,
-//!         Arc::new(FrozenClock),
+//!         ExportClock::frozen(),
 //!     ))
 //!     .observe(move |done: On<ExportDone>| {
 //!         if let Ok(ExportOutput::Buffers(rendered)) = &done.result {
@@ -81,9 +81,44 @@
 //! assert_eq!(*channels.lock().unwrap(), Some(2));
 //! ```
 //!
-//! A request may also carry a `with_prepare` hook — the last look at the net
-//! before it leaves the main thread, which is where an isolated clone's voices
+//! A request may also carry a `with_prepare` hook — the last look at the graph
+//! before it leaves the main thread, which is where an isolated copy's voices
 //! get refilled from the app's world. See [`ExportRequest::with_prepare`].
+//!
+//! # Which graph is rendered
+//!
+//! On [`GraphBackend::Native`](crate::graph::GraphBackend::Native) an export
+//! renders a **fork** of the live graph (`Editor::fork`, design doc 013 PR 12):
+//! what the global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
+//! feeding one node for [`ExportSource::Node`], every node isolated, rebound
+//! onto the request's [`ExportClock`] and reset. The live graph is not
+//! touched and keeps playing while the render runs on the pool.
+//!
+//! - **It renders what the graph is driven to play, from silence.** A master
+//!   export on `Net` is a plain clone that keeps the live transport bindings
+//!   and running state (delay lines, a sounding voice); a fork keeps neither.
+//! - **Controls are a snapshot** at the fork: a parameter moved while the
+//!   render runs does not reach it. A modulated parameter renders its
+//!   authored base, not the live modulation (an LFO's offset); a hosted
+//!   plugin renders its saved state plus its authored automation.
+//! - **A hosted plugin is forked by state transfer**: a fresh instance in a
+//!   new `plugin-server` process, loaded with the live one's state, told it
+//!   is rendering offline. Its MIDI clip comes with it, rebound onto the
+//!   render's timeline, so an exported instrument plays its notes; its live
+//!   MIDI inbox does not. The fork launches in the frame the export starts.
+//! - **Some nodes cannot be forked**, and an export that needs one (an
+//!   output reaches it) is refused naming the node's entity
+//!   ([`ExportError::NotForkable`]): a microphone monitor, an
+//!   in-process VST2 plugin, and a **disk-streamed sampler voice** — its seek
+//!   handle drives the live butler, so a copy would reposition the live
+//!   stream. (On `Net`, a master export's plain clone read the live voice's
+//!   ring from the render thread, taking frames the audio thread was waiting
+//!   on; a node export severed the ring and rendered silence, while its first
+//!   in-window frame could still seek the live stream.) Export a node it does
+//!   not feed, or load the clip into memory.
+//! - **A fork that fails while rendering** — a plugin server that crashes or
+//!   hangs — fails the export by name ([`ExportError::ForkFailed`]) rather
+//!   than writing silence as a success.
 //!
 //! # What is deliberately not here
 //!
@@ -93,8 +128,8 @@
 //! that knows the answer can simply spawn the one it wants first.
 //!
 //! There *is* a cap, of exactly one: see [`ExportInFlight`]. It is enforced in
-//! [`start_exports`] rather than left to callers, because the per-request net
-//! clone is main-thread work and a `run_if` gate cannot see requests spawned in
+//! [`start_exports`] rather than left to callers, because the per-request graph
+//! copy is main-thread work and a `run_if` gate cannot see requests spawned in
 //! its own frame.
 //!
 //! **No progress reporting.** The render is one synchronous call; there is
@@ -106,10 +141,17 @@ mod request;
 mod run;
 
 pub use request::{
-    ExportDone, ExportInFlight, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    PrepareNet, PreparedNet,
+    ExportClock, ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest,
+    ExportSource, ExportTarget, PrepareGraph, PreparedGraph,
 };
+
+// The engine types this module's API hands out, so a host names them without
+// depending on the crates they come from: the graph a `prepare` hook edits,
+// and what an `ExportError` carries.
 pub use run::{poll_exports, start_exports};
+pub use tutti_export::RenderGraph;
+pub use tutti_graph::{ForkCause, ForkFaultKind};
+pub use tutti_types::NodeKey;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;

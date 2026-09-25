@@ -26,6 +26,10 @@
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
 
+use std::sync::Arc;
+
+use tutti_types::SampleRate;
+
 // -----------------------------------------------------------------------------
 // Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
@@ -124,13 +128,47 @@ pub trait MidiIn: Send + Sync {
 /// the post-routing counterpart to [`MidiIn`], whose caller has no id to
 /// give because routing has not run yet.
 ///
-/// `block_size` is the frame count of the upcoming audio block; a beat-domain
-/// store uses it to place each event's `frame_offset`, which must lie in
+/// `block_size` is the frame count of the upcoming audio block, and
+/// `sample_rate` the rate that block runs at — the polling unit's own, handed
+/// over every block rather than copied into the source, so a unit re-prepared
+/// at another rate (a device change, a fork prepared at an export's rate)
+/// needs no second write to keep its source in step. A beat-domain store uses
+/// both to place each event's `frame_offset`, which must lie in
 /// `[0, block_size)`.
 ///
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block per unit.
 pub trait MidiUnitIn: Send + Sync {
     /// Write `unit_id`'s events for this block into `buffer`; return how many.
-    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+    fn poll_unit(
+        &self,
+        unit_id: MidiUnitId,
+        block_size: usize,
+        sample_rate: SampleRate,
+        buffer: &mut [MidiEvent],
+    ) -> usize;
+
+    /// A copy of this source for an **offline render**: addressed to `unit`
+    /// (the forked unit's port, which is not the live one's), reading the
+    /// render's timeline out of `ctx` instead of the live transport, and
+    /// sharing no cursor with this one. Control thread, not the audio path.
+    ///
+    /// `ctx` is what `AudioUnit::rebind_offline` is handed — today a
+    /// `&OfflineTransport` (tutti-core); a source downcasts it.
+    ///
+    /// `None` when this source cannot be carried into an offline render — it
+    /// is not a function of a timeline (a live inbox, an already-offline
+    /// snapshot), or `ctx` is not a context it reads. **Required, with no
+    /// default**, because the answer decides what an export renders: a
+    /// source that silently answered `None` would export its notes as
+    /// silence, so a caller treats `None` for an installed source as a
+    /// failure it reports (tutti-plugin's fork does:
+    /// `PluginForkError::MidiSource`). Why this exists: a graph fork (design
+    /// doc 013, `Editor::fork`) gives a MIDI-driven unit a fresh port, and an
+    /// exported instrument whose clip did not come with it renders silence.
+    fn rebind_offline(
+        &self,
+        unit: MidiUnitId,
+        ctx: &dyn core::any::Any,
+    ) -> Option<Arc<dyn MidiUnitIn>>;
 }

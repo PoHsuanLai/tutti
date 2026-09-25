@@ -3,8 +3,9 @@
 Status: **in progress** (2026-09-25). The graph crate (`tutti-graph`,
 Phases 1 and 2) has landed, and `Engine` can render it
 ([Phase 2](#phase-2--runtime-behind-the-engine), 2b); the Bevy adapter runs
-on either, behind `GraphBackend` (default `Net`, Phase 3 PR 11), and export
-still builds `Net`s until PR 12. Work that does not need the graph has
+on either, behind `GraphBackend` (default `Net`, Phase 3 PR 11), and on the
+native backend export forks the graph (PR 12); `Net` export stays until
+PR 13. Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -982,7 +983,8 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    megabytes for a convolver, which copies its IR spectra (Phase 4 moves
    them to `Arc`).
 
-   Two things for PR 12. **`ForkTarget::Master` isolates and resets**,
+   Two things for PR 12 (both done there, see "PR 12 landed").
+   **`ForkTarget::Master` isolates and resets**,
    unlike today's master export, which is a plain `Net::clone` that keeps
    live bindings: through a fork, disk voices are severed from their live
    stream and render silence, and a `VoicePool`'s voices are cleared, so a
@@ -1109,7 +1111,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
 | 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
 | 11 | **Done.** bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
-| 12 | bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
+| 12 | **Done.** bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
@@ -1487,7 +1489,7 @@ inspecting it: the clamp lives in `ClampBounds`, a cell a native shadow does
 not share once `isolate` snapshots cells (#29). **Export stays `Net`-only**:
 on `Native` it reports `InvalidConfig` naming the backend and PR 12 (no `Net`
 mirror is kept: a second graph to keep in step is the thing this migration
-removes).
+removes). **Superseded by PR 12**, below: `Native` exports fork.
 
 **Control writes and forks** (for PR 12). A fork clones each node's shadow,
 so a by-value write that bypasses the settings ring moves the live unit and
@@ -1545,6 +1547,217 @@ resumes) and logs a poisoned refusal, keeping the old controls. The plugin
 latency re-probe clamps to `MAX_NODE_LATENCY`, as the insert-time probe is
 clamped, since `set_latency` refuses a figure past it and the poll would not
 ask again.
+
+**PR 12 landed: bevy-tutti exports through `Fork`.** On `Native` an
+`ExportRequest` renders `Editor::fork` of the live graph, through
+tutti-export's `RenderGraph::fork` (prepared at the render's rate and
+`GRAPH_MAX_BLOCK`) and its `Graph` backend: `ExportSource::Master` is
+`ForkTarget::Master`, `ExportSource::Node(entity)` is
+`ForkTarget::Node(key)`, both `ForkMode::Offline(&ctx)` with `ctx` the
+request's `OfflineTransport` itself — the exact type every `rebind_offline`
+downcasts. `clone_isolated`, `isolate_for_offline` and the `Net` hand-out
+are gone from the native path; `AudioGraphRes::export` is one method that
+dispatches per backend, and the `Net` arm exports as it always did until
+PR 13 deletes it (no mixing: a `Net` graph never forks, a native one never
+clones). The pieces:
+
+- **The render's time is one value.** `ExportRequest` carried a
+  `clock: Arc<dyn RenderClock>` and, beside it, `offline:
+  Option<OfflineTransport>` — two objects that had to be the same, and a
+  `None` that silently rebound every node onto a default rolling timeline
+  at the *device* rate that nothing advanced (review of #38). They are one
+  field now, `clock: ExportClock`: `ExportClock::timeline(t)` (the renderer
+  advances `t`, every node reads it) or `ExportClock::frozen()` (the
+  renderer's `FrozenClock`, and the nodes rebound onto a timeline stopped at
+  beat 0, so a clip reader plays nothing rather than loop its first block).
+- **What a master fork holds.** `ForkTarget::Master` forked every node in
+  the spec, so an unrouted mic monitor or disk voice refused the whole
+  export and every unrouted plugin launched a `plugin-server`. It forks what
+  the global outputs reach now — back along audio, feedback and event edges,
+  the reachability `graph_tail` folds over (tutti-graph,
+  `a_master_fork_holds_only_what_the_outputs_reach`).
+- **An engine-built graph forks.** `build_into` puts an `EnvClock` in every
+  native graph, inserted through the blanket `IntoNode` (no fork source), so
+  every master export of a real app — and every node export whose upstream
+  holds the clock (the click, an LFO or automation fed the beat ports) — was
+  `NotForkable` (review of #38; every earlier test built a bare `headless`
+  graph). tutti-graph gained `ForkByClone<N>`: a native node whose `Clone`
+  shares nothing, inserted with a source that clones and resets it; the
+  clock goes in through it. Pinned over `build_on` (the device-free
+  `build_into`) on both backends: master, click and clock export, and the
+  forked clock's whole beats step on the render's timeline.
+- **The prepare hook is graph-level.** `PreparedNet { net, ctx }` became
+  `PreparedGraph { graph: &mut RenderGraph, ctx }` (`PrepareNet` →
+  `PrepareGraph`): `RenderGraph::Net` on `Net`, the fork's own installed
+  editor/executor on `Native`. A hook edits a fork through its editor
+  (insert under `PreparedGraph::fresh_key`, `spec_mut`); the adapter commits
+  whatever it left and applies it before the render and before the
+  latency/tail figures are read, and an uncommittable edit fails the export
+  with the reason. A fork's units are on its executor when the hook runs,
+  so a unit in it cannot be refilled in place (the `Net` hook's "refill the
+  voices" use); insert a new one instead. `ctx` is `Some` whenever the graph
+  was rebound — every fork, and a `Net` node export.
+- **Failures name the node.** `ExportDone::result` is now
+  `Result<ExportOutput, ExportError>`: `Render(tutti_export::Error)` for
+  everything else, and `NotForkable`, `ForkSource` (a fork source failed at
+  fork time: a plugin's fresh instance did not load, refused the state, or
+  plays a MIDI source that cannot be rebound) and `ForkFailed { kind, cause
+  }` (a fork faulted mid-render, tutti-export's `Error::ForkFailed` from
+  `fork_health`) each carry an `ExportNode { entity, name, key }`, resolved
+  from a snapshot of every `AudioNode` entity (and its `Name`) taken when the
+  export starts and moved into the render task. A graph with no outputs says
+  so, for either source.
+- **Latency and tail from the graph.** `ExportRequest::trim_reported_latency`
+  and `with_reported_tail(cap)` set the render's trim and tail from
+  `RenderGraph::reported_latency` / `reported_tail` of the graph that is
+  rendered, after the hook: on `Native` the fork's plan (total latency, the
+  spec's tail fold, probed at the render's rate), on `Net` the net's
+  answers (at the live rate). The tail resolves by `GraphTail::resolve`
+  (unbounded → the cap; otherwise what was reported, at most the cap: a
+  node that never said counts as none). A request-side switch, because the
+  caller cannot know the fork's figures when it spawns the request. Default
+  off, as the export always was.
+- **Plugins are inserted forkable.** `plugin_load_promote` takes the
+  concrete `PluginClient` out of the `Plugin` (`Plugin::into_client`, new;
+  `into_parts`/`into_unit` still box it) and inserts it through
+  `AudioGraphRes::insert_plugin`: on `Native`, `Legacy::controlled` over
+  the boxed client (the settings ring, and the shadow the latency re-probe
+  and `inspect` read) handed to the editor as `NodeParts` with the plugin's
+  own fork source (`PluginClient::fork_source`, new: the state-transfer
+  source `IntoNode for PluginClient` uses). `IntoNode for PluginClient`
+  alone was not enough: it has no ring and no shadow. `Net` boxes it as
+  before. An in-process VST2 plugin (`into_client` → `Err`) is still boxed
+  and refuses an export by name.
+- **A forked plugin instrument plays its clip.** A fork has a fresh MIDI
+  port. `MidiUnitIn` gained a **required** `rebind_offline(unit, ctx)` →
+  `Option<Arc<dyn MidiUnitIn>>` (a default answering "not rebound" would
+  have exported a host's sequencer as silence); `MidiClipSource` answers
+  with the same event list on a fresh cursor on the offline timeline,
+  addressed to the fork's port, **without its hardware-out tap** (an export
+  must not play the clip on external MIDI); `MidiSnapshotReader` answers
+  `None` (it is already bound to its own offline timeline).
+  `MidiInPort::rebind_offline_into(fork_port, ctx)` returns `OfflineRebind
+  { NoSource, Rebound, NotRebindable }`, and the plugin's fork source calls
+  it (offline only) with the live port's clone it captured, failing the
+  fork with `PluginForkError::MidiSource` on `NotRebindable`.
+- **A MIDI source is handed its unit's rate; it keeps none.** The first cut
+  gave `MidiUnitIn` a `set_sample_rate` and made the plugin restamp its
+  source when re-prepared: a copy of the unit's rate, kept in step by a
+  second write (review of #38: mirror-and-reconcile). The rate is now an
+  argument: `MidiUnitIn::poll_unit(unit, block, sample_rate, buf)` and
+  `MidiInPort::poll(block, sample_rate, buf)`, the polling unit's own
+  (`PolySynth`'s bank rate, `SoundFontUnit`'s fixed rate, a plugin node's
+  `PluginControls::sample_rate`, the in-process VST2 node's). A
+  `MidiClipSource` holds no rate (`MidiClipSource::new` lost its argument;
+  its `BeatCursor` is `unrated` and advanced with `advance_at`). The ripple
+  was four poll sites and the trait's implementors, all in-tree. A fork
+  launched at the live rate and prepared at an export's therefore places
+  its notes at the export's with nothing to update, and so does a live clip
+  after a device-rate change. Pinned at 48 and 96 kHz with the reference
+  plugin's new note-gate render mode (`RenderMode::Notes`).
+- **What an export renders, restated from PR 16:** the controls as a
+  snapshot at the fork; a modulated parameter's authored base and a plugin's
+  base plus authored automation, never live modulation (an export has no
+  offline modulation driver yet); the plan rendered chunk-major while it
+  holds a `Legacy` unit (#34), which every graph built by this adapter does.
+  The metronome is a snapshot too: a forked click is cloned from its shadow,
+  taken at insert with the mode it had then (`Off` in a fresh engine), and
+  `MetronomeRes` writes only the live node's settings cell — a click is not
+  part of an export (PR 11's "known export limits").
+
+**The behaviour change, decided.** A native master export isolates and
+resets every node (`ForkTarget::Master`), where the `Net` master export is a
+plain `Net::clone` that keeps the live transport bindings and running state.
+So a native master export renders what the graph is *driven* to play from the
+request's timeline, from silence; the two render the same samples from a
+graph whose live side has not advanced (`export_fork.rs`,
+`native_and_net_exports_are_bit_identical`: master and node, bit for bit).
+The `Net` master clone also **shares** every `Arc` cell its nodes share across
+clones with the live graph: a render advances them under the live audio
+thread (the native test
+`live_playback_continues_unaffected_while_an_export_renders` uses exactly
+such a unit, and would fail on `Net`'s master path by construction), and its
+click and beat clock follow the **live** transport (measured over `build_on`:
+clicks on frames 1 and 24 001 of the render, the live playhead's beats). A
+`Net` node export of the `TransportClock` starts from beat 0, not from the
+render timeline's start beat — its rebind severs it at its own beat; PR 13
+removes the arm.
+
+**Disk voices refuse a native export** (`ExportError::NotForkable`, by
+entity and name) when an output reaches them. What the `Net` export did with
+one, read from the code (`DiskSource`'s `Clone` shares its ring consumer,
+`isolate` stops it and drops its `RtState`; `DiskVoice` keeps its own
+`Arc<RtState>`): a `Net` **master** export's plain clone read the live
+voice's ring from the render thread — popping frames the audio thread was
+waiting on, against the live transport — and a **node** export severed the
+ring and rendered silence, while its first in-window frame could still ask
+the live butler to seek. Neither is an export. Playing disk voices offline
+needs an offline stream from the butler (its own ring, a seek handle of its
+own); until then the fork refuses rather than glitch live playback, and a
+host loads the clip to memory or exports a node the voice does not feed.
+
+Tests, each mutation run (the mutation is on the test):
+
+- tutti-graph `fork.rs`: `a_fork_by_clone_node_forks_from_reset`,
+  `a_master_fork_holds_only_what_the_outputs_reach` (and
+  `a_node_without_a_fork_source_is_not_forkable`'s fixtures now route their
+  node to an output, since an unrouted one is no longer asked);
+- tutti-midi-runtime `clip_player.rs`: a clip rebound offline plays on the
+  fork's port on the render's timeline, leaves the live clip alone, fires no
+  tap, and reports `NoSource` / `NotRebindable`; a clip follows the rate
+  its unit polls it at, and a 96 kHz fork does not move the live clip's;
+- bevy-tutti `export::run::tests`: an engine-built graph (`build_on`)
+  exports master, click and clock on both backends, and on `Native` the
+  forked clock's beats are the render's;
+- bevy-tutti `export_surface.rs`, every test on both backends (buffers,
+  file, in-flight marker, no-outputs refusal, one-at-a-time batch, the
+  prepare hook reaching the rendered graph, the caller's timeline, a master
+  export's `ctx` saying whether it was rebound);
+- bevy-tutti `export_fork.rs`: `native_and_net_exports_are_bit_identical`;
+  `latency_and_tail_come_from_the_graph` (with an unknown tail rendering
+  none); `the_trim_is_read_after_the_prepare_hook`;
+  `a_graph_with_no_outputs_says_so`; `a_node_export_follows_a_90_bpm_timeline`
+  (a `MemorySource` at beat 3 enters at frame 96 000, not 72 000; a frozen
+  export of one at beat 0 is silent);
+  `live_playback_continues_unaffected_while_an_export_renders`;
+  `an_unrouted_unforkable_node_does_not_refuse_a_master_export`;
+  `an_unforkable_node_refuses_the_export_by_name`; and the reference CLAP
+  plugin: as an effect in its latency mode, fed a ramp, the render is the
+  ramp from frame 0 sample for sample (the trim is the 137 + 64 frames it
+  applies, pinned to the frame); as an instrument with a `MidiSourceInstall`
+  clip at 48 and 96 kHz; a fork that cannot be built (an unrebindable MIDI
+  source, the plugin file removed since it loaded) is `ForkSource` naming
+  it; a fork whose server crashes mid-render is `ForkFailed` naming it;
+- the `offline_export` example runs on either backend (`-- --native`).
+
+Found on the way: the chunk starting exactly on a beat can hold silence and
+a clip reader enter one chunk later (or a MIDI note one frame early), on both
+backends, because `OfflineTimeline` accumulates an `f64` beat per 64-frame
+chunk in steps binary cannot hold (1/32 000 of a beat at 90 BPM, 48 kHz).
+Its own PR, recorded as a follow-up; the plugin instrument test keeps to
+87.890625 BPM (a beat of 2^15 frames, exact) until then, and the forked
+clock's step is asserted to a frame.
+
+Recorded for later:
+
+- **The offline timeline's accumulated beat** (above): its own PR.
+- **The fork runs on the main thread**, in the frame the export starts, as
+  the `Net` clone did — and a plugin's fork launches a `plugin-server` and
+  transfers state (half a second or more), stalling that frame. Moving it
+  off-thread needs `Editor::fork` split into a control-side gather (sources,
+  spec) and a build that can run on the worker.
+- **A forked `PolySynth` or `SoundFontUnit` has no clip.** Their MIDI port
+  is severed by `isolate`, and bevy-tutti's `Legacy::controlled` shadow is
+  isolated at insert, so the shadow a fork clones never saw the clip
+  installed on the live port later. The plugin carries its clip because its
+  fork source reads the live port, not a shadow. The fix is the same shape
+  for the synths once they have native fork sources (Phase 4): read the live
+  port's source at fork time and `rebind_offline_into` the fork's.
+- **Disk voices offline** (above).
+- **The reference probe reports 137 frames of latency in every mode but
+  delays only in its latency mode**; the effect test uses that mode, where
+  report and delay agree. The probe's other modes are routing oracles, not
+  delays, and keep their report so the PDC suites see a latent plugin.
 
 **Phase 3 follow-ups** (recorded, not done here):
 
@@ -1648,10 +1861,15 @@ ask again.
     edit waits for the re-prepare's second half and lands with the next
     `commit_graph` (the per-channel compensation table then has the new
     width).
-  - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` places
-    events in frames at its build rate) is rebuilt at the new rate:
-    `midi::sequence::rebuild` treats a change of `AudioConfig`'s rate as
-    dirty, with the all-notes-off every rebuild sends.
+  - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` placed
+    events in frames at its build rate) was rebuilt at the new rate:
+    `midi::sequence::rebuild` treated a change of `AudioConfig`'s rate as
+    dirty, with the all-notes-off every rebuild sends. **Superseded by PR
+    12:** a clip holds no rate — `MidiUnitIn::poll_unit` is handed the
+    polling unit's rate every block — so a re-rated unit places its clip at
+    the new rate with nothing rebuilt, and the rate-change rebuild (and its
+    all-notes-off mid-note) is gone. `midi_sequence.rs`'s
+    `a_rate_change_places_the_clip_at_the_new_rate` keeps #39's check.
 
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the

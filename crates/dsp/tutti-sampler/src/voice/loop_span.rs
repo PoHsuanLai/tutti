@@ -3,7 +3,7 @@
 //! Shared by every reader that indexes a file directly — `MemorySource` (its
 //! free-running loop and a placed voice's) and the offline disk reader a forked
 //! disk voice plays through — and by the butler, which writes a live stream's
-//! ring by it (`butler::loops::fill_sequence`), so the same loop sounds the
+//! ring by it (`butler::loops::Mapping::fill`), so the same loop sounds the
 //! same on each. Pure arithmetic: no allocation, safe on the audio thread.
 //!
 //! # The loop is a sequence of frames, and the interpolator reads that sequence
@@ -163,7 +163,7 @@ impl LoopSpan {
     ///
     /// The butler's refill writes a looped stream's ring frame by frame
     /// through this, so the ring carries the sequence every other tier reads
-    /// (`butler::loops::fill_sequence`).
+    /// (`butler::loops::Mapping::fill`).
     #[inline]
     pub(crate) fn place_frame(&self, pos: usize) -> usize {
         if pos < self.end {

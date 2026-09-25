@@ -1,843 +1,705 @@
-//! Lock-free ring buffers for audio streaming.
+//! A stream's ring: file frames the butler has read ahead, indexed by
+//! position.
 //!
-//! One SPSC ring per streaming region: the butler pushes decoded frames into a
-//! [`RegionOut`], the audio thread pops them through a [`RegionReader`]. The
-//! reader is reached via a [`SharedReader`], an `ArcSwap` the audio thread loads
-//! wait-free — no lock ever sits on the hot path.
+//! One ring per streaming region. The butler writes frames into it
+//! ([`RegionOut`]); the audio thread reads them ([`Ring`], through a
+//! [`SharedReader`]). Nothing on the reading side locks, allocates or waits.
+//!
+//! # Indexed by straight position, not consumed in order
+//!
+//! Slot `s mod N` holds what straight position `s` holds under the stream's
+//! mapping (`loops`' module docs): the file counted straight on, a loop
+//! placing it. The ring publishes the window of positions it holds,
+//! `[from, to)`, as one packed atomic word, and the reader looks the four taps
+//! a position needs up by position. So the reader seats on the clock exactly
+//! as the memory tier does and reads what the memory tier reads, at any rate;
+//! a jump inside the window costs nothing; and a jump outside it is the butler
+//! moving the window to where the reader now plays ([`Ring::play`]), with no
+//! flush, no stale frames to discard and no read head to guess.
+//!
+//! This replaced an SPSC FIFO the reader popped: the butler had to flush it to
+//! move it, which dropped what it had refilled since, left the reader's head
+//! unknowable while the flush was pending, and cost the reader its history —
+//! doc 013, "The live disk reposition (after #48)".
+//!
+//! # Why a write never tears a read
+//!
+//! A write of position `s` reuses the slot of `s - N`. Before it, the butler
+//! raises the window's start past `s - N` (so no later block reads it) and
+//! then loads the ranges the reader's block in flight may read, which the
+//! reader stores *before* it loads the window (all `SeqCst`). Either the
+//! reader's load saw the raised start, or its ranges were stored before the
+//! butler's load, which then sees them: the butler writes no slot those ranges
+//! reach ([`RegionOut::push_interleaved`]). The samples are `AtomicU32`s all
+//! the same, so a protocol slip is a wrong sample, never undefined behaviour.
 //!
 //! # Frames, not samples
 //!
-//! The rings are flat `HeapRb<f32>`, but **every count crossing this module's
-//! boundary is denominated in frames** and the interleave stride never leaks
-//! out. The refill advances the writer's file position by the frames it landed
-//! and `loops::head_position` subtracts the frames buffered from it, so a
-//! sample-denominated count would run a 6-channel stream six times ahead and
-//! wrap its loop at one sixth of its true length.
+//! Every count crossing this module is in **frames**; the stride never leaks
+//! out.
 
-use ringbuf::{
-    traits::{Consumer, Observer, Producer, Split},
-    HeapCons, HeapProd, HeapRb,
-};
-use std::cell::UnsafeCell;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use tutti_core::{AtomicU64, ChannelLayout, Ordering, Samples};
-
-use crate::nonempty;
+use tutti_core::{ChannelLayout, RtPublish, RtRef, Samples};
+use tutti_io::Wave;
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 use tutti_io::FileIn;
 
 use super::command::RegionId;
+use super::loops::{Arrangement, Content, Mapping, RingMap};
+use crate::nonempty;
 
-/// ringbuf `HeapProd` wrapper that is `Send + Sync` when `T: Send`.
-///
-/// ringbuf conservatively doesn't impl Send/Sync for its SPSC handles.
-/// This wrapper concentrates the unsafe impls in one place.
-struct SendProd<T>(HeapProd<T>);
+/// Bits of the packed window word that hold its length; the rest hold its end.
+const LEN_BITS: u32 = 24;
 
-// SAFETY: HeapProd is designed for single-producer cross-thread use.
-// T: Send ensures the element type is safe to send across threads.
-unsafe impl<T: Send> Send for SendProd<T> {}
-unsafe impl<T: Send> Sync for SendProd<T> {}
+/// Frames a ring keeps behind where its reader plays: the taps a position
+/// reads behind itself, and a little slack.
+pub(crate) const HISTORY_FRAMES: u64 = 4;
 
-impl<T> SendProd<T> {
-    fn new(prod: HeapProd<T>) -> Self {
-        Self(prod)
+/// The most frames a ring holds: its window's length must fit [`LEN_BITS`].
+pub(crate) const MAX_RING_FRAMES: usize = (1 << LEN_BITS) - 1;
+
+/// A window of straight positions `[from, to)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Window {
+    pub(crate) from: u64,
+    pub(crate) to: u64,
+}
+
+impl Window {
+    fn pack(self) -> u64 {
+        (self.to << LEN_BITS) | (self.to - self.from)
     }
-    fn try_push(&mut self, val: T) -> Result<(), T> {
-        self.0.try_push(val)
+
+    fn unpack(word: u64) -> Self {
+        let to = word >> LEN_BITS;
+        Self {
+            from: to - (word & ((1 << LEN_BITS) - 1)),
+            to,
+        }
     }
-    fn vacant_len(&self) -> usize {
-        self.0.vacant_len()
-    }
-    fn capacity(&self) -> core::num::NonZeroUsize {
-        self.0.capacity()
+
+    /// Whether position `s` is held.
+    #[inline]
+    pub(crate) fn holds(&self, s: u64) -> bool {
+        s >= self.from && s < self.to
     }
 }
 
-/// ringbuf `HeapCons` wrapper that is `Send + Sync` when `T: Send`.
-struct SendCons<T>(HeapCons<T>);
-
-// SAFETY: HeapCons is designed for single-consumer cross-thread use.
-unsafe impl<T: Send> Send for SendCons<T> {}
-unsafe impl<T: Send> Sync for SendCons<T> {}
-
-impl<T> SendCons<T> {
-    fn new(cons: HeapCons<T>) -> Self {
-        Self(cons)
-    }
-    fn try_pop(&mut self) -> Option<T> {
-        self.0.try_pop()
-    }
-    fn occupied_len(&self) -> usize {
-        self.0.occupied_len()
-    }
-}
-
-/// A region's identity and write cursor, shared by both halves of its ring so
-/// either can report which file it streams and where the *writer* has reached.
-pub(crate) struct RegionMeta {
+/// A region's ring, shared by the butler's writer and the audio thread's
+/// reader.
+pub(crate) struct Ring {
     region_id: RegionId,
     file_path: PathBuf,
-    file_position: AtomicU64,
-}
-
-impl RegionMeta {
-    /// The writer's cursor as an absolute offset into the file, in **frames**.
-    /// Distinct from the reader's `read_position`, which counts frames the audio
-    /// thread has consumed.
-    pub fn file_position(&self) -> u64 {
-        self.file_position.load(Ordering::Relaxed)
-    }
-
-    /// Move the writer's cursor to absolute file frame `pos`. Butler thread —
-    /// set after each refill and on every reposition (a seek, a PDC or loop
-    /// change). Counts the file straight on; a loop places it as the refill
-    /// writes (`loops`' module docs).
-    pub fn set_file_position(&self, pos: u64) {
-        self.file_position.store(pos, Ordering::Relaxed);
-    }
-}
-
-/// The producer half of a region's SPSC ring.
-///
-/// # Frames, not samples
-///
-/// The ring itself is a flat `HeapRb<f32>` — the width is a property of the
-/// file, so it is a runtime [`ChannelLayout`], never baked into the element
-/// type. **Every public method here is denominated in frames** and the stride
-/// never leaks out. That is deliberate: the refill adds what landed to a file
-/// position in *file frames*, which a loop places and `loops.rs` indexes the
-/// file with. Exposing samples anywhere on this boundary would silently
-/// multiply every loop point by the channel count.
-///
-/// So every count these methods return is a [`Samples`] (the engine's frame
-/// count), not a `usize`: the refill path adds the landed count to a file
-/// position, and a bare `usize` would have accepted a sample count there just
-/// as happily.
-pub(crate) struct RegionOut {
-    prod: SendProd<f32>,
-    /// Declared ring width. One frame is `channels.count()` consecutive slots.
     channels: ChannelLayout,
-    /// `channels.count()`, cached — the interleave stride.
-    ///
-    /// Every method below divides or chunks by it, and `push_interleaved` /
-    /// `write_interleaved_reversed` run it per frame. The layout is the
-    /// declaration; this is its arithmetic. Set once at construction, so the two
-    /// cannot drift.
+    /// `channels.count()`, cached — the interleave stride of `slots`.
     stride: usize,
-    meta: Arc<RegionMeta>,
+    /// Slots, `N`.
+    frames: usize,
+    /// `frames * stride` samples, as `f32` bits.
+    slots: Box<[AtomicU32]>,
+    /// The packed [`Window`] of positions the slots hold.
+    window: AtomicU64,
+    /// Reader → butler: the straight position the reader plays (what the
+    /// butler fills ahead of).
+    play: AtomicU64,
+    /// Reader → butler: the ranges the block in flight may read,
+    /// `[a0, e0)` and `[a1, e1)`.
+    reads: [AtomicU64; 4],
+    /// Butler → reader: the channel's PDC preroll, in file frames: the reader
+    /// plays straight position `gate - preroll`.
+    preroll: AtomicU64,
+    /// Butler → reader: where a free-running reader starts (the stream's
+    /// offset).
+    origin: AtomicU64,
+    /// Butler → reader: a free-running reader's seek, `(epoch, target)`.
+    seek_epoch: AtomicU64,
+    seek_target: AtomicU64,
+    /// Butler → reader: output frames a reader's seek crossfade lasts.
+    fade_frames: AtomicU64,
+    /// Butler → reader: how to read the slots.
+    map: RtPublish<RingMap>,
+    /// Butler-side count of window moves and retractions (tests).
+    #[cfg(test)]
+    moves: AtomicU64,
+}
+
+impl std::fmt::Debug for Ring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ring")
+            .field("region_id", &self.region_id)
+            .field("frames", &self.frames)
+            .field("window", &self.window())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Ring {
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.region_id
+    }
+
+    /// Declared width — the file's own layout.
+    pub(crate) fn channels(&self) -> ChannelLayout {
+        self.channels
+    }
+
+    /// Slots, in frames.
+    pub(crate) fn frames(&self) -> usize {
+        self.frames
+    }
+
+    /// The positions held.
+    #[inline]
+    pub(crate) fn window(&self) -> (u64, u64) {
+        let w = Window::unpack(self.window.load(Ordering::SeqCst));
+        (w.from, w.to)
+    }
+
+    /// Audio thread, once per block before any read: say where the reader
+    /// plays and which positions the block may read, then take the window it
+    /// may read them in. The order is the no-tear argument in the module docs.
+    #[inline]
+    pub(crate) fn claim(&self, play: u64, reads: [(u64, u64); 2]) -> Window {
+        self.play.store(play, Ordering::SeqCst);
+        for (i, (a, e)) in reads.into_iter().enumerate() {
+            self.reads[2 * i].store(a, Ordering::SeqCst);
+            self.reads[2 * i + 1].store(e, Ordering::SeqCst);
+        }
+        Window::unpack(self.window.load(Ordering::SeqCst))
+    }
+
+    /// Channel `c` of the frame at position `s`. The caller holds `s` in a
+    /// claimed window and range.
+    #[inline]
+    pub(crate) fn sample(&self, s: u64, c: usize) -> f32 {
+        let slot = (s % self.frames as u64) as usize;
+        f32::from_bits(self.slots[slot * self.stride + c].load(Ordering::Relaxed))
+    }
+
+    /// How to read the slots, for this block (once per block, never per
+    /// sample; never parked across blocks).
+    #[inline]
+    pub(crate) fn map(&self) -> RtRef<'_, RingMap> {
+        self.map.read()
+    }
+
+    /// The channel's PDC preroll, file frames.
+    #[inline]
+    pub(crate) fn preroll(&self) -> u64 {
+        self.preroll.load(Ordering::Relaxed)
+    }
+
+    /// Where a free-running reader starts.
+    pub(crate) fn origin(&self) -> u64 {
+        self.origin.load(Ordering::Relaxed)
+    }
+
+    /// A free-running reader's pending seek, `(epoch, target)`.
+    #[inline]
+    pub(crate) fn seek_request(&self) -> (u64, u64) {
+        let epoch = self.seek_epoch.load(Ordering::Acquire);
+        (epoch, self.seek_target.load(Ordering::Relaxed))
+    }
+
+    /// Output frames a reader's seek crossfade lasts.
+    #[inline]
+    pub(crate) fn fade_frames(&self) -> usize {
+        self.fade_frames.load(Ordering::Relaxed) as usize
+    }
+
+    /// Where the reader plays.
+    pub(crate) fn play(&self) -> u64 {
+        self.play.load(Ordering::SeqCst)
+    }
+
+    /// One past the last position the block in flight may read.
+    pub(crate) fn in_flight_end(&self) -> u64 {
+        self.reads[1]
+            .load(Ordering::SeqCst)
+            .max(self.reads[3].load(Ordering::SeqCst))
+    }
+
+    fn in_flight(&self) -> [(u64, u64); 2] {
+        let r = |i: usize| self.reads[i].load(Ordering::SeqCst);
+        [(r(0), r(1)), (r(2), r(3))]
+    }
+
+    fn store_window(&self, window: Window) {
+        #[cfg(test)]
+        if Window::unpack(self.window.load(Ordering::SeqCst)).to > window.to {
+            self.moves.fetch_add(1, Ordering::Relaxed);
+        }
+        self.window.store(window.pack(), Ordering::SeqCst);
+    }
+
+    /// Butler: drop every position at and past `x` from the window (a rewrite
+    /// from `x` follows).
+    pub(crate) fn retract_to(&self, x: u64) {
+        let (from, to) = self.window();
+        if x < to {
+            self.store_window(Window {
+                from: from.min(x),
+                to: x,
+            });
+        }
+    }
+
+    /// Butler: an empty window at `start` (the reader jumped outside it).
+    pub(crate) fn reset(&self, start: u64) {
+        #[cfg(test)]
+        self.moves.fetch_add(1, Ordering::Relaxed);
+        self.window.store(
+            Window {
+                from: start,
+                to: start,
+            }
+            .pack(),
+            Ordering::SeqCst,
+        );
+    }
+
+    /// Butler: publish how to read the slots.
+    pub(crate) fn publish_map(&self, map: RingMap) {
+        self.map.publish(Arc::new(map));
+    }
+
+    /// Butler: the channel's PDC preroll.
+    pub(crate) fn set_preroll(&self, preroll: u64) {
+        self.preroll.store(preroll, Ordering::Relaxed);
+    }
+
+    /// Butler: where the reader plays, before one has said (a stream's start,
+    /// a free-running reader's seek), so the window is filled there.
+    pub(crate) fn set_play(&self, play: u64) {
+        self.play.store(play, Ordering::SeqCst);
+    }
+
+    /// Butler: seek a free-running reader to `target` (a placed voice follows
+    /// its clock instead).
+    pub(crate) fn request_seek(&self, target: u64) {
+        self.seek_target.store(target, Ordering::Relaxed);
+        self.seek_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Window moves and retractions so far (tests).
+    #[cfg(test)]
+    pub(crate) fn moves(&self) -> u64 {
+        self.moves.load(Ordering::Relaxed)
+    }
+}
+
+/// The audio thread's handle on a region's ring.
+pub(crate) type SharedReader = Arc<Ring>;
+
+/// The butler's end of a region's ring: the writer, its source (a disk
+/// decoder, or the file resident whole) and what it holds (`loops::Content`).
+/// Butler-thread-local.
+pub(crate) struct RegionOut {
+    ring: Arc<Ring>,
+    content: Content,
     /// Incremental disk decoder for real streaming. `None` means this region
-    /// uses the whole-file `load_wave` + `LruCache` fallback path (non-seekable
-    /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
-    /// so the rayon `par_iter_mut` refill path is fine.
+    /// reads the file resident whole (`resident`).
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     decoder: Option<FileIn>,
+    /// The file decoded whole, for a format that cannot seek. Held here, not
+    /// only in the LRU cache, so a file too large to cache still streams.
+    resident: Option<Arc<Wave>>,
 }
 
 impl RegionOut {
-    /// The writer's cursor as an absolute offset into the file, in **frames**.
-    pub fn file_position(&self) -> u64 {
-        self.meta.file_position()
+    /// The shared ring.
+    pub(crate) fn ring(&self) -> &Arc<Ring> {
+        &self.ring
     }
 
-    /// Install an incremental disk decoder, switching this region onto the
-    /// real-streaming refill path. Without one, refill uses the whole-file
-    /// fallback.
+    /// What the ring holds.
+    pub(crate) fn content(&self) -> &Content {
+        &self.content
+    }
+
+    pub(crate) fn set_content(&mut self, content: Content) {
+        self.content = content;
+    }
+
+    /// Install an incremental disk decoder.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
         self.decoder = Some(decoder);
     }
 
-    /// Mutable access to the streaming decoder, if this region streams.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    pub(crate) fn decoder_mut(&mut self) -> Option<&mut FileIn> {
-        self.decoder.as_mut()
+    /// Hold the file resident whole (a format that cannot seek).
+    pub(crate) fn set_resident(&mut self, wave: Arc<Wave>) {
+        self.resident = Some(wave);
     }
 
-    /// Move the writer's cursor to absolute file frame `pos`.
-    pub fn set_file_position(&self, pos: u64) {
-        self.meta.set_file_position(pos);
+    /// Declared ring width — the file's own layout.
+    pub(crate) fn channels(&self) -> ChannelLayout {
+        self.ring.channels
     }
 
-    /// Declared ring width — the file's own layout, since the streaming tier
-    /// defers the channel policy to the reader rather than folding on the way in.
-    pub fn channels(&self) -> ChannelLayout {
-        self.channels
+    /// Frames held ahead of where the reader plays.
+    pub(crate) fn buffered(&self) -> Samples {
+        let (from, to) = self.ring.window();
+        let play = self.ring.play().max(from);
+        Samples(to.saturating_sub(play) as usize)
     }
 
-    /// Free space in **frames**.
-    pub fn write_space(&self) -> Samples {
-        Samples::from_interleaved_len(self.prod.vacant_len(), self.channels)
-    }
-
-    /// Total capacity in **frames**.
-    pub fn capacity(&self) -> Samples {
-        Samples::from_interleaved_len(self.prod.capacity().get(), self.channels)
-    }
-
-    /// Frames buffered and not yet consumed — capacity less free space.
-    ///
-    /// Named because the refill heuristics and the stall detector each used to
-    /// spell it `capacity() - write_space()`, and `Samples` deliberately has no
-    /// `-`. Vacancy never exceeds capacity, so the saturation in
-    /// [`remaining_after`](Samples::remaining_after) never engages here; it is
-    /// what the type offers instead of a wrapping subtraction.
-    pub fn buffered(&self) -> Samples {
-        self.capacity().remaining_after(self.write_space())
-    }
-
-    /// Push interleaved frames from a flat slice, returning how many **frames**
-    /// landed. A trailing partial frame in `samples` is ignored.
-    ///
-    /// Each frame is pushed **all-or-nothing**: vacancy for the whole frame is
-    /// checked before its first sample, so the ring can never hold a torn frame
-    /// for the consumer to read. A tear would permanently rotate channels for
-    /// the rest of the stream — no click, no underrun, just a subtly wrong mix.
-    ///
-    /// `vacant_len` is conservative under SPSC concurrency, but only in the safe
-    /// direction here: the producer's view of free space can only *grow* as the
-    /// consumer pops, so a frame that passes the check still fits.
-    pub fn push_interleaved(&mut self, samples: &[f32]) -> Samples {
-        let ch = self.stride;
-        let mut written = 0;
-        for f in samples.chunks_exact(ch) {
-            let mut ok = true;
-            for &s in f {
-                if self.prod.try_push(s).is_err() {
-                    ok = false;
-                    break;
-                }
-            }
-            if !ok {
-                break;
-            }
-            written += 1;
-        }
-        Samples(written)
-    }
-
-    /// Write frames in reverse order (for reverse playback). Frames are taken
-    /// from the end of the slice first; returns how many **frames** landed
-    /// before the ring filled. `pump` can't express the reversal, so the reverse
-    /// refill path calls this directly.
-    ///
-    /// Only the *frame sequence* reverses — the channels **within** each frame
-    /// stay in order. Reversing those too would swap L/R (and every other pair)
-    /// on every reverse-played source.
-    pub fn write_interleaved_reversed(&mut self, samples: &[f32]) -> Samples {
-        let ch = self.stride;
-        let mut written = 0;
-        for f in samples.chunks_exact(ch).rev() {
-            if self.prod.vacant_len() < ch {
-                break;
-            }
-            for &s in f {
-                let _ = self.prod.try_push(s);
-            }
-            written += 1;
-        }
-        Samples(written)
-    }
-
-    /// The file this region streams. The butler uses it to reach the whole-file
-    /// [`Wave`](tutti_io::Wave) when capturing crossfade buffers.
-    pub fn file_path(&self) -> &Path {
-        &self.meta.file_path
+    /// The file this region streams.
+    pub(crate) fn file_path(&self) -> &Path {
+        &self.ring.file_path
     }
 
     pub(crate) fn region_id(&self) -> RegionId {
-        self.meta.region_id
+        self.ring.region_id
+    }
+
+    /// Read file frames `at..` into `out` (flat, the ring's width), from the
+    /// decoder or the resident file; zero past the end. `false` when the
+    /// file could not be read there.
+    pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
+        let channels = self.ring.channels;
+        let ch = self.ring.stride;
+        #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+        if let Some(decoder) = self.decoder.as_mut() {
+            if decoder.cursor() != at as u64 && decoder.seek(at as u64).is_err() {
+                out.fill(0.0);
+                return false;
+            }
+            return match decoder.fill_sequential_interleaved(out) {
+                Ok(got) => {
+                    out[got * ch..].fill(0.0);
+                    true
+                }
+                Err(_) => {
+                    out.fill(0.0);
+                    false
+                }
+            };
+        }
+        match self.resident.as_deref() {
+            Some(wave) => {
+                super::loops::read_wave(wave, at, out, channels);
+                true
+            }
+            None => {
+                out.fill(0.0);
+                false
+            }
+        }
+    }
+
+    /// Fill `out` with what straight positions `pos..` hold under `mapping`,
+    /// reading the file.
+    pub(crate) fn fill_with(&mut self, mapping: &Mapping, pos: u64, out: &mut [f32]) {
+        let ch = self.ring.stride;
+        mapping.fill(pos, out, ch, &mut |at, run| {
+            let _ = self.read_file(at, run);
+        });
+    }
+
+    /// Append frames at the window's end, returning how many **frames**
+    /// landed: short when a slot the reader's block in flight may read would
+    /// be reused (see the module docs), or the ring is full ahead of the
+    /// reader. A trailing partial frame is ignored.
+    pub fn push_interleaved(&mut self, samples: &[f32]) -> Samples {
+        let ring = &*self.ring;
+        let ch = ring.stride;
+        let n = (samples.len() / ch) as u64;
+        let frames = ring.frames as u64;
+        let (from, to) = ring.window();
+        let play = ring.play();
+        // Never reuse the slot of a position the reader still stands on.
+        let room = (play.saturating_sub(4) + frames).saturating_sub(to);
+        let mut end = to + n.min(room);
+        let new_from = from.max(end.saturating_sub(frames));
+        if new_from != from {
+            ring.store_window(Window { from: new_from, to });
+        }
+        for (a, e) in ring.in_flight() {
+            end = end.min(first_alias(to, a, e, frames));
+        }
+        if end <= to {
+            return Samples(0);
+        }
+        for (i, frame) in samples
+            .chunks_exact(ch)
+            .take((end - to) as usize)
+            .enumerate()
+        {
+            let slot = ((to + i as u64) % frames) as usize;
+            for (c, &s) in frame.iter().enumerate() {
+                ring.slots[slot * ch + c].store(s.to_bits(), Ordering::Relaxed);
+            }
+        }
+        ring.store_window(Window {
+            from: new_from.min(end),
+            to: end,
+        });
+        Samples((end - to) as usize)
+    }
+}
+
+/// The first position at or past `to` whose slot also holds a position of the
+/// reader's range `[a, e)` other than itself — an alias `[a + kN, e + kN)`,
+/// `k != 0`, of a ring `n` slots long. Writing a position *in* the range is
+/// no conflict: the reader only reads it once the window holds it.
+fn first_alias(to: u64, a: u64, e: u64, n: u64) -> u64 {
+    if e <= a {
+        return u64::MAX;
+    }
+    let len = e - a;
+    let d = (to as i128 - a as i128).rem_euclid(n as i128) as u64;
+    if d < len {
+        return if (a..e).contains(&to) { a + n } else { to };
+    }
+    let next = to + (n - d);
+    if next == a {
+        a + n
+    } else {
+        next
     }
 }
 
 /// The ring is the engine's [`AudioOut`](tutti_core::AudioOut) shape: flat
-/// interleaved in, a runtime [`ChannelLayout`] for the width, counts in frames.
-/// Stating it as the trait lets a region ring feed any generic consumer written
-/// against the engine vocabulary ([`pump`](tutti_core::pump) included) rather
-/// than only code that knows the name `push_interleaved`.
-///
-/// # Additive, not a replacement — the inherent methods stay
-///
-/// `RegionOut` is not *purely* a sink and the trait does not try to pretend
-/// otherwise. It also owns a [`FileIn`] decoder and its [`RegionMeta`]
-/// (`set_decoder`, `file_position`, `write_space`, `capacity`), and
-/// [`write_interleaved_reversed`](Self::write_interleaved_reversed) has no trait
-/// counterpart at all — reverse refill is a butler policy, not something every
-/// audio sink can do. Forcing those through `AudioOut` would produce trait
-/// methods whose meaning depends on which tier you are in, which is exactly the
-/// failure that got `ClipReader` deleted.
-///
-/// So the trait covers the one thing it genuinely describes — appending frames —
-/// and the rest stays inherent. Notably [`push_interleaved`](Self::push_interleaved)
-/// stays public too: `write` must return `()` to satisfy the trait, but the
-/// refill path *needs* the landed frame count to advance `file_position`. That
-/// count is the whole bookkeeping of the butler, so the richer inherent method
-/// remains the one production callers use, and `write` is implemented in terms
-/// of it.
+/// interleaved in, a runtime [`ChannelLayout`] for the width, counts in
+/// frames. `write` appends at the window's end; the inherent
+/// [`push_interleaved`](RegionOut::push_interleaved) stays the one production
+/// callers use, because it returns what landed.
 impl tutti_core::AudioOut<f32> for RegionOut {
     fn layout(&self) -> ChannelLayout {
-        self.channels
+        self.ring.channels
     }
 
     /// Append frames, discarding the landed count.
-    ///
-    /// A short write here means the ring was full — for a bounded SPSC ring that
-    /// is back-pressure, not an error, and the trait has no way to report it.
-    /// Any caller that must not lose frames wants
-    /// [`push_interleaved`](Self::push_interleaved), which returns the count.
     fn write(&mut self, interleaved: &[f32]) {
         let _ = self.push_interleaved(interleaved);
     }
 
-    /// No-op: the ring is a live SPSC channel with a consumer on the audio
-    /// thread, never a stream that gets closed. There is no header to
-    /// back-patch and no descriptor to flush.
+    /// No-op: the ring is live, never a stream that gets closed.
     fn finalize(self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// The consumer half of a region's SPSC ring: the audio thread's end.
-///
-/// Popped one frame at a time by [`read_into`](Self::read_into), which is
-/// lock-free and allocation-free. Like [`RegionOut`], every count it reports or
-/// advances is in **frames**.
-pub struct RegionReader {
-    cons: SendCons<f32>,
-    /// Declared ring width — see [`RegionOut`]'s note on frames vs samples.
-    channels: ChannelLayout,
-    /// `channels.count()`, cached — the interleave stride.
-    ///
-    /// [`read_into`](Self::read_into) is the audio thread's per-frame pop: it
-    /// reads the stride twice (an occupancy check and the pop loop's bound) on
-    /// every frame of every block. Re-deriving from the layout there would put
-    /// an enum match inside the pop loop.
-    stride: usize,
-    read_position: Arc<AtomicU64>,
-    region_id: RegionId,
-}
-
-impl RegionReader {
-    pub(crate) fn region_id(&self) -> RegionId {
-        self.region_id
-    }
-
-    /// Declared ring width — the width the producer interleaved at, which the
-    /// reader's own channel policy reconciles against the output frame.
-    pub fn channels(&self) -> ChannelLayout {
-        self.channels
-    }
-
-    /// Pop the next frame into `out`, returning `false` on underrun.
-    ///
-    /// **All-or-nothing**: on underrun nothing is consumed and `read_position`
-    /// does not move, so it can never land mid-frame. `out` shorter than
-    /// `channels` receives the leading channels; the rest of the frame is still
-    /// consumed, so the stream stays aligned.
-    #[inline]
-    pub fn read_into(&mut self, out: &mut [f32]) -> bool {
-        // `self.stride`, not `self.channels.count()`: this is the per-frame pop.
-        let ch = self.stride;
-        if self.cons.occupied_len() < ch {
-            return false;
-        }
-        for c in 0..ch {
-            // Cannot fail: occupancy was checked above and we are the sole
-            // consumer, so nothing else can have taken these slots.
-            let s = self.cons.try_pop().unwrap_or(0.0);
-            if let Some(o) = out.get_mut(c) {
-                *o = s;
-            }
-        }
-        // ONE per FRAME: frames consumed, as every count on this boundary is.
-        self.read_position.fetch_add(1, Ordering::Relaxed);
-        true
-    }
-
-    /// Discard every buffered frame without rendering it, advancing
-    /// `read_position` by the **frames** dropped, so it counts every frame
-    /// that left the ring.
-    ///
-    /// Applied by the audio thread when the butler has requested a ring reset
-    /// after it repositioned the stream (a seek, a PDC or a loop change). The butler must never call this: it does not
-    /// own the consumer.
-    pub fn clear(&mut self) {
-        let frames = self.cons.occupied_len() / self.stride;
-        for _ in 0..frames * self.stride {
-            let _ = self.cons.try_pop();
-        }
-        // Drain any straggling partial frame so the ring realigns on a frame
-        // boundary. Unreachable given all-or-nothing pushes, but a stray sample
-        // here would desynchronise every subsequent frame — cheap insurance on
-        // the one invariant whose failure is inaudible as a glitch.
-        while self.cons.try_pop().is_some() {}
-        self.read_position
-            .fetch_add(frames as u64, Ordering::Relaxed);
-    }
-
-    /// A shared handle to the read cursor, in **frames** consumed (or
-    /// dropped). A count, not a file position: nothing on the butler reads it
-    /// (the ring's head is `loops::head_position`); tests observe consumption
-    /// through it.
-    #[cfg(test)]
-    pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.read_position)
-    }
-}
-
-/// Interior-mutable wrapper over a [`RegionReader`] that lets the single audio
-/// consumer pop through a shared `&self`, so the reader can be held behind an
-/// [`ArcSwap`] instead of a `Mutex`.
-///
-/// # Why this exists rather than a `Mutex`
-///
-/// A [`RegionReader`] wraps a single-consumer SPSC ring, so no lock is
-/// architecturally required: exactly one party ever pops. Putting the reader
-/// behind `Arc<Mutex<RegionReader>>` and having the audio thread `try_lock` it
-/// per block is wrong on two counts — it puts a lock on the audio hot path, and
-/// it makes a `try_lock` *miss* indistinguishable from an underrun, reporting a
-/// starved ring when the ring was full and the butler merely held the lock.
-///
-/// # Single-consumer safety invariant (why the `UnsafeCell` is sound)
-///
-/// [`HeapCons::try_pop`] needs `&mut` because it advances the read index. This
-/// cell hands out that mutation through `&self`, which is only sound if **no two
-/// threads ever pop/clear concurrently**. That invariant holds because:
-///
-///   * The **audio thread** is the sole popper. `read()` / `clear()` are called
-///     only from `DiskSource` / `DiskVoice` on the audio
-///     thread. Those units may hold several clones of the same `SharedReader`
-///     (the direct-read reader plus the time-stretch processor's internal
-///     clone), but only one clone is *active* per buffer and both live on the
-///     one audio thread — so the pops are serialized by that thread, never
-///     concurrent.
-///   * The **butler thread** never pops or clears the live reader. It only
-///     *replaces* the reader wholesale via [`SharedReaderExt::store`] on a
-///     stream (re)start; the audio thread observes the new reader on its next
-///     buffer through a wait-free [`ArcSwap::load`]. Ring resets on
-///     repositions are requested by the butler through a lock-free
-///     `RtState` flag and applied by the audio thread (the owning consumer),
-///     never by the butler touching the ring.
-///
-/// Under that discipline every access to the inner `HeapCons` happens from a
-/// single thread at a time, so the `&self` → `&mut` reborrow is race-free.
-pub(crate) struct ReaderCell {
-    inner: UnsafeCell<RegionReader>,
-    region_id: RegionId,
-    /// Declared ring width, cached here so a reader lookup does not need the
-    /// `UnsafeCell` reborrow.
-    channels: ChannelLayout,
-    /// The reader's consumption count, for tests to observe (see
-    /// [`RegionReader::read_position_shared`]).
-    #[cfg(test)]
-    read_position: Arc<AtomicU64>,
-}
-
-// SAFETY: the inner `RegionReader` is only ever mutated by the single audio
-// consumer (see the invariant on `ReaderCell`). The butler never pops; it swaps
-// the whole cell. `Send`/`Sync` let the cell cross to the audio thread inside an
-// `Arc<ArcSwap<_>>`; concurrent aliasing of the inner ring is prevented by the
-// single-consumer discipline, not by the type system.
-unsafe impl Send for ReaderCell {}
-unsafe impl Sync for ReaderCell {}
-
-impl ReaderCell {
-    fn new(reader: RegionReader) -> Self {
-        let region_id = reader.region_id();
-        let channels = reader.channels();
-        Self {
-            #[cfg(test)]
-            read_position: reader.read_position_shared(),
-            inner: UnsafeCell::new(reader),
-            region_id,
-            channels,
-        }
-    }
-
-    /// Declared ring width.
-    pub(crate) fn channels(&self) -> ChannelLayout {
-        self.channels
-    }
-
-    /// Pop the next frame into `out`, returning `false` on underrun.
-    /// Audio-thread only (see the single-consumer invariant on [`ReaderCell`]).
-    #[inline]
-    pub(crate) fn read_into(&self, out: &mut [f32]) -> bool {
-        // SAFETY: single-consumer invariant — only the audio thread calls this,
-        // and its several `SharedReader` clones are serialized on that thread.
-        unsafe { (*self.inner.get()).read_into(out) }
-    }
-
-    /// Discard all buffered samples. Audio-thread only, applied when the butler
-    /// has requested a ring reset (a reposition) via `RtState`.
-    pub(crate) fn clear(&self) {
-        // SAFETY: same single-consumer invariant as `read`.
-        unsafe { (*self.inner.get()).clear() }
-    }
-
-    pub(crate) fn region_id(&self) -> RegionId {
-        self.region_id
-    }
-
-    #[cfg(test)]
-    pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.read_position)
-    }
-}
-
-/// The audio-thread reader handle: a wait-free-loadable, butler-replaceable
-/// [`ReaderCell`].
-///
-/// The audio thread `load`s it (wait-free) and pops; the butler `store`s a
-/// replacement on a stream (re)start and never pops. No lock ever sits on the
-/// audio hot path.
-pub(crate) type SharedReader = Arc<ArcSwap<ReaderCell>>;
-
-/// Wrap a freshly-built [`RegionReader`] into a [`SharedReader`] for handoff to
-/// the audio thread.
-pub(crate) fn share_reader(reader: RegionReader) -> SharedReader {
-    Arc::new(ArcSwap::from_pointee(ReaderCell::new(reader)))
-}
-
-/// Constructor namespace for a region's ring — see
-/// [`with_capacity`](Self::with_capacity). Carries no state of its own; the two
-/// halves it returns own everything.
+/// Constructor namespace for a region's ring.
 pub(crate) struct RegionBuffer;
 
 impl RegionBuffer {
-    /// Build a region's ring sized for `capacity` **frames** of `channels`
-    /// each, returning the producer and consumer halves.
-    ///
-    /// `capacity` is a frame count, so the backing store is
-    /// `capacity * channels` samples and every frame-denominated accessor on
-    /// [`RegionOut`] / [`RegionReader`] reports the value the caller passed.
-    /// Sizing in whole frames is what makes a torn push structurally impossible:
-    /// a producer physically cannot stop mid-frame in a ring whose slot count is
-    /// a frame multiple.
-    ///
-    /// `capacity` is floored at 4096 frames, and `channels` at one — a
-    /// zero-width ring would divide by zero on every accessor.
+    /// Build a region's ring of `capacity` **frames** of `channels` each
+    /// (floored at 4096 frames and one channel, capped at
+    /// [`MAX_RING_FRAMES`]), holding nothing, read as an unlooped forward
+    /// stream of a file `len` frames long (`usize::MAX` for a length not
+    /// known). Returns the writer and the reader's handle.
+    #[cfg(test)]
     pub(crate) fn with_capacity(
         region_id: RegionId,
         file_path: PathBuf,
         capacity: usize,
         channels: impl Into<ChannelLayout>,
-    ) -> (RegionOut, RegionReader) {
+    ) -> (RegionOut, SharedReader) {
+        Self::for_file(region_id, file_path, capacity, channels, usize::MAX)
+    }
+
+    /// [`with_capacity`](Self::with_capacity) for a file `len` frames long.
+    pub(crate) fn for_file(
+        region_id: RegionId,
+        file_path: PathBuf,
+        capacity: usize,
+        channels: impl Into<ChannelLayout>,
+        len: usize,
+    ) -> (RegionOut, SharedReader) {
         let channels = nonempty(channels.into());
-        // Stride derived once; both halves get the same cached copy.
         let stride = channels.count() as usize;
-        let capacity = capacity.max(4096);
-
-        let rb = HeapRb::<f32>::new(capacity * stride);
-        let (prod, cons) = rb.split();
-
-        let meta = Arc::new(RegionMeta {
+        let frames = capacity.clamp(4096, MAX_RING_FRAMES);
+        let mapping = Mapping::plain(len);
+        let ring = Arc::new(Ring {
             region_id,
             file_path,
-            file_position: AtomicU64::new(0),
-        });
-
-        let producer = RegionOut {
-            prod: SendProd::new(prod),
             channels,
             stride,
-            meta: meta.clone(),
+            frames,
+            slots: (0..frames * stride).map(|_| AtomicU32::new(0)).collect(),
+            window: AtomicU64::new(0),
+            play: AtomicU64::new(0),
+            reads: std::array::from_fn(|_| AtomicU64::new(0)),
+            preroll: AtomicU64::new(0),
+            origin: AtomicU64::new(0),
+            seek_epoch: AtomicU64::new(0),
+            seek_target: AtomicU64::new(0),
+            fade_frames: AtomicU64::new(0),
+            map: RtPublish::new(RingMap::plain(Arrangement::plain(len), 0)),
+            #[cfg(test)]
+            moves: AtomicU64::new(0),
+        });
+        let writer = RegionOut {
+            ring: Arc::clone(&ring),
+            content: Content::new(mapping),
             #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
+            resident: None,
         };
+        (writer, ring)
+    }
 
-        let consumer = RegionReader {
-            cons: SendCons::new(cons),
-            channels,
-            stride,
-            read_position: Arc::new(AtomicU64::new(0)),
-            region_id,
-        };
-
-        (producer, consumer)
+    /// Point a fresh ring at `start`: the reader there and the window from
+    /// just behind it (the taps a position reads one frame back), a
+    /// free-running reader's origin, the preroll and the seek fade set.
+    pub(crate) fn place(ring: &Ring, start: u64, origin: u64, preroll: u64, fade_frames: usize) {
+        let from = start.saturating_sub(HISTORY_FRAMES);
+        ring.window
+            .store(Window { from, to: from }.pack(), Ordering::SeqCst);
+        ring.play.store(start, Ordering::SeqCst);
+        ring.origin.store(origin, Ordering::Relaxed);
+        ring.preroll.store(preroll, Ordering::Relaxed);
+        ring.fade_frames
+            .store(fade_frames as u64, Ordering::Relaxed);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::butler::command::RegionId;
+    use tutti_core::AudioOut;
 
-    /// `frames` stereo frames, flat interleaved, channel `c` of frame `f`
-    /// carrying `f * 2 + c` so a rotation or a tear is a wrong value.
+    /// `frames` frames at `channels`, sample `c` of frame `f` carrying
+    /// `f * channels + c`, so a rotation or a tear is a wrong value.
     fn indexed(frames: usize, channels: usize) -> Vec<f32> {
         (0..frames * channels).map(|i| i as f32).collect()
     }
 
-    #[test]
-    fn test_buffer_full() {
-        let (mut prod, _) = RegionBuffer::with_capacity(
-            RegionId(1),
-            PathBuf::from("test.wav"),
-            10, // Tiny buffer (will be clamped to 4096 frames)
-            2usize,
-        );
-
-        let samples: Vec<f32> = (0..4096).flat_map(|i| [i as f32; 2]).collect();
-        let written = prod.push_interleaved(&samples);
-        assert!(written <= Samples(4096));
+    fn ring(capacity: usize, channels: usize) -> (RegionOut, SharedReader) {
+        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), capacity, channels)
     }
 
-    #[test]
-    fn test_clear_allows_refill() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("test.wav"), 100, 2usize);
-
-        let section_a: Vec<f32> = (0..50).flat_map(|i| [i as f32 / 100.0; 2]).collect();
-        assert_eq!(prod.push_interleaved(&section_a), Samples(50));
-
-        let mut f = [0.0f32; 2];
-        assert!(cons.read_into(&mut f));
-        assert!((f[0] - 0.0).abs() < 0.001, "First sample should be ~0.0");
-
-        cons.clear();
-        assert!(!cons.read_into(&mut f), "cleared ring must underrun");
-
-        let section_b: Vec<f32> = (0..50).flat_map(|_| [0.5f32; 2]).collect();
-        assert_eq!(prod.push_interleaved(&section_b), Samples(50));
-        assert!(cons.read_into(&mut f));
-        assert!((f[0] - 0.5).abs() < 0.001, "refill must serve section B");
+    fn frame_at(ring: &Ring, s: u64) -> Vec<f32> {
+        (0..ring.stride).map(|c| ring.sample(s, c)).collect()
     }
 
-    /// `read_position` counts FILE FRAMES at any width, as every count on this
-    /// boundary does; a sample-denominated count would be six times off at six
-    /// channels.
-    #[test]
-    fn read_position_counts_frames_not_samples_at_six_channels() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
-        assert_eq!(prod.push_interleaved(&indexed(10, 6)), Samples(10));
-
-        let pos = cons.read_position_shared();
-        let mut f = [0.0f32; 6];
-        for _ in 0..10 {
-            assert!(cons.read_into(&mut f));
-        }
-        assert_eq!(
-            pos.load(Ordering::Relaxed),
-            10,
-            "10 frames of 6 channels must advance read_position by 10, not 60"
-        );
-    }
-
-    /// `clear()` is frame-denominated too — a 6x overshoot here sends the butler
-    /// to the wrong file offset on every seek.
-    #[test]
-    fn clear_advances_read_position_by_frames_at_six_channels() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
-        prod.push_interleaved(&indexed(10, 6));
-
-        let pos = cons.read_position_shared();
-        let mut f = [0.0f32; 6];
-        for _ in 0..3 {
-            assert!(cons.read_into(&mut f));
-        }
-        cons.clear();
-        assert_eq!(
-            pos.load(Ordering::Relaxed),
-            10,
-            "3 read + 7 cleared == 10 frames"
-        );
-    }
-
-    /// A frame is pushed and popped all-or-nothing, so the consumer can never
-    /// observe a torn frame (channel 0 of frame k beside channel 1 of frame
-    /// k+1). A tear permanently rotates channels for the rest of the stream and
-    /// is INAUDIBLE as a glitch — it just sounds like a wrong mix. Deliberately
-    /// overfills the ring, the condition where a naive implementation tears.
+    /// **The window packs into one word and back**, up to its largest length
+    /// and far along the straight line.
     ///
-    /// Note this passes even without `push_interleaved`'s all-or-nothing gate,
-    /// and that is worth stating rather than hiding: the ring is allocated as
-    /// `capacity_frames * channels`, so its slot count is always a whole number
-    /// of frames and a producer physically cannot stop mid-frame. The gate is
-    /// belt-and-braces against a future sizing change (an odd capacity, a
-    /// shared/resized ring) that would break that property silently. What this
-    /// test DOES pin is that frames come out in order with their channels
-    /// intact under overfill — which a stride mistake anywhere in the push/pop
-    /// pair would break.
+    /// Mutation (run): the length mask one bit short → the longest window
+    /// unpacks short → fails.
     #[test]
-    fn a_full_ring_never_hands_out_a_torn_frame() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 6usize);
-        let n = prod.capacity() + Samples(37); // deliberately past the end
-        let pushed = prod.push_interleaved(&indexed(n.get(), 6));
-        assert_eq!(
-            pushed,
-            prod.capacity(),
-            "overfill must stop exactly at capacity"
-        );
+    fn a_window_packs_into_one_word_and_back() {
+        let far = 1u64 << 39;
+        for (from, to) in [(0, 0), (5, 4_100), (far, far + MAX_RING_FRAMES as u64)] {
+            let w = Window { from, to };
+            assert_eq!(Window::unpack(w.pack()), w);
+        }
+    }
 
-        let mut f = [0.0f32; 6];
-        for k in 0..pushed.get() {
-            assert!(cons.read_into(&mut f));
-            for (c, &s) in f.iter().enumerate() {
-                assert_eq!(
-                    s,
-                    (k * 6 + c) as f32,
-                    "frame {k} channel {c} torn — ring lost frame alignment"
-                );
+    /// **Frames land at the window's end and read back by position**, every
+    /// channel in its place at six channels — through the inherent push and
+    /// through the `AudioOut` trait — and a trailing partial frame is dropped.
+    ///
+    /// Mutation (run): the slot index taken in samples (`slot * ch` omitted) →
+    /// channels rotate → fails.
+    #[test]
+    fn frames_land_at_the_windows_end_and_read_back_by_position() {
+        let (mut writer, reader) = ring(64, 6);
+        assert_eq!(AudioOut::layout(&writer), ChannelLayout::from(6u16));
+        assert_eq!(writer.push_interleaved(&indexed(10, 6)), Samples(10));
+        let mut more = indexed(12, 6)[60..].to_vec();
+        more.extend_from_slice(&[99.0, 99.0, 99.0]);
+        writer.write(&more);
+        assert_eq!(reader.window(), (0, 12), "twelve whole frames");
+        for s in 0..12 {
+            let want: Vec<f32> = (0..6).map(|c| (s as usize * 6 + c) as f32).collect();
+            assert_eq!(frame_at(&reader, s), want, "frame {s}");
+        }
+    }
+
+    /// **A ring holds a whole number of frames**: the capacity asked for,
+    /// floored at 4096 and capped at what the window word can say.
+    #[test]
+    fn a_ring_holds_a_whole_number_of_frames() {
+        assert_eq!(ring(10, 2).1.frames(), 4_096);
+        assert_eq!(ring(10_000, 6).1.frames(), 10_000);
+        assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_RING_FRAMES);
+    }
+
+    /// **A write never goes round the ring onto the reader**: with the
+    /// reader at 1 000, a ring of 4 096 takes positions up to 1 000 - 4 +
+    /// 4 096 and no further, so the frames the reader stands on (and the few
+    /// behind it its taps read) are intact.
+    ///
+    /// Mutation (run): the room check removed → the push wraps onto 996.. →
+    /// fails.
+    #[test]
+    fn a_write_never_goes_round_the_ring_onto_the_reader() {
+        let (mut writer, reader) = ring(4_096, 1);
+        writer.push_interleaved(&indexed(1_000, 1));
+        reader.set_play(1_000);
+        let landed = writer.push_interleaved(&indexed(8_000, 1));
+        assert_eq!(landed, Samples(4_096 - 4), "up to 996 + 4 096");
+        assert_eq!(reader.window().1, 1_000 - 4 + 4_096);
+        assert_eq!(frame_at(&reader, 996), [996.0]);
+    }
+
+    /// **A write never reuses a slot the block in flight reads**: a reader
+    /// whose block reads `[3 997, 4 069)` and whose jump copy reads `[100,
+    /// 200)` keeps both — the writer stops at 4 196, the first position whose
+    /// slot is 100's — while it writes the block's own positions freely.
+    ///
+    /// Mutation (run): the in-flight check removed → 4 196.. overwrite 100.. →
+    /// fails. Mutation (run): a position *in* the range counted as its own
+    /// alias (the first cut of `first_alias`) → the writer stops at once →
+    /// fails.
+    #[test]
+    fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
+        let (mut writer, reader) = ring(4_096, 1);
+        writer.push_interleaved(&indexed(4_000, 1));
+        let window = reader.claim(3_997, [(3_997, 4_069), (100, 200)]);
+        assert_eq!(window, Window { from: 0, to: 4_000 });
+        let landed = writer.push_interleaved(&vec![-1.0; 300]);
+        assert_eq!(landed, Samples(196), "stops at 4 196");
+        assert_eq!(
+            frame_at(&reader, 150),
+            [150.0],
+            "the copy's frames are intact"
+        );
+    }
+
+    /// `first_alias` against a brute-force search, over ranges before, around
+    /// and after the write's start, near and across a lap of the ring.
+    ///
+    /// Mutation (run): `a + n` returned as `a` for a range containing the
+    /// start → fails.
+    #[test]
+    fn first_alias_is_the_first_slot_another_position_of_the_range_holds() {
+        let n = 16u64;
+        for to in 0..64u64 {
+            for a in 0..64u64 {
+                for len in 0..8u64 {
+                    let e = a + len;
+                    let brute = (to..to + 3 * n)
+                        .find(|&s| (a..e).any(|q| q != s && q % n == s % n))
+                        .unwrap_or(u64::MAX);
+                    let got = first_alias(to, a, e, n);
+                    assert!(
+                        got == brute || (brute == u64::MAX && got >= to + 3 * n),
+                        "to {to} range [{a}, {e}): {got}, brute {brute}"
+                    );
+                }
             }
         }
-        assert!(!cons.read_into(&mut f), "ring must be empty after draining");
     }
 
-    /// The ring's slot count is always a whole number of frames. This is the
-    /// property that makes a torn push structurally impossible, so it is worth
-    /// pinning directly rather than leaving implicit in the sizing arithmetic.
+    /// **A reset empties the window where the reader jumped; a retraction
+    /// drops what lies past a switch.**
     #[test]
-    fn ring_capacity_is_a_whole_number_of_frames() {
-        for ch in [1usize, 2, 3, 5, 6, 8] {
-            let (prod, _cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 1000, ch);
-            // `capacity()` divides slots by `ch`; if slots were not a frame
-            // multiple the division would truncate and lose usable space.
-            assert_eq!(
-                prod.capacity() * ch,
-                prod.capacity() * ch,
-                "capacity must be exact at width {ch}"
-            );
-            assert!(
-                prod.capacity() >= Samples(4096),
-                "floor applies in frames at width {ch}"
-            );
-        }
-    }
-
-    /// Reverse push reverses the FRAME order, never the sample order within a
-    /// frame. Getting this backwards swaps L/R (and every other pair) on every
-    /// reverse-played source — audible, but easy to mistake for a panning bug.
-    #[test]
-    fn reversed_push_keeps_channels_in_order_within_each_frame() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4usize);
-        let data = [0., 1., 2., 3., 10., 11., 12., 13., 20., 21., 22., 23.];
-        assert_eq!(prod.write_interleaved_reversed(&data), Samples(3));
-
-        let mut f = [0.0f32; 4];
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [20., 21., 22., 23.], "last frame first");
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [10., 11., 12., 13.]);
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [0., 1., 2., 3.]);
-    }
-
-    /// `write_space` / `capacity` are frame-denominated, as the refill's
-    /// fill level and chunk sizing read them; a sample-denominated value would
-    /// over-request by the channel count.
-    #[test]
-    fn write_space_and_capacity_are_frames() {
-        let (mut prod, _cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192, 6usize);
-        assert_eq!(prod.capacity(), Samples(8192), "capacity is in frames");
-        assert_eq!(
-            prod.write_space(),
-            Samples(8192),
-            "empty ring has full frame vacancy"
-        );
-        assert_eq!(prod.buffered(), Samples::ZERO);
-
-        prod.push_interleaved(&indexed(100, 6));
-        assert_eq!(prod.write_space(), Samples(8192 - 100));
-        assert_eq!(
-            prod.buffered(),
-            Samples(100),
-            "100 frames buffered — not 600, and not the free space"
-        );
-    }
-
-    /// The `AudioOut` impl is the inherent `push_interleaved` — same frames,
-    /// same order, same channels — reached through the generic trait method.
-    ///
-    /// Driven at six channels deliberately: the trait speaks a flat `&[f32]`,
-    /// so if `write` ever grew a stride mistake it would be a 6x error here and
-    /// only a 2x one at stereo, where it could hide in a round number.
-    #[test]
-    fn writing_through_the_audio_out_trait_matches_the_inherent_push() {
-        use tutti_core::AudioOut;
-
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
-
-        assert_eq!(
-            AudioOut::layout(&prod),
-            ChannelLayout::from(6u16),
-            "the trait must report the ring's declared width"
-        );
-
-        // Trait method — the count is discarded by `write`'s signature.
-        prod.write(&indexed(10, 6));
-
-        let mut f = [0.0f32; 6];
-        for k in 0..10 {
-            assert!(cons.read_into(&mut f), "frame {k} must have landed");
-            for (c, &s) in f.iter().enumerate() {
-                assert_eq!(
-                    s,
-                    (k * 6 + c) as f32,
-                    "frame {k} channel {c} — trait write must not rotate channels"
-                );
-            }
-        }
-        assert!(
-            !cons.read_into(&mut f),
-            "exactly 10 frames, no trailing partial"
-        );
-    }
-
-    /// `write` ignores a trailing partial frame rather than pushing it short,
-    /// which is what keeps every subsequent frame aligned. `chunks_exact` in
-    /// `push_interleaved` is what provides this; the trait inherits it.
-    #[test]
-    fn a_trait_write_drops_a_trailing_partial_frame() {
-        use tutti_core::AudioOut;
-
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4usize);
-
-        // Two whole frames plus three stray samples of a third.
-        let mut data = indexed(2, 4);
-        data.extend_from_slice(&[99.0, 99.0, 99.0]);
-        prod.write(&data);
-
-        let mut f = [0.0f32; 4];
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [0., 1., 2., 3.]);
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [4., 5., 6., 7.]);
-        assert!(
-            !cons.read_into(&mut f),
-            "the partial frame must not have been pushed"
-        );
-    }
-
-    /// An underrun consumes nothing and does not move `read_position`, so a
-    /// partially-available frame can never leave the ring mid-frame.
-    #[test]
-    fn underrun_is_all_or_nothing() {
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
-        prod.push_interleaved(&indexed(1, 6));
-
-        let pos = cons.read_position_shared();
-        let mut f = [0.0f32; 6];
-        assert!(cons.read_into(&mut f));
-        assert_eq!(pos.load(Ordering::Relaxed), 1);
-
-        assert!(!cons.read_into(&mut f), "empty ring must underrun");
-        assert_eq!(
-            pos.load(Ordering::Relaxed),
-            1,
-            "an underrun must not advance read_position"
-        );
+    fn a_reset_and_a_retraction_move_the_window() {
+        let (mut writer, reader) = ring(4_096, 1);
+        writer.push_interleaved(&indexed(1_000, 1));
+        reader.retract_to(600);
+        assert_eq!(reader.window(), (0, 600));
+        reader.reset(9_000);
+        assert_eq!(reader.window(), (9_000, 9_000));
+        assert_eq!(reader.moves(), 2);
     }
 }

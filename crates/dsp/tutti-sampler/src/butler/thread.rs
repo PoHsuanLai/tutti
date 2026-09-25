@@ -213,6 +213,12 @@ impl ButlerThread {
         Arc::clone(&self.shared.plans)
     }
 
+    /// The butler's wave cache (tests).
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> Arc<LruCache> {
+        Arc::clone(&self.shared.cache)
+    }
+
     /// The session-rate cell, shared: a [`Status`](crate::Status) built from
     /// it reads the rate as it is, not as it was.
     pub(crate) fn session_rate(&self) -> SessionRate {

@@ -1,9 +1,9 @@
 //! One butler cycle, synchronously.
 //!
-//! The butler's work is a loop over three pure steps — apply PDC preroll
-//! changes, apply audio-thread seek requests, refill the rings. (A loop is
-//! not a step: the refill writes a looped stream's sequence, `loops`.) None of them is asynchronous: they read a `DashMap`, decode from a
-//! file, and push into a ring. The only async in the butler is the *pacing* —
+//! The butler's work is a loop over three pure steps — publish PDC preroll
+//! changes, apply direction changes to each ring's mapping, refill the rings
+//! (following each reader to where it plays). None of them is asynchronous:
+//! they read a `DashMap`, decode from a file, and write into a ring. The only async in the butler is the *pacing* —
 //! the timer the loop parks on when there is nothing urgent to do.
 //!
 //! This module is that work with the pacing removed. [`ButlerCycle::step`]
@@ -28,8 +28,9 @@
 
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
-use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
+use super::handlers::{handle_command, Handles, Local};
 use super::io::refill::{refill_all, refill_all_parallel};
+use super::loops::{apply_mapping, Mapping};
 use super::preroll::apply_pdc_updates;
 
 /// What the pacing layer should do after a [`ButlerCycle::step`].
@@ -86,13 +87,11 @@ impl ButlerCycle {
     }
 
     /// Run one cycle: drain every queued command, then — when any channel is
-    /// streaming — apply PDC preroll changes, apply audio-thread seek requests,
-    /// and refill the rings.
+    /// streaming — publish PDC preroll changes, apply direction changes, and
+    /// refill the rings.
     ///
-    /// Seeks are applied *before* refill so the ring refills from the new offset
-    /// in the same cycle. That ordering is the reason this is one function and
-    /// not three public ones: a caller that ran them in a different order would
-    /// refill from the pre-seek position and then discard it.
+    /// Direction changes are applied *before* refill so the refill writes the
+    /// new mapping this cycle.
     ///
     /// `drain` is called until it yields `None`; commands are applied
     /// non-blockingly, so a step never waits for one to arrive.
@@ -113,18 +112,8 @@ impl ButlerCycle {
             return StepOutcome::Idle;
         }
 
-        apply_pdc_updates(
-            &shared.pdc,
-            &shared.plans,
-            &mut self.local.regions,
-            &shared.cache,
-            &shared.metrics,
-            &self.config,
-        );
-
-        // Audio-thread-requested timeline seeks: apply BEFORE refill so the
-        // ring refills from the new disk offset this cycle.
-        self.apply_seek_requests(shared);
+        apply_pdc_updates(&shared.pdc, &shared.plans);
+        self.apply_directions(shared);
 
         // Frames resident across every streaming ring, sampled before the
         // refill so the outcome can say whether the refill actually achieved
@@ -135,7 +124,6 @@ impl ButlerCycle {
             refill_all_parallel(
                 &shared.plans,
                 &mut self.local.regions,
-                &shared.cache,
                 &shared.metrics,
                 self.config.chunk_size,
                 self.local.buffer_margin,
@@ -144,7 +132,6 @@ impl ButlerCycle {
             refill_all(
                 &shared.plans,
                 &mut self.local.regions,
-                &shared.cache,
                 &shared.metrics,
                 self.config.chunk_size,
                 self.local.buffer_margin,
@@ -161,36 +148,39 @@ impl ButlerCycle {
         }
     }
 
-    /// Apply any audio-thread-requested timeline seeks. For each streaming
-    /// channel whose [`RtState`](super::rt_state::RtState) has a fresh seek
-    /// request (epoch changed vs. the butler's last-applied), reposition the
-    /// live stream to the requested absolute file offset via the same
-    /// click-free path as PDC/loop reposition. Coalesces rapid seeks (only the
-    /// latest target survives) — the desired behavior for scrubbing.
+    /// Turn each ring whose channel changed direction (`RtState`'s, set by the
+    /// voice or by `SetVarispeed`): reverse is a mapping (the file mirrored,
+    /// loop ignored), so the change is `apply_mapping`'s — a switch the reader
+    /// crossfades across just past the block it is in.
     ///
-    /// Channel indices + targets are collected first so the plan refs are
-    /// released before [`handle_seek_stream`] re-acquires them (avoids DashMap
-    /// re-entrancy).
-    fn apply_seek_requests(&mut self, shared: &Handles) {
-        let mut pending: Vec<(usize, u64)> = Vec::new();
-        for entry in shared.plans.iter() {
-            let plan = entry.value();
-            if plan.link.is_none() {
+    /// The plans are read and released before any ring is touched, since a
+    /// switch reads the file for its fade.
+    fn apply_directions(&mut self, shared: &Handles) {
+        let turned: Vec<(super::command::RegionId, bool, f64)> = shared
+            .plans
+            .iter()
+            .filter_map(|entry| {
+                let plan = entry.value();
+                let link = plan.link.as_ref()?;
+                Some((
+                    link.region_id,
+                    plan.rt_state.is_reverse(),
+                    plan.rt_state.read_rate().get(),
+                ))
+            })
+            .collect();
+        for (region_id, reverse, rate) in turned {
+            let Some(writer) = self.local.regions.get_mut(region_id) else {
+                continue;
+            };
+            if writer.content().current.reverse == reverse {
                 continue;
             }
-            if let Some(target) = plan.rt_state.take_seek_request() {
-                pending.push((*entry.key(), target));
-            }
-        }
-
-        for (channel_index, file_position) in pending {
-            handle_seek_stream(
-                channel_index,
-                file_position,
-                shared,
-                &self.config,
-                &mut self.local,
-            );
+            let new = Mapping {
+                reverse,
+                ..writer.content().current.clone()
+            };
+            apply_mapping(writer, new, self.config.seek_crossfade_frames, rate);
         }
     }
 }

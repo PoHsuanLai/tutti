@@ -1,45 +1,39 @@
-//! A live disk voice on a looped stream (doc 013, "The live disk loop").
+//! A live disk voice against the memory tier, through loops and repositions
+//! (doc 013, "The live disk loop" and "The live disk reposition").
 //!
-//! The butler writes a looped stream into the ring as the sequence
-//! `LoopSpan` defines (`butler::loops`), and the voice consumes the ring with
-//! no loop logic of its own. These tests drive a live `DiskVoice` from a
-//! hand-stepped butler (`DiskStreamer::manual`, one cycle per block, as the
-//! butler thread stands to the audio callback) and compare what it plays with
-//! the memory tier's `MemorySource` on the same loop.
+//! The butler writes a stream into a ring indexed by straight position — the
+//! loop's sequence, the file mirrored in reverse — and the voice seats on the
+//! clock as the memory tier does and reads its taps there by position
+//! (`live_read`). These tests drive a live `DiskVoice` from a hand-stepped
+//! butler (`DiskStreamer::manual`, one cycle per block, as the butler thread
+//! stands to the audio callback) and compare it with a placed `MemorySource`
+//! on its own copy of the clock, given the same edits at the same blocks.
 //!
-//! # Lining the two tiers up
-//!
-//! The live reader interpolates from a four-frame history it fills as it pops
-//! the ring, so at read rate `r` its output frame `j` (counted from a fresh
-//! history) sits at file position `r (j + 1) - 3`, where a placed memory voice's
-//! frame `m` sits at `r m`. Where `3 / r` is whole (`r` = 1, 1.5, 0.75) that is
-//! the memory tier's frame `j + 1 - 3 / r`, and the two are compared frame for
-//! frame, bit for bit. At a converted rate (a 44.1 kHz file at 48 kHz) the
-//! offset is a fraction of a frame; there the memory voice is placed that
-//! fraction later on the clock, and the comparison takes a tolerance: the live
-//! reader accumulates its step (`fractional_pos += rate`) where the memory
-//! tier multiplies it from a seat, and with a non-dyadic ratio the two part in
-//! the last bits.
-//!
-//! # The entry seek
-//!
-//! A live voice's gate asks the butler to seek on its first frame in the
-//! window. The warm-up holds the clock while that settles (`warm_up`), so the
-//! first compared block starts at the clock's beat 0 from a clean history.
+//! **Bit for bit, from the first frame, at any rate.** Both read the same
+//! positions (the same gate and seat) through the same tap layout and kernel,
+//! from the same frames, so there is no lag to line up and no tolerance to
+//! take — a 44.1 kHz file at 48 kHz included. Where the two differ is only
+//! where a jump or an edit lands: the memory tier cuts there, the live voice
+//! crossfades there (from its copy of the old continuation, or the butler's
+//! record of the old loop) over the ring's fade length. The tests allow that
+//! window and nothing else, and count the frames the live voice could not
+//! read (underruns): a reposition costs none.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, PlaybackRate, SamplePosition, SampleRate};
 
 use super::DiskVoice;
+use crate::test_transport::MockTransport;
 use crate::{Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 /// Length of the ramp files, in frames.
 const LEN: usize = 40_000;
+/// The butler's default seek crossfade, in output frames.
+const FADE: usize = 512;
 
 /// Frame `i` of every ramp file: distinct per frame, and exactly what an f32
 /// WAV hands back.
@@ -91,17 +85,6 @@ fn write_sine(path: &Path, frames: usize) {
     w.finalize().expect("writes");
 }
 
-/// A 120 BPM clock at [`SR`] from `beat` (two beats a second, 24 000 frames a
-/// beat).
-fn clock(beat: f64) -> Arc<OfflineTimeline> {
-    Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: Beat(beat),
-        tempo: Bpm(120.0),
-        sample_rate: SampleRate(SR),
-        loop_range: None,
-    }))
-}
-
 fn loop_on(start: f64, end: f64, fade: usize) -> LoopSetting {
     LoopSetting::On {
         start: SamplePosition(start),
@@ -110,15 +93,9 @@ fn loop_on(start: f64, end: f64, fade: usize) -> LoopSetting {
     }
 }
 
-/// A live voice on a hand-stepped butler, and the clock it is placed on.
-struct Live {
-    streamer: DiskStreamer,
-    voice: DiskVoice,
-    clock: Arc<OfflineTimeline>,
-    output: BufferVec,
-    /// The reader's fraction as the first sounding block began (see
-    /// [`warm_up`](Self::warm_up)).
-    start_fraction: f64,
+/// Beats at 120 BPM of `frames` at [`SR`].
+fn beats(frames: f64) -> f64 {
+    frames / SR * 2.0
 }
 
 /// How a [`Live`] voice is set up, besides its file.
@@ -126,12 +103,13 @@ struct Live {
 struct Setup {
     loop_: LoopSetting,
     speed: f32,
-    /// Where the clock starts; the voice is placed at beat 0, so its entry
-    /// seek lands this far into the clip.
+    /// Where the clock starts (the voice is placed at beat 0); the stream is
+    /// started there, so the ring holds it before the first block.
     beat: f64,
-    reverse: bool,
     /// The channel's PDC preroll, in frames.
     preroll: usize,
+    /// Other streams on channels 1.., so the butler refills in parallel.
+    neighbours: usize,
 }
 
 impl Setup {
@@ -140,50 +118,56 @@ impl Setup {
             loop_,
             speed,
             beat: 0.0,
-            reverse: false,
             preroll: 0,
+            neighbours: 0,
         }
     }
 }
 
+/// A live voice on a hand-stepped butler, and the clock it is placed on.
+struct Live {
+    streamer: DiskStreamer,
+    voice: DiskVoice,
+    clock: Arc<MockTransport>,
+    output: BufferVec,
+}
+
 impl Live {
-    /// [`with`](Self::with) a plain [`Setup::looped`].
-    fn new(path: &Path, loop_: LoopSetting, speed: f32) -> (Self, [Vec<f32>; 2]) {
+    fn new(path: &Path, loop_: LoopSetting, speed: f32) -> Self {
         Self::with(path, Setup::looped(loop_, speed))
     }
 
-    /// Stream `path` on channel 0 with the setup's loop set (and its PDC
-    /// preroll published before the stream starts), and take a live voice
-    /// placed at beat 0, warmed up (see [`warm_up`](Self::warm_up)). The seek
-    /// crossfade is off, so the entry seek is a plain reposition.
-    fn with(path: &Path, setup: Setup) -> (Self, [Vec<f32>; 2]) {
-        let loop_ = setup.loop_;
+    /// Stream `path` on channel 0 from where the clock starts, with the
+    /// setup's loop and preroll, under the butler's default config (its seek
+    /// crossfade included), and take a live voice placed at beat 0.
+    fn with(path: &Path, setup: Setup) -> Self {
         let mut config = DiskStreamerConfig::default();
-        config.buffer_config.seek_crossfade_frames = 0;
         if setup.preroll > 0 {
             config.pdc = Some(Arc::new(tutti_core::RtPublish::new(vec![
                 tutti_core::Samples(setup.preroll),
             ])));
         }
         let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
-        streamer
-            .commands()
-            .send(Command::Stream {
-                channel_index: 0,
-                file_path: path.to_path_buf(),
-                offset: SamplePosition(0.0),
-            })
-            .expect("the butler is alive");
+        for channel in 0..=setup.neighbours {
+            streamer
+                .commands()
+                .send(Command::Stream {
+                    channel_index: channel,
+                    file_path: path.to_path_buf(),
+                    offset: SamplePosition(setup.beat / 2.0 * SR),
+                })
+                .expect("the butler is alive");
+        }
         assert!(
             streamer.step_until_settled(1_000) < 1_000,
             "the ring primes"
         );
-        if loop_ != LoopSetting::Off {
+        if setup.loop_ != LoopSetting::Off {
             streamer
                 .commands()
                 .send(Command::Loop {
                     channel_index: 0,
-                    setting: loop_,
+                    setting: setup.loop_,
                 })
                 .expect("the butler is alive");
             assert!(
@@ -191,271 +175,205 @@ impl Live {
                 "the ring primes"
             );
         }
-        let clock = clock(setup.beat);
+        let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::new(120.0));
         let mut voice = streamer
             .status()
             .take_disk_voice(0, clock.clone(), Beat(0.0), None)
             .expect("the link is installed");
         voice.set_sample_rate(SampleRate(SR));
         voice.set_speed(PlaybackRate::new(setup.speed));
-        if setup.reverse {
-            voice.set_direction(crate::Direction::Reverse);
-        }
-        let mut live = Self {
+        Self {
             streamer,
             voice,
             clock,
             output: BufferVec::new(2),
-            start_fraction: 0.0,
-        };
-        let first = live.warm_up();
-        (live, first)
+        }
     }
 
-    /// One block of the voice, both channels.
-    fn block(&mut self) -> [Vec<f32>; 2] {
+    /// One block of the voice, channel 0; then the clock moves and the
+    /// butler runs a cycle, as the thread would before the next callback.
+    fn block(&mut self) -> Vec<f32> {
         let input = BufferVec::new(0);
         self.voice
             .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
         let out = self.output.buffer_ref();
-        [0, 1].map(|c| (0..BLOCK).map(|i| out.at_f32(c, i)).collect())
+        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        self.clock.advance(BLOCK as i64, SR);
+        let _ = self.streamer.step_once();
+        left
     }
 
-    /// Settle the entry seek with the clock held at beat 0: the first block
-    /// asks for it (and plays the primed ring, discarded), then a butler cycle
-    /// and a block at a time until the voice sounds. That block is the first
-    /// of the sequence from frame 0, played from a zero history (the flush
-    /// zeroed it, and an underrun block keeps it zero) — but not always from a
-    /// zero fraction: an underrun block still steps the reader's fraction, by
-    /// `64 r` mod 1, which is 0 at the rates whose `3 / r` is whole and not at
-    /// a converted one. [`start_fraction`](Self::start_fraction) keeps it.
-    fn warm_up(&mut self) -> [Vec<f32>; 2] {
-        let _ = self.block();
-        for _ in 0..8 {
-            let _ = self.streamer.step_once();
-            let applied = self.voice.inner.applied_reset_epoch == self.resets();
-            let fraction = self.voice.inner.fractional_pos;
-            let out = self.block();
-            if out[0].iter().any(|&s| s != 0.0) {
-                assert!(applied, "the sounding block applied a flush itself");
-                self.start_fraction = fraction;
-                return out;
-            }
-        }
-        panic!("the voice never sounded after its entry seek");
+    fn render(&mut self, blocks: usize) -> Vec<f32> {
+        (0..blocks).flat_map(|_| self.block()).collect()
     }
 
-    /// Render `blocks` more blocks after `first`, moving the clock after each
-    /// block and running one butler cycle before the next.
-    fn render(&mut self, first: [Vec<f32>; 2], blocks: usize) -> [Vec<f32>; 2] {
-        let mut planes = first;
-        for _ in 0..blocks {
-            self.clock.advance(BLOCK);
-            let _ = self.streamer.step_once();
-            let [l, r] = self.block();
-            planes[0].extend(l);
-            planes[1].extend(r);
-        }
-        planes
+    fn loop_(&mut self, setting: LoopSetting) {
+        self.streamer
+            .commands()
+            .send(Command::Loop {
+                channel_index: 0,
+                setting,
+            })
+            .expect("the butler is alive");
     }
 
-    /// The ring resets the butler has asked this voice's reader for.
-    fn resets(&self) -> u64 {
-        self.voice.shared_state.reset_epoch()
+    /// Window moves and retractions of the voice's ring so far.
+    fn moves(&self) -> u64 {
+        self.voice.inner.read.ring().moves()
+    }
+
+    /// Frames the voice could not read since the last call.
+    fn underruns(&self) -> u64 {
+        self.voice.shared_state.take_underruns()
     }
 }
 
-/// A placed memory voice on the same loop, at `speed`, its window starting
-/// `start` beats in, rendered for `frames` from beat `from`.
-fn memory(
-    wave: Arc<tutti_io::Wave>,
-    loop_: LoopSetting,
-    speed: f32,
-    start: f64,
-    from: f64,
-    frames: usize,
-) -> [Vec<f32>; 2] {
-    let clock = clock(from);
-    let mut source = MemorySource::with_transport(wave, clock.clone(), Beat(start), None);
-    source.set_speed(PlaybackRate::new(speed));
-    source.set_loop_setting(loop_);
-    source.set_sample_rate(SampleRate(SR));
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
-    let mut planes = [Vec::new(), Vec::new()];
-    for _ in 0..frames.div_ceil(BLOCK) {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let out = output.buffer_ref();
-        for (c, plane) in planes.iter_mut().enumerate() {
-            plane.extend((0..BLOCK).map(|i| out.at_f32(c, i)));
-        }
-        clock.advance(BLOCK);
-    }
-    planes
+/// A placed memory voice at `speed` from beat `from`, looped by `loop_`,
+/// on its own clock, rendered block by block like a [`Live`] one.
+struct Memory {
+    source: MemorySource,
+    clock: Arc<MockTransport>,
+    output: BufferVec,
 }
 
-/// **A live disk voice on a looped stream plays the memory tier's loop, bit
-/// for bit**, across many wraps: crossfaded, hard, and from frame 0 (the fade
-/// into the loop's head, `LoopSpan`'s fallback), at unity, 1.5× and 0.75×.
-/// The butler never flushes the ring while it loops: the reset count after
-/// the warm-up holds through every wrap.
+impl Memory {
+    fn new(wave: Arc<tutti_io::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
+        let clock = MockTransport::rolling(Beat::new(from), Bpm::new(120.0));
+        let mut source = MemorySource::with_transport(wave, clock.clone(), Beat(0.0), None);
+        source.set_speed(PlaybackRate::new(speed));
+        source.set_loop_setting(loop_);
+        source.set_sample_rate(SampleRate(SR));
+        Self {
+            source,
+            clock,
+            output: BufferVec::new(2),
+        }
+    }
+
+    fn block(&mut self) -> Vec<f32> {
+        let input = BufferVec::new(0);
+        self.source
+            .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
+        let out = self.output.buffer_ref();
+        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        self.clock.advance(BLOCK as i64, SR);
+        left
+    }
+
+    fn render(&mut self, blocks: usize) -> Vec<f32> {
+        (0..blocks).flat_map(|_| self.block()).collect()
+    }
+}
+
+/// Assert `live` and `memory` bit-identical at every frame outside `allowed`
+/// (half-open frame ranges), naming the first frame that is not.
+fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usize, usize)]) {
+    assert_eq!(live.len(), memory.len(), "{what}: lengths");
+    for (k, (&x, &y)) in live.iter().zip(memory).enumerate() {
+        if allowed.iter().any(|&(a, b)| k >= a && k < b) {
+            continue;
+        }
+        assert_eq!(
+            x.to_bits(),
+            y.to_bits(),
+            "{what}: frame {k}: live {x} memory {y}"
+        );
+    }
+}
+
+/// **A live looped voice plays the memory tier's loop bit for bit, from its
+/// first frame**, across many wraps: crossfaded, hard, from frame 0 (the fade
+/// into the loop's head, `LoopSpan`'s fallback), a loop whose end is past the
+/// file (clamped to it, on both tiers), at unity, 1.5×, 0.75× and — the rate
+/// the old reader could only approximate — a 44.1 kHz file at 48 kHz. The
+/// ring never moves and nothing underruns while it loops.
 ///
-/// This is the live half of doc 013's "The live disk loop": before the fix
-/// the butler flushed the ring on every cycle once the reader's consumed-frame
-/// count passed the loop's end, and the voice fell silent after 576 frames.
-///
-/// Mutation (run): this module against `origin/main`'s butler (the `AtEnd`
-/// flush, the RT loop crossfade) → the entry seek's flush adds the whole ring
-/// to the reader's consumed count, which is then past every loop's end, so
-/// every cycle flushes (the reset count climbs by one a cycle) and the voice
-/// never sounds → every test here fails. Mutation (run): the blend dropped
-/// from `fill_sequence` → the crossfaded rows part in the first fade → fails.
-/// Mutation (run): `place_frame` wrapping to `start` rather than `resume` →
-/// the row from frame 0 parts at its first wrap → fails. Mutation (run): the
-/// fade's lead-in captured from `resume` rather than before it → fails.
-/// Mutation (run): the refill's run not cut at the loop's end → fails.
+/// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded rows part in
+/// the first fade → fails. Mutation (run): `place_frame` wrapping to `start`
+/// rather than `resume` → the row from frame 0 parts at its first wrap →
+/// fails. Mutation (run): the loop's end not clamped to the file on the ring
+/// (the file's length → `usize::MAX` in `handle_set_stream_loop`) → the
+/// past-the-file row parts at the file's end → fails. Mutation (run): a
+/// refill that moves a looped ring's window every cycle (the old `AtEnd`
+/// flush, in the new ring) → the ring moves → fails.
 #[test]
 fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
     struct Case {
         what: &'static str,
+        file_rate: u32,
         speed: f32,
-        /// `3 / speed - 1`: how many output frames the live reader's history
-        /// runs behind the memory tier (module docs).
-        lag: usize,
         loop_: LoopSetting,
     }
     let cases = [
         Case {
             what: "a crossfaded loop",
+            file_rate: SR as u32,
             speed: 1.0,
-            lag: 2,
             loop_: loop_on(3_000.0, 7_001.0, 700),
         },
         Case {
             what: "a crossfaded loop at 1.5x",
+            file_rate: SR as u32,
             speed: 1.5,
-            lag: 1,
             loop_: loop_on(3_000.0, 7_001.0, 700),
         },
         Case {
             what: "a hard loop at 1.5x",
+            file_rate: SR as u32,
             speed: 1.5,
-            lag: 1,
             loop_: loop_on(3_000.0, 7_001.0, 0),
         },
         Case {
             what: "a crossfaded loop at 0.75x",
+            file_rate: SR as u32,
             speed: 0.75,
-            lag: 3,
             loop_: loop_on(3_000.0, 5_001.0, 500),
         },
         Case {
             what: "a crossfaded loop from frame 0",
+            file_rate: SR as u32,
             speed: 1.0,
-            lag: 2,
             loop_: loop_on(0.0, 5_001.0, 700),
+        },
+        Case {
+            what: "a loop whose end is past the file",
+            file_rate: SR as u32,
+            speed: 1.0,
+            loop_: loop_on(36_000.0, 50_000.0, 300),
+        },
+        Case {
+            what: "a 44.1 kHz file at 48 kHz",
+            file_rate: 44_100,
+            speed: 1.0,
+            loop_: loop_on(3_000.0, 7_001.0, 700),
         },
     ];
     let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, LEN);
     for case in cases {
-        let (mut live, first) = Live::new(&path, case.loop_, case.speed);
-        assert_eq!(
-            live.start_fraction, 0.0,
-            "{}: a whole-frame start",
-            case.what
-        );
-        let resets = live.resets();
+        let path = dir.path().join(format!("ramp{}.wav", case.file_rate));
+        write_ramp(&path, case.file_rate, LEN);
+        let mut live = Live::new(&path, case.loop_, case.speed);
+        let moves = live.moves();
         const BLOCKS: usize = 900;
-        let [l, r] = live.render(first, BLOCKS);
+        let got = live.render(BLOCKS);
         assert_eq!(
-            live.resets(),
-            resets,
-            "{}: the butler flushed the ring while it looped",
+            live.moves(),
+            moves,
+            "{}: the ring moved while looping",
             case.what
         );
-        let memory = memory(
-            ramp_wave(SR as u32, LEN),
-            case.loop_,
-            case.speed,
-            0.0,
-            0.0,
-            l.len(),
-        );
+        assert_eq!(live.underruns(), 0, "{}: frames went unread", case.what);
+        let want =
+            Memory::new(ramp_wave(case.file_rate, LEN), case.loop_, case.speed, 0.0).render(BLOCKS);
+        let rate = case.speed as f64 * case.file_rate as f64 / SR;
         let LoopSetting::On { end, .. } = case.loop_ else {
             unreachable!()
         };
-        let wraps = (l.len() as f64 * case.speed as f64 - end.get()) / 2_000.0;
+        let wraps = (got.len() as f64 * rate - end.get().min(LEN as f64)) / 2_000.0;
         assert!(wraps > 5.0, "{}: too few wraps to say anything", case.what);
-        for (c, live) in [l, r].iter().enumerate() {
-            for m in 4..live.len() - case.lag {
-                let (x, y) = (live[m + case.lag], memory[c][m]);
-                assert_eq!(
-                    x.to_bits(),
-                    y.to_bits(),
-                    "{}: channel {c}, memory frame {m}: live {x} memory {y}",
-                    case.what
-                );
-            }
-        }
+        assert!(got.iter().any(|&s| s != 0.0), "{}: silent", case.what);
+        assert_same_outside(case.what, &got, &want, &[]);
     }
-}
-
-/// **At a converted rate the live loop still is the memory tier's**, to a
-/// tolerance: a 44.1 kHz file at 48 kHz, crossfaded, across many wraps. The
-/// memory voice is placed the live reader's lag later (a fraction of a frame
-/// here, `3 / r - 1` output frames), and the two agree within 1e-6 (the ramp
-/// peaks near 0.07; the live reader accumulates its step where the memory
-/// tier multiplies it, module docs).
-///
-/// Mutation (run): the loop taken in session frames rather than the file's
-/// (`RingLoop::capture` scaling its points by 48 000 / 44 100) → parts at the
-/// first fade → fails. Mutation (run): the blend dropped → fails.
-#[test]
-fn a_live_looped_voice_at_a_converted_rate_matches_the_memory_tier() {
-    const FILE_RATE: u32 = 44_100;
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, FILE_RATE, LEN);
-    let loop_ = loop_on(3_000.0, 7_001.0, 700);
-    let (mut live, first) = Live::new(&path, loop_, 1.0);
-    let resets = live.resets();
-    let [l, _] = live.render(first, 900);
-    assert_eq!(
-        live.resets(),
-        resets,
-        "the butler flushed the ring while it looped"
-    );
-    let rate = FILE_RATE as f64 / SR;
-    // The live frame `j` sits at `r (j + 1) - 3 + f0` (`f0` the reader's
-    // starting fraction); the memory voice placed `lag` frames late at `r (m -
-    // lag)`: equal at `m = j` for `lag = (3 - f0) / r - 1`.
-    let lag_frames = (3.0 - live.start_fraction) / rate - 1.0;
-    // Beats at 120 BPM: two a second.
-    let lag_beats = lag_frames / SR * 2.0;
-    let [memory, _] = memory(
-        ramp_wave(FILE_RATE, LEN),
-        loop_,
-        1.0,
-        lag_beats,
-        0.0,
-        l.len(),
-    );
-    // From the memory voice's second block: its first is gated whole at beat
-    // 0, before its window.
-    let mut worst = 0.0f32;
-    for m in BLOCK..l.len() {
-        worst = worst.max((l[m] - memory[m]).abs());
-    }
-    assert!(
-        worst < 1e-6,
-        "the live loop parts from the memory tier by {worst}"
-    );
-    assert!(
-        l.len() as f64 * rate > 7_001.0 + 5.0 * 4_001.0,
-        "too few wraps to say anything"
-    );
 }
 
 /// **A live crossfaded loop is continuous at its wrap** (doc 013's S3, the
@@ -466,10 +384,10 @@ fn a_live_looped_voice_at_a_converted_rate_matches_the_memory_tier() {
 /// 2281)`, whose fade goes into its head. The hard loops are asserted to click,
 /// so the loop points have teeth.
 ///
-/// Mutation (run): the blend dropped from `fill_sequence` → the crossfaded
-/// loops click → fails. Mutation (run): the fade's lead-in captured from
-/// `resume` rather than before it (the old head replay) → a step far above
-/// the sine's own at the wrap → fails.
+/// Mutation (run): the blend dropped from `Mapping::fill` → the crossfaded
+/// loops click → fails. Mutation (run): the fade's lead-in read from `resume`
+/// rather than before it (the old head replay) → a step far above the sine's
+/// own at the wrap → fails.
 #[test]
 fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -482,10 +400,10 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
         (0.0, 2_281.0, 0, true),
         (0.0, 2_281.0, 256, false),
     ] {
-        let (mut live, first) = Live::new(&path, loop_on(start, end, fade), 1.0);
-        let [l, _] = live.render(first, (3_025 + 3 * 2_025) / BLOCK);
+        let mut live = Live::new(&path, loop_on(start, end, fade), 1.0);
+        let got = live.render((3_025 + 3 * 2_025) / BLOCK);
         let at_loop = format!("[{start}, {end}) fade {fade}");
-        let (step, at) = l
+        let (step, at) = got
             .windows(2)
             .enumerate()
             .map(|(i, w)| ((w[1] - w[0]).abs(), i))
@@ -504,25 +422,25 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// **A seek past the loop's end, and a PDC preroll, land on the loop where
-/// the memory tier plays the same position.** The stream's position counts the
-/// file straight on and the refill places it on the loop, so a voice entering
-/// its clip at beat 1 (24 000 frames in, well past a loop `[3000, 7001)`) plays
-/// what a memory voice plays there — and with a 12 000-frame preroll on its
-/// channel, what the memory voice plays half a beat earlier. Bit for bit.
+/// **Entering the clip past the loop's end, and with a PDC preroll, plays
+/// the memory tier's frames there**, bit for bit: the stream's position counts
+/// the file straight on and the ring places it, so a voice entering at beat 1
+/// (24 000 frames in, well past a loop `[3000, 7001)`) plays what a memory
+/// voice plays there — and with a 12 000-frame preroll on its channel, what
+/// the memory voice plays half a beat earlier.
 ///
-/// Mutation (run): the refill writing from the straight position unplaced
-/// (`place_frame` → identity) → it reads the file at 24 000, not the loop →
-/// fails. Mutation (run): the seek's `pdc_preroll` not applied → the preroll
-/// row plays the memory voice's beat-1 frames → fails.
+/// Mutation (run): the ring writing the straight position unplaced
+/// (`place_frame` → identity) → fails. Mutation (run): the reader not taking
+/// the preroll off its position → the preroll row plays beat 1's frames →
+/// fails.
 #[test]
-fn a_seek_and_a_preroll_land_on_the_loop_where_the_memory_tier_plays() {
+fn an_entry_past_the_loop_and_a_preroll_land_where_the_memory_tier_plays() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let loop_ = loop_on(3_000.0, 7_001.0, 700);
     for (preroll, memory_from) in [(0usize, 1.0), (12_000, 0.5)] {
-        let (mut live, first) = Live::with(
+        let mut live = Live::with(
             &path,
             Setup {
                 beat: 1.0,
@@ -530,154 +448,297 @@ fn a_seek_and_a_preroll_land_on_the_loop_where_the_memory_tier_plays() {
                 ..Setup::looped(loop_, 1.0)
             },
         );
-        let resets = live.resets();
-        let [l, _] = live.render(first, 300);
-        assert_eq!(
-            live.resets(),
-            resets,
-            "preroll {preroll}: a flush while looping"
-        );
-        let [memory, _] = memory(
-            ramp_wave(SR as u32, LEN),
-            loop_,
-            1.0,
-            0.0,
-            memory_from,
-            l.len(),
-        );
-        for m in 4..l.len() - 2 {
-            assert_eq!(
-                l[m + 2].to_bits(),
-                memory[m].to_bits(),
-                "preroll {preroll}: memory frame {m}: live {} memory {}",
-                l[m + 2],
-                memory[m]
-            );
-        }
+        let got = live.render(300);
+        assert_eq!(live.underruns(), 0, "preroll {preroll}: frames went unread");
+        let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.0, memory_from).render(300);
+        assert_same_outside(&format!("preroll {preroll}"), &got, &want, &[]);
     }
 }
 
-/// **Reverse ignores the loop, live as on every tier**: a reversed voice
-/// entering at beat 1 plays the file backwards from frame 24 000 straight
-/// through a loop `[3000, 7001)` and on to frame 0, exactly as the same voice
-/// with no loop; and a loop changed while it plays reversed is only stored —
-/// no flush, nothing heard.
+/// **Reverse ignores the loop, and mirrors the file as the memory tier's
+/// reverse does**: a reversed voice entering at beat 1 plays file frame
+/// `len - 1 - p` at position `p`, straight through a loop `[3000, 7001)` and
+/// on to silence past the file's first frame — exactly as the same voice with
+/// no loop, frame for frame, and as a reversed memory voice once the turn
+/// (a switch just past the block the voice was in, crossfaded) is done. A loop
+/// changed while it plays reversed is only stored: the ring does not move.
 ///
-/// Mutation (run): the reverse refill placing its cursor on the loop (a
-/// first cut of this fix, for a stream turned round after it had looped) →
-/// the entry at 24 000 starts from the loop's frame 3 995 → fails. Mutation
-/// (run): `handle_set_stream_loop` repositioning a reversed stream → the
-/// mid-play change flushes → fails.
+/// Mutation (run): the reverse mapping honouring the loop (`forward_loop` not
+/// filtering reverse) → the looped run parts at the loop → fails. Mutation
+/// (run): the reverse fill read from `len - pos` (one frame off) → parts from
+/// the mirror → fails. Mutation (run): `apply_mapping` switching even where
+/// the mappings agree on every written slot → the mid-play change moves the
+/// ring → fails.
 #[test]
-fn a_reversed_voice_ignores_its_loop() {
+fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
-    let reversed = |loop_| Setup {
-        beat: 1.0,
-        reverse: true,
-        ..Setup::looped(loop_, 1.0)
+    let reversed = |loop_| {
+        let mut live = Live::with(
+            &path,
+            Setup {
+                beat: 1.0,
+                ..Setup::looped(loop_, 1.0)
+            },
+        );
+        live.voice.set_direction(crate::Direction::Reverse);
+        let _ = live.streamer.step_until_settled(1_000);
+        live
     };
-    let (mut plain, first) = Live::with(&path, reversed(LoopSetting::Off));
-    let [want, _] = plain.render(first, 420);
-    let (mut looped, first) = Live::with(&path, reversed(loop_on(3_000.0, 7_001.0, 700)));
-    let resets = looped.resets();
-    let [mut got, _] = looped.render(first, 20);
-    looped
-        .streamer
-        .commands()
-        .send(Command::Loop {
-            channel_index: 0,
-            setting: loop_on(10_000.0, 12_000.0, 0),
-        })
-        .expect("the butler is alive");
-    let [rest, _] = looped.render([Vec::new(), Vec::new()], 400);
-    got.extend(rest);
-    assert_eq!(
-        looped.resets(),
-        resets,
-        "a loop change flushed a reversed stream"
+    const BLOCKS: usize = 420;
+    let mut plain = reversed(LoopSetting::Off);
+    let want = plain.render(BLOCKS);
+    let mut looped = reversed(loop_on(3_000.0, 7_001.0, 700));
+    let moves = looped.moves();
+    let mut got = looped.render(20);
+    looped.loop_(loop_on(10_000.0, 12_000.0, 0));
+    got.extend(looped.render(BLOCKS - 20));
+    assert_eq!(looped.moves(), moves, "a loop change moved a reversed ring");
+    // The turn lands a guard past the block the voice was in, and fades
+    // over the ring's fade length from what the old (looped or plain)
+    // mapping held: past that, the two are the same frames.
+    let settled = BLOCK + crate::butler::GUARD_FRAMES as usize + FADE + 8;
+    assert_same_outside("looped against plain", &got, &want, &[(0, settled)]);
+
+    // From there on, the memory tier's mirror (exact: whole positions).
+    for (k, &v) in got.iter().enumerate().skip(settled) {
+        let p = 24_000 + k;
+        let want = if p < LEN { value(LEN - 1 - p) } else { 0.0 };
+        assert_eq!(v, want, "reversed, frame {k} (position {p})");
+    }
+}
+
+/// **A loop change takes effect where the memory tier's does, never lags,
+/// and costs no frame**: the memory tier changes its loop at the edit; the
+/// live ring switches a guard past the block its reader is in and crossfades
+/// there from the butler's record of the old loop. Outside that span the two
+/// are bit-identical, before and after — the live voice is on the clock — and
+/// nothing underruns. With the default crossfade (512 frames).
+///
+/// Here: a crossfaded loop `[1000, 3000)`, changed 81 blocks in (at straight
+/// 5 184, its frame 1 184) to a hard `[200, 1400)`, which places the same
+/// position on frame 384: the memory tier jumps 800 frames of ramp there.
+///
+/// Mutation (run): the change only stored (no switch) → the ring plays on
+/// through the old loop → fails. Mutation (run): the record's old frames
+/// taken under the *new* mapping → the fade blends new with new and the
+/// switch is a jump → the crossfade assertion fails.
+#[test]
+fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let (a, b) = (loop_on(1_000.0, 3_000.0, 300), loop_on(200.0, 1_400.0, 0));
+    let mut live = Live::new(&path, a, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), a, 1.0, 0.0);
+    let mut got = live.render(81);
+    let mut want = memory.render(81);
+    let edit = got.len();
+    live.loop_(b);
+    memory.source.set_loop_setting(b);
+    got.extend(live.render(120));
+    want.extend(memory.render(120));
+    assert_eq!(live.underruns(), 0, "frames went unread");
+    let window = (
+        edit,
+        edit + BLOCK * 2 + crate::butler::GUARD_FRAMES as usize + FADE + 8,
     );
-    assert_eq!(got.len(), want.len());
-    // The file backwards from its frame 23 999, through the loop, to frame 0.
-    for (j, &v) in want.iter().enumerate().take(24_002).skip(2) {
-        assert_eq!(v, value(23_999 - (j - 2)), "reversed, frame {j}");
-    }
-    for (k, (&g, &w)) in got.iter().zip(&want).enumerate() {
-        assert_eq!(g.to_bits(), w.to_bits(), "frame {k}: looped {g} plain {w}");
-    }
-}
-
-/// **A loop change takes effect at the butler's next cycle, at the frame the
-/// reader reads next**, not once the ring drains (it may hold 30 s of the old
-/// loop). The butler flushes the ring at its head — the reader's straight
-/// position, frames played plus the four it had fetched ahead — and refills
-/// from that position under the new loop, where the memory tier (whose loop
-/// change is a store) places the same position; exactly one flush. It moves as
-/// a seek does: with a hand-stepped butler the reader finds the ring empty for
-/// the block after the flush (the refill lands a cycle later) and restarts
-/// from a zero history (two more zero frames), so it resumes one block
-/// behind the clock it left, which the gate lets stand as it lets any
-/// reposition's drift under `SEEK_EPSILON_SAMPLES` stand. (With the seek
-/// crossfade on, that block is covered by the crossfade; doc 013's follow-ups
-/// record what that crossfade still gets wrong.)
-///
-/// Here: a hard loop `[1000, 3000)`, changed to `[500, 1500)` 81 blocks in
-/// (straight 5 188, the old loop's frame 1 188, the new one's 1 188 too — the
-/// point of the change is where it goes next: to 1 499, then round to 500).
-///
-/// Mutation (run): the change only stored (no reposition) → the ring plays
-/// on through the old loop's frames → fails. Mutation (run): the reposition
-/// at the writer's cursor rather than the head → resumes thousands of frames
-/// on → fails.
-#[test]
-fn a_loop_change_takes_effect_at_the_readers_next_frame() {
-    let dir = tempfile::tempdir().expect("a temp dir");
-    let path = dir.path().join("ramp.wav");
-    write_ramp(&path, SR as u32, LEN);
-    let (mut live, first) = Live::new(&path, loop_on(1_000.0, 3_000.0, 0), 1.0);
-    let resets = live.resets();
-    let [before, _] = live.render(first, 80);
-    let old = |s: usize| {
-        if s < 3_000 {
-            s
-        } else {
-            1_000 + (s - 3_000) % 2_000
-        }
-    };
-    for (j, &v) in before.iter().enumerate().skip(2) {
-        assert_eq!(v, value(old(j - 2)), "before the change, frame {j}");
-    }
-    live.streamer
-        .commands()
-        .send(Command::Loop {
-            channel_index: 0,
-            setting: loop_on(500.0, 1_500.0, 0),
-        })
-        .expect("the butler is alive");
-    let [after, _] = live.render([Vec::new(), Vec::new()], 60);
-    assert_eq!(live.resets(), resets + 1, "one flush, for the change");
+    assert_same_outside("across a loop change", &got, &want, &[window]);
+    // Inside the window: the old loop, then a fade, never a hard jump — each
+    // step is a fraction of the jump the memory tier made.
+    let jump = (want[edit] - want[edit - 1]).abs().max(1e-6);
+    let worst = got[window.0..window.1]
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
     assert!(
-        after[..BLOCK + 2].iter().all(|&s| s == 0.0),
-        "the block after the flush finds the ring empty"
+        worst < jump / 4.0,
+        "a step of {worst} inside the switch, against the memory tier's jump of {jump}"
     );
-    let head = before.len() + 4;
-    let new = |s: usize| {
-        if s < 1_500 {
-            s
-        } else {
-            500 + (s - 1_500) % 1_000
-        }
-    };
-    let mut wrapped = 0;
-    for (i, &v) in after[BLOCK + 2..].iter().enumerate() {
-        assert_eq!(
-            v,
-            value(new(head + i)),
-            "after the change, frame {i} of the refill (straight {})",
-            head + i
-        );
-        wrapped += usize::from(new(head + i) == 500);
+}
+
+/// **N loop edits and transport jumps leave the live voice exactly on the
+/// clock** (the review of #48's blocker 2): with the default crossfade, a
+/// sequence of loop edits, jumps inside and outside the ring's window, and a
+/// varispeed change, each applied at the same block to a live voice and a
+/// memory voice. Outside a bounded span after each event the two are
+/// bit-identical — the last 200 blocks included, so nothing drifts — and the
+/// live voice never underruns: every reposition costs 0 frames.
+///
+/// Mutation (run): the reader not taking the old continuation at a jump (no
+/// scratch fade) → the refill gap underruns → fails. Mutation (run): the
+/// refill not following a reader that jumped outside the window → the new
+/// position is never filled → fails.
+#[test]
+fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    enum Event {
+        Loop(LoopSetting),
+        Jump(f64),
+        Speed(f32),
     }
-    assert!(wrapped >= 2, "the new loop wrapped {wrapped} times");
+    let events = [
+        (30, Event::Loop(loop_on(8_000.0, 12_001.0, 400))),
+        (60, Event::Jump(beats(9_000.0))),
+        (90, Event::Loop(loop_on(9_000.0, 11_001.0, 400))),
+        (120, Event::Jump(beats(30_000.0))),
+        (150, Event::Speed(1.5)),
+        (180, Event::Loop(LoopSetting::Off)),
+        (210, Event::Jump(beats(1_000.0))),
+        (240, Event::Loop(loop_on(2_000.0, 6_001.0, 0))),
+    ];
+    let first = loop_on(3_000.0, 7_001.0, 700);
+    let mut live = Live::new(&path, first, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), first, 1.0, 0.0);
+    let (mut got, mut want, mut allowed) = (Vec::new(), Vec::new(), Vec::new());
+    let mut at = 0;
+    for (block, event) in &events {
+        got.extend(live.render(block - at));
+        want.extend(memory.render(block - at));
+        at = *block;
+        let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+        allowed.push((got.len(), got.len() + span));
+        match event {
+            Event::Loop(setting) => {
+                live.loop_(*setting);
+                memory.source.set_loop_setting(*setting);
+            }
+            Event::Jump(beat) => {
+                live.clock.set_beat(Beat::new(*beat));
+                memory.clock.set_beat(Beat::new(*beat));
+            }
+            Event::Speed(speed) => {
+                live.voice.set_speed(PlaybackRate::new(*speed));
+                memory.source.set_speed(PlaybackRate::new(*speed));
+            }
+        }
+    }
+    got.extend(live.render(200 + 30));
+    want.extend(memory.render(200 + 30));
+    assert_eq!(live.underruns(), 0, "a reposition cost frames");
+    assert!(got.iter().filter(|&&s| s != 0.0).count() > got.len() / 2);
+    assert_same_outside("edits and jumps", &got, &want, &allowed);
+}
+
+/// **Two loop changes in one butler cycle, and a jump with a loop change in
+/// one cycle, settle to the last loop at the clock** (the review of #48's
+/// blocker 1: a second reposition read the ring's head off a pending flush
+/// and resumed at frame 0). The second change supersedes the first before the
+/// reader reaches it; the jump is the reader's own, the loop the butler's.
+///
+/// Mutation (run): the second of two changes ignored while the first's switch
+/// is pending (`apply_mapping` returning `Same` whenever a switch is pending)
+/// → it settles to the first loop → fails. (The fold of a pending switch into
+/// the next, `at.min(switch_at)`, is a guard no sequence of loop edits here
+/// reaches: a divergence is found against what the ring holds, so it lies at
+/// or below a pending switch whenever the new mapping differs there.)
+#[test]
+fn two_changes_in_one_cycle_settle_to_the_last() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let first = loop_on(1_000.0, 3_000.0, 0);
+    for jump in [false, true] {
+        let mut live = Live::new(&path, first, 1.0);
+        let mut memory = Memory::new(ramp_wave(SR as u32, LEN), first, 1.0, 0.0);
+        let mut got = live.render(81);
+        let mut want = memory.render(81);
+        let edit = got.len();
+        let last = loop_on(500.0, 1_500.0, 300);
+        if jump {
+            live.clock.set_beat(Beat::new(beats(20_000.0)));
+            memory.clock.set_beat(Beat::new(beats(20_000.0)));
+        } else {
+            live.loop_(loop_on(2_000.0, 2_500.0, 0));
+        }
+        live.loop_(last);
+        memory.source.set_loop_setting(last);
+        got.extend(live.render(150));
+        want.extend(memory.render(150));
+        assert_eq!(live.underruns(), 0, "jump {jump}: frames went unread");
+        let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+        assert_same_outside(&format!("jump {jump}"), &got, &want, &[(edit, edit + span)]);
+    }
+}
+
+/// **A loop edit that changes nothing near the playhead is not heard**: the
+/// same loop set again is nothing at all (no switch, the ring does not move),
+/// and a loop end moved far ahead switches exactly where the two loops part —
+/// so the output is bit-identical to the memory tier with the edit throughout
+/// (no crossfade, no guard), and to no edit at all until the old end.
+///
+/// Mutation (run): `apply_mapping` switching a guard past the reader
+/// whatever the divergence (`at` = `busy + GUARD`) → the switch lands near
+/// 1 000, dropping 29 000 buffered frames that agreed → fails. Mutation (run):
+/// `apply_mapping` switching even where the mappings agree on every written
+/// slot → the same loop set again moves the ring → fails.
+#[test]
+fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let near = loop_on(3_000.0, 30_000.0, 0);
+    let far = loop_on(3_000.0, 31_000.0, 0);
+
+    let mut same = Live::new(&path, near, 1.0);
+    let before = same.render(10);
+    let moves = same.moves();
+    same.loop_(near);
+    let mut got = before;
+    got.extend(same.render(100));
+    assert_eq!(same.moves(), moves, "setting the same loop moved the ring");
+    let unedited = Memory::new(ramp_wave(SR as u32, LEN), near, 1.0, 0.0).render(110);
+    assert_same_outside("the same loop again", &got, &unedited, &[]);
+
+    let mut moved = Live::new(&path, near, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), near, 1.0, 0.0);
+    let mut got = moved.render(10);
+    let mut want = memory.render(10);
+    moved.loop_(far);
+    memory.source.set_loop_setting(far);
+    got.extend(moved.render(1));
+    let at = moved.voice.inner.read.ring().map().at;
+    assert_eq!(at, 30_000, "the ring switched where the loops still agreed");
+    got.extend(moved.render(599));
+    want.extend(memory.render(600));
+    assert_eq!(moved.underruns(), 0, "frames went unread");
+    assert_same_outside("a loop end moved far ahead", &got, &want, &[]);
+    let unedited = Memory::new(ramp_wave(SR as u32, LEN), near, 1.0, 0.0).render(610);
+    assert_same_outside(
+        "until the old end",
+        &got[..30_000],
+        &unedited[..30_000],
+        &[],
+    );
+}
+
+/// **A looped stream refilled in parallel loops as one refilled serially**
+/// (three streams, so the butler's parallel refill runs): bit-identical to
+/// the memory tier, with the loop travelling with its writer.
+///
+/// The loop lives on the ring's writer (`loops::Content`), which the
+/// parallel pass hands each worker whole, so neither path can drop it on its
+/// own (the old parallel work item carried a copy of the loop range, and
+/// dropping it there was a live bug class). Mutation (run): the parallel pass
+/// skipping its work items → nothing refills → underruns → fails.
+#[test]
+fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let loop_ = loop_on(3_000.0, 7_001.0, 700);
+    let mut live = Live::with(
+        &path,
+        Setup {
+            neighbours: 2,
+            ..Setup::looped(loop_, 1.5)
+        },
+    );
+    let got = live.render(600);
+    assert_eq!(live.underruns(), 0, "frames went unread");
+    let want = Memory::new(ramp_wave(SR as u32, LEN), loop_, 1.5, 0.0).render(600);
+    assert_same_outside("parallel refill", &got, &want, &[]);
 }

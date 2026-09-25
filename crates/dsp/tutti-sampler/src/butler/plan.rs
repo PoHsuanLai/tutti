@@ -6,7 +6,6 @@ use tutti_core::{PlaybackRate, SampleRate, SrcRatio};
 use super::cache::StreamPin;
 use super::command::RegionId;
 use super::control::StreamRecord;
-use super::loops::RingLoop;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
 use crate::voice::types::Direction;
@@ -15,12 +14,10 @@ use crate::voice::types::Direction;
 pub(crate) struct LoopConfig {
     /// `(start, end)` in file **frames**, half-open, as it was asked for.
     pub(crate) range: (u64, u64),
-    /// Crossfade length in **frames** as it was asked for; 0 wraps hard.
+    /// Crossfade length in **frames**: as asked for, or 0 when the fade's
+    /// lead-in could not be read and the ring plays the loop hard — so a fork
+    /// reading the stream's record plays what the live voice does.
     pub(crate) crossfade_frames: usize,
-    /// The loop as the refill writes it (`loops::RingLoop`): the span on this
-    /// file, clamped, and its fade's lead-in, captured once. `None` for a
-    /// range with nothing in it once clamped to the file, which plays on.
-    pub(crate) ring: Option<RingLoop>,
 }
 
 /// Active streaming connection for a channel.
@@ -28,12 +25,8 @@ pub(crate) struct LoopConfig {
 /// Groups the ring buffer consumer, region identity, and optional loop config
 /// into one value. Created by `start_streaming`, dropped by `stop_streaming`.
 /// `region_id` is cached so the butler reads it without touching the
-/// [`SharedReader`]. (The reader's `read_position`, a count of frames
-/// consumed, is no file position and the butler no longer reads it: the ring's
-/// head is the writer's cursor less what is buffered, `loops::head_position`.) The reader itself sits behind an `ArcSwap`
-/// (not a `Mutex`): the audio thread loads it wait-free and is its sole
-/// consumer; the butler only ever *replaces* it and requests ring resets via
-/// `RtState`.
+/// [`SharedReader`], the ring every voice taken from the stream reads by
+/// position (`prefetch::Ring`).
 pub(crate) struct Link {
     pub(crate) consumer: SharedReader,
     pub(crate) region_id: RegionId,
@@ -139,7 +132,7 @@ impl ChannelPlan {
         file_path: std::path::PathBuf,
         cache: std::sync::Weak<super::cache::LruCache>,
     ) {
-        let region_id = consumer.load().region_id();
+        let region_id = consumer.region_id();
         self.link = Some(Link {
             consumer,
             region_id,
@@ -159,39 +152,12 @@ impl ChannelPlan {
         self.pdc_preroll = 0;
         self.rt_state.set_speed(PlaybackRate::UNITY);
         self.rt_state.set_direction(Direction::Forward);
-        self.rt_state.set_seeking(false);
         self.rt_state.set_src_ratio(SrcRatio::UNITY);
     }
 
     /// Clone of the RT-shared state handle for passing to the audio thread.
     pub fn rt_state(&self) -> Arc<RtState> {
         Arc::clone(&self.rt_state)
-    }
-
-    /// Request the audio thread drop the ring's stale contents (after the butler
-    /// repositions the stream: a seek, a PDC change, a loop change).
-    ///
-    /// The butler must not pop the SPSC consumer itself — that would race the
-    /// audio thread. Instead it bumps a lock-free reset epoch in `RtState`; the
-    /// audio thread, which owns the ring, clears it when it next observes the
-    /// bump. Safe to call even when idle (no active link): the epoch simply has
-    /// no consumer to act on it.
-    pub fn flush_buffer(&self) {
-        self.rt_state.request_ring_reset();
-    }
-
-    /// The active loop config, if streaming and looping.
-    pub(crate) fn loop_config(&self) -> Option<&LoopConfig> {
-        self.link.as_ref()?.loop_config.as_ref()
-    }
-
-    /// Bracket a reposition, so the audio thread mutes rather than rendering a
-    /// stream whose read head is moving.
-    ///
-    /// Takes `&self`: the flag lives in the `Arc`-shared `RtState`, which has
-    /// interior mutability, so no exclusive borrow of the plan is needed.
-    pub fn set_seeking(&self, seeking: bool) {
-        self.rt_state.set_seeking(seeking);
     }
 }
 
@@ -212,7 +178,6 @@ mod tests {
 
         assert_eq!(state.pdc_preroll, 0);
         assert!(state.link.is_none());
-        assert!(state.loop_config().is_none());
         assert_eq!(state.rt_state.speed(), PlaybackRate::UNITY);
         assert!(!state.rt_state.is_reverse());
     }

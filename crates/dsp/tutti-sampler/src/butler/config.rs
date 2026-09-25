@@ -14,9 +14,10 @@ pub struct BufferConfig {
     /// Pinned entries (those backing a live stream) are never evicted, so this
     /// is a target rather than a hard bound.
     pub cache_max_entries: usize,
-    /// Ceiling on the LRU cache's total resident bytes. 1 GiB by default. An
-    /// oversized wave is still admitted when nothing evictable remains, so this
-    /// too is a target rather than a hard bound.
+    /// Ceiling on the LRU cache's total resident bytes. 1 GiB by default. A
+    /// wave is still admitted over it when nothing evictable remains, so this
+    /// too is a target rather than a hard bound — but a single wave larger than
+    /// the whole ceiling is refused.
     pub cache_max_bytes: u64,
     /// Crossfade length in **frames** applied when the butler repositions a live
     /// stream (timeline seek or a PDC preroll change). 512 by default, about

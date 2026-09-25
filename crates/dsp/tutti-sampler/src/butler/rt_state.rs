@@ -2,35 +2,27 @@
 //!
 //! Every field is atomic or lock-free, so both sides read and publish without a
 //! lock ever reaching the audio callback. The fields are grouped into orthogonal
-//! sub-structs (playback, health, seek crossfade) — one `Arc`, one
-//! allocation — each `#[repr(align(64))]` so a butler write to one group cannot
-//! false-share a cache line with an audio-thread read of another.
+//! sub-structs (playback, health) — one `Arc`, one allocation — each
+//! `#[repr(align(64))]` so a butler write to one group cannot false-share a
+//! cache line with an audio-thread read of another.
 //!
 //! # Which side writes what
 //!
-//! Most cells have one writer and one reader, and the direction is the thing to
-//! keep straight:
+//! * **Butler (or control) writes, audio reads** — speed, direction,
+//!   `src_ratio`, gain, the stretch rate. `src_ratio` is re-derived by the
+//!   control thread when the session rate moves (`SessionRate::set`, a device
+//!   restart), under the plan's lock, which the butler also holds when it
+//!   writes one.
+//! * **Audio writes, butler reads** — `underrun_count`; the butler writes
+//!   `buffer_fill_level` for its own pacing.
 //!
-//! * **Butler writes, audio reads** — speed, direction, `src_ratio`, gain,
-//!   `reset_epoch` (ring-clear request), and both crossfades' buffers.
-//!   `src_ratio` has one more writer: the control thread re-derives it when
-//!   the session rate moves (`SessionRate::set`, a device restart), under the
-//!   plan's lock, which the butler also holds when it writes one.
-//! * **Audio writes, butler reads** — `underrun_count`, `buffer_fill_level`, and
-//!   the seek request (`seek_target` + `seek_request_epoch`), the mirror image of
-//!   `reset_epoch`.
-//! * **One side only** — `applied_seek_epoch` is butler-private bookkeeping and
-//!   the audio thread never touches it.
-//!
-//! Both epoch pairs exist so neither side has to touch state the other owns: the
-//! butler must never pop the SPSC ring and the audio thread must never seek a
-//! decoder, so each *requests* and the owner *applies*.
+//! Where a stream stands and how to read it is the ring's, not this cell's
+//! (`prefetch::Ring`): the reader publishes the position it plays and the
+//! butler follows it, so there is nothing to request and nothing to flush.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::ChannelLayout;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::{Amplitude, AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, SrcRatio};
 
-use super::crossfader::StreamingCrossfader;
 use crate::voice::types::Direction;
 
 /// Varispeed, direction, rate conversion, stretch and gain — the cells the audio
@@ -81,53 +73,26 @@ impl Default for PlaybackParams {
     }
 }
 
-/// Ring occupancy, underrun counts, and the two epoch-based reposition
-/// requests that cross between the threads.
+/// Ring occupancy and underrun counts.
 ///
 /// Cache-line aligned: the audio thread writes `buffer_fill_level` and
 /// `underrun_count` every block, and that must not evict [`PlaybackParams`]
 /// out from under the butler.
 #[repr(align(64))]
 pub struct BufferHealth {
-    /// Set while the butler is mid-reposition, so the audio thread mutes rather
-    /// than reading a half-seeked stream.
-    seeking: AtomicBool,
     /// Underruns since the last [`RtState::take_underruns`]. Audio thread
     /// increments, butler drains.
     underrun_count: AtomicU64,
     /// Ring occupancy as 0-1000, i.e. 0.0-1.0 in thousandths. Fixed-point
     /// because the cell is an integer atomic; the accessors do the scaling.
     buffer_fill_level: AtomicU32,
-    /// Butler-bumped ring-reset request. The butler increments this when it
-    /// repositions the stream (seek, PDC or loop change) and needs the audio thread to
-    /// drop the stale buffered samples. The audio thread — the sole ring
-    /// consumer — clears the ring when it observes a change vs. its last-applied
-    /// value, keeping the SPSC pop single-threaded (the butler never pops).
-    reset_epoch: AtomicU64,
-    /// Audio-bumped timeline-seek request (the mirror image of `reset_epoch`:
-    /// audio requests, butler applies). The audio thread stores the absolute
-    /// file offset in `seek_target` and bumps `seek_request_epoch`; the butler
-    /// polls the epoch and, on a change vs. `applied_seek_epoch`, repositions the
-    /// live stream to `seek_target` (flush + seek + crossfade). Both stores are
-    /// lock-free and allocation-free — safe on the audio hot path.
-    seek_target: AtomicU64,
-    seek_request_epoch: AtomicU64,
-    /// Butler-only last-applied seek epoch. Never touched by the audio thread —
-    /// the symmetric counterpart to the audio-side `applied_reset_epoch`. Lets
-    /// the butler coalesce rapid seeks (only the latest `seek_target` survives).
-    applied_seek_epoch: AtomicU64,
 }
 
 impl Default for BufferHealth {
     fn default() -> Self {
         Self {
-            seeking: AtomicBool::new(false),
             underrun_count: AtomicU64::new(0),
             buffer_fill_level: AtomicU32::new(0),
-            reset_epoch: AtomicU64::new(0),
-            seek_target: AtomicU64::new(0),
-            seek_request_epoch: AtomicU64::new(0),
-            applied_seek_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -143,15 +108,11 @@ impl Default for BufferHealth {
 pub struct RtState {
     /// Varispeed, direction, conversion ratio, stretch and gain.
     pub playback: PlaybackParams,
-    /// Ring occupancy, underruns, and the seek/reset epochs.
+    /// Ring occupancy and underruns.
     pub health: BufferHealth,
-    /// Armed when the butler repositions the stream, drained by the audio
-    /// thread one frame per block.
-    pub seek_crossfade: StreamingCrossfader,
-    // No loop crossfade: the butler writes a loop's fade into the ring as it
-    // refills (`loops::fill_sequence`), so the audio thread does no loop
-    // logic. The RT crossfade this held replaced the ring's output without
-    // consuming it, so the tail it faded out played again after it.
+    // No crossfaders: a loop's fade is written into the ring, and a jump's
+    // fade is the reader's own, from the ring (doc 013, "The live disk
+    // reposition (after #48)").
 }
 
 impl Default for RtState {
@@ -161,24 +122,22 @@ impl Default for RtState {
 }
 
 impl RtState {
-    /// A state at rest: unity speed and conversion ratio, unity gain, forward,
-    /// not seeking, no crossfade armed, all counters zero.
+    /// A state at rest: unity speed and conversion ratio, unity gain,
+    /// forward, all counters zero.
     pub fn new() -> Self {
         Self {
             playback: PlaybackParams::default(),
             health: BufferHealth::default(),
-            seek_crossfade: StreamingCrossfader::new(),
         }
     }
 
     /// A new state holding this one's playback controls (speed, direction,
     /// gain, conversion ratio, stretch rate) at their current values, and
-    /// nothing else: no seek, no crossfade, no counters.
+    /// nothing else: no counters.
     ///
     /// What a disk voice severed for an offline render keeps
     /// (`DiskVoice::isolate`): its controls as a snapshot, like every other
-    /// forked unit's, in a cell no butler and no live voice shares. Control
-    /// thread only; it builds a crossfader.
+    /// forked unit's, in a cell no butler and no live voice shares.
     pub(crate) fn detached(&self) -> Self {
         let state = Self::new();
         state.set_speed(self.speed());
@@ -316,73 +275,6 @@ impl RtState {
             .store(ratio.get(), Ordering::Release);
     }
 
-    /// Whether the butler is mid-reposition. The audio thread reads this to mute
-    /// rather than render a stream whose read head is moving under it.
-    #[inline]
-    pub fn is_seeking(&self) -> bool {
-        self.health.seeking.load(Ordering::Acquire)
-    }
-
-    /// Bracket a reposition. The butler sets it before flushing and clears it
-    /// once the new position and crossfade are both published.
-    pub fn set_seeking(&self, seeking: bool) {
-        self.health.seeking.store(seeking, Ordering::Release);
-    }
-
-    /// Butler side: request the audio thread drop the ring's stale contents
-    /// after repositioning the stream. Lock-free; the butler never touches the
-    /// SPSC consumer itself.
-    pub fn request_ring_reset(&self) {
-        self.health.reset_epoch.fetch_add(1, Ordering::Release);
-    }
-
-    /// Current ring-reset epoch. The audio thread compares this against its
-    /// last-applied value to decide whether a butler-requested clear is pending.
-    #[inline]
-    pub fn reset_epoch(&self) -> u64 {
-        self.health.reset_epoch.load(Ordering::Acquire)
-    }
-
-    /// Audio side: request the butler reposition the live stream to absolute file
-    /// offset `file_offset` (timeline seek). Two atomic stores, zero alloc, zero
-    /// I/O — safe to call from the audio hot path. Coalescing is intentional:
-    /// only the latest target survives if the butler hasn't caught up.
-    #[inline]
-    pub fn request_seek(&self, file_offset: u64) {
-        self.health
-            .seek_target
-            .store(file_offset, Ordering::Relaxed);
-        self.health
-            .seek_request_epoch
-            .fetch_add(1, Ordering::Release);
-    }
-
-    /// Butler side: read the pending seek request as `(epoch, target)`. The
-    /// butler compares `epoch` against its last-applied value (see
-    /// [`take_seek_request`](Self::take_seek_request)) to decide whether to act.
-    #[inline]
-    pub fn seek_request(&self) -> (u64, u64) {
-        let epoch = self.health.seek_request_epoch.load(Ordering::Acquire);
-        let target = self.health.seek_target.load(Ordering::Relaxed);
-        (epoch, target)
-    }
-
-    /// Butler side: if a new seek has been requested since the last poll, mark it
-    /// applied and return `Some(target)`; otherwise `None`. Coalesces rapid
-    /// seeks — only the latest `seek_target` is returned. Butler-only: never
-    /// touched by the audio thread.
-    #[inline]
-    pub fn take_seek_request(&self) -> Option<u64> {
-        let (epoch, target) = self.seek_request();
-        if epoch == self.health.applied_seek_epoch.load(Ordering::Relaxed) {
-            return None;
-        }
-        self.health
-            .applied_seek_epoch
-            .store(epoch, Ordering::Relaxed);
-        Some(target)
-    }
-
     /// Count one frame the ring could not supply. Audio side: a single relaxed
     /// increment, allocation-free and safe on the hot path.
     #[inline]
@@ -411,35 +303,6 @@ impl RtState {
     #[inline]
     pub fn buffer_fill(&self) -> f32 {
         self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
-    }
-
-    /// Arm the seek crossfade with the tail of the old position and the head of
-    /// the new one, both flat interleaved at `channels` samples per frame.
-    ///
-    /// Butler thread: the buffers are allocated here precisely so the audio side
-    /// receives something finished. The fade runs for as many **frames** as the
-    /// shorter buffer holds.
-    pub fn start_seek_crossfade(
-        &self,
-        fadeout: Vec<f32>,
-        fadein: Vec<f32>,
-        channels: impl Into<ChannelLayout>,
-    ) {
-        self.seek_crossfade.start(fadeout, fadein, channels);
-    }
-
-    /// Whether a seek crossfade is armed and still has frames left to blend.
-    #[inline]
-    pub fn is_seek_crossfading(&self) -> bool {
-        self.seek_crossfade.is_active()
-    }
-
-    /// Blend one frame of the seek crossfade into `out`, returning `false` when
-    /// the fade is finished or was never armed (leaving `out` untouched).
-    ///
-    /// Audio thread: atomic loads and one `ArcSwap` read, no allocation.
-    pub fn next_seek_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
-        self.seek_crossfade.next_frame_into(out)
     }
 }
 
@@ -503,16 +366,6 @@ mod tests {
     }
 
     #[test]
-    fn test_seeking() {
-        let state = RtState::new();
-        assert!(!state.is_seeking());
-        state.set_seeking(true);
-        assert!(state.is_seeking());
-        state.set_seeking(false);
-        assert!(!state.is_seeking());
-    }
-
-    #[test]
     fn test_underrun_reporting() {
         let state = RtState::new();
 
@@ -524,40 +377,6 @@ mod tests {
 
         state.report_underrun();
         assert_eq!(state.take_underruns(), 1);
-    }
-
-    #[test]
-    fn test_seek_crossfade() {
-        let state = RtState::new();
-
-        assert!(!state.is_seek_crossfading());
-        assert!(!state.next_seek_crossfade_frame_into(&mut [0.0f32; 2]));
-
-        let fadeout = vec![1.0; 4 * 2];
-        let fadein = vec![0.0; 4 * 2];
-
-        state.start_seek_crossfade(fadeout, fadein, 2usize);
-
-        assert!(state.is_seek_crossfading());
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_seek_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 1.0).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_seek_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.75).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_seek_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.5).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_seek_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.25).abs() < 0.01);
-
-        assert!(!state.is_seek_crossfading());
-        assert!(!state.next_seek_crossfade_frame_into(&mut [0.0f32; 2]));
     }
 
     #[test]

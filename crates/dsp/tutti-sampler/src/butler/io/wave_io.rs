@@ -5,7 +5,7 @@
 //! one place the planar `wave.at(0,i)/at(1,i)` unpack lives — a cursor over a
 //! `Wave` with mono up-mix and zero-pad past end. A loop is not its business:
 //! the refill cuts its reads at the loop's end and places each run
-//! (`loops::fill_sequence`), so a `WaveIn` always reads the file straight on.
+//! (`loops::Mapping::fill`), so a `WaveIn` always reads the file straight on.
 //!
 //! Both ends speak flat interleaved `&[f32]` at a **runtime** width, with the
 //! stride owned by the type and every count denominated in **frames**. The sink
@@ -137,7 +137,7 @@ impl<'w> WaveIn<'w> {
     /// `out.len() / ch` **unconditionally** — a pure function of the buffer the
     /// caller passed in, carrying no information back about the source. It is a
     /// convenience, not a signal, and the production callers
-    /// (`loops::fill_sequence`'s runs) discard it; the refill takes its frame
+    /// (`loops::Mapping::fill`'s runs) discard it; the refill takes its frame
     /// count from `RegionOut::push_interleaved` instead. See the type-level docs for why
     /// that disqualifies `WaveIn` from the trait.
     pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {

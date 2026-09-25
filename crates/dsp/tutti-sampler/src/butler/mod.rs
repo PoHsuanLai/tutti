@@ -8,7 +8,6 @@ mod cache;
 mod command;
 mod config;
 pub(crate) mod control;
-mod crossfader;
 mod handlers;
 mod io;
 mod loop_body;
@@ -26,8 +25,11 @@ mod thread;
 pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
+#[cfg(test)]
+pub(crate) use loops::GUARD_FRAMES;
+pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use plan::ChannelPlan;
-pub(crate) use prefetch::SharedReader;
+pub(crate) use prefetch::{SharedReader, Window};
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 
@@ -47,4 +49,4 @@ pub use step::StepOutcome;
 #[cfg(test)]
 pub(crate) use command::RegionId;
 #[cfg(test)]
-pub(crate) use prefetch::{share_reader, RegionBuffer};
+pub(crate) use prefetch::RegionBuffer;

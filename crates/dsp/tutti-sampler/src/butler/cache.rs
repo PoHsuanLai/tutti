@@ -128,8 +128,16 @@ impl LruCache {
     /// admitted over budget, which is the deliberate trade: exceeding a byte
     /// target is recoverable, pulling a wave out from under a playing stream is
     /// not.
+    ///
+    /// **A wave larger than the whole byte budget is refused**, and evicts
+    /// nothing: admitting it would empty the cache for one file and still
+    /// leave it over budget. Its holder keeps it (a stream that cannot seek
+    /// holds its file on its writer, `RegionOut::set_resident`).
     pub fn insert(&self, path: PathBuf, wave: Arc<Wave>) {
         let size = wave.len() as u64 * wave.channels() as u64 * 4;
+        if size > self.max_bytes {
+            return;
+        }
 
         if let Some(existing) = self.cache.get(&path) {
             existing
@@ -224,6 +232,23 @@ mod tests {
     fn make_wave(samples: usize) -> Arc<Wave> {
         let data = vec![0.0f32; samples];
         Arc::new(Wave::from_samples(44100.0, &data))
+    }
+
+    /// **A wave larger than the whole budget is refused, and evicts nothing.**
+    ///
+    /// Mutation (run): the size check removed → the resident entry is evicted
+    /// to make room and the oversize wave admitted → fails.
+    #[test]
+    fn a_wave_larger_than_the_budget_is_refused() {
+        // Two-channel waves of 100 frames: 800 bytes each.
+        let cache = LruCache::new(10, 1_000);
+        cache.insert(PathBuf::from("small.wav"), make_wave(100));
+        cache.insert(PathBuf::from("huge.wav"), make_wave(1_000));
+        assert!(cache.get(Path::new("huge.wav")).is_none(), "admitted");
+        assert!(
+            cache.get(Path::new("small.wav")).is_some(),
+            "evicted for it"
+        );
     }
 
     #[test]

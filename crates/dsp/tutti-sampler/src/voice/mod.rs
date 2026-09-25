@@ -19,6 +19,8 @@ pub mod memory_source;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `DiskStreamer`.
 pub mod disk_voice;
+// A live disk voice reads the butler's ring by position here.
+mod live_read;
 // A forked disk voice reads its file here instead of the butler's ring.
 mod offline_read;
 // The voice pool, one file per duty. Each holds Bevy-free DSP; the ECS pieces

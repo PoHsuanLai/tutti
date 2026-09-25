@@ -123,7 +123,9 @@ fn bench_encode(c: &mut Criterion) {
     group.throughput(Throughput::Elements((0.25 * SR) as u64));
 
     // A `Vec`, not an array: a `#[cfg]` on an array element changes its
-    // length, which the type cannot express.
+    // length, which the type cannot express. The `mut` is only used when a
+    // pushing arm is compiled in.
+    #[cfg_attr(not(any(feature = "flac", feature = "ogg")), allow(unused_mut))]
     let mut formats: Vec<(&str, AudioFormat)> = vec![("wav", AudioFormat::Wav)];
     #[cfg(feature = "flac")]
     formats.push(("flac", AudioFormat::Flac(Default::default())));

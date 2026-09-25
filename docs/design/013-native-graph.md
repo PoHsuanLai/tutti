@@ -993,7 +993,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
 | 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
 | 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
-| 10 | bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
+| 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
 | 11 | bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
 | 12 | bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
@@ -1057,6 +1057,37 @@ suite's `crossfades_are_bit_identical`:
   the gain law (`CrossfadeCurve::gains`); the verifier's rule 8,
   `verify_fades`, checks every fade a delta carries against both plans and
   runs on every `Editor::package`.
+
+**PR 10 landed.** `AudioGraphRes`'s field is private (a `compile_fail`
+doctest on the type keeps it so), and bevy-tutti's src, tests, examples and
+README reach the graph only through its methods. They are named in graph terms
+and take an `AudioNode` and a `GraphSource` (`Node(AudioNode, port)`,
+`Input(port)`, `Silence`), never a `Net` type: `insert`/`insert_boxed`,
+`remove`, `contains`, `replace(node, unit, Seconds, CrossfadeCurve)`,
+`set_param`, `source`/`set_source`, `output_source`/`set_output_source`,
+`set_outputs_from`, `inputs`/`outputs`/`node_inputs`/`node_outputs`,
+`node_latency`/`node_tail`, `latency_plan`, `set_sample_rate`, `render_frame`,
+`inspect`, and the constructors `headless`, `unattached` and `take_audio_side`.
+Crate-private: `commit`, `widen_outputs`, `compensate`, the two PDC-delay
+queries `topology::disagreements` needs, `take_backend` for the engine builder,
+and `export_master`/`export_node`, the only two that still hand out a `Net`
+(PR 12 replaces them with `Fork`). What PR 11 has to answer behind them:
+
+- **`AudioNode` still wraps a `NodeId`.** The native backend can key on
+  `NodeKey(node.0.value())` and mint handles with `NodeId::new()`, which keeps
+  the global counter's uniqueness without a map.
+- **`unattached` has `Net` semantics.** Every site that built a `Net` with no
+  backend uses it (the `audio_param` and `mod_value_path` suites, two
+  `plugin_host` unit tests, the `param` and `modulation` doc examples, one
+  example), some because a `Net` with no backend applies `set` straight to the
+  node, so a param write reads back at once. A native backend needs the same (apply the
+  settings ring on the control side when nothing drains it) or those tests move
+  to rendering.
+- **`inspect` hands out `&dyn AudioUnit`.** `mod_audio_rate`'s two
+  rendered-node tests downcast it; under the native backend it reads the
+  `Legacy::controlled` shadow.
+- **`render_frame` renders the control side**, as `Net::tick` did. A native
+  graph has no control-side copy, so it drives the executor instead.
 
 For PR 11: `crossfade_audio_node` maps to
 `Editor::replace(key, unit, Fade::seconds(Seconds(0.005), rate, CrossfadeCurve::EqualAmplitude))`.

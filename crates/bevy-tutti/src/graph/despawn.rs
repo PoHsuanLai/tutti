@@ -15,8 +15,8 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// the per-frame [`commit_graph`](crate::graph::commit_graph) (Commit phase)
 /// does the actual commit.
 ///
-/// [`Net::remove`](tutti_core::dsp::Net::remove) replaces every connection to
-/// and from the unit with zeros, so a sink still declaring this entity as a
+/// [`AudioGraphRes::remove`] replaces every connection to and from the unit
+/// with silence, so a sink still declaring this entity as a
 /// source is left silent rather than dangling.
 ///
 /// The controls captured from the unit at insertion go with it — see
@@ -38,8 +38,7 @@ pub fn reconcile_node_despawn(
     let Ok(node) = nodes.get(entity) else { return };
     let Some(mut graph) = graph else { return };
     let Some(mut dirty) = dirty else { return };
-    if graph.0.contains(node.0) {
-        graph.0.remove(node.0);
+    if graph.remove(*node) {
         dirty.0 = true;
     }
 }

@@ -18,7 +18,6 @@ use bevy_ecs::prelude::*;
 
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::Net;
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_core::{Hz, Q};
 use tutti_export::{
@@ -38,7 +37,7 @@ fn main() {
     let mut app = App::new();
 
     // Same headless engine as `graph_wiring`, plus the export plugin.
-    app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {

@@ -50,7 +50,6 @@ use bevy_tutti::plugin_host::{
     TuttiHostingPlugin,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::Net;
 use tutti_core::transport::{ClickState, Transport};
 use tutti_core::{AudioNode, SampleRate, Samples};
 use tutti_plugin::catalog::PluginId;
@@ -138,7 +137,7 @@ fn app() -> App {
 
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
-    app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
     // Both are what `plugin_bind_transport` installs; it waits without them.
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));

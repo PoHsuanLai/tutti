@@ -26,9 +26,7 @@ use bevy_tutti::modulation::{
     ModulationMatrix, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
-use tutti_core::AudioUnit as _;
 use tutti_core::SampleRate;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_types::{Depth, Drive, Hz, ParamAddr, Unit, UnitParam};
@@ -120,10 +118,10 @@ impl FaderView {
 fn main() {
     let mut app = App::new();
 
-    let mut net = Net::new(0, 1);
-    net.set_sample_rate(SampleRate(SAMPLE_RATE));
+    let mut graph = AudioGraphRes::unattached(0, 1);
+    graph.set_sample_rate(SampleRate(SAMPLE_RATE));
 
-    app.insert_resource(AudioGraphRes(net));
+    app.insert_resource(graph);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     // Stands in for a running device; nothing here opens one.
     app.insert_resource(AudioEngineState::Running);
@@ -141,8 +139,8 @@ fn main() {
     let controls = CapturedControls::capture(app.world(), &unit);
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let node = graph.0.push(Box::new(unit));
-        graph.0.pipe_output(node);
+        let node = graph.insert(unit);
+        graph.set_outputs_from(node);
         node
     };
 

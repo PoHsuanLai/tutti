@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bevy-tutti's `AudioGraphRes` is opaque: its methods are the only way to
+  the graph.** The field was `pub Net`; it is private, so `graph.0` no longer
+  compiles outside the crate. The graph is still fundsp's `Net` inside. The
+  methods are named in graph terms and take an `AudioNode` and a `GraphSource`,
+  so the native backend (design doc 013, Phase 3) can sit behind the same
+  signatures. Every removed or changed item, with its replacement:
+
+  | Was | Now |
+  |---|---|
+  | `AudioGraphRes(Net::with_backend(n))` | `AudioGraphRes::headless(0, n)`: a graph with no device, whose commits go to an audio side that is taken and dropped |
+  | `AudioGraphRes(Net::new(i, o))` (no backend) | `AudioGraphRes::unattached(i, o)`: no audio side, so a param write lands on the node at once. It cannot commit |
+  | `net.backend()` before inserting the net | `graph.take_audio_side()`, which returns `impl AudioUnit` to render what a device would hear |
+  | `graph.0.add(unit)` / `graph.0.push(boxed)` → `NodeId` | `graph.insert(unit)` / `graph.insert_boxed(boxed)` → `AudioNode` |
+  | `graph.0.contains(id)` then `graph.0.remove(id)` | `graph.contains(node)`, `graph.remove(node) -> bool` (`false` if it was not there) |
+  | `graph.0.source` / `set_source` / `output_source` / `set_output_source` with `tutti_core::dsp::Source` | the same names with `bevy_tutti::graph::GraphSource`: `Node(AudioNode, port)` for `Local`, `Input(port)` for `Global`, `Silence` for `Zero` |
+  | `graph.0.pipe_output(id)` | `graph.set_outputs_from(node)` (it still wraps a narrow node across a wide root, and `MasterSources` is still the declared way) |
+  | `graph.0.crossfade(id, fade, secs, unit)` | `graph.replace(node, unit, Seconds, CrossfadeCurve)` |
+  | `graph.0.set(unit_param::node_setting(id, param, v))` | `graph.set_param(node, param, v)` |
+  | `graph.0.inputs()` / `outputs()` / `inputs_in(id)` / `outputs_in(id)` | `graph.inputs()` / `outputs()` / `node_inputs(node)` / `node_outputs(node)` |
+  | `LatencyGraph::latency(&graph.0, id)` / `TailGraph::tail(&graph.0, id)` | `graph.node_latency(node)` / `graph.node_tail(node)` |
+  | `tutti_core::latency::plan(&graph.0)` | `graph.latency_plan()` |
+  | `graph.0.set_sample_rate(rate)` | `graph.set_sample_rate(rate)` |
+  | `graph.0.tick(&[], out)` | `graph.render_frame(out)` |
+  | `graph.0.node(id)` (read-only, for inspection) | `graph.inspect(node, \|unit\| ..)` |
+  | `graph.0.commit()` in a host system | set `GraphDirty`; `commit_graph` commits once per frame. The commit is no longer public |
+  | `graph.0.clone()` / `clone_isolated` for an offline render | an `ExportRequest` (`bevy_tutti::export`) |
+  | `CapturedControls::bind(entity, NodeId)` | `CapturedControls::bind(entity, AudioNode)`, which takes what `insert` returns |
+
+  `GraphSource` is new, in `bevy_tutti::graph` and the prelude. `bevy_tutti::Net`
+  stays: an export's `prepare` hook is still handed the `Net` it renders
+  (`PreparedNet`) until export moves to `Fork`.
+
 - **bevy-tutti captures a node's controls when the node is inserted, and never
   reaches back into the graph for them.** `MidiTargetRegistry` and
   `ModTargetRegistry` are now read once per unit, as it goes in (by

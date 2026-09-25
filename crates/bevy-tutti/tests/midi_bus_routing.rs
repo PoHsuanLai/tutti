@@ -37,7 +37,6 @@ mod midi_route {
         MidiRouteFallback, MidiRouteRule, MidiRoutingRes, MidiTargetRegistry, TuttiMidiPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::RtPublish;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -53,9 +52,7 @@ mod midi_route {
     /// the routing table's RT half handed back so assertions can read it.
     fn app() -> (App, RtView) {
         let mut app = App::new();
-        let mut net = Net::new(0, 2);
-        let _backend = net.backend();
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(TransportRes(tutti_core::transport::Transport::new(
             SAMPLE_RATE,
         )));
@@ -93,7 +90,7 @@ mod midi_route {
         let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(synth))
+            graph.insert(synth)
         };
         let mut entity = app.world_mut().spawn_empty();
         controls.bind(&mut entity, node);
@@ -254,7 +251,7 @@ mod midi_route {
         let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(synth))
+            graph.insert(synth)
         };
         controls.bind(&mut app.world_mut().entity_mut(pending), node);
         app.update();
@@ -307,7 +304,6 @@ mod midi_registration {
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiRegistered, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::AudioNode;
     use tutti_polysynth::{PolySynth, SynthConfig};
 
@@ -331,9 +327,7 @@ mod midi_registration {
     /// backend-less graph is fine only for tests that never edit the topology.
     fn bare_app() -> App {
         let mut app = App::new();
-        let mut net = Net::new(0, 2);
-        let _backend = net.backend();
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         // `AudioEngineState::Running` is a claim about the whole engine block, and
         // systems gated on `engine_ready` take everything that block inserts as
         // plain `Res` — so a test asserting readiness has to supply them all.
@@ -372,7 +366,7 @@ mod midi_registration {
         let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(synth))
+            graph.insert(synth)
         };
         let mut entity = app.world_mut().spawn_empty();
         controls.bind(&mut entity, node);
@@ -450,7 +444,7 @@ mod midi_registration {
         let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(synth))
+            graph.insert(synth)
         };
         controls.bind(&mut app.world_mut().entity_mut(entity), node);
         app.update();
@@ -534,8 +528,6 @@ mod plugin_crash_unwire {
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiBusRes, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
-    use tutti_core::dsp::NodeId;
     use tutti_core::AudioNode;
     use tutti_midi_types::MidiUnitId;
     use tutti_polysynth::{PolySynth, SynthConfig};
@@ -544,11 +536,9 @@ mod plugin_crash_unwire {
     /// them, minus the audio device.
     fn app() -> App {
         let mut app = App::new();
-        let mut net = Net::new(0, 2);
         // Removing a node marks the graph dirty, and Commit-phase `commit_graph`
-        // asserts a backend exists before publishing.
-        let _backend = net.backend();
-        app.insert_resource(AudioGraphRes(net));
+        // needs an audio side to publish to.
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(bevy_tutti::graph::TransportRes(
             tutti_core::transport::Transport::new(48_000.0),
         ));
@@ -579,7 +569,7 @@ mod plugin_crash_unwire {
     }
 
     /// A synth bound to the graph the way every spawner binds one.
-    fn spawn_synth(app: &mut App) -> (Entity, NodeId, MidiUnitId) {
+    fn spawn_synth(app: &mut App) -> (Entity, AudioNode, MidiUnitId) {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let unit_id = synth.midi_port().unit_id();
         // Captured from the unit before it moves — the step every insertion
@@ -587,7 +577,7 @@ mod plugin_crash_unwire {
         let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.0.push(Box::new(synth))
+            graph.insert(synth)
         };
         let mut entity = app.world_mut().spawn_empty();
         controls.bind(&mut entity, node);
@@ -599,8 +589,8 @@ mod plugin_crash_unwire {
         app.world().resource::<MidiBusRes>().contains(unit_id)
     }
 
-    fn graph_has(app: &App, node: NodeId) -> bool {
-        app.world().resource::<AudioGraphRes>().0.contains(node)
+    fn graph_has(app: &App, node: AudioNode) -> bool {
+        app.world().resource::<AudioGraphRes>().contains(node)
     }
 
     /// Removing `AudioNode` unwires both the graph node and the MIDI sender, with

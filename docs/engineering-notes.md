@@ -356,8 +356,8 @@ vocabulary it could not cover.
 
 `spawn_audio_node` adds an *unwired* node. `AudioSources` on a sink names what
 feeds each of its input ports; the `MasterSources` resource names what feeds each
-global output channel. The rebuild resolves entities → `NodeId` each frame (a
-stored id goes stale on crossfade) and diffs against `Net::source` /
+global output channel. The rebuild resolves entities → `AudioNode` each frame (a
+stored handle goes stale on a rebind) and diffs against `AudioGraphRes::source` /
 `output_source`, so the adapter keeps no shadow state.
 
 Keying on the *sink port* is what makes fan-in unrepresentable: `Net` holds one
@@ -369,7 +369,8 @@ kept a tracked map to know what to disconnect.
 `Spawn → Params → Despawn → Compensate → Commit` — one file per duty (`schedule`,
 `spawn`, `despawn`, `commit`, `wire`, `param`, plus `io`, `metering`, `tap`,
 `transport`, `plugin`, `resources`). `AudioGraphRes` is the graph handle
-(fundsp's `Net`, no `Deref` so the mutate/commit boundary stays visible),
+(opaque: its methods are the only way to the `Net` inside, and there is no
+`Deref`, so the mutate/commit boundary stays visible),
 `AudioConfig` the sample-rate / channel config, `GraphDirty` the per-frame
 commit-coalescing flag. Node removal is an `On<Remove, AudioNode>` observer, not a
 despawn system.

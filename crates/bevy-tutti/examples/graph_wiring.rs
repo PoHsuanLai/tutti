@@ -19,7 +19,6 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
 // `AudioUnit` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
-use tutti_core::dsp::{Net, Source};
 use tutti_core::transport::Transport;
 use tutti_core::{Hz, Q};
 use tutti_nodes::testing::{Osc, Through};
@@ -39,7 +38,9 @@ fn main() {
     // `TuttiPlugin` would open CPAL and insert all of this. Doing it by hand
     // keeps the example headless and shows exactly what the core needs:
     // a graph, a claim that the engine is up, and the reconcile pipeline.
-    app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+    let mut graph = AudioGraphRes::headless(0, 2);
+    graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.add_plugins(GraphReconcilePlugin);
@@ -121,7 +122,7 @@ fn build_chain(mut commands: Commands) {
 
 /// Read the graph back and render a few samples through it.
 fn report(
-    graph: Res<AudioGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     transport: Res<TransportRes>,
     nodes: Query<(&AudioNode, &Label)>,
 ) {
@@ -139,18 +140,18 @@ fn report(
 
     println!("\nnodes in the graph:");
     for (node, label) in &nodes {
-        println!("  {:<7} inputs={}", label.0, graph.0.inputs_in(node.0));
+        println!("  {:<7} inputs={}", label.0, graph.node_inputs(*node));
     }
 
     println!("\nedges, read back from the engine:");
     for (node, label) in &nodes {
-        for port in 0..graph.0.inputs_in(node.0) {
-            // `Net::source` is why this layer keeps no shadow state: the engine
-            // can always be asked what a port currently holds.
-            let src = match graph.0.source(node.0, port) {
-                Source::Local(id, p) => format!("node {id:?} port {p}"),
-                Source::Global(p) => format!("graph input {p}"),
-                Source::Zero => "silence".to_string(),
+        for port in 0..graph.node_inputs(*node) {
+            // `AudioGraphRes::source` is why this layer keeps no shadow state:
+            // the engine can always be asked what a port currently holds.
+            let src = match graph.source(*node, port) {
+                GraphSource::Node(id, p) => format!("node {id:?} port {p}"),
+                GraphSource::Input(p) => format!("graph input {p}"),
+                GraphSource::Silence => "silence".to_string(),
             };
             println!("  {:<7} port {port} <- {src}", label.0);
         }
@@ -158,20 +159,16 @@ fn report(
 
     println!("\nmaster bus:");
     for channel in 0..2 {
-        println!(
-            "  channel {channel} <- {:?}",
-            graph.0.output_source(channel)
-        );
+        println!("  channel {channel} <- {:?}", graph.output_source(channel));
     }
 
     // Render a handful of frames. A committed graph is a real signal path, so
-    // this is the same arithmetic the audio thread would do.
-    let mut net = graph.0.clone();
-    net.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    // this is the same arithmetic the audio thread would do. The graph is
+    // headless, so rendering its control side here takes nothing from a device.
     let mut frame = [0.0f32; 2];
     println!("\nfirst 4 output frames:");
     for i in 0..4 {
-        net.tick(&[], &mut frame);
+        graph.render_frame(&mut frame);
         println!("  {i}: [{:+.4}, {:+.4}]", frame[0], frame[1]);
     }
 }

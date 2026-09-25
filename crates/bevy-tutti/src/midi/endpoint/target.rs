@@ -10,10 +10,9 @@
 //! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
 //! use bevy_tutti::midi::{MidiTargetRegistry, TuttiMidiPlugin};
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::Net;
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(Net::new(0, 2)));
+//! app.insert_resource(AudioGraphRes::unattached(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
 //! // `AssetPlugin` is a Bevy prerequisite for the subsystems registering

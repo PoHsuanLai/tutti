@@ -29,7 +29,7 @@
 //! **That guard is `NodeId` equality and nothing more.** It catches a different
 //! node bound to the entity; it cannot see a unit replaced *under the same id*.
 //! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
-//! a host that calls `Net::crossfade` (or `Net::replace`) on `AudioGraphRes`
+//! a host that calls [`AudioGraphRes::replace`](crate::graph::AudioGraphRes::replace)
 //! directly bypasses both the capture and the guard, and the entity keeps
 //! driving the outgoing unit's controls. Go through `crossfade_audio_node`, or
 //! re-run [`CapturedControls::capture`] and [`bind`](CapturedControls::bind)
@@ -115,14 +115,14 @@ impl CapturedControls {
     ///
     /// The whole binding in one step, which is how every insertion path in this
     /// crate forms it.
-    pub fn bind(self, entity: &mut EntityWorldMut, node: NodeId) {
-        entity.insert(AudioNode(node));
+    pub fn bind(self, entity: &mut EntityWorldMut, node: AudioNode) {
+        entity.insert(node);
         self.replace(entity, node);
     }
 
     /// Replace the entity's captured controls with these, keeping its
     /// [`AudioNode`] — the crossfade case, where the unit changes under a
-    /// surviving `NodeId`.
+    /// surviving handle.
     ///
     /// A control this unit does not have is **removed**: the old unit's port or
     /// params would otherwise stay reachable under the new unit's node id.
@@ -134,7 +134,8 @@ impl CapturedControls {
     /// `CompensatedLatency` records what PDC was last planned against for the
     /// outgoing node; clearing it makes the latency poll re-plan for the
     /// incoming one on its next pass.
-    pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: NodeId) {
+    pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: AudioNode) {
+        let node: NodeId = node.0;
         let _ = (&entity, node);
         #[cfg(feature = "plugin")]
         {

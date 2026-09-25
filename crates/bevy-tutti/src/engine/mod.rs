@@ -25,6 +25,7 @@ pub use tutti_cpal::{DeviceInfo, TuttiDriver};
 // The mic/record API is not here: it is the live I/O edge, not engine
 // bootstrap, so it lives in `crate::io` — one adapter module per engine crate.
 
-// The audio graph is fundsp's `Net` — there is no tutti wrapper. Surfaced here
-// so hosts reach it without naming fundsp directly.
+// The live graph is `AudioGraphRes`, which keeps its `Net` private. `Net` is
+// still surfaced for the offline side: an export's `prepare` hook is handed the
+// net it renders (`PreparedNet`), and a host reaches that without naming fundsp.
 pub use tutti_core::dsp::Net;

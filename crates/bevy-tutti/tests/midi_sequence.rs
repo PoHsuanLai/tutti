@@ -15,7 +15,6 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::midi::{MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_runtime::TimedMidiEvent;
@@ -56,9 +55,7 @@ const MF: u16 = 0x8000;
 
 fn app() -> App {
     let mut app = App::new();
-    let mut net = Net::new(0, 2);
-    let _backend = net.backend();
-    app.insert_resource(AudioGraphRes(net));
+    app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
@@ -95,7 +92,7 @@ fn spawn_synth(app: &mut App) -> Entity {
     let controls = CapturedControls::capture(app.world(), &synth);
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.0.push(Box::new(synth))
+        graph.insert(synth)
     };
     let mut entity = app.world_mut().spawn_empty();
     controls.bind(&mut entity, node);

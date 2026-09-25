@@ -24,10 +24,11 @@ use tutti_nodes::testing::{Const, Sink};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so
 /// `clone_isolated` succeeds.
-fn graph_with_one_node() -> (AudioGraphRes, tutti_core::dsp::NodeId) {
-    let mut net = tutti_core::dsp::Net::with_backend(2);
-    let id = net.master(Const::mono(0.5));
-    (AudioGraphRes(net), id)
+fn graph_with_one_node() -> (AudioGraphRes, tutti_core::AudioNode) {
+    let mut graph = AudioGraphRes::headless(0, 2);
+    let node = graph.insert(Const::mono(0.5));
+    graph.set_outputs_from(node);
+    (graph, node)
 }
 
 fn stereo_config() -> ExportConfig {
@@ -61,7 +62,7 @@ fn app_with_engine() -> (App, Entity) {
     // resource, so a test graph alone is not enough.
     app.insert_resource(bevy_tutti::AudioEngineState::Running);
     // `ExportSource::Node` names an entity, so bind one to the node.
-    let entity = app.world_mut().spawn(tutti_core::AudioNode(node)).id();
+    let entity = app.world_mut().spawn(node).id();
     (app, entity)
 }
 
@@ -203,8 +204,8 @@ fn an_unrenderable_node_reports_a_failure() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let id = graph.0.push(Box::new(Sink::mono()));
-        app.world_mut().spawn(tutti_core::AudioNode(id)).id()
+        let id = graph.insert(Sink::mono());
+        app.world_mut().spawn(id).id()
     };
 
     static FAILED: AtomicUsize = AtomicUsize::new(0);

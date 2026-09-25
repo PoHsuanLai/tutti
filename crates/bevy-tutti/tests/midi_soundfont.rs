@@ -37,7 +37,6 @@ mod soundfont_spawn {
     use bevy_tutti::soundfont::SoundFontAsset;
     use bevy_tutti::soundfont::{PlaySoundFont, TuttiSoundFontPlugin};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::AudioNode;
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -68,9 +67,7 @@ mod soundfont_spawn {
         let mut app = App::new();
         app.add_plugins((bevy_app::TaskPoolPlugin::default(), AssetPlugin::default()));
 
-        let mut net = Net::new(0, 2);
-        let _backend = net.backend();
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(TransportRes(tutti_core::transport::Transport::new(
             SAMPLE_RATE,
         )));
@@ -127,9 +124,9 @@ mod soundfont_spawn {
             "the off-thread build should land and insert AudioNode"
         );
 
-        let node = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
+        let node = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert!(
-            app.world().resource::<AudioGraphRes>().0.contains(node),
+            app.world().resource::<AudioGraphRes>().contains(node),
             "the handle must name a node that is actually in the graph"
         );
         assert!(
@@ -242,9 +239,7 @@ mod midi_soundfont_audio {
     };
     use bevy_tutti::midi::{MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioUnit;
     use tutti_core::{Beat, BeatDuration, SampleRate};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
@@ -317,7 +312,7 @@ mod midi_soundfont_audio {
         let mut out = Vec::with_capacity(frames);
         for _ in 0..frames {
             let mut frame = [0.0f32; 2];
-            graph.0.tick(&[], &mut frame);
+            graph.render_frame(&mut frame);
             out.push((frame[0], frame[1]));
         }
         out
@@ -331,13 +326,10 @@ mod midi_soundfont_audio {
         let unit = SoundFontUnit::new(sf, &settings).expect("build the SoundFontUnit");
 
         let mut app = App::new();
-        let mut net = Net::new(0, 2);
-        // A backend, because the Commit-phase `commit_graph` asserts one exists.
-        // We render the frontend `Net` directly rather than through the backend —
-        // `tick` on this side sees the same units.
-        let _backend = net.backend();
-
-        app.insert_resource(AudioGraphRes(net));
+        // Headless, because the Commit-phase `commit_graph` needs an audio side
+        // to publish to. We render the control side directly rather than through
+        // that — `render_frame` on this side sees the same units.
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
@@ -368,8 +360,8 @@ mod midi_soundfont_audio {
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.0.push(Box::new(unit));
-            graph.0.pipe_output(node);
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
             node
         };
         let mut synth = app.world_mut().spawn_empty();
@@ -530,7 +522,6 @@ mod midi_crossfade {
         MidiBusRes, MidiRouteRule, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::{AudioUnit, SampleRate};
     use tutti_midi_types::ump::MidiEvent;
@@ -578,12 +569,12 @@ mod midi_crossfade {
     #[test]
     fn a_crossfaded_synth_is_reached_through_the_bus() {
         let sf = soundfont();
-        let mut net = Net::new(0, 2);
-        net.set_sample_rate(SampleRate(SAMPLE_RATE));
-        let mut backend = net.backend();
+        let mut graph = AudioGraphRes::unattached(0, 2);
+        graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+        let mut backend = graph.take_audio_side();
 
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),

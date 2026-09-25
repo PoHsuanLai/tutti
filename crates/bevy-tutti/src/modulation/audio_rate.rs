@@ -245,8 +245,8 @@ fn spawn_chain(
         .collect::<Option<_>>()?;
 
     // Through the engine's own assembler, which is what keeps the base cell.
-    // `build_param_mod`, not `wire_param_mod`: this crate declares its edges as
-    // `PortSources` and diffs them against `Net` each frame, so an edge
+    // `param_mod_parts`, not `wire_param_mod`: this crate declares its edges as
+    // `PortSources` and diffs them against the graph each frame, so an edge
     // connected here would be reverted on the next wire pass. The builder makes
     // the nodes; the declarations below make the edges.
     let shaping: Vec<tutti_nodes::ParamModShaping> = routes
@@ -257,23 +257,23 @@ fn spawn_chain(
             curve: r.curve,
         })
         .collect();
-    let built =
-        tutti_nodes::build_param_mod(&mut graph.0, range.base, range.min, range.max, &shaping);
+    let parts = tutti_nodes::param_mod_parts(range.base, range.min, range.max, &shaping);
     // **The handle, not a copy.** A node whose param port is wired never reads
     // its own atomic, so this cell is the only address an authored write has —
     // see `ParamModChain::base_cell` and `write_param`'s audio-rate branch.
-    let base_cell = built.base_cell();
-    let bounds = built.bounds();
+    let base_cell = parts.base_cell();
+    let bounds = parts.bounds();
 
-    let base = commands.spawn(tutti_core::AudioNode(built.base)).id();
-    let sum = commands.spawn(tutti_core::AudioNode(built.sum)).id();
+    // Inserted in `ParamModParts::insert_into`'s order: base, sum, shapers.
+    let base = commands.spawn(graph.insert(parts.base)).id();
+    let sum = commands.spawn(graph.insert(parts.sum)).id();
 
     let mut shapers = Vec::with_capacity(routes.len());
     let mut sum_sources = PortSources::silent().with(0, PortSource::node(base));
-    for (i, (&shaper_id, &feed)) in built.shapers.iter().zip(feeds.iter()).enumerate() {
+    for (i, (shaper_unit, &feed)) in parts.shapers.into_iter().zip(feeds.iter()).enumerate() {
         let shaper = commands
             .spawn((
-                tutti_core::AudioNode(shaper_id),
+                graph.insert(shaper_unit),
                 // The shaping rides the entity that carries the node it built,
                 // so the two cannot drift apart.
                 ShaperShaping(shaping[i]),
@@ -401,8 +401,7 @@ pub fn ensure_source_nodes(
             ModClock::Free { hz } => node.with_frequency(hz),
         };
 
-        let id = graph.0.add(node);
-        let entity = commands.spawn(tutti_core::AudioNode(id)).id();
+        let entity = commands.spawn(graph.insert(node)).id();
         commands.entity(route.source).insert(ModSourceNode(entity));
         dirty.0 = true;
     }
@@ -608,9 +607,8 @@ fn reshape_chain(
         }
 
         let unit = tutti_nodes::ParamShaperNode::new(want.depth, want.polarity, want.curve);
-        let id = graph.0.add(unit);
         let replacement = commands
-            .spawn((tutti_core::AudioNode(id), ShaperShaping(want)))
+            .spawn((graph.insert(unit), ShaperShaping(want)))
             .id();
 
         // The new shaper needs the same feed the old one had. Re-declared from

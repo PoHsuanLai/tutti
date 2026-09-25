@@ -61,20 +61,25 @@ use tutti_core::Hz;
 use tutti_nodes::testing::Osc;
 use tutti_core::transport::MotionEvent;
 
-fn control(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
+fn control(
+    transport: Res<TransportRes>,
+    mut graph: ResMut<AudioGraphRes>,
+    mut dirty: ResMut<GraphDirty>,
+) {
     transport.settings.set_tempo(128.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
-    let id = graph.0.add(Osc::sine(Hz(440.0)));
-    graph.0.commit();
+    let _node = graph.insert(Osc::sine(Hz(440.0)));
+    // Staged: `commit_graph` publishes the frame's edits once.
+    dirty.0 = true;
 }
 ```
 
 ## Node entities
 
-An entity carrying `AudioNode(NodeId)` *is* a node in the graph. The reconcile
+An entity carrying `AudioNode` *is* a node in the graph. The reconcile
 pipeline (`GraphReconcileSystems::{Spawn, Params, Despawn, Compensate, Commit}`)
 translates component edits into graph operations and coalesces a single
-`graph.commit()` per frame.
+commit per frame.
 
 ```rust
 use bevy::prelude::*;
@@ -117,7 +122,7 @@ engine adapter keeps.
 | Helper | Where | What it does |
 |--------|-------|--------------|
 | `Commands::spawn_audio_node(unit)` | always | Add `unit` to the graph + spawn an entity with `AudioNode`. The node arrives unwired. |
-| `crossfade_audio_node(commands, entity, new_unit)` | always | `Net::crossfade` for entity-as-node; the same `NodeId` survives, so declared wiring keeps resolving. |
+| `crossfade_audio_node(commands, entity, new_unit)` | always | `AudioGraphRes::replace` for entity-as-node; the same `AudioNode` survives, so declared wiring keeps resolving. |
 
 ## ECS resources
 
@@ -127,7 +132,7 @@ to reach it.
 
 | Resource | Feature | Description |
 |----------|---------|-------------|
-| `AudioGraphRes` | always | fundsp `Net` -- the editable DSP graph. No `Deref`, so the mutate/commit boundary stays visible at call sites. |
+| `AudioGraphRes` | always | The editable DSP graph, behind methods (`insert`, `remove`, `set_source`, `set_output_source`, `replace`, `set_param`, …); `headless(inputs, outputs)` builds one with no device. No `Deref`, so the mutate/commit boundary stays visible at call sites. |
 | `AudioConfig` | always | Sample rate and channel layout, captured at build |
 | `TransportRes` | always | Lock-free transport handle (play/stop/seek/tempo/loop) |
 | `MetronomeRes` | always | Shared `ClickState` the click node reads |
@@ -270,7 +275,7 @@ The node is a plain `AudioUnit`; add it and declare what it feeds, like any node
 ```rust
 // The graph's rate: the monitor node does not resample.
 let (mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)?;
-let id = graph.0.add(monitor);
+let id = graph.insert(monitor);
 commands.spawn(AudioNode(id));   // then name it in MasterSources or a PortSources
 ```
 

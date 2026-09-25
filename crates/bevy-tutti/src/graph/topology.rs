@@ -10,7 +10,7 @@
 //!
 //! # What the value owns, and what it does not
 //!
-//! **It owns edges and outputs.** Every `Net::set_source` and
+//! **It owns edges and outputs.** Every `AudioGraphRes::set_source` and
 //! `set_output_source` this adapter performs is driven by [`apply`] from a
 //! value. Nothing reads a topology back out of the runtime to decide what to
 //! write.
@@ -77,12 +77,11 @@ use std::collections::BTreeMap;
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-use tutti_core::AudioUnit as _;
 use tutti_types::graph::{Edge, InPort, NodeKey, NodeSpec, OutPort, Source, Topology};
 use tutti_types::ChannelLayout;
 
 use super::wire::{MasterSources, PortSource, PortSources};
-use super::AudioGraphRes;
+use super::{AudioGraphRes, GraphSource};
 
 /// The catalog id every entity-bound node carries.
 ///
@@ -174,18 +173,18 @@ pub fn build(
     #[cfg(feature = "modulation")] shaping: &Query<&crate::modulation::audio_rate::ShaperShaping>,
 ) -> Topology {
     let mut topology = Topology {
-        inputs: ChannelLayout::from_count(graph.0.inputs() as u16),
+        inputs: ChannelLayout::from_count(graph.inputs() as u16),
         ..Default::default()
     };
 
     for (entity, node) in nodes.iter() {
-        if !graph.0.contains(node.0) {
+        if !graph.contains(*node) {
             continue;
         }
         // `mut` only under `modulation`: without that feature no shaper exists,
         // so nothing writes to the spec after it is built.
         #[cfg_attr(not(feature = "modulation"), allow(unused_mut))]
-        let mut spec = spec_of(graph, node.0);
+        let mut spec = spec_of(graph, *node);
         // A shaper's identity is not observable from its unit: `ParamShaperNode`
         // bakes depth, polarity and curve into a LUT and exposes no accessor, so
         // two shapers built from different sliders present identically here.
@@ -226,7 +225,7 @@ pub fn build(
     // same two clamps `rebuild` applies, for the reasons its comments give: a
     // shorter declaration is *undeclared*, not silent, and a longer one has
     // already widened the root by the time the loop runs.
-    let root_channels = graph.0.outputs();
+    let root_channels = graph.outputs();
     topology.outputs = (0..master.0.len().min(root_channels))
         .map(|channel| {
             // Unresolvable, not silent — but `Topology::outputs` is positional,
@@ -323,7 +322,7 @@ fn curve_key(curve: tutti_mod::CurveType) -> (u32, Option<(f32, f32)>) {
 /// Bring the engine into line with the value, and say whether anything moved.
 ///
 /// **The value is the truth for edges and outputs; this is the only place it
-/// reaches the runtime.** Three calls — `Net::set_source`, `set_output_source`
+/// reaches the runtime.** Two calls — `AudioGraphRes::set_source`, `set_output_source`
 /// — driven by what the value says rather than by re-reading the declaration
 /// port by port. Nothing here calls `connect`, `pipe_input` or `pipe_output`:
 /// those walk *every* port of a node, which is how a later wiring call silently
@@ -372,8 +371,8 @@ pub fn apply(
         let (Some(&sink), Some(source)) = (ids.get(&at.node), lower(source, &ids)) else {
             continue;
         };
-        if graph.0.source(sink, at.port as usize) != source {
-            graph.0.set_source(sink, at.port as usize, source);
+        if graph.source(sink, at.port as usize) != source {
+            graph.set_source(sink, at.port as usize, source);
             wrote = true;
         }
     }
@@ -382,8 +381,8 @@ pub fn apply(
         let Some(source) = lower(*source, &ids) else {
             continue;
         };
-        if graph.0.output_source(channel) != source {
-            graph.0.set_output_source(channel, source);
+        if graph.output_source(channel) != source {
+            graph.set_output_source(channel, source);
             wrote = true;
         }
     }
@@ -391,39 +390,36 @@ pub fn apply(
     wrote
 }
 
-/// `NodeKey` → the live `NodeId` for every entity-bound node the engine holds.
+/// `NodeKey` → the live [`AudioNode`] for every entity-bound node the engine
+/// holds.
 ///
 /// Rebuilt per call rather than held, and that is the same rule
-/// [`PortSource::Node`] follows: a stored id goes stale the moment anything
-/// replaces the node, so the id is re-derived from the entity every time and
-/// this layer keeps no `Entity → NodeId` map between frames.
+/// [`PortSource::Node`] follows: a stored handle goes stale the moment anything
+/// replaces the node, so it is re-derived from the entity every time and this
+/// layer keeps no `Entity → AudioNode` map between frames.
 fn live_ids(
     graph: &AudioGraphRes,
     nodes: &Query<(Entity, &AudioNode)>,
-) -> BTreeMap<NodeKey, tutti_core::dsp::NodeId> {
+) -> BTreeMap<NodeKey, AudioNode> {
     nodes
         .iter()
-        .filter(|(_, n)| graph.0.contains(n.0))
-        .map(|(e, n)| (key_of(e), n.0))
+        .filter(|(_, n)| graph.contains(**n))
+        .map(|(e, n)| (key_of(e), *n))
         .collect()
 }
 
-/// A value [`Source`] as the runtime's own, or `None` if it names a node the
-/// engine does not hold.
+/// A value [`Source`] as the graph's own [`GraphSource`], or `None` if it names
+/// a node the engine does not hold.
 ///
 /// Total over the value's arms, which is what keeps the two enums from drifting
 /// silently. `None` is "not yet", never "silent": collapsing the two would drive
 /// a port to zero on the frame before its source appears and then never revisit
 /// it, since the declaration would not have changed.
-fn lower(
-    source: Source,
-    ids: &BTreeMap<NodeKey, tutti_core::dsp::NodeId>,
-) -> Option<tutti_core::dsp::Source> {
-    use tutti_core::dsp::Source as NetSource;
+fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSource> {
     Some(match source {
-        Source::Zero => NetSource::Zero,
-        Source::Global(ch) => NetSource::Global(ch as usize),
-        Source::Node(p) => NetSource::Local(*ids.get(&p.node)?, p.port as usize),
+        Source::Zero => GraphSource::Silence,
+        Source::Global(ch) => GraphSource::Input(ch as usize),
+        Source::Node(p) => GraphSource::Node(*ids.get(&p.node)?, p.port as usize),
     })
 }
 
@@ -442,9 +438,9 @@ fn lower(
 /// # What is compared, and what deliberately is not
 ///
 /// **Compared:** every edge the value declares, against
-/// [`Net::source`](tutti_core::dsp::Net::source); every output channel, against
-/// `output_source`; and the latency plan, since PDC is the fold with the most to
-/// lose from a wrong edge.
+/// [`AudioGraphRes::source`]; every output channel, against
+/// [`output_source`](AudioGraphRes::output_source); and the latency plan,
+/// since PDC is the fold with the most to lose from a wrong edge.
 ///
 /// **Not compared:** a port the value says nothing about. The loop's own
 /// contract is that an undeclared port belongs to whoever wired it — a `Vec`
@@ -455,8 +451,8 @@ fn lower(
 ///
 /// **Not compared, second class:** the `PdcDelay` nodes compensation splices
 /// in. They have no entity, so they are not in the value, and they *re-point*
-/// edges the value declares — a compensated edge reads `Local(delay, 0)` where
-/// the value says `Local(source, port)`. That is the compensation working, not
+/// edges the value declares — a compensated edge reads `Node(delay, 0)` where
+/// the value says `Node(source, port)`. That is the compensation working, not
 /// a disagreement, so an edge whose engine source is a PDC delay is skipped.
 /// The latency comparison below is the one that would catch compensation going
 /// wrong, and it runs on the pre-compensation plan for both sides.
@@ -478,8 +474,8 @@ pub fn disagreements(
         let (Some(&sink), Some(expected)) = (ids.get(&at.node), lower(source, &ids)) else {
             continue;
         };
-        let live = graph.0.source(sink, at.port as usize);
-        if live != expected && !is_pdc_delay(graph, live) {
+        let live = graph.source(sink, at.port as usize);
+        if live != expected && !graph.is_compensation(live) {
             faults.push(format!(
                 "node {:?} port {}: value says {expected:?}, engine holds {live:?}",
                 entity_of(at.node),
@@ -492,8 +488,8 @@ pub fn disagreements(
         let Some(expected) = lower(*source, &ids) else {
             continue;
         };
-        let live = graph.0.output_source(channel);
-        if live != expected && !is_pdc_delay(graph, live) {
+        let live = graph.output_source(channel);
+        if live != expected && !graph.is_compensation(live) {
             faults.push(format!(
                 "output {channel}: value says {expected:?}, engine holds {live:?}"
             ));
@@ -511,13 +507,9 @@ pub fn disagreements(
     // value describes. A compensated `Net` is the plan's output, and comparing
     // a value against an output it does not model would be asserting the two
     // disagree by construction.
-    if !graph
-        .0
-        .ids()
-        .any(|&id| graph.0.node(id).get_id() == tutti_core::PDC_DELAY_ID)
-    {
+    if !graph.has_compensation() {
         let want_plan = tutti_types::latency::plan(want);
-        let live_plan = tutti_types::latency::plan(&graph.0);
+        let live_plan = graph.latency_plan();
         if want_plan.channels() != live_plan.channels() || want_plan.total() != live_plan.total() {
             faults.push(format!(
                 "latency plan: value gives {:?} total {:?}, engine gives {:?} total {:?}",
@@ -532,35 +524,15 @@ pub fn disagreements(
     faults
 }
 
-/// Whether an engine source names a compensation delay.
-///
-/// Identified by `AudioUnit::get_id`, which is how
-/// `DelayInsertion::clear_delays` finds
-/// them too — one marker, one definition of "this node is derived, not
-/// authored".
-fn is_pdc_delay(graph: &AudioGraphRes, source: tutti_core::dsp::Source) -> bool {
-    let tutti_core::dsp::Source::Local(id, _) = source else {
-        return false;
-    };
-    graph.0.contains(id) && graph.0.node(id).get_id() == tutti_core::PDC_DELAY_ID
-}
-
-/// The spec of one live node, read off the unit.
-///
-/// `latency` and `tail` go through the `Net`'s own `LatencyGraph` / `TailGraph`
-/// impls rather than being re-derived: both `AudioUnit` methods take
-/// `&mut self`, so a `&Net` cannot call them, and those impls are the one place
-/// the clone-to-probe is already written down.
-fn spec_of(graph: &AudioGraphRes, node: tutti_core::dsp::NodeId) -> NodeSpec {
-    use tutti_types::latency::LatencyGraph as _;
-    use tutti_types::tail::TailGraph as _;
-
+/// The spec of one live node, read off the unit through the graph's shape
+/// queries.
+fn spec_of(graph: &AudioGraphRes, node: AudioNode) -> NodeSpec {
     NodeSpec {
         kind: ENTITY_NODE_KIND.to_string(),
-        inputs: ChannelLayout::from_count(graph.0.inputs_in(node) as u16),
-        outputs: ChannelLayout::from_count(graph.0.outputs_in(node) as u16),
-        latency: graph.0.latency(node),
-        tail: graph.0.tail(node),
+        inputs: ChannelLayout::from_count(graph.node_inputs(node) as u16),
+        outputs: ChannelLayout::from_count(graph.node_outputs(node) as u16),
+        latency: graph.node_latency(node),
+        tail: graph.node_tail(node),
         params: BTreeMap::new(),
     }
 }

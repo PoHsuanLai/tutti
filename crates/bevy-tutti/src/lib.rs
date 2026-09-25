@@ -13,7 +13,6 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::Net;
 //! use tutti_core::Hz;
 //! use tutti_nodes::testing::Osc;
 //!
@@ -33,15 +32,15 @@
 //! // The device is off, so stand the graph up by hand — these are the two
 //! // resources `build_into` would have inserted. The reconcile schedule is
 //! // already there: `TuttiPlugin` adds it either way.
-//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_systems(Startup, build_chain);
 //! app.update();
 //!
-//! let node = app.world_mut().query::<&AudioNode>().single(app.world()).unwrap().0;
+//! let node = *app.world_mut().query::<&AudioNode>().single(app.world()).unwrap();
 //! let graph = app.world().resource::<AudioGraphRes>();
 //! // Read the edge back off the engine, not off the component.
-//! assert_eq!(graph.0.output_source(0), tutti_core::dsp::Source::Local(node, 0));
+//! assert_eq!(graph.output_source(0), GraphSource::Node(node, 0));
 //! ```
 //!
 //! # Sub-plugins
@@ -70,14 +69,19 @@
 //! # use bevy_ecs::prelude::*;
 //! # use bevy_tutti::prelude::*;
 //! # use tutti_core::transport::MotionEvent;
-//! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
+//! fn control_audio(
+//!     transport: Res<TransportRes>,
+//!     mut graph: ResMut<AudioGraphRes>,
+//!     mut dirty: ResMut<GraphDirty>,
+//! ) {
 //!     transport.settings.set_tempo(128.0);
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
-//!     let id = graph.0.add(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
-//!     graph.0.commit();
-//!     let _ = id;
+//!     let node = graph.insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
+//!     // Staged, not committed: `commit_graph` publishes the frame's edits once.
+//!     dirty.0 = true;
+//!     let _ = node;
 //! }
 //! ```
 //!
@@ -137,7 +141,8 @@ pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationP
 #[cfg(feature = "plugin")]
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
 
-// Engine types. The audio graph itself is `Net` (fundsp) — no wrapper.
+// Engine types. `Net` is the offline render's graph (see `engine`'s note); the
+// live one is `graph::AudioGraphRes`.
 pub use engine::{DeviceInfo, Net, TuttiDriver};
 
 /// The crate error, at the crate root: its public position and its file
@@ -157,9 +162,9 @@ pub mod prelude {
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
         AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, DeclareParamPorts, EngineNodes,
-        GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode, MasterSources,
-        MeteringRes, MetronomeRes, ParamPortMap, PortSource, PortSources, PumpFinished,
-        SpawnAudioNode, TransportRes,
+        GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode,
+        MasterSources, MeteringRes, MetronomeRes, ParamPortMap, PortSource, PortSources,
+        PumpFinished, SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,

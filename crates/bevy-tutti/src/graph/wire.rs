@@ -8,7 +8,6 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::{Net, Source};
 //! use tutti_core::{ChannelLayout, Hz, Q};
 //! use tutti_nodes::testing::Osc;
 //! use tutti_nodes::{SvfFilterNode, SvfType};
@@ -30,7 +29,7 @@
 //! }
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins(GraphReconcilePlugin);
 //! app.add_systems(Startup, build);
@@ -39,15 +38,15 @@
 //! // Read the edges back off the engine — the declaration's actual effect,
 //! // as opposed to `LiveGraph`, which is what this layer meant to write.
 //! let graph = app.world().resource::<AudioGraphRes>();
-//! assert!(matches!(graph.0.output_source(0), Source::Local(_, 0)));
-//! assert!(matches!(graph.0.output_source(1), Source::Local(_, 1)));
+//! assert!(matches!(graph.output_source(0), GraphSource::Node(_, 0)));
+//! assert!(matches!(graph.output_source(1), GraphSource::Node(_, 1)));
 //! ```
 //!
 //! # Why the sink owns the declaration
 //!
 //! A [`Net`](tutti_core::dsp::Net) graph is a *total function from input port to
 //! source*: every port — `(node, channel)` and `(global, channel)` — holds
-//! exactly one [`Source`], defaulting to `Zero`. There is no fan-in and no
+//! exactly one [`GraphSource`], defaulting to `Silence`. There is no fan-in and no
 //! partial state.
 //!
 //! So the declaration is keyed the way the engine is keyed. [`PortSources`] is
@@ -69,7 +68,7 @@
 //! [`rebuild`] derives a [`Topology`](tutti_types::graph::Topology) from the
 //! declarations, compares it against [`LiveGraph`] — one comparison, the whole
 //! change detection — and, when it differs, writes the ports that differ through
-//! `Net::set_source` / `set_output_source`. Those are the same three calls this
+//! `AudioGraphRes::set_source` / `set_output_source`. Those are the same calls this
 //! module always made; what changed is that a *value* decides them rather than a
 //! port-by-port re-read of the runtime.
 //!
@@ -85,7 +84,7 @@
 //! # One writer per declared port
 //!
 //! A port named by a [`PortSources`] belongs to that declaration. Writing it
-//! imperatively through `AudioGraphRes.0` as well is a bug in the host — and one
+//! imperatively through [`AudioGraphRes::set_source`] as well is a bug in the host — and one
 //! this layer now **detects and repairs**. An engine-side write leaves the
 //! declaration untouched, so the value is unchanged and `want != live` is *not*
 //! what catches it; what catches it is that the write lands on a port the value
@@ -100,27 +99,23 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-// `inputs`/`outputs` on `Net` are `AudioUnit` methods — the graph's own arity,
-// as opposed to `inputs_in`/`outputs_in`, which are a contained node's.
-use tutti_core::dsp::Source;
 use tutti_core::AudioNode;
-use tutti_core::AudioUnit as _;
 use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
 
 use super::topology::{self, LiveGraph};
-use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems, GraphSource};
 
 /// Where one input port's signal comes from.
 ///
-/// [`tutti_core::dsp::Source`] with the node named by *entity* rather than
-/// `NodeId`. That one difference is load-bearing: a
+/// [`GraphSource`] with the node named by *entity* rather than by
+/// [`AudioNode`]. That one difference is load-bearing: a
 /// [`crossfade`](super::crossfade_audio_node) keeps a node's `NodeId` but an id
 /// stored on an entity is stale the moment anything else replaces the node, so
 /// the declaration names the entity and [`rebuild`] re-derives the id every
 /// time. It also means a host never handles an engine id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortSource {
-    /// Output `port` of the node bound to `entity`. Mirrors [`Source::Local`].
+    /// Output `port` of the node bound to `entity`. Mirrors [`GraphSource::Node`].
     Node {
         /// The entity carrying the source node. Resolved to a `NodeId` on every
         /// rebuild, so a crossfade cannot strand it.
@@ -129,13 +124,13 @@ pub enum PortSource {
         port: usize,
     },
     /// Global network input `port` — a hardware or host input channel.
-    /// Mirrors [`Source::Global`].
+    /// Mirrors [`GraphSource::Input`].
     Input {
         /// Index into the graph's global inputs. Out of range resolves to
         /// nothing rather than to silence.
         port: usize,
     },
-    /// Silence. Mirrors [`Source::Zero`], and what an unlisted port gets.
+    /// Silence. Mirrors [`GraphSource::Silence`], and what an unlisted port gets.
     #[default]
     Silence,
 }
@@ -245,7 +240,7 @@ impl PortSources {
 /// What feeds each global output channel. Index = channel.
 ///
 /// Empty — the default — declares nothing, so a host that never writes this
-/// keeps whatever it wired through `AudioGraphRes.0` itself. Once written, it is
+/// keeps whatever it wired through [`AudioGraphRes`] itself. Once written, it is
 /// the single declaration of what reaches the speakers, which is what makes "two
 /// nodes both own the master" unrepresentable rather than a race.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
@@ -465,8 +460,8 @@ pub fn rebuild(
                  holds; the excess will not be rendered"
             );
         }
-        if declared > graph.0.outputs() {
-            graph.0.set_output_arity_live(declared);
+        if declared > graph.outputs() {
+            graph.widen_outputs(declared);
             dirty.0 = true;
         }
     }
@@ -542,13 +537,13 @@ pub fn unwire_removed_sources(
     };
     let Some(mut graph) = graph else { return };
     let Some(mut dirty) = dirty else { return };
-    if !graph.0.contains(node.0) {
+    if !graph.contains(*node) {
         return;
     }
-    let claimed = declared.0.len().min(graph.0.inputs_in(node.0));
+    let claimed = declared.0.len().min(graph.node_inputs(*node));
     for port in 0..claimed {
-        if graph.0.source(node.0, port) != Source::Zero {
-            graph.0.set_source(node.0, port, Source::Zero);
+        if graph.source(*node, port) != GraphSource::Silence {
+            graph.set_source(*node, port, GraphSource::Silence);
             dirty.0 = true;
         }
     }

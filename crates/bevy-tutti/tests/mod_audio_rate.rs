@@ -22,13 +22,13 @@ mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::modulation::audio_rate::{AudioRateChains, ModSourceNode};
     use bevy_tutti::modulation::{
         ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{Net, Source};
     use tutti_core::AudioNode;
     use tutti_mod::LfoShape;
     use tutti_nodes::{DistortionNode, ParamPorts, ShapeKind};
@@ -37,7 +37,7 @@ mod mod_audio_rate_reconcile {
     /// An app with the engine's plugins and one ported distortion, ready to modulate.
     fn app_with_target() -> (App, Entity, usize) {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
@@ -53,7 +53,7 @@ mod mod_audio_rate_reconcile {
         // And its controls, captured from the unit before it moves — the same
         // step every insertion path in `bevy_tutti::graph` runs.
         let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
+        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
 
         let mut target = app.world_mut().spawn((
             ports,
@@ -74,8 +74,8 @@ mod mod_audio_rate_reconcile {
             .id()
     }
 
-    fn node_id(app: &App, entity: Entity) -> tutti_core::dsp::NodeId {
-        app.world().get::<AudioNode>(entity).expect("AudioNode").0
+    fn node_id(app: &App, entity: Entity) -> AudioNode {
+        *app.world().get::<AudioNode>(entity).expect("AudioNode")
     }
 
     /// The headline: an `at_audio_rate` route materialises
@@ -113,7 +113,7 @@ mod mod_audio_rate_reconcile {
     fn a_bus_strips_volume_and_pan_reach_audio_rate() {
         for (param, label) in [(UnitParam::Volume, "Volume"), (UnitParam::Pan, "Pan")] {
             let mut app = App::new();
-            app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+            app.insert_resource(AudioGraphRes::headless(0, 2));
             app.insert_resource(AudioEngineState::Running);
             app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
             app.world_mut()
@@ -133,7 +133,10 @@ mod mod_audio_rate_reconcile {
                 .expect("the strip declares this port");
             let ports = bevy_tutti::graph::ParamPortMap::of(&strip);
             let controls = CapturedControls::capture(app.world(), &strip);
-            let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(strip);
+            let node = app
+                .world_mut()
+                .resource_mut::<AudioGraphRes>()
+                .insert(strip);
             let mut target = app.world_mut().spawn((
                 ports,
                 ModParamRange::default().with(ParamAddr::Unit(param), 0.5, 0.0, 1.0),
@@ -174,8 +177,8 @@ mod mod_audio_rate_reconcile {
             let sum = node_id(&app, chain.sum);
             let graph = app.world().resource::<AudioGraphRes>();
             assert_eq!(
-                graph.0.source(node, chain.port),
-                Source::Local(sum, 0),
+                graph.source(node, chain.port),
+                GraphSource::Node(sum, 0),
                 "{label}: the strip's param port must read the chain's sum"
             );
         }
@@ -223,23 +226,23 @@ mod mod_audio_rate_reconcile {
         let graph = app.world().resource::<AudioGraphRes>();
 
         assert_eq!(
-            graph.0.source(shaper, 0),
-            Source::Local(src, 0),
+            graph.source(shaper, 0),
+            GraphSource::Node(src, 0),
             "lfo → shaper"
         );
         assert_eq!(
-            graph.0.source(sum, 0),
-            Source::Local(base, 0),
+            graph.source(sum, 0),
+            GraphSource::Node(base, 0),
             "base → sum.0"
         );
         assert_eq!(
-            graph.0.source(sum, 1),
-            Source::Local(shaper, 0),
+            graph.source(sum, 1),
+            GraphSource::Node(shaper, 0),
             "shaper → sum.1"
         );
         assert_eq!(
-            graph.0.source(t, drive_port),
-            Source::Local(sum, 0),
+            graph.source(t, drive_port),
+            GraphSource::Node(sum, 0),
             "sum → the node's drive port"
         );
     }
@@ -272,7 +275,7 @@ mod mod_audio_rate_reconcile {
         let sum = node_id(&app, chain.sum);
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(
-            graph.0.inputs_in(sum),
+            graph.node_inputs(sum),
             3,
             "the sum is sized to the group: one base port plus one per route"
         );
@@ -426,7 +429,7 @@ mod mod_audio_rate_reconcile {
     #[test]
     fn a_route_declared_before_its_sinks_node_still_binds() {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
@@ -463,7 +466,7 @@ mod mod_audio_rate_reconcile {
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
         let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
         let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
+        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
         let mut sink = app.world_mut().entity_mut(target);
         sink.insert(ports);
         controls.bind(&mut sink, node);
@@ -715,14 +718,18 @@ mod mod_audio_rate_reconcile {
             let chain = chains
                 .get(target, ParamAddr::Unit(UnitParam::Drive))
                 .expect("the chain must exist");
-            let node = app.world().get::<AudioNode>(chain.shapers[0]).unwrap().0;
+            let node = *app.world().get::<AudioNode>(chain.shapers[0]).unwrap();
             let graph = app.world().resource::<AudioGraphRes>();
-            let unit = graph
-                .0
-                .node_as::<tutti_nodes::ParamShaperNode>(node)
+            let mut unit = graph
+                .inspect(node, |unit| {
+                    unit.as_any()
+                        .downcast_ref::<tutti_nodes::ParamShaperNode>()
+                        .cloned()
+                })
+                .flatten()
                 .expect("the shaper is a ParamShaperNode");
             let mut out = [0.0f32; 1];
-            tutti_core::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
+            tutti_core::AudioUnit::tick(&mut unit, &[1.0], &mut out);
             out[0]
         }
 
@@ -803,14 +810,18 @@ mod mod_audio_rate_reconcile {
             let chain = chains
                 .get(target, ParamAddr::Unit(UnitParam::Drive))
                 .expect("the chain must exist");
-            let node = app.world().get::<AudioNode>(chain.sum).unwrap().0;
+            let node = *app.world().get::<AudioNode>(chain.sum).unwrap();
             let graph = app.world().resource::<AudioGraphRes>();
-            let unit = graph
-                .0
-                .node_as::<tutti_nodes::ParamSumNode>(node)
+            let mut unit = graph
+                .inspect(node, |unit| {
+                    unit.as_any()
+                        .downcast_ref::<tutti_nodes::ParamSumNode>()
+                        .cloned()
+                })
+                .flatten()
                 .expect("the sum is a ParamSumNode");
             let mut out = [0.0f32; 1];
-            tutti_core::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
+            tutti_core::AudioUnit::tick(&mut unit, &[base, 0.0], &mut out);
             out[0]
         }
 

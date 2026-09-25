@@ -144,13 +144,12 @@ mod tests {
     use crate::graph::AudioGraphRes;
     use crate::AudioEngineState;
     use bevy_app::prelude::*;
-    use tutti_core::dsp::Net;
 
     /// The poll writes `CompensatedLatency` and raises `GraphDirty`; nothing
     /// else in this app does, so both observations are attributable.
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::new(0, 2)));
+        app.insert_resource(AudioGraphRes::unattached(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.init_resource::<GraphDirty>();
         app.add_systems(Update, plugin_latency_poll);
@@ -164,13 +163,11 @@ mod tests {
     #[test]
     fn a_non_plugin_node_never_marks_the_graph_dirty() {
         let mut app = test_app();
-        let id = {
+        let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph
-                .0
-                .push(Box::new(tutti_nodes::testing::Const::mono(0.0)))
+            graph.insert(tutti_nodes::testing::Const::mono(0.0))
         };
-        let entity = app.world_mut().spawn(AudioNode(id)).id();
+        let entity = app.world_mut().spawn(node).id();
 
         app.update();
 

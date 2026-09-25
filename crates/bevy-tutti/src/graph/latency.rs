@@ -42,19 +42,18 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::dsp::Net;
 //! use tutti_core::Hz;
 //! use tutti_nodes::testing::Osc;
 //!
 //! /// A host system that edits the graph itself.
 //! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
-//!     graph.0.add(Osc::sine(Hz(440.0)));
+//!     graph.insert(Osc::sine(Hz(440.0)));
 //!     // Say so, or the compensation pass skips the frame entirely.
 //!     dirty.0 = true;
 //! }
 //!
 //! let mut app = App::new();
-//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
 //! app.add_systems(Update, my_graph_edits.before(GraphReconcileSystems::Compensate));
@@ -77,10 +76,9 @@
 //!
 //! This plugin *applies* compensation, inserting delays. A host that only wants
 //! to know what a graph would need — a latency readout that must not perturb the
-//! graph — calls [`tutti_core::latency::plan`] on `AudioGraphRes.0` directly;
-//! `Net` implements the `LatencyGraph` trait it takes. There is no wrapper here
-//! because there would be nothing to wrap: `plan` needs no ECS state and mutates
-//! nothing, so a wrapper would be a rename.
+//! graph — calls [`AudioGraphRes::latency_plan`] directly. There is no system
+//! for it because there would be nothing for one to do: the plan needs no ECS
+//! state and mutates nothing.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -88,7 +86,7 @@ use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 use tutti_core::RtPublish;
-use tutti_core::{latency, Samples};
+use tutti_core::Samples;
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
 ///
@@ -166,7 +164,7 @@ pub fn compensate_graph(
         return;
     }
 
-    let compensation = latency::compensate(&mut graph.0);
+    let compensation = graph.compensate();
     total.0 = compensation.total();
     published
         .0
@@ -176,8 +174,7 @@ pub fn compensate_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::dsp::Net;
-    use tutti_core::dsp::Source;
+    use crate::graph::GraphSource;
     use tutti_core::{ChannelLayout, Db};
     use tutti_nodes::testing::Const;
     use tutti_nodes::LimiterNode;
@@ -188,9 +185,9 @@ mod tests {
     /// `AudioEngineState::Running` stands in for a built engine: the
     /// compensation system is gated on `engine_ready`, which reads the state
     /// rather than probing for the graph resource.
-    fn test_app(graph: Net) -> App {
+    fn test_app(graph: AudioGraphRes) -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(graph));
+        app.insert_resource(graph);
         app.insert_resource(crate::AudioEngineState::Running);
         app.init_resource::<GraphDirty>();
         app.add_plugins(LatencyCompensationPlugin);
@@ -202,20 +199,20 @@ mod tests {
     /// The limiter is the engine's own `LimiterNode`, whose lookahead is what
     /// it reports as latency — so the plan is exercised on the latency-bearing
     /// node the engine ships, not on fundsp's.
-    fn skewed_graph() -> (Net, Samples) {
-        let mut graph = Net::with_backend(2);
-        let a = graph.add(Const::mono(1.0));
-        let eff = graph.add(LimiterNode::with_channels(
+    fn skewed_graph() -> (AudioGraphRes, Samples) {
+        let mut graph = AudioGraphRes::headless(0, 2);
+        let a = graph.insert(Const::mono(1.0));
+        let eff = graph.insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),
         ));
-        let b = graph.add(Const::mono(1.0));
-        graph.connect(a, 0, eff, 0);
-        graph.set_output_source(0, Source::Local(eff, 0));
-        graph.set_output_source(1, Source::Local(b, 0));
+        let b = graph.insert(Const::mono(1.0));
+        graph.set_source(eff, 0, GraphSource::Node(a, 0));
+        graph.set_output_source(0, GraphSource::Node(eff, 0));
+        graph.set_output_source(1, GraphSource::Node(b, 0));
 
-        let lat = tutti_core::LatencyGraph::latency(&graph, eff);
+        let lat = graph.node_latency(eff);
         // Every test built on this graph compares against `lat`; if the
         // limiter ever reported no latency they would all agree on zero and
         // pass while testing nothing.
@@ -267,10 +264,10 @@ mod tests {
     /// A graph where nothing reports latency has no figure to display.
     #[test]
     fn a_graph_with_no_latency_reports_none() {
-        let mut graph = Net::with_backend(2);
-        let a = graph.add(Const::mono(1.0));
-        graph.set_output_source(0, Source::Local(a, 0));
-        graph.set_output_source(1, Source::Local(a, 0));
+        let mut graph = AudioGraphRes::headless(0, 2);
+        let a = graph.insert(Const::mono(1.0));
+        graph.set_output_source(0, GraphSource::Node(a, 0));
+        graph.set_output_source(1, GraphSource::Node(a, 0));
 
         let mut app = test_app(graph);
         app.world_mut().resource_mut::<GraphDirty>().0 = true;

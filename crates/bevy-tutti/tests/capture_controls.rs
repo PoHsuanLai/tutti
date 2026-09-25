@@ -22,7 +22,6 @@ mod midi {
     };
     use bevy_tutti::midi::{MidiTarget, MidiTargetRegistry, MidiTargetResolver};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::AudioNode;
     use tutti_midi_types::MidiUnitId;
     use tutti_polysynth::{PolySynth, SynthConfig};
@@ -31,7 +30,7 @@ mod midi {
         let mut app = App::new();
         // A backend: every insertion path dirties the graph, and the commit
         // asserts one exists.
-        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         app.init_resource::<MidiTargetRegistry>();
@@ -178,10 +177,10 @@ mod midi {
         app.update();
         assert_eq!(resolved(&mut app, entity), Some(id));
 
-        let other = app.world_mut().resource_mut::<AudioGraphRes>().0.add(
+        let other = app.world_mut().resource_mut::<AudioGraphRes>().insert(
             tutti_nodes::testing::Const::new(0.0, tutti_types::ChannelLayout::STEREO),
         );
-        app.world_mut().entity_mut(entity).insert(AudioNode(other));
+        app.world_mut().entity_mut(entity).insert(other);
 
         assert!(
             app.world().get::<MidiTarget>(entity).is_some(),
@@ -203,7 +202,6 @@ mod modulation {
         ModTargetRegistry, ModTargetResolver, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
     use tutti_nodes::{DistortionNode, ShapeKind};
@@ -213,7 +211,7 @@ mod modulation {
 
     fn app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(Net::with_backend(1)));
+        app.insert_resource(AudioGraphRes::headless(0, 1));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -315,9 +313,8 @@ mod modulation {
         let other = app
             .world_mut()
             .resource_mut::<AudioGraphRes>()
-            .0
-            .add(tutti_nodes::testing::Const::mono(0.0));
-        app.world_mut().entity_mut(target).insert(AudioNode(other));
+            .insert(tutti_nodes::testing::Const::mono(0.0));
+        app.world_mut().entity_mut(target).insert(other);
         assert!(!resolves(&mut app), "the leftover handle does not");
     }
 }
@@ -358,9 +355,8 @@ mod crossfade_consumers {
         TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::{AudioUnit as _, Beat, SampleRate};
+    use tutti_core::{Beat, SampleRate};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
@@ -376,12 +372,12 @@ mod crossfade_consumers {
 
     #[test]
     fn a_crossfaded_synth_keeps_its_route_its_modulation_and_its_sequence() {
-        let mut net = Net::new(0, 2);
-        net.set_sample_rate(SampleRate(SAMPLE_RATE));
-        let _backend = net.backend();
+        let mut graph = AudioGraphRes::unattached(0, 2);
+        graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+        let _backend = graph.take_audio_side();
 
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),

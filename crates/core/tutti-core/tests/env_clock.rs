@@ -189,11 +189,11 @@ fn beat(p: (f32, f32)) -> f64 {
 ///   behind the playhead at frame 4 000 jumps into [1, 2);
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
 ///
-/// Not caught, and not claimed: reading the closed form
-/// `env.transport_at(k)` instead of accumulating. It differs from the clock
-/// in the last `f64` bits, which the `f32` split at the ports rounds away
-/// (it survived this test); `EnvClock` accumulates so the ports equal the
-/// clock's by construction rather than by that rounding.
+/// Not caught, and not claimed: reading `env.transport_at(k)` instead of
+/// continuing the clock's segment. It is the same closed form up to a loop
+/// wrap and agrees to rounding past one, which the `f32` split at the ports
+/// rounds away; `EnvClock` runs the clock's own code (`FrameClock`) so the
+/// ports equal the clock's by construction rather than by that rounding.
 #[test]
 fn env_clock_emits_what_transport_clock_emits() {
     let net_t = Transport::new(SR);

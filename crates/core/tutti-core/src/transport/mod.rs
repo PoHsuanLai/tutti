@@ -15,6 +15,7 @@ mod beat_window;
 mod click;
 mod clock;
 mod env_clock;
+mod frame_clock;
 pub(crate) mod fsm;
 mod handle;
 mod motion;
@@ -23,7 +24,7 @@ mod settings;
 mod state;
 mod timed;
 
-pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
+pub use beat_window::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub(crate) use clock::{tempo_in_effect, Control};

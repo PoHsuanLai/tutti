@@ -15,6 +15,7 @@ use std::sync::Arc;
 use crate::transport::Timeline;
 use crate::AtomicF64;
 use crate::SampleRate;
+use tutti_types::first_frame_at_or_after;
 use tutti_types::value::units::{Beat, BeatDuration};
 
 /// Beat range one audio block covers, plus the factors to place an event inside
@@ -33,6 +34,18 @@ pub struct BeatWindow {
     /// Largest in-block sample offset, i.e. `block_size - 1`. Offsets are
     /// clamped to this so a caller never splits past the end of its buffer.
     pub max_offset: u32,
+}
+
+/// Where a beat falls against one block: the answer to "is it in this
+/// block, and on which frame", from [`BeatWindow::place`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BeatPlacement {
+    /// Playback reached it before this block's first frame.
+    Before,
+    /// Playback reaches it on this frame of the block.
+    At(u32),
+    /// Playback reaches it after this block.
+    After,
 }
 
 /// What [`BeatWindow::from_timeline`] observed about the transport, so the
@@ -132,28 +145,65 @@ impl BeatWindow {
         ))
     }
 
-    /// Where `beat` lands inside this block, as a sample offset clamped to
-    /// [`max_offset`](Self::max_offset). Beats at or before the window start
-    /// map to 0.
+    /// Where `beat` falls against this block, by the engine's one beat→frame
+    /// rule ([`first_frame_at_or_after`], doc 013 §6): the first frame at or
+    /// after the beat, within a millionth of a frame, compared as an integer
+    /// against the block's frames.
     ///
-    /// The one home for beat→in-block-offset, so every caller gets the same
-    /// zero-guard. A non-positive rate yields offset 0 rather than dividing to
-    /// infinity, which the `max_offset` clamp would otherwise turn into "the
-    /// last sample of the block" — every event in a stalled block bunched at
-    /// its tail.
+    /// **The** block-membership test for a beat-scheduled source: skip
+    /// [`Before`](BeatPlacement::Before), emit [`At`](BeatPlacement::At), stop
+    /// at [`After`](BeatPlacement::After). Comparing beats against
+    /// [`start_beat`](Self::start_beat)/[`end_beat`](Self::end_beat) instead
+    /// disagrees with the frame at the edges: a beat exactly on the next
+    /// block's first frame, whose `end_beat` rounded an ulp high, would be
+    /// "in" this block and then placed on its last frame, one frame early.
+    /// By frames, blocks that tile the timeline place every beat in exactly
+    /// one of them, on its frame.
+    ///
+    /// A non-positive rate (a window built by hand; `from_timeline` refuses
+    /// one) has no frames to place by: a beat inside `[start_beat,
+    /// end_beat)` is at frame 0, and the bounds decide the rest.
     #[inline]
-    pub fn offset_of(&self, beat: Beat) -> u32 {
+    pub fn place(&self, beat: Beat) -> BeatPlacement {
         if self.beats_per_sample <= BeatDuration(0.0) {
-            return 0;
+            return if beat < self.start_beat {
+                BeatPlacement::Before
+            } else if beat < self.end_beat {
+                BeatPlacement::At(0)
+            } else {
+                BeatPlacement::After
+            };
         }
-        let beat_delta = (beat - self.start_beat).max(BeatDuration(0.0));
-        ((beat_delta / self.beats_per_sample) as u32).min(self.max_offset)
+        let k = first_frame_at_or_after((beat - self.start_beat) / self.beats_per_sample);
+        match u32::try_from(k) {
+            Err(_) if k < 0 => BeatPlacement::Before,
+            Ok(k) if k <= self.max_offset => BeatPlacement::At(k),
+            _ => BeatPlacement::After,
+        }
     }
 
-    /// Whether `beat` falls inside this block's `[start, end)` range.
+    /// Where `beat` lands inside this block, as a frame offset: its
+    /// [placement](Self::place), clamped to the block. Beats placed before
+    /// the window map to 0, after it to [`max_offset`](Self::max_offset).
+    ///
+    /// A non-positive rate yields offset 0 rather than dividing to infinity,
+    /// which the `max_offset` clamp would otherwise turn into "the last
+    /// sample of the block" — every event in a stalled block bunched at its
+    /// tail.
+    #[inline]
+    pub fn offset_of(&self, beat: Beat) -> u32 {
+        match self.place(beat) {
+            BeatPlacement::Before => 0,
+            BeatPlacement::At(k) => k,
+            BeatPlacement::After => self.max_offset,
+        }
+    }
+
+    /// Whether `beat` falls inside this block: [placed](Self::place) on one
+    /// of its frames.
     #[inline]
     pub fn contains(&self, beat: Beat) -> bool {
-        beat >= self.start_beat && beat < self.end_beat
+        matches!(self.place(beat), BeatPlacement::At(_))
     }
 }
 

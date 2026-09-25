@@ -207,7 +207,7 @@ pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,
-    Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
+    Resolution, Scratch, SegmentOrigin, Shape, SilenceMask, Status, Transport, TransportChange,
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use plan::{

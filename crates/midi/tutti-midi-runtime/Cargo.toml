@@ -27,3 +27,7 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# The native graph, to drive a clip source as a `Legacy` node through the
+# graph engine and an offline `render_graph` (`tests/frame_exact_clip.rs`).
+# No cycle: `tutti-graph` names only `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }

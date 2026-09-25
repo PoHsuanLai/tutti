@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::transport::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync, Timeline};
 use tutti_core::{Beat, SampleRate};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
@@ -144,6 +144,11 @@ impl MidiClipSource {
     /// sample-accurate `frame_offset`. Pure with respect to the transport —
     /// it reads the clip's own event list and cursor only.
     ///
+    /// Membership is by frame ([`BeatWindow::place`], doc 013 §6), not by
+    /// comparing beats: an event exactly on a block's first frame is emitted
+    /// there, at offset 0, and never on the previous block's last frame
+    /// because that block's `end_beat` rounded an ulp high.
+    ///
     /// Advances the persisted cursor solely past events actually written to
     /// `out`; if `out` fills up, the remainder reappear on the next poll at
     /// the same beat.
@@ -151,17 +156,19 @@ impl MidiClipSource {
         // Skip past anything before the window (cursor may have lagged due to
         // a seek, looping, or a buffer that filled up earlier).
         let mut cursor = self.cursor.load(Ordering::Relaxed) as usize;
-        while cursor < self.events.len() && self.events[cursor].beat < window.start_beat {
+        while cursor < self.events.len()
+            && window.place(self.events[cursor].beat) == BeatPlacement::Before
+        {
             cursor += 1;
         }
 
         let mut written = 0;
-        while cursor < self.events.len()
-            && self.events[cursor].beat < window.end_beat
-            && written < out.len()
-        {
+        while cursor < self.events.len() && written < out.len() {
             let TimedClipEvent { beat, mut event } = self.events[cursor];
-            event.frame_offset = window.offset_of(beat);
+            let BeatPlacement::At(offset) = window.place(beat) else {
+                break;
+            };
+            event.frame_offset = offset;
             out[written] = event;
             // Hardware-out tap: forward the same sample-stamped event through the
             // `MidiOut` sink (lock-free, drops if full — benign backpressure).

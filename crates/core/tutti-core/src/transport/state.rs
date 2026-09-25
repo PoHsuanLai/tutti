@@ -44,13 +44,20 @@ pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
 
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.
 ///
-/// The conversion every beat-driven consumer needs: the clock caches it per
-/// buffer, `BeatWindow` derives a block's span from it, `OfflineTimeline`
-/// precomputes it once.
+/// The per-frame rate a reader needs to place a beat inside a block
+/// (`BeatWindow`, the MIDI clock, automation sampling): a beat span divided
+/// by it is a frame distance, which the engine's one placement rule
+/// ([`first_frame_at_or_after`](tutti_types::first_frame_at_or_after)) turns
+/// into a frame, its tolerance absorbing the rate's rounding.
 ///
-/// The association is load-bearing: `(tempo / 60) / sample_rate`, **not**
-/// `tempo / (60 * sample_rate)`. The two round differently, and the offline
-/// timeline is pinned to agree with the clock sample-for-sample.
+/// **No clock steps by it.** A playhead that adds this per frame or per block
+/// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
+/// frame 96 000, which is beat 3): the clocks count frames and derive the
+/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment),
+/// doc 013 §6).
+///
+/// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
+/// by it divides by the same `f64`.
 #[inline]
 pub fn beats_per_sample(
     tempo: impl Into<crate::Bpm>,

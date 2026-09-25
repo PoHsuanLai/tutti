@@ -29,9 +29,9 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
-use tutti_types::{At, Beat, Frame, Latency, Samples};
+use tutti_types::{first_frame_at_or_after, At, Beat, Frame, Latency, Samples, FRAME_TOLERANCE};
 
-use crate::node::{Env, Transport, TransportChanges};
+use crate::node::{Env, SegmentOrigin, Transport, TransportChanges};
 
 /// A position inside the current block: frames from its first frame.
 ///
@@ -329,9 +329,14 @@ impl Env {
     /// there (or the block's own transport), with its beat advanced to
     /// `offset` at its tempo while it rolls, wrapping at its loop.
     ///
-    /// Closed form, in `f64`: a host that accumulates its beat frame by frame
-    /// (tutti-core's `TransportClock`) agrees to rounding, not to the bit. The
-    /// block-start beat and every change's beat are the host's own figures.
+    /// Closed form from the transport's [segment](Transport::segment), never
+    /// accumulated: for a host that counts frames (tutti-core's
+    /// `TransportClock`, which carries its [origin](Transport::origin)) the
+    /// beat is the host's own figure for that frame, to the bit, until a loop
+    /// wrap; past a wrap inside the block it agrees to rounding (the host
+    /// starts a new segment on the wrap's frame, this wraps the unwrapped
+    /// position). The block-start beat and every change's beat are the
+    /// host's own figures.
     pub fn transport_at(&self, offset: Offset) -> Transport {
         let (start, mut t) = self
             .changes
@@ -340,21 +345,33 @@ impl Env {
             .rev()
             .find(|c| c.at <= offset)
             .map_or((0, self.transport), |c| (c.at.index(), c.to));
-        let Some(fpb) = self.frames_per_beat_at(t.tempo.get()).filter(|_| t.playing) else {
+        if self.frames_per_beat_at(t.tempo.get()).is_none() || !t.playing {
             return t;
-        };
-        let pos = t.beat.get() + (offset.index() - start) as f64 / fpb;
-        t.beat = Beat(match t.looping {
+        }
+        let (segment, first) = t.segment(self.sample_rate);
+        let frame = first + Samples(offset.index() - start);
+        let pos = segment.beat_at(frame).get();
+        let wrapped = match t.looping {
             Some(l) if t.beat.get() < l.end.get() && l.start.get() < l.end.get() => {
                 let (ls, le) = (l.start.get(), l.end.get());
-                if pos < le {
-                    pos
-                } else {
-                    ls + (pos - ls).rem_euclid(le - ls)
-                }
+                (pos >= le).then(|| ls + (pos - ls).rem_euclid(le - ls))
             }
-            _ => pos,
-        });
+            _ => None,
+        };
+        match wrapped {
+            Some(beat) => {
+                t.beat = Beat(beat);
+                // Past the wrap the beat is its own origin.
+                t.origin = None;
+            }
+            None => {
+                t.beat = Beat(pos);
+                t.origin = Some(SegmentOrigin {
+                    beat: segment.origin_beat,
+                    frame,
+                });
+            }
+        }
         t
     }
 
@@ -470,12 +487,12 @@ impl Env {
         // A beat behind the playhead by less than a frame (minus the
         // tolerance) falls due on this block's first frame. It is the exact
         // complement of the ahead side: the previous block resolved a beat
-        // `d` frames before its end to offset `ceil(len - d - TOLERANCE)`,
+        // `d` frames before its end to offset `ceil(len - d - FRAME_TOLERANCE)`,
         // which is inside that block only when `d >= 1 - TOLERANCE`. So a
         // beat between a block's last frame and its end (or a rounding error
-        // behind an accumulated playhead) is due here, not late, and every
+        // behind the playhead) is due here, not late, and every
         // beat lands exactly once.
-        let beat = if beat < now && (now - beat) * frames_per_beat < 1.0 - TOLERANCE {
+        let beat = if beat < now && (now - beat) * frames_per_beat < 1.0 - FRAME_TOLERANCE {
             now
         } else {
             beat
@@ -498,17 +515,15 @@ impl Env {
             _ if beat >= now => beat - now,
             _ => return Due::NotYet,
         };
-        // Up to `f64` rounding in the product, a beat exactly on a frame
-        // boundary lands on that frame rather than the next: a transport
-        // position is itself an accumulated `f64`, and without the tolerance
-        // a beat computed as `frame / frames_per_beat` could miss its own
-        // frame by one. A millionth of a frame is far below anything musical.
-        const TOLERANCE: f64 = 1e-6;
-        let k = (ahead * frames_per_beat - TOLERANCE).ceil().max(0.0);
-        if k < self.block_len.get() as f64 {
-            Due::In(Offset(k as u32))
-        } else {
-            Due::NotYet
+        // The one beat→frame rule (`first_frame_at_or_after`): up to `f64`
+        // rounding in the product, a beat exactly on a frame boundary lands
+        // on that frame rather than the next, so a beat computed as
+        // `frame / frames_per_beat` cannot miss its own frame by one. Every
+        // clip and MIDI reader in the engine places beats by the same rule.
+        let k = first_frame_at_or_after(ahead * frames_per_beat).max(0);
+        match u32::try_from(k) {
+            Ok(k) if (k as usize) < self.block_len.get() => Due::In(Offset(k)),
+            _ => Due::NotYet,
         }
     }
 }
@@ -587,6 +602,7 @@ mod tests {
             tempo: Bpm(120.0),
             beat: Beat(beat),
             looping: None,
+            origin: None,
         };
         // The block starting at frame 35 990 starts at beat 35 990 / 24 000.
         let e = env(35_990, 64, rolling(35_990.0 / 24_000.0));
@@ -630,6 +646,7 @@ mod tests {
             tempo: Bpm(120.0),
             beat: Beat(1000.0 / 24_000.0),
             looping: None,
+            origin: None,
         };
         let e = env(1000, 64, t);
         let mut beat = At::Beat(Beat(1010.0 / 24_000.0));
@@ -670,6 +687,7 @@ mod tests {
                 start: Beat(4.0),
                 end: Beat(8.0),
             }),
+            origin: None,
         };
         let e = env(0, 64, t);
         // Beat 4 plus 5 frames: 10 frames to the wrap, then 5 more.
@@ -704,6 +722,7 @@ mod tests {
                 tempo: Bpm(120.0),
                 beat: Beat(beat),
                 looping,
+                origin: None,
             },
         )
     }
@@ -772,6 +791,7 @@ mod tests {
                     tempo: Bpm(tempo),
                     beat: Beat(beat),
                     looping: None,
+                    origin: None,
                 },
             )
         };
@@ -807,6 +827,7 @@ mod tests {
                     tempo: Bpm(tempo),
                     beat: Beat(beat),
                     looping: None,
+                    origin: None,
                 },
             )
         };

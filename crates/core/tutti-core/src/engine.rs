@@ -871,6 +871,7 @@ impl Pieces for NetPieces<'_> {
                 start: r.start(),
                 end: r.end(),
             }),
+            origin: None,
         }
     }
 

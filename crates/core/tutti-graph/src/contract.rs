@@ -957,6 +957,7 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
         tempo: Bpm(120.0),
         beat: Beat((at - start.unwrap_or(0)) as f64 / FRAMES_PER_BEAT as f64),
         looping: None,
+        origin: None,
     };
     let mut changes = TransportChanges::NONE;
     let Some(s) = start else {

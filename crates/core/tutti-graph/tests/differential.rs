@@ -397,6 +397,7 @@ impl Script {
                 start: tutti_types::Beat(start),
                 end: tutti_types::Beat(end),
             }),
+            origin: None,
         };
         // Half the changes ramp linearly across the block; half step at a
         // random offset inside it. Either way the block reports its starting

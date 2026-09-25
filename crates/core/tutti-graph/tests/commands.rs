@@ -256,6 +256,7 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
             tempo: Bpm(60.0),
             beat: Beat(beat),
             looping: None,
+            origin: None,
         };
         rig.block(n, &t);
         beat += n as f64 * 60.0 / (60.0 * rate); // 60 BPM: beats per frame
@@ -268,6 +269,7 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
         tempo: Bpm(120.0),
         beat: Beat(1.5 - 10.0 * spb),
         looping: None,
+        origin: None,
     };
     rig.block(64, &t);
     for log in [&rig.exec_log, &rig.ref_log] {
@@ -700,6 +702,7 @@ fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) ->
             start: Beat(start),
             end: Beat(end),
         }),
+        origin: None,
     }
 }
 
@@ -1239,6 +1242,7 @@ fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
             start: Beat(start),
             end: Beat(end),
         }),
+        origin: None,
     };
     let step = |b: f64| {
         let x = b + frame_beat;

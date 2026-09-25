@@ -50,7 +50,7 @@ pub use transport::{
 // The time a scheduled command names, and the engine's frame clock. Homed in
 // `tutti-types` so the graph's `Editor::schedule` and the transport's
 // `MotionFsm::schedule` share one vocabulary.
-pub use tutti_types::{At, Frame};
+pub use tutti_types::{first_frame_at_or_after, At, Frame, TimelineSegment, FRAME_TOLERANCE};
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
 // here so consumers that already depend on tutti-core need no new dependency.

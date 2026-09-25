@@ -36,7 +36,7 @@ use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
-use tutti_core::{Beat, BeatDuration, SampleRate};
+use tutti_core::{first_frame_at_or_after, Beat, BeatDuration, SampleRate};
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -260,8 +260,9 @@ impl ClockMaster {
                 .swap(expected_advance.get(), Ordering::AcqRel),
         );
         let is_edge = playing && !was_playing;
-        if !is_edge && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS)
-        {
+        let jumped = !is_edge
+            && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS);
+        if jumped {
             self.emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
@@ -271,28 +272,41 @@ impl ClockMaster {
         }
 
         // --- 24-PPQN clock ticks --------------------------------------------
-        // Emit a 0xF8 at every 1/24-beat boundary inside the block window
-        // [beat, beat + expected_advance), sample-accurate. `tick_beats` is the
-        // clock-tick spacing in beats (1/24). The walk starts at the first tick
-        // boundary strictly after `beat` and steps forward.
+        // Emit a 0xF8 at every 1/24-beat boundary playback reaches inside this
+        // block, on its frame. `tick_beats` is the clock-tick spacing in beats
+        // (1/24).
+        //
+        // Placed by the engine's one beat→frame rule
+        // (`first_frame_at_or_after`, doc 013 §6) and compared as integer
+        // frames, not as beats against `beat + expected_advance`: a tick on
+        // a block boundary is reached on the next block's first frame (offset
+        // `block_size` here, 0 there), so it goes out once. Comparing beats,
+        // the previous block's end and this block's start round
+        // independently, and a boundary tick was sent twice or not at all.
+        //
+        // Where playback does not continue the previous block (a start, a
+        // continue, a locate) a tick exactly on the first frame is not sent:
+        // the Start / Continue / Song Position just sent stands for it, as it
+        // always has here.
         let tick_beats = BeatDuration(1.0 / PPQN);
-        let end_beat = beat + expected_advance;
         let max_offset = (block_size - 1) as u32;
-        // First tick index strictly *after* `beat`. `floor + 1` skips a boundary
-        // sitting exactly on `beat`, which the tail of the previous block
-        // already emitted — `ceil` would re-send it.
-        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64 + 1;
+        let continues = !is_edge && !jumped;
+        // The tick at or before `beat`: its frame is 0 (on `beat`, within the
+        // rule's tolerance) or before this block (already sent).
+        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64;
         loop {
             let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
-            if tick_beat >= end_beat {
-                break;
-            }
-            let sample_offset = ((tick_beat - beat) / beats_per_sample) as u32;
-            self.emit(
-                MidiEvent::timing_clock(self.group)
-                    .with_frame_offset(sample_offset.min(max_offset)),
-            );
+            let k = first_frame_at_or_after((tick_beat - beat) / beats_per_sample);
             tick_idx += 1;
+            if k < 0 || (k == 0 && !continues) {
+                continue;
+            }
+            match u32::try_from(k) {
+                Ok(k) if k <= max_offset => {
+                    self.emit(MidiEvent::timing_clock(self.group).with_frame_offset(k));
+                }
+                _ => break,
+            }
         }
 
         // --- MTC quarter-frames ---------------------------------------------

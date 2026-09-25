@@ -5,14 +5,15 @@
 //! (whole, then fraction) so precision does not decay as a session runs long,
 //! and writes the playhead back to the transport once per buffer.
 
+use super::frame_clock::FrameClock;
 use super::state::{ClockLinks, LoopSpan};
 use crate::Ordering;
-use crate::{Beat, BeatDuration, Bpm};
+use crate::{Beat, Bpm};
 use fundsp::prelude::*;
 use std::any;
 
-/// How far the tempo must move before the cached per-sample increment is
-/// re-derived. Comparing for equality would re-derive on every buffer from ULP
+/// How far the tempo must move before the clock takes it (and starts a new
+/// segment). Comparing for equality would restart on every buffer from ULP
 /// noise.
 const TEMPO_EPSILON: f64 = 0.001;
 
@@ -79,24 +80,25 @@ pub(super) fn split_beat(beat: Beat) -> (f32, f32) {
 /// playhead as `(whole, fraction)`.
 ///
 /// Emit-then-advance. Sample 0 of a block carries the block's start beat, and
-/// only then does the beat increment — anything that advances a second clock
-/// alongside this one must match that order or sit permanently one
-/// `beats_per_sample` out of step.
+/// only then does the beat move — anything that advances a second clock
+/// alongside this one must match that order or sit permanently one frame out
+/// of step.
+///
+/// **The frame is the source of truth** (doc 013 §6). The playhead is a
+/// frame count on a segment (`FrameClock`), and the beat is derived from it
+/// in closed form, never accumulated: at 90 BPM and 48 kHz, frame 96 000 is
+/// beat 3 to the bit, where adding `beats_per_sample` 96 000 times drifts off
+/// it. A seek, a tempo or rate change and a loop wrap start a new segment on
+/// their frame.
 #[derive(Clone, Debug)]
 pub struct TransportClock {
     /// Everything shared with the live transport. `isolate()` replaces this
     /// wholesale; every other field is this clock's own.
     links: ClockLinks,
-    /// The playhead. Advanced once per sample in `tick`/`process`.
-    current_beat: Beat,
-    sample_rate: crate::SampleRate,
-    /// Beats advanced per output sample — the cached
-    /// `tempo / 60 / sample_rate`. A derived rate, invalidated whenever
-    /// `last_tempo` or `sample_rate` moves.
-    beat_per_sample: BeatDuration,
-    /// Tempo the cached increment was computed from; a change here is what
-    /// invalidates it.
-    last_tempo: Bpm,
+    /// The playhead, and the tempo in force (its hysteresis applied) and rate
+    /// it rolls at. Advanced once per sample in `tick`/`process`, or a block
+    /// at a time by [`advance`](Self::advance): the same beats either way.
+    clock: FrameClock,
 }
 
 impl TransportClock {
@@ -111,19 +113,16 @@ impl TransportClock {
 
         let clock = Self {
             links,
-            current_beat: Beat(0.0),
-            sample_rate,
-            beat_per_sample: super::state::beats_per_sample(initial_tempo, sample_rate),
-            last_tempo: initial_tempo,
+            clock: FrameClock::new(Beat(0.0), initial_tempo, sample_rate),
         };
         clock.publish_tempo();
         clock
     }
 
-    /// Publish the tempo in force (`last_tempo`) to the live transport.
+    /// Publish the tempo in force to the live transport.
     fn publish_tempo(&self) {
         if let Some(ref out) = self.links.tempo_in_force {
-            out.store(self.last_tempo.get(), Ordering::Release);
+            out.store(self.clock.tempo().get(), Ordering::Release);
         }
     }
 
@@ -151,7 +150,7 @@ impl TransportClock {
     pub fn starting_at(&self, beat: impl Into<Beat>) -> Self {
         let mut derived = self.clone();
         derived.isolate();
-        derived.current_beat = beat.into();
+        derived.clock.seat(beat.into());
         derived
     }
 
@@ -163,19 +162,18 @@ impl TransportClock {
         derived
     }
 
-    /// Set this clock's tempo, refreshing the cached per-sample increment.
+    /// Set this clock's tempo, from its current frame on.
     fn set_tempo(&mut self, bpm: impl Into<crate::Bpm>) {
         let bpm = bpm.into();
         self.links.tempo.store(bpm.get(), Ordering::Release);
-        self.beat_per_sample = super::state::beats_per_sample(bpm, self.sample_rate);
-        self.last_tempo = bpm;
+        self.clock.set_tempo(bpm);
         self.publish_tempo();
     }
 
     /// The beat this clock will emit next. Its own position, not the live
     /// transport's — an isolated clone reports its private playhead here.
     pub fn current_beat(&self) -> Beat {
-        self.current_beat
+        self.clock.beat()
     }
 
     #[inline]
@@ -184,13 +182,13 @@ impl TransportClock {
         self.take_tempo(asked);
     }
 
-    /// Take `asked` as the tempo, if it moved past the hysteresis.
+    /// Take `asked` as the tempo, if it moved past the hysteresis: a new
+    /// segment from this frame.
     #[inline]
     fn take_tempo(&mut self, asked: Bpm) {
-        let tempo = tempo_in_effect(asked, self.last_tempo);
-        if tempo != self.last_tempo {
-            self.beat_per_sample = super::state::beats_per_sample(tempo, self.sample_rate);
-            self.last_tempo = tempo;
+        let tempo = tempo_in_effect(asked, self.clock.tempo());
+        if tempo != self.clock.tempo() {
+            self.clock.set_tempo(tempo);
             self.publish_tempo();
         }
     }
@@ -198,23 +196,13 @@ impl TransportClock {
     #[inline]
     fn apply_pending_seek(&mut self) {
         if let Some(target) = self.links.seek.take() {
-            self.current_beat = target;
+            self.clock.seat(target);
         }
     }
 
-    #[inline]
-    fn apply_loop_wrap(&mut self, from: crate::Beat) {
-        let Some(region) = self.links.loop_span.as_ref().and_then(LoopSpan::range) else {
-            return;
-        };
-        // `LoopRange` is non-empty by construction, so `wrap` needs no guard.
-        // Only a playhead that crossed the end wraps: see `LoopRange::advance`.
-        self.current_beat = region.advance(from, self.current_beat);
-    }
-
-    /// The rate this clock converts tempo to a per-frame increment at.
+    /// The rate this clock counts frames at.
     pub(crate) fn sample_rate(&self) -> crate::SampleRate {
-        self.sample_rate
+        self.clock.sample_rate()
     }
 
     /// Take a pending seek (when `take_seek`) and `control`'s tempo, and
@@ -237,19 +225,22 @@ impl TransportClock {
         self.take_tempo(control.tempo);
         tutti_graph::Transport {
             playing: !control.paused,
-            tempo: self.last_tempo,
-            beat: self.current_beat,
+            tempo: self.clock.tempo(),
+            beat: self.clock.beat(),
             looping: control.looping.map(|r| tutti_graph::LoopRange {
                 start: r.start(),
                 end: r.end(),
             }),
+            // The frame count the beat is derived from, so the graph's
+            // `EnvClock` continues this clock with its arithmetic.
+            origin: Some(self.clock.origin()),
         }
     }
 
     /// Advance `frames` under `from`, the transport the last
     /// [`begin`](Self::begin) reported, exactly as `process` would over that
-    /// many frames: the same per-frame increment and loop wrap, then the
-    /// steady-time count. **Not** the position writeback: the engine walks
+    /// many frames: the same frames counted and the same loop wraps (so the
+    /// same beats, to the bit), then the steady-time count. **Not** the position writeback: the engine walks
     /// a block before rendering it, and publishes with
     /// [`publish_position`](Self::publish_position) once the block is
     /// rendered, so the live playhead reads the block's first frame while it
@@ -261,22 +252,10 @@ impl TransportClock {
     /// told.
     pub(crate) fn advance(&mut self, frames: usize, from: &tutti_graph::Transport) {
         if from.playing {
-            match from
+            let region = from
                 .looping
-                .and_then(|l| super::LoopRange::new(l.start, l.end))
-            {
-                Some(region) => {
-                    for _ in 0..frames {
-                        let from = self.current_beat;
-                        self.current_beat = region.advance(from, from + self.beat_per_sample);
-                    }
-                }
-                None => {
-                    for _ in 0..frames {
-                        self.current_beat += self.beat_per_sample;
-                    }
-                }
-            }
+                .and_then(|l| super::LoopRange::new(l.start, l.end));
+            self.clock.advance(frames, region);
         }
         self.advance_steady_time(frames);
     }
@@ -320,7 +299,7 @@ impl AudioUnit for TransportClock {
     }
 
     fn reset(&mut self) {
-        self.current_beat = Beat(0.0);
+        self.clock.seat(Beat(0.0));
     }
 
     /// Sever every shared link to the *live* transport so this clone can be
@@ -363,13 +342,13 @@ impl AudioUnit for TransportClock {
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
-        self.sample_rate = sample_rate;
-        // The tempo in force, not the one asked: the increment is always
-        // derived from `last_tempo` (see `take_tempo`), which is the tempo a
-        // graph engine reports in its `Env` and an `EnvClock` steps by. A
-        // request inside the hysteresis would otherwise run this clock at a
-        // tempo it does not publish.
-        self.beat_per_sample = super::state::beats_per_sample(self.last_tempo, sample_rate);
+        // A new segment at the new rate, at the tempo in force, not the one
+        // asked: the clock takes a tempo only through `take_tempo`'s
+        // hysteresis, and the tempo in force is the one a graph engine
+        // reports in its `Env` and an `EnvClock` steps by. A request inside
+        // the hysteresis would otherwise run this clock at a tempo it does
+        // not publish.
+        self.clock.set_sample_rate(sample_rate);
     }
 
     #[inline]
@@ -377,18 +356,19 @@ impl AudioUnit for TransportClock {
         self.apply_pending_seek();
         self.update_tempo_if_changed();
 
-        let (whole, frac) = split_beat(self.current_beat);
+        let (whole, frac) = split_beat(self.clock.beat());
         output[0] = whole;
         output[1] = frac;
 
         if !self.links.paused.load(Ordering::Acquire) {
-            let from = self.current_beat;
-            self.current_beat += self.beat_per_sample;
-            self.apply_loop_wrap(from);
+            // `LoopRange` is non-empty by construction; only a playhead that
+            // crosses the end wraps (`FrameClock::advance`).
+            let region = self.links.loop_span.as_ref().and_then(LoopSpan::range);
+            self.clock.advance(1, region);
         }
 
         if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(self.current_beat.get(), Ordering::Release);
+            writeback.store(self.clock.beat().get(), Ordering::Release);
         }
         self.advance_steady_time(1);
     }
@@ -402,30 +382,25 @@ impl AudioUnit for TransportClock {
         let active_loop = self.links.loop_span.as_ref().and_then(LoopSpan::range);
 
         if is_paused {
-            let (whole, frac) = split_beat(self.current_beat);
+            let (whole, frac) = split_beat(self.clock.beat());
             for i in 0..size {
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
-            }
-        } else if let Some(region) = active_loop {
-            for i in 0..size {
-                let (whole, frac) = split_beat(self.current_beat);
-                output.set_f32(0, i, whole);
-                output.set_f32(1, i, frac);
-                let from = self.current_beat;
-                self.current_beat = region.advance(from, from + self.beat_per_sample);
             }
         } else {
+            // Frame by frame, each beat in closed form from the segment: what
+            // `advance(size)` lands on, and what an `EnvClock` continuing this
+            // clock's origin emits.
             for i in 0..size {
-                let (whole, frac) = split_beat(self.current_beat);
+                let (whole, frac) = split_beat(self.clock.beat());
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
-                self.current_beat += self.beat_per_sample;
+                self.clock.advance(1, active_loop);
             }
         }
 
         if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(self.current_beat.get(), Ordering::Release);
+            writeback.store(self.clock.beat().get(), Ordering::Release);
         }
         self.advance_steady_time(size);
     }
@@ -443,7 +418,7 @@ impl AudioUnit for TransportClock {
     }
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let (whole, frac) = split_beat(self.current_beat);
+        let (whole, frac) = split_beat(self.clock.beat());
         let mut output = SignalFrame::new(2);
         output.set(0, Signal::Value(f64::from(whole)));
         output.set(1, Signal::Value(f64::from(frac)));

@@ -2008,11 +2008,12 @@ impl BeatDuration {
     /// For *duration* readouts — a clip length, a UI-facing time display. It is
     /// deliberately **not** the conversion the per-sample transport path uses:
     /// `tutti_core::transport::state::beats_per_sample` computes
-    /// `(tempo / 60) / sample_rate` and documents that association as
-    /// load-bearing (the offline timeline is pinned to agree with the clock
-    /// sample-for-sample, and the two groupings round differently). Routing
-    /// those sites through this method would silently re-associate the
-    /// arithmetic. Two conversions, two call sites, on purpose.
+    /// `(tempo / 60) / sample_rate`, the one spelling every reader placing a
+    /// beat in a block divides by (the two groupings round differently, and
+    /// readers must agree). Routing those sites through this method would
+    /// silently re-associate the arithmetic. Two conversions, two call sites,
+    /// on purpose. (No clock steps by either: a playhead is a frame count,
+    /// `TimelineSegment`.)
     ///
     /// Keeping them apart is now a choice rather than a constraint: that
     /// function takes a [`SampleRate`], which this crate defines, so it *could*

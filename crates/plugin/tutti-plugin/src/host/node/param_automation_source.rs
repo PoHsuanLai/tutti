@@ -486,10 +486,11 @@ impl ParamAutomationSource {
             out.queues.clear();
             return;
         }
-        // Through the shared conversion, not `tempo / 60 / rate` by hand: its
-        // doc records the association as load-bearing, because the offline
-        // timeline is pinned to agree with the clock sample-for-sample and the
-        // two groupings round differently.
+        // Through the shared conversion, not `tempo / 60 / rate` by hand, so
+        // every reader divides by the same rate. This samples the curve at
+        // offsets from the block's first beat (one rounding each, nothing
+        // accumulated across blocks: the block's beat is the clock's own,
+        // derived from its frame count).
         let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
         let loop_range = self.transport.loop_range();
         let last = block_size - 1;

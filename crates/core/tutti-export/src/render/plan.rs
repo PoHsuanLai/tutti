@@ -78,8 +78,8 @@ pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
 ///
 /// Routed through [`beats_per_sample`](tutti_core::transport::beats_per_sample)
 /// rather than `BeatDuration::to_seconds`, which returns `f32` `Seconds` and
-/// would reintroduce the narrowing above. The association `(tempo / 60) / rate`
-/// is load-bearing — see that function.
+/// would reintroduce the narrowing above. `(tempo / 60) / rate` is the one
+/// spelling of the rate — see that function.
 pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 {
     let bps = tutti_core::transport::beats_per_sample(tempo, rate).get();
     if bps <= 0.0 {

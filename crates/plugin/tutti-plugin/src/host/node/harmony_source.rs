@@ -17,7 +17,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::transport::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync, Timeline};
 use tutti_core::{Beat, SampleRate};
 
 use crate::host::ipc_client::audio::HarmonyInputs;
@@ -188,15 +188,19 @@ impl HarmonySource {
         window: &BeatWindow,
         mut push: impl FnMut(&T, i32),
     ) {
+        // Membership by frame, not by comparing beats (`BeatWindow::place`):
+        // a change exactly on a block boundary lands on its frame, once.
         let mut idx = cursor.load(Ordering::Relaxed) as usize;
-        while idx < items.len() && items[idx].beat() < window.start_beat {
+        while idx < items.len() && window.place(items[idx].beat()) == BeatPlacement::Before {
             idx += 1;
         }
-        while idx < items.len() && items[idx].beat() < window.end_beat {
-            // Harmony change offsets are `i32` on the wire; the window clamps to
-            // `block_size - 1`, so the cast is always in range.
-            let off = window.offset_of(items[idx].beat()) as i32;
-            push(&items[idx], off);
+        while idx < items.len() {
+            let BeatPlacement::At(off) = window.place(items[idx].beat()) else {
+                break;
+            };
+            // Harmony change offsets are `i32` on the wire; an offset is inside
+            // the block (`<= block_size - 1`), so the cast is always in range.
+            push(&items[idx], off as i32);
             idx += 1;
         }
         cursor.store(idx as u64, Ordering::Release);

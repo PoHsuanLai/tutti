@@ -156,6 +156,7 @@ use crate::event::{merge_into, Event, EventWriter, SortedEvents};
 use crate::fade::CrossfadeCurve;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
+use crate::legacy::LegacyClock;
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges, MAX_PORTS,
@@ -1041,6 +1042,41 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        self.render(frames, transport, changes, None, inputs, outputs);
+    }
+
+    /// As [`process_with_changes`](Self::process_with_changes), with `clock`
+    /// seating the timeline the graph's [`Legacy`](crate::Legacy) units poll
+    /// out of band on the first frame of each of their chunks
+    /// ([`LegacyClock`]). A renderer whose `Legacy` units read a shared
+    /// timeline (a sampler voice's `Arc<dyn Timeline>`) renders through this,
+    /// and puts the timeline back where the block ends once it returns: the
+    /// last seat is wherever the last `Legacy` unit's last chunk began.
+    ///
+    /// # Panics
+    ///
+    /// As [`process_with_changes`](Self::process_with_changes).
+    pub fn process_with_clock(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        clock: &dyn LegacyClock,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
+        self.render(frames, transport, changes, Some(clock), inputs, outputs);
+    }
+
+    fn render(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        legacy_clock: Option<&dyn LegacyClock>,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
         let _rt = AudioThread::enter();
         let _ftz = ScopedNoDenormals::new();
         // Before the bound is checked: a queued resume changes it, and the
@@ -1217,6 +1253,7 @@ impl Executor {
                         max,
                         cap,
                         env: &env,
+                        legacy_clock,
                     };
                     let mut st = OpState {
                         arena,
@@ -1442,6 +1479,7 @@ fn fading_node_op(
         let cx = Cx {
             env: h.env,
             arrival: h.rec.arrival,
+            legacy_clock: h.legacy_clock,
         };
         x.out
             .as_mut()
@@ -1524,6 +1562,7 @@ struct Head<'p, 'e> {
     max: MaxBlock,
     cap: usize,
     env: &'e Env,
+    legacy_clock: Option<&'e dyn LegacyClock>,
 }
 
 /// What a node op may write besides its own unit.
@@ -1632,6 +1671,7 @@ fn node_op(
 
     let call = Call {
         env: h.env,
+        legacy_clock: h.legacy_clock,
         max: h.max,
         frames,
         rec,
@@ -1697,6 +1737,7 @@ struct Extra<'s> {
 /// One node call's constants, shared by every borrow form.
 struct Call<'p, 'e> {
     env: &'e Env,
+    legacy_clock: Option<&'e dyn LegacyClock>,
     max: MaxBlock,
     frames: usize,
     rec: &'p NodeRec,
@@ -1740,6 +1781,7 @@ impl Call<'_, '_> {
         Cx {
             env: self.env,
             arrival: self.rec.arrival,
+            legacy_clock: self.legacy_clock,
         }
     }
 

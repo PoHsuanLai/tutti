@@ -29,6 +29,28 @@
 //!   before the unit runs, so an output that already holds its input is no
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].
 //! - **Silence: no claim unless the caller makes it.** See below.
+//! - **Time read out of band: seated per chunk.** See below.
+//!
+//! # A timeline polled per call: [`LegacyClock`]
+//!
+//! An `AudioUnit` receives no `Env`. One that follows the transport (a
+//! sampler voice, and so every clip reader; a plugin's transport source)
+//! polls a shared timeline, an `Arc<dyn Timeline>` in tutti-core, on every
+//! `process` call, and takes what it reads as the position of that call's
+//! first frame. `Net` rendered in 64-frame blocks and moved its clock between
+//! them, so the poll was right to the chunk. The graph moves its clock once
+//! per block; a timeline that stood still across the block would hand all of
+//! a block's chunks the same beat, and a voice would replay its first 64
+//! frames `block / 64` times (a dry 440 Hz voice measured 768 Hz at 1024).
+//!
+//! So a renderer that owns such a timeline hands the executor a
+//! [`LegacyClock`] ([`Executor::process_with_clock`](crate::Executor::process_with_clock)),
+//! and the adapter calls [`seat`](LegacyClock::seat) with each chunk's first
+//! frame before the unit runs it: the timeline reads where the transport is
+//! on that frame, as it did through `Net`. [`Env`](crate::Env) is untouched:
+//! it describes the whole block, and the seats are positions inside it.
+//! Doc 013 §6 has the decision; the proper fix, units reading
+//! `Env::transport_at` themselves, is the Phase 4 port's.
 //!
 //! # Never skipped, unless [`pure`](Legacy::pure)
 //!
@@ -181,6 +203,7 @@ use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, IntoNode, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask, Status,
 };
+use crate::time::Offset;
 
 /// An `AudioUnit`, ready to run as a [`Node`]: insert it
 /// ([`Editor::insert`], through [`IntoNode`]).
@@ -215,6 +238,35 @@ struct Adapter {
 /// calls. Past that, [`LegacyControls::set`] holds and coalesces on the
 /// control side (see the `legacy` module docs, `src/legacy.rs`).
 pub const LEGACY_SETTINGS_CAPACITY: usize = 64;
+
+/// The frames a [`Legacy`] hands its unit per `AudioUnit::process` call,
+/// walking each block from its first frame: fundsp's `MAX_BUFFER_SIZE`, the
+/// most a call can take. Every [`LegacyClock::seat`] is at a multiple of it.
+pub const LEGACY_CHUNK: usize = MAX_BUFFER_SIZE;
+
+/// Seats the timeline [`Legacy`] units poll out of band on the frame their
+/// next chunk starts.
+///
+/// Implemented by whoever renders the graph *and* owns the clock such units
+/// hold (the live engine, an offline render), and handed to
+/// [`Executor::process_with_clock`](crate::Executor::process_with_clock) for
+/// one block. See "A timeline polled per call" in the `legacy` module docs
+/// (`src/legacy.rs`).
+///
+/// **Not a clock of its own.** Seats are positions inside the block the
+/// renderer already advanced its clock over (or will, the moment the block
+/// returns); they move nothing past the block. Each `Legacy` node walks its
+/// chunks from frame 0, so the seats go forward for one node and start again
+/// at 0 for the next: an implementation answers each from the block's own
+/// start, never from the last seat.
+pub trait LegacyClock {
+    /// Seat the timeline on frame `at` of the block being rendered, before a
+    /// `Legacy` unit processes the chunk that starts there. `at` is a
+    /// multiple of [`LEGACY_CHUNK`].
+    ///
+    /// Audio thread: must not allocate, lock or block.
+    fn seat(&self, at: Offset);
+}
 
 /// What became of a [`LegacyControls::set`] or
 /// [`flush`](LegacyControls::flush). Never "dropped": a setting that did not
@@ -615,7 +667,7 @@ impl Node for Adapter {
         self.shape = Self::probe(self.unit.as_mut());
     }
 
-    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let ins = self.shape.audio_in.count() as usize;
         let outs = self.shape.audio_out.count() as usize;
         let frames = io.frames();
@@ -636,7 +688,12 @@ impl Node for Adapter {
         }
         let mut start = 0;
         while start < frames {
-            let len = (frames - start).min(MAX_BUFFER_SIZE);
+            let len = (frames - start).min(LEGACY_CHUNK);
+            // The unit may poll a timeline during this call: seat it on the
+            // chunk's first frame (see "A timeline polled per call").
+            if let Some(clock) = cx.legacy_clock {
+                clock.seat(Offset::raw(start as u32));
+            }
             for c in 0..ins {
                 self.input.channel_f32_mut(c)[..len]
                     .copy_from_slice(&io.input(c)[start..start + len]);

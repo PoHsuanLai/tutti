@@ -26,21 +26,18 @@
 //! wrong clock rate) leaves the output emphatically non-zero, so `!= 0.0` cannot
 //! see any of them.
 //!
-//! # The graph renders 64-frame blocks, and why
+//! # The graph renders 1024-frame blocks; the voice reads per 64
 //!
 //! The voice runs in the native graph as a `tutti_graph::Legacy`, which calls
 //! it in 64-frame chunks from each block's start, and it reads the timeline
-//! **out of band** — `beat()` on its `Arc`, on every call. The export advances
-//! that timeline once per graph block (`RenderClock::render_graph`). So at
-//! `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024) every chunk of a block
-//! reads the block's first beat and the voice replays its first 64 frames
-//! sixteen times: measured, the dry voice exports at ~768 Hz, not 440. At a
-//! 64-frame `MaxBlock` the clock moves between the voice's calls exactly as a
-//! `Net` render's does (`NetSource` advances it every 64 frames), which is why
-//! [`voice_graph`] prepares at 64. That is a constraint of `Legacy` clip
-//! readers until they read `Env::transport_at` natively (doc 013, Phase 4),
-//! not of these tests; doc 013's PR 8 notes carry it forward to the export
-//! fork (PR 12), which prepares at `GRAPH_MAX_BLOCK`.
+//! **out of band** — `beat()` on its `Arc`, on every call. The graph is
+//! prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024), so the
+//! render clock has to move *inside* each block: `RenderClock::render_graph`
+//! seats it on every chunk's first frame (`LegacyClock`, doc 013 §6). Without
+//! that every chunk of a block reads the block's first beat and the voice
+//! replays its first 64 frames sixteen times: measured, the dry voice exports
+//! at ~768 Hz, not 440. (Until the seating landed, this file prepared at a
+//! 64-frame `MaxBlock` to dodge it.)
 //!
 //! Gated on `wav`, because the assertions decode the exported file through
 //! `hound` — which this crate only links when that feature is on. `wav` is in
@@ -64,10 +61,9 @@ use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig, RenderGraph,
 };
-use tutti_graph::{GraphBuilder, Prepare};
+use tutti_graph::GraphBuilder;
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-use tutti_types::Samples;
 
 const SR: f64 = 48_000.0;
 const BASE_HZ: f32 = 440.0;
@@ -96,9 +92,9 @@ fn tone(frames: usize) -> Arc<Wave> {
 /// `RenderClock`, so the voice and the render share one clock by construction
 /// rather than by two configs that happen to match.
 ///
-/// Prepared at a 64-frame `MaxBlock`, not `RenderGraph::prepare`'s: see the
-/// module docs. Mutation (run): prepare with `RenderGraph::prepare(SampleRate(SR))`
-/// → every case fails, the dry voice measuring ~768 Hz.
+/// Prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`, what an export
+/// renders at: see the module docs. Mutation (run): `Legacy` not seating the
+/// clock per chunk → every case fails, the dry voice measuring ~768 Hz.
 fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
@@ -142,7 +138,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     let id = g.add_unit(Box::new(pool));
     g.pipe_output(id);
     let (editor, executor) = g
-        .build(Prepare::new(SampleRate(SR), Samples(64)))
+        .build(RenderGraph::prepare(SampleRate(SR)))
         .expect("builds");
     (RenderGraph::Graph { editor, executor }, transport)
 }

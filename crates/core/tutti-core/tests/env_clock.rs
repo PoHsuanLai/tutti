@@ -10,7 +10,9 @@
 //! - `ClickNode` fed by `EnvClock` clicks on the same frames, with the same
 //!   samples, as fed by `TransportClock`;
 //! - an offline render driven by `OfflineTimeline::render_graph` hands the
-//!   graph the transport a live graph engine hands it for the same timeline.
+//!   graph the transport a live graph engine hands it for the same timeline:
+//!   the `Env` per block, and the timeline a `Legacy` clip reader polls per
+//!   64-frame chunk.
 
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +21,7 @@ use tutti_core::{
     At, AudioUnit, Beat, Bpm, BufferMut, BufferRef, ChannelLayout, ClickNode, ClickSettings,
     Engine, EnvClock, FadeOut, Frame, InterleavedMut, LoopRange, MetronomeMode, MotionEvent,
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
-    Transport, TransportClock, TransportCommand,
+    Timeline, Transport, TransportClock, TransportCommand,
 };
 use tutti_graph::{Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -381,31 +383,114 @@ impl Node for EnvLog {
     fn reset(&mut self) {}
 }
 
-fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor) {
+/// A clip reader's view of time: an `AudioUnit` (so a `Legacy` node, called
+/// per 64-frame chunk) that logs what its `Timeline` reads on every call,
+/// the way a sampler voice polls its own.
+#[derive(Clone)]
+struct TimelinePoll {
+    timeline: Arc<dyn Timeline>,
+    log: Arc<Mutex<Vec<f64>>>,
+}
+
+impl AudioUnit for TimelinePoll {
+    fn inputs(&self) -> usize {
+        0
+    }
+    fn outputs(&self) -> usize {
+        1
+    }
+    fn tick(&mut self, _: &[f32], output: &mut [f32]) {
+        output[0] = 0.0;
+    }
+    fn process(&mut self, size: usize, _: &BufferRef, output: &mut BufferMut) {
+        self.log
+            .lock()
+            .expect("log")
+            .push(self.timeline.beat().get());
+        for i in 0..size {
+            output.set_f32(0, i, 0.0);
+        }
+    }
+    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
+        let mut out = SignalFrame::new(1);
+        out.set(0, Signal::Latency(0.0));
+        out
+    }
+    fn get_id(&self) -> u64 {
+        tutti_core::mnemonic(b"TTLNPOLL")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// An `EnvLog` at key 1 and a `Legacy` `TimelinePoll` over `timeline` at
+/// key 2, each on a global output.
+fn env_graph(
+    max_block: usize,
+    log: &Arc<Mutex<Vec<Env>>>,
+    timeline: Arc<dyn Timeline>,
+    polls: &Arc<Mutex<Vec<f64>>>,
+) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(max_block)));
     ed.insert(NodeKey(1), "env", EnvLog(Arc::clone(log)));
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
+    ed.insert(
+        NodeKey(2),
+        "clip",
+        Legacy::new(TimelinePoll {
+            timeline,
+            log: Arc::clone(polls),
+        }),
+    );
+    ed.spec_mut().topology.outputs = [1, 2]
+        .map(|k| {
+            Source::Node(OutPort {
+                node: NodeKey(k),
+                port: 0,
+            })
+        })
+        .to_vec();
     ed.commit().expect("commits");
     (ed, exec)
 }
 
 /// An offline render from bar 2 (beat 4), at 100 BPM, looping beats 6–7,
-/// driven by `OfflineTimeline::render_graph`, hands the graph the transport
-/// a live graph engine hands it for the same timeline: block by block, the
-/// same play state, tempo and loop, no changes, and the same start beat
-/// within the documented tolerance. The tolerance is the timeline's: it
-/// advances a block in one step where the live clock accumulates frame by
-/// frame, which agree to rounding (the same split as `OfflineTimeline` vs
-/// `TransportClock`), not to the bit.
+/// driven by `OfflineTimeline::render_graph`, hands the graph the time a
+/// live graph engine hands it for the same timeline, at the two
+/// granularities the graph specifies (doc 013 §6):
+///
+/// - **per graph block, the `Env`**: the same play state, tempo and loop,
+///   no changes, and the same start beat;
+/// - **per `Legacy` chunk, the timeline a clip reader polls** (its
+///   `Arc<dyn Timeline>`, read on every `AudioUnit::process`): the same
+///   beat, which is the `Env`'s beat at the chunk's first frame
+///   (`Env::transport_at`). Both renderers seat their clock on each chunk
+///   while the block renders; the `Env` stays the block's.
+///
+/// The blocks correspond one to one because both sides render the same
+/// graph blocks (the offline side replays the live side's), and so do their
+/// chunks. The beats agree within a tolerance, not to the bit: the live
+/// clock accumulates frame by frame and the offline timeline 64 frames at a
+/// time (a `Net` render's steps), the same split as `OfflineTimeline` vs
+/// `TransportClock`.
 ///
 /// Mutations (run):
-/// - advance the timeline before processing in `render_graph` → every
+/// - `advance(frames)` before `graph_block` in `render_graph` → every
 ///   offline beat is one block ahead → fails on block 0;
 /// - drop the loop from `graph_block` → the offline beats run past 7 →
-///   fails once the live one wraps.
+///   fails once the live one wraps;
+/// - `Legacy` not seating → every chunk past a block's first reads the
+///   block's end (live) or its start (offline) → fails on the per-chunk
+///   check;
+/// - `render_graph` not putting the timeline back on the block's start
+///   before advancing it → every block after the first starts past where
+///   the live one does → fails.
 #[test]
 fn an_offline_render_sees_the_live_engine_transport() {
     const BAR_2: f64 = 4.0;
@@ -414,7 +499,8 @@ fn an_offline_render_sees_the_live_engine_transport() {
     // Live.
     let live_t = Transport::new(SR);
     let live_log = Arc::new(Mutex::new(Vec::new()));
-    let (mut ed, exec) = env_graph(512, &live_log);
+    let live_polls = Arc::new(Mutex::new(Vec::new()));
+    let (mut ed, exec) = env_graph(512, &live_log, Arc::new(live_t.clone()), &live_polls);
     let live = Engine::with_graph(&live_t, &mut ed, exec).expect("within the limits");
     live_t.settings.set_tempo(Bpm(100.0));
     live_t.settings.loop_span.set_range(6.0, 7.0);
@@ -429,19 +515,20 @@ fn an_offline_render_sees_the_live_engine_transport() {
 
     // Offline, in the graph blocks the live engine rendered (a device block
     // past its maximum is two).
-    let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(BAR_2),
         tempo: Bpm(100.0),
         sample_rate: SampleRate(SR),
         loop_range: LoopRange::new(6.0, 7.0),
-    });
+    }));
     let off_log = Arc::new(Mutex::new(Vec::new()));
-    let (_ed, mut exec) = env_graph(512, &off_log);
-    let mut out = vec![0.0f32; 512];
+    let off_polls = Arc::new(Mutex::new(Vec::new()));
+    let (_ed, mut exec) = env_graph(512, &off_log, timeline.clone(), &off_polls);
+    let (mut o1, mut o2) = (vec![0.0f32; 512], vec![0.0f32; 512]);
     let live_log = live_log.lock().expect("log");
     for env in live_log.iter() {
         let n = env.block_len.get();
-        timeline.render_graph(&mut exec, n, &[], &mut [&mut out[..n]]);
+        timeline.render_graph(&mut exec, n, &[], &mut [&mut o1[..n], &mut o2[..n]]);
     }
     let off_log = off_log.lock().expect("log");
 
@@ -465,6 +552,42 @@ fn an_offline_render_sees_the_live_engine_transport() {
         );
         wrapped |= i > 0 && l.beat < live_log[i - 1].transport.beat;
     }
+
+    // Per chunk: what the clip reader polled, both sides, against the `Env`
+    // at the chunk's first frame.
+    let (live_polls, off_polls) = (
+        live_polls.lock().expect("log"),
+        off_polls.lock().expect("log"),
+    );
+    let chunks = live_log
+        .iter()
+        .flat_map(|env| {
+            (0..env.block_len.get())
+                .step_by(tutti_graph::LEGACY_CHUNK)
+                .map(move |k| (env, k))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(live_polls.len(), chunks.len(), "one live poll a chunk");
+    assert_eq!(off_polls.len(), chunks.len(), "one offline poll a chunk");
+    let mut moved_within = false;
+    for (j, (&(env, k), (&l, &o))) in chunks
+        .iter()
+        .zip(live_polls.iter().zip(off_polls.iter()))
+        .enumerate()
+    {
+        let at = tutti_graph::Offset::new(k, env.block_len).expect("inside the block");
+        let want = env.transport_at(at).beat.get();
+        assert!(
+            (l - want).abs() < 1e-9 && (o - want).abs() < 1e-9,
+            "chunk {j} (frame {k} of the block at {}): live polled {l}, offline {o}, \
+             the Env says {want}",
+            env.frame.get()
+        );
+        moved_within |= k > 0 && l != env.transport.beat.get();
+    }
+    // Not vacuous: a chunk inside a block read past the block's first beat.
+    assert!(moved_within, "the timeline moved within a block");
+
     // Not vacuous: it started on bar 2, it rolled, and it wrapped.
     assert_eq!(off_log[0].transport.beat, Beat(BAR_2));
     assert!(off_log[0].transport.playing);
@@ -478,8 +601,9 @@ fn an_offline_render_sees_the_live_engine_transport() {
 /// the timeline read: the two clocks of an offline render agree at every
 /// block start, bit for bit, and within a block to rounding.
 ///
-/// Mutation (run): advance before processing in `render_graph` → the first
-/// emitted beat is one block on → fails on block 0.
+/// Mutation (run): `advance(frames)` before `graph_block` in
+/// `render_graph` → the first emitted beat is one block on → fails on
+/// block 0.
 #[test]
 fn env_clock_offline_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {

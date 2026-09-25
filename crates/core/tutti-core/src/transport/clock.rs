@@ -280,6 +280,19 @@ impl TransportClock {
         self.advance_steady_time(frames);
     }
 
+    /// Publish `beat` as the live playhead, the figure a [`Timeline`]
+    /// (`Transport::beat`) reads, without moving this clock. The graph
+    /// engine seats the timeline on each `Legacy` chunk's first frame with
+    /// it, then puts back [`current_beat`](Self::current_beat) (see
+    /// `engine.rs`, `Seats`). A no-op for a clock with no writeback.
+    ///
+    /// [`Timeline`]: super::Timeline
+    pub(crate) fn publish_position(&self, beat: Beat) {
+        if let Some(ref writeback) = self.links.position_writeback {
+            writeback.store(beat.get(), Ordering::Release);
+        }
+    }
+
     /// Advance the free-running sample counter.
     ///
     /// Deliberately **not** gated on `paused`: this counts samples the device

@@ -146,6 +146,8 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
         fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
             Default::default()
         }
+        // Graph path only, like `graph_block`.
+        fn seat(&self, _: &tutti_graph::Transport, _: tutti_types::Samples) {}
     }
 
     let clock = Arc::new(CountingClock(AtomicUsize::new(0)));

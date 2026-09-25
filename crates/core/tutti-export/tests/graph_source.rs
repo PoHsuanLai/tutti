@@ -516,8 +516,8 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 /// Mutations (run):
 /// - `GraphSource::fill` rendering through `FrozenClock` (a stopped
 ///   transport at beat 0) and only advancing the clock → every beat reads 0;
-/// - `RenderClock::render_graph` advancing before processing → the first
-///   frame reads a block past the start beat.
+/// - `RenderClock::render_graph` advancing before `graph_block` → the
+///   first frame reads a block past the start beat.
 #[test]
 fn the_graph_reads_the_render_clocks_transport() {
     let start = 4.0;
@@ -552,4 +552,206 @@ fn the_graph_reads_the_render_clocks_transport() {
         (timeline.beat().get() - (start + bps * frames as f64)).abs() < 1e-9,
         "the timeline must advance by exactly the frames rendered"
     );
+}
+
+// ---- a clip reader: a `Legacy` unit that polls the render clock ----------
+
+/// A 440 Hz sine at the render's rate, one second long: a plain wave table,
+/// so a voice reading it at unit rate reproduces it sample for sample.
+fn tone() -> Arc<tutti_io::Wave> {
+    let mut w = tutti_io::Wave::new(1, RATE.get());
+    for i in 0..RATE.get() as usize {
+        w.push_frame(&[tone_at(i)]);
+    }
+    Arc::new(w)
+}
+
+/// The tone's frame `i`.
+fn tone_at(i: usize) -> f32 {
+    (std::f32::consts::TAU * 440.0 * i as f32 / RATE.get() as f32).sin()
+}
+
+/// An offline timeline at beat 0, 120 BPM, at the render's rate.
+fn timeline() -> Arc<OfflineTimeline> {
+    Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        start_beat: Beat(0.0),
+        tempo: Bpm(120.0),
+        sample_rate: RATE,
+        loop_range: None,
+    }))
+}
+
+/// A voice placed at beat 0 on `clock`, pitched by `cents`, in a
+/// `VoicePool` (the unit a clip track renders).
+fn placed_pool(clock: &Arc<OfflineTimeline>, cents: f32) -> tutti_sampler::VoicePool {
+    use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+    let source = MemorySource::with_transport(
+        tone(),
+        Arc::clone(clock) as Arc<dyn tutti_core::Timeline>,
+        Beat(0.0),
+        None,
+    );
+    let (mut pool, _handle) = VoicePool::new();
+    pool.insert_voice(
+        SlotId(1),
+        Voice {
+            source: VoiceSource::Memory(source),
+            play: Playback {
+                pitch: tutti_core::Cents::new(cents),
+                ..Default::default()
+            },
+            channel_index: None,
+        },
+    );
+    pool
+}
+
+/// The planes of `graph`, rendered as float stereo (or the graph's width)
+/// under `clock`.
+fn render_under(
+    graph: RenderGraph,
+    clock: &OfflineTimeline,
+    width: ChannelLayout,
+) -> Vec<Vec<f32>> {
+    render_to_buffers(graph, &config(BitDepth::Float32, width), clock)
+        .expect("renders")
+        .planes
+}
+
+/// The first `(channel, frame)` at which two renders differ, if any.
+fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
+    assert_eq!(a.len(), b.len(), "widths differ");
+    a.iter().zip(b).enumerate().find_map(|(c, (x, y))| {
+        assert_eq!(x.len(), y.len(), "lengths differ");
+        x.iter()
+            .zip(y)
+            .position(|(p, q)| p.to_bits() != q.to_bits())
+            .map(|i| (c, i))
+    })
+}
+
+/// **A sampler voice renders bit-identically through both backends at
+/// `GRAPH_MAX_BLOCK`**, dry and a fifth up, and the dry one is the tone it
+/// plays, frame for frame.
+///
+/// The voice polls the render clock (its `Arc<dyn Timeline>`) on every
+/// `AudioUnit::process` call, which `Legacy` makes per 64-frame chunk. The
+/// graph render renders 1024-frame blocks, so unless the clock is seated on
+/// each chunk (`RenderClock::render_graph`, doc 013 §6) every chunk of a
+/// block reads the block's first beat, and the voice replays its first 64
+/// frames sixteen times (a dry 440 Hz voice measured 768 Hz). `NetSource`
+/// renders 64-frame blocks and advances the clock between them; the graph
+/// render advances it in the same steps and seats it on the positions those
+/// steps pass through, so the two agree to the bit.
+///
+/// Why to the bit and not to rounding: the pitched voice runs through the
+/// vocoder, which turns an ulp of beat into far more. Measured with one
+/// `advance(1024)` a block and seats computed in one multiply each: the
+/// fifth-up voice left the `Net`'s render by 1e-3 at frame 3076.
+///
+/// Mutations (run):
+/// - `Legacy`'s adapter not calling `seat` (the clock stands at the
+///   block's first beat) → the backends part at frame 64, and the dry
+///   render leaves the tone there;
+/// - `OfflineTimeline::stepped` taking one step of all its frames (a seat
+///   computed in one multiply) → the planes differ by an ulp from frame
+///   448, below what the tone check can see: that is what the bit-identity
+///   is for;
+/// - `render_graph` advancing the block in one `advance(frames)` → the
+///   planes differ by an ulp from frame 2048;
+/// - `render_graph` not putting the clock back on the block's start before
+///   advancing it (so it advances from the last chunk's seat) → every block
+///   after the first starts 960 frames ahead.
+#[test]
+fn a_sampler_voice_renders_bit_identically_at_the_graph_block() {
+    assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
+    for cents in [0.0f32, 700.0] {
+        let net_clock = timeline();
+        let mut net = Net::new(0, 2);
+        let id = net.push(Box::new(placed_pool(&net_clock, cents)));
+        net.pipe_output(id);
+        let a = render_under(net.into(), &net_clock, ChannelLayout::STEREO);
+
+        let graph_clock = timeline();
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+        let k = g.add_unit(Box::new(placed_pool(&graph_clock, cents)));
+        g.pipe_output(k);
+        let b = render_under(built(g), &graph_clock, ChannelLayout::STEREO);
+
+        if let Some((c, i)) = first_difference(&a, &b) {
+            panic!(
+                "{cents} cents: channel {c} differs first at frame {i}: net {} graph {}",
+                a[c][i], b[c][i]
+            );
+        }
+        assert_audible(&b);
+        // Both clocks stand where the render ends, to the bit.
+        assert_eq!(
+            net_clock.beat().get().to_bits(),
+            graph_clock.beat().get().to_bits(),
+            "{cents} cents: the clocks end apart"
+        );
+        if cents == 0.0 {
+            // Not merely the `Net`'s render: the right one. At unit rate the
+            // voice reads the table at (nearly) integer positions.
+            for (i, &s) in b[0].iter().enumerate() {
+                let want = tone_at(i);
+                assert!(
+                    (s - want).abs() < 1e-3,
+                    "frame {i}: the voice read {s}, the tone is {want} there"
+                );
+            }
+        }
+    }
+}
+
+/// The same through a **fork**: a placed `MemorySource` in a live graph,
+/// forked offline onto the render's timeline (its `rebind_offline`
+/// re-points it), renders what the `Net` path renders with the voice on
+/// that timeline from the start.
+///
+/// Mutations (run): `Legacy`'s adapter not calling `seat` → the backends
+/// part at frame 64; `OfflineTimeline::stepped` in one step → they part by
+/// an ulp at frame 448.
+#[test]
+fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
+    use tutti_sampler::MemorySource;
+    let placed = |clock: Arc<OfflineTimeline>| {
+        MemorySource::with_transport(
+            tone(),
+            clock as Arc<dyn tutti_core::Timeline>,
+            Beat(0.0),
+            None,
+        )
+    };
+
+    let net_clock = timeline();
+    let mut net = Net::new(0, 1);
+    let id = net.push(Box::new(placed(Arc::clone(&net_clock))));
+    net.pipe_output(id);
+    net.set_sample_rate(RATE);
+    net.reset();
+    let a = render_under(net.into(), &net_clock, ChannelLayout::MONO);
+
+    // Live, the voice follows another clock, somewhere else; the fork
+    // re-points it at the render's.
+    let live_clock = timeline();
+    live_clock.seek_to(Beat(3.0));
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let k = g.add_unit(Box::new(placed(live_clock)));
+    g.pipe_output(k);
+    let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    let graph_clock = timeline();
+    let rebind: OfflineTransport = graph_clock.clone();
+    let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)
+        .expect("a memory source is forkable");
+    let b = render_under(forked, &graph_clock, ChannelLayout::MONO);
+
+    if let Some((c, i)) = first_difference(&a, &b) {
+        panic!(
+            "channel {c} differs first at frame {i}: net {} graph {}",
+            a[c][i], b[c][i]
+        );
+    }
+    assert_audible(&b);
 }

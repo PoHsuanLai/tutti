@@ -92,8 +92,11 @@ pub trait Timeline: Send + Sync {
 /// the net, so it only ever advances this. A renderer driving the native graph
 /// (`tutti_graph::Executor`) must also *hand* each block a transport, since
 /// the graph's clock is the executor's `Env`, not a node — that is
-/// [`graph_block`](Self::graph_block), and [`render_graph`](Self::render_graph)
-/// is the one order the two are called in. It is still not a supertrait of
+/// [`graph_block`](Self::graph_block) — and *seat* this clock on each
+/// 64-frame chunk the graph's `Legacy` units run, since they poll it as a
+/// `Timeline` per call and the graph block is longer — that is
+/// [`seat`](Self::seat). [`render_graph`](Self::render_graph) is the one
+/// order they are called in. It is still not a supertrait of
 /// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
 /// report — stopped, at beat zero — without being a timeline anything reads.
 ///
@@ -123,11 +126,37 @@ pub trait RenderClock: Send + Sync {
     /// it is.
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges);
 
+    /// Stand `at` frames into the block `origin` describes (what
+    /// [`graph_block`](Self::graph_block) reported for it): where
+    /// [`advance`](Self::advance) from there, called per `LEGACY_CHUNK`
+    /// (64) frames and then for the rest, would leave this clock — the
+    /// steps [`render_graph`](Self::render_graph) and a `Net` render both
+    /// advance it in, so a seat is the position the clock will really pass
+    /// through, to the bit. A view of the block in progress, not a move: `at`
+    /// 0 puts the clock back on the block's first frame.
+    ///
+    /// [`render_graph`](Self::render_graph) calls it before each of a
+    /// `Legacy` unit's chunks (a sampler voice polls this clock as a
+    /// [`Timeline`] on every call, doc 013 §6), then with 0 before it
+    /// advances the clock over the block. It answers from `origin` every
+    /// time, never from the last seat: each `Legacy` node walks the block
+    /// from frame 0 again.
+    ///
+    /// Required, for [`graph_block`](Self::graph_block)'s reason: a clock
+    /// that moves and did not seat would hand every chunk of a block the
+    /// block's first beat, and a voice would replay its first 64 frames
+    /// through the block. A clock that does not move (`FrozenClock`) seats
+    /// nothing.
+    fn seat(&self, origin: &tutti_graph::Transport, at: tutti_types::Samples);
+
     /// Render one block of `frames` through `exec` under this clock, then
-    /// advance the clock by it: [`graph_block`](Self::graph_block),
-    /// `Executor::process_with_changes`, then [`advance`](Self::advance) —
-    /// the one order that keeps every reader of this clock on the frame the
-    /// graph renders (emit-then-advance, as above).
+    /// advance the clock by it: [`graph_block`](Self::graph_block), then
+    /// `Executor::process_with_clock` [seating](Self::seat) the clock on
+    /// each `Legacy` chunk's first frame, then the clock back on the block's
+    /// first frame and [`advance`](Self::advance)d by `frames`, 64 at a
+    /// time as the `Net` path advances it — the one order that keeps every
+    /// reader of this clock on the frame the graph renders (emit-then-advance,
+    /// as above).
     ///
     /// # Panics
     ///
@@ -141,8 +170,35 @@ pub trait RenderClock: Send + Sync {
         outputs: &mut [&mut [f32]],
     ) {
         let (transport, changes) = self.graph_block();
-        exec.process_with_changes(frames, &transport, &changes, inputs, outputs);
-        self.advance(tutti_types::Samples(frames));
+        let seats = Seats {
+            clock: self,
+            origin: transport,
+        };
+        exec.process_with_clock(frames, &transport, &changes, &seats, inputs, outputs);
+        // The last seat is wherever the last `Legacy` chunk began: back to
+        // the block's start, then forward as a `Net` render moves the
+        // clock, a chunk at a time, which is where the seats said it was.
+        self.seat(&transport, tutti_types::Samples(0));
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(tutti_graph::LEGACY_CHUNK);
+            self.advance(tutti_types::Samples(n));
+            done += n;
+        }
+    }
+}
+
+/// A [`RenderClock`] as the executor's `LegacyClock` for one block: each seat
+/// is [`RenderClock::seat`] from the block's origin.
+struct Seats<'a, C: RenderClock + ?Sized> {
+    clock: &'a C,
+    origin: tutti_graph::Transport,
+}
+
+impl<C: RenderClock + ?Sized> tutti_graph::LegacyClock for Seats<'_, C> {
+    fn seat(&self, at: tutti_graph::Offset) {
+        self.clock
+            .seat(&self.origin, tutti_types::Samples(at.index()));
     }
 }
 
@@ -166,6 +222,9 @@ impl RenderClock for FrozenClock {
             tutti_graph::TransportChanges::NONE,
         )
     }
+
+    /// Nothing moves, so there is nothing to seat.
+    fn seat(&self, _origin: &tutti_graph::Transport, _at: tutti_types::Samples) {}
 }
 
 /// A live transport: a [`Timeline`] that also carries the record/loop state a

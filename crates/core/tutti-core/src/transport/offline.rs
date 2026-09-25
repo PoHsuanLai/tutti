@@ -136,16 +136,39 @@ impl OfflineTimeline {
     /// production render uses — see the sample-for-sample test below.
     pub fn advance(&self, samples: usize) {
         let from = Beat(self.current_beat.load(Ordering::Acquire));
-        let mut beat = from + self.beats_per_sample * samples as f64;
+        self.current_beat
+            .store(self.step(from, samples).get(), Ordering::Release);
+    }
 
-        if let Some(region) = self.loop_range {
+    /// `from` advanced by `samples` frames in one step, wrapped once: the
+    /// arithmetic of [`advance`](Self::advance).
+    fn step(&self, from: Beat, samples: usize) -> Beat {
+        let beat = from + self.beats_per_sample * samples as f64;
+        match self.loop_range {
             // `LoopRange` is non-empty by construction, so `wrap` needs no
             // guard — the same reason `TransportClock` needs none. Only a
             // crossing wraps, as for the clock (`LoopRange::advance`).
-            beat = region.advance(from, beat);
+            Some(region) => region.advance(from, beat),
+            None => beat,
         }
+    }
 
-        self.current_beat.store(beat.get(), Ordering::Release);
+    /// `from` advanced by `samples` frames in `LEGACY_CHUNK` steps (then the
+    /// rest): where the `advance` calls a render makes, one per 64 frames
+    /// (a `Net` render's blocks, `RenderClock::render_graph`'s chunks), leave
+    /// it. What [`RenderClock::seat`](super::RenderClock::seat) seats.
+    ///
+    /// Walked from `from` every time: at most `GRAPH_MAX_BLOCK / 64` (16)
+    /// steps a seat, next to 64 frames of the unit it seats.
+    fn stepped(&self, from: Beat, samples: usize) -> Beat {
+        let mut beat = from;
+        let mut left = samples;
+        while left > 0 {
+            let n = left.min(tutti_graph::LEGACY_CHUNK);
+            beat = self.step(beat, n);
+            left -= n;
+        }
+        beat
     }
 
     /// The current playhead.
@@ -209,8 +232,9 @@ impl OfflineTimeline {
     ///
     /// Read **before** the block is processed and advance after, as
     /// [`render_graph`](Self::render_graph) does: the snapshot's beat is the
-    /// block's first frame, the one clip readers and samplers holding this
-    /// timeline read during the block (see [`RenderClock`](super::RenderClock)).
+    /// block's first frame. Clip readers and samplers holding this timeline
+    /// read it per `Legacy` chunk, seated from this snapshot (see
+    /// [`RenderClock::seat`](super::RenderClock::seat)).
     pub fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
         let transport = tutti_graph::Transport {
             playing: true,
@@ -226,9 +250,18 @@ impl OfflineTimeline {
 
     /// Render one block of `frames` through `exec` under this timeline, then
     /// advance the timeline by it: [`graph_block`](Self::graph_block),
-    /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
-    /// then [`advance`](Self::advance), in the one order that keeps every
-    /// reader of this timeline on the frame the graph renders.
+    /// [`Executor::process_with_clock`](tutti_graph::Executor::process_with_clock)
+    /// with the playhead seated on each `Legacy` chunk's first frame, then
+    /// back to the block's start and [`advance`](Self::advance)d over the
+    /// block 64 frames at a time — the one order that keeps every reader of
+    /// this timeline on the frame the graph renders.
+    ///
+    /// 64 at a time because a `Net` render advances it so: a clip reader
+    /// here reads the positions it read through `Net`, to the bit, and the
+    /// playhead at a frame does not depend on the graph's block size (for
+    /// blocks that are multiples of 64). One `advance(frames)` would round
+    /// differently, and a pitched or stretched voice's vocoder turns that
+    /// ulp of beat into a 1e-3 difference in its output (measured).
     ///
     /// The graph's frames and this timeline's beats both start where they
     /// stand: the executor keeps its own frame clock, and the beat is this
@@ -276,6 +309,14 @@ impl super::RenderClock for OfflineTimeline {
 
     fn graph_block(&self) -> (tutti_graph::Transport, tutti_graph::TransportChanges) {
         OfflineTimeline::graph_block(self)
+    }
+
+    /// The playhead at `origin`'s beat advanced `at` frames in 64-frame
+    /// steps, as a render advances it. `origin` carries the tempo and loop
+    /// too, but they are this timeline's own (fixed for the render), so only
+    /// its beat is read.
+    fn seat(&self, origin: &tutti_graph::Transport, at: tutti_types::Samples) {
+        self.seek_to(self.stepped(origin.beat, at.get()));
     }
 }
 

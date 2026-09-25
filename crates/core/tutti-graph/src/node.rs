@@ -589,7 +589,12 @@ pub struct Env {
 }
 
 /// What a node is told about *this* call besides its buffers.
-#[derive(Clone, Copy, Debug)]
+///
+/// Built by the executor (and the reference interpreter) only: it also
+/// carries, privately, the renderer's [`LegacyClock`](crate::LegacyClock),
+/// which only the [`Legacy`](crate::Legacy) adapter reads. A native node reads
+/// the transport from [`env`](Self::env).
+#[derive(Clone, Copy)]
 pub struct Cx<'a> {
     /// The block's environment.
     pub env: &'a Env,
@@ -598,6 +603,19 @@ pub struct Cx<'a> {
     /// reads it this many frames earlier, so a latent path and a direct path
     /// agree about which beat a sample belongs to.
     pub arrival: Latency,
+    /// What seats the out-of-band timeline before each of a `Legacy` unit's
+    /// chunks, when the renderer has one (`Executor::process_with_clock`).
+    pub(crate) legacy_clock: Option<&'a dyn crate::LegacyClock>,
+}
+
+impl std::fmt::Debug for Cx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cx")
+            .field("env", self.env)
+            .field("arrival", &self.arrival)
+            .field("legacy_clock", &self.legacy_clock.is_some())
+            .finish()
+    }
 }
 
 /// A processor in the graph.

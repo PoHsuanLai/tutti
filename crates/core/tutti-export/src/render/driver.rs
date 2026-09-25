@@ -258,8 +258,9 @@ impl FrameSource for NetSource<'_> {
 /// needs the caller's clock advanced; the executor reads the transport from
 /// each block's `Env`, so this hands it one — through
 /// [`RenderClock::render_graph`], which reads the clock's snapshot before the
-/// block and advances it after (`OfflineTimeline::render_graph` is that call
-/// for an offline timeline).
+/// block, seats the clock on each 64-frame chunk the graph's `Legacy` units
+/// (clip readers polling it) run, and leaves it where the block ends
+/// (`OfflineTimeline::render_graph` is that call for an offline timeline).
 pub(crate) struct GraphSource<'a> {
     editor: &'a mut tutti_graph::Editor,
     executor: &'a mut tutti_graph::Executor,
@@ -341,8 +342,9 @@ impl FrameSource for GraphSource<'_> {
             .iter_mut()
             .map(|p| &mut p[..block_size])
             .collect();
-        // Snapshot, process, advance — in that order (emit-then-advance, as
-        // `NetSource` documents for the `Net` path).
+        // Snapshot, process (seating per chunk), then the block's end — in
+        // that order (emit-then-advance, as `NetSource` documents for the
+        // `Net` path).
         self.clock
             .render_graph(self.executor, block_size, &inputs, &mut outputs);
         // Retired units and returned commits are freed here, on this thread,

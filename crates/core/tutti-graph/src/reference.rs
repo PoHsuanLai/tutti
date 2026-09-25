@@ -870,9 +870,12 @@ impl Reference {
         }
 
         let n_out = shape.audio_out.count() as usize;
+        // No clock: the reference interprets the graph, and a `Legacy` unit
+        // polling a timeline of its own is outside what it models.
         let cx = Cx {
             env,
             arrival: self.arrival[&key],
+            legacy_clock: None,
         };
         // A crossfade here: the outgoing unit first, on its own copy of the
         // inputs, with no events; what it emits goes nowhere.

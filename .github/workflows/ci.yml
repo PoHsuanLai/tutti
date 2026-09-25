@@ -475,10 +475,11 @@ jobs:
   # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
   # its own target only, never the workspace.
   #
-  # Release, because loom explores every interleaving in-process. Five of the
-  # six `RtPublish` models are exhaustive (no preemption bound) and the sixth
-  # runs at a bound of 4; the suite takes about 17 minutes optimized on the
-  # machine that wrote it, dominated by `nested_reads_overflow`.
+  # Release, because loom explores every interleaving in-process. The
+  # `RtPublish` models run at a preemption bound of 4: about a minute and a
+  # half, and every recorded mutation fails at a bound of 3. The exhaustive run
+  # (about 17 minutes, bar one model that is always bounded) is
+  # `just loom-full`, for a change to `rt/publish.rs` itself.
   loom:
     name: loom
     runs-on: ubuntu-latest
@@ -492,4 +493,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p tutti-types --release --test rt_publish_loom
+        env:
+          LOOM_MAX_PREEMPTIONS: 4
       - run: cargo test -p tutti-shm-model --release

@@ -249,8 +249,9 @@ fences, advances the epoch, and frees only what no slot announces and no live
 epoch pins. The soundness argument, in C++20 terms, is in `rt/publish.rs`'s
 module docs. On the slot path the `SeqCst` fence pair is the whole argument,
 and both halves are load-bearing: the loom model (`tutti-types/tests/rt_publish_loom.rs`, run
-against the shipped code, exhaustively) fails with either removed, and so does
-miri on the concurrent stress test. A plain x86 run does not — its CAS is
+against the shipped code; bounded in CI, exhaustive under `just loom-full`)
+fails with either removed, and so does miri, over 16 seeds, on the concurrent
+stress test. A plain x86 run does not — its CAS is
 already a full barrier — which is why neither check can be replaced by more
 iterations.
 

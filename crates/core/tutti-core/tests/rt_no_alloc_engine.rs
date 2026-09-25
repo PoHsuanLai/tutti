@@ -22,8 +22,9 @@
 //! exhaust one. A test that tried anyway lived here until it was removed — it
 //! passed while asserting a property it structurally could not observe, which
 //! reads as coverage and is worse than nothing. The race is covered where it
-//! can be: the loom model `tutti-types/tests/rt_publish_loom.rs` (exhaustive,
-//! against the shipped code) and miri over `rt::publish`'s stress test. (#34's
+//! can be: the loom model `tutti-types/tests/rt_publish_loom.rs` (against the
+//! shipped code; bounded in CI, exhaustive under `just loom-full`) and miri
+//! over `rt::publish`'s stress test. (#34's
 //! residual case — the old `ArcSwap` guard degrading into an owning reference —
 //! is gone with the `ArcSwap`.)
 

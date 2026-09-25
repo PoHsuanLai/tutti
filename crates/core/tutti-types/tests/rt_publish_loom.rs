@@ -62,7 +62,12 @@
 //! - a sealed epoch made to pin nothing → `nested_reads_overflow`,
 //!   `overflow_while_another_reader_holds_the_slots`;
 //! - the slot check in `take_unprotected` removed → causality violations;
-//! - `RtRef::drop` made to reclaim → "reader thread freed value N", all six.
+//! - `RtRef::drop` made to reclaim → "reader thread freed value N", in every
+//!   model;
+//! - the current epoch made to pin nothing → `publishes_with_no_free_epoch`,
+//!   alone. It is the only model that reaches the branch of `advance_epoch`
+//!   that finds no free epoch, where that pin is the only thing keeping a
+//!   stalled publish's retired value alive.
 //!
 //! One mutation survives, by construction: weakening the overflow reader's
 //! `loaded` increment from `Release` to `Relaxed`. Breaking it needs the
@@ -163,9 +168,10 @@ impl Drop for Tracked {
     }
 }
 
-/// Exhaustive: no preemption bound. Every model but one runs this way; see
-/// `model_bounded` for the exception. Set `LOOM_MAX_PREEMPTIONS` to bound all
-/// of them locally (3 finishes the suite in about ten seconds).
+/// No preemption bound of its own: exhaustive unless `LOOM_MAX_PREEMPTIONS`
+/// is set. CI sets it to 4 (the suite then takes about a minute and a half);
+/// `just loom-full` leaves it unset and runs every model but one
+/// exhaustively (about 17 minutes); see `model_bounded` for the exception.
 fn model(f: impl Fn() + Sync + Send + 'static) {
     loom::model::Builder::new().check(f);
 }
@@ -384,5 +390,52 @@ fn overflow_while_another_reader_holds_the_slots() {
         let readers = [holder.join().unwrap(), overflow];
         drop(std::sync::Arc::into_inner(cell).unwrap());
         tracker.assert_all_freed_off(&readers);
+    });
+}
+
+/// The "no free epoch" branch of `advance_epoch`. Both slots and two of the
+/// three epochs are held by parked reads on the main thread. The third epoch is
+/// current, so the next two publishes cannot advance. While they run, a
+/// reader thread takes an overflow read in that stuck current epoch, and only
+/// the current epoch's open-ended pin keeps its value alive. The value it may
+/// hold (3) is covered by no sealed epoch's range.
+///
+/// Mutation: make `EpochState::Current` pin nothing in `take_unprotected`.
+/// The second stalled publish then frees value 3 under the reader, a
+/// causality violation.
+#[test]
+fn publishes_with_no_free_epoch() {
+    model(|| {
+        let tracker = Tracker::new(5);
+        let cell = std::sync::Arc::new(RtPublish::from_arc(tracker.make(0)));
+
+        // Both slots, then one overflow read in epoch 0 and one in epoch 1.
+        let s1 = cell.read();
+        let s2 = cell.read();
+        let e0 = cell.read();
+        cell.publish(tracker.make(1));
+        let e1 = cell.read();
+        cell.publish(tracker.make(2));
+        assert_eq!(cell.epoch_stalls(), 0);
+
+        let reader = {
+            let cell = cell.clone();
+            thread::spawn(move || {
+                cell.read().check();
+                thread::current().id()
+            })
+        };
+
+        cell.publish(tracker.make(3));
+        cell.publish(tracker.make(4));
+        assert_eq!(cell.epoch_stalls(), 2, "both publishes found no free epoch");
+
+        let reader = reader.join().unwrap();
+        for r in [&s1, &s2, &e0, &e1] {
+            r.check();
+        }
+        drop((s1, s2, e0, e1));
+        drop(std::sync::Arc::into_inner(cell).unwrap());
+        tracker.assert_all_freed_off(&[reader]);
     });
 }

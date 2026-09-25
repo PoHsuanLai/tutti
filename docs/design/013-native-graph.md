@@ -194,7 +194,7 @@ the interpreter.
   only its epoch's values) + a retirement list the audio thread never
   touches. Same API, no call site moved. The reader cannot free;
   the loom model `tutti-types/tests/rt_publish_loom.rs` checks that against the
-  shipped code, exhaustively. The read costs the same as the `ArcSwap::load` it
+  shipped code (exhaustively under `just loom-full`). The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
   ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
   `tutti-types`; the nullable slots elsewhere stay on `ArcSwapOption`.

@@ -32,10 +32,11 @@ use crate::graph::{engine_ready, GraphReconcileSystems};
 ///
 /// Carries the id purely so [`unregister_midi_sender`] can remove the right
 /// entry after the node — and with it the port that knew the id — is already
-/// gone. It is *not* an address to route by: resolution always re-derives from
-/// the graph, because a `crossfade` can replace a node's port while keeping its
-/// `NodeId`. Reading this to send MIDI would reintroduce exactly the staleness
-/// the resolver exists to avoid.
+/// gone. It is *not* an address to route by: resolution reads the entity's
+/// [`MidiTarget`](super::target::MidiTarget), which a `crossfade` replaces along
+/// with the node's port while keeping its `NodeId`. This id is not replaced, so
+/// reading it to send MIDI would reintroduce exactly the staleness the resolver
+/// exists to avoid.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiRegistered {
     unit_id: MidiUnitId,

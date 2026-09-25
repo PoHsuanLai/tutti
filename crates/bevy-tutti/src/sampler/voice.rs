@@ -65,10 +65,10 @@ pub struct SamplerVoice;
 ///
 /// It cannot be. The sender half is minted inside
 /// [`VoiceNode::with_commands`] beside the receiver that lives in the unit, and
-/// once the unit is in the graph there is no way back to it — `node_as_mut`
-/// reaches the *frontend* clone, whose receiver is shared but whose sender was
-/// never stored anywhere. The constructor is the only moment both ends exist,
-/// so the handle has to be kept from there.
+/// once the unit is in the graph there is no way back to it — the graph's copy
+/// of the unit shares the receiver, but the sender was never stored anywhere.
+/// The constructor is the only moment both ends exist, so the handle has to be
+/// kept from there.
 ///
 /// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`],
 /// which is every voice this crate builds. A `VoiceNode` a host constructs

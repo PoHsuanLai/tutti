@@ -237,6 +237,7 @@ pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
+    capture: crate::graph::ControlCapture,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     // `TuttiSoundFontPlugin` is `pub` and separately addable, but `GraphDirty`
@@ -263,6 +264,9 @@ pub fn promote_pending_soundfonts(
         };
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
+        // Captured before the unit moves into the graph — the `MidiTarget` that
+        // makes this player addressable comes from here.
+        let controls = capture.capture(&unit);
         let id = graph.0.add(unit);
         edited = true;
 
@@ -272,7 +276,7 @@ pub fn promote_pending_soundfonts(
         commands
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
-            .insert(tutti_core::AudioNode(id));
+            .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, id));
     }
 
     // Stage only; the Commit-phase `commit_graph` coalesces (this system is
@@ -287,9 +291,9 @@ pub fn promote_pending_soundfonts(
 /// # It also teaches the MIDI registry to reach a `SoundFontUnit`
 ///
 /// Building the unit and putting it in the graph is not enough to make it
-/// *playable*: `MidiTargetRegistry` resolves a node to its `MidiInPort` by
-/// downcasting to a concrete type, so a unit type nothing registered has no
-/// reachable port and every `MidiSourceInstall` naming it resolves to nothing.
+/// *playable*: `MidiTargetRegistry` captures a node's `MidiInPort` from its
+/// concrete type as the node is inserted, so a unit type nothing registered has
+/// no reachable port and every `MidiSourceInstall` naming it resolves to nothing.
 ///
 /// That registration belongs here rather than with each consumer, because the
 /// failure it prevents is invisible: the asset loads, the unit builds, the node

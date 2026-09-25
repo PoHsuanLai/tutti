@@ -30,13 +30,15 @@ mod midi_route {
     use bevy_app::prelude::*;
     use bevy_ecs::entity::Entity;
 
-    use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::graph::{
+        AudioConfig, AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes,
+    };
     use bevy_tutti::midi::{
         MidiRouteFallback, MidiRouteRule, MidiRoutingRes, MidiTargetRegistry, TuttiMidiPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
-    use tutti_core::{AudioNode, RtPublish};
+    use tutti_core::RtPublish;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::{MidiRoutingSnapshot, MidiUnitId};
@@ -86,11 +88,16 @@ mod midi_route {
     fn spawn_synth(app: &mut App) -> (Entity, MidiUnitId) {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let unit_id = synth.midi_port().unit_id();
+        // Captured from the unit before it moves — the step every insertion
+        // path runs, and the one that gives the entity its `MidiTarget`.
+        let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.push(Box::new(synth))
         };
-        let entity = app.world_mut().spawn(AudioNode(node)).id();
+        let mut entity = app.world_mut().spawn_empty();
+        controls.bind(&mut entity, node);
+        let entity = entity.id();
         (entity, unit_id)
     }
 
@@ -242,11 +249,14 @@ mod midi_route {
         // The node turns up.
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let unit_id = synth.midi_port().unit_id();
+        // Captured from the unit before it moves — the step every insertion
+        // path runs, and the one that gives the entity its `MidiTarget`.
+        let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.push(Box::new(synth))
         };
-        app.world_mut().entity_mut(pending).insert(AudioNode(node));
+        controls.bind(&mut app.world_mut().entity_mut(pending), node);
         app.update();
 
         assert!(
@@ -294,7 +304,7 @@ mod midi_route {
 mod midi_registration {
     use bevy_app::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiRegistered, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
@@ -357,11 +367,16 @@ mod midi_registration {
     fn spawn_synth(app: &mut App) -> (bevy_ecs::entity::Entity, tutti_midi_types::MidiUnitId) {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let unit_id = synth.midi_port().unit_id();
+        // Captured from the unit before it moves — the step every insertion
+        // path runs, and the one that gives the entity its `MidiTarget`.
+        let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.push(Box::new(synth))
         };
-        let entity = app.world_mut().spawn(AudioNode(node)).id();
+        let mut entity = app.world_mut().spawn_empty();
+        controls.bind(&mut entity, node);
+        let entity = entity.id();
         (entity, unit_id)
     }
 
@@ -430,11 +445,14 @@ mod midi_registration {
         // A fresh unit on the same entity registers under its own new id.
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let second_id = synth.midi_port().unit_id();
+        // Captured from the unit before it moves — the step every insertion
+        // path runs, and the one that gives the entity its `MidiTarget`.
+        let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.push(Box::new(synth))
         };
-        app.world_mut().entity_mut(entity).insert(AudioNode(node));
+        controls.bind(&mut app.world_mut().entity_mut(entity), node);
         app.update();
 
         assert_ne!(first_id, second_id, "a new port mints a new id");
@@ -454,7 +472,7 @@ mod midi_registration {
         assert!(!bus_has(&app, unit_id), "nothing can resolve it");
         assert!(
             app.world().get::<MidiRegistered>(entity).is_none(),
-            "and it stays unmarked, so it retries if the type is registered later"
+            "and it stays unmarked, so it registers if a captured port turns up later"
         );
     }
 }
@@ -481,7 +499,7 @@ mod plugin_crash_unwire {
     use bevy_app::prelude::*;
     use bevy_ecs::entity::Entity;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::midi::{MidiBusRes, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
@@ -532,11 +550,16 @@ mod plugin_crash_unwire {
     fn spawn_synth(app: &mut App) -> (Entity, NodeId, MidiUnitId) {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let unit_id = synth.midi_port().unit_id();
+        // Captured from the unit before it moves — the step every insertion
+        // path runs, and the one that gives the entity its `MidiTarget`.
+        let controls = CapturedControls::capture(app.world(), &synth);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.push(Box::new(synth))
         };
-        let entity = app.world_mut().spawn(AudioNode(node)).id();
+        let mut entity = app.world_mut().spawn_empty();
+        controls.bind(&mut entity, node);
+        let entity = entity.id();
         (entity, node, unit_id)
     }
 

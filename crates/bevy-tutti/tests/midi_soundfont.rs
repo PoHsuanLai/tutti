@@ -178,6 +178,42 @@ mod soundfont_spawn {
             "the entity keeps its original node — a re-trigger would mint a new one"
         );
     }
+
+    /// A promoted soundfont is addressable: the promotion captured its MIDI port
+    /// before the unit went into the graph.
+    ///
+    /// `TuttiSoundFontPlugin` registers `SoundFontUnit` with the MIDI registry
+    /// for exactly this, and promotion is an insertion path of its own (it adds
+    /// the node directly, not through `spawn_audio_node`), so it has to run the
+    /// capture itself.
+    ///
+    /// Mutation: making `promote_pending_soundfonts` bind
+    /// `CapturedControls::default()` instead of `capture.capture(&unit)` fails
+    /// this — the player gets its node and no port, and every
+    /// `MidiSourceInstall` naming it would resolve to nothing.
+    #[test]
+    fn a_promoted_soundfont_carries_its_midi_port() {
+        let asset = soundfont_asset();
+        let mut app = app();
+        let handle = insert_asset(&mut app, asset);
+
+        let entity = app
+            .world_mut()
+            .spawn(PlaySoundFont {
+                source: handle,
+                preset: 0,
+                channel: 0,
+            })
+            .id();
+        assert!(run_until_promoted(&mut app, entity));
+
+        let node = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
+        let target = app
+            .world()
+            .get::<bevy_tutti::midi::MidiTarget>(entity)
+            .expect("the promotion captured the unit's MIDI port");
+        assert_eq!(target.node(), node, "for the node it promoted");
+    }
 }
 
 /// The whole chain, rendered: an ECS declaration produces audible samples.
@@ -201,12 +237,13 @@ mod midi_soundfont_audio {
     use bevy_app::prelude::*;
     use bevy_ecs::entity::Entity;
 
-    use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
-    use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
+    use bevy_tutti::graph::{
+        AudioConfig, AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes,
+    };
+    use bevy_tutti::midi::{MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioNode;
     use tutti_core::AudioUnit;
     use tutti_core::{Beat, BeatDuration, SampleRate};
     use tutti_midi_runtime::TimedMidiEvent;
@@ -295,8 +332,6 @@ mod midi_soundfont_audio {
 
         let mut app = App::new();
         let mut net = Net::new(0, 2);
-        let node = net.push(Box::new(unit));
-        net.pipe_output(node);
         // A backend, because the Commit-phase `commit_graph` asserts one exists.
         // We render the frontend `Net` directly rather than through the backend —
         // `tick` on this side sees the same units.
@@ -328,7 +363,18 @@ mod midi_soundfont_audio {
             .resource_mut::<MidiTargetRegistry>()
             .register::<SoundFontUnit>();
 
-        let synth = app.world_mut().spawn(AudioNode(node)).id();
+        // Registered first, then captured from the unit and pushed — the order
+        // every insertion path follows, so the synth carries its MIDI port.
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut synth = app.world_mut().spawn_empty();
+        controls.bind(&mut synth, node);
+        let synth = synth.id();
         (app, synth)
     }
 
@@ -430,10 +476,9 @@ mod midi_soundfont_audio {
 
         // Push a live note straight at the synth's mailbox, as a keyboard would.
         {
-            let node = app.world().get::<AudioNode>(synth).unwrap().0;
-            let graph = app.world().resource::<AudioGraphRes>();
-            let unit = graph.0.node_as::<SoundFontUnit>(node).unwrap();
-            unit.midi_port()
+            let target = app.world().get::<MidiTarget>(synth).unwrap();
+            target
+                .port()
                 .sender()
                 .queue(&[tutti_midi_types::ump::MidiEvent::note_on(
                     MidiGroup::FIRST,

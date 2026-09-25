@@ -22,7 +22,7 @@ mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
     use bevy_tutti::modulation::audio_rate::{AudioRateChains, ModSourceNode};
     use bevy_tutti::modulation::{
         ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
@@ -50,16 +50,17 @@ mod mod_audio_rate_reconcile {
         // Declared from the unit, at the direct `Net::add` site — see
         // `bevy_tutti::graph::param_ports`.
         let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
+        // And its controls, captured from the unit before it moves — the same
+        // step every insertion path in `bevy_tutti::graph` runs.
+        let controls = CapturedControls::capture(app.world(), &dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
 
-        let target = app
-            .world_mut()
-            .spawn((
-                AudioNode(node),
-                ports,
-                ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-            ))
-            .id();
+        let mut target = app.world_mut().spawn((
+            ports,
+            ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
+        ));
+        controls.bind(&mut target, node);
+        let target = target.id();
 
         (app, target, drive_port)
     }
@@ -131,15 +132,14 @@ mod mod_audio_rate_reconcile {
                 .param_port(param)
                 .expect("the strip declares this port");
             let ports = bevy_tutti::graph::ParamPortMap::of(&strip);
+            let controls = CapturedControls::capture(app.world(), &strip);
             let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(strip);
-            let target = app
-                .world_mut()
-                .spawn((
-                    AudioNode(node),
-                    ports,
-                    ModParamRange::default().with(ParamAddr::Unit(param), 0.5, 0.0, 1.0),
-                ))
-                .id();
+            let mut target = app.world_mut().spawn((
+                ports,
+                ModParamRange::default().with(ParamAddr::Unit(param), 0.5, 0.0, 1.0),
+            ));
+            controls.bind(&mut target, node);
+            let target = target.id();
 
             let lfo = spawn_lfo(&mut app);
             app.world_mut().spawn(
@@ -462,10 +462,11 @@ mod mod_audio_rate_reconcile {
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
         let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
+        let controls = CapturedControls::capture(app.world(), &dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
-        app.world_mut()
-            .entity_mut(target)
-            .insert((AudioNode(node), ports));
+        let mut sink = app.world_mut().entity_mut(target);
+        sink.insert(ports);
+        controls.bind(&mut sink, node);
 
         app.update();
         app.update();

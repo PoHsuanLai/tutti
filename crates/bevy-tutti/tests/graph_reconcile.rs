@@ -290,7 +290,8 @@ mod audio_param {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, TransportRes,
+        AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
+        TransportRes,
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
@@ -300,7 +301,6 @@ mod audio_param {
     use bevy_tutti::AudioEngineState;
     use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
-    use tutti_core::AudioNode;
     use tutti_types::{Drive, Hz, UnitParam};
     // Only the modulation tests below use these.
     use tutti_nodes::DistortionNode;
@@ -318,12 +318,11 @@ mod audio_param {
 
         let mut app = App::new();
 
+        let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, INITIAL_DRIVE);
+        // The node's own drive atomic, shared with every clone of it — what the
+        // DSP reads, reachable without asking the graph for its copy.
+        let drive = DriveCell(unit.drive());
         let mut net = Net::new(0, 1);
-        let node = net.push(Box::new(DistortionNode::new(
-            tutti_nodes::ShapeKind::Tanh,
-            INITIAL_DRIVE,
-        )));
-        net.pipe_output(node);
         net.set_sample_rate(tutti_core::SampleRate(48_000.0));
         // Deliberately no `backend()`. With one, `Net::set` enqueues to the audio
         // thread and the frontend vertex these tests read is never updated — every
@@ -337,22 +336,41 @@ mod audio_param {
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         #[cfg(feature = "modulation")]
-        app.add_plugins(TuttiModulationPlugin);
+        {
+            app.add_plugins(TuttiModulationPlugin);
+            // Before the node is bound: the registry is consulted once, when the
+            // node's controls are captured, so a type registered afterwards
+            // would leave this node unmodulatable.
+            app.world_mut()
+                .resource_mut::<ModTargetRegistry>()
+                .register::<DistortionNode>();
+        }
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
-        let entity = app.world_mut().spawn(AudioNode(node)).id();
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut entity = app.world_mut().spawn(drive);
+        controls.bind(&mut entity, node);
+        let entity = entity.id();
         (app, entity)
     }
 
+    /// The node's drive atomic, taken from the unit before it moved into the
+    /// graph.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+
     /// The node's live drive — what the DSP reads.
     fn node_drive(app: &App, entity: Entity) -> f32 {
-        let node = app.world().get::<AudioNode>(entity).unwrap().0;
-        let graph = app.world().resource::<AudioGraphRes>();
-        graph
-            .0
-            .node_as::<DistortionNode>(node)
+        app.world()
+            .get::<DriveCell>(entity)
             .unwrap()
-            .drive()
+            .0
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -396,15 +414,11 @@ mod audio_param {
 
         // Move the node's value behind the reconciler's back. A push would restore
         // it to 4.0; silence leaves the poke standing.
-        let node = app.world().get::<AudioNode>(entity).unwrap().0;
-        {
-            let graph = app.world().resource::<AudioGraphRes>();
-            graph
-                .0
-                .node_as::<DistortionNode>(node)
-                .unwrap()
-                .set_drive(Drive(9.0));
-        }
+        app.world()
+            .get::<DriveCell>(entity)
+            .unwrap()
+            .0
+            .store(9.0, std::sync::atomic::Ordering::Release);
 
         app.update();
 
@@ -462,10 +476,9 @@ mod audio_param {
     #[cfg(feature = "modulation")]
     #[test]
     fn an_authored_write_to_a_modulated_param_moves_the_base() {
+        // `app_with_node` registers `DistortionNode` for modulation before it
+        // binds the node — the registry is read once, at capture.
         let (mut app, entity) = app_with_node();
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
         app.world_mut().entity_mut(entity).insert((
             DriveParam::new(Drive(5.0)),

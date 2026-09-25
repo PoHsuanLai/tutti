@@ -325,7 +325,7 @@ mod tests {
     use super::*;
     use bevy_app::prelude::*;
 
-    use crate::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use crate::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use crate::modulation::{
         LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
         TuttiModulationPlugin,
@@ -345,14 +345,7 @@ mod tests {
         // `with_backend`, not `Net::new`: this app runs the full reconcile
         // pipeline, and `commit_graph` asserts a backend exists. Backend-less
         // worked only while nothing in the pipeline dirtied the graph.
-        let mut net = Net::with_backend(1);
-        let node = net.push(Box::new(DistortionNode::new(
-            tutti_nodes::ShapeKind::Tanh,
-            1.0,
-        )));
-        net.pipe_output(node);
-
-        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(AudioGraphRes(Net::with_backend(1)));
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
@@ -360,7 +353,20 @@ mod tests {
             .resource_mut::<ModTargetRegistry>()
             .register::<DistortionNode>();
 
-        let target = app.world_mut().spawn(AudioNode(node)).id();
+        // Registered first, then captured and pushed: the capture is what makes
+        // the node modulatable, and it only runs on the unit before insertion.
+        let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
+        let drive = DriveCell(unit.drive());
+        let controls = CapturedControls::capture(app.world(), &unit);
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.0.push(Box::new(unit));
+            graph.0.pipe_output(node);
+            node
+        };
+        let mut entity = app.world_mut().spawn(drive);
+        controls.bind(&mut entity, node);
+        let target = entity.id();
         app.world_mut()
             .entity_mut(target)
             .insert(ModParamRange::default().with(
@@ -372,14 +378,17 @@ mod tests {
         (app, target)
     }
 
+    /// The node's own drive atomic, taken from the unit before it moved into
+    /// the graph. Shared with every clone of the node, so it reads what the DSP
+    /// reads.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+
     fn node_drive(app: &App, entity: Entity) -> f32 {
-        let node = app.world().get::<AudioNode>(entity).unwrap().0;
         app.world()
-            .resource::<AudioGraphRes>()
-            .0
-            .node_as::<DistortionNode>(node)
+            .get::<DriveCell>(entity)
             .unwrap()
-            .drive()
+            .0
             .load(core::sync::atomic::Ordering::Acquire)
     }
 

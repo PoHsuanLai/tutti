@@ -1,7 +1,7 @@
 //! The source registry: which modulator kinds this app can build.
 //!
 //! The mirror of [`ModTargetRegistry`](super::ModTargetRegistry), for the send
-//! half. A target is registered by *node type* and resolved by downcast; a
+//! half. A target is registered by *node type* and captured from the unit; a
 //! source is registered by **component**, and its builder is a plain
 //! constructor — [`Sourced<M>`](tutti_mod::Sourced) erases `M` at construction,
 //! so nothing downstream ever recovers the concrete type.

@@ -1038,9 +1038,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    and fundsp's wrappers forward it, and `Legacy::unforkable()` opts a node
    out. An audit of every in-tree unit's `isolate` found three more:
    `DiskVoice` keeps a second `Arc<RtState>` that a fork would seek the live
-   butler through, so it says `false` (and a `VoiceNode` answers for its
-   voice); `VoicePool::isolate` left its beat cursor shared (now dropped,
-   and rebuilt on the render's transport by `rebind_offline`);
+   butler through, so it said `false` (and a `VoiceNode` answers for its
+   voice) until its `isolate` cut that too and its fork learned to read the
+   file itself ("Disk voices export", after PR 12); `VoicePool::isolate`
+   left its beat cursor shared (now dropped, and rebuilt on the render's
+   transport by `rebind_offline`);
    `EqBandNode` never forwarded `isolate` to its SVF (now it does). One
    known limit stays: `stretch::Unit::isolate` reads the live bank's
    `AudioThreadCell` from the forking thread to copy its geometry (as
@@ -1085,7 +1087,8 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    **`ForkTarget::Master` isolates and resets**,
    unlike today's master export, which is a plain `Net::clone` that keeps
    live bindings: through a fork, disk voices are severed from their live
-   stream and render silence, and a `VoicePool`'s voices are cleared, so a
+   stream (and, since "Disk voices export", read their file themselves),
+   and a `VoicePool`'s voices are cleared, so a
    master export renders what the graph is *driven* to play from the
    offline transport, not a copy of what is sounding now. And a graph
    holding a plugin forks only if the plugin was inserted as a
@@ -1187,7 +1190,7 @@ nothing to move):
 | `VoiceNode` | tutti-sampler | command channel, cursor, its voice and stretch | severs all | as its voice | — (controls arrive as commands; `a_render_clone_steals_no_commands`) |
 | `VoicePool` | tutti-sampler | command channel, voices, butler, cursor | severs all, voices cleared | yes | — |
 | `DiskSource` | tutti-sampler | ring consumer, `RtState` | stops, drops `RtState`: renders silence | yes | — |
-| `DiskVoice` | tutti-sampler | its own `Arc<RtState>` seeks the live butler | — | **no** | — |
+| `DiskVoice` | tutti-sampler | its own `Arc<RtState>` (seeks the live butler; speed, direction, gain, stretch) | a private snapshot (`RtState::detached`), off the ring; `rebind_offline` hands it the stream's file | yes | `a_severed_copy_never_touches_the_live_stream`, `tests/offline_disk_voice.rs` |
 | `PolySynth` | tutti-polysynth | MIDI inbox and source; master volume, unison detune and spread | fresh port, voices cleared, cells detached | yes | `isolate_snapshots_volume_and_unison` |
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
 | `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
@@ -1781,18 +1784,10 @@ clicks on frames 1 and 24 001 of the render, the live playhead's beats). A
 render timeline's start beat — its rebind severs it at its own beat; PR 13
 removes the arm.
 
-**Disk voices refuse a native export** (`ExportError::NotForkable`, by
-entity and name) when an output reaches them. What the `Net` export did with
-one, read from the code (`DiskSource`'s `Clone` shares its ring consumer,
-`isolate` stops it and drops its `RtState`; `DiskVoice` keeps its own
-`Arc<RtState>`): a `Net` **master** export's plain clone read the live
-voice's ring from the render thread — popping frames the audio thread was
-waiting on, against the live transport — and a **node** export severed the
-ring and rendered silence, while its first in-window frame could still ask
-the live butler to seek. Neither is an export. Playing disk voices offline
-needs an offline stream from the butler (its own ring, a seek handle of its
-own); until then the fork refuses rather than glitch live playback, and a
-host loads the clip to memory or exports a node the voice does not feed.
+**Disk voices refused a native export** in PR 12 (`ExportError::NotForkable`,
+by entity and name, when an output reached them): a fork's copy would have
+asked the live butler to seek. Since closed; see "Disk voices export" after
+this PR's notes.
 
 Tests, each mutation run (the mutation is on the test):
 
@@ -1913,7 +1908,9 @@ Recorded for later:
     `PolySynth` is bit-identical to a `Net` one whose `prepare` hook refills
     the clip, as a `Net`-era host did; an unrebindable source refuses the
     export naming "Synth").
-- **Disk voices offline** (above).
+- ~~**Disk voices offline**~~: done, "Disk voices export" (below).
+- **A placed `MemorySource` at a mismatched rate** steps by varispeed
+  alone within a block ("Disk voices export", found on the way).
 - **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
   re-prepares the graph, but a live SoundFont unit keeps the rate it was
   built at (its `set_sample_rate` is a no-op, and a test pins that), so after
@@ -1928,6 +1925,93 @@ Recorded for later:
   delays only in its latency mode**; the effect test uses that mode, where
   report and delay agree. The probe's other modes are routing oracles, not
   delays, and keep their report so the PDC suites see a latent plugin.
+
+**Disk voices export (after PR 12).** PR 12 first refused a fork holding
+a disk voice (`ExportError::NotForkable`): `DiskSource`'s `Clone` shares
+its ring consumer and `isolate` stopped it, but `DiskVoice` kept its own
+`Arc<RtState>`, so a fork's first in-window frame asked the **live** butler to seek. The `Net` export was no better: a
+master export's plain clone read the live voice's ring from the render
+thread (popping frames the audio thread was waiting on, against the live
+transport), and a node export severed the ring and rendered silence. That
+refusal blocked making `Native` the default (PR 13). Now a forked disk
+voice plays its file:
+
+- **Severed whole.** `DiskVoice::isolate` replaces the voice's control cell
+  with a private snapshot (`RtState::detached`: speed, direction, gain,
+  conversion and stretch rate, at their current values — the controls as a
+  snapshot, like every forked unit's) and switches the copy onto an offline
+  read that never touches the ring or the butler. `rebind_offline` isolates a
+  copy that was not, so nothing on the render's clock can drive the live
+  butler. `forkable()` is the default `true` again.
+- **Its file, as the butler records it when the fork is taken.**
+  `Status::take_disk_voice` gives the voice a read-only handle on the
+  butler's record of its stream (`StreamOrigin`: the plan map, the channel,
+  the region id); `rebind_offline` — which a fork calls right after
+  `isolate`, at fork time — reads the stream's file path (now kept on the
+  `Link`), file rate and loop from it, then drops the handle. Read then, not
+  when the voice is built: a loop is set on the stream later
+  (`Command::Loop`), and bevy-tutti's `Legacy::controlled` shadow is
+  isolated at insert. A stream stopped, or its channel restarted on another
+  file (the region id no longer matches), gives silence, which is what the
+  live voice then plays too.
+- **Decoded on demand, on the render's thread** (`voice/offline_read.rs`).
+  Option (b) of the two considered: the other, a second butler stream per
+  fork, would put the render on the butler's schedule (an export runs faster
+  than real time and would outrun its refills; an underrun is silence written
+  into the file as a success) and need tearing down when the export ends.
+  Offline there is no deadline, so the copy opens the file with the butler's
+  own decoder (`tutti_io::FileIn`, `seek` + `fill_sequential_interleaved`)
+  and keeps two 32 768-frame pages resident (two, because the loop seam and
+  a loop crossfade read two places at once); a format that cannot seek is
+  decoded whole, the butler's own fallback. Its only resources drop with the
+  fork: no butler stream is ever registered (it holds no command handle).
+- **Read as the memory tier reads.** A position goes through the same four
+  taps and kernel as `MemorySource`: `interp::read_frame` was split into
+  `tap_indices` and `interpolate_taps`, and the paged reader feeds the
+  latter. The gate is the live one (`window_position` by the file's rate);
+  the read seats there whenever the clock reads a new beat and steps by
+  `speed × SrcRatio::for_rates(file, render) × stretch` — the conversion from
+  the file's own rate to the rate the copy renders at, derived from the two
+  rates, not read from the cell the butler keeps for the live session. A
+  seat per clock move serves both `process` (a bare voice) and the
+  frame-at-a-time `tick` a `VoiceNode` reads a disk voice through. Loops wrap
+  as `MemorySource`'s free-running loop wraps (`wrap_into_loop`) and
+  crossfade linearly into the loop's head, as the butler's loop crossfade
+  does; reverse mirrors the position as the memory tier does, and ignores
+  the loop as the butler's reverse refill does. The butler's PDC preroll is
+  not applied (the fork's graph compensates itself).
+- **The gate lands on whole frames.** `window_position` (both tiers) now
+  snaps a position within `FRAME_TOLERANCE` of a whole frame to it:
+  converting the clock's closed-form beat back through seconds came out an
+  ulp off (frame 128 at 120 BPM, 48 kHz as 127.99999999999, read by the
+  kernel as frame 127 at `t` = 1.0), so a placed clip played its samples
+  only to within an ulp. With it, a disk clip exports the file's samples
+  exactly and bit-identically to the same clip in memory.
+
+On `Net`, a node export (`clone_isolated`: isolate, rebind) plays the file
+the same way; a `Net` master export is still a plain clone that reads the
+live ring, and goes with the arm in PR 13.
+
+Tests (each mutation run; the mutation is on the test): tutti-sampler
+`disk_voice::tests::a_severed_copy_never_touches_the_live_stream` (no ring
+pop, no live seek, own gain, for an isolated and a rebound-only copy);
+`tests/offline_disk_voice.rs` (the file's frames from the frame its beat
+falls on, bare and in a `VoiceNode`; a 24 kHz file at 48 kHz; a loop set
+after the voice was built, hard and crossfaded; a restarted channel gives
+silence); bevy-tutti `export_fork.rs` `disk::` (a master and a node export at
+beat 3 of 90 BPM play the file exactly and match the memory voice bit for
+bit; a node export on both backends; a 24 kHz file exported at 48 kHz; live
+playback with a hand-stepped butler on its own thread stays contiguous while
+the voice exports; on Linux, no handle on the file outlives the export).
+
+Found on the way: **a placed `MemorySource` steps by varispeed alone within a
+block**, where it must step by `speed × file_rate / session_rate`: a 24 kHz
+file placed on a 48 kHz timeline reads one file frame per output frame for
+64 frames and then jumps back 32 at every chunk (measured: frames 60..63,
+then 32). `window_rate` is right for the gate and wrong as the step
+(`next_frame_into`, `PlaybackSlot::process_into`). Not fixed here (the
+memory tier, with its own suites); the disk fork steps correctly, so the
+two tiers match only at matched rates until it is.
 
 **Phase 3 follow-ups** (recorded, not done here):
 

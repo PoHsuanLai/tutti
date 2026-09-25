@@ -121,9 +121,9 @@ impl GraphSource {
 ///   the compiler compensates every commit and nothing is inserted.
 /// - **Export** (`ExportRequest`) forks on `Native` (`Editor::fork`, doc
 ///   013 PR 12): every node, the master included, is isolated, rebound onto
-///   the export's offline timeline and reset, and a node that cannot be
-///   forked (a mic monitor, a disk voice, an in-process VST2 plugin) refuses
-///   the export by name. `Net` clones: a master export keeps the live
+///   the export's offline timeline and reset (a disk voice then reads its
+///   file itself), and a node that cannot be forked (a mic monitor, an
+///   in-process VST2 plugin) refuses the export by name. `Net` clones: a master export keeps the live
 ///   bindings and running state. See `crate::export`.
 /// - **Block-oriented units** (a convolver's FFT, a plugin's batcher) run in
 ///   `Legacy`'s 64-frame chunks from the start of each native block, so a

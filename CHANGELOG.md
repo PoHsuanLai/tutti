@@ -42,10 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     source, so a fork loads a fresh instance with the live one's state. An
     in-process VST2 plugin is still inserted boxed and refuses an export by
     name.
-  - **A disk-streamed sampler voice refuses a native export** by name
-    (`ExportError::NotForkable`): its seek handle drives the live butler. On
-    `Net` its master export read the live voice's ring from the render
-    thread, and a node export rendered silence.
+  - **A disk-streamed sampler voice exports**: its fork reads the voice's
+    file itself, on the render's thread, and plays it on the export's
+    timeline (see the tutti-sampler entry below). It no longer refuses an
+    export as `ExportError::NotForkable`. On `Net` a node export plays it
+    the same way; a `Net` master export is still a plain clone that reads
+    the live voice's ring from the render thread, until PR 13 removes it.
   - New on `ExportRequest`, either backend: `trim_reported_latency()` and
     `with_reported_tail(cap)` take the render's latency trim and tail from
     the graph that is rendered, after the `prepare` hook. The tail resolves
@@ -54,6 +56,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `bevy_tutti::export` re-exports `RenderGraph`, `ForkCause`,
     `ForkFaultKind` and `NodeKey`, the engine types its API hands out.
 
+- **tutti-sampler: a forked `DiskVoice` plays its file offline.** A copy
+  taken for an offline render (a graph fork, or `clone_isolated`) no longer
+  touches the live stream: `isolate` gives it a private snapshot of the
+  stream's control cell (so its gate can no longer ask the live butler to
+  seek) and switches it off the ring, and `rebind_offline` hands it the
+  stream's file, loop and rate as the butler records them at that moment
+  (`Status::take_disk_voice` now keeps a read-only handle on that record).
+  The copy decodes the file on demand on the render's thread, in pages,
+  and reads each position as `MemorySource` reads it (the same four taps
+  and kernel, split out of `interp::read_frame`), so a clip rendered from
+  disk is bit-identical to the same clip in memory. It plays the voice's
+  window on the render's timeline, resampled from the file's rate to the
+  render's, looped as the stream is (with its linear crossfade), reversed
+  as the memory tier reverses; the butler's PDC preroll is not applied
+  offline. It registers no butler stream, so nothing is left behind when
+  the render ends: its decoder drops with it. `DiskVoice::forkable` is
+  `true` again (the trait default), and so is a `VoiceNode` holding one.
+  A voice whose stream was stopped or restarted on another file by the
+  time it is forked renders silence, as it does live.
+- **tutti-sampler: the placement gate lands on whole frames.**
+  `interp::window_position` (both tiers) returns a whole frame when the
+  position it derives is within `FRAME_TOLERANCE` of one. Converting the
+  clock's beat back through seconds landed an ulp off (frame 128 of a clip
+  at 120 BPM, 48 kHz came out 127.99999999999), so a clip placed on a beat
+  played its own samples only to within an ulp.
 - **tutti-graph: `ForkTarget::Master` forks what the global outputs
   reach**, walking back along audio, feedback and event edges, and nothing
   else. A node no output reaches is not copied and need not be forkable

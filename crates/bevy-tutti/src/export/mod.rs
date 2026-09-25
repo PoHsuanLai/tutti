@@ -113,16 +113,18 @@
 //!   cannot be rebound refuses the export by name
 //!   ([`ExportError::ForkSource`]) rather than render its notes as silence,
 //!   for a synth as for a plugin.
+//! - **A disk-streamed sampler voice reads its file itself.** Its copy
+//!   cannot play through the butler (the live audio thread is the ring's one
+//!   consumer, and a seek moves the live stream), so it decodes the file the
+//!   stream plays on the render's thread, and plays the voice's window of it
+//!   on the request's timeline, resampled to the render's rate and looped as
+//!   the stream is looped when the export starts. The live voice and its
+//!   butler are not touched. (A `Net` master export's plain clone still
+//!   reads the live voice's ring from the render thread.)
 //! - **Some nodes cannot be forked**, and an export that needs one (an
 //!   output reaches it) is refused naming the node's entity
-//!   ([`ExportError::NotForkable`]): a microphone monitor, an
-//!   in-process VST2 plugin, and a **disk-streamed sampler voice** — its seek
-//!   handle drives the live butler, so a copy would reposition the live
-//!   stream. (On `Net`, a master export's plain clone read the live voice's
-//!   ring from the render thread, taking frames the audio thread was waiting
-//!   on; a node export severed the ring and rendered silence, while its first
-//!   in-window frame could still seek the live stream.) Export a node it does
-//!   not feed, or load the clip into memory.
+//!   ([`ExportError::NotForkable`]): a microphone monitor and an in-process
+//!   VST2 plugin. Export a node it does not feed.
 //! - **A fork that fails while rendering** — a plugin server that crashes or
 //!   hangs — fails the export by name ([`ExportError::ForkFailed`]) rather
 //!   than writing silence as a success.

@@ -611,7 +611,7 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
 }
 
 /// A source whose `isolate` it will not vouch for, as a microphone monitor
-/// or a disk voice declares: `forkable() == false`.
+/// declares: `forkable() == false`.
 #[derive(Clone)]
 struct Unforkable;
 
@@ -1819,5 +1819,422 @@ mod host_midi {
             }
             other => panic!("expected a named fork-source failure, got {other:?}"),
         }
+    }
+}
+// ---------------------------------------------------------------------------
+// Native only: a disk-streamed sampler voice, which a fork reads from its file
+// ---------------------------------------------------------------------------
+
+/// A disk-streamed clip through a fork. The live voice plays what the butler
+/// streams into its ring; the fork cannot (the ring's one consumer is the live
+/// audio thread, and a seek moves the live stream), so it reads the file the
+/// butler's record names itself, on the render's thread (tutti-sampler's
+/// `offline_read`). Native only: a `Net` master export is a plain clone that
+/// reads the live ring.
+///
+/// The butler is hand-stepped (`DiskStreamer::manual`), so a refill is a
+/// step, not a race with a render that runs faster than real time.
+#[cfg(feature = "sampler")]
+mod disk {
+    use super::*;
+
+    use std::path::Path;
+
+    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+    use tutti_core::{Beat, Bpm, SamplePosition, Timeline};
+    use tutti_sampler::{
+        Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
+    };
+
+    /// Frame `i` of every test file: distinct per frame, and exactly what an
+    /// f32 WAV hands back.
+    fn value(i: usize) -> f32 {
+        (i as f32 + 1.0) * 1e-5
+    }
+
+    /// The file frame a sample of [`value`] came from.
+    fn frame_of(s: f32) -> i64 {
+        (s / 1e-5).round() as i64 - 1
+    }
+
+    /// A stereo f32 WAV of `frames` at `rate`: `value(i)` left, `-value(i)`
+    /// right.
+    fn write_ramp(path: &Path, rate: u32, frames: usize) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(path, spec).expect("writes");
+        for i in 0..frames {
+            w.write_sample(value(i)).expect("writes");
+            w.write_sample(-value(i)).expect("writes");
+        }
+        w.finalize().expect("writes");
+    }
+
+    /// A hand-stepped butler at the export's rate streaming `path` on
+    /// channel 0, primed.
+    fn streamer_on(path: &Path) -> DiskStreamer {
+        let mut streamer =
+            DiskStreamer::manual(SampleRate(RATE), Default::default()).expect("builds");
+        streamer
+            .commands()
+            .send(Command::Stream {
+                channel_index: 0,
+                file_path: path.to_path_buf(),
+                offset: SamplePosition(0.0),
+            })
+            .expect("the butler is alive");
+        assert!(
+            streamer.step_until_settled(1_000) < 1_000,
+            "the ring primes"
+        );
+        streamer
+    }
+
+    /// The live voice on channel 0, placed at `beat` on `clock`.
+    fn disk_voice(streamer: &DiskStreamer, clock: Arc<dyn Timeline>, beat: f64) -> DiskVoice {
+        streamer
+            .status()
+            .take_disk_voice(0, clock, Beat(beat), None)
+            .expect("the link is installed")
+    }
+
+    /// A timeline at `tempo` BPM from beat 0, at the export's rate.
+    fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
+        Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: Beat(0.0),
+            tempo: Bpm(tempo),
+            sample_rate: SampleRate(RATE),
+            loop_range: None,
+        }))
+    }
+
+    fn node_of(source: VoiceSource) -> VoiceNode {
+        VoiceNode::with_channels(
+            Voice {
+                source,
+                play: Playback::default(),
+                channel_index: None,
+            },
+            2usize,
+        )
+    }
+
+    fn on(seconds: f64, source: ExportSource, clock: &Arc<OfflineTimeline>) -> ExportRequest {
+        ExportRequest::new(
+            source,
+            ExportTarget::Buffers,
+            config(seconds),
+            ExportClock::timeline(clock.clone()),
+        )
+    }
+
+    /// **A disk-streamed clip exports its file, from the frame its beat falls
+    /// on**, as the master and as a node: placed at beat 3 of a 90 BPM render
+    /// (frame 96 000), silent before, then the file's own frame `k` on render
+    /// frame `96 000 + k`, exactly, on both channels, and silent after its
+    /// last. The master is a bare `DiskVoice`; the node a `VoiceNode` holding
+    /// one, which reads it a frame at a time. **And it is the same clip as a
+    /// memory voice**: a node export of the file's frames in memory, placed
+    /// the same, renders the same planes bit for bit.
+    ///
+    /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
+    /// file (`offline.read` left `None`) → both exports silent → fails.
+    /// Mutation (run): the placement gate's whole-frame snap removed
+    /// (tutti-sampler `interp::window_position`) → a frame of the clip reads
+    /// an ulp off → fails. Mutation (run): `DiskVoice::forkable` answering
+    /// `false` again → refused as not forkable → fails.
+    #[test]
+    fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
+        const AT: usize = 96_000;
+        const LEN: usize = 48_000;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        write_ramp(&path, RATE as u32, LEN);
+        let streamer = streamer_on(&path);
+        let live = timeline(90.0) as Arc<dyn Timeline>;
+
+        let mut app = app_over(graph_on(GraphBackend::Native));
+        let (disk_node, memory_node) = {
+            let bare = disk_voice(&streamer, live.clone(), 3.0);
+            let wrapped = node_of(VoiceSource::Disk(disk_voice(&streamer, live.clone(), 3.0)));
+            let mut wave = tutti_io::Wave::new(2, RATE);
+            for i in 0..LEN {
+                wave.push_frame(&[value(i), -value(i)]);
+            }
+            let memory = node_of(VoiceSource::Memory(MemorySource::with_transport(
+                Arc::new(wave),
+                live.clone(),
+                Beat(3.0),
+                None,
+            )));
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let bare = graph.insert(bare);
+            graph.set_outputs_from(bare);
+            let (wrapped, memory) = (graph.insert(wrapped), graph.insert(memory));
+            app.world_mut().spawn(bare);
+            (
+                app.world_mut().spawn(wrapped).id(),
+                app.world_mut().spawn(memory).id(),
+            )
+        };
+
+        let render = |app: &mut App, source| export(app, on(3.0, source, &timeline(90.0))).planes();
+        let master = render(&mut app, ExportSource::Master);
+        let disk = render(&mut app, ExportSource::Node(disk_node));
+        for (what, planes) in [("master", &master), ("node", &disk)] {
+            assert!(
+                planes[0][..AT].iter().all(|&s| s == 0.0),
+                "{what}: sounded before beat 3"
+            );
+            for k in 0..LEN {
+                assert_eq!(planes[0][AT + k], value(k), "{what}: left, file frame {k}");
+                assert_eq!(
+                    planes[1][AT + k],
+                    -value(k),
+                    "{what}: right, file frame {k}"
+                );
+            }
+            assert!(
+                planes[0][AT + LEN..].iter().all(|&s| s == 0.0),
+                "{what}: sounded past the file's end"
+            );
+        }
+
+        let memory = render(&mut app, ExportSource::Node(memory_node));
+        for c in 0..2 {
+            if let Some(i) =
+                (0..disk[c].len()).find(|&i| disk[c][i].to_bits() != memory[c][i].to_bits())
+            {
+                panic!(
+                    "channel {c} parts from memory at frame {i}: disk {} memory {}",
+                    disk[c][i], memory[c][i]
+                );
+            }
+        }
+    }
+
+    /// **A node export of a disk voice plays its file on either backend.**
+    /// `Net`'s node export isolates and rebinds a clone of the node
+    /// (`clone_isolated`), the same calls a fork makes, so its copy reads
+    /// the file too (it rendered silence while `isolate` only cut the ring).
+    /// A `Net` master export is a plain clone of the live net and is not
+    /// covered: it reads the live ring, until PR 13 removes it.
+    ///
+    /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
+    /// file → silent on both → fails.
+    fn a_node_export_of_a_disk_voice_plays_its_file(backend: GraphBackend) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        write_ramp(&path, RATE as u32, 4_800);
+        let streamer = streamer_on(&path);
+
+        let mut app = app_over(graph_on(backend));
+        let voice = {
+            let voice = node_of(VoiceSource::Disk(disk_voice(
+                &streamer,
+                timeline(120.0),
+                1.0,
+            )));
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert(voice);
+            app.world_mut().spawn(node).id()
+        };
+        let planes = export(
+            &mut app,
+            on(1.0, ExportSource::Node(voice), &timeline(120.0)),
+        )
+        .planes();
+        assert!(
+            planes[0][..24_000].iter().all(|&s| s == 0.0),
+            "{backend:?}: sounded before beat 1"
+        );
+        for k in 0..4_800 {
+            assert_eq!(
+                planes[0][24_000 + k],
+                value(k),
+                "{backend:?}: file frame {k}"
+            );
+        }
+    }
+    both_backends!(a_node_export_of_a_disk_voice_plays_its_file);
+
+    /// **A clip whose file is at another rate is resampled to the export's**:
+    /// a 24 kHz file exported at 48 kHz reads file frame `n / 2` on render
+    /// frame `n` of the clip (a ramp, which the cubic kernel reproduces
+    /// between frames up to rounding), and its one second of file lasts
+    /// 48 000 render frames.
+    ///
+    /// Mutation (run): the fork's read rate without the conversion
+    /// (`SrcRatio::for_rates` → `UNITY` in `DiskVoice::offline_read_rate`)
+    /// → a file frame per render frame → fails.
+    #[test]
+    fn a_disk_voice_at_another_rate_exports_resampled() {
+        const AT: usize = 24_000;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp_24k.wav");
+        write_ramp(&path, 24_000, 24_000);
+        let streamer = streamer_on(&path);
+
+        let mut app = app_over(graph_on(GraphBackend::Native));
+        {
+            let voice = disk_voice(&streamer, timeline(120.0), 1.0);
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert(voice);
+            graph.set_outputs_from(node);
+        }
+        let planes = export(&mut app, on(2.0, ExportSource::Master, &timeline(120.0))).planes();
+        assert!(
+            planes[0][..AT].iter().all(|&s| s == 0.0),
+            "sounded before beat 1"
+        );
+        assert_eq!(planes[0][AT], value(0), "the clip's first frame on beat 1");
+        // From frame 4: the first frames' taps clamp at the file's start.
+        for n in 4..47_990 {
+            let want = (n as f32 / 2.0 + 1.0) * 1e-5;
+            let got = planes[0][AT + n];
+            assert!(
+                (got - want).abs() < 1e-6,
+                "render frame {n} of the clip read {got}, want {want}"
+            );
+        }
+        assert!(
+            planes[0][AT + 48_000..].iter().all(|&s| s == 0.0),
+            "sounded past the file's end"
+        );
+    }
+
+    /// **Live disk playback is untouched while its voice exports.** The live
+    /// graph renders on its own thread (the butler stepped between its
+    /// blocks, its clock moved after each), from before the export starts
+    /// until after it reports, while a master export forks the same voice.
+    /// The live voice plays the file's frames one after another the whole
+    /// time: a render that popped its ring, or asked its butler to seek,
+    /// would show as a jump. The export plays the clip from its first frame.
+    ///
+    /// Mutation (run): the fork taking the live path (the offline branch
+    /// removed from `DiskVoice::process`) with `isolate` keeping the live
+    /// control cell → the fork's gate asks the live butler to seek to the
+    /// render's position, and the live frames jump → fails.
+    #[test]
+    fn live_disk_playback_is_untouched_while_its_voice_exports() {
+        const BLOCK: usize = 256;
+        // Past the entry seek the live voice raises on its first block.
+        const SETTLED: usize = 16 * BLOCK;
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("long.wav");
+        // Long enough that the live side, paced below, cannot run out of
+        // file while the export renders.
+        let len = 30 * RATE as usize;
+        write_ramp(&path, RATE as u32, len);
+        let mut streamer = streamer_on(&path);
+        let live_clock = timeline(120.0);
+
+        let mut graph = graph_on(GraphBackend::Native);
+        let node = graph.insert(disk_voice(&streamer, live_clock.clone(), 0.0));
+        graph.set_outputs_from(node);
+        graph.render_frame(&mut [0.0, 0.0]);
+        let mut live = graph.take_audio_side();
+        let mut app = app_over(graph);
+
+        let (settled, done) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (heard, got) = std::thread::scope(|s| {
+            let device = s.spawn(|| {
+                let mut heard = Vec::new();
+                let mut block = vec![Vec::new(), Vec::new()];
+                let mut after = 0;
+                while after < 8 {
+                    let _ = streamer.step_until_settled(64);
+                    live.render(BLOCK, BLOCK, &mut block);
+                    live_clock.advance(BLOCK);
+                    heard.extend_from_slice(&block[0]);
+                    assert!(heard.len() < len, "the live side ran out of file first");
+                    if heard.len() > SETTLED {
+                        settled.store(true, Ordering::Release);
+                    }
+                    if done.load(Ordering::Acquire) {
+                        after += 1;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                heard
+            });
+            // The export starts once the live voice has settled, so every
+            // frame it could disturb is one the assertions below check.
+            while !settled.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let got = export(&mut app, on(1.0, ExportSource::Master, &timeline(120.0)));
+            done.store(true, Ordering::Release);
+            (device.join().expect("the live side"), got)
+        });
+
+        let first = frame_of(heard[SETTLED]);
+        assert!(first >= 0, "the live voice is playing by frame {SETTLED}");
+        for (i, &s) in heard[SETTLED..].iter().enumerate() {
+            assert_eq!(
+                frame_of(s),
+                first + i as i64,
+                "the live voice jumped at frame {} while the export ran",
+                SETTLED + i
+            );
+        }
+        let rendered = got.planes();
+        for (k, &s) in rendered[0].iter().enumerate() {
+            assert_eq!(s, value(k), "the export's frame {k}");
+        }
+    }
+
+    /// Open file descriptors of this process that name `path` (Linux:
+    /// `/proc/self/fd`).
+    #[cfg(target_os = "linux")]
+    fn open_handles(path: &Path) -> usize {
+        let path = path.canonicalize().expect("the file exists");
+        std::fs::read_dir("/proc/self/fd")
+            .expect("procfs")
+            .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
+            .filter(|target| *target == path)
+            .count()
+    }
+
+    /// **An export leaves nothing open behind it.** The fork's only resource
+    /// is the file it reads (it registers no butler stream: it holds no
+    /// command handle to register one with), and it is closed once the
+    /// export has reported: the process holds the same handles on the file
+    /// as before, the live butler's. That the fork opened it at all is the
+    /// export playing the clip.
+    ///
+    /// Linux only: it counts handles through `/proc/self/fd`, which the other
+    /// platforms do not have. What it pins is platform-independent.
+    ///
+    /// Mutation (run): the offline reader leaking its decoder
+    /// (`Box::leak` of the `FileIn` in `Pages::open`) → one handle more
+    /// after the export → fails.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_export_leaves_nothing_open_behind_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        write_ramp(&path, RATE as u32, 4_800);
+        let streamer = streamer_on(&path);
+
+        let mut app = app_over(graph_on(GraphBackend::Native));
+        {
+            let voice = disk_voice(&streamer, timeline(120.0), 0.0);
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert(voice);
+            graph.set_outputs_from(node);
+        }
+        let before = open_handles(&path);
+        let planes = export(&mut app, on(0.2, ExportSource::Master, &timeline(120.0))).planes();
+        assert_eq!(planes[0][100], value(100), "the export played the clip");
+        assert_eq!(
+            open_handles(&path),
+            before,
+            "the export left a handle on the file open"
+        );
     }
 }

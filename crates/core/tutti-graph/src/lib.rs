@@ -204,7 +204,9 @@ pub use fork::{
     ForkTarget, Forked,
 };
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
-pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY};
+pub use legacy::{
+    Delivery, Legacy, LegacyControls, LegacyForkHook, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY,
+};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,

@@ -150,8 +150,9 @@
 //! [`ForkError::NotForkable`](crate::ForkError::NotForkable).
 //! [`Legacy::unforkable`] opts a node out explicitly. A fork follows fundsp's sequence (`PendingClone::isolate_for_offline`
 //! then `Net::reset`): clone, `AudioUnit::isolate`, `AudioUnit::rebind_offline`
-//! for an offline fork, `AudioUnit::reset`. What it clones depends on how the
-//! node was built:
+//! for an offline fork, `AudioUnit::reset` — with a host's
+//! [`with_fork_hook`](Legacy::with_fork_hook) step, if it added one, between
+//! the rebind and the reset. What it clones depends on how the node was built:
 //!
 //! - **[`Legacy::controlled`]: the shadow.** It has every setting sent
 //!   through [`LegacyControls`] applied, in order, which is the only way a
@@ -220,7 +221,15 @@ pub struct Legacy {
     fork_from: Option<Box<dyn Snapshot>>,
     /// Opted out of forking ([`Legacy::unforkable`]).
     unforkable: bool,
+    /// A host's last step on each fork ([`Legacy::with_fork_hook`]).
+    fork_hook: Option<LegacyForkHook>,
 }
+
+/// A step a host adds to every fork of a [`Legacy`] node
+/// ([`Legacy::with_fork_hook`]): handed the forked unit after `isolate` and
+/// (offline) `rebind_offline`, before `reset`.
+pub type LegacyForkHook =
+    Box<dyn Fn(&mut dyn AudioUnit, ForkMode<'_>) -> Result<(), ForkCause> + Send>;
 
 /// The node a [`Legacy`] runs as.
 struct Adapter {
@@ -436,6 +445,7 @@ impl<T: AudioUnit + Clone + 'static> Snapshot for Arc<Mutex<T>> {
 struct LegacyFork {
     from: Box<dyn Snapshot>,
     pure: bool,
+    hook: Option<LegacyForkHook>,
 }
 
 impl ForkSource for LegacyFork {
@@ -450,10 +460,15 @@ impl ForkSource for LegacyFork {
         if let ForkMode::Offline(ctx) = mode {
             unit.rebind_offline(ctx);
         }
+        // The host's step (`Legacy::with_fork_hook`): after the rebind, so
+        // what it installs is not severed; before the reset, as the rebind is.
+        if let Some(hook) = &self.hook {
+            hook(unit.as_mut(), mode)?;
+        }
         unit.reset();
         let mut node = Adapter::new(unit);
         node.pure = self.pure;
-        // A clone cannot fail.
+        // A clone cannot fail; only a hook can.
         Ok(Forked::new(Box::new(node)))
     }
 }
@@ -494,6 +509,28 @@ impl Legacy {
     /// a second copy of (see "Forking" in the module docs).
     pub fn unforkable(mut self) -> Self {
         self.unforkable = true;
+        self
+    }
+
+    /// Add a last step to every fork of this node: `hook` is handed the
+    /// forked unit after `isolate` and, offline, `rebind_offline`, and before
+    /// `reset` (see "Forking" in the module docs), with the fork's mode.
+    ///
+    /// For what a host knows about the unit that the unit's own
+    /// `rebind_offline` cannot: a MIDI clip installed on the live unit's port
+    /// through a handle the host keeps, which `isolate` severed from the
+    /// clone and the host re-installs, rebound, on the fork's own port. An
+    /// `Err` fails the whole fork as
+    /// [`ForkError::Source`](crate::ForkError::Source), naming the key —
+    /// for a step that would otherwise render the fork wrong (its notes
+    /// dropped) rather than not at all.
+    ///
+    /// No effect on a node with no fork source (an unforkable unit).
+    pub fn with_fork_hook(
+        mut self,
+        hook: impl Fn(&mut dyn AudioUnit, ForkMode<'_>) -> Result<(), ForkCause> + Send + 'static,
+    ) -> Self {
+        self.fork_hook = Some(Box::new(hook));
         self
     }
 
@@ -544,6 +581,7 @@ impl Legacy {
             node: Adapter::new(unit),
             fork_from: None,
             unforkable: false,
+            fork_hook: None,
         }
     }
 
@@ -587,6 +625,7 @@ impl IntoNode for Legacy {
         let fork = LegacyFork {
             from,
             pure: self.node.pure,
+            hook: self.fork_hook,
         };
         NodeParts {
             node: Box::new(self.node),

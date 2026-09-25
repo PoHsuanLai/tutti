@@ -976,10 +976,19 @@ unsafe fn load_impl(stream: *const clap_istream, context: u32) -> bool {
 }
 
 unsafe extern "C" fn state_save(_plugin: *const clap_plugin, stream: *const clap_ostream) -> bool {
+    // REFUSAL: the out-of-process switch (see `crate::subprocess`), for a
+    // host suite that needs a plugin which cannot save its state.
+    if crate::subprocess::refuse_state_save() {
+        return false;
+    }
     save_impl(stream, 0)
 }
 
 unsafe extern "C" fn state_load(_plugin: *const clap_plugin, stream: *const clap_istream) -> bool {
+    // REFUSAL: refuse before reading, as the context flavour does.
+    if crate::subprocess::refuse_state_load() {
+        return false;
+    }
     load_impl(stream, 0)
 }
 

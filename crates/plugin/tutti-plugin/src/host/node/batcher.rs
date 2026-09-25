@@ -35,10 +35,13 @@
 //! format-tagged enum; only one variant exists per `Batcher` instance at
 //! runtime.
 
+use super::fork::ForkWatch;
 use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
 use crate::protocol::{MidiEventVec, SampleFormat};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, Samples, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
@@ -195,6 +198,17 @@ pub(crate) struct Batcher {
     /// The block whose output is expected on the *next* call, or `None`
     /// when nothing is in flight (start-up, and after a reset).
     expect_seq: Option<u64>,
+    /// `Some` only on an **offline fork** (`host::node::fork`): before
+    /// collecting block N−1, wait up to this long for the server to publish
+    /// it. See [`await_output`](Self::await_output).
+    offline_wait: Option<OfflineWait>,
+}
+
+/// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
+/// the latches.
+#[derive(Clone)]
+struct OfflineWait {
+    watch: Arc<ForkWatch>,
 }
 
 impl Clone for Batcher {
@@ -209,6 +223,7 @@ impl Clone for Batcher {
         // `None` — because the clone is a different object and the old one may
         // still collect it.
         cloned.next_seq = self.next_seq;
+        cloned.offline_wait = self.offline_wait.clone();
         cloned
     }
 }
@@ -232,6 +247,78 @@ impl Batcher {
             max_block,
             next_seq: 1,
             expect_seq: None,
+            offline_wait: None,
+        }
+    }
+
+    /// Make every collect wait for its block, up to `budget` per block: the
+    /// offline mode of a forked instance.
+    ///
+    /// The pipeline never waits because it runs on the audio thread, where a
+    /// wait is a dropout (module docs). An offline fork runs on a render
+    /// worker with no deadline, as fast as the plugin answers — so there the
+    /// same rule is the defect: a render loop outpaces the subprocess, every
+    /// block it has not published yet reads as silence, and the export is
+    /// mostly silent with no error. Waiting keeps the pipelined shape (submit
+    /// N, collect N−1) and so the declared one-block latency, and makes the
+    /// output a function of the input rather than of scheduling.
+    ///
+    /// The budget and the latches are the fork's [`ForkWatch`]: it records a
+    /// miss or a dead server there, and its health probe reports them.
+    pub(super) fn set_offline_wait(&mut self, watch: Arc<ForkWatch>) {
+        self.offline_wait = Some(OfflineWait { watch });
+    }
+
+    /// With [`set_offline_wait`](Self::set_offline_wait): block until the
+    /// block this call collects is published, the bridge crashes, or the
+    /// budget runs out. A no-op otherwise, and when nothing is in flight.
+    ///
+    /// **The first miss is the last wait.** A block still missing at the
+    /// budget is collected as silence, as the live path would, and the wait
+    /// latches `gave_up`: from then on every block is collected at once
+    /// (silence, unless the server catches up), so a hung server costs one
+    /// budget per render, not one per block — an hour-long export through a
+    /// wedged plugin would otherwise take days to report its failure. The
+    /// fork's health probe turns the latch into `ForkFaultKind::TimedOut`,
+    /// which the renderer reports.
+    ///
+    /// **A dead server ends the wait at once**, and reads as `Crashed`. The
+    /// bridge alone would not notice in time: it learns of a dead peer only
+    /// when it next reads the socket, which it does for a command, and this
+    /// wait sends none. So the wait also asks the process itself
+    /// ([`ForkWatch::server_died`]), every [`PROCESS_POLL`].
+    fn await_output(&self, bridge: &PluginBridge) {
+        const PROCESS_POLL: Duration = Duration::from_millis(5);
+        let (Some(wait), Some(seq)) = (&self.offline_wait, self.expect_seq) else {
+            return;
+        };
+        let watch = &wait.watch;
+        if watch.stopped_waiting() {
+            return;
+        }
+        let deadline = Instant::now() + watch.budget();
+        let mut next_poll = Instant::now() + PROCESS_POLL;
+        while !bridge.is_crashed() && !bridge.audio_buffer().has_output(seq) {
+            let now = Instant::now();
+            if now >= next_poll {
+                if watch.server_died() {
+                    return;
+                }
+                next_poll = now + PROCESS_POLL;
+            }
+            if now >= deadline {
+                watch.give_up();
+                tracing::warn!(
+                    seq,
+                    budget = ?watch.budget(),
+                    "offline plugin fork: block not published in time; \
+                     rendering silence from here on"
+                );
+                return;
+            }
+            // Short, not a spin: this is a worker thread, and the server needs
+            // the core more than this loop does.
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 
@@ -375,6 +462,7 @@ impl Batcher {
         // Decide what is collectable BEFORE overwriting the input ring with this
         // block — at ring depth 2, block N's input slot is the one block N-2
         // used.
+        self.await_output(bridge);
         let collected = self.collectable(bridge);
 
         let seq = self.next_seq;
@@ -416,6 +504,7 @@ impl Batcher {
         payload: BlockPayload,
         midi_out: &mut MidiEventVec,
     ) {
+        self.await_output(bridge);
         let collected = self.collectable(bridge);
 
         let seq = self.next_seq;

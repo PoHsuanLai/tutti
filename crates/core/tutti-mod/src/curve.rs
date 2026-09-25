@@ -27,6 +27,19 @@ use tutti_types::Beat;
 pub trait Curve: Send + Sync {
     /// Evaluate the curve at `beat`, or `None` if it has no value there.
     fn value_at(&self, beat: Beat) -> Option<f32>;
+
+    /// A copy of this curve that **no later write reaches**, for a render that
+    /// runs beside the live graph (a graph fork: an offline export).
+    ///
+    /// `None`, the default, says the curve is immutable once shared — an
+    /// envelope, an LFO shape, anything whose `value_at` reads only what it was
+    /// built with — so sharing the `Arc` already is the copy. A curve that reads
+    /// state something writes after construction (a modulation target a router
+    /// writes every frame) returns `Some` of a frozen copy, and one that wraps
+    /// another curve forwards the question to it.
+    fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
+        None
+    }
 }
 
 /// `T` is the envelope's target *label* — never the evaluated value, which is

@@ -69,6 +69,6 @@ sources from all three into one binary, so a mixed set is a compile error at
 best. After bumping, re-run:
 
 ```bash
-cargo test --manifest-path crates/bevy-tutti/Cargo.toml \
+cargo test \
   -p tutti-vst3-host --features conformance
 ```

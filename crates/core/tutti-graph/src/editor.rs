@@ -67,7 +67,7 @@ use crate::exec::{
     channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY,
 };
 use crate::fade::Fade;
-use crate::fork::ForkSource;
+use crate::fork::{ForkHealth, ForkSource};
 use crate::legacy::Outbox;
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::plan::{Delta, Placement, Plan};
@@ -289,6 +289,9 @@ pub struct Editor {
     /// Events per event slot per block, as the executor was built with: a
     /// fork gets the same.
     event_capacity: usize,
+    /// On a **fork** only: the health probe each forked unit's source handed
+    /// over, by key (see `src/fork.rs`, "When a forked unit fails").
+    fork_health: Vec<(NodeKey, Arc<dyn ForkHealth>)>,
 }
 
 /// A panic payload as text.
@@ -350,6 +353,7 @@ impl Editor {
             outboxes: Vec::new(),
             forks: BTreeMap::new(),
             event_capacity: cap,
+            fork_health: Vec::new(),
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -770,6 +774,16 @@ impl Editor {
     /// handed it over, if it is forkable.
     pub(crate) fn fork_source(&self, key: NodeKey) -> Option<(u32, &dyn ForkSource)> {
         self.forks.get(&key).map(|(gen, f)| (*gen, f.as_ref()))
+    }
+
+    /// Watch `health` for the forked unit at `key` (`Editor::fork` only).
+    pub(crate) fn watch_fork(&mut self, key: NodeKey, health: Arc<dyn ForkHealth>) {
+        self.fork_health.push((key, health));
+    }
+
+    /// The forked units' probes, in key order.
+    pub(crate) fn fork_probes(&self) -> &[(NodeKey, Arc<dyn ForkHealth>)] {
+        &self.fork_health
     }
 
     /// Events per event slot per block, as the executor was built with.

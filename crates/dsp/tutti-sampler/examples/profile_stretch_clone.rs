@@ -1,7 +1,7 @@
 //! Where the time goes when a graph commit clones stretched voices.
 //!
 //! ```text
-//! cargo build --manifest-path crates/bevy-tutti/Cargo.toml \
+//! cargo build \
 //!     -p tutti-sampler --profile profiling --example profile_stretch_clone
 //! samply record target/profiling/examples/profile_stretch_clone
 //! ```

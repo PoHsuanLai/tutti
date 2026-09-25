@@ -170,7 +170,7 @@ impl<U: Into<f32> + From<f32> + Copy> LayeredCurve<U> {
     }
 }
 
-impl<U: Into<f32> + From<f32> + Copy + Send + Sync> Curve for LayeredCurve<U> {
+impl<U: Into<f32> + From<f32> + Copy + Send + Sync + 'static> Curve for LayeredCurve<U> {
     /// `clamp(base + Σ layer(beat), [min, max])`. A layer with no value at this
     /// beat (`None` — disabled / empty) contributes nothing, preserving the
     /// empty-vs-zero distinction each layer carries.
@@ -182,6 +182,34 @@ impl<U: Into<f32> + From<f32> + Copy + Send + Sync> Curve for LayeredCurve<U> {
             .sum();
         let (min, max) = self.range();
         Some((self.base.into() + sum).clamp(min, max))
+    }
+
+    /// A value is already a copy; only a curve **layer** that reads live state
+    /// needs freezing, and then the whole sum is rebuilt around its frozen copy.
+    fn frozen(&self) -> Option<Arc<dyn Curve>> {
+        let mut any = false;
+        let layers = self
+            .layers
+            .iter()
+            .map(|(k, l)| match l {
+                Layer::Curve(c) => match c.frozen() {
+                    Some(f) => {
+                        any = true;
+                        (*k, Layer::Curve(f))
+                    }
+                    None => (*k, l.clone()),
+                },
+                Layer::Scalar(_) => (*k, l.clone()),
+            })
+            .collect();
+        any.then(|| {
+            Arc::new(Self {
+                base: self.base,
+                min: self.min,
+                max: self.max,
+                layers,
+            }) as Arc<dyn Curve>
+        })
     }
 }
 

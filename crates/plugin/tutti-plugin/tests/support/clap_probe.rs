@@ -43,13 +43,9 @@ const PLUGIN_SERVER_CANDIDATES: &str = env!("TUTTI_PLUGIN_SERVER_CANDIDATES");
 
 /// The exact command that builds the missing binary, printed by the panic below.
 ///
-/// Spelled with `--manifest-path` on purpose. A bare `cargo build -p
-/// tutti-plugin-server` fails from the repository root, because tutti is a
-/// **separate workspace** from the app and the app root `exclude`s it — so the
-/// obvious shortening of this string is also the version that does not work, and
-/// the reader would have to know the workspace layout to repair it.
-pub const BUILD_COMMAND: &str =
-    "cargo build --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-plugin-server";
+/// Run from the repository root, which is the one workspace every crate here
+/// belongs to (`CLAUDE.md`, "Build `plugin-server` first").
+pub const BUILD_COMMAND: &str = "cargo build -p tutti-plugin-server";
 
 /// These tests must not run concurrently, and a `Mutex` cannot enforce it.
 ///
@@ -292,6 +288,24 @@ impl ProbeEnv {
         self
     }
 
+    /// Make the plugin's `clap.state` save refuse.
+    pub fn refuse_state_save(mut self, on: bool) -> Self {
+        self.set(
+            "TUTTI_CLAP_PROBE_REFUSE_STATE_SAVE",
+            u8::from(on).to_string(),
+        );
+        self
+    }
+
+    /// Make the plugin's `clap.state` load refuse.
+    pub fn refuse_state_load(mut self, on: bool) -> Self {
+        self.set(
+            "TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD",
+            u8::from(on).to_string(),
+        );
+        self
+    }
+
     fn set(&mut self, key: &'static str, value: String) {
         // SAFETY: `exclusive()` is held for the whole test, and every test in
         // these suites takes it before touching the environment — so no other
@@ -340,15 +354,61 @@ pub struct LoadedProbe {
 /// If the load fails — these tests are about what a *loaded* plugin does, so a
 /// failure to load is a broken fixture rather than an outcome worth asserting.
 pub fn load_probe(sample_rate: f64) -> LoadedProbe {
+    load_probe_with(BridgeConfig::default(), sample_rate)
+}
+
+/// [`load_probe`] with a bridge config of the caller's (a shorter
+/// `timeout_ms`, say).
+pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
     // SAFETY: `exclusive()` is held; see `ProbeEnv::set`.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server_path()) };
 
-    let client = PluginClient::new(
-        BridgeConfig::default(),
-        clap_probe_path().to_path_buf(),
-        sample_rate,
-    )
-    .expect("load the reference CLAP plugin through a real plugin-server");
+    let client = PluginClient::new(config, clap_probe_path().to_path_buf(), sample_rate)
+        .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = PluginHandle::from_client(&client);
     LoadedProbe { client, handle }
+}
+
+/// Whether `pid` still names a process that has not been reaped.
+///
+/// Unix: `kill(pid, 0)` checks the pid without sending a signal. A running
+/// orphan answers `Ok`. So does a zombie, which means a missing `wait` is
+/// caught as well as a missing `kill`. A reaped child answers `ESRCH`.
+///
+/// Windows: there are no zombies. A process object lives exactly as long as
+/// some handle to it is open, and the guard's `Child` holds one. After a
+/// correct teardown, `OpenProcess` finds nothing. A leaked guard keeps the
+/// server running, so its exit code reads `STILL_ACTIVE`.
+///
+/// Neither probe can rule out the OS reusing a reaped pid for an unrelated
+/// process. That error goes the loud way (a false leak, never a false pass),
+/// and it needs a pid to wrap round between a drop and this check.
+#[cfg(unix)]
+pub fn is_alive(pid: u32) -> bool {
+    let pid = libc::pid_t::try_from(pid).expect("a pid fits pid_t");
+    // SAFETY: signal 0 performs only the existence and permission check.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    // EPERM: the pid exists but belongs to someone else. It cannot be our
+    // child, but it is not gone, so report it rather than guess.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+pub fn is_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: plain Win32 calls on a handle this function opens and closes.
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let queried = GetExitCodeProcess(process, &mut code);
+        let _ = CloseHandle(process);
+        queried.is_ok() && code == STILL_ACTIVE.0 as u32
+    }
 }

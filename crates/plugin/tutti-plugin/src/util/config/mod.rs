@@ -18,5 +18,5 @@
 pub mod bridge;
 pub mod catalog;
 
-pub use bridge::BridgeConfig;
+pub use bridge::{unique_socket_path, BridgeConfig};
 pub use catalog::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};

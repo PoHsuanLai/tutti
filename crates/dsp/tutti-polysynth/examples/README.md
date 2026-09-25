@@ -6,9 +6,9 @@ harmonic series, filter transfer functions, unison beating.
 ```bash
 just verify-audio                 # renders + judges everything, this included
 # or directly:
-cargo run --release --manifest-path crates/bevy-tutti/Cargo.toml \
+cargo run --release \
     -p tutti-polysynth --example render_synth_cases -- /tmp/tutti-polysynth
-cd crates/tutti && uv run python \
+uv run python \
     crates/dsp/tutti-polysynth/examples/verify_synth.py /tmp/tutti-polysynth
 ```
 

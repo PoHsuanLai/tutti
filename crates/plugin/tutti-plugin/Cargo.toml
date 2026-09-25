@@ -39,6 +39,11 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 # realising those two roles (see util/transport/shm/slab.rs).
 tutti-types = { path = "../../core/tutti-types" }
 
+# The native graph, for a plugin node's own `ForkSource` (fork by state
+# transfer, doc 013 Phase 3 PR 16). No cycle: `tutti-graph` names only
+# `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }
+
 # Parameter range/scaling
 audio-automation = { workspace = true }
 
@@ -120,6 +125,10 @@ optional = true
 tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 
 [dev-dependencies]
+# `clap_fork.rs` exports through a forked plugin, to pin that a fork failing
+# mid-render fails the export by name. Acyclic: tutti-export does not depend on
+# tutti-plugin. No codecs: the test renders to buffers.
+tutti-export = { path = "../../core/tutti-export", default-features = false }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["testing"] }

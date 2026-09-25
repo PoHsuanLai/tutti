@@ -199,7 +199,10 @@ pub use event::{
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
-pub use fork::{ForkError, ForkMode, ForkSource, ForkTarget};
+pub use fork::{
+    ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget,
+    Forked,
+};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY};
 pub use node::{

@@ -62,6 +62,23 @@ impl TransportSource {
         }
     }
 
+    /// The same meter, read through `reader`, stamped at `sample_rate` — a
+    /// source for a forked instance (`host::node::fork`). Shares nothing
+    /// mutable with `self`: its rate cell is its own, so a rate change on the
+    /// live node does not reach the fork. The meter is shared, read-only.
+    pub(crate) fn rebound(
+        &self,
+        reader: Arc<dyn TransportState>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Self {
+        Self::new(reader, Arc::clone(&self.meter), sample_rate)
+    }
+
+    /// The transport this source reads.
+    pub(crate) fn reader(&self) -> &Arc<dyn TransportState> {
+        &self.reader
+    }
+
     /// Update the stamped sample rate live (device / rate switch). Reaches the
     /// running box because the atomic is shared across clones.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {

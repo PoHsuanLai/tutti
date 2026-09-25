@@ -1008,7 +1008,7 @@ fn a_resolution_mark_without_its_edge_is_invalid() {
 /// `Legacy::probe` → fails.
 #[test]
 fn nodes_default_to_sample_and_legacy_declares_block() {
-    use tutti_graph::{Legacy, Node, Resolution};
+    use tutti_graph::{Legacy, Resolution};
     let s = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO);
     assert_eq!(s.event_resolution, Resolution::Sample);
     let legacy = Legacy::new(fundsp::prelude32::pass());

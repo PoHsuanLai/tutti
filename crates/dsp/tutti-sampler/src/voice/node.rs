@@ -403,6 +403,14 @@ impl AudioUnit for VoiceNode {
         self.rx = bounded(0).1;
     }
 
+    /// Answers for the voice it holds: a memory voice is forkable, a disk
+    /// voice is not (see `DiskVoice::forkable`). The rest of what `isolate`
+    /// touches — the stretch bank, the cursor, the command channel — it
+    /// severs completely.
+    fn forkable(&self) -> bool {
+        self.slot.voice.forkable()
+    }
+
     /// The host's door to a live voice's scalar controls.
     ///
     /// # Why this exists, when `voice_mut` already did

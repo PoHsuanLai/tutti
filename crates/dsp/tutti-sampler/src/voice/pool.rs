@@ -765,6 +765,12 @@ impl AudioUnit for VoicePool {
         // The offline render rebuilds voices from ECS and never forwards
         // streaming loop ops, so it needs no butler handle.
         self.butler = None;
+        // The cursor clones by sharing its cells (so a clone-on-commit does
+        // not restart playback): left in place, the clone's `process` would
+        // store `last_beat` and its `set_sample_rate` the rate into the live
+        // pool's cursor. `rebind_offline` seats a fresh one on the render's
+        // transport, as `VoiceNode::isolate` drops its own.
+        self.cursor = None;
     }
 
     /// Seat the render's transport, so voices inserted afterwards are built
@@ -775,6 +781,10 @@ impl AudioUnit for VoicePool {
             return;
         };
         self.replace_transport(transport.clone());
+        // A cursor of its own, on the render's transport: `isolate` dropped
+        // the shared one, and seek detection must watch the timeline the
+        // render advances.
+        self.cursor = Some(BeatCursor::new(transport.clone(), self.sample_rate));
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {

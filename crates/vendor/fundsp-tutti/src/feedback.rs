@@ -371,6 +371,10 @@ impl AudioUnit for FeedbackUnit {
         self.x.rebind_offline(ctx);
     }
 
+    fn forkable(&self) -> bool {
+        self.x.forkable()
+    }
+
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         if self.sample_rate != sample_rate {

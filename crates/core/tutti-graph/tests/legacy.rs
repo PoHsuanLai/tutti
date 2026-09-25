@@ -7,7 +7,7 @@ use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
 use tutti_graph::{
-    Delivery, Editor, GraphBuilder, Legacy, LegacyControls, Node, Transport,
+    Delivery, Editor, GraphBuilder, IntoNode, Legacy, LegacyControls, Transport,
     LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::buffer::BufferVec;
@@ -130,7 +130,7 @@ impl AudioUnit for FractionalLatency {
 /// Mutation: floor instead of round in `Legacy::probe` → 2 → fails.
 #[test]
 fn legacy_rounds_latency_as_net_does() {
-    let mut node = Legacy::new(FractionalLatency);
+    let (mut node, ()) = Legacy::new(FractionalLatency).into_node();
     node.prepare(&prepare(64));
     assert_eq!(node.shape().latency, Latency::new(Samples(3)));
     let mut net = Net::new(1, 1);
@@ -155,7 +155,7 @@ fn legacy_declares_the_units_latency_and_tail() {
     let mut probe = limiter(0.0101, 0.01);
     probe.set_sample_rate(SampleRate(48_000.0));
     let reported = probe.latency().expect("a limiter reports latency");
-    let mut node = Legacy::new(limiter(0.0101, 0.01));
+    let (mut node, ()) = Legacy::new(limiter(0.0101, 0.01)).into_node();
     let before = node.shape().latency;
     node.prepare(&prepare(64));
     let shape = node.shape();

@@ -77,7 +77,7 @@
 //!   on the control side, never processed and never locked by the audio
 //!   thread. Every [`LegacyControls::set`] is applied to it as well, so it
 //!   holds the unit's by-value params as the caller last set them — what a
-//!   fork (doc 013, Phase 3 PR 2) clones from. It is a snapshot, not a window:
+//!   fork ([`Editor::fork`]) clones from. It is a snapshot, not a window:
 //!   `isolate` severs the `Arc` cells a plain clone would share with the live
 //!   unit, so writing the shadow never moves live state ahead of the ring.
 //!   Live handles come from a node's captured controls (Phase 3 PR 9).
@@ -110,6 +110,60 @@
 //! side effects. The hazard was a unit *with* audio inputs fed out of band —
 //! a plugin instrument with a sidechain, a vocoder carrier. `Modified` closes
 //! it for every shape at once, without leaning on either rule.)
+//!
+//! # Forking
+//!
+//! [`Legacy`] is a builder, not the node: inserting it
+//! ([`IntoNode::into_parts`]) hands the editor the node *and* a
+//! [`ForkSource`], so an `AudioUnit` is forkable ([`Editor::fork`]) from day
+//! one **if it says so**: `AudioUnit::forkable()`, default `true`, is the
+//! unit's promise that its `isolate` severs all its shared mutable state.
+//! The fork trusts that promise and nothing else. A unit that cannot keep it
+//! answers `false` — `MicMonitorNode` (its clone shares the ring consumer),
+//! `PluginClient` and `InProcessVst2Client` (clones share the plugin) — and
+//! so does any unit holding one (`Net` asks its vertices); the node is then
+//! inserted without a fork source, and a fork that needs it is
+//! [`ForkError::NotForkable`](crate::ForkError::NotForkable).
+//! [`Legacy::unforkable`] opts a node out explicitly. A fork follows fundsp's sequence (`PendingClone::isolate_for_offline`
+//! then `Net::reset`): clone, `AudioUnit::isolate`, `AudioUnit::rebind_offline`
+//! for an offline fork, `AudioUnit::reset`. What it clones depends on how the
+//! node was built:
+//!
+//! - **[`Legacy::controlled`]: the shadow.** It has every setting sent
+//!   through [`LegacyControls`] applied, in order, which is the only way a
+//!   `Legacy`'s by-value state changes after insert — the sampler voice's
+//!   `play.gain` included. Its limit is the shadow's: it was isolated when it
+//!   was built, so a value the unit shares through an `Arc` cell *and* that
+//!   something other than these controls writes is at whatever the shadow
+//!   last had (its value at construction, or the last `set` that wrote it).
+//!   Settings are how a `Legacy` is steered today; a handle captured from the
+//!   unit (Phase 3 PR 9) that writes such a cell directly is not seen.
+//! - **Any other `Legacy`: a clone taken at insert**, never processed, and
+//!   deliberately **not** isolated. A plain `Legacy` has no settings path at
+//!   all, so nothing can change its by-value state after insert except a
+//!   cell it shares; a shared cell stays shared with this copy, and a fork
+//!   reads its value at fork time, when `isolate` copies it out — what
+//!   `Net::clone_isolated` then `isolate` saw. Everything else the live unit
+//!   accumulates is running state, which the fork's `reset` clears anyway.
+//!   Holding an un-isolated copy is safe because it never runs: it keeps an
+//!   inbox or a command channel alive, and never reads from one. (Requiring
+//!   `controlled` for every forkable node was the alternative; it would make
+//!   export refuse every node the adapter builds with [`Legacy::new`] until
+//!   each was rebuilt, for no state that a plain node can have.)
+//!
+//! **The memory cost.** Either way a forkable `Legacy` keeps a second deep
+//! copy of its unit for as long as it is in the graph (the shadow, or the
+//! insert-time clone). For most units that is a few hundred bytes of
+//! coefficients and state; for one that owns large buffers by value it is
+//! all of them again — a `ConvolverNode` copies its IR spectra, megabytes
+//! per long reverb, and a delay line its ring. Units that share such data
+//! read-only through an `Arc` (a sampler's `Wave`) cost nothing extra.
+//! Doc 013 Phase 4 moves the convolver's IR to `Arc` spectra; until then a
+//! host short on memory can build such a node [`unforkable`](Legacy::unforkable).
+//!
+//! A node built with [`IntoNode::into_node`] (a bare `Box<dyn Node>`) has no
+//! fork source and is not forkable. A fork's own nodes have none either: a
+//! fork is not forked again.
 
 use std::collections::VecDeque;
 use std::mem::Discriminant;
@@ -122,11 +176,30 @@ use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::editor::Editor;
+use crate::fork::{ForkMode, ForkSource};
 use crate::io::Io;
-use crate::node::{ConstantMask, Cx, Node, Prepare, Resolution, Shape, SilenceMask, Status};
+use crate::node::{
+    ConstantMask, Cx, IntoNode, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask, Status,
+};
 
-/// An `AudioUnit` running as a [`Node`].
+/// An `AudioUnit`, ready to run as a [`Node`]: insert it
+/// ([`Editor::insert`], through [`IntoNode`]).
+///
+/// It is a builder, not the node itself, so that insertion can hand the
+/// editor a [`ForkSource`] beside the node (see "Forking" in the module
+/// docs). [`IntoNode::into_node`] yields the node alone, for a caller that
+/// wants a `Box<dyn Node>`; a node inserted that way cannot be forked.
 pub struct Legacy {
+    node: Adapter,
+    /// Where forks come from when not from a clone taken at insert: the
+    /// shadow of a [`Legacy::controlled`] node.
+    fork_from: Option<Box<dyn Snapshot>>,
+    /// Opted out of forking ([`Legacy::unforkable`]).
+    unforkable: bool,
+}
+
+/// The node a [`Legacy`] runs as.
+struct Adapter {
     unit: Box<dyn AudioUnit>,
     shape: Shape,
     input: BufferVec,
@@ -292,7 +365,7 @@ impl<T: AudioUnit> LegacyControls<T> {
     /// sent since applied to it. Never processed, never prepared (its sample
     /// rate is whatever the unit had when it was wrapped).
     ///
-    /// It is a **by-value snapshot**: what a fork (doc 013 Phase 3 PR 2)
+    /// It is a **by-value snapshot**: what a fork ([`Editor::fork`])
     /// clones, and where a plain field the unit's `set` writes (a sampler
     /// voice's `play.gain`) can be read back. It is *not* a window onto the
     /// live unit: `isolate` severs the `Arc` cells a clone would share, so a
@@ -306,6 +379,51 @@ impl<T: AudioUnit> LegacyControls<T> {
     /// mid-`set` leaves nothing torn that audio could hear.
     pub fn shadow(&self) -> MutexGuard<'_, T> {
         lock(&self.shadow)
+    }
+}
+
+/// A unit a fork can be cloned from: the one place a [`LegacyFork`] reads.
+trait Snapshot: Send {
+    /// A clone of the unit, as it stands now. Not yet isolated.
+    fn snapshot(&self) -> Box<dyn AudioUnit>;
+}
+
+/// A plain [`Legacy`]'s clone, taken at insert. Never processed.
+impl Snapshot for Box<dyn AudioUnit> {
+    fn snapshot(&self) -> Box<dyn AudioUnit> {
+        self.clone()
+    }
+}
+
+/// A [`Legacy::controlled`] node's shadow, shared with its controls.
+impl<T: AudioUnit + Clone + 'static> Snapshot for Arc<Mutex<T>> {
+    fn snapshot(&self) -> Box<dyn AudioUnit> {
+        Box::new(lock(self).clone())
+    }
+}
+
+/// A [`Legacy`] node's [`ForkSource`]: see "Forking" in the module docs.
+struct LegacyFork {
+    from: Box<dyn Snapshot>,
+    pure: bool,
+}
+
+impl ForkSource for LegacyFork {
+    /// fundsp's sequence, in its order (`PendingClone::isolate_for_offline`,
+    /// then `Net::reset`): `rebind_offline` after `isolate`, because
+    /// `isolate` severs the very handles a rebind installs — the other way
+    /// round, a transport-aware unit would be rebound and then cut loose, and
+    /// render against nothing.
+    fn fork(&self, mode: ForkMode<'_>) -> Box<dyn Node> {
+        let mut unit = self.from.snapshot();
+        unit.isolate();
+        if let ForkMode::Offline(ctx) = mode {
+            unit.rebind_offline(ctx);
+        }
+        unit.reset();
+        let mut node = Adapter::new(unit);
+        node.pure = self.pure;
+        Box::new(node)
     }
 }
 
@@ -334,13 +452,23 @@ impl Legacy {
     /// ([`from_box`](Self::from_box)). The same claim, with the same
     /// consequence if it is false.
     pub fn assume_pure(mut self) -> Self {
-        self.pure = true;
+        self.node.pure = true;
+        self
+    }
+
+    /// Insert this node without a fork source, whatever its unit's
+    /// `AudioUnit::forkable` says: a fork that needs it is
+    /// [`ForkError::NotForkable`](crate::ForkError::NotForkable). For a unit
+    /// whose `isolate` the caller does not trust, or one too large to keep
+    /// a second copy of (see "Forking" in the module docs).
+    pub fn unforkable(mut self) -> Self {
+        self.unforkable = true;
         self
     }
 
     /// Whether this node was declared [`pure`](Self::pure).
     pub fn is_pure(&self) -> bool {
-        self.pure
+        self.node.pure
     }
 
     /// Wrap `unit` with a settings path: the `Net::set` replacement. Returns
@@ -353,6 +481,9 @@ impl Legacy {
     /// what the ring could not take on every [`collect`](Editor::collect),
     /// so held settings go out without another `set`. It holds the queue
     /// weakly; dropping the controls unregisters it.
+    ///
+    /// Forks of the node are cloned from the shadow, so they carry every
+    /// setting sent (see "Forking" in the module docs).
     ///
     /// Not [`pure`](Self::pure) unless marked with
     /// [`assume_pure`](Self::assume_pure).
@@ -368,17 +499,74 @@ impl Legacy {
             held: VecDeque::new(),
         }));
         editor.register_outbox(Arc::downgrade(&outbox));
+        let shadow = Arc::new(Mutex::new(shadow));
         let mut node = Self::new(unit);
-        node.settings = Some(rx);
-        let controls = LegacyControls {
-            outbox,
-            shadow: Arc::new(Mutex::new(shadow)),
-        };
+        node.node.settings = Some(rx);
+        node.fork_from = Some(Box::new(Arc::clone(&shadow)));
+        let controls = LegacyControls { outbox, shadow };
         (node, controls)
     }
 
     /// Wrap an already boxed unit.
-    pub fn from_box(mut unit: Box<dyn AudioUnit>) -> Self {
+    pub fn from_box(unit: Box<dyn AudioUnit>) -> Self {
+        Self {
+            node: Adapter::new(unit),
+            fork_from: None,
+            unforkable: false,
+        }
+    }
+
+    /// The wrapped unit.
+    pub fn unit(&self) -> &dyn AudioUnit {
+        self.node.unit.as_ref()
+    }
+
+    /// The shape the unit declares now: probed at construction, so at
+    /// whatever rate the unit had then. Inserting prepares it, and probes
+    /// again.
+    pub fn shape(&self) -> Shape {
+        self.node.shape
+    }
+}
+
+impl IntoNode for Legacy {
+    type Controls = ();
+
+    fn into_node(self) -> (Box<dyn Node>, ()) {
+        (Box::new(self.node), ())
+    }
+
+    /// The node, and a [`ForkSource`]: from the shadow for a
+    /// [`controlled`](Legacy::controlled) node, from a clone of the unit
+    /// taken now for any other (see "Forking" in the module docs).
+    fn into_parts(self) -> NodeParts<()> {
+        // The unit's promise, or the caller's opt-out: without it there is
+        // no source, and a fork that needs this node is refused.
+        if self.unforkable || !self.node.unit.forkable() {
+            return NodeParts {
+                node: Box::new(self.node),
+                controls: (),
+                fork: None,
+            };
+        }
+        let from = match self.fork_from {
+            Some(shadow) => shadow,
+            None => Box::new(self.node.unit.clone()) as Box<dyn Snapshot>,
+        };
+        let fork = LegacyFork {
+            from,
+            pure: self.node.pure,
+        };
+        NodeParts {
+            node: Box::new(self.node),
+            controls: (),
+            fork: Some(Box::new(fork)),
+        }
+    }
+}
+
+impl Adapter {
+    fn new(mut unit: Box<dyn AudioUnit>) -> Self {
         let (ins, outs) = (unit.inputs(), unit.outputs());
         let shape = Self::probe(unit.as_mut());
         Self {
@@ -414,14 +602,9 @@ impl Legacy {
         // about their timing — and says so, rather than inheriting `Sample`.
         .with_event_resolution(Resolution::Block)
     }
-
-    /// The wrapped unit.
-    pub fn unit(&self) -> &dyn AudioUnit {
-        self.unit.as_ref()
-    }
 }
 
-impl Node for Legacy {
+impl Node for Adapter {
     fn shape(&self) -> Shape {
         self.shape
     }

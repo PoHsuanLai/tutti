@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use common::{prepare, Kind, TestNode};
-use tutti_graph::{CommitError, Editor, Executor, Legacy, Node, Reference, Transport};
+use tutti_graph::{CommitError, Editor, Executor, IntoNode, Legacy, Node, Reference, Transport};
 use tutti_node::AudioUnit;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
@@ -131,7 +131,7 @@ fn graph(plugin: Plugin) -> (Editor, Executor) {
 /// Units for a [`Reference`] of the same graph.
 fn fresh(plugin: Plugin) -> BTreeMap<NodeKey, Box<dyn Node>> {
     let mut m: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
-    m.insert(PLUGIN, Box::new(Legacy::new(plugin)));
+    m.insert(PLUGIN, Legacy::new(plugin).into_node().0);
     m.insert(
         DRY,
         Box::new(TestNode::new(Kind::Gain {

@@ -315,7 +315,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
         tutti_core::Samples(512),
     ));
     let src: Box<dyn tutti_graph::Node> = if legacy {
-        Box::new(tutti_graph::Legacy::new(Osc::sine(Hz(440.0))))
+        tutti_graph::IntoNode::into_node(tutti_graph::Legacy::new(Osc::sine(Hz(440.0)))).0
     } else {
         Box::new(NativeSine {
             hz: 440.0,
@@ -327,15 +327,15 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     let mut last = NodeKey(0);
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
-        let f: Box<dyn tutti_graph::Node> = if legacy {
-            Box::new(tutti_graph::Legacy::pure(SvfFilterNode::<f64>::new(
-                SvfType::LowPass,
-                Hz(cutoff),
-                Q(0.7),
-            )))
-        } else {
-            Box::new(NativeLowpass::new(cutoff, 0.7))
-        };
+        let f: Box<dyn tutti_graph::Node> =
+            if legacy {
+                tutti_graph::IntoNode::into_node(tutti_graph::Legacy::pure(
+                    SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(cutoff), Q(0.7)),
+                ))
+                .0
+            } else {
+                Box::new(NativeLowpass::new(cutoff, 0.7))
+            };
         let k = NodeKey(1 + i as u64);
         ed.insert(k, "lowpass", f);
         ed.spec_mut().topology.edges.insert(

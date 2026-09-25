@@ -190,6 +190,37 @@ mod tests {
         );
     }
 
+    /// **An isolated pool does not write the live pool's beat cursor.** The
+    /// cursor clones by sharing its cells, so before `isolate` dropped it a
+    /// fork's `set_sample_rate` rewrote the live cursor's rate (and its
+    /// `process` stored `last_beat` there). An offline rebind seats a cursor
+    /// of the fork's own, on the render's transport.
+    ///
+    /// Mutation: drop `self.cursor = None` from `VoicePool::isolate` → the
+    /// live cursor reads 96 kHz → fails. Mutation: drop the cursor rebuild in
+    /// `rebind_offline` → the fork has no cursor → fails.
+    #[test]
+    fn isolate_severs_the_pools_beat_cursor() {
+        let live_t: Arc<dyn tutti_core::Timeline> =
+            MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let (live, _handle) = VoicePool::with_transport(Arc::clone(&live_t), None);
+        let mut fork = live.clone();
+        fork.isolate();
+        fork.set_sample_rate(SampleRate(96_000.0));
+        assert_eq!(
+            live.cursor.as_ref().expect("a transport").sample_rate(),
+            SampleRate(44_100.0),
+            "the fork moved the live cursor"
+        );
+
+        let offline: tutti_core::transport::OfflineTransport =
+            MockTransport::rolling(Beat::new(8.0), Bpm::new(90.0));
+        fork.rebind_offline(&offline);
+        let cursor = fork.cursor.as_ref().expect("rebound to the render");
+        assert!(Arc::ptr_eq(cursor.timeline(), &offline));
+        assert_eq!(cursor.sample_rate(), SampleRate(96_000.0));
+    }
+
     /// A transport seek must flush the stretch filter's buffered audio.
     ///
     /// `Timeline` is poll-only — `beat()` / `tempo()` / `is_rolling()`, no seek

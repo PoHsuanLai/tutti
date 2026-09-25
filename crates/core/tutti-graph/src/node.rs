@@ -23,6 +23,7 @@
 
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, Latency, SampleRate, Samples, Tail};
 
+use crate::fork::ForkSource;
 use crate::io::Io;
 use crate::time::Offset;
 
@@ -629,13 +630,71 @@ pub trait Node: Send + 'static {
 /// parameters later. A plain node has no controls; a node with live
 /// parameters implements this on a builder type and returns its `Param<U>`
 /// handles.
+///
+/// # Forking
+///
+/// A node that can be copied into a graph of its own — an offline export, a
+/// live duplicate ([`Editor::fork`](crate::Editor::fork)) — says so here, in
+/// [`into_parts`](Self::into_parts), by handing the editor a
+/// [`ForkSource`](crate::ForkSource) beside the node. It is the only chance:
+/// once inserted, the unit belongs to the executor and nothing on the control
+/// side can reach it again. The default hands none, so a node is **not
+/// forkable unless it says it is**, and a fork of a graph containing it is
+/// [`ForkError::NotForkable`](crate::ForkError::NotForkable) naming its key
+/// rather than a copy that shares state with the live one. [`Legacy`](crate::Legacy)
+/// implements it for every `AudioUnit` whose `forkable()` is true.
 pub trait IntoNode {
     /// What the caller keeps: `Param<U>` handles, `RtPublish` cells, or `()`.
     type Controls;
 
     /// Split into the unit the executor will own and the handles the caller
     /// keeps.
+    ///
+    /// This drops any fork source. A type that wraps another `IntoNode`
+    /// must forward [`into_parts`](Self::into_parts) too, not only this, or
+    /// the node it wraps silently stops being forkable.
     fn into_node(self) -> (Box<dyn Node>, Self::Controls);
+
+    /// [`into_node`](Self::into_node), plus the node's
+    /// [`ForkSource`](crate::ForkSource) if it has one. What
+    /// [`Editor::insert`](crate::Editor::insert) calls. The default has none.
+    fn into_parts(self) -> NodeParts<Self::Controls>
+    where
+        Self: Sized,
+    {
+        let (node, controls) = self.into_node();
+        NodeParts {
+            node,
+            controls,
+            fork: None,
+        }
+    }
+}
+
+/// A node split for insertion: the unit, its controls, and where a fork of
+/// it comes from. What [`IntoNode::into_parts`] returns — and itself an
+/// [`IntoNode`], so a caller that had to split a node early (to read its
+/// shape, as [`GraphBuilder`](crate::GraphBuilder) does) can still insert it
+/// with its fork source.
+pub struct NodeParts<C> {
+    /// The unit the executor will own.
+    pub node: Box<dyn Node>,
+    /// The handles the caller keeps.
+    pub controls: C,
+    /// Where a fork of this node comes from; `None` if it cannot be forked.
+    pub fork: Option<Box<dyn ForkSource>>,
+}
+
+impl<C> IntoNode for NodeParts<C> {
+    type Controls = C;
+
+    fn into_node(self) -> (Box<dyn Node>, C) {
+        (self.node, self.controls)
+    }
+
+    fn into_parts(self) -> NodeParts<C> {
+        self
+    }
 }
 
 impl<N: Node> IntoNode for N {

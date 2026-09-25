@@ -377,6 +377,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Four tutti-sampler reads were wrong on the memory tier, three of them on
+  a forked disk voice too** (design doc 013's follow-ups to "Disk voices
+  export": the placed `MemorySource` rate, S1, S3 and N2). Each reached live
+  playback. `MemorySource` (bare, or in a `VoicePool` / `VoiceNode` slot) and
+  the offline read a forked `DiskVoice` plays now read a position through the
+  same code, so the tiers cannot part again:
+  - **A placed file at another rate than the session's played at the wrong
+    speed within a block.** The in-block step was varispeed alone; it is now
+    varispeed × `file_rate / session_rate` (× the stretch on the stretched
+    path), while the gate's origin keeps varispeed alone. A 24 kHz clip on a
+    48 kHz clock read frames 60…63 and then 32 at every 64-frame block; it
+    now reads half a frame per frame, monotone. A placed read seats on the
+    clock and steps from there, so `tick` against a clock that moves once
+    per block steps through the block as `process` does (it repeated one
+    frame).
+  - **Reverse past a file's first frame held frame 0 as DC.** It is now
+    silent, as forward is past the end (memory tier and disk fork; the
+    butler's reverse refill already pushed silence, now pinned).
+  - **A loop crossfade replayed the loop's head.** It blended the tail
+    toward `[start, start + fade)`, then the wrap played `start` again: a
+    jump of `fade` frames at every loop. It now blends toward the frames
+    that lead *into* the start, `[start - fade, start)`, with frame `k`
+    weighing the lead-in `(k + 1) / (fade + 1)`, so the wrap continues
+    seamlessly. The fade is clamped to the frames before the start (a loop
+    from frame 0 loops hard) and to the loop. The butler captures its
+    crossfade buffers by the same rule.
+  - **Interpolation taps next to a loop's end read the file past it.** They
+    now wrap through the loop's start (and, behind the start after a wrap,
+    read the loop's last frame): the frame sequence the butler's ring holds.
+  - **A placed `MemorySource` honours its loop** going forward, as a disk
+    voice's stream does; it ignored it. Loop points are whole frames,
+    truncated, as the butler takes them.
+  - `MemorySource` reads a loop's fade from the wave in place: its internal
+    crossfade buffer, and that buffer's 4096-frame cap on `crossfade_frames`,
+    are gone, and `loop_setting()` returns the crossfade length asked for.
+  - **Not fixed: a live disk voice on a looped stream.** The butler's loop
+    bookkeeping compares a consumed-frame counter against the loop's file
+    frames, so past the loop's end it flushes the ring on every cycle; doc
+    013 records it ("The live disk loop") and the fix.
+
 - **A synth instrument exported silent on the native graph** (design doc
   013, PR 12's follow-up). A forked `PolySynth` or `SoundFontUnit` was
   cloned from its `Legacy::controlled` shadow, whose MIDI port was severed

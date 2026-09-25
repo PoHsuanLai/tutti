@@ -315,9 +315,11 @@ carry from how that landed:
 **A sampler *voice* is a graph node and not an edge — the split above decides it,
 not the width.** `MemorySource` implements `AudioUnit` (`inputs() = 0`,
 `outputs() = channels.count()`) and will not grow an `AudioIn` impl. Three
-reasons, none about channel count: `poll_into` has nowhere to carry
-`offset_in_block`, which the placed path needs because a transport advances once
-per *block* (drop it and a placed clip emits DC across the block); `ON_EMPTY` has
+reasons, none about channel count: `poll_into` has no clock to seat on, and
+the placed path needs one because a transport advances once per *block* — it
+seats where the playhead is and steps from there until the clock moves
+(`MemorySource::seated_position`; re-read the playhead per frame instead and a
+placed clip emits DC across the block); `ON_EMPTY` has
 no honest value, since a placed voice outside its window fills zeros and then
 sounds again when the playhead re-enters; and `AudioIn` deliberately carries no
 rate/length/seek vocabulary, so `window_position`, `read_rate` / `window_rate`,

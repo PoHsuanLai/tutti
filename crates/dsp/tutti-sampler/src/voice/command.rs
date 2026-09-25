@@ -363,7 +363,27 @@ pub struct VoiceNodeHandle {
     /// beside it: a node's single voice lives as long as the node does, so
     /// nothing is ever handed back to be freed.
     pub(crate) tx: Sender<VoiceCommand>,
+    /// The last placement this handle queued, shared with the node and every
+    /// clone of it — see [`PlacementRecord`].
+    pub(crate) placement: PlacementRecord,
 }
+
+/// The last placement a [`VoiceNodeHandle`] queued, for a **fork** of the node
+/// to start from.
+///
+/// A placement rides the command queue, which only the live node drains, and
+/// `VoiceNode::isolate` severs that queue from a copy (a render must not steal
+/// the live node's edits). So a copy taken before a move — the never-processed
+/// snapshot a native graph forks from, taken when the node is inserted — would
+/// otherwise export the clip at the position it had then. The handle records
+/// each move it queues here, and `isolate` applies the latest to the copy.
+///
+/// **Control thread only**: written by the handle, read by `isolate` (which a
+/// fork runs on the control thread); the audio thread never touches it, so it
+/// is a plain lock (the engine's rule for control-thread-only cells). Shared by
+/// every clone, deliberately: it is the record of what the host asked for, and
+/// a fork reads it at fork time.
+pub(crate) type PlacementRecord = Arc<std::sync::Mutex<Option<(Beat, Option<BeatDuration>)>>>;
 
 impl VoiceNodeHandle {
     /// Move the voice's timeline window.
@@ -415,7 +435,19 @@ impl VoiceNodeHandle {
     /// `AudioUnit::set`; its speed and pitch are fixed at construction, so a host
     /// changing either respawns the voice. Only [`VoicePool`](crate::VoicePool)
     /// has the live-update path.
+    ///
+    /// A placement that is queued is also recorded for a fork of the node
+    /// (`PlacementRecord`); one that is refused is not, so a fork never
+    /// plays a move the live voice did not get.
     pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
+        let placed = match command {
+            VoiceCommand::UpdatePlacement {
+                start_beat,
+                duration_beats,
+                ..
+            } => Some((start_beat, duration_beats)),
+            _ => None,
+        };
         // The variants carry the lost command, deliberately — see `SendError`.
         // Dropping it here would leave a caller able to see *that* an edit
         // failed but not *which*, which is the difference between backing off
@@ -423,7 +455,14 @@ impl VoiceNodeHandle {
         self.tx.try_send(command).map_err(|e| match e {
             TrySendError::Full(cmd) => SendError::Full(cmd),
             TrySendError::Disconnected(cmd) => SendError::Disconnected(cmd),
-        })
+        })?;
+        if let Some(window) = placed {
+            *self
+                .placement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
+        }
+        Ok(())
     }
 }
 

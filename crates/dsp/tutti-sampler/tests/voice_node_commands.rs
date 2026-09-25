@@ -267,3 +267,47 @@ fn a_channel_less_node_renders_normally() {
         "a node with no command channel must render exactly as before"
     );
 }
+
+/// **A clip moved after the node was inserted reaches a fork of it.**
+///
+/// A native graph (doc 013) keeps a never-processed snapshot of each node,
+/// taken when it is inserted — `Legacy::controlled` clones the unit and
+/// `isolate`s the clone — and forks (an export) by cloning that snapshot and
+/// `isolate`-ing again. Neither copy drains the command queue (`isolate`
+/// severs it, per `a_render_clone_steals_no_commands`), so a placement sent
+/// after the insert would never reach them: the fork would export the clip at
+/// its old position. The handle records each placement it queues, and
+/// `isolate` applies the latest.
+///
+/// Mutation (run): `VoiceNode::isolate` not applying the recorded placement →
+/// the fork keeps the window at beat 0, is silent at beat 10, and this fails.
+#[test]
+fn a_placement_sent_after_the_snapshot_reaches_a_fork() {
+    let transport = FixedTransport::at(10.0);
+    let (live, handle) = VoiceNode::with_commands(
+        voice_at(transport.clone(), 0.0),
+        tutti_core::ChannelLayout::MONO,
+    );
+    // The snapshot a native graph takes at insert.
+    let mut snapshot = live.clone();
+    snapshot.isolate();
+
+    handle
+        .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
+        .expect("send");
+
+    // The fork: a clone of the snapshot, isolated.
+    let mut fork = snapshot.clone();
+    fork.isolate();
+    assert!(
+        peak(&mut fork, 64) > 0.5,
+        "the fork must play the clip where it was moved to (beat 10)"
+    );
+
+    // Not vacuous: the snapshot itself was taken before the move and was
+    // never told, so it is still at beat 0.
+    assert!(
+        peak(&mut snapshot, 64) < 1e-6,
+        "the pre-move snapshot is silent at beat 10"
+    );
+}

@@ -45,6 +45,11 @@ impl MockTransport {
         t
     }
 
+    /// Start or stop the transport where it stands — the beat does not move.
+    pub fn set_rolling(&self, rolling: bool) {
+        self.playing.store(rolling, Ordering::Relaxed);
+    }
+
     /// Jump the playhead — a seek or a scrub. The discontinuity this creates is
     /// the thing under test in the stretch-flush tests.
     pub fn set_beat(&self, beat: Beat) {

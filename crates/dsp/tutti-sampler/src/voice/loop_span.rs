@@ -8,7 +8,8 @@
 //! # The loop is a sequence of frames, and the interpolator reads that sequence
 //!
 //! A looped voice plays file frames `0, 1, …, end - 1`, then `start, …, end -
-//! 1` again, forever. Two things follow, and both used to be wrong:
+//! 1` again, forever (`resume` rather than `start` when the fade has to go into
+//! the loop's head, below). Two things follow, and both used to be wrong:
 //!
 //! - **The crossfade leads into `start`, it does not replay it.** Frame `end -
 //!   fade + k` (for `k` in `0..fade`) is blended toward frame `start - fade +
@@ -36,23 +37,40 @@
 //! correlated material (a sustained tone either side of the seam) a linear fade
 //! holds the level exactly.
 //!
-//! # A fade longer than the material before `start` is clamped
+//! # When there is too little before `start`: fade into the head instead
 //!
 //! The lead-in is the `fade` frames before `start`, so a loop starting at frame
-//! 100 can fade over at most 100 frames, and one starting at frame 0 loops hard.
-//! A fade is also never longer than the loop.
+//! 0 (or at any frame closer to the file's start than the fade asked for) has
+//! none. Then the tail fades into the loop's own head, `[start, start + fade)`,
+//! and the wrap resumes at `start + fade`: frame `end - fade + k` blends toward
+//! `start + k`, the last blended frame is almost all `start + fade - 1`, and the
+//! loop continues at `start + fade` — still the file's own step at the join,
+//! with no material before `start` needed. The loop that repeats is then
+//! `[start + fade, end)`; its head is heard only on the first pass (and inside
+//! every fade). The fade is at most half the loop in that mode, so the head and
+//! the tail never overlap.
+//!
+//! Both modes are one rule with a **resume** frame: the tail blends toward the
+//! `fade` frames that lead into `resume`, and the wrap lands on `resume`.
+//! `resume` is `start` when the lead-in exists, `start + fade` when it does not.
+//! A fade is never longer than the loop, and the loop's end is clamped to the
+//! file where its length is known.
 
 use super::LoopSetting;
 use tutti_core::SamplePosition;
 
 /// A loop over whole file frames `[start, end)`, with a crossfade of `fade`
-/// frames into it. See the module docs.
+/// frames into it, wrapping to `resume`. See the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LoopSpan {
     start: usize,
     end: usize,
-    /// Clamped to `start` (the lead-in must exist) and to the loop's length.
+    /// The crossfade in use: the length asked for, clamped to the loop (to
+    /// half of it when fading into the head).
     fade: usize,
+    /// Where the wrap lands and what the fade leads into: `start`, or `start +
+    /// fade` when there is too little before `start` for a lead-in.
+    resume: usize,
 }
 
 /// One of the four frames the kernel interpolates a looped position from: the
@@ -65,38 +83,60 @@ pub(crate) struct LoopTap {
 }
 
 impl LoopSpan {
-    /// The loop `[start, end)` in whole file frames, fading over
-    /// `crossfade_frames` (clamped; see the module docs). `None` for an
-    /// empty or inverted range, which does not loop.
-    pub(crate) fn new(start: usize, end: usize, crossfade_frames: usize) -> Option<Self> {
-        (end > start).then(|| Self {
+    /// The loop `[start, end)` in whole file frames of a file `len` frames
+    /// long (`usize::MAX` where the length is not known; `end` is clamped to
+    /// it), fading over `crossfade_frames` (see the module docs for the two
+    /// modes). `None` for a range with nothing in it, which does not loop.
+    pub(crate) fn new(
+        start: usize,
+        end: usize,
+        crossfade_frames: usize,
+        len: usize,
+    ) -> Option<Self> {
+        let end = end.min(len);
+        if end <= start {
+            return None;
+        }
+        let loop_len = end - start;
+        let (fade, resume) = if crossfade_frames <= start {
+            // A lead-in exists: fade toward what leads into `start`.
+            (crossfade_frames.min(loop_len), start)
+        } else {
+            // Too little before `start`: fade into the head, resume after it.
+            let fade = crossfade_frames.min(loop_len / 2);
+            (fade, start + fade)
+        };
+        Some(Self {
             start,
             end,
-            fade: crossfade_frames.min(start).min(end - start),
+            fade,
+            resume,
         })
     }
 
-    /// The loop a [`LoopSetting`] describes, its points taken to whole frames
-    /// as the butler takes them (`Commands::send`'s `Command::Loop`).
-    pub(crate) fn from_setting(setting: LoopSetting) -> Option<Self> {
+    /// The loop a [`LoopSetting`] describes in a file `len` frames long, its
+    /// points taken to whole frames as the butler takes them
+    /// (`Commands::send`'s `Command::Loop`).
+    pub(crate) fn from_setting(setting: LoopSetting, len: usize) -> Option<Self> {
         match setting {
             LoopSetting::On {
                 start,
                 end,
                 crossfade_frames,
-            } => Self::new(whole_frame(start), whole_frame(end), crossfade_frames),
+            } => Self::new(whole_frame(start), whole_frame(end), crossfade_frames, len),
             LoopSetting::Off => None,
         }
     }
 
-    /// The loop's first frame.
-    pub(crate) fn start(&self) -> usize {
-        self.start
-    }
-
-    /// One past the loop's last frame.
+    /// One past the loop's last frame (clamped to the file).
     pub(crate) fn end(&self) -> usize {
         self.end
+    }
+
+    /// Where a wrap lands: `start`, or `start + fade` when the fade is into the
+    /// loop's head.
+    pub(crate) fn resume(&self) -> usize {
+        self.resume
     }
 
     /// The crossfade length in use, after the clamp.
@@ -105,20 +145,21 @@ impl LoopSpan {
     }
 
     /// Place a forward read at `pos` (file frames, counted as if the file
-    /// played straight on) on the loop: the position inside `[start, end)` it
-    /// plays, once it has reached `end`, and whether it has been round.
+    /// played straight on) on the loop: the position it plays, which once it
+    /// has reached `end` repeats `[resume, end)`, and whether it has been round.
     ///
     /// Modulo, so an overshoot longer than the loop still lands inside it.
     pub(crate) fn place(&self, pos: f64) -> (f64, bool) {
-        let (start, end) = (self.start as f64, self.end as f64);
+        let (resume, end) = (self.resume as f64, self.end as f64);
         if pos < end {
             return (pos, false);
         }
-        (start + (pos - start).rem_euclid(end - start), true)
+        (resume + (pos - end).rem_euclid(end - resume), true)
     }
 
     /// The crossfade at file frame `frame`: the lead-in frame it blends toward
-    /// and the lead-in's weight, or `None` outside the fade.
+    /// (one of the `fade` frames leading into `resume`) and the lead-in's
+    /// weight, or `None` outside the fade.
     #[inline]
     pub(crate) fn fade_at(&self, frame: usize) -> Option<(usize, f32)> {
         let fade_start = self.end - self.fade;
@@ -127,7 +168,7 @@ impl LoopSpan {
         }
         let k = frame - fade_start;
         Some((
-            self.start - self.fade + k,
+            self.resume - self.fade + k,
             (k + 1) as f32 / (self.fade + 1) as f32,
         ))
     }
@@ -138,28 +179,32 @@ impl LoopSpan {
     ///
     /// `pos` is placed on the loop already (below `end`; see
     /// [`place`](Self::place)), and `looped` says whether the read has been
-    /// round it: then the frame behind `start` is `end - 1`, the one the loop
-    /// just played. Ahead, a tap at or past `end` wraps through `start`. Each
-    /// tap is clamped to the file, as [`tap_indices`](super::interp::tap_indices)
-    /// clamps an unlooped read.
+    /// round it. Ahead, a tap at or past `end` wraps through `resume`. Behind,
+    /// a tap before `resume` is the loop's last frames — but only when the
+    /// position itself is on the repeating loop (at or after `resume`) and has
+    /// been round it: a position before `resume` reads the file behind it,
+    /// whatever `looped` says (a loop moved under a cursor that had been round
+    /// the old one leaves it there). Each tap is clamped to the file, as
+    /// [`tap_indices`](super::interp::tap_indices) clamps an unlooped read.
     #[inline]
     pub(crate) fn taps(&self, len: usize, pos: f64, looped: bool) -> ([LoopTap; 4], f32) {
         let (idx, frac) = super::interp::split_position(pos);
-        let loop_len = self.end - self.start;
+        let cycle = self.end - self.resume;
         let last = len - 1;
+        let back_wraps = looped && idx >= self.resume;
         let tap = |offset: isize| {
             let mut at = idx as isize + offset;
-            if looped && at < self.start as isize {
-                at += loop_len as isize;
+            if back_wraps && at < self.resume as isize {
+                at += cycle as isize;
             }
             let mut at = at.max(0) as usize;
             if at >= self.end {
-                at = self.start + (at - self.start) % loop_len;
+                at = self.resume + (at - self.end) % cycle;
             }
             let frame = at.min(last);
             LoopTap {
                 frame,
-                // A lead-in is before `start`, so inside the file whenever the
+                // A lead-in is before `resume`, so inside the file whenever the
                 // tail is.
                 fade: self.fade_at(frame),
             }
@@ -185,32 +230,80 @@ fn whole_frame(pos: SamplePosition) -> usize {
 mod tests {
     use super::*;
 
+    const ANY: usize = usize::MAX;
+
     /// **The fade leads into `start`.** A 4-frame fade on `[10, 20)` blends
-    /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else.
+    /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else; the
+    /// wrap lands on 10.
     ///
-    /// Mutation (run): the lead-in `start + k` (the old head replay) → frame 16
-    /// blends toward 10 → fails.
+    /// Mutation (run): the lead-in `resume + k` (the old head replay) → frame
+    /// 16 blends toward 10 → fails. Mutation (run): the weight `k / fade` →
+    /// frame 16 weighs 0 → fails.
     #[test]
     fn the_fade_blends_the_tail_toward_what_leads_into_start() {
-        let span = LoopSpan::new(10, 20, 4).expect("a loop");
+        let span = LoopSpan::new(10, 20, 4, ANY).expect("a loop");
         assert_eq!(span.fade_at(15), None);
         assert_eq!(span.fade_at(16), Some((6, 0.2)));
         assert_eq!(span.fade_at(19), Some((9, 0.8)));
         assert_eq!(span.fade_at(20), None);
+        assert_eq!(span.resume(), 10);
+        assert_eq!(span.place(20.0), (10.0, true));
     }
 
-    /// **A fade is clamped to the material before `start` and to the loop.**
+    /// **With too little before `start`, the fade goes into the loop's head
+    /// and the wrap resumes after it.** A 4-frame fade on `[2, 20)` (two
+    /// frames before the start) blends frames 16..20 toward the head 2..6 and
+    /// wraps to 6, so the last blended frame (almost all 5) is followed by 6.
+    /// A loop from frame 0 fades too; the fade is at most half the loop there.
     ///
-    /// Mutation (run): the `min(start)` clamp removed → a 100-frame fade on a
-    /// loop at frame 10, whose lead-in would start before the file → fails.
+    /// Mutation (run): the head mode removed (the fade clamped to `start`,
+    /// the first cut) → a 2-frame fade → fails. Mutation (run): `resume` left
+    /// at `start` in head mode → the wrap lands on 2, replaying the head →
+    /// fails.
     #[test]
-    fn a_fade_is_clamped_to_its_lead_in_and_its_loop() {
-        assert_eq!(LoopSpan::new(10, 1_000, 100).map(|s| s.fade()), Some(10));
-        assert_eq!(LoopSpan::new(0, 1_000, 100).map(|s| s.fade()), Some(0));
-        assert_eq!(LoopSpan::new(500, 520, 100).map(|s| s.fade()), Some(20));
-        assert_eq!(LoopSpan::new(20, 20, 4), None);
-        let span = LoopSpan::new(10, 1_000, 100).expect("a loop");
-        assert_eq!(span.fade_at(990), Some((0, 1.0 / 11.0)));
+    fn with_too_little_before_start_the_fade_goes_into_the_head() {
+        let span = LoopSpan::new(2, 20, 4, ANY).expect("a loop");
+        assert_eq!((span.fade(), span.resume()), (4, 6));
+        assert_eq!(span.fade_at(16), Some((2, 0.2)));
+        assert_eq!(span.fade_at(19), Some((5, 0.8)));
+        assert_eq!(span.place(20.0), (6.0, true));
+        assert_eq!(span.place(34.0), (6.0, true), "the loop repeats [6, 20)");
+        let whole = LoopSpan::new(0, 1_000, 256, ANY).expect("a loop");
+        assert_eq!((whole.fade(), whole.resume()), (256, 256));
+        let short = LoopSpan::new(0, 100, 256, ANY).expect("a loop");
+        assert_eq!((short.fade(), short.resume()), (50, 50));
+    }
+
+    /// **A fade is clamped to the loop, and the loop to the file.**
+    ///
+    /// Mutation (run): the `min(len)` clamp on `end` removed → a loop past a
+    /// 1 000-frame file keeps its end at 5 000 → fails.
+    #[test]
+    fn a_fade_is_clamped_to_its_loop_and_the_loop_to_its_file() {
+        assert_eq!(
+            LoopSpan::new(500, 520, 100, ANY).map(|s| s.fade()),
+            Some(20)
+        );
+        assert_eq!(LoopSpan::new(20, 20, 4, ANY), None);
+        let clamped = LoopSpan::new(100, 5_000, 0, 1_000).expect("a loop");
+        assert_eq!(clamped.end(), 1_000);
+        assert_eq!(LoopSpan::new(2_000, 5_000, 0, 1_000), None);
+    }
+
+    /// **A position before the loop reads the file behind it, even from a
+    /// cursor that has been round a loop** — the cursor a loop change leaves
+    /// behind the new loop's start. Every tap of 1 500.5 is the file's own
+    /// 1 499..1 502 on a loop `[2000, 4000)`, looped or not.
+    ///
+    /// Mutation (run): the back wrap for every tap behind `resume` whenever
+    /// `looped` (the review's B1) → 3 499.. → fails.
+    #[test]
+    fn a_position_before_the_loop_reads_the_file_behind_it() {
+        let span = LoopSpan::new(2_000, 4_000, 0, ANY).expect("a loop");
+        for looped in [false, true] {
+            let (taps, _) = span.taps(10_000, 1_500.5, looped);
+            assert_eq!(taps.map(|t| t.frame), [1_499, 1_500, 1_501, 1_502]);
+        }
     }
 
     /// **Taps wrap through the loop**: ahead of a position near `end` they read
@@ -221,7 +314,7 @@ mod tests {
     /// removed → `[9, 10, 11, 12]` after a wrap → fails.
     #[test]
     fn taps_wrap_through_the_loop() {
-        let span = LoopSpan::new(10, 20, 0).expect("a loop");
+        let span = LoopSpan::new(10, 20, 0, ANY).expect("a loop");
         let frames = |pos, looped| {
             let (taps, _) = span.taps(100, pos, looped);
             taps.map(|t| t.frame)

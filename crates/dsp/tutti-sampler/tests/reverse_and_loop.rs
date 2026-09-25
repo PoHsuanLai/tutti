@@ -318,6 +318,13 @@ const PERIOD: usize = 100;
 /// amplitude. 256 frames of fade fit in the 1000 before the start.
 const SEAM: (f64, f64, usize) = (1_000.0, 3_025.0, 256);
 
+/// A loop on [`sine`] from frame 0, with nothing before its start to fade
+/// from: the fade goes into the loop's head `[0, 256)` and the wrap resumes at
+/// 256 (`LoopSpan`'s head mode). The end is a quarter period past 256 in the
+/// cycle, as [`SEAM`]'s is past its start, so the join into 256 is the same
+/// shape; cut hard at 0 it jumps from −0.95 to 0.
+const HEAD_SEAM: (f64, f64, usize) = (0.0, 2_281.0, 256);
+
 /// The largest step [`sine`] takes between two frames: `2 sin(π / PERIOD)`,
 /// its slope at a zero crossing. A loop that plays continuously takes no
 /// larger one anywhere, the seam included; `f32` rounding gets a hair.
@@ -343,7 +350,14 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
 /// Free-running, and placed (a placed voice loops as a disk voice's stream
 /// does): the two read the loop through the same `LoopSpan`.
 ///
+/// And from frame 0 ([`HEAD_SEAM`]), where there is no lead-in: the fade goes
+/// into the loop's head and the wrap resumes after it, still continuous. The
+/// first cut clamped that fade to nothing — a loop from 0 always cut hard.
+///
 /// The hard loop is asserted to click first, so the loop points have teeth.
+///
+/// Mutation (run): the head mode removed (the fade clamped to `start`) → the
+/// loop from 0 cuts hard → fails.
 ///
 /// Mutation (run): `LoopSpan::fade_at`'s lead-in `start + k` (the old head
 /// replay: the fade blends toward the loop's first frames, then the wrap plays
@@ -357,25 +371,30 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
 #[test]
 fn a_crossfaded_loop_is_continuous_at_its_wrap() {
     const LEN: usize = 4_000;
-    let (start, end, fade) = SEAM;
+    for (start, end, fade) in [SEAM, HEAD_SEAM] {
+        loop_is_continuous(LEN, start, end, fade);
+    }
+}
 
-    let hard = render(&mut looping_source(sine(LEN), start, end, 0), 150);
+/// One seam of [`a_crossfaded_loop_is_continuous_at_its_wrap`].
+fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
+    let hard = render(&mut looping_source(sine(len), start, end, 0), 150);
     let (step, at) = largest_step(&hard);
     assert!(
         step > 0.9,
-        "the hard loop does not click ({step} at {at}): the loop points have no teeth"
+        "[{start}, {end}): the hard loop does not click ({step} at {at}): the loop points have no teeth"
     );
 
     let free = {
         // From the file's start, as the placed voice below plays it.
-        let mut source = looping_source(sine(LEN), start, end, fade);
+        let mut source = looping_source(sine(len), start, end, fade);
         source.trigger_at(SamplePosition(0.0));
         render(&mut source, 150)
     };
     let placed = {
         let clock = Clock::new();
         let mut source = MemorySource::with_config(
-            sine(LEN),
+            sine(len),
             MemorySourceConfig {
                 channels: ChannelLayout::STEREO,
                 timeline: Some(clock.clone() as Arc<dyn Timeline>),
@@ -398,12 +417,12 @@ fn a_crossfaded_loop_is_continuous_at_its_wrap() {
         }
         out
     };
-    // 150 blocks = 9600 frames: 3025 to the first wrap, then three passes.
+    // 150 blocks = 9600 frames: to the first wrap, then three passes and more.
     for (what, out) in [("free-running", &free), ("placed", &placed)] {
         let (step, at) = largest_step(out);
         assert!(
             step <= sine_step(),
-            "{what}: a step of {step} at output {at}, larger than the sine's own {}",
+            "[{start}, {end}) {what}: a step of {step} at output {at}, larger than the sine's own {}",
             sine_step()
         );
     }

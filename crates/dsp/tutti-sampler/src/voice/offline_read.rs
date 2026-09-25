@@ -45,6 +45,7 @@ use tutti_io::Wave;
 use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
 use super::loop_span::{blend, LoopSpan};
 use super::types::Direction;
+use super::LoopSetting;
 use crate::butler::control::StreamFile;
 use crate::MAX_SAMPLER_CHANNELS;
 
@@ -152,11 +153,10 @@ impl OfflineRead {
     /// is the point of this type, and why it is only ever built for an
     /// offline render.
     pub(crate) fn read_into(&mut self, pos: SamplePosition, direction: Direction, out: &mut [f32]) {
-        let span = LoopSpan::from_setting(self.file.loop_);
         // Past what this direction can play, known without opening the file.
         let played_out = match direction {
             Direction::Reverse => true,
-            Direction::Forward => span.is_none(),
+            Direction::Forward => self.file.loop_ == LoopSetting::Off,
         };
         if played_out {
             if let Some(len) = self.len {
@@ -167,10 +167,12 @@ impl OfflineRead {
                 }
             }
         }
+        let setting = self.file.loop_;
         let Some(open) = self.open() else {
             out.fill(0.0);
             return;
         };
+        let span = LoopSpan::from_setting(setting, open.len());
         let len = open.len() as f64;
         match (direction, span) {
             (Direction::Reverse, _) => {
@@ -472,7 +474,6 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LoopSetting;
     use tutti_core::SampleRate;
 
     const LEN: usize = 100_000;

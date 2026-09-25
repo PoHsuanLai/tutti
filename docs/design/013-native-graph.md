@@ -1936,9 +1936,18 @@ Recorded for later:
   which knows every frame's file position (blend frames `[end - fade, end)`
   toward `LoopSpan::fade_at`'s lead-in as they are written, from the
   `preloop_buffer` the butler already captures), and to drop
-  `handle_loops`' `AtEnd` flush and the RT loop crossfade. Nothing pins
-  live looping today (no test drives a `Command::Loop` through a live
-  voice); the offline fork and the memory tier are correct.
+  `handle_loops`' `AtEnd` flush and the RT loop crossfade. The refill
+  must also wrap to `LoopSpan::resume`, not the loop's start: a loop whose
+  fade goes into its head (too little before `start`) repeats `[start +
+  fade, end)`. Nothing pins live looping today (no test drives a
+  `Command::Loop` through a live voice); the offline fork and the memory
+  tier are correct.
+- **A crossfade curve on `LoopSetting`.** Every loop fade is linear, which
+  holds the level of correlated material across the seam (a sustained tone)
+  but dips about 3 dB midway on uncorrelated material (noise, a mix). An
+  option for an equal-power curve, linear by default, would be one field on
+  `LoopSetting::On` and one weight in `LoopSpan::fade_at` (and the
+  butler's refill, once it bakes the fade).
 - ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
   done, "Sampler tier bugs (after #43)".
 - **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
@@ -2115,7 +2124,13 @@ reads a position through the same code, so the fixes cannot part them:
   frame `n` of a seat is `origin + speed × src_ratio × stretch × n`, the
   origin from the gate (`window_rate`, varispeed and the stretch, in the
   file's own frames). The step was `window_rate` (varispeed alone), right
-  only where `src_ratio` is 1. `process` and `tick` both come through the
+  only where `src_ratio` is 1. The seat keeps the rate it steps by: a rate
+  change before the clock moves re-anchors it where it stands (the next
+  frame is one step at the new rate on), rather than rescale the frames
+  already stepped; a window change re-seats. The seat is keyed on the
+  clock's exact beat — `Timeline` has no seek or segment generation — so a
+  seek to the beat the clock already reads (or a one-block transport loop
+  landing on the beat it left) runs the seat on instead of re-seating. `process` and `tick` both come through the
   seat (`MemorySource::seated_position`), so a `tick` against a clock that
   moves once per block steps through it rather than repeat one frame, the
   slot's tick paths included; the stretched branch seats and steps with the
@@ -2131,11 +2146,20 @@ reads a position through the same code, so the fixes cannot part them:
   loop's start: frame `end - fade + k` blends toward `start - fade + k`
   weighted `(k + 1) / (fade + 1)` (linear, both endpoints excluded), so the
   last blended frame is almost all `start - 1` and the wrap continues at
-  `start` — the join is the file's own step. The fade is clamped to the
-  frames before `start` (a loop from frame 0 is hard) and to the loop.
-  Taps wrap: ahead of a position near the end they read `start`, `start +
-  1`; behind a position on `start`, once round, `end - 1` — the sequence the
-  butler's ring holds. The butler captures its crossfade buffers by the same
+  `start` — the join is the file's own step. With fewer than `fade` frames
+  before `start` (a loop from frame 0), the tail blends toward the loop's
+  own head `[start, start + fade)` and the wrap *resumes* at `start + fade`,
+  still the file's own step at the join; the loop that repeats is then
+  `[start + fade, end)`, and the fade is at most half the loop. (The first
+  cut clamped the fade to `start`, so a loop from 0 always cut hard.) The
+  loop's end is clamped to the file where its length is known.
+  Taps wrap: ahead of a position near the end they read the frames the wrap
+  lands on; behind a position on the repeating loop, once round, the loop's
+  last frame — the sequence the butler's ring holds. Only a position *on*
+  the loop wraps back: a loop moved under a cursor that had been round the
+  old one reads the file behind the cursor (the review of #46 caught a
+  cut that wrapped every tap behind the start, reading 2 000 frames off
+  when a loop point was dragged). The butler captures its crossfade buffers by the same
   rule (`loops::capture_lead_in`, `loop_fade_len`), though its live loop
   has faults of its own (the follow-up above). `MemorySource` reads its fade
   from the wave in place, so its `LoopCrossfade` buffer (and its
@@ -2146,10 +2170,14 @@ reads a position through the same code, so the fixes cannot part them:
   frames, truncated, as the butler takes them.
 
 Tests (each mutation run; the mutation is on the test): tutti-sampler
-`loop_span::tests` (the fade's lead-in and weight, its clamp, the taps'
-wrap); `memory_source::tests` (a 24 kHz wave on a 48 kHz clock through
-`process` and `tick`; a stretched seat's positions, asserted on positions
-because the vocoder hides a wrong step; taps through a seam at half speed);
+`loop_span::tests` (the fade's lead-in and weight, the head mode, the
+clamps, the taps' wrap, a position before the loop); `memory_source::tests`
+(a 24 kHz wave on a 48 kHz clock through `process` and `tick`; a stretched
+seat's positions, asserted on positions because the vocoder hides a wrong
+step; taps through a seam at half speed; a loop moved under a looped
+cursor; a crossfaded loop against hand-computed frames, both modes; a rate
+change mid-seat; a stopped clock); `disk_voice::tests` (a stopped clock
+silences a fork);
 `voice_pool::tests` (a `VoiceNode` reads a 24 kHz wave by `tick` and by
 `process`, forward and reversed); `offline_read::tests` (a loop's taps,
 paged); `loops::tests` (the butler's fadein is the lead-in, clamped);
@@ -2158,8 +2186,11 @@ paged); `loops::tests` (the butler's fadein is the lead-in, clamped);
 crossfaded loop on a sine whose loop points click cut hard is continuous at
 its wrap, free-running and placed, identically); `tests/offline_disk_voice.rs`
 (the fork's crossfaded loop, now to the corrected sequence; its continuity
-on the same sine; a reversed fork past the first frame is silent; the
-bit-identity table above).
+on the same sine, both modes; a reversed fork past the first frame is
+silent; a varispeed change mid-chunk continues it; the bit-identity table
+above, with rows that force the fork onto paged reads so the two sides do
+not share their fetch-and-blend — what both tiers share, `LoopSpan` and the
+seat, is pinned by the hand-computed oracles, not by the table).
 
 **Phase 3 follow-ups** (recorded, not done here):
 

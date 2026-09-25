@@ -134,25 +134,47 @@ pub fn window_position(
 /// steps from there by the read rate: frame `frames` of the seat is `origin +
 /// rate × frames`. Shared by both tiers that index a file (`MemorySource` and
 /// a forked `DiskVoice`), so the same clock gives them the same positions.
+///
+/// # The step rate is the seat's own
+///
+/// A rate change (varispeed, the stretch filter's) between two frames of one
+/// seat re-anchors it where it stands: the next frame is one step at the new
+/// rate from the last one. Scaling the whole run instead (`origin + new_rate ×
+/// frames`) jumped the read by `frames × Δrate` mid-block. The next clock move
+/// re-seats at the gate, which measures elapsed time at the new speed — that
+/// relocation is what a varispeed change on a placed voice means.
+///
+/// # What re-seats: a new beat
+///
+/// The seat is keyed on the clock's beat, compared exactly. [`Timeline`] has no
+/// seek or segment generation to key on, so a clock that reads the *same* beat
+/// after a seek (a seek to where it already stands, or a transport loop exactly
+/// one block long that lands on the beat it left) runs the seat on instead of
+/// re-seating: the read keeps stepping rather than replay the block. A clock
+/// that exposed a generation would close that; none does today.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seat {
     /// The beat the clock read when the read seated.
     beat: Beat,
-    /// The file position the gate gave for it.
+    /// The file position of frame 0 of this seat.
     origin: SamplePosition,
     /// Frames read since.
     frames: usize,
+    /// File frames per output frame this seat steps by.
+    rate: ReadRate,
 }
 
 impl Seat {
-    /// This frame's seat: the last one a frame on while `timeline` still reads
-    /// the beat it seated on, else a fresh one at the position `gate` gives —
-    /// `None` when the gate gives none (outside the window), or the clock is
-    /// stopped.
+    /// This frame's seat, stepping by `rate`: the last one a frame on while
+    /// `timeline` still reads the beat it seated on (re-anchored where it
+    /// stands if `rate` changed), else a fresh one at the position `gate`
+    /// gives — `None` when the gate gives none (outside the window), or the
+    /// clock is stopped.
     #[inline]
     pub(crate) fn next(
         last: Option<Self>,
         timeline: &dyn Timeline,
+        rate: ReadRate,
         gate: impl FnOnce() -> Option<SamplePosition>,
     ) -> Option<Self> {
         // A stopped clock reads one beat for ever: running on from the last
@@ -162,22 +184,30 @@ impl Seat {
         }
         let beat = timeline.beat();
         match last.filter(|seat| seat.beat == beat) {
-            Some(seat) => Some(Self {
+            Some(seat) if seat.rate.get() == rate.get() => Some(Self {
                 frames: seat.frames + 1,
+                ..seat
+            }),
+            // Re-anchored where it stands: one step at the new rate on.
+            Some(seat) => Some(Self {
+                origin: seat.position(),
+                frames: 1,
+                rate,
                 ..seat
             }),
             None => gate().map(|origin| Self {
                 beat,
                 origin,
                 frames: 0,
+                rate,
             }),
         }
     }
 
-    /// The position this seat reads at, stepping by `rate` per frame.
+    /// The position this seat reads at.
     #[inline]
-    pub(crate) fn position(&self, rate: ReadRate) -> SamplePosition {
-        self.origin + rate.advance(Samples(self.frames))
+    pub(crate) fn position(&self) -> SamplePosition {
+        self.origin + self.rate.advance(Samples(self.frames))
     }
 }
 

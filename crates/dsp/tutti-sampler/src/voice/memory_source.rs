@@ -45,19 +45,22 @@ pub(crate) enum LoopMode {
 }
 
 impl LoopMode {
-    /// The loop as the read plays it, or `None` when one-shot (or a range
-    /// with nothing in it).
-    fn span(&self) -> Option<LoopSpan> {
+    /// The loop as the read plays it on a wave `len` frames long, or `None`
+    /// when one-shot (or a range with nothing in it once clamped to the wave).
+    fn span(&self, len: usize) -> Option<LoopSpan> {
         match *self {
             Self::OneShot => None,
             Self::Looping {
                 range: (start, end),
                 crossfade_frames,
-            } => LoopSpan::from_setting(LoopSetting::On {
-                start,
-                end,
-                crossfade_frames,
-            }),
+            } => LoopSpan::from_setting(
+                LoopSetting::On {
+                    start,
+                    end,
+                    crossfade_frames,
+                },
+                len,
+            ),
         }
     }
 }
@@ -79,6 +82,21 @@ pub enum LoopSetting {
     Off,
     /// Loop over `[start, end)` in samples, with `crossfade_frames` of loop
     /// crossfade (0 = hard loop, no crossfade).
+    ///
+    /// **The fade actually used.** The points are whole frames (truncated),
+    /// and `end` is clamped to the file. The fade is linear, over the last
+    /// `crossfade_frames` before `end`, and continuous at the wrap:
+    ///
+    /// - With at least `crossfade_frames` before `start`, the tail blends
+    ///   toward the frames leading into `start`, and the wrap lands on
+    ///   `start`. The fade is at most the loop's length.
+    /// - With fewer (a loop from frame 0, say), the tail blends toward the
+    ///   loop's own head `[start, start + fade)` and the wrap lands on
+    ///   `start + fade`: the loop that repeats is `[start + fade, end)`. The
+    ///   fade is at most half the loop's length there.
+    ///
+    /// Every tier reads the same rule. (The live butler's loop has faults of
+    /// its own; see doc 013, "The live disk loop".)
     On {
         start: SamplePosition,
         end: SamplePosition,
@@ -426,6 +444,8 @@ impl MemorySource {
     /// just geometry, so there is no "only if placed" branch to get wrong.
     pub fn set_window(&mut self, window: VoiceWindow) {
         self.window = window;
+        // The seat's origin was the old window's; the next frame re-seats.
+        self.seat = None;
     }
 
     /// Swap the transport clock, used by export to inject the offline timeline.
@@ -488,10 +508,9 @@ impl MemorySource {
                     ),
                     crossfade_frames: 0,
                 };
+                self.looped.store(false, Ordering::Relaxed);
             }
-            (false, _) => {
-                self.loop_mode = LoopMode::OneShot;
-            }
+            (false, _) => self.clear_loop_range(),
         }
     }
 
@@ -675,9 +694,10 @@ impl MemorySource {
     /// The loop plays whole frames (its points are truncated, as the butler
     /// takes a stream's), and the fade leads into the loop's start: the last
     /// `crossfade_frames` before the end blend toward the frames *before* the
-    /// start, so the wrap continues seamlessly there. A fade longer than the
-    /// material before the start, or than the loop, is clamped to it. The whole
-    /// rule is `LoopSpan`'s, which every tier reads through.
+    /// start, so the wrap continues seamlessly there — or, with too little
+    /// before the start, toward the loop's own head, the wrap then resuming
+    /// after it ([`LoopSetting::On`] has the rule). The whole rule is
+    /// `LoopSpan`'s, which every tier reads through.
     ///
     /// **Allocation-free, and it has to be**: `VoiceCommand::UpdateLoop` is
     /// drained by `VoicePool::drain_commands`, which `tick`/`process` call — so
@@ -693,6 +713,10 @@ impl MemorySource {
             range: (loop_start, loop_end),
             crossfade_frames,
         };
+        // The cursor has not been round *this* loop. (The taps would read the
+        // right frames either way — they only wrap back for a position on the
+        // loop — but the flag belongs to the loop it was set by.)
+        self.looped.store(false, Ordering::Relaxed);
     }
 
     /// Drop the loop range and revert to one-shot playback. Allocation-free, so
@@ -700,6 +724,7 @@ impl MemorySource {
     /// [`set_loop_range`](Self::set_loop_range) runs on.
     pub fn clear_loop_range(&mut self) {
         self.loop_mode = LoopMode::OneShot;
+        self.looped.store(false, Ordering::Relaxed);
     }
 
     /// The loop's `(start, end)` in source samples, or `None` when one-shot.
@@ -781,7 +806,7 @@ impl MemorySource {
                 }
                 self.get_sample_raw_into((len - 1.0 - pos.get()).max(0.0), out);
             }
-            Direction::Forward => match self.loop_mode.span() {
+            Direction::Forward => match self.loop_mode.span(self.wave.len()) {
                 Some(span) => {
                     let (p, looped) = span.place(pos.get());
                     self.read_looped_raw_into(&span, p, looped, out);
@@ -824,11 +849,12 @@ impl MemorySource {
     #[inline]
     pub(crate) fn seated_position(&mut self, stretch_rate: ReadRate) -> Option<SamplePosition> {
         let timeline = self.timeline.as_ref()?;
-        let seat = Seat::next(self.seat, timeline.as_ref(), || {
+        let rate = self.read_rate().then(stretch_rate);
+        let seat = Seat::next(self.seat, timeline.as_ref(), rate, || {
             self.stretched_window_position(stretch_rate)
         });
         self.seat = seat;
-        seat.map(|seat| seat.position(self.read_rate().then(stretch_rate)))
+        seat.map(|seat| seat.position())
     }
 
     /// [`get_sample_raw_into`](Self::get_sample_raw_into) with this unit's gain
@@ -961,7 +987,7 @@ impl MemorySource {
 
         let pos = self.position.load(Ordering::Relaxed).get();
         let wave_len = self.wave.len() as f64;
-        let span = self.loop_mode.span();
+        let span = self.loop_mode.span(self.wave.len());
         match &span {
             Some(span) => {
                 let looped = self.looped.load(Ordering::Relaxed);
@@ -977,7 +1003,7 @@ impl MemorySource {
         // A range with nothing in it keeps its old meaning: the cursor pins to
         // its start (`wrap_into_loop`), rather than play on as one-shot.
         let (looping, loop_start, loop_end) = match (&span, self.loop_mode) {
-            (Some(span), _) => (true, span.start() as f64, span.end() as f64),
+            (Some(span), _) => (true, span.resume() as f64, span.end() as f64),
             (None, LoopMode::Looping { range, .. }) => (true, range.0.get(), range.1.get()),
             (None, LoopMode::OneShot) => (false, 0.0, wave_len),
         };
@@ -987,11 +1013,14 @@ impl MemorySource {
                 // Modulo, not `loop_start + (new_pos - loop_end)`: at high
                 // varispeed one advance can overshoot a short loop by more than
                 // its own length, and the subtraction form would land past the
-                // loop end and never recover.
-                self.position.store(
-                    SamplePosition::new(wrap_into_loop(new_pos, loop_start, loop_end)),
-                    Ordering::Relaxed,
-                );
+                // loop end and never recover. A loop lands on its `resume`
+                // (`LoopSpan::place`), after its head when the fade went there.
+                let wrapped = match &span {
+                    Some(span) => span.place(new_pos).0,
+                    None => wrap_into_loop(new_pos, loop_start, loop_end),
+                };
+                self.position
+                    .store(SamplePosition::new(wrapped), Ordering::Relaxed);
                 self.looped.store(true, Ordering::Relaxed);
             } else {
                 self.playing.store(false, Ordering::Relaxed);
@@ -1499,6 +1528,145 @@ mod tests {
             cubic_hermite(v(19), v(10), v(11), v(12), 0.5),
             "at 10.5, after the wrap"
         );
+    }
+
+    /// **A rate change between two clock moves continues from where the read
+    /// stands**: 16 frames at 1×, then 2× on the same clock reading, steps 2
+    /// from the last frame read — the seat re-anchors, rather than rescale the
+    /// frames it has already stepped (which jumped the read 17 frames).
+    ///
+    /// Mutation (run): `Seat::next` keeping the seat on a rate change (stepping
+    /// `origin + new_rate × frames`) → frame 16 reads 16 frames on → fails.
+    #[test]
+    fn a_rate_change_mid_seat_continues_where_the_read_stands() {
+        let wave = ramp_wave(16_384, 44_100.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+        let mut u = placed_unit(&wave, &transport, 1.0);
+        let mut out = collect_process(&mut u, 16);
+        u.set_speed(PlaybackRate::new(2.0));
+        out.extend(collect_process(&mut u, 16));
+        for (n, w) in out.windows(2).enumerate() {
+            let want = if n < 15 { 1.0 } else { 2.0 };
+            assert!(
+                (w[1].0 - w[0].0 - want).abs() < 1e-3,
+                "frame {} steps {} from frame {n}, want {want}",
+                n + 1,
+                w[1].0 - w[0].0
+            );
+        }
+    }
+
+    /// **A crossfaded loop plays the hand-computed frames** — the memory
+    /// tier's oracle, independent of `LoopSpan`'s arithmetic (the disk fork's
+    /// is `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`). A ramp
+    /// (value = frame + 1) at unit speed from frame 0, round the loop twice:
+    ///
+    /// - `[10, 30)`, a 4-frame fade with room before the start: frame `26 + k`
+    ///   blends toward `6 + k`, weighing it `(k + 1) / 5`, and the wrap lands
+    ///   on 10.
+    /// - `[2, 30)`, the same fade with only 2 frames before the start: frame
+    ///   `26 + k` blends toward the loop's head `2 + k`, and the wrap lands on
+    ///   6, after the head.
+    ///
+    /// Mutation (run): the weight `k / fade` in `LoopSpan::fade_at` → frame 26
+    /// reads the pure tail → fails. Mutation (run): the head mode's `resume`
+    /// left at `start` → the second loop wraps to 2 → fails.
+    #[test]
+    fn a_crossfaded_loop_plays_the_hand_computed_frames() {
+        for (start, resume, lead) in [(10usize, 10usize, 6usize), (2, 6, 2)] {
+            let mut u = MemorySource::new(ramp_wave(64, 44_100.0));
+            u.set_loop_range(
+                SamplePosition::new(start as f64),
+                SamplePosition::new(30.0),
+                4,
+            );
+            let got: Vec<f32> = collect_ticks(&mut u, 30 + 2 * (30 - resume))
+                .iter()
+                .map(|f| f.0)
+                .collect();
+            let frames = (0..30).chain(resume..30).chain(resume..30);
+            for (n, (p, &g)) in frames.zip(got.iter()).enumerate() {
+                let want = if p >= 26 {
+                    let k = p - 26;
+                    let t = (k + 1) as f32 / 5.0;
+                    (p + 1) as f32 * (1.0 - t) + (lead + k + 1) as f32 * t
+                } else {
+                    (p + 1) as f32
+                };
+                assert!(
+                    (g - want).abs() < 1e-5,
+                    "loop from {start}: output {n} (frame {p}) read {g}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// **A stopped clock silences a placed read mid-clip**, through `process`
+    /// and through `tick`: the clock stops where it stands (its beat does not
+    /// move), and the read must not run on from its seat as if it still
+    /// rolled.
+    ///
+    /// Mutation (run): the `is_rolling` guard removed from `Seat::next` → the
+    /// seat runs on through the stop → fails.
+    #[test]
+    fn a_stopped_clock_silences_a_placed_read() {
+        let wave = ramp_wave(16_384, 44_100.0);
+        for via_tick in [false, true] {
+            let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+            let mut u = placed_unit(&wave, &transport, 1.0);
+            let block = |u: &mut MemorySource| {
+                if via_tick {
+                    collect_ticks(u, 64)
+                } else {
+                    collect_process(u, 64)
+                }
+            };
+            assert!(
+                block(&mut u).iter().all(|&(l, _)| l > 0.0),
+                "tick {via_tick}: rolling, the clip plays"
+            );
+            transport.set_rolling(false);
+            assert!(
+                block(&mut u).iter().all(|&(l, r)| l == 0.0 && r == 0.0),
+                "tick {via_tick}: stopped, the read plays on"
+            );
+        }
+    }
+
+    /// **A loop moved under a cursor that has been round the old one reads
+    /// the file where the cursor is** (the review's B1): wrapped once on
+    /// `[1000, 3000)` to frame 1500, then the loop moved to `[2000, 4000)` —
+    /// what `VoiceCommand::UpdateLoop` does while a loop point is dragged — the
+    /// next frames are the file's 1500, 1501, …, not 3500, …. The same after
+    /// the loop is switched off and on again. The ramp's value is its frame + 1.
+    ///
+    /// Mutation (run): both guards removed — `LoopSpan::taps` wrapping back
+    /// every tap behind `resume` when `looped`, and the loop setters leaving
+    /// `looped` set → 3501 → fails. (Either guard alone holds it;
+    /// `loop_span`'s own test pins the first.)
+    #[test]
+    fn a_loop_moved_under_a_looped_cursor_reads_where_the_cursor_is() {
+        for toggle in [false, true] {
+            let mut u = MemorySource::new(ramp_wave(8_000, 44_100.0));
+            u.set_loop_range(
+                SamplePosition::new(1_000.0),
+                SamplePosition::new(3_000.0),
+                0,
+            );
+            u.trigger_at(SamplePosition::new(2_999.0));
+            collect_ticks(&mut u, 501);
+            assert_eq!(u.position().get(), 1_500.0, "wrapped once, to 1500");
+            if toggle {
+                u.set_looping(false);
+            }
+            u.set_loop_range(
+                SamplePosition::new(2_000.0),
+                SamplePosition::new(4_000.0),
+                0,
+            );
+            let got: Vec<f32> = collect_ticks(&mut u, 3).iter().map(|f| f.0).collect();
+            assert_eq!(got, [1_501.0, 1_502.0, 1_503.0], "toggled {toggle}");
+        }
     }
 
     // --- loop wrap arithmetic ---

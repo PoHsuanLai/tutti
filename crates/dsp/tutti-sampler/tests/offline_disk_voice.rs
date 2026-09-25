@@ -48,7 +48,12 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 
 /// A hand-stepped butler streaming `path` on channel 0, primed.
 fn streamer_on(path: &Path) -> DiskStreamer {
-    let mut streamer = DiskStreamer::manual(SampleRate(SR), Default::default()).expect("builds");
+    streamer_with(path, Default::default())
+}
+
+/// [`streamer_on`], with `config`.
+fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> DiskStreamer {
+    let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");
     streamer
         .commands()
         .send(Command::Stream {
@@ -310,12 +315,19 @@ const PERIOD: usize = 100;
 /// at a zero crossing), round the loop three times. The fade leads into the
 /// loop's start, so the join is the sine's own step.
 ///
+/// And a loop from frame 0, `[0, 2281)`, with nothing before its start: the
+/// fade goes into the loop's head and the wrap resumes after it (at 256),
+/// still continuous (its end sits a quarter period past 256, and cut hard at
+/// 0 it clicks).
+///
 /// The hard loop is asserted to click first, so the loop points have teeth.
 ///
 /// Mutation (run): the lead-in `start + k` in `LoopSpan::fade_at` (the old
 /// head replay: fade into the loop's first frames, then play them again) → a
 /// step far above the sine's own at the wrap → fails. Mutation (run): the fade
-/// dropped (`LoopTap::fade` always `None`) → the hard cut → fails.
+/// dropped (`LoopTap::fade` always `None`) → the hard cut → fails. Mutation
+/// (run): the head mode removed (the fade clamped to `start`) → the loop from
+/// 0 cuts hard → fails.
 #[test]
 fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -325,14 +337,19 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     let voice = live_voice(&streamer, 0.0);
     let own = (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 1e-5;
 
-    for (fade, clicks) in [(0usize, true), (256, false)] {
+    for (start, end, fade, clicks) in [
+        (1_000.0, 3_025.0, 0usize, true),
+        (1_000.0, 3_025.0, 256, false),
+        (0.0, 2_281.0, 0, true),
+        (0.0, 2_281.0, 256, false),
+    ] {
         streamer
             .commands()
             .send(Command::Loop {
                 channel_index: 0,
                 setting: LoopSetting::On {
-                    start: SamplePosition(1_000.0),
-                    end: SamplePosition(3_025.0),
+                    start: SamplePosition(start),
+                    end: SamplePosition(end),
                     crossfade_frames: fade,
                 },
             })
@@ -342,17 +359,21 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
         let (clock, ctx) = clock_at(SR);
         let mut copy = fork(&voice, &ctx, SR);
         let [l, _] = render(&mut copy, &clock, 3_025 + 3 * 2_025);
+        let at_loop = format!("[{start}, {end})");
         let (step, at) = l
             .windows(2)
             .enumerate()
             .map(|(i, w)| ((w[1] - w[0]).abs(), i))
             .fold((0.0f32, 0), |a, b| if b.0 > a.0 { b } else { a });
         if clicks {
-            assert!(step > 0.9, "the hard loop does not click ({step} at {at})");
+            assert!(
+                step > 0.9,
+                "{at_loop}: the hard loop does not click ({step} at {at})"
+            );
         } else {
             assert!(
                 step <= own,
-                "fade {fade}: a step of {step} at render frame {at}, larger than the sine's own {own}"
+                "{at_loop} fade {fade}: a step of {step} at render frame {at}, larger than the sine's own {own}"
             );
         }
     }
@@ -385,6 +406,36 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
     }
     for (k, &got) in l.iter().enumerate().skip(LEN) {
         assert_eq!(got, 0.0, "clip frame {k}, past the file's first frame");
+    }
+}
+
+/// **A varispeed change between two clock moves continues a fork from where
+/// its read stands**: 32 frames at 1×, then 2× before the clock moves, and
+/// the next frame is two file frames on from the last — not the whole run so
+/// far rescaled to 2× (a jump of 33 frames).
+///
+/// Mutation (run): `Seat::next` keeping the seat on a rate change → frame 32
+/// reads frame 64 → fails.
+#[test]
+fn a_varispeed_change_mid_chunk_continues_a_fork() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, 10_000);
+    let streamer = streamer_on(&path);
+    let voice = live_voice(&streamer, 0.0);
+    let (_clock, ctx) = clock_at(SR);
+    let mut copy = fork(&voice, &ctx, SR);
+    let input = BufferVec::new(0);
+    let mut output = BufferVec::new(2);
+    let mut left = Vec::new();
+    for speed in [1.0f32, 2.0] {
+        copy.set_speed(tutti_core::PlaybackRate::new(speed));
+        copy.process(32, &input.buffer_ref(), &mut output.buffer_mut());
+        left.extend((0..32).map(|i| output.buffer_ref().at_f32(0, i)));
+    }
+    for (k, &got) in left.iter().enumerate() {
+        let frame = if k < 32 { k } else { 31 + 2 * (k - 31) };
+        assert_eq!(got, value(frame), "render frame {k}");
     }
 }
 
@@ -607,8 +658,23 @@ fn a_fork_follows_a_looping_render_timeline() {
 ///   wraps, on fractional positions: the fade toward the lead-in (S3) and the
 ///   taps through the seam (N2). A placed memory voice used to ignore its
 ///   loop.
+/// - **The same loop, paged**: the rows above fork onto the butler's cached
+///   wave (`Open::Resident`, the butler decodes the file whole to capture a
+///   loop's fade), which reads through the very `read_looped_frame` the
+///   memory tier does — so there the two sides share their loop code, and a
+///   bug in it passes. This row evicts the wave from the butler's cache
+///   (a one-entry cache, and a second stream whose loop loads its own file)
+///   so the fork decodes pages (`Pages::read_looped_into`), an independent
+///   fetch-and-blend. A hard loop at 1.5× runs the paged seam taps too.
 /// - **Reversed** (the memory voice in a `VoiceNode`, where direction lives),
 ///   past the file's first frame into silence (S1).
+///
+/// **What this does not pin**: anything the two tiers share — `LoopSpan`'s
+/// fade weight, lead-in and tap layout, the seat, the kernel. Agreement
+/// there is by construction. Those are pinned against hand-computed
+/// oracles: `loop_span`'s own tests, `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`
+/// (the fork) and `memory_source`'s `a_crossfaded_loop_plays_the_hand_computed_frames`
+/// (the memory tier).
 ///
 /// Mutation (run): the fork's step not composing varispeed (`speed` →
 /// `PlaybackRate::UNITY` in `offline_frame`'s step) → it parts from memory
@@ -617,7 +683,10 @@ fn a_fork_follows_a_looping_render_timeline() {
 /// inside the clip's first chunk → fails. Mutation (run): `MemorySource::read_placed_into`
 /// ignoring the loop → the loop case parts at the first wrap → fails.
 /// Mutation (run): the memory tier's reverse holding frame 0 → the reverse
-/// case parts past the start → fails.
+/// case parts past the start → fails. Mutation (run): the paged blend weight
+/// alone changed (`blend(.., 1.0 - t)` in `Pages::read_looped_into`) → the
+/// paged row parts in the first fade → fails (the resident row does not see
+/// it, which is why the paged row exists).
 #[test]
 fn a_fork_matches_the_memory_tier_bit_for_bit() {
     const LEN: usize = 40_000;
@@ -627,6 +696,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         speed: f32,
         loop_: LoopSetting,
         reverse: bool,
+        paged: bool,
     }
     let cases = [
         Case {
@@ -635,6 +705,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             speed: 1.5,
             loop_: LoopSetting::Off,
             reverse: false,
+            paged: false,
         },
         Case {
             what: "a 24 kHz file at 48 kHz",
@@ -642,6 +713,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             speed: 1.0,
             loop_: LoopSetting::Off,
             reverse: false,
+            paged: false,
         },
         Case {
             what: "a crossfaded loop at 1.5x",
@@ -653,6 +725,31 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
                 crossfade_frames: 700,
             },
             reverse: false,
+            paged: false,
+        },
+        Case {
+            what: "a crossfaded loop at 1.5x, paged",
+            file_rate: SR as u32,
+            speed: 1.5,
+            loop_: LoopSetting::On {
+                start: SamplePosition(3_000.0),
+                end: SamplePosition(7_001.0),
+                crossfade_frames: 700,
+            },
+            reverse: false,
+            paged: true,
+        },
+        Case {
+            what: "a hard loop at 1.5x, paged",
+            file_rate: SR as u32,
+            speed: 1.5,
+            loop_: LoopSetting::On {
+                start: SamplePosition(3_000.0),
+                end: SamplePosition(7_001.0),
+                crossfade_frames: 0,
+            },
+            reverse: false,
+            paged: true,
         },
         Case {
             what: "reversed",
@@ -660,19 +757,52 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             speed: 1.0,
             loop_: LoopSetting::Off,
             reverse: true,
+            paged: false,
         },
     ];
     for case in cases {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("ramp.wav");
         write_ramp(&path, case.file_rate, LEN);
-        let mut streamer = streamer_on(&path);
+        let mut config = tutti_sampler::DiskStreamerConfig::default();
+        if case.paged {
+            // One wave resident at a time, so the next file the butler loads
+            // evicts this one.
+            config.buffer_config.cache_max_entries = 1;
+        }
+        let mut streamer = streamer_with(&path, config);
         if case.loop_ != LoopSetting::Off {
             streamer
                 .commands()
                 .send(Command::Loop {
                     channel_index: 0,
                     setting: case.loop_,
+                })
+                .expect("the butler is alive");
+            let _ = streamer.step_until_settled(1_000);
+        }
+        if case.paged {
+            // A second stream whose crossfaded loop makes the butler load its
+            // own file whole — evicting the first, which the fork then pages.
+            let other = dir.path().join("other.wav");
+            write_ramp(&other, SR as u32, 1_000);
+            let commands = streamer.commands();
+            commands
+                .send(Command::Stream {
+                    channel_index: 1,
+                    file_path: other,
+                    offset: SamplePosition(0.0),
+                })
+                .expect("the butler is alive");
+            let _ = streamer.step_until_settled(1_000);
+            commands
+                .send(Command::Loop {
+                    channel_index: 1,
+                    setting: LoopSetting::On {
+                        start: SamplePosition(500.0),
+                        end: SamplePosition(900.0),
+                        crossfade_frames: 100,
+                    },
                 })
                 .expect("the butler is alive");
             let _ = streamer.step_until_settled(1_000);

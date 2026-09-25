@@ -400,15 +400,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     jump of `fade` frames at every loop. It now blends toward the frames
     that lead *into* the start, `[start - fade, start)`, with frame `k`
     weighing the lead-in `(k + 1) / (fade + 1)`, so the wrap continues
-    seamlessly. The fade is clamped to the frames before the start (a loop
-    from frame 0 loops hard) and to the loop. The butler captures its
-    crossfade buffers by the same rule.
+    seamlessly. With fewer than `fade` frames before the start (a loop from
+    frame 0), the tail blends toward the loop's own head `[start, start +
+    fade)` and the wrap resumes at `start + fade`, still continuous; the
+    fade is at most half the loop there, and at most the loop otherwise.
+    `LoopSetting::On` documents the fade actually used. The butler captures
+    its crossfade buffers by the same rule.
   - **Interpolation taps next to a loop's end read the file past it.** They
     now wrap through the loop's start (and, behind the start after a wrap,
     read the loop's last frame): the frame sequence the butler's ring holds.
   - **A placed `MemorySource` honours its loop** going forward, as a disk
     voice's stream does; it ignored it. Loop points are whole frames,
-    truncated, as the butler takes them.
+    truncated, as the butler takes them, and a loop's end is clamped to the
+    file.
+  - A placed read's seat keeps the rate it steps by: a varispeed or stretch
+    change before the clock moves continues from where the read stands,
+    instead of rescaling the frames already stepped. A stopped clock
+    silences a placed read at once, through `tick` and `process`.
   - `MemorySource` reads a loop's fade from the wave in place: its internal
     crossfade buffer, and that buffer's 4096-frame cap on `crossfade_frames`,
     are gone, and `loop_setting()` returns the crossfade length asked for.

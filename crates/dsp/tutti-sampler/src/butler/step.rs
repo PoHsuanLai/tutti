@@ -1,13 +1,13 @@
 //! One butler cycle, synchronously.
 //!
-//! The butler's work is a loop over four pure steps — apply PDC preroll
-//! changes, apply audio-thread seek requests, advance loop state, refill the
-//! rings. None of them is asynchronous: they read a `DashMap`, decode from a
+//! The butler's work is a loop over three pure steps — apply PDC preroll
+//! changes, apply audio-thread seek requests, refill the rings. (A loop is
+//! not a step: the refill writes a looped stream's sequence, `loops`.) None of them is asynchronous: they read a `DashMap`, decode from a
 //! file, and push into a ring. The only async in the butler is the *pacing* —
 //! the timer the loop parks on when there is nothing urgent to do.
 //!
 //! This module is that work with the pacing removed. [`ButlerCycle::step`]
-//! drains the command queue, runs the four steps, and reports what the pacing
+//! drains the command queue, runs the three steps, and reports what the pacing
 //! layer should do next as a [`StepOutcome`]. The async loop in
 //! [`loop_body`](super::loop_body) is then the pacing layer and nothing else.
 //!
@@ -30,7 +30,6 @@ use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
 use super::io::refill::{refill_all, refill_all_parallel};
-use super::loops::handle_loops;
 use super::preroll::apply_pdc_updates;
 
 /// What the pacing layer should do after a [`ButlerCycle::step`].
@@ -88,11 +87,11 @@ impl ButlerCycle {
 
     /// Run one cycle: drain every queued command, then — when any channel is
     /// streaming — apply PDC preroll changes, apply audio-thread seek requests,
-    /// advance loop state, and refill the rings.
+    /// and refill the rings.
     ///
     /// Seeks are applied *before* refill so the ring refills from the new offset
     /// in the same cycle. That ordering is the reason this is one function and
-    /// not four public ones: a caller that ran them in a different order would
+    /// not three public ones: a caller that ran them in a different order would
     /// refill from the pre-seek position and then discard it.
     ///
     /// `drain` is called until it yields `None`; commands are applied
@@ -126,13 +125,6 @@ impl ButlerCycle {
         // Audio-thread-requested timeline seeks: apply BEFORE refill so the
         // ring refills from the new disk offset this cycle.
         self.apply_seek_requests(shared);
-
-        handle_loops(
-            &shared.plans,
-            &mut self.local.regions,
-            &shared.cache,
-            &shared.metrics,
-        );
 
         // Frames resident across every streaming ring, sampled before the
         // refill so the outcome can say whether the refill actually achieved

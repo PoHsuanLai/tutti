@@ -167,7 +167,7 @@ impl ButlerThread {
     }
 
     /// Run exactly one butler cycle on the **calling** thread: drain every
-    /// queued command, then apply PDC preroll, seeks, loop wraps and refills.
+    /// queued command, then apply PDC preroll, seeks and refills.
     /// Returns once that work is done, reporting what the pacing layer *would*
     /// have done next.
     ///

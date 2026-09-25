@@ -73,7 +73,7 @@ pub struct DiskSource {
     shared_state: Option<Arc<RtState>>,
 
     /// Last ring-reset epoch this consumer applied. When the butler bumps
-    /// `RtState::reset_epoch` (on a seek / loop-wrap reposition), the audio
+    /// `RtState::reset_epoch` (on a seek, PDC or loop-change reposition), the audio
     /// thread — the ring's sole consumer — clears the stale buffered samples so
     /// the butler never has to pop the SPSC ring.
     applied_reset_epoch: u64,
@@ -523,20 +523,9 @@ impl AudioUnit for DiskSource {
                 return;
             }
 
-            if state.is_loop_crossfading() {
-                for i in 0..size {
-                    if state.next_loop_crossfade_frame_into(&mut xfade[..n]) {
-                        let g = self.gain().get();
-                        for (c, &s) in xfade[..n].iter().enumerate() {
-                            output.set_f32(c, i, s * g);
-                        }
-                    } else {
-                        self.process_normal_samples(size - i, i, output);
-                        return;
-                    }
-                }
-                return;
-            }
+            // No loop branch: a looped stream's ring already holds the loop,
+            // fade and wrap included, as the butler wrote it
+            // (`butler::loops`). This side just consumes it.
 
             if state.is_seeking() {
                 for c in 0..n {
@@ -1272,6 +1261,9 @@ impl AudioUnit for DiskVoice {
         std::mem::size_of::<Self>()
     }
 }
+
+#[cfg(test)]
+mod live_loop;
 
 #[cfg(test)]
 mod tests {

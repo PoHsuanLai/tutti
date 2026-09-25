@@ -229,7 +229,7 @@ mod tests {
     ///
     /// # Why the ring-reset epoch, and not a position
     ///
-    /// The obvious probe is `link.read_position` — and it is the wrong one. That
+    /// The obvious probe is the reader's `read_position` — and it is the wrong one. That
     /// counter tracks frames the *reader* has consumed, so with nothing
     /// rendering it sits at 0 no matter what the butler does; asserting on it
     /// reported "the butler did not reposition" for a butler that had. The

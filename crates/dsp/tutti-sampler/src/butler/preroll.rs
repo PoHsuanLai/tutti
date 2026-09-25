@@ -10,7 +10,7 @@
 
 use super::cache::LruCache;
 use super::config::BufferConfig;
-use super::loops::{fadein_samples, fadeout_samples};
+use super::loops::{forward_loop, ring_head_frames, sequence_frames};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 use super::region_map::RegionMap;
@@ -79,14 +79,19 @@ pub(crate) fn apply_pdc_updates(
 
 /// Move a live stream's read head to `new_pos` without a click.
 ///
-/// Capture the fadeout tail at the current position, flush the ring, seek the
-/// writer, capture the fadein head at the new position, and hand both to the
-/// audio thread's seek crossfader. The `seeking` flag brackets the whole move so
-/// the audio thread mutes rather than reading a half-repositioned stream.
+/// Capture the fadeout — what the ring hands the audio thread next
+/// ([`ring_head_frames`]) — then [`reposition_from`] it. The `seeking` flag
+/// brackets the whole move so the audio thread mutes rather than reading a
+/// half-repositioned stream.
 ///
-/// The two callers differ only in how they choose `new_pos` — a PDC preroll
-/// delta here, an explicit timeline target in `handle_seek_stream` — so the move
-/// itself lives once.
+/// The callers differ only in how they choose `new_pos` — a PDC preroll delta
+/// here, an explicit timeline target in `handle_seek_stream` — so the move
+/// itself lives once. A loop change captures its fadeout under the old loop
+/// before it sets the new one, and calls [`reposition_from`] itself.
+///
+/// `new_pos` is a straight position (the file counted straight on); a looped
+/// stream's refill places it on the loop (`loops`' module docs), so a seek
+/// target past the loop's end lands where the memory tier would read it.
 pub(in crate::butler) fn reposition_click_free(
     plan: &ChannelPlan,
     writer: &mut super::prefetch::RegionOut,
@@ -95,21 +100,38 @@ pub(in crate::butler) fn reposition_click_free(
     metrics: &Metrics,
     config: &BufferConfig,
 ) {
+    let fadeout = ring_head_frames(plan, writer, cache, metrics, config.seek_crossfade_frames);
+    reposition_from(plan, writer, new_pos, fadeout, cache, metrics, config);
+}
+
+/// Flush the ring, move the writer to straight position `new_pos`, capture
+/// the fadein there (the sequence the stream now plays, on its loop), and hand
+/// `fadeout` and the fadein to the audio thread's seek crossfader. An empty
+/// `fadeout` (or fadein) skips the crossfade: a hard cut.
+pub(in crate::butler) fn reposition_from(
+    plan: &ChannelPlan,
+    writer: &mut super::prefetch::RegionOut,
+    new_pos: u64,
+    fadeout: Vec<f32>,
+    cache: &LruCache,
+    metrics: &Metrics,
+    config: &BufferConfig,
+) {
     let crossfade_len = config.seek_crossfade_frames;
     let ch = writer.channels();
-    let fadeout = fadeout_samples(plan, cache, metrics, writer.file_path(), crossfade_len, ch);
 
     plan.set_seeking(true);
     plan.flush_buffer();
     writer.set_file_position(new_pos);
 
-    let fadein = fadein_samples(
+    let fadein = sequence_frames(
         cache,
         metrics,
         writer.file_path(),
         new_pos,
         crossfade_len,
         ch,
+        forward_loop(plan),
     );
 
     if !fadeout.is_empty() && !fadein.is_empty() {
@@ -179,6 +201,7 @@ mod tests {
                 crate::butler::share_reader(reader),
                 None,
                 tutti_core::SampleRate::SR_48K,
+                48_000,
                 PathBuf::from("test.wav"),
                 std::sync::Weak::new(),
             );

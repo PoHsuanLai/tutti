@@ -9,13 +9,22 @@
 //! scratch-buffer resize is the only place the interleave stride enters. A
 //! sample-denominated `chunk_size` would over-request by the channel count and
 //! desynchronise `file_position` from the loop range it is compared against.
+//!
+//! A forward refill writes a looped stream's frames as the continuous sequence
+//! the loop plays, fade blended in, through [`fill_sequence`]; `file_position`
+//! counts the file straight on and the loop places it (see `loops`' module
+//! docs). A reverse refill ignores the loop, on every tier: its cursor is a
+//! file frame, and a stream turned round after it has been round its loop
+//! reads back from its straight count, as the memory tier's reverse mirrors its
+//! clock's position without placing it.
 
 use super::super::cache::LruCache;
+use super::super::loops::{fill_sequence, forward_loop, RingLoop};
 use super::super::metrics::Metrics;
 use super::super::plan::ChannelPlan;
 use super::super::prefetch::RegionOut;
 use super::super::region_map::RegionMap;
-use super::wave_io::{wave_frame_into, wrap_position, WaveIn};
+use super::wave_io::{wave_frame_into, WaveIn};
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -112,7 +121,7 @@ pub(crate) fn refill_all(
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
         let file_position = writer.file_position() as usize;
-        let loop_range = stream_state.loop_config().map(|c| c.range);
+        let ring_loop = forward_loop(stream_state);
 
         // Real incremental streaming: decode only the requested range from
         // disk. Regions whose format isn't seekable have no decoder and use the
@@ -127,7 +136,7 @@ pub(crate) fn refill_all(
                     file_position,
                     chunk_size,
                     interleave_buffer,
-                    loop_range,
+                    ring_loop,
                 );
             }
             continue;
@@ -147,7 +156,7 @@ pub(crate) fn refill_all(
                 file_position,
                 chunk_size,
                 interleave_buffer,
-                loop_range,
+                ring_loop,
             );
         }
     }
@@ -165,11 +174,11 @@ struct RefillWorkItem {
     /// Ring occupancy at decision time, republished to `RtState` by the worker.
     fill_pct: f32,
     shared: Arc<super::super::rt_state::RtState>,
-    /// Carried per item so the parallel path wraps at the loop bounds exactly
-    /// like the serial one. Hardcoding `None` here would silently drop loop
-    /// handling for every session with 3+ concurrent streams — the very
-    /// threshold that selects this path.
-    loop_range: Option<(u64, u64)>,
+    /// Carried per item so the parallel path writes a loop exactly like the
+    /// serial one. Hardcoding `None` here would silently drop loop handling
+    /// for every session with 3+ concurrent streams — the very threshold that
+    /// selects this path. A clone shares the lead-in (`Arc`).
+    ring_loop: Option<RingLoop>,
 }
 
 /// The same refill across rayon workers, chosen when `parallel_io` is on and
@@ -182,8 +191,8 @@ struct RefillWorkItem {
 /// `Vec` rather than a `DashMap`: this needs `Send`, not `Sync`. Scratch is a
 /// thread-local per worker.
 ///
-/// Each item carries its own `loop_range`, so a looped stream wraps here exactly
-/// as it does serially. Dropping that would make looping depend on how many
+/// Each item carries its own loop, so a looped stream wraps here exactly as it
+/// does serially. Dropping that would make looping depend on how many
 /// voices happened to be streaming.
 pub(crate) fn refill_all_parallel(
     plans: &DashMap<usize, ChannelPlan>,
@@ -224,7 +233,7 @@ pub(crate) fn refill_all_parallel(
                 file_path: writer.file_path().to_path_buf(),
                 fill_pct,
                 shared,
-                loop_range: stream_state.loop_config().map(|c| c.range),
+                ring_loop: forward_loop(stream_state).cloned(),
             })
         })
         .collect();
@@ -259,7 +268,7 @@ pub(crate) fn refill_all_parallel(
                     item.fill_pct,
                     &item.shared,
                     &mut buf,
-                    item.loop_range,
+                    item.ring_loop.as_ref(),
                 );
             });
         });
@@ -279,20 +288,20 @@ fn refill_one(
     fill_pct: f32,
     shared: &super::super::rt_state::RtState,
     buffer: &mut Vec<f32>,
-    loop_range: Option<(u64, u64)>,
+    ring_loop: Option<&RingLoop>,
 ) {
     shared.set_buffer_fill(fill_pct);
 
     let file_position = writer.file_position() as usize;
 
-    // Real incremental streaming when this region has a decoder. `loop_range`
+    // Real incremental streaming when this region has a decoder. The loop
     // comes from the work item so this matches the serial path.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     if writer.decoder_mut().is_some() {
         if is_reverse {
             refill_reverse_stream(writer, file_position, chunk_size, buffer);
         } else {
-            refill_forward_stream(writer, file_position, chunk_size, buffer, loop_range);
+            refill_forward_stream(writer, file_position, chunk_size, buffer, ring_loop);
         }
         return;
     }
@@ -306,74 +315,66 @@ fn refill_one(
     } else {
         // Whole-file forward via the WaveIn source into the region ring. WaveIn
         // zero-pads past end, so one block fill of `chunk_size` frames always
-        // produces a full buffer. `loop_range` is honoured here for the same
+        // produces a full buffer. The loop is honoured here for the same
         // reason as the decoder path above: this function serves the 3+-stream
         // parallel refill, and dropping it there would make looping depend on
         // how many voices happened to be streaming.
-        refill_forward(writer, &wave, file_position, chunk_size, buffer, loop_range);
+        refill_forward(writer, &wave, file_position, chunk_size, buffer, ring_loop);
     }
 }
 
 /// Refill for forward playback by decoding straight from disk (real streaming),
-/// respecting loop boundaries if set. Advances `file_position` by the frames
-/// written — identical bookkeeping to the whole-file [`refill_forward`].
+/// writing a looped stream's sequence ([`fill_sequence`]). Advances
+/// `file_position` by the frames written — identical bookkeeping to the
+/// whole-file [`refill_forward`].
 ///
 /// The decoder is a sequential [`AudioIn`](tutti_core::io::AudioIn): each run
-/// seeks only when the target `pos` differs from the decoder's cursor, then
+/// seeks only when its first frame differs from the decoder's cursor, then
 /// polls forward. Without a loop that is one seek-free sequential fill; with a
-/// loop, each run stops at `loop_end` and the next seeks back to `loop_start`.
+/// loop, each run stops at the loop's end and the next seeks back to where the
+/// loop resumes.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 fn refill_forward_stream(
     writer: &mut RegionOut,
     file_position: usize,
     chunk_size: usize,
     interleave_buffer: &mut Vec<f32>,
-    loop_range: Option<(u64, u64)>,
+    ring_loop: Option<&RingLoop>,
 ) {
     // Stride derived once per refill, above every loop below.
     let ch = writer.channels().count() as usize;
     interleave_buffer.clear();
     interleave_buffer.resize(chunk_size * ch, 0.0);
 
-    // Active loop end, if the range is non-empty (used to cap each run).
-    let loop_end = loop_range.and_then(|(start, end)| (end > start).then_some(end as usize));
-
     let decoder = match writer.decoder_mut() {
         Some(d) => d,
         None => return,
     };
 
-    let mut filled = 0usize;
-    let mut pos = file_position;
-    while filled < chunk_size {
-        let run = if let Some(loop_end) = loop_end {
-            pos = wrap_position(pos, loop_range);
-            (loop_end - pos).min(chunk_size - filled)
-        } else {
-            chunk_size - filled
-        };
-        // Seek only when the decoder isn't already positioned here (the common
-        // no-loop path stays seek-free after the first fill).
-        if decoder.cursor() != pos as u64 {
-            let _ = decoder.seek(pos as u64);
-        }
-        let got = decoder
-            .fill_sequential_interleaved(&mut interleave_buffer[filled * ch..(filled + run) * ch])
-            .unwrap_or(0);
-        // Past EOF the decoder yields a short count; zero-fill the rest of this
-        // run to preserve the old zero-pad behaviour and keep bookkeeping simple.
-        interleave_buffer[(filled + got) * ch..(filled + run) * ch].fill(0.0);
-        filled += run;
-        pos += run;
-    }
+    fill_sequence(
+        file_position,
+        interleave_buffer,
+        ch,
+        ring_loop,
+        |at, run| {
+            // Seek only when the decoder isn't already positioned here (the common
+            // no-loop path stays seek-free after the first fill).
+            if decoder.cursor() != at as u64 {
+                let _ = decoder.seek(at as u64);
+            }
+            let got = decoder.fill_sequential_interleaved(run).unwrap_or(0);
+            // Past EOF the decoder yields a short count; zero-fill the rest of this
+            // run to preserve the old zero-pad behaviour and keep bookkeeping simple.
+            run[got * ch..].fill(0.0);
+        },
+    );
 
     let written = writer.push_interleaved(interleave_buffer);
 
     // `written` is FRAMES (a `Samples`), added to a file position in frames.
-    // Were it the interleaved sample count, a 6-channel loop would wrap at a
-    // sixth of its length — see `a_six_channel_loop_wraps_at_its_frame_length`.
-    let new_pos = wrap_position(file_position + written.get(), loop_range);
-    writer.set_file_position(new_pos as u64);
+    // Were it the interleaved sample count, a 6-channel stream would run six
+    // times ahead of what it wrote — see `a_six_channel_loop_wraps_at_its_frame_length`.
+    writer.set_file_position((file_position + written.get()) as u64);
 }
 
 /// Refill for reverse playback by decoding forward from disk then writing the
@@ -421,10 +422,10 @@ fn refill_reverse_stream(
     writer.set_file_position(file_position.saturating_sub(written.get()) as u64);
 }
 
-/// Refill for forward playback from a resident `Wave`, respecting loop
-/// boundaries if set. Fills one `chunk_size` block through the [`WaveIn`]
-/// source (mono up-mix + loop wrap + zero-pad past end confined there) and
-/// pushes it into the region ring.
+/// Refill for forward playback from a resident `Wave`, writing a looped
+/// stream's sequence ([`fill_sequence`]): one `chunk_size` block through the
+/// [`WaveIn`] source (mono up-mix and zero-pad past end confined there), pushed
+/// into the region ring.
 ///
 /// Pushes through the inherent `push_interleaved` rather than
 /// [`AudioOut::write`](tutti_core::AudioOut::write), which `RegionOut` also
@@ -437,23 +438,30 @@ fn refill_forward(
     file_position: usize,
     chunk_size: usize,
     interleave_buffer: &mut Vec<f32>,
-    loop_range: Option<(u64, u64)>,
+    ring_loop: Option<&RingLoop>,
 ) {
     // Stride derived once per refill, above every loop below.
-    let ch = writer.channels().count() as usize;
+    let channels = writer.channels();
+    let ch = channels.count() as usize;
     interleave_buffer.clear();
     interleave_buffer.resize(chunk_size * ch, 0.0);
 
-    let mut src = WaveIn::new(wave, file_position, loop_range, ch);
-    src.fill_interleaved(interleave_buffer);
+    fill_sequence(
+        file_position,
+        interleave_buffer,
+        ch,
+        ring_loop,
+        |at, run| {
+            WaveIn::new(wave, at, channels).fill_interleaved(run);
+        },
+    );
 
     let written = writer.push_interleaved(interleave_buffer);
 
     // `written` is FRAMES (a `Samples`), added to a file position in frames.
-    // Were it the interleaved sample count, a 6-channel loop would wrap at a
-    // sixth of its length — see `a_six_channel_loop_wraps_at_its_frame_length`.
-    let new_pos = wrap_position(file_position + written.get(), loop_range);
-    writer.set_file_position(new_pos as u64);
+    // Were it the interleaved sample count, a 6-channel stream would run six
+    // times ahead of what it wrote — see `a_six_channel_loop_wraps_at_its_frame_length`.
+    writer.set_file_position((file_position + written.get()) as u64);
 }
 
 /// Refill for reverse playback from a resident `Wave`. Reads frames forward
@@ -702,19 +710,25 @@ mod tests {
     /// in the interleaved length by accident; what remains checkable at runtime
     /// is that the ring itself reports frames, end to end through the real
     /// refill arithmetic. At six channels a sample count is a 6× error, which
-    /// the loop wrap turns into a visibly wrong position rather than a
-    /// plausible one.
+    /// the loop turns into a visibly wrong frame rather than a plausible one.
+    ///
+    /// The cursor counts the file straight on (the loop places it as the ring
+    /// is written), so 150 frames in it stands at 150, and the next refill
+    /// writes the loop's frame 50 — while the ring's frame 100 is the loop's
+    /// frame 0.
     ///
     /// Mutation: `push_interleaved` returning `Samples(samples.len())` (the
-    /// interleaved length) → 900 "frames" land, `wrap(900) = 0`, not 50 → the
-    /// forward assertion fails. `write_interleaved_reversed` returning the
-    /// sample count → 180 back from 100 saturates to 0, not 70 → the reverse
-    /// assertion fails.
+    /// interleaved length) → the cursor at 900, whose next frame places at 0,
+    /// not 50 → the forward assertions fail. `write_interleaved_reversed`
+    /// returning the sample count → 180 back from 100 saturates to 0, not 70 →
+    /// the reverse assertion fails. (Re-run on the straight cursor.)
     #[test]
     fn a_six_channel_loop_wraps_at_its_frame_length() {
         use crate::butler::command::RegionId;
         use crate::butler::RegionBuffer;
         use tutti_core::Samples;
+
+        let frame_value = |i: usize| (i * 6) as f32 / 1000.0;
 
         const CH: usize = 6;
         const LOOP_FRAMES: usize = 100;
@@ -728,22 +742,40 @@ mod tests {
         let mut buf = Vec::new();
 
         // Forward: 150 frames from frame 0 of a 100-frame loop.
-        let (mut writer, _reader) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, CH);
-        refill_forward(
-            &mut writer,
-            &wave,
+        let ring_loop = crate::butler::loops::RingLoop::capture(
+            (0, LOOP_FRAMES as u64),
             0,
-            150,
-            &mut buf,
-            Some((0, LOOP_FRAMES as u64)),
+            LOOP_FRAMES,
+            None,
+            CH,
         );
+        let (mut writer, mut reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, CH);
+        refill_forward(&mut writer, &wave, 0, 150, &mut buf, ring_loop.as_ref());
         assert_eq!(writer.buffered(), Samples(150), "150 frames landed");
         assert_eq!(
             writer.file_position(),
-            50,
-            "150 frames into a 100-frame loop is frame 50 — a sample-denominated \
-             count (900) would have wrapped to 0"
+            150,
+            "150 frames in, counted straight on — a sample-denominated count would be 900"
+        );
+        let at = writer.file_position() as usize;
+        refill_forward(&mut writer, &wave, at, 1, &mut buf, ring_loop.as_ref());
+        let mut frame = [0.0f32; CH];
+        let mut firsts = Vec::new();
+        while reader.read_into(&mut frame) {
+            firsts.push(frame[0]);
+        }
+        assert_eq!(firsts.len(), 151);
+        assert_eq!(firsts[99], frame_value(99));
+        assert_eq!(
+            firsts[100],
+            frame_value(0),
+            "the loop wraps at its 100th frame"
+        );
+        assert_eq!(
+            firsts[150],
+            frame_value(50),
+            "150 frames into a 100-frame loop is frame 50"
         );
 
         // Reverse: 30 frames back from frame 100.
@@ -799,7 +831,7 @@ mod tests {
         // The forward whole-file fill now runs through WaveIn; verify the block
         // it produces matches the old fill_buffer_forward output shape.
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)]);
-        let mut src = WaveIn::new(&wave, 0, None, 2usize);
+        let mut src = WaveIn::new(&wave, 0, 2usize);
         let mut buffer = vec![0.0f32; 3 * 2];
         src.fill_interleaved(&mut buffer);
 
@@ -809,7 +841,7 @@ mod tests {
     #[test]
     fn test_forward_fill_past_end_pads_zeros() {
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, None, 2usize);
+        let mut src = WaveIn::new(&wave, 1, 2usize);
         let mut buffer = vec![9.0f32; 4 * 2];
         src.fill_interleaved(&mut buffer);
 

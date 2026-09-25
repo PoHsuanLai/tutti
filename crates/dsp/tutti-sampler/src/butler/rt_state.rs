@@ -2,7 +2,7 @@
 //!
 //! Every field is atomic or lock-free, so both sides read and publish without a
 //! lock ever reaching the audio callback. The fields are grouped into orthogonal
-//! sub-structs (playback, health, seek/loop crossfade) — one `Arc`, one
+//! sub-structs (playback, health, seek crossfade) — one `Arc`, one
 //! allocation — each `#[repr(align(64))]` so a butler write to one group cannot
 //! false-share a cache line with an audio-thread read of another.
 //!
@@ -99,7 +99,7 @@ pub struct BufferHealth {
     /// because the cell is an integer atomic; the accessors do the scaling.
     buffer_fill_level: AtomicU32,
     /// Butler-bumped ring-reset request. The butler increments this when it
-    /// repositions the stream (seek / loop-wrap) and needs the audio thread to
+    /// repositions the stream (seek, PDC or loop change) and needs the audio thread to
     /// drop the stale buffered samples. The audio thread — the sole ring
     /// consumer — clears the ring when it observes a change vs. its last-applied
     /// value, keeping the SPSC pop single-threaded (the butler never pops).
@@ -148,8 +148,10 @@ pub struct RtState {
     /// Armed when the butler repositions the stream, drained by the audio
     /// thread one frame per block.
     pub seek_crossfade: StreamingCrossfader,
-    /// Armed as playback approaches a loop end, so the wrap is not a click.
-    pub loop_crossfade: StreamingCrossfader,
+    // No loop crossfade: the butler writes a loop's fade into the ring as it
+    // refills (`loops::fill_sequence`), so the audio thread does no loop
+    // logic. The RT crossfade this held replaced the ring's output without
+    // consuming it, so the tail it faded out played again after it.
 }
 
 impl Default for RtState {
@@ -166,7 +168,6 @@ impl RtState {
             playback: PlaybackParams::default(),
             health: BufferHealth::default(),
             seek_crossfade: StreamingCrossfader::new(),
-            loop_crossfade: StreamingCrossfader::new(),
         }
     }
 
@@ -177,7 +178,7 @@ impl RtState {
     /// What a disk voice severed for an offline render keeps
     /// (`DiskVoice::isolate`): its controls as a snapshot, like every other
     /// forked unit's, in a cell no butler and no live voice shares. Control
-    /// thread only; it builds two crossfaders.
+    /// thread only; it builds a crossfader.
     pub(crate) fn detached(&self) -> Self {
         let state = Self::new();
         state.set_speed(self.speed());
@@ -440,40 +441,6 @@ impl RtState {
     pub fn next_seek_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
         self.seek_crossfade.next_frame_into(out)
     }
-
-    /// Arm the loop crossfade with the tail before the loop end and the head at
-    /// the loop start, both flat interleaved at `channels` samples per frame.
-    ///
-    /// Butler thread, called as playback approaches the loop end; the head is
-    /// usually the pre-captured `preloop_buffer`, so no wrap re-reads the file.
-    pub fn start_loop_crossfade(
-        &self,
-        fadeout: Vec<f32>,
-        fadein: Vec<f32>,
-        channels: impl Into<ChannelLayout>,
-    ) {
-        self.loop_crossfade.start(fadeout, fadein, channels);
-    }
-
-    /// Whether a loop crossfade is armed and still has frames left to blend.
-    #[inline]
-    pub fn is_loop_crossfading(&self) -> bool {
-        self.loop_crossfade.is_active()
-    }
-
-    /// Blend one frame of the loop crossfade into `out`, returning `false` when
-    /// the fade is finished or was never armed (leaving `out` untouched).
-    ///
-    /// Audio thread: atomic loads and one `ArcSwap` read, no allocation.
-    pub fn next_loop_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
-        self.loop_crossfade.next_frame_into(out)
-    }
-
-    /// Disarm the loop crossfade and drop its buffers. Called at the wrap
-    /// itself, and by `stop_streaming` so a fade cannot outlive its stream.
-    pub fn clear_loop_crossfade(&self) {
-        self.loop_crossfade.clear();
-    }
 }
 
 #[cfg(test)]
@@ -613,68 +580,5 @@ mod tests {
 
         state.set_buffer_fill(1.5);
         assert!((state.buffer_fill() - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_loop_crossfade() {
-        let state = RtState::new();
-
-        assert!(!state.is_loop_crossfading());
-        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
-
-        let fadeout = vec![1.0; 4 * 2];
-        let fadein = vec![0.0; 4 * 2];
-
-        state.start_loop_crossfade(fadeout, fadein, 2usize);
-
-        assert!(state.is_loop_crossfading());
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_loop_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 1.0).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_loop_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.75).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_loop_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.5).abs() < 0.01);
-
-        let mut sample = [0.0f32; 2];
-        assert!(state.next_loop_crossfade_frame_into(&mut sample));
-        assert!((sample[0] - 0.25).abs() < 0.01);
-
-        assert!(!state.is_loop_crossfading());
-        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
-    }
-
-    #[test]
-    fn test_loop_crossfade_clear() {
-        let state = RtState::new();
-
-        let fadeout = vec![1.0; 10 * 2];
-        let fadein = vec![0.0; 10 * 2];
-        state.start_loop_crossfade(fadeout, fadein, 2usize);
-
-        assert!(state.is_loop_crossfading());
-
-        state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]);
-        state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]);
-
-        state.clear_loop_crossfade();
-        assert!(!state.is_loop_crossfading());
-        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
-    }
-
-    #[test]
-    fn test_loop_crossfade_empty_buffers() {
-        let state = RtState::new();
-
-        state.start_loop_crossfade(Vec::new(), Vec::new(), 2usize);
-        assert!(!state.is_loop_crossfading());
-
-        state.start_loop_crossfade(vec![1.0, 1.0], Vec::new(), 2usize);
-        assert!(!state.is_loop_crossfading());
     }
 }

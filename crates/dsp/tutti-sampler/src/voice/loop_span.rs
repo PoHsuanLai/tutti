@@ -2,8 +2,9 @@
 //!
 //! Shared by every reader that indexes a file directly — `MemorySource` (its
 //! free-running loop and a placed voice's) and the offline disk reader a forked
-//! disk voice plays through — so the same loop sounds the same on each. Pure
-//! arithmetic: no allocation, safe on the audio thread.
+//! disk voice plays through — and by the butler, which writes a live stream's
+//! ring by it (`butler::loops::fill_sequence`), so the same loop sounds the
+//! same on each. Pure arithmetic: no allocation, safe on the audio thread.
 //!
 //! # The loop is a sequence of frames, and the interpolator reads that sequence
 //!
@@ -23,9 +24,9 @@
 //!   `start`, `start + 1` there, which are the frames the loop plays next, not
 //!   `end`, `end + 1` from the file past the loop. Behind a position on the
 //!   loop's start, once the voice has been round, the frame before is `end - 1`,
-//!   the one the loop just played. This is the sequence the butler's ring holds
-//!   (its refill wraps at `end`), so the ring's own four-tap history reads the
-//!   same frames.
+//!   the one the loop just played. This is the sequence the butler writes into
+//!   a looped stream's ring (fade blended in, wrapping to `resume`), so a live
+//!   voice's own four-tap history reads the same frames.
 //!
 //! # The fade weight
 //!
@@ -157,6 +158,20 @@ impl LoopSpan {
         (resume + (pos - end).rem_euclid(end - resume), true)
     }
 
+    /// [`place`](Self::place) for a whole frame: the file frame a forward
+    /// stream at `pos` (counted as if the file played straight on) plays.
+    ///
+    /// The butler's refill writes a looped stream's ring frame by frame
+    /// through this, so the ring carries the sequence every other tier reads
+    /// (`butler::loops::fill_sequence`).
+    #[inline]
+    pub(crate) fn place_frame(&self, pos: usize) -> usize {
+        if pos < self.end {
+            return pos;
+        }
+        self.resume + (pos - self.end) % (self.end - self.resume)
+    }
+
     /// The crossfade at file frame `frame`: the lead-in frame it blends toward
     /// (one of the `fade` frames leading into `resume`) and the lead-in's
     /// weight, or `None` outside the fade.
@@ -268,6 +283,11 @@ mod tests {
         assert_eq!(span.fade_at(19), Some((5, 0.8)));
         assert_eq!(span.place(20.0), (6.0, true));
         assert_eq!(span.place(34.0), (6.0, true), "the loop repeats [6, 20)");
+        // The whole-frame twin the butler writes its ring by agrees.
+        // Mutation (run): `place_frame` wrapping to `start` → 2 → fails.
+        for pos in [0, 5, 19, 20, 33, 34, 47, 1_000] {
+            assert_eq!(span.place_frame(pos) as f64, span.place(pos as f64).0);
+        }
         let whole = LoopSpan::new(0, 1_000, 256, ANY).expect("a loop");
         assert_eq!((whole.fade(), whole.resume()), (256, 256));
         let short = LoopSpan::new(0, 100, 256, ANY).expect("a loop");

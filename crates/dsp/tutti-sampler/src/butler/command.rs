@@ -22,9 +22,10 @@ pub(crate) enum ButlerCommand {
     StopStreaming { channel_index: usize },
 
     /// Enable looping on a streaming channel. The butler builds a
-    /// [`LoopConfig`](super::plan::LoopConfig) (range + crossfade, plus a
-    /// pre-captured fadein buffer) into the channel's `link.loop_config`, which
-    /// the refill/loop-wrap machinery then respects.
+    /// [`LoopConfig`](super::plan::LoopConfig) (range + crossfade, plus the
+    /// fade's lead-in, captured once) into the channel's `link.loop_config`,
+    /// which the refill writes the ring by, and repositions the stream at its
+    /// head so the change is heard at once (`handle_set_stream_loop`).
     SetStreamLoop {
         channel_index: usize,
         /// `(loop_start, loop_end)` in file samples.
@@ -32,13 +33,14 @@ pub(crate) enum ButlerCommand {
         crossfade_frames: usize,
     },
     /// Clear looping on a streaming channel — drop its `link.loop_config` so the
-    /// stream plays through to the end without wrapping.
+    /// stream plays through to the end without wrapping, repositioned at its
+    /// head as a loop change is.
     ClearStreamLoop { channel_index: usize },
 
     /// Reposition a live stream to an absolute file sample offset (timeline
     /// seek). `file_position` is the absolute file sample offset; the handler
     /// applies the channel's `pdc_preroll` before repositioning. Mirrors the
-    /// PDC/loop-wrap click-free reposition (flush + seek + crossfade).
+    /// PDC and loop-change click-free reposition (flush + seek + crossfade).
     SeekStream {
         channel_index: usize,
         file_position: u64,

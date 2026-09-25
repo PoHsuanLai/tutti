@@ -9,9 +9,10 @@
 //!
 //! The rings are flat `HeapRb<f32>`, but **every count crossing this module's
 //! boundary is denominated in frames** and the interleave stride never leaks
-//! out. `plan.rs` compares `read_position` against a loop range in file frames
-//! and `loops.rs` indexes the file with it, so a sample-denominated count would
-//! wrap a looped 6-channel source at one sixth of its true length.
+//! out. The refill advances the writer's file position by the frames it landed
+//! and `loops::head_position` subtracts the frames buffered from it, so a
+//! sample-denominated count would run a 6-channel stream six times ahead and
+//! wrap its loop at one sixth of its true length.
 
 use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
@@ -93,7 +94,9 @@ impl RegionMeta {
     }
 
     /// Move the writer's cursor to absolute file frame `pos`. Butler thread —
-    /// set after each refill and on every loop wrap or seek.
+    /// set after each refill and on every reposition (a seek, a PDC or loop
+    /// change). Counts the file straight on; a loop places it as the refill
+    /// writes (`loops`' module docs).
     pub fn set_file_position(&self, pos: u64) {
         self.file_position.store(pos, Ordering::Relaxed);
     }
@@ -106,10 +109,10 @@ impl RegionMeta {
 /// The ring itself is a flat `HeapRb<f32>` — the width is a property of the
 /// file, so it is a runtime [`ChannelLayout`], never baked into the element
 /// type. **Every public method here is denominated in frames** and the stride
-/// never leaks out. That is deliberate: `plan.rs`
-/// compares `read_position` against a loop range in *file frames*, and
-/// `loops.rs` uses it to index the file directly. Exposing samples anywhere on
-/// this boundary would silently multiply every loop point by the channel count.
+/// never leaks out. That is deliberate: the refill adds what landed to a file
+/// position in *file frames*, which a loop places and `loops.rs` indexes the
+/// file with. Exposing samples anywhere on this boundary would silently
+/// multiply every loop point by the channel count.
 ///
 /// So every count these methods return is a [`Samples`] (the engine's frame
 /// count), not a `usize`: the refill path adds the landed count to a file
@@ -350,19 +353,17 @@ impl RegionReader {
                 *o = s;
             }
         }
-        // ONE per FRAME. `plan.rs` compares this against a loop range in file
-        // frames and `loops.rs` indexes the file with it — a sample-denominated
-        // count would wrap a looped source at 1/channels of its true length.
+        // ONE per FRAME: frames consumed, as every count on this boundary is.
         self.read_position.fetch_add(1, Ordering::Relaxed);
         true
     }
 
     /// Discard every buffered frame without rendering it, advancing
-    /// `read_position` by the **frames** dropped so the butler's view of where
-    /// the reader stands stays honest.
+    /// `read_position` by the **frames** dropped, so it counts every frame
+    /// that left the ring.
     ///
     /// Applied by the audio thread when the butler has requested a ring reset
-    /// after a seek or loop wrap. The butler must never call this: it does not
+    /// after it repositioned the stream (a seek, a PDC or a loop change). The butler must never call this: it does not
     /// own the consumer.
     pub fn clear(&mut self) {
         let frames = self.cons.occupied_len() / self.stride;
@@ -378,9 +379,11 @@ impl RegionReader {
             .fetch_add(frames as u64, Ordering::Relaxed);
     }
 
-    /// A shared handle to the read cursor, in **frames** consumed. The butler
-    /// caches this on the `Link` so it can classify loop status without
-    /// reaching through the [`SharedReader`].
+    /// A shared handle to the read cursor, in **frames** consumed (or
+    /// dropped). A count, not a file position: nothing on the butler reads it
+    /// (the ring's head is `loops::head_position`); tests observe consumption
+    /// through it.
+    #[cfg(test)]
     pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.read_position)
     }
@@ -416,7 +419,7 @@ impl RegionReader {
 ///     *replaces* the reader wholesale via [`SharedReaderExt::store`] on a
 ///     stream (re)start; the audio thread observes the new reader on its next
 ///     buffer through a wait-free [`ArcSwap::load`]. Ring resets on
-///     seek/loop-wrap are requested by the butler through a lock-free
+///     repositions are requested by the butler through a lock-free
 ///     `RtState` flag and applied by the audio thread (the owning consumer),
 ///     never by the butler touching the ring.
 ///
@@ -428,6 +431,9 @@ pub(crate) struct ReaderCell {
     /// Declared ring width, cached here so a reader lookup does not need the
     /// `UnsafeCell` reborrow.
     channels: ChannelLayout,
+    /// The reader's consumption count, for tests to observe (see
+    /// [`RegionReader::read_position_shared`]).
+    #[cfg(test)]
     read_position: Arc<AtomicU64>,
 }
 
@@ -443,12 +449,12 @@ impl ReaderCell {
     fn new(reader: RegionReader) -> Self {
         let region_id = reader.region_id();
         let channels = reader.channels();
-        let read_position = reader.read_position_shared();
         Self {
+            #[cfg(test)]
+            read_position: reader.read_position_shared(),
             inner: UnsafeCell::new(reader),
             region_id,
             channels,
-            read_position,
         }
     }
 
@@ -467,7 +473,7 @@ impl ReaderCell {
     }
 
     /// Discard all buffered samples. Audio-thread only, applied when the butler
-    /// has requested a ring reset (seek / loop-wrap) via `RtState`.
+    /// has requested a ring reset (a reposition) via `RtState`.
     pub(crate) fn clear(&self) {
         // SAFETY: same single-consumer invariant as `read`.
         unsafe { (*self.inner.get()).clear() }
@@ -477,6 +483,7 @@ impl ReaderCell {
         self.region_id
     }
 
+    #[cfg(test)]
     pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.read_position)
     }
@@ -601,10 +608,9 @@ mod tests {
         assert!((f[0] - 0.5).abs() < 0.001, "refill must serve section B");
     }
 
-    /// `read_position` counts FILE FRAMES at any width. `plan.rs` compares it
-    /// against a loop range in file frames and `loops.rs` indexes the file with
-    /// it, so a sample-denominated count would wrap a looped 6-channel source at
-    /// one sixth of its true length.
+    /// `read_position` counts FILE FRAMES at any width, as every count on this
+    /// boundary does; a sample-denominated count would be six times off at six
+    /// channels.
     #[test]
     fn read_position_counts_frames_not_samples_at_six_channels() {
         let (mut prod, mut cons) =
@@ -725,9 +731,9 @@ mod tests {
         assert_eq!(f, [0., 1., 2., 3.]);
     }
 
-    /// `write_space` / `capacity` are frame-denominated. `loops.rs` compares a
-    /// frame-count loop length against `write_space()` directly, so a
-    /// sample-denominated value would over-request by the channel count.
+    /// `write_space` / `capacity` are frame-denominated, as the refill's
+    /// fill level and chunk sizing read them; a sample-denominated value would
+    /// over-request by the channel count.
     #[test]
     fn write_space_and_capacity_are_frames() {
         let (mut prod, _cons) =

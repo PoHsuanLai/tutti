@@ -1,55 +1,42 @@
 //! Per-channel butler plan for a streaming playback.
 
 use std::sync::Arc;
-use tutti_core::{AtomicU64, Ordering, PlaybackRate, SampleRate, SrcRatio};
+use tutti_core::{PlaybackRate, SampleRate, SrcRatio};
 
 use super::cache::StreamPin;
 use super::command::RegionId;
 use super::control::StreamRecord;
+use super::loops::RingLoop;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
 use crate::voice::types::Direction;
 
-/// Where the reader stands relative to an active loop, as classified each
-/// butler cycle by [`ChannelPlan::check_loop_status`].
-///
-/// Positions throughout are file **frames**, matching `read_position`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LoopStatus {
-    /// Nothing to do: not looping, or still clear of the loop end.
-    Normal,
-    /// Within `crossfade_frames` of the loop end — time to arm the loop
-    /// crossfade, before the wrap rather than at it.
-    ApproachingEnd,
-    /// At or past the loop end. Carries the loop start **frame** to wrap to.
-    AtEnd(u64),
-}
-
 /// Loop playback configuration for one streaming channel.
 pub(crate) struct LoopConfig {
-    /// `(start, end)` in file **frames**, half-open.
+    /// `(start, end)` in file **frames**, half-open, as it was asked for.
     pub(crate) range: (u64, u64),
-    /// Crossfade length in **frames**; 0 disables the fade and wraps hard.
+    /// Crossfade length in **frames** as it was asked for; 0 wraps hard.
     pub(crate) crossfade_frames: usize,
-    /// Cached fadein: the frames leading into the loop's start, `[start -
-    /// fade, start)` (`loops::capture_lead_in`); avoids re-reading on each
-    /// loop. Flat interleaved at the region ring's width.
-    pub(crate) preloop_buffer: Option<Vec<f32>>,
+    /// The loop as the refill writes it (`loops::RingLoop`): the span on this
+    /// file, clamped, and its fade's lead-in, captured once. `None` for a
+    /// range with nothing in it once clamped to the file, which plays on.
+    pub(crate) ring: Option<RingLoop>,
 }
 
 /// Active streaming connection for a channel.
 ///
 /// Groups the ring buffer consumer, region identity, and optional loop config
 /// into one value. Created by `start_streaming`, dropped by `stop_streaming`.
-/// `region_id` and `read_position` are cached so the butler reads them without
-/// touching the [`SharedReader`]. The reader itself sits behind an `ArcSwap`
+/// `region_id` is cached so the butler reads it without touching the
+/// [`SharedReader`]. (The reader's `read_position`, a count of frames
+/// consumed, is no file position and the butler no longer reads it: the ring's
+/// head is the writer's cursor less what is buffered, `loops::head_position`.) The reader itself sits behind an `ArcSwap`
 /// (not a `Mutex`): the audio thread loads it wait-free and is its sole
 /// consumer; the butler only ever *replaces* it and requests ring resets via
 /// `RtState`.
 pub(crate) struct Link {
     pub(crate) consumer: SharedReader,
     pub(crate) region_id: RegionId,
-    pub(crate) read_position: Arc<AtomicU64>,
     /// The loop, as the butler runs it. Written only through
     /// [`set_loop`](Self::set_loop), which also tells the stream's
     /// [`StreamRecord`].
@@ -60,6 +47,9 @@ pub(crate) struct Link {
     /// (`SessionRate::set`), and a placement gate converts beats to file
     /// frames with it (`Status::take_disk_voice`).
     pub(crate) file_rate: SampleRate,
+    /// The file's length in frames, as the stream found it: what a loop's end
+    /// is clamped to, as every tier clamps it (`LoopSpan::new`).
+    pub(crate) file_frames: u64,
     /// What a fork of a voice on this stream needs to play the same file
     /// itself: the stream's own small record, shared with every voice taken
     /// from it (`take_streaming_unit`). The region writer that also knows the
@@ -75,11 +65,6 @@ pub(crate) struct Link {
 }
 
 impl Link {
-    /// The active loop config, if looping.
-    pub(crate) fn loop_config(&self) -> Option<&LoopConfig> {
-        self.loop_config.as_ref()
-    }
-
     /// Set or clear the loop, and tell the stream's record: the one place a
     /// loop changes, so the butler's loop and the one a fork reads cannot
     /// disagree.
@@ -135,8 +120,7 @@ impl Default for ChannelPlan {
 }
 
 impl ChannelPlan {
-    /// Attach a ring buffer consumer. Reads region_id + read_position once
-    /// under one lock so the audio thread never re-locks to get them.
+    /// Attach a ring buffer consumer, caching its region id.
     ///
     /// `cache_pin` keeps the streamed wave resident in the LRU cache for the
     /// stream's lifetime; it is stored in the `Link` and released when
@@ -144,25 +128,24 @@ impl ChannelPlan {
     /// resident cache entry (incremental disk streaming). `file_rate` is the
     /// file's own rate (see [`Link::file_rate`]); `file_path` the file, and
     /// `cache` the butler's wave cache, both for the stream's
-    /// [`StreamRecord`].
+    /// [`StreamRecord`]. `file_frames` is the file's length (see
+    /// [`Link::file_frames`]).
     pub fn start_streaming(
         &mut self,
         consumer: SharedReader,
         cache_pin: Option<StreamPin>,
         file_rate: SampleRate,
+        file_frames: u64,
         file_path: std::path::PathBuf,
         cache: std::sync::Weak<super::cache::LruCache>,
     ) {
-        let (region_id, read_position) = {
-            let cell = consumer.load();
-            (cell.region_id(), cell.read_position_shared())
-        };
+        let region_id = consumer.load().region_id();
         self.link = Some(Link {
             consumer,
             region_id,
-            read_position,
             loop_config: None,
             file_rate,
+            file_frames,
             record: Arc::new(StreamRecord::new(file_path, file_rate, cache)),
             _cache_pin: cache_pin,
         });
@@ -178,7 +161,6 @@ impl ChannelPlan {
         self.rt_state.set_direction(Direction::Forward);
         self.rt_state.set_seeking(false);
         self.rt_state.set_src_ratio(SrcRatio::UNITY);
-        self.rt_state.clear_loop_crossfade();
     }
 
     /// Clone of the RT-shared state handle for passing to the audio thread.
@@ -187,7 +169,7 @@ impl ChannelPlan {
     }
 
     /// Request the audio thread drop the ring's stale contents (after the butler
-    /// repositions the stream on a seek / loop-wrap).
+    /// repositions the stream: a seek, a PDC change, a loop change).
     ///
     /// The butler must not pop the SPSC consumer itself — that would race the
     /// audio thread. Instead it bumps a lock-free reset epoch in `RtState`; the
@@ -203,35 +185,6 @@ impl ChannelPlan {
         self.link.as_ref()?.loop_config.as_ref()
     }
 
-    /// Classify the current read position relative to the loop.
-    pub fn check_loop_status(&self) -> LoopStatus {
-        let Some(link) = self.link.as_ref() else {
-            return LoopStatus::Normal;
-        };
-        let Some(loop_cfg) = link.loop_config.as_ref() else {
-            return LoopStatus::Normal;
-        };
-        let (loop_start, loop_end) = loop_cfg.range;
-
-        let read_pos = link.read_position.load(Ordering::Relaxed);
-
-        if read_pos >= loop_end {
-            return LoopStatus::AtEnd(loop_start);
-        }
-
-        // The fade as `handle_loops` runs it: clamped to the lead-in before
-        // the loop's start and to the loop.
-        let fade = super::loops::loop_fade_len(loop_cfg.range, loop_cfg.crossfade_frames);
-        if fade > 0 {
-            let crossfade_start = loop_end - fade as u64;
-            if read_pos >= crossfade_start {
-                return LoopStatus::ApproachingEnd;
-            }
-        }
-
-        LoopStatus::Normal
-    }
-
     /// Bracket a reposition, so the audio thread mutes rather than rendering a
     /// stream whose read head is moving.
     ///
@@ -245,12 +198,6 @@ impl ChannelPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_loop_status_normal() {
-        let state = ChannelPlan::default();
-        assert_eq!(state.check_loop_status(), LoopStatus::Normal);
-    }
 
     #[test]
     fn test_stop_streaming_resets_everything() {

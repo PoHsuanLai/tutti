@@ -414,8 +414,8 @@ impl VoicePool {
     ///
     /// - **In-memory**: primes / clears the loop range on the `MemorySource` in-unit
     ///   (`MemorySource::set_loop_setting`).
-    /// - **Streaming**: loop is butler-owned — `SetStreamLoop` reads a loop-start
-    ///   fadein head off disk and mutates `plan.link.loop_config`, neither
+    /// - **Streaming**: loop is butler-owned — `SetStreamLoop` reads the loop's
+    ///   fade lead-in off disk and mutates `plan.link.loop_config`, neither
     ///   reachable from the reader — so the reader FORWARDS to the butler via the
     ///   typed [`Commands`] handle (`Command::Loop`, which maps `On`→
     ///   `SetStreamLoop` / `Off`→`ClearStreamLoop`). Originating the forward here

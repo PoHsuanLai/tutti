@@ -15,11 +15,11 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
-use super::loops::{buffer_size_for_file, capture_lead_in};
+use super::loops::{buffer_size_for_file, head_position, ring_head_frames, RingLoop};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::{share_reader, RegionBuffer};
-use super::preroll::reposition_click_free;
+use super::preroll::{reposition_click_free, reposition_from};
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
@@ -146,14 +146,16 @@ pub(super) fn handle_command(
             range,
             crossfade_frames,
         } => {
-            handle_set_stream_loop(channel_index, range, crossfade_frames, shared, local);
+            handle_set_stream_loop(
+                channel_index,
+                Some((range, crossfade_frames)),
+                shared,
+                config,
+                local,
+            );
         }
         ButlerCommand::ClearStreamLoop { channel_index } => {
-            if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-                if let Some(link) = plan.link.as_mut() {
-                    link.set_loop(None);
-                }
-            }
+            handle_set_stream_loop(channel_index, None, shared, config, local);
         }
 
         ButlerCommand::SeekStream {
@@ -300,6 +302,7 @@ fn handle_stream_file(
             share_reader(consumer),
             cache_pin,
             file_sr,
+            file_length,
             file_path,
             Arc::downgrade(&shared.cache),
         );
@@ -314,52 +317,90 @@ fn handle_stream_file(
     }
 }
 
-/// Populate a streaming channel's `link.loop_config`, so `handle_loops`
-/// wraps the disk decoder at the loop bounds and `refill_forward` respects
-/// them. When a crossfade is requested, its fadein — the frames leading into
-/// the loop's start, `[start - fade, start)` (`capture_lead_in`) — is
-/// captured once here (off the audio thread) into `preloop_buffer`, so the
-/// per-loop crossfade in `handle_loops` doesn't re-read it every wrap.
+/// Set (`Some((range, crossfade_frames))`) or clear (`None`) a streaming
+/// channel's loop, and reposition the stream so the change is heard at once.
+///
+/// The ring holds what the refill wrote under the old loop, as much as 30 s
+/// of it (`buffer_size_for_file`), so a change left to the refill would be
+/// heard only once that drained. Instead the change takes effect **at the
+/// butler's next cycle, at the frame the audio thread reads next**: the ring
+/// is flushed at its head ([`head_position`]) and refilled from that same
+/// straight position under the new loop — where the memory tier, whose loop
+/// change is a store, plays the same position. It moves as a seek does, through
+/// the seek crossfade (the fadeout captured under the old loop, the fadein under
+/// the new). A reverse stream ignores the loop, so its change is only stored.
+///
+/// The loop's span is taken on the file's length, and a crossfaded loop's
+/// lead-in is captured here, once, off the audio thread (`RingLoop::capture`),
+/// so no refill re-reads it.
 ///
 /// No-op when the channel isn't currently streaming (no `link`) — the loop
 /// config has nowhere to live without an active stream.
 fn handle_set_stream_loop(
     channel_index: usize,
-    range: (u64, u64),
-    crossfade_frames: usize,
+    setting: Option<((u64, u64), usize)>,
     shared: &Handles,
+    config: &BufferConfig,
     local: &mut Local,
 ) {
     let Some(mut plan) = shared.plans.get_mut(&channel_index) else {
         return;
     };
-    let Some(link) = plan.link.as_mut() else {
+    let Some(region_id) = plan.link.as_ref().map(|link| link.region_id) else {
+        return;
+    };
+    let Some(writer) = local.regions.get_mut(region_id) else {
         return;
     };
 
-    // Capture the fadein (the lead-in to the loop's start) once, off the
-    // audio thread, so the per-wrap crossfade in `handle_loops` never re-reads
-    // the file.
-    let preloop_buffer = if crossfade_frames > 0 {
-        local
-            .regions
-            .get(link.region_id)
-            // Width comes from the ring, not the wave: the ring's stride is what
-            // the RT crossfade will index this buffer with.
-            .and_then(|writer| {
-                load_wave(&shared.cache, &shared.metrics, writer.file_path())
-                    .map(|wave| (wave, writer.channels()))
-            })
-            .map(|(wave, ch)| capture_lead_in(&wave, range, crossfade_frames, ch))
-    } else {
-        None
-    };
+    let loop_config = setting.map(|(range, crossfade_frames)| {
+        let file_frames = plan.link.as_ref().map_or(0, |link| link.file_frames) as usize;
+        // The whole file only for a fade's lead-in; a hard loop reads nothing.
+        let wave = (crossfade_frames > 0)
+            .then(|| load_wave(&shared.cache, &shared.metrics, writer.file_path()))
+            .flatten();
+        LoopConfig {
+            range,
+            crossfade_frames,
+            // Width from the ring, not the wave: the ring's stride is what the
+            // refill blends the lead-in at.
+            ring: RingLoop::capture(
+                range,
+                crossfade_frames,
+                file_frames,
+                wave.as_deref(),
+                writer.channels(),
+            ),
+        }
+    });
 
-    link.set_loop(Some(LoopConfig {
-        range,
-        crossfade_frames,
-        preloop_buffer,
-    }));
+    if plan.rt_state.is_reverse() {
+        if let Some(link) = plan.link.as_mut() {
+            link.set_loop(loop_config);
+        }
+        return;
+    }
+
+    let fadeout = ring_head_frames(
+        &plan,
+        writer,
+        &shared.cache,
+        &shared.metrics,
+        config.seek_crossfade_frames,
+    );
+    let head = head_position(writer);
+    if let Some(link) = plan.link.as_mut() {
+        link.set_loop(loop_config);
+    }
+    reposition_from(
+        &plan,
+        writer,
+        head,
+        fadeout,
+        &shared.cache,
+        &shared.metrics,
+        config,
+    );
 }
 
 /// Reposition a live stream to an absolute file sample offset (timeline seek),

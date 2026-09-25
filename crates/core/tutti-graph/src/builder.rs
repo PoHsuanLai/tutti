@@ -447,14 +447,6 @@ impl GraphBuilder {
         key
     }
 
-    /// [`chain_unit`](Self::chain_unit) through [`Legacy::pure`] — see
-    /// [`add_pure_unit`](Self::add_pure_unit).
-    pub fn chain_pure_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        let key = self.add_pure_unit(unit);
-        self.link(key);
-        key
-    }
-
     fn link(&mut self, key: NodeKey) {
         if self.size() == 1 {
             if self.inputs() > 0 {

@@ -811,17 +811,25 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    sampler voice's `play.gain`) [PR 1]. **Closed by PR 1:**
    `Legacy::controlled(unit)` returns the node and `LegacyControls<T>`: a
    64-deep SPSC ring of `Setting`s drained into `AudioUnit::set` at the start
-   of each call, and a never-processed shadow clone (`Arc<Mutex<T>>`) that
-   every `set` is applied to. A full ring holds the setting control-side,
-   coalesced per parameter, and sends it ahead of anything newer
-   (`Delivery::Held`); nothing is dropped.
+   of each call, and a never-processed shadow (`Arc<Mutex<T>>`) that every
+   `set` is applied to. The shadow is an isolated deep copy (`clone()` then
+   `AudioUnit::isolate()`), a by-value snapshot for `Fork` and for reading
+   plain fields — never a window onto live state (`SvfFilterNode::isolate`
+   now severs its param cells for this). A full ring holds the setting
+   control-side, coalesced per parameter by moving the latest value to the
+   back (delivery is always a subsequence of what was sent), and sends it
+   ahead of anything newer (`Delivery::Held`); nothing is dropped. The
+   editor passed to `controlled` flushes held settings on every `collect`,
+   so a burst that goes quiet is still delivered.
 3. **No replace-with-fade** for `crossfade_audio_node` [PR 3].
 4. **No runtime latency change** for a plugin's latency atomic [PR 1].
    **Closed by PR 1:** `Editor::set_latency(key, Latency)` updates the spec
    and the shape; the next commit moves PDC without touching the unit. It is
    the authority until the next re-prepare, which re-probes the unit (a frame
-   count is wrong at a new rate). The reference interpreter reads latency from
-   the spec, as the compiler does.
+   count is wrong at a new rate) or a replace re-reads the new unit's shape.
+   A figure past `MAX_NODE_LATENCY` is refused (`LatencyTooLong`), not
+   clamped. The reference interpreter reads latency from the spec, as the
+   compiler does.
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
    hosts read its `BEAT_PORTS` [PR 6]. **Closed:** `EnvClock` (tutti-core,
    beside `TransportClock`) is a native `Node` that emits the same

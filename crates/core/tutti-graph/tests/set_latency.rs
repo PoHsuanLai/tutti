@@ -11,6 +11,7 @@ use common::{prepare, Kind, TestNode};
 use tutti_graph::{CommitError, Editor, Executor, Legacy, Node, Reference, Transport};
 use tutti_node::AudioUnit;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples};
 
 /// The delay the plugin actually runs.
@@ -254,9 +255,11 @@ fn a_latency_change_moves_the_other_paths_compensation() {
     );
 }
 
-/// Refusals: a key with no node, and between a re-prepare's two commits.
+/// Refusals: a key with no node, a latency past what PDC compensates, and
+/// between a re-prepare's two commits.
 ///
 /// Mutation: drop the `repreparing` check in `set_latency` → `Ok` → fails.
+/// Mutation: drop the `MAX_NODE_LATENCY` check → `Ok` → fails.
 #[test]
 fn set_latency_refuses_what_it_cannot_honour() {
     let (mut ed, _exec) = graph(Plugin::new());
@@ -265,6 +268,20 @@ fn set_latency_refuses_what_it_cannot_honour() {
         ed.set_latency(NodeKey(99), Latency::new(Samples(4))),
         Err(CommitError::NoSuchNode { node: NodeKey(99) })
     );
+    // At the limit is fine; one past it is refused, not clamped, and
+    // nothing is written.
+    let limit = Latency::new(MAX_NODE_LATENCY);
+    ed.set_latency(PLUGIN, limit).expect("at the limit");
+    let past = Latency::new(Samples(MAX_NODE_LATENCY.get() + 1));
+    assert_eq!(
+        ed.set_latency(PLUGIN, past),
+        Err(CommitError::LatencyTooLong {
+            node: PLUGIN,
+            latency: past,
+            limit
+        })
+    );
+    assert_eq!(ed.spec().topology.nodes[&PLUGIN].latency, MAX_NODE_LATENCY);
     ed.reprepare(prepare(128)).expect("re-prepares");
     assert_eq!(
         ed.set_latency(PLUGIN, Latency::new(Samples(4))),

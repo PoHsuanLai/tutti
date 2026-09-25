@@ -10,15 +10,19 @@ section there before you relax or work around a rule.
 **fundsp's `Net` is being replaced by a native graph**, per
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. `Engine` can already render it
-(`Engine::with_graph`); `bevy-tutti` runs on either behind
-`GraphBackend` (default `Net`; its suites run on both). On `Native`, export
-forks the live graph (`Editor::fork`, Phase 3 PR 12); on `Net` it still
-clones the `Net`, until PR 13 deletes that arm. Until the migration lands:
+once, and events as ports. `Engine` renders it (`Engine::with_graph`), and
+since Phase 3 PR 13 it is `bevy-tutti`'s only runtime: `AudioGraphRes` holds
+an `Editor`, PDC is the compiler's, and export forks the live graph
+(`Editor::fork`). `Net` is left in tutti-export's `RenderGraph::Net` (PR 14),
+tutti-core's `Engine::new(NetBackend)` (PR 15), the nodes' own tests, and
+test-only `Net`-era oracles (bevy-tutti's `net_parity.rs` and the
+`*_net_era` helpers) that go with those. Until the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can
   (`process`, `reset`, `set_sample_rate`, declared latency and tail).
+  A `Net`-era oracle is a test comparing against what `Net` rendered; do not
+  add one where an analytic figure will do.
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
@@ -212,14 +216,20 @@ Non-scalar state handed to the audio thread goes through
 
 ## Wiring is declared, not called
 
-This is current until the native graph flips `bevy-tutti` (doc 013, Phase 3).
+`bevy-tutti` runs on the native graph only (doc 013, Phase 3 PR 13).
 
 - `spawn_audio_node` adds an *unwired* node. `PortSources` on a sink and the
-  `MasterSources` resource declare what feeds each port. The rebuild diffs
-  them against the graph each frame, and the adapter keeps no shadow state.
-- A new graph test in `bevy-tutti` runs on both backends: take a
-  `GraphBackend` and invoke `both_backends!(name)` (`tests/common`, or
-  `crate::graph::both_backends` in unit tests).
+  `MasterSources` resource declare what feeds each port. The rebuild builds a
+  `Topology` value from them (`LiveGraph` holds the last one), writes the
+  declared ports that differ into the editor's spec, and the frame's commit
+  compiles it; PDC is the compiler's, and nothing is spliced into the graph.
+- A declaration may be partial: a port a short `PortSources` leaves out, and
+  every output channel while `MasterSources` is empty, belong to whoever
+  wires them through `AudioGraphRes`. The rebuild's debug check
+  (`topology::disagreements`) compares only declared ports; never compare a
+  whole-graph fold (a latency plan) against the value.
+- A declaration names an *entity*, the graph keys an `AudioNode`; re-binding
+  an entity to a new node re-derives its wires (`Changed<AudioNode>`).
 - Keys are sink ports, so fan-in cannot be represented. Summing is a node's
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.

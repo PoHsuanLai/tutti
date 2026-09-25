@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bevy-tutti runs on the native graph only** (design doc 013, Phase 3 PR
+  13). fundsp's `Net` is gone from the adapter: `AudioGraphRes` holds the
+  native `tutti-graph` editor, PDC is the compiler's (no delay nodes are
+  spliced into the graph), and every export forks the live graph. What
+  changes for a host:
+
+  | Was | Now |
+  |---|---|
+  | `TuttiPlugin { graph_backend: GraphBackend::Native, .. }` | delete the field: there is one runtime. `graph_backend` and `GraphBackend` are removed (a one-variant enum would select nothing) |
+  | `TuttiPlugin::default()` ran on `Net` | it runs on the native graph. Behaviour that differed, now everywhere: a `set_param` lands on the node's next rendered block; `inspect` reads the node's shadow (an isolated copy with every setting applied); `render_frame` panics once the audio side is taken; `replace` fades only between units of one latency (else it swaps); a device-rate restart keeps every unit instance |
+  | `AudioGraphRes::headless_with(backend, i, o)` / `unattached_with(backend, i, o)` | `AudioGraphRes::headless(i, o)` |
+  | `AudioGraphRes::unattached(i, o)` | `AudioGraphRes::headless(i, o)`: the two built the same graph on the native runtime (a setting is never applied at once), so one name stays |
+  | `AudioGraphRes::backend()` | removed |
+  | `PreparedGraph::ctx: Option<&OfflineTransport>` (`None` for a `Net` master export) | `ctx: &OfflineTransport`: every export is a fork rebound onto the request's timeline |
+  | `PreparedGraph::graph` could be `RenderGraph::Net` | always `RenderGraph::Graph` (the enum keeps its `Net` arm until tutti-export's graph-only API, PR 14) |
+  | `ExportSource::Master` on `Net`: a plain clone keeping live bindings and running state | a fork of what the outputs hear, isolated, rebound and reset (PR 12's behaviour, now the only one) |
+  | `bevy_tutti::Net`, and `Net` in `bevy_tutti::prelude` | removed: nothing in the adapter hands one out. Name `tutti_core::dsp::Net` if you still build one yourself |
+  | `offline_export` example's `-- --native` | removed; the example always forks |
+
+  - **The rebuild's debug consistency check no longer panics over a
+    partially declared graph.** `topology::disagreements` compared the
+    latency plan of the whole graph against the value's, which holds only
+    declared ports, so a host that wired the master itself (an empty
+    `MasterSources`), or a port a short `PortSources` leaves undeclared,
+    through a latent node panicked a debug build. It compares declared
+    edges and outputs only; restricted to those, the plan comparison is
+    implied by them.
+  - **`LatencyCompensationPlugin` publishes; it does not apply.** The graph
+    compensates every commit with or without it; the plugin publishes
+    `ChannelCompensation` and `GraphLatency` for what lives outside the
+    graph. Its API is unchanged.
+
 - **bevy-tutti exports fork the native graph** (design doc 013, Phase 3 PR
   12). On `GraphBackend::Native` an `ExportRequest` renders `Editor::fork`
   of the live graph — `ExportSource::Master` what the global outputs hear,

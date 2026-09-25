@@ -40,10 +40,9 @@ TuttiPlugin::default()
 // Custom I/O
 TuttiPlugin { inputs: 2, outputs: 2, ..Default::default() }
 
-// The native tutti-graph runtime instead of fundsp's `Net` (design doc 013).
-// Same ECS surface; `GraphBackend` lists where the two differ. Export is
-// `Net`-only for now and reports an error on `Native`.
-TuttiPlugin { graph_backend: GraphBackend::Native, ..Default::default() }
+// The graph is the native tutti-graph runtime (design doc 013); there is no
+// runtime to choose. (`graph_backend: GraphBackend::Net | Native` was removed
+// with fundsp's `Net` arm.)
                // select device by index
                          // enable MIDI subsystem
 
@@ -294,7 +293,7 @@ Requires the `export` feature. An export is an **entity**: spawn an
 [`ExportRequest`] and `ExportPlugin` drives it to completion off the main
 thread.
 
-On `GraphBackend::Native` it renders a **fork** of the live graph: every node
+It renders a **fork** of the live graph: every node
 isolated, rebound onto the request's offline timeline and reset, a hosted
 plugin as a fresh instance loaded with the live one's state (its MIDI clip
 rebound too), a disk-streamed voice reading its file itself. The live graph

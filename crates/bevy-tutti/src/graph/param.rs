@@ -23,8 +23,8 @@
 //! // The node's own drive atomic — shared with every clone of the node, so it
 //! // is the cell the DSP reads, wherever the graph keeps the unit.
 //! let live = unit.drive();
-//! // `unattached`: with no audio side, the write lands on the graph's copy of
-//! // the node at once, so the assertion below can read it.
+//! // A graph with no device: its audio side stays here, and `render_frame`
+//! // plays it.
 //! let mut graph = AudioGraphRes::headless(0, 1);
 //! let node = graph.insert(unit);
 //! graph.set_sample_rate(SampleRate(48_000.0));
@@ -41,6 +41,9 @@
 //!
 //! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
 //! app.update();
+//! // The write rides the node's settings ring, drained at the start of its
+//! // next block: render one.
+//! app.world_mut().resource_mut::<AudioGraphRes>().render_frame(&mut [0.0]);
 //!
 //! // Read the node's own atomic — the cell the DSP reads, not the component.
 //! assert_eq!(live.load(std::sync::atomic::Ordering::Acquire), 4.0);

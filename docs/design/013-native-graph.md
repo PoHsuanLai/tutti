@@ -1,11 +1,10 @@
 # A native audio graph, and the road off fundsp
 
-Status: **in progress** (2026-09-25). The graph crate (`tutti-graph`,
+Status: **in progress** (2026-09-26). The graph crate (`tutti-graph`,
 Phases 1 and 2) has landed, and `Engine` can render it
 ([Phase 2](#phase-2--runtime-behind-the-engine), 2b); the Bevy adapter runs
-on either, behind `GraphBackend` (default `Net`, Phase 3 PR 11), and on the
-native backend export forks the graph (PR 12); `Net` export stays until
-PR 13. Work that does not need the graph has
+on it alone (Phase 3 PR 13; PR 11 had put it beside `Net` behind
+`GraphBackend`), and export forks the graph (PR 12). Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -1213,7 +1212,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 10 | **Done.** bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
 | 11 | **Done.** bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
 | 12 | **Done.** bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
-| 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
+| 13 | **Done** (see "PR 13 landed"). bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
 | 16 | **Done.** tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
@@ -2225,6 +2224,111 @@ two tiers match only at matched rates until it is.
   - Things a host builds from `AudioConfig` itself (an analyser over the
     tap, a `Recorder`'s WAV header): `AudioConfig` changes on a restart,
     which is the signal to rebuild them.
+
+**PR 13 landed: bevy-tutti runs on the native graph only.**
+`AudioGraphRes` holds a `Mutex<NativeGraph>`, nothing else: the `Backend`
+enum and every `Net` arm are gone (about 520 net lines out of `src/`), and
+with them `GraphBackend` itself. **Decided: removed, not kept with one
+variant.** A one-variant enum selects nothing, and keeping
+`TuttiPlugin::graph_backend` would let a host's `GraphBackend::Native`
+compile while it means nothing; the migration is to delete the field.
+`headless_with`, `unattached_with` and `unattached` went too (`unattached`
+built what `headless` builds once there is no control-side copy of a node);
+`headless` is the one constructor. What each item of the PR's scope came to:
+
+- **The `Net` arm of every method**: the plain-clone / `clone_isolated`
+  export (and `Exported::rebound`, always true now, so
+  `PreparedGraph::ctx` is `&OfflineTransport`, not an `Option`); the restart
+  hook's `Net` re-rate (re-seating the clock by a seek, compensating and
+  committing inline); the `TransportClock` beat clock (always `EnvClock`);
+  `AudioSide`'s `NetBackend` arm; `GraphSource::lower`/`lift` to fundsp's
+  `Source`. `bevy_tutti::Net` (and its prelude entry) is no longer
+  re-exported: nothing in the adapter hands one out.
+- **`PdcDelay`**: `has_compensation` and `is_compensation`, the only
+  readers of `PDC_DELAY_ID` here, are gone, and `compensate_graph` publishes
+  the plan's figures with no re-minting (`AudioGraphRes::compensate` takes
+  `&self`). `LatencyCompensationPlugin` is now a publisher: the graph is
+  compensated with or without it.
+- **Arity**: `commit_output_arity_change` went with the `Net` commit; a
+  wider root is part of the spec the next commit compiles.
+- **`disagreements`** is kept, but compares only what the value declares
+  (below). It still earns its place: it reads the edges back through the
+  graph's own queries after `apply` wrote them, so a lowering that writes
+  one thing and reads back another is caught where it happens.
+- **`apply`** is kept as the write of declared ports into the editor's
+  spec, comparing first so a rebuild that moves nothing leaves the graph
+  clean (no dirty flag, no compile). **Deviation:** the Phase 3 bullet
+  "`LiveGraph` diff emits a `Delta` via `compile`" is not done here. The
+  value keys nodes by entity and the spec by `AudioNode` (a node goes in
+  before an entity is bound, and nodes with no entity are allowed), and a
+  declaration may be partial (below), so the value cannot replace the
+  spec's edges wholesale. Keying the spec by entity is a Phase 4-sized
+  change with no defect behind it.
+- **`rebound`** (`Changed<AudioNode>` bypassing `want == live`) is kept, for
+  the same reason: a re-bind to a node of the same shape leaves the value
+  equal and the spec's edges on the old key. It was never `Net`'s.
+
+**The false panic in `disagreements`, fixed here.** It compared the latency
+plan of the whole graph against the value's. The value holds only declared
+ports, and a declaration may be partial by contract — every output channel
+while `MasterSources` is empty, and a port a short `PortSources` leaves
+out, belong to whoever wires them through `AudioGraphRes`. So a host that
+wired either from a latent node gave a graph whose plan the value could not
+fold to, and a debug build panicked over a graph that was right. On `Net`
+it was masked whenever compensation delays were live (the check skipped the
+plan then); on `Native` it always fired. Imperative wiring cannot be
+retired to make the declaration total — it is the public headless-graph API
+(`set_source`, `set_output_source`, `set_outputs_from`) and the contract
+tests and hosts use — so the comparison covers only declared parts:
+declared edges and declared outputs. The plan comparison is dropped rather
+than restricted, because restricted to declared ports it is a fold of the
+value's node specs (read off the same shapes) and the declared edges, so it
+agrees exactly when the edge checks do. Pinned by `graph_wire`'s
+`a_hand_wired_master_behind_a_latent_node_is_not_a_disagreement` and
+`a_hand_wired_port_behind_a_latent_node_is_not_a_disagreement` (each
+panics with the whole-graph comparison restored). `shrinking_the_master_releases_the_dropped_channel`
+used to be caught by that comparison under its mutation; its own reading of
+channel 1 catches it now (re-run).
+
+**`both_backends!` is gone, and no assertion with it.** Every test that ran
+on both runtimes runs once, on the native graph, with its assertions (test
+names lost their `::net`/`::native` modules, and a few their `native_`
+prefix). The tests that were **A/B comparisons** — native against `Net` —
+keep their assertions against a **`Net`-era oracle** built by hand from
+tutti-core (and tutti-export's `Net` arm), wired, compensated and committed
+in the order the adapter's `Net` arm did:
+
+- `tests/graph_backends.rs` → `tests/net_parity.rs` (the scene under PDC,
+  unaligned blocks, a param write, a crossfade), oracle `NetEra`;
+- `engine::build`'s click and sampler-voice tests, oracle `net_era`
+  (`Engine::new` over a `Net` with a `TransportClock`); the click test now
+  also pins its onset frames analytically, across the seek (the locate
+  itself clicks, at 60 417, on both);
+- `export_fork.rs`'s two export A/Bs, oracles `chain_net_era` and
+  `synths::poly_node_export_net_era` (the `Net` export's clone, rebound
+  and reset, rendered by `RenderGraph::Net`).
+
+These oracles are the **narrowest `Net` seam left in bevy-tutti**, test-only;
+they go with tutti-export's `Net` arm (PR 14) and `Engine::new(NetBackend)`
+(PR 15), when each test keeps only its analytic half or is re-pinned against
+recorded figures. Assertions that were about the adapter's `Net` arm itself
+could not be ported and are dropped, each named where it was: the restart
+test's "`Net` publishes the new PDC figures before the first block" (the
+graph republishes once its re-prepare resumes, which the test still
+checks); the PDC-switch test's "`Net`'s dry channel reads a spliced delay"
+(its native half stays, `pdc_is_the_compilers`); the engine-export test's
+`Net` early return (it only checked lengths there); and
+`a_master_export_says_whether_it_was_rebound`'s `None` for `Net`, now
+`a_master_export_is_rebound_onto_the_callers_timeline`. The native
+`has_compensation()` assertion in `latency`'s
+`publishes_the_compensation_its_commit_sends` became "both channels still
+read the nodes they were wired to".
+
+Left for the next PRs, as scoped: `PreparedGraph::graph` is still a
+`&mut RenderGraph` whose `Net` arm the adapter never builds (PR 14 makes it
+graph-only); `AudioNode` still wraps fundsp's `NodeId` (the key's source of
+uniqueness, and harmless). PR #43 (disk voices in native export) touches
+`export/mod.rs` and `tests/export_fork.rs` alongside this.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

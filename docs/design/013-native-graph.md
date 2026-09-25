@@ -1256,11 +1256,17 @@ so a by-value write that bypasses the settings ring moves the live unit and
 leaves a fork (an export) at the value the unit was built with. Every
 `bevy-tutti` path was audited: `AudioParam` and `AudioGraphRes::set_param` go
 through the ring; a control-rate **modulated** param's authored base is also
-written to the node's shadow (`set_param_snapshot`), since live the driver
-writes `base + Σ layers` and a fork runs its own modulation — **live
-modulation offsets are the exception, by design**. A unit test forks the
-native graph and checks each path (`graph::native::tests`). Known export
-limits, each a cell a `Setting` cannot reach:
+written to the node's shadow (`set_param_snapshot`), both when a param
+write moves it and when the modulation rebuild re-seeds it from
+`ModParamRange`, since live the driver writes `base + Σ layers` and a fork
+runs its own modulation — **live modulation offsets are the exception, by
+design**. A sampler clip's **placement** rides `VoiceNode`'s command queue,
+which `isolate` severs from a copy, so `VoiceNodeHandle` records each
+placement it queues in a control-thread cell the node shares with its
+clones, and `isolate` applies the latest to the copy (review of #32). A unit
+test forks the native graph and checks each path (`graph::native::tests`);
+the placement is pinned in `tutti-sampler`'s `voice_node_commands`. Known
+export limits, each a cell a `Setting` cannot reach:
 
 - **The audio-rate base** (`AudioRateChains::base_cell`) is read by
   `AtomicSourceNode`, which takes no `Setting`; a fork sees the cell as that
@@ -1290,6 +1296,31 @@ two fade steps, and before and after it to the bit. Every graph suite
 (`graph_*`, `mod_*`, `midi_*`, `audio_param`, `capture_controls`,
 `plugin_capture`, `audio_io_pump`, and the crate's unit tests that build a
 graph) runs on both backends through `both_backends!`.
+
+**Review of #32.** `Editor::replace` refuses while a re-prepare is between
+its commits (and on a poisoned editor) and consumes its node. The native
+`replace` asks first (`Editor::is_repreparing`, `Editor::poisoned`) and hands
+the unit back as `ReplaceRefused::Busy`; `crossfade_audio_node` binds the
+incoming unit's captured controls only when the replace lands, parks a busy
+one in `PendingCrossfades` (applied on the first frame after the re-prepare
+resumes) and logs a poisoned refusal, keeping the old controls. The plugin
+latency re-probe clamps to `MAX_NODE_LATENCY`, as the insert-time probe is
+clamped, since `set_latency` refuses a figure past it and the poll would not
+ask again.
+
+**Phase 3 follow-ups** (recorded, not done here):
+
+- **An engine-driven sampler A/B.** `AudioSide::render` renders under a
+  stopped transport, so the A/B suite cannot see a clip reader's clock.
+  Once the `Legacy` per-64-chunk timeline fix for clip readers lands
+  (tutti-core / tutti-export), add a sampler A/B through
+  `Engine::process` at 256- and 512-frame blocks with a rolling transport.
+- **`TuttiDriver::restart` at a new device rate** re-prepares nothing: the
+  graph keeps its old rate (on `Net` its units, on `Native` its `Prepare`),
+  and `AudioConfig` and `Transport` keep the old one too. It predates PR 11
+  and affects both backends; the fix is a restart that re-rates the graph
+  (`AudioGraphRes::set_sample_rate`, an `Editor::reprepare` on `Native`) and
+  republishes `AudioConfig` and the transport's rate.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

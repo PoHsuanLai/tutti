@@ -757,6 +757,43 @@ mod tests {
         );
     }
 
+    /// **A reverse stream falls silent past the file's first frame** (doc 013
+    /// follow-up S1, the butler tier): a reverse refill that reaches frame 0
+    /// hands the ring frames `n - 1 … 0`, and every refill after that hands it
+    /// silence. Without the silence the ring would run dry, and `DiskSource`
+    /// holds its last frame through an underrun — frame 0 as DC, what the
+    /// memory tier and the disk fork used to play.
+    ///
+    /// Mutation (run): the zero push removed from `refill_reverse`'s
+    /// `actual_chunk == 0` arm → the ring holds nothing past frame 0 → fails.
+    #[test]
+    fn a_reverse_refill_is_silent_past_the_first_frame() {
+        use crate::butler::command::RegionId;
+        use crate::butler::RegionBuffer;
+
+        let wave = make_test_wave(&[(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]);
+        let (mut writer, mut reader) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 2usize);
+        let mut buf = Vec::new();
+        // From frame 4, back past the start in chunks of 3: frames 3, 2, 1;
+        // then 0; then twice from the start.
+        writer.set_file_position(4);
+        for _ in 0..4 {
+            let at = writer.file_position() as usize;
+            refill_reverse(&mut writer, &wave, at, 3, &mut buf);
+        }
+        let mut frame = [0.0f32; 2];
+        let mut left = Vec::new();
+        while reader.read_into(&mut frame) {
+            left.push(frame[0]);
+        }
+        assert_eq!(&left[..4], [4.0, 3.0, 2.0, 1.0], "the file, reversed");
+        assert!(
+            left.len() >= 4 + 3 && left[4..].iter().all(|&s| s == 0.0),
+            "past the first frame the ring holds silence: {left:?}"
+        );
+    }
+
     #[test]
     fn test_forward_fill_via_wave_in() {
         // The forward whole-file fill now runs through WaveIn; verify the block

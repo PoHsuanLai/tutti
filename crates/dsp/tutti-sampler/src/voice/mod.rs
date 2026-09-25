@@ -11,7 +11,8 @@
 //! - [`node`] — one voice as a standalone graph node.
 //! - [`interp`] — the interpolation kernel and the transport-placement gate.
 
-mod loop_crossfade;
+// A loop as the frames it plays: shared by every reader that indexes a file.
+pub(crate) mod loop_span;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
 pub mod memory_source;

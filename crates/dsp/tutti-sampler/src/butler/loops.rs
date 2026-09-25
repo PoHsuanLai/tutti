@@ -18,6 +18,7 @@ use tutti_core::{ChannelLayout, SampleRate};
 use tutti_io::Wave;
 
 use crate::nonempty;
+use crate::voice::loop_span::LoopSpan;
 
 /// Advance every streaming channel's loop state by one butler cycle.
 ///
@@ -27,8 +28,11 @@ use crate::nonempty;
 /// clear the fade, flush the ring, move the writer back to the loop start and
 /// prefill what fits.
 ///
-/// The fadein head comes from the pre-captured `preloop_buffer` when the loop
-/// was set up with one, so a wrap re-reads nothing.
+/// The fadein comes from the pre-captured `preloop_buffer` when the loop was
+/// set up with one, so a wrap re-reads nothing. Both buffers are
+/// [`loop_fade_len`] frames: the tail `[end - fade, end)` and the lead-in
+/// `[start - fade, start)` — the material that leads into the loop's start, so
+/// the fade ends where the wrap continues (see [`capture_lead_in`]).
 pub(crate) fn handle_loops(
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
@@ -52,23 +56,37 @@ pub(crate) fn handle_loops(
                 let Some(loop_cfg) = link.loop_config() else {
                     continue;
                 };
-                let fade_len = loop_cfg.crossfade_frames;
+                let (loop_start, loop_end) = loop_cfg.range;
+                let fade_len = loop_fade_len(loop_cfg.range, loop_cfg.crossfade_frames);
                 if fade_len == 0 {
                     continue;
                 }
 
-                let (loop_start, loop_end) = loop_cfg.range;
-
                 if let Some(writer) = regions.get(link.region_id) {
                     if let Some(wave) = load_wave(cache, metrics, writer.file_path()) {
                         let ch = writer.channels();
-                        let fadeout_start = (loop_end as usize).saturating_sub(fade_len);
-                        let fadeout = capture_frames(&wave, fadeout_start, fade_len, ch);
+                        // The span on this wave: its end clamped to the file,
+                        // as every tier reads it.
+                        let Some(span) = LoopSpan::new(
+                            loop_start as usize,
+                            loop_end as usize,
+                            loop_cfg.crossfade_frames,
+                            wave.len(),
+                        ) else {
+                            continue;
+                        };
+                        let fade_len = span.fade();
+                        let fadeout = capture_frames(&wave, span.end() - fade_len, fade_len, ch);
 
                         let fadein = if let Some(preloop) = loop_cfg.preloop_buffer.as_deref() {
                             preloop.to_vec()
                         } else {
-                            capture_frames(&wave, loop_start as usize, fade_len, ch)
+                            capture_lead_in(
+                                &wave,
+                                (loop_start, loop_end),
+                                loop_cfg.crossfade_frames,
+                                ch,
+                            )
                         };
 
                         stream_state
@@ -131,6 +149,44 @@ pub(crate) fn capture_frames(
         wave_frame_into(wave, start + i, frame);
     }
     samples
+}
+
+/// The frames a loop over `range` actually fades over when `crossfade_frames`
+/// are asked for, as every tier clamps it (`LoopSpan`): to the loop, and to
+/// half of it when there is too little before the start for a lead-in and
+/// the fade goes into the loop's head. 0 for an empty range. The file's length
+/// is not known here, so the loop's end is not clamped to it.
+pub(crate) fn loop_fade_len(range: (u64, u64), crossfade_frames: usize) -> usize {
+    LoopSpan::new(
+        range.0 as usize,
+        range.1 as usize,
+        crossfade_frames,
+        usize::MAX,
+    )
+    .map_or(0, |span| span.fade())
+}
+
+/// Capture the fadein of a loop crossfade: the `fade` frames that lead into
+/// where the wrap resumes, `[resume - fade, resume)` (`LoopSpan`'s rule),
+/// flat interleaved at `channels`. `resume` is the loop's start, or — with
+/// too little before the start for a lead-in — `start + fade`, so the fadein
+/// is then the loop's own head.
+///
+/// The frames that lead into `resume`, not the ones from it: the fade ends on
+/// frame `resume - 1` and the wrap continues at `resume`, so the join is the
+/// file's own step. Capturing `[start, start + fade)` and wrapping to `start`
+/// — what this did first — faded into the loop's head and then played the
+/// head again after the wrap: a jump of `fade` frames at every loop.
+pub(crate) fn capture_lead_in(
+    wave: &Wave,
+    range: (u64, u64),
+    fade: usize,
+    channels: impl Into<ChannelLayout>,
+) -> Vec<f32> {
+    match LoopSpan::new(range.0 as usize, range.1 as usize, fade, wave.len()) {
+        Some(span) => capture_frames(wave, span.resume() - span.fade(), span.fade(), channels),
+        None => Vec::new(),
+    }
 }
 
 /// Capture the fadeout buffer for a seek crossfade — the `count` **frames**
@@ -306,6 +362,31 @@ mod tests {
         assert_eq!(&captured[0..2], [1.0, 1.0]);
         assert_eq!(&captured[2..4], [2.0, 2.0]);
         assert_eq!(&captured[4..6], [3.0, 3.0]);
+    }
+
+    /// **The loop's fadein is what leads into where the wrap resumes**:
+    /// `[start - fade, start)` when there is room before the start, else the
+    /// loop's own head `[start, start + fade)` (the wrap then resuming after
+    /// it), the fade at most half the loop there — `LoopSpan`'s rule, which
+    /// every tier reads by.
+    ///
+    /// Mutation (run): `capture_lead_in` capturing from `start` in every mode
+    /// (the old head replay) → `[5.0, 6.0]` → fails. Mutation (run): the head
+    /// mode removed from `LoopSpan::new` (the fade clamped to `start`) → a
+    /// 2-frame fade before frame 2 → fails.
+    #[test]
+    fn a_loop_fades_in_from_what_leads_into_its_resume() {
+        let wave = make_mono_wave(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        assert_eq!(capture_lead_in(&wave, (5, 9), 2, 1usize), [3.0, 4.0]);
+        assert_eq!(loop_fade_len((5, 7), 4), 2);
+        assert_eq!(loop_fade_len((2, 9), 4), 3);
+        assert_eq!(capture_lead_in(&wave, (2, 9), 4, 1usize), [2.0, 3.0, 4.0]);
+        assert_eq!(loop_fade_len((0, 9), 4), 4);
+        assert_eq!(
+            capture_lead_in(&wave, (0, 9), 4, 1usize),
+            [0.0, 1.0, 2.0, 3.0]
+        );
+        assert!(capture_lead_in(&wave, (0, 9), 0, 1usize).is_empty());
     }
 
     #[test]

@@ -110,14 +110,15 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
         })
         .expect("the command queue has room in a test");
 
-    // Block-driven via `process`, NOT per-frame `tick`.
+    // Block-driven via `process`, as a host drives a unit.
     //
     // A placed voice derives its read position from the playhead, and the
-    // playhead advances once per block. `process` walks the block with
-    // `offset_in_block` so each sample reads the right place; `tick` has no such
-    // offset, so calling it 64 times against one transport reading emits the
-    // SAME sample 64 times — a staircase that resamples the source downward and
-    // fails every case, including an unprocessed one.
+    // playhead advances once per block. When this harness was written, `tick`
+    // re-read the playhead per call, so calling it 64 times against one
+    // transport reading emitted the SAME sample 64 times — a staircase that
+    // resampled the source downward and failed every case, including an
+    // unprocessed one. A placed read now seats on the clock and steps through
+    // the block through either entry point (`MemorySource::seated_position`).
     //
     // The `dry` control is what distinguishes that from a real defect: driven
     // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The

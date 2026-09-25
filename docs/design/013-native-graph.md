@@ -1908,25 +1908,48 @@ Recorded for later:
     the clip, as a `Net`-era host did; an unrebindable source refuses the
     export naming "Synth").
 - ~~**Disk voices offline**~~: done, "Disk voices export" (below).
-- **A placed `MemorySource` at a mismatched rate** steps by varispeed
-  alone within a block ("Disk voices export", found on the way).
-- **Reverse past a file's first frame holds that frame (S1, review of
-  #43).** A reversed read mirrors the position (`len - 1 - pos`) and clamps
-  at 0, so past the start it plays frame 0 as DC rather than silence, on
-  the memory tier (`read_clip_sample_into`) and the disk fork alike. It
-  should fall silent, as a forward read past the end does.
-- **A loop crossfade replays its head (S3, review of #43).** The last
-  `fade` frames before a loop's end blend into `[start, start + fade)`,
-  and after the wrap the loop plays `[start, start + fade)` again: the head
-  is heard twice, a jump at the wrap. The butler's loop crossfade,
-  `MemorySource`'s `LoopCrossfade` and the disk fork all do it; the fork's
-  test (`a_fork_loops_as_the_stream_is_looped_when_it_is_taken`) pins
-  parity with it, not correctness, and should change with the fix (after
-  the fade, continue from `start + fade`).
-- **Taps across a loop seam read past the loop (N2, review of #43).** Near
-  a loop's end the interpolator's two taps ahead read the file past the
-  loop end rather than the loop's start (`tap_indices` clamps to the file,
-  not the loop), on every tier; it smears the seam by up to two frames.
+- ~~**A placed `MemorySource` at a mismatched rate**~~: done, "Sampler
+  tier bugs (after #43)" (below).
+- ~~**Reverse past a file's first frame holds that frame (S1, review of
+  #43)**~~: done, "Sampler tier bugs (after #43)".
+- ~~**A loop crossfade replays its head (S3, review of #43)**~~: done on the
+  memory tier and the disk fork, and in what the butler captures; "Sampler
+  tier bugs (after #43)". The live butler loop has deeper faults, the next
+  item.
+- **The live disk loop (found fixing S3).** A live `DiskVoice` on a looped
+  stream does not loop correctly, crossfaded or not, because the butler's
+  loop bookkeeping compares a counter against file frames:
+  `ChannelPlan::check_loop_status` reads `Link::read_position`, which counts
+  frames the audio thread has *consumed* since the stream started (and
+  every ring flush adds the frames it drops), against the loop's points in
+  *file* frames. Once past the loop's end it never comes back under it, so
+  `LoopStatus::AtEnd` fires on every butler cycle: the ring is flushed and
+  refilled from the loop start each cycle. Measured with a hand-stepped
+  butler (a 48 kHz ramp, loop `[1000, 3000)`, a voice placed at beat 0):
+  the voice played its first 576 frames and was silent from then on,
+  through 9 000 frames, with or without a fade. Separately, the ring
+  already loops (both refills wrap at the loop's end, `wrap_position`), so
+  the flush is redundant as well as wrong; and the RT loop crossfade
+  (`RtState::start_loop_crossfade`) replaces the ring's output for `fade`
+  frames without consuming it, so after the fade the ring plays the tail
+  it faded out again. The fix is to bake the crossfade into the refill,
+  which knows every frame's file position (blend frames `[end - fade, end)`
+  toward `LoopSpan::fade_at`'s lead-in as they are written, from the
+  `preloop_buffer` the butler already captures), and to drop
+  `handle_loops`' `AtEnd` flush and the RT loop crossfade. The refill
+  must also wrap to `LoopSpan::resume`, not the loop's start: a loop whose
+  fade goes into its head (too little before `start`) repeats `[start +
+  fade, end)`. Nothing pins live looping today (no test drives a
+  `Command::Loop` through a live voice); the offline fork and the memory
+  tier are correct.
+- **A crossfade curve on `LoopSetting`.** Every loop fade is linear, which
+  holds the level of correlated material across the seam (a sustained tone)
+  but dips about 3 dB midway on uncorrelated material (noise, a mix). An
+  option for an equal-power curve, linear by default, would be one field on
+  `LoopSetting::On` and one weight in `LoopSpan::fade_at` (and the
+  butler's refill, once it bakes the fade).
+- ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
+  done, "Sampler tier bugs (after #43)".
 - **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
   re-prepares the graph, but a live SoundFont unit keeps the rate it was
   built at (its `set_sample_rate` is a no-op, and a test pins that), so after
@@ -2044,9 +2067,13 @@ the default (PR 13). Now a forked disk voice plays its file:
 
 **What bit-identity with the memory tier covers.** Pinned: matched rates, at
 unity speed on whole frames (bevy-tutti, through an export) and at 1.5×
-varispeed on fractional positions (tutti-sampler). Not at mismatched rates,
-where the memory tier steps wrongly (below), nor with a stretch or a loop,
-whose memory-tier paths differ (a placed memory voice ignores its loop).
+varispeed on fractional positions (tutti-sampler). Since "Sampler tier bugs
+(after #43)" also a 24 kHz file at 48 kHz, a crossfaded loop at 1.5×
+(through the fade, the seam and many wraps), and a reversed voice past its
+file's first frame (tutti-sampler). Not with a stretch: the memory tier feeds
+its positions to the phase vocoder, and a forked disk voice reads at the
+stretched rate with no vocoder of its own (the slot's filter runs on the
+read either way), so there is no pre-filter output to compare.
 
 On `Net`, a node export (`clone_isolated`: isolate, rebind) plays the file
 the same way; a `Net` master export is still a plain clone that reads the
@@ -2080,9 +2107,90 @@ block**, where it must step by `speed × file_rate / session_rate`: a 24 kHz
 file placed on a 48 kHz timeline reads one file frame per output frame for
 64 frames and then jumps back 32 at every chunk (measured: frames 60..63,
 then 32). `window_rate` is right for the gate and wrong as the step
-(`next_frame_into`, `PlaybackSlot::process_into`). Not fixed here (the
-memory tier, with its own suites); the disk fork steps correctly, so the
-two tiers match only at matched rates until it is.
+(`next_frame_into`, `PlaybackSlot::process_into`). Fixed in "Sampler tier
+bugs (after #43)", next.
+
+**Sampler tier bugs (after #43).** Four reads that were wrong on the memory
+tier, and three of them on the disk fork too, each affecting live playback
+(and an export of a memory voice, which renders the same code). Every tier
+that indexes a file — `MemorySource` (bare, or in a `PlaybackSlot`) and the
+offline read a forked `DiskVoice` plays (`voice/offline_read.rs`) — now
+reads a position through the same code, so the fixes cannot part them:
+
+- **One placed read: seated on the clock, stepped by the read rate**
+  (`interp::Seat`, the disk fork's seat moved there and shared). A placed
+  memory read seats where the gate puts the playhead whenever the clock
+  reads a new beat, and steps `read_rate` per output frame from there:
+  frame `n` of a seat is `origin + speed × src_ratio × stretch × n`, the
+  origin from the gate (`window_rate`, varispeed and the stretch, in the
+  file's own frames). The step was `window_rate` (varispeed alone), right
+  only where `src_ratio` is 1. The seat keeps the rate it steps by: a rate
+  change before the clock moves re-anchors it where it stands (the next
+  frame is one step at the new rate on), rather than rescale the frames
+  already stepped; a window change re-seats. The seat is keyed on the
+  clock's exact beat — `Timeline` has no seek or segment generation — so a
+  seek to the beat the clock already reads (or a one-block transport loop
+  landing on the beat it left) runs the seat on instead of re-seating. `process` and `tick` both come through the
+  seat (`MemorySource::seated_position`), so a `tick` against a clock that
+  moves once per block steps through it rather than repeat one frame, the
+  slot's tick paths included; the stretched branch seats and steps with the
+  filter's rate. A stopped clock ends a seat (`Seat::next`), where the disk
+  fork's first cut ran on at the last beat.
+- **Reverse is silent where forward is** (S1): a reversed read at or past
+  `len` (whose mirror is before the first frame) is silence, not frame 0
+  held (`MemorySource::read_placed_into`, now the slot's read too, and
+  `OfflineRead::read_into`, which also closes the file there). The butler's
+  reverse refill already pushed silence past frame 0; a test now pins it.
+- **A loop is the sequence of frames it plays** (S3 and N2,
+  `voice::loop_span::LoopSpan`, read by both tiers). The fade leads into the
+  loop's start: frame `end - fade + k` blends toward `start - fade + k`
+  weighted `(k + 1) / (fade + 1)` (linear, both endpoints excluded), so the
+  last blended frame is almost all `start - 1` and the wrap continues at
+  `start` — the join is the file's own step. With fewer than `fade` frames
+  before `start` (a loop from frame 0), the tail blends toward the loop's
+  own head `[start, start + fade)` and the wrap *resumes* at `start + fade`,
+  still the file's own step at the join; the loop that repeats is then
+  `[start + fade, end)`, and the fade is at most half the loop. (The first
+  cut clamped the fade to `start`, so a loop from 0 always cut hard.) The
+  loop's end is clamped to the file where its length is known.
+  Taps wrap: ahead of a position near the end they read the frames the wrap
+  lands on; behind a position on the repeating loop, once round, the loop's
+  last frame — the sequence the butler's ring holds. Only a position *on*
+  the loop wraps back: a loop moved under a cursor that had been round the
+  old one reads the file behind the cursor (the review of #46 caught a
+  cut that wrapped every tap behind the start, reading 2 000 frames off
+  when a loop point was dragged). The butler captures its crossfade buffers by the same
+  rule (`loops::capture_lead_in`, `loop_fade_len`), though its live loop
+  has faults of its own (the follow-up above). `MemorySource` reads its fade
+  from the wave in place, so its `LoopCrossfade` buffer (and its
+  4096-frame cap) is gone and a loop change is a store.
+- **A placed `MemorySource` honours its loop** going forward, as a disk
+  voice's stream does; it used to ignore it. Reverse ignores the loop on
+  every tier, as the butler's reverse refill does. Loop points are whole
+  frames, truncated, as the butler takes them.
+
+Tests (each mutation run; the mutation is on the test): tutti-sampler
+`loop_span::tests` (the fade's lead-in and weight, the head mode, the
+clamps, the taps' wrap, a position before the loop); `memory_source::tests`
+(a 24 kHz wave on a 48 kHz clock through `process` and `tick`; a stretched
+seat's positions, asserted on positions because the vocoder hides a wrong
+step; taps through a seam at half speed; a loop moved under a looped
+cursor; a crossfaded loop against hand-computed frames, both modes; a rate
+change mid-seat; a stopped clock); `disk_voice::tests` (a stopped clock
+silences a fork);
+`voice_pool::tests` (a `VoiceNode` reads a 24 kHz wave by `tick` and by
+`process`, forward and reversed); `offline_read::tests` (a loop's taps,
+paged); `loops::tests` (the butler's fadein is the lead-in, clamped);
+`refill::tests` (a reverse refill is silent past frame 0);
+`tests/reverse_and_loop.rs` (reverse past the first frame is silent; a
+crossfaded loop on a sine whose loop points click cut hard is continuous at
+its wrap, free-running and placed, identically); `tests/offline_disk_voice.rs`
+(the fork's crossfaded loop, now to the corrected sequence; its continuity
+on the same sine, both modes; a reversed fork past the first frame is
+silent; a varispeed change mid-chunk continues it; the bit-identity table
+above, with rows that force the fork onto paged reads so the two sides do
+not share their fetch-and-blend — what both tiers share, `LoopSpan` and the
+seat, is pinned by the hand-computed oracles, not by the table).
 
 **Phase 3 follow-ups** (recorded, not done here):
 

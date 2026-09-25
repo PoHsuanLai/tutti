@@ -15,7 +15,7 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
-use super::loops::{buffer_size_for_file, capture_frames};
+use super::loops::{buffer_size_for_file, capture_lead_in};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::{share_reader, RegionBuffer};
@@ -316,7 +316,8 @@ fn handle_stream_file(
 
 /// Populate a streaming channel's `link.loop_config`, so `handle_loops`
 /// wraps the disk decoder at the loop bounds and `refill_forward` respects
-/// them. When a crossfade is requested, the fadein head of the loop is
+/// them. When a crossfade is requested, its fadein — the frames leading into
+/// the loop's start, `[start - fade, start)` (`capture_lead_in`) — is
 /// captured once here (off the audio thread) into `preloop_buffer`, so the
 /// per-loop crossfade in `handle_loops` doesn't re-read it every wrap.
 ///
@@ -336,8 +337,9 @@ fn handle_set_stream_loop(
         return;
     };
 
-    // Capture the loop-start fadein head once, off the audio thread, so the
-    // per-wrap crossfade in `handle_loops` never re-reads the file.
+    // Capture the fadein (the lead-in to the loop's start) once, off the
+    // audio thread, so the per-wrap crossfade in `handle_loops` never re-reads
+    // the file.
     let preloop_buffer = if crossfade_frames > 0 {
         local
             .regions
@@ -348,7 +350,7 @@ fn handle_set_stream_loop(
                 load_wave(&shared.cache, &shared.metrics, writer.file_path())
                     .map(|wave| (wave, writer.channels()))
             })
-            .map(|(wave, ch)| capture_frames(&wave, range.0 as usize, crossfade_frames, ch))
+            .map(|(wave, ch)| capture_lead_in(&wave, range, crossfade_frames, ch))
     } else {
         None
     };

@@ -883,8 +883,9 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 
 /// Changing a loop range mid-playback must not allocate in the drain.
 ///
-/// The crossfade buffer is reserved once at `MAX_CROSSFADE_FRAMES` and
-/// re-pointed by `retune`; the pre-loop tail is written in place.
+/// The loop crossfade holds no buffer: it reads its fade from the wave in
+/// place (`LoopSpan`), so a loop change is a store. (It once copied a pre-loop
+/// tail into a buffer reserved up front, which this pinned stayed in place.)
 #[test]
 fn update_loop_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);

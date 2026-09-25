@@ -15,9 +15,10 @@
 //! most expensive thing in this crate, and `StretchFactor(1.0)` is a bypass,
 //! so the 1.0-vs-0.5 gap is the whole cost of engaging it.
 //!
-//! Driven with `pool.process`, never `tick` — `examples/render_cases.rs:110`
-//! documents why at length: `tick` has no `offset_in_block`, so 64 calls
-//! against one transport reading emit the same sample 64 times.
+//! Driven with `pool.process`, the block path a host runs. (A placed voice's
+//! `tick` used to read one sample for a whole block, `examples/README.md`'s
+//! first trap; it now seats on the clock and steps as `process` does,
+//! `MemorySource::seated_position`.)
 
 use std::f32::consts::TAU;
 use std::hint::black_box;

@@ -21,7 +21,7 @@ use tutti_core::{
     ReadRate, SamplePosition, SampleRate, Samples, SrcRatio, Timeline,
 };
 
-use super::interp::cubic_hermite;
+use super::interp::{cubic_hermite, Seat};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
 use super::types::Direction;
@@ -741,24 +741,6 @@ impl std::fmt::Display for OfflineFault {
 
 impl std::error::Error for OfflineFault {}
 
-/// A read position seated from the clock, and how far it has run since.
-///
-/// The clock moves between calls (per block, or per 64-frame chunk under
-/// `Legacy`), not per frame, and a voice in a [`VoiceNode`](super::VoiceNode)
-/// is read a frame at a time through `tick`. So the read seats where the gate
-/// puts the playhead whenever the clock reads a beat it did not read last
-/// time, and steps from there by the read rate: frame `frames` of the seat is
-/// `origin + rate × frames`, the memory tier's own `start + rate × i`.
-#[derive(Clone, Copy, Debug)]
-struct Seat {
-    /// The beat the clock read when the read seated.
-    beat: Beat,
-    /// The file position the gate gave for it.
-    origin: SamplePosition,
-    /// Frames read since.
-    frames: usize,
-}
-
 // Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
 // the `Arc<dyn Timeline>` clock. Print the gate
 // scalars + inner unit; nothing here touches the ring.
@@ -1052,67 +1034,59 @@ impl DiskVoice {
     /// Once the playhead is past the window's end, the file is closed: a
     /// render holding many voices keeps a file open per voice sounding.
     fn offline_frame(&mut self, out: &mut [f32]) {
-        let beat = self.timeline.beat();
-        let seated = self
-            .offline
-            .as_ref()
-            .and_then(|offline| offline.seat)
-            .filter(|seat| seat.beat == beat);
-        let seat = match seated {
-            Some(seat) => Seat {
-                frames: seat.frames + 1,
-                ..seat
-            },
-            None => match super::interp::window_position(
-                self.timeline.as_ref(),
-                self.window.start,
-                self.window.duration,
-                self.file_sample_rate,
-                self.offline_window_rate(),
-            ) {
-                Some(origin) => Seat {
-                    beat,
-                    origin,
-                    frames: 0,
-                },
-                None => {
-                    let past = self.window.duration.is_some_and(|duration| {
-                        self.timeline.is_rolling() && beat >= self.window.start + duration
-                    });
-                    if let Some(offline) = self.offline.as_mut() {
-                        offline.seat = None;
-                        if past {
-                            if let Some(read) = offline.read.as_mut() {
-                                read.close();
-                            }
-                        }
-                    }
-                    out.fill(0.0);
-                    return;
-                }
-            },
-        };
-        let direction = self.shared_state.direction();
-        let gain = self.shared_state.gain().get();
+        let last = self.offline.as_ref().and_then(|offline| offline.seat);
+        // The step: varispeed and the stretcher's rate, with the conversion
+        // from the file's rate to the render's — derived from the two rates,
+        // not read from the cell the butler keeps for the live session. (A
+        // copy never told a rate latches below, inside its window.)
         let (speed, stretch) = (
             self.shared_state.effective_speed(),
             self.shared_state.stretch_rate(),
         );
         let file_rate = self.file_sample_rate;
-        let render_rate = self.sample_rate;
+        let rate = self.sample_rate.map_or(ReadRate::UNITY, |render_rate| {
+            speed
+                .read_rate(SrcRatio::for_rates(file_rate, render_rate))
+                .then(stretch)
+        });
+        let seated = Seat::next(last, self.timeline.as_ref(), rate, || {
+            super::interp::window_position(
+                self.timeline.as_ref(),
+                self.window.start,
+                self.window.duration,
+                self.file_sample_rate,
+                self.offline_window_rate(),
+            )
+        });
+        let Some(seat) = seated else {
+            let beat = self.timeline.beat();
+            let past = self.window.duration.is_some_and(|duration| {
+                self.timeline.is_rolling() && beat >= self.window.start + duration
+            });
+            if let Some(offline) = self.offline.as_mut() {
+                offline.seat = None;
+                if past {
+                    if let Some(read) = offline.read.as_mut() {
+                        read.close();
+                    }
+                }
+            }
+            out.fill(0.0);
+            return;
+        };
+        let direction = self.shared_state.direction();
+        let gain = self.shared_state.gain().get();
+        let told_rate = self.sample_rate.is_some();
         let Some(offline) = self.offline.as_mut() else {
             out.fill(0.0);
             return;
         };
-        let Some(render_rate) = render_rate else {
+        if !told_rate {
             offline.fault.latch(OfflineFault::NoRenderRate);
             out.fill(0.0);
             return;
-        };
-        let rate = speed
-            .read_rate(SrcRatio::for_rates(file_rate, render_rate))
-            .then(stretch);
-        let pos = seat.origin + rate.advance(Samples(seat.frames));
+        }
+        let pos = seat.position();
         offline.seat = Some(seat);
         match offline.read.as_mut() {
             Some(read) => read.read_into(pos, direction, out),
@@ -1575,6 +1549,93 @@ mod tests {
             }
         }
         assert!(!is_open(&copy), "the file is still open past the window");
+    }
+
+    /// **A stopped clock silences a fork mid-clip**, through `process` and
+    /// through `tick`: the clock stops where it stands (its beat does not
+    /// move), and the read must not run on from its seat as if it still
+    /// rolled. A render's own clock always rolls, so the fork is put on a
+    /// mock one after its rebind; the seat is the memory tier's too
+    /// (`memory_source`'s `a_stopped_clock_silences_a_placed_read`).
+    ///
+    /// Mutation (run): the `is_rolling` guard removed from `Seat::next` → the
+    /// seat runs on through the stop → fails.
+    #[test]
+    fn a_stopped_clock_silences_a_fork() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).expect("writes");
+        for i in 0..20_000 {
+            w.write_sample((i + 1) as f32 * 1e-5).expect("writes");
+            w.write_sample((i + 1) as f32 * 1e-5).expect("writes");
+        }
+        w.finalize().expect("writes");
+        let mut streamer =
+            crate::DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
+        streamer
+            .commands()
+            .send(crate::Command::Stream {
+                channel_index: 0,
+                file_path: path,
+                offset: SamplePosition(0.0),
+            })
+            .expect("the butler is alive");
+        let _ = streamer.step_until_settled(1_000);
+        let live: Arc<dyn Timeline> = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+        let voice = streamer
+            .status()
+            .take_disk_voice(0, live, Beat::new(0.0), None)
+            .expect("the link is installed");
+        let render = Arc::new(tutti_core::transport::OfflineTimeline::new(
+            &tutti_core::transport::OfflineTimelineConfig {
+                start_beat: Beat::new(0.0),
+                tempo: Bpm::new(120.0),
+                sample_rate: SampleRate(48_000.0),
+                loop_range: None,
+            },
+        ));
+        let ctx: tutti_core::transport::OfflineTransport = render;
+
+        for via_tick in [false, true] {
+            let mut copy = voice.clone();
+            copy.isolate();
+            copy.rebind_offline(&ctx);
+            copy.reset();
+            copy.set_sample_rate(SampleRate(48_000.0));
+            let clock = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+            copy.timeline = clock.clone();
+            let block = |copy: &mut DiskVoice| -> Vec<f32> {
+                if via_tick {
+                    (0..64)
+                        .map(|_| {
+                            let mut frame = [0.0f32; 2];
+                            copy.tick(&[], &mut frame);
+                            frame[0]
+                        })
+                        .collect()
+                } else {
+                    let input = BufferVec::new(0);
+                    let mut output = BufferVec::new(2);
+                    copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+                    (0..64).map(|i| output.buffer_ref().at_f32(0, i)).collect()
+                }
+            };
+            assert!(
+                block(&mut copy).iter().all(|&s| s != 0.0),
+                "tick {via_tick}: rolling, the clip plays"
+            );
+            clock.set_rolling(false);
+            assert!(
+                block(&mut copy).iter().all(|&s| s == 0.0),
+                "tick {via_tick}: stopped, the fork plays on"
+            );
+        }
     }
 
     /// **A copy severed for an offline render never touches the live stream**:

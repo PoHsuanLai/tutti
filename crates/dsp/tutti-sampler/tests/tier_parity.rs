@@ -276,12 +276,13 @@ fn load_wave(path: &Path) -> Arc<Wave> {
 /// Render `blocks` blocks of a unit into interleaved stereo, advancing `clock`
 /// once per block.
 ///
-/// Block-driven via `process`, never `tick`. A placed voice derives its position
-/// from the playhead, which advances once per *block*; `tick` has no
-/// `offset_in_block`, so calling it BLOCK times against one transport reading
-/// emits the same sample BLOCK times — a staircase that resamples the source
-/// downward and makes every case fail. That trap is documented in
-/// `examples/README.md` and it cost a full debugging session there.
+/// Block-driven via `process`, as a host drives a unit. A placed voice derives
+/// its position from the playhead, which advances once per *block*. `tick` used
+/// to re-read the playhead per call, so calling it BLOCK times against one
+/// transport reading emitted the same sample BLOCK times — a staircase that
+/// resampled the source downward (`examples/README.md`'s first trap). A placed
+/// memory read now seats on the clock and steps through the block through
+/// either entry point (`MemorySource::seated_position`).
 fn render(unit: &mut dyn AudioUnit, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
     let input = BufferVec::new(2);
     let mut output = BufferVec::new(2);

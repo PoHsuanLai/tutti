@@ -55,8 +55,9 @@ fn index_of(value: f32, len: usize) -> f64 {
 /// A rolling transport advanced by hand, once per block.
 ///
 /// Needed because reverse only reaches its code path on a **placed** voice:
-/// `PlaybackSlot` derives the read position from `window_position()`, which returns
-/// `None` without a timeline, and the slot then emits silence. A free-running
+/// `PlaybackSlot` derives the read position from the playhead
+/// (`MemorySource::seated_position`), which is `None` without a timeline, and
+/// the slot then emits silence. A free-running
 /// voice never reaches `read_clip_sample_into` at all — which is how the first
 /// draft of this file measured index 0 for every reversed read and looked like
 /// an engine bug.
@@ -119,7 +120,7 @@ fn render(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<f32> {
 /// pool, which is also the assembly a real render uses.
 fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock>) {
     let clock = Clock::new();
-    // **Placed**, not free-running. `PlaybackSlot` reads `window_position()`, which
+    // **Placed**, not free-running. `PlaybackSlot` reads `seated_position()`, which
     // needs a timeline; without one the slot returns early and emits silence, so
     // the reverse arm is never reached.
     let source = MemorySource::with_config(
@@ -258,9 +259,175 @@ fn reverse_does_not_read_outside_the_source() {
     }
 }
 
+/// **Reverse falls silent past the source's first frame** (doc 013 follow-up
+/// S1, the memory tier), as forward falls silent past its last: the mirror of
+/// a read past the end is a read before the start. Holding frame 0 there
+/// played the source's first sample as DC for as long as the voice's window
+/// stayed open.
+///
+/// The source here starts at a non-zero value, so a held frame 0 is not
+/// silence by accident.
+///
+/// Mutation (run): the silence removed from `MemorySource::read_placed_into`'s
+/// reverse arm (the old `(len - 1 - pos).max(0.0)` alone) → frame 0 held from
+/// output `LEN` on → fails.
+#[test]
+fn reverse_past_the_first_frame_is_silent() {
+    const LEN: usize = 512;
+    let mut w = Wave::new(2, SR);
+    for i in 0..LEN {
+        let v = (i + 1) as f32 / LEN as f32;
+        w.push_frame(&[v, v]);
+    }
+    let (mut pool, clock) = reversed_pool(Arc::new(w), Direction::Reverse);
+    let out = render_placed(&mut pool, &clock, 16);
+
+    for (k, &s) in out[..LEN].iter().enumerate() {
+        let want = (LEN - k) as f32 / LEN as f32;
+        assert!(
+            (s - want).abs() < 1e-6,
+            "output {k} read {s}, want the source's frame {} ({want})",
+            LEN - 1 - k
+        );
+    }
+    for (k, &s) in out.iter().enumerate().skip(LEN) {
+        assert_eq!(s, 0.0, "output {k}, past the source's first frame, is {s}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
+
+/// A sine of period [`PERIOD`] frames, `len` long, on both channels.
+fn sine(len: usize) -> Arc<Wave> {
+    let mut w = Wave::new(2, SR);
+    for i in 0..len {
+        let v = (std::f64::consts::TAU * i as f64 / PERIOD as f64).sin() as f32;
+        w.push_frame(&[v, v]);
+    }
+    Arc::new(w)
+}
+
+/// The period of [`sine`], in frames.
+const PERIOD: usize = 100;
+
+/// A loop on [`sine`] that clicks when cut hard: it starts on a rising zero
+/// crossing and ends a quarter period later in the cycle, so the frame before
+/// the wrap is at the crest and the one after it at zero — a jump of the whole
+/// amplitude. 256 frames of fade fit in the 1000 before the start.
+const SEAM: (f64, f64, usize) = (1_000.0, 3_025.0, 256);
+
+/// A loop on [`sine`] from frame 0, with nothing before its start to fade
+/// from: the fade goes into the loop's head `[0, 256)` and the wrap resumes at
+/// 256 (`LoopSpan`'s head mode). The end is a quarter period past 256 in the
+/// cycle, as [`SEAM`]'s is past its start, so the join into 256 is the same
+/// shape; cut hard at 0 it jumps from −0.95 to 0.
+const HEAD_SEAM: (f64, f64, usize) = (0.0, 2_281.0, 256);
+
+/// The largest step [`sine`] takes between two frames: `2 sin(π / PERIOD)`,
+/// its slope at a zero crossing. A loop that plays continuously takes no
+/// larger one anywhere, the seam included; `f32` rounding gets a hair.
+fn sine_step() -> f32 {
+    (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 1e-5
+}
+
+/// The largest step between consecutive frames of `x`, and where.
+fn largest_step(x: &[f32]) -> (f32, usize) {
+    x.windows(2)
+        .enumerate()
+        .map(|(i, w)| ((w[1] - w[0]).abs(), i))
+        .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a })
+}
+
+/// **A crossfaded loop is continuous at its wrap** (doc 013 follow-up S3, the
+/// memory tier): on a sine whose loop points would click cut hard, no step in
+/// the output is larger than the sine's own, round the loop three times. The
+/// fade leads into the loop's start — the last blended frame is almost all
+/// the frame before `start`, and the wrap plays `start` next — so the seam is
+/// the sine's own step.
+///
+/// Free-running, and placed (a placed voice loops as a disk voice's stream
+/// does): the two read the loop through the same `LoopSpan`.
+///
+/// And from frame 0 ([`HEAD_SEAM`]), where there is no lead-in: the fade goes
+/// into the loop's head and the wrap resumes after it, still continuous. The
+/// first cut clamped that fade to nothing — a loop from 0 always cut hard.
+///
+/// The hard loop is asserted to click first, so the loop points have teeth.
+///
+/// Mutation (run): the head mode removed (the fade clamped to `start`) → the
+/// loop from 0 cuts hard → fails.
+///
+/// Mutation (run): `LoopSpan::fade_at`'s lead-in `start + k` (the old head
+/// replay: the fade blends toward the loop's first frames, then the wrap plays
+/// them again) → a step far above the sine's own at the wrap → fails.
+/// Mutation (run): the fade dropped (`LoopTap::fade` always `None`) → the hard
+/// cut → fails. Mutation (run): `MemorySource::read_placed_into` ignoring the
+/// loop → the placed voice plays straight on → fails. Not pinned here: the
+/// fade weight `k / fade` (the last blended frame keeps `1 / fade` of the
+/// tail) stays under the bound at this length; `loop_span`'s own tests pin
+/// the weight.
+#[test]
+fn a_crossfaded_loop_is_continuous_at_its_wrap() {
+    const LEN: usize = 4_000;
+    for (start, end, fade) in [SEAM, HEAD_SEAM] {
+        loop_is_continuous(LEN, start, end, fade);
+    }
+}
+
+/// One seam of [`a_crossfaded_loop_is_continuous_at_its_wrap`].
+fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
+    let hard = render(&mut looping_source(sine(len), start, end, 0), 150);
+    let (step, at) = largest_step(&hard);
+    assert!(
+        step > 0.9,
+        "[{start}, {end}): the hard loop does not click ({step} at {at}): the loop points have no teeth"
+    );
+
+    let free = {
+        // From the file's start, as the placed voice below plays it.
+        let mut source = looping_source(sine(len), start, end, fade);
+        source.trigger_at(SamplePosition(0.0));
+        render(&mut source, 150)
+    };
+    let placed = {
+        let clock = Clock::new();
+        let mut source = MemorySource::with_config(
+            sine(len),
+            MemorySourceConfig {
+                channels: ChannelLayout::STEREO,
+                timeline: Some(clock.clone() as Arc<dyn Timeline>),
+                ..Default::default()
+            },
+        );
+        source.set_loop_setting(LoopSetting::On {
+            start: SamplePosition(start),
+            end: SamplePosition(end),
+            crossfade_frames: fade,
+        });
+        let input = BufferVec::new(2);
+        let mut output = BufferVec::new(2);
+        let mut out = Vec::new();
+        for _ in 0..150 {
+            source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+            let b = output.buffer_ref();
+            out.extend((0..BLOCK).map(|i| b.at_f32(0, i)));
+            clock.advance(BLOCK);
+        }
+        out
+    };
+    // 150 blocks = 9600 frames: to the first wrap, then three passes and more.
+    for (what, out) in [("free-running", &free), ("placed", &placed)] {
+        let (step, at) = largest_step(out);
+        assert!(
+            step <= sine_step(),
+            "[{start}, {end}) {what}: a step of {step} at output {at}, larger than the sine's own {}",
+            sine_step()
+        );
+    }
+    assert_eq!(free, placed, "the two read the loop the same way");
+}
 
 /// A free-running looping source over `[start, end)` with `xfade` frames of
 /// crossfade.
@@ -420,15 +587,12 @@ fn a_zero_length_crossfade_is_a_hard_loop() {
 /// The two features touch different code — `PlaybackSlot` reverses the read,
 /// `MemorySource` wraps the position — and nothing exercised them together.
 ///
-/// # Placed, and therefore not looping in the usual sense
+/// # Reversed, and therefore not looping
 ///
-/// Worth stating, because the combination is narrower than it looks. The loop
-/// wrap lives in the source's **free-running** arm, driven by its own position
-/// accumulator; a *placed* voice derives position from the playhead instead and
-/// never reaches that arm. Reverse, conversely, only reaches its code path on a
-/// placed voice (see [`reversed_pool`]). So "a reversed looping voice" cannot
-/// currently loop *and* reverse at once through a pool — the loop setting is
-/// inert here.
+/// Worth stating, because the combination is narrower than it looks. A placed
+/// voice loops going forward (`MemorySource::read_placed_into`, as a disk
+/// voice's stream loops), but a reversed read ignores the loop, as the
+/// butler's reverse refill does — so the loop setting is inert here.
 ///
 /// That is worth knowing rather than asserting around: this test pins that the
 /// combination is *safe* (bounded, finite, audible) rather than claiming it

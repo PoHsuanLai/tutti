@@ -15,33 +15,59 @@ use tutti_core::{
 };
 use tutti_io::Wave;
 
-use super::loop_crossfade::LoopCrossfade;
+use super::interp::{read_looped_frame, Seat};
+use super::loop_span::LoopSpan;
+use super::types::Direction;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
-/// Live loop state on a `MemorySource`. Internal: `Looping` carries the running
-/// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
-/// the public loop *intent* is [`LoopSetting`].
+/// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
+/// [`LoopSetting`].
 ///
 /// Modeled on the butler's `Link.loop_config`. One enum rather than three
-/// fields: `OneShot` renders `range`/`crossfade` unreachable and `Looping`
-/// guarantees a range, so a loop with no range — or a range with looping off —
-/// is unrepresentable rather than merely unlikely.
-#[derive(Default)]
+/// fields: `OneShot` renders `range`/`crossfade_frames` unreachable and
+/// `Looping` guarantees a range, so a loop with no range — or a range with
+/// looping off — is unrepresentable rather than merely unlikely.
+///
+/// The crossfade holds no buffer: a loop reads its fade from the wave in place
+/// (`LoopSpan`, the one definition of what a looped voice plays), so a loop
+/// change is a store, allocation-free on the audio thread's command drain.
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum LoopMode {
     /// Play through once, then stop.
     #[default]
     OneShot,
-    /// Loop over `range` (start, end) in samples, with optional crossfade.
+    /// Loop over `range` (start, end) in samples, fading over
+    /// `crossfade_frames` into it (0 = a hard loop).
     Looping {
         range: (SamplePosition, SamplePosition),
-        crossfade: Option<LoopCrossfade>,
+        crossfade_frames: usize,
     },
 }
 
+impl LoopMode {
+    /// The loop as the read plays it on a wave `len` frames long, or `None`
+    /// when one-shot (or a range with nothing in it once clamped to the wave).
+    fn span(&self, len: usize) -> Option<LoopSpan> {
+        match *self {
+            Self::OneShot => None,
+            Self::Looping {
+                range: (start, end),
+                crossfade_frames,
+            } => LoopSpan::from_setting(
+                LoopSetting::On {
+                    start,
+                    end,
+                    crossfade_frames,
+                },
+                len,
+            ),
+        }
+    }
+}
+
 /// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
-/// that says whether and how to loop, without exposing the live `LoopCrossfade`
-/// runtime state. [`MemorySource::with_config`] converts it into the internal
-/// loop mode, priming the crossfade privately.
+/// that says whether and how to loop. [`MemorySource::with_config`] converts it
+/// into the internal loop mode.
 ///
 /// Mirrors how the streaming/timeline loop speaks in
 /// `(start, end, crossfade_frames)` via `VoiceCommand::UpdateLoop`, so the same
@@ -56,6 +82,21 @@ pub enum LoopSetting {
     Off,
     /// Loop over `[start, end)` in samples, with `crossfade_frames` of loop
     /// crossfade (0 = hard loop, no crossfade).
+    ///
+    /// **The fade actually used.** The points are whole frames (truncated),
+    /// and `end` is clamped to the file. The fade is linear, over the last
+    /// `crossfade_frames` before `end`, and continuous at the wrap:
+    ///
+    /// - With at least `crossfade_frames` before `start`, the tail blends
+    ///   toward the frames leading into `start`, and the wrap lands on
+    ///   `start`. The fade is at most the loop's length.
+    /// - With fewer (a loop from frame 0, say), the tail blends toward the
+    ///   loop's own head `[start, start + fade)` and the wrap lands on
+    ///   `start + fade`: the loop that repeats is `[start + fade, end)`. The
+    ///   fade is at most half the loop's length there.
+    ///
+    /// Every tier reads the same rule. (The live butler's loop has faults of
+    /// its own; see doc 013, "The live disk loop".)
     On {
         start: SamplePosition,
         end: SamplePosition,
@@ -175,30 +216,6 @@ impl Default for MemorySourceConfig {
     }
 }
 
-impl Clone for LoopMode {
-    fn clone(&self) -> Self {
-        match self {
-            Self::OneShot => Self::OneShot,
-            Self::Looping { range, crossfade } => Self::Looping {
-                range: *range,
-                crossfade: crossfade.clone(),
-            },
-        }
-    }
-}
-
-impl std::fmt::Debug for LoopMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OneShot => f.write_str("OneShot"),
-            Self::Looping { range, .. } => f
-                .debug_struct("Looping")
-                .field("range", range)
-                .finish_non_exhaustive(),
-        }
-    }
-}
-
 /// In-memory sample playback with optional loop crossfade — the resident tier of
 /// [`VoiceSource`](super::types::VoiceSource), reading an `Arc<Wave>` by index
 /// rather than streaming.
@@ -268,13 +285,15 @@ pub struct MemorySource {
     /// Span of timeline this voice occupies. Meaningless without `timeline`.
     window: VoiceWindow,
 
-    /// A crossfade buffer kept resident so a loop change never allocates.
-    ///
-    /// `set_loop_range` runs on the audio thread (via the reader's command
-    /// drain), so it takes this, re-points it with `retune`, and puts it back
-    /// inside `loop_mode`. `clear_loop_range` returns it here. Built once at
-    /// construction with `MAX_CROSSFADE_FRAMES` reserved.
-    loop_crossfade: Option<LoopCrossfade>,
+    /// Whether the free-running cursor has been round its loop: then the frame
+    /// behind the loop's start is the loop's last (`LoopSpan::taps`). Atomic
+    /// for the reason `position` is: [`trigger`](Self::trigger) clears it
+    /// through `&self`.
+    looped: AtomicBool,
+
+    /// Where a placed read last seated on the clock, and how far it has run
+    /// since. See [`seated_position`](Self::seated_position).
+    seat: Option<Seat>,
 
     /// Output width — this unit's `outputs()`, fixed at construction.
     ///
@@ -316,10 +335,12 @@ impl Clone for MemorySource {
             speed: self.speed,
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
-            loop_mode: self.loop_mode.clone(),
+            loop_mode: self.loop_mode,
             timeline: self.timeline.clone(),
             window: self.window,
-            loop_crossfade: self.loop_crossfade.clone(),
+            looped: AtomicBool::new(self.looped.load(Ordering::Relaxed)),
+            // A copy seats itself from its own clock, which a fork rebinds.
+            seat: None,
             channels: self.channels,
         }
     }
@@ -343,7 +364,8 @@ impl MemorySource {
             loop_mode: LoopMode::OneShot,
             timeline: None,
             window: VoiceWindow::default(),
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, ChannelLayout::STEREO)),
+            looped: AtomicBool::new(false),
+            seat: None,
             channels: ChannelLayout::STEREO,
         }
     }
@@ -354,11 +376,8 @@ impl MemorySource {
     /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
     /// channel policy (mono fans, anything else folds).
     pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
-        let channels = nonempty(channels.into());
         Self {
-            channels,
-            // Reserve at THIS width: the default from `new` is stereo-sized.
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, channels)),
+            channels: nonempty(channels.into()),
             ..Self::new(wave)
         }
     }
@@ -371,16 +390,15 @@ impl MemorySource {
     /// Build from an explicit [`MemorySourceConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
-    /// A `LoopSetting::On { crossfade_frames, .. }` primes the loop crossfade
-    /// from the wave (via the same path as [`set_loop_range`](Self::set_loop_range));
-    /// `crossfade_frames == 0` loops with no crossfade.
+    /// A `LoopSetting::On { crossfade_frames, .. }` loops with that crossfade
+    /// (via [`set_loop_range`](Self::set_loop_range)); `crossfade_frames == 0`
+    /// loops with no crossfade.
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
             timeline: config.timeline,
             window: config.window,
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, nonempty(config.channels))),
             channels: nonempty(config.channels),
             ..Self::new(wave)
         };
@@ -426,6 +444,8 @@ impl MemorySource {
     /// just geometry, so there is no "only if placed" branch to get wrong.
     pub fn set_window(&mut self, window: VoiceWindow) {
         self.window = window;
+        // The seat's origin was the old window's; the next frame re-seats.
+        self.seat = None;
     }
 
     /// Swap the transport clock, used by export to inject the offline timeline.
@@ -436,6 +456,7 @@ impl MemorySource {
     /// makes this swap a swap.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         self.timeline = Some(transport);
+        self.seat = None;
     }
 
     /// Rewind to sample 0 and start playing. Two relaxed atomic stores, so this
@@ -444,15 +465,14 @@ impl MemorySource {
     /// Only affects the **free-running** path: a placed voice derives its
     /// position from the transport, so triggering one changes nothing audible.
     pub fn trigger(&self) {
-        self.position
-            .store(SamplePosition::new(0.0), Ordering::Relaxed);
-        self.playing.store(true, Ordering::Relaxed);
+        self.trigger_at(SamplePosition::new(0.0));
     }
 
     /// [`trigger`](Self::trigger) from an arbitrary [`SamplePosition`] in source
     /// samples rather than from 0.
     pub fn trigger_at(&self, position: SamplePosition) {
         self.position.store(position, Ordering::Relaxed);
+        self.looped.store(false, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
@@ -486,12 +506,11 @@ impl MemorySource {
                         SamplePosition::new(0.0),
                         SamplePosition::new(self.wave.len() as f64),
                     ),
-                    crossfade: None,
+                    crossfade_frames: 0,
                 };
+                self.looped.store(false, Ordering::Relaxed);
             }
-            (false, _) => {
-                self.loop_mode = LoopMode::OneShot;
-            }
+            (false, _) => self.clear_loop_range(),
         }
     }
 
@@ -600,24 +619,28 @@ impl MemorySource {
 
     /// Source samples consumed per output sample: varispeed × conversion.
     ///
-    /// For the **free-running** path, where a cursor steps through file samples
-    /// once per output sample and so needs both factors. The placement gate must
-    /// NOT use this — see [`window_rate`](Self::window_rate).
+    /// **The step, on both paths.** A free-running cursor advances by it once
+    /// per output sample, and a placed read steps by it from the origin the gate
+    /// gives (see `seated_position`): an output frame is
+    /// `1 / session_rate` seconds, which is `file_rate / session_rate` file
+    /// frames at unit speed. The placement gate's *origin* must NOT use this —
+    /// see [`window_rate`](Self::window_rate).
     #[inline]
     pub fn read_rate(&self) -> ReadRate {
         self.speed.read_rate(self.src_ratio)
     }
 
-    /// Source samples per output sample **within a gated window**: varispeed
-    /// alone, because [`window_position`](Self::window_position) already resolved
-    /// the beat→sample conversion against this wave's own rate.
+    /// The rate the placement gate maps elapsed time onto this wave with:
+    /// varispeed alone, because [`window_position`](Self::window_position)
+    /// measures elapsed seconds in this wave's own frames, so the conversion
+    /// is complete before any ratio applies.
     ///
-    /// One method rather than the expression repeated at each stepping site. A
-    /// block-stepping caller seats itself at `window_position()` and then advances
-    /// by this — the two MUST agree, or the block starts at the right sample and
-    /// drifts away from it, which sounds like a slow detune rather than a break.
-    /// Two call sites open-coded a `speed * src_ratio` product here and got that
-    /// wrong; naming the quantity is what stops a third.
+    /// **The origin only, never the step.** Within the clock's move a read steps
+    /// by output frames, and an output frame is `src_ratio` file frames at unit
+    /// speed: stepping by this instead reads a 24 kHz file on a 48 kHz clock at
+    /// one file frame per output frame, then jumps back at every block (frames
+    /// 60…63, then 32, at 64-frame blocks). The two agree only at matched rates,
+    /// where `src_ratio` is exactly 1.
     #[inline]
     pub fn window_rate(&self) -> ReadRate {
         self.speed.read_rate(SrcRatio::UNITY)
@@ -631,6 +654,8 @@ impl MemorySource {
         self.wave = wave;
         self.position
             .store(SamplePosition::new(0.0), Ordering::Release);
+        self.looped.store(false, Ordering::Relaxed);
+        self.seat = None;
     }
 
     /// Re-derive the sample-rate conversion ratio for a new session rate.
@@ -666,78 +691,40 @@ impl MemorySource {
     /// Loop over `[loop_start, loop_end)` in source samples, with
     /// `crossfade_frames` **frames** of loop crossfade (0 = a hard loop).
     ///
+    /// The loop plays whole frames (its points are truncated, as the butler
+    /// takes a stream's), and the fade leads into the loop's start: the last
+    /// `crossfade_frames` before the end blend toward the frames *before* the
+    /// start, so the wrap continues seamlessly there — or, with too little
+    /// before the start, toward the loop's own head, the wrap then resuming
+    /// after it ([`LoopSetting::On`] has the rule). The whole rule is
+    /// `LoopSpan`'s, which every tier reads through.
+    ///
     /// **Allocation-free, and it has to be**: `VoiceCommand::UpdateLoop` is
     /// drained by `VoicePool::drain_commands`, which `tick`/`process` call — so
-    /// this runs inside the audio callback. The resident crossfade buffer is
-    /// reserved once at `MAX_CROSSFADE_FRAMES`, retuned rather than regrown, and
-    /// its pre-loop tail is filled in place.
-    ///
-    /// A `crossfade_frames` past the reservation is clamped, costing a shorter
-    /// fade instead of a real-time violation.
+    /// this runs inside the audio callback. It is a store: the fade is read from
+    /// the wave in place, never copied.
     pub fn set_loop_range(
         &mut self,
         loop_start: SamplePosition,
         loop_end: SamplePosition,
         crossfade_frames: usize,
     ) {
-        // Reuse the resident crossfade rather than building one: constructing
-        // here would allocate `crossfade_frames * channels` floats in the audio
-        // callback, plus a temporary buffer to read the wave into.
-        let crossfade = if crossfade_frames > 0 {
-            let mut xfade = self
-                .loop_crossfade
-                .take()
-                .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_frames, self.channels));
-            // `retune` re-points the length, never the width, so a reclaimed
-            // crossfade must already be this source's width. Both are set at
-            // construction from the same value; a divergence would silently
-            // rotate channels through the fade.
-            debug_assert_eq!(
-                xfade.channels(),
-                self.channels,
-                "resident loop crossfade width diverged from the source's"
-            );
-            xfade.retune(crossfade_frames);
-
-            let start = loop_start.get();
-            // Split the borrow: `fill_preloop_with` holds `&mut xfade` while the
-            // closure reads `&self`, so the read cannot go through `self.
-            // get_sample_raw_into` directly.
-            let wave = Arc::clone(&self.wave);
-            let gain_free_read = |i: usize, frame: &mut [f32]| {
-                let pos = start + i as f64;
-                if pos >= wave.len() as f64 {
-                    frame.fill(0.0);
-                } else {
-                    super::interp::read_frame(&wave, pos, frame);
-                }
-            };
-            xfade.fill_preloop_with(gain_free_read);
-
-            Some(xfade)
-        } else {
-            None
-        };
-
         self.loop_mode = LoopMode::Looping {
             range: (loop_start, loop_end),
-            crossfade,
+            crossfade_frames,
         };
+        // The cursor has not been round *this* loop. (The taps would read the
+        // right frames either way — they only wrap back for a position on the
+        // loop — but the flag belongs to the loop it was set by.)
+        self.looped.store(false, Ordering::Relaxed);
     }
 
     /// Drop the loop range and revert to one-shot playback. Allocation-free, so
     /// it is safe on the same audio-thread command drain
     /// [`set_loop_range`](Self::set_loop_range) runs on.
     pub fn clear_loop_range(&mut self) {
-        // Reclaim the crossfade rather than dropping it, so re-enabling a loop
-        // later still finds a resident buffer and stays allocation-free.
-        if let LoopMode::Looping {
-            crossfade: Some(xfade),
-            ..
-        } = std::mem::replace(&mut self.loop_mode, LoopMode::OneShot)
-        {
-            self.loop_crossfade = Some(xfade);
-        }
+        self.loop_mode = LoopMode::OneShot;
+        self.looped.store(false, Ordering::Relaxed);
     }
 
     /// The loop's `(start, end)` in source samples, or `None` when one-shot.
@@ -751,18 +738,20 @@ impl MemorySource {
     }
 
     /// The current loop as a public [`LoopSetting`] intent, with the crossfade
-    /// length in **frames** recovered from the live crossfade (0 when there is
-    /// none).
+    /// length in **frames** as it was asked for (0 for a hard loop).
     ///
     /// Lets a caller that built this unit imperatively read its loop back as a
     /// value — the `VoicePool` add shim uses it to fold a pre-configured
     /// `MemorySource`'s loop into a `Playback` record.
     pub fn loop_setting(&self) -> LoopSetting {
         match &self.loop_mode {
-            LoopMode::Looping { range, crossfade } => LoopSetting::On {
+            LoopMode::Looping {
+                range,
+                crossfade_frames,
+            } => LoopSetting::On {
                 start: range.0,
                 end: range.1,
-                crossfade_frames: crossfade.as_ref().map_or(0, |x| x.len()),
+                crossfade_frames: *crossfade_frames,
             },
             LoopMode::OneShot => LoopSetting::Off,
         }
@@ -784,6 +773,88 @@ impl MemorySource {
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
         // bound-clamped), unifying this path with `DiskSource`.
         super::interp::read_frame(&self.wave, position, out);
+    }
+
+    /// Read one un-gained frame of a **placed** voice at `pos`, the position
+    /// the gate and the step give (see [`seated_position`](Self::seated_position)),
+    /// into `out`, writing every element.
+    ///
+    /// - **Forward**, on a loop: a position at or past the loop's end plays
+    ///   inside it, and the loop's fade and seam are read as `LoopSpan` has
+    ///   them, as the offline disk reader reads the same stream's loop.
+    /// - **Reverse** mirrors the position about the last frame (`len - 1 -
+    ///   pos`) and ignores the loop, as the butler's reverse refill does. It is
+    ///   silent where a forward read would be, at and past `len`: the mirror
+    ///   of a read past the end is a read before the start, and it must fall
+    ///   silent rather than hold frame 0 as DC. Between the two (`pos` in
+    ///   `(len - 1, len)`) the mirror sits under a frame before the first and
+    ///   reads frame 0, as a forward read in `[len - 1, len)` reads the last
+    ///   frame.
+    #[inline]
+    pub(crate) fn read_placed_into(
+        &self,
+        pos: SamplePosition,
+        direction: Direction,
+        out: &mut [f32],
+    ) {
+        let len = self.wave.len() as f64;
+        match direction {
+            Direction::Reverse => {
+                if pos.get() >= len {
+                    out.fill(0.0);
+                    return;
+                }
+                self.get_sample_raw_into((len - 1.0 - pos.get()).max(0.0), out);
+            }
+            Direction::Forward => match self.loop_mode.span(self.wave.len()) {
+                Some(span) => {
+                    let (p, looped) = span.place(pos.get());
+                    self.read_looped_raw_into(&span, p, looped, out);
+                }
+                None => self.get_sample_raw_into(pos.get(), out),
+            },
+        }
+    }
+
+    /// One un-gained frame of this wave on `span`, at `p` placed on it: silent
+    /// at and past the file's end, as an unlooped read is.
+    #[inline]
+    fn read_looped_raw_into(&self, span: &LoopSpan, p: f64, looped: bool, out: &mut [f32]) {
+        if p >= self.wave.len() as f64 {
+            out.fill(0.0);
+            return;
+        }
+        read_looped_frame(&self.wave, span, p, looped, out);
+    }
+
+    /// The position a placed read plays this frame, or `None` outside its
+    /// window (or unplaced).
+    ///
+    /// **Seated from the clock, stepped by the read rate.** The clock moves
+    /// between calls (per block, or per 64-frame chunk), not per frame, and a
+    /// voice may be read a frame at a time through `tick`. So the read seats
+    /// where the gate puts the playhead whenever the clock reads a beat it did
+    /// not read last time, and steps from there: frame `n` of a seat is
+    /// `origin + read_rate × stretch_rate × n`. The origin comes from
+    /// [`stretched_window_position`](Self::stretched_window_position) (varispeed
+    /// and the stretch, measured in this wave's frames), the step from
+    /// [`read_rate`](Self::read_rate) (varispeed and the conversion) — the one
+    /// model the offline disk reader seats by too, so the tiers read the same
+    /// positions, frame for frame.
+    ///
+    /// `process` and `tick` both come through here, once per output frame: a
+    /// `tick` against a clock that moves once per block steps through the block
+    /// as `process` does, rather than repeat one frame. Pass
+    /// [`ReadRate::UNITY`] when nothing stretches.
+    #[inline]
+    pub(crate) fn seated_position(&mut self, stretch_rate: ReadRate) -> Option<SamplePosition> {
+        let timeline = self.timeline.as_ref()?;
+        let rate = self.read_rate().then(stretch_rate);
+        let seat = Seat::next(self.seat, timeline.as_ref(), rate, || {
+            self.stretched_window_position(stretch_rate)
+        });
+        self.seat = seat;
+        seat.map(|seat| seat.position())
     }
 
     /// [`get_sample_raw_into`](Self::get_sample_raw_into) with this unit's gain
@@ -883,35 +954,27 @@ impl MemorySource {
     /// The split is deliberate:
     ///
     /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
-    ///   so the voice cannot drift from the transport. Varispeed is folded into
-    ///   the beat→sample mapping, not accumulated here.
+    ///   so the voice cannot drift from the transport: seated where the gate
+    ///   puts the playhead and stepped by the read rate until the clock moves
+    ///   ([`seated_position`](Self::seated_position)). A transport advances
+    ///   once per *block*, not per sample — the offline driver calls
+    ///   `advance(block_size)` after `process` returns, and `TransportClock` is
+    ///   emit-then-advance — so re-deriving from `beat()` alone would emit one
+    ///   constant frame all block long.
     /// - **Free-running** (no transport) — nothing else owns this voice's time,
     ///   so it advances its own cursor by `read_rate`.
-    ///
-    /// # `offset_in_block` is why a block is not DC
-    ///
-    /// It is the sample's index within the current `process` call (always 0 from
-    /// `tick`), and the placed branch NEEDS it: a transport advances once per
-    /// *block*, not per sample — the offline driver calls `advance(block_size)`
-    /// after `process` returns (`tutti-export/src/render/driver.rs`), and
-    /// `TransportClock` is emit-then-advance. Re-reading `beat()` for every
-    /// sample returns the same value all block long and emits a constant frame
-    /// instead of the material under the playhead.
     ///
     /// Writes every element of `out` on every path, so a caller never pre-zeros
     /// and a partial write can never leave a stale channel from the previous
     /// block in a trailing slot.
     #[inline]
-    fn next_frame_into(&mut self, offset_in_block: usize, out: &mut [f32]) {
+    fn next_frame_into(&mut self, out: &mut [f32]) {
         if self.timeline.is_some() {
-            // Derived: the transport owns the position. Step within the block by
-            // `read_rate` from the block's start beat — the transport itself
-            // only moves between blocks.
-            match self.window_position() {
+            match self.seated_position(ReadRate::UNITY) {
                 None => out.fill(0.0),
-                Some(start_pos) => {
-                    let pos = start_pos + self.window_rate().advance(Samples(offset_in_block));
-                    self.get_sample_into(pos.get(), out);
+                Some(pos) => {
+                    self.read_placed_into(pos, Direction::Forward, out);
+                    self.apply_gain(out);
                 }
             }
             return;
@@ -923,47 +986,42 @@ impl MemorySource {
         }
 
         let pos = self.position.load(Ordering::Relaxed).get();
-        self.get_sample_into(pos, out);
-
         let wave_len = self.wave.len() as f64;
-        let (looping, loop_start, loop_end) = match &mut self.loop_mode {
-            LoopMode::OneShot => (false, 0.0, wave_len),
-            LoopMode::Looping { range, crossfade } => {
-                let (loop_start, loop_end) = (range.0.get(), range.1.get());
-                if let Some(xfade) = crossfade {
-                    let crossfade_start = loop_end - xfade.len() as f64;
-                    if pos >= crossfade_start && pos < loop_end && !xfade.is_active() {
-                        xfade.start();
-                    }
-                    if xfade.is_active() {
-                        xfade.process_in_place(out);
-                    }
-                }
-                (true, loop_start, loop_end)
+        let span = self.loop_mode.span(self.wave.len());
+        match &span {
+            Some(span) => {
+                let looped = self.looped.load(Ordering::Relaxed);
+                self.read_looped_raw_into(span, pos, looped, out);
+                self.apply_gain(out);
             }
-        };
+            None => self.get_sample_into(pos, out),
+        }
 
         // One output sample's worth of source material.
         let new_pos = pos + self.read_rate().advance(Samples(1)).get();
+
+        // A range with nothing in it keeps its old meaning: the cursor pins to
+        // its start (`wrap_into_loop`), rather than play on as one-shot.
+        let (looping, loop_start, loop_end) = match (&span, self.loop_mode) {
+            (Some(span), _) => (true, span.resume() as f64, span.end() as f64),
+            (None, LoopMode::Looping { range, .. }) => (true, range.0.get(), range.1.get()),
+            (None, LoopMode::OneShot) => (false, 0.0, wave_len),
+        };
 
         if new_pos >= loop_end {
             if looping {
                 // Modulo, not `loop_start + (new_pos - loop_end)`: at high
                 // varispeed one advance can overshoot a short loop by more than
                 // its own length, and the subtraction form would land past the
-                // loop end and never recover.
-                self.position.store(
-                    SamplePosition::new(wrap_into_loop(new_pos, loop_start, loop_end)),
-                    Ordering::Relaxed,
-                );
-
-                if let LoopMode::Looping {
-                    crossfade: Some(xfade),
-                    ..
-                } = &mut self.loop_mode
-                {
-                    xfade.reset();
-                }
+                // loop end and never recover. A loop lands on its `resume`
+                // (`LoopSpan::place`), after its head when the fade went there.
+                let wrapped = match &span {
+                    Some(span) => span.place(new_pos).0,
+                    None => wrap_into_loop(new_pos, loop_start, loop_end),
+                };
+                self.position
+                    .store(SamplePosition::new(wrapped), Ordering::Relaxed);
+                self.looped.store(true, Ordering::Relaxed);
             } else {
                 self.playing.store(false, Ordering::Relaxed);
                 self.position
@@ -972,6 +1030,15 @@ impl MemorySource {
         } else {
             self.position
                 .store(SamplePosition::new(new_pos), Ordering::Relaxed);
+        }
+    }
+
+    /// Scale a frame by this unit's gain.
+    #[inline]
+    fn apply_gain(&self, out: &mut [f32]) {
+        let gain = self.gain.load().get();
+        for s in out.iter_mut() {
+            *s *= gain;
         }
     }
 }
@@ -1020,6 +1087,8 @@ impl AudioUnit for MemorySource {
         self.position
             .store(SamplePosition::new(0.0), Ordering::Relaxed);
         self.playing.store(false, Ordering::Relaxed);
+        self.looped.store(false, Ordering::Relaxed);
+        self.seat = None;
     }
 
     /// Re-point this source's own read clock at the render's transport.
@@ -1045,7 +1114,7 @@ impl AudioUnit for MemorySource {
         // The caller's slice IS the frame — no intermediate storage needed.
         // Stride derived once — `next_frame_into` is the loop.
         let n = (self.channels.count() as usize).min(output.len());
-        self.next_frame_into(0, &mut output[..n]);
+        self.next_frame_into(&mut output[..n]);
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
@@ -1061,7 +1130,7 @@ impl AudioUnit for MemorySource {
             .min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         for i in 0..size {
-            self.next_frame_into(i, &mut frame[..n]);
+            self.next_frame_into(&mut frame[..n]);
             for (c, &s) in frame.iter().enumerate().take(n) {
                 output.set_f32(c, i, s);
             }
@@ -1343,6 +1412,261 @@ mod tests {
             (step - 0.5).abs() < 0.01,
             "at 0.5x the in-block step should be ~0.5 samples/frame, got {step}"
         );
+    }
+
+    /// **A placed wave at another rate than the clock's steps by the
+    /// conversion**, across block boundaries, through `process` and through
+    /// `tick`: a 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on
+    /// output frame `n`, a monotone read half a frame per frame, with no jump
+    /// where a block starts.
+    ///
+    /// Stepping by the gate's rate (`window_rate`, varispeed alone) read one
+    /// file frame per output frame within a block and re-seated half a block
+    /// back at the next (frames 60…63, then 32). `tick` against a clock that
+    /// moves once per block read one frame all block long.
+    ///
+    /// Mutation (run): `seated_position`'s step `read_rate` → `window_rate` →
+    /// output frame 1 reads file frame 1 → fails (both paths). Mutation (run):
+    /// `Seat::next` re-seating on every call (never running on) → `tick`
+    /// repeats one frame per block → fails; `process` too, as both come
+    /// through the seat.
+    #[test]
+    fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
+        let wave = ramp_wave(4_096, 24_000.0);
+        for via_tick in [false, true] {
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+            let mut u = placed_unit(&wave, &transport, 1.0);
+            u.set_sample_rate(SampleRate::new(48_000.0));
+            let mut out = Vec::new();
+            for _ in 0..8 {
+                if via_tick {
+                    out.extend(collect_ticks(&mut u, 64));
+                } else {
+                    out.extend(collect_process(&mut u, 64));
+                }
+                transport.advance(64, 48_000.0);
+            }
+            // From frame 4: the first frames' taps clamp at the file's start.
+            for (n, &(l, _)) in out.iter().enumerate().skip(4) {
+                let want = n as f32 / 2.0 + 1.0;
+                assert!(
+                    (l - want).abs() < 1e-3,
+                    "tick {via_tick}: output frame {n} read {l}, want file frame {} ({want})",
+                    n as f32 / 2.0
+                );
+            }
+        }
+    }
+
+    /// **A stretched placed read seats and steps with the stretch, at another
+    /// rate too** — the positions the stretched slot branch feeds its filter.
+    /// A 24 kHz wave on a 48 kHz clock at a stretch read rate of 0.5: each
+    /// block seats where the gate puts it with the stretch (16 file frames per
+    /// 64-frame block) and steps a quarter frame per output frame (the
+    /// conversion's half, times the stretch's), so the read is one line
+    /// across every block.
+    ///
+    /// Asserted on the positions, not on the filter's output: the phase
+    /// vocoder hides a wrong step (a 440 Hz source read at twice the rate
+    /// within each block and re-seated at the next still measures 440 Hz), so
+    /// a pitch test cannot see this. Whether the slot passes the filter's rate
+    /// here at all is `a_stretched_placed_voice_holds_its_pitch_across_blocks`'s.
+    ///
+    /// Mutation (run): the step `read_rate` → `window_rate` → half a frame per
+    /// frame → fails. Mutation (run): the seat by `window_position` (no
+    /// stretch) → each block seats at 32 → fails.
+    #[test]
+    fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
+        let wave = ramp_wave(4_096, 24_000.0);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut u = placed_unit(&wave, &transport, 1.0);
+        u.set_sample_rate(SampleRate::new(48_000.0));
+        for block in 0..4 {
+            for i in 0..64 {
+                let pos = u.seated_position(ReadRate(0.5)).expect("inside the window");
+                let want = (block * 64 + i) as f64 * 0.25;
+                assert!(
+                    (pos.get() - want).abs() < 1e-9,
+                    "block {block}, frame {i}: position {}, want {want}",
+                    pos.get()
+                );
+            }
+            transport.advance(64, 48_000.0);
+        }
+    }
+
+    /// **The interpolator's taps wrap through the loop** (doc 013 follow-up
+    /// N2, the memory tier): at half speed over a hard loop `[10, 20)`, a
+    /// position half a frame before the end interpolates frames 18, 19, then
+    /// 10, 11 — what the loop plays next — not 20, 21 from past it; and after
+    /// the wrap, half a frame into the loop, the frame behind is 19, the one
+    /// the loop just played. The ramp's value is its frame + 1.
+    ///
+    /// Mutation (run): `LoopSpan::taps` clamping to the file rather than
+    /// wrapping → reads 20.5 at 19.5 → fails. Mutation (run): the `looped`
+    /// back tap removed → frame 9 behind 10.5 → fails. Mutation (run): the
+    /// wrap not marking the cursor `looped` → the same → fails.
+    #[test]
+    fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
+        use super::super::interp::cubic_hermite;
+        let wave = ramp_wave(64, 44_100.0);
+        let mut u = MemorySource::new(wave);
+        u.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(20.0), 0);
+        u.set_speed(PlaybackRate::new(0.5));
+        u.trigger_at(SamplePosition::new(19.5));
+        let ticks = collect_ticks(&mut u, 3);
+        let v = |frame: usize| (frame + 1) as f32;
+        assert_eq!(
+            ticks[0].0,
+            cubic_hermite(v(18), v(19), v(10), v(11), 0.5),
+            "at 19.5"
+        );
+        // 19.5 + 0.5 = 20.0 wraps to 10.0, which is frame 10 exactly.
+        assert_eq!(ticks[1].0, v(10), "at 10.0, after the wrap");
+        assert_eq!(
+            ticks[2].0,
+            cubic_hermite(v(19), v(10), v(11), v(12), 0.5),
+            "at 10.5, after the wrap"
+        );
+    }
+
+    /// **A rate change between two clock moves continues from where the read
+    /// stands**: 16 frames at 1×, then 2× on the same clock reading, steps 2
+    /// from the last frame read — the seat re-anchors, rather than rescale the
+    /// frames it has already stepped (which jumped the read 17 frames).
+    ///
+    /// Mutation (run): `Seat::next` keeping the seat on a rate change (stepping
+    /// `origin + new_rate × frames`) → frame 16 reads 16 frames on → fails.
+    #[test]
+    fn a_rate_change_mid_seat_continues_where_the_read_stands() {
+        let wave = ramp_wave(16_384, 44_100.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+        let mut u = placed_unit(&wave, &transport, 1.0);
+        let mut out = collect_process(&mut u, 16);
+        u.set_speed(PlaybackRate::new(2.0));
+        out.extend(collect_process(&mut u, 16));
+        for (n, w) in out.windows(2).enumerate() {
+            let want = if n < 15 { 1.0 } else { 2.0 };
+            assert!(
+                (w[1].0 - w[0].0 - want).abs() < 1e-3,
+                "frame {} steps {} from frame {n}, want {want}",
+                n + 1,
+                w[1].0 - w[0].0
+            );
+        }
+    }
+
+    /// **A crossfaded loop plays the hand-computed frames** — the memory
+    /// tier's oracle, independent of `LoopSpan`'s arithmetic (the disk fork's
+    /// is `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`). A ramp
+    /// (value = frame + 1) at unit speed from frame 0, round the loop twice:
+    ///
+    /// - `[10, 30)`, a 4-frame fade with room before the start: frame `26 + k`
+    ///   blends toward `6 + k`, weighing it `(k + 1) / 5`, and the wrap lands
+    ///   on 10.
+    /// - `[2, 30)`, the same fade with only 2 frames before the start: frame
+    ///   `26 + k` blends toward the loop's head `2 + k`, and the wrap lands on
+    ///   6, after the head.
+    ///
+    /// Mutation (run): the weight `k / fade` in `LoopSpan::fade_at` → frame 26
+    /// reads the pure tail → fails. Mutation (run): the head mode's `resume`
+    /// left at `start` → the second loop wraps to 2 → fails.
+    #[test]
+    fn a_crossfaded_loop_plays_the_hand_computed_frames() {
+        for (start, resume, lead) in [(10usize, 10usize, 6usize), (2, 6, 2)] {
+            let mut u = MemorySource::new(ramp_wave(64, 44_100.0));
+            u.set_loop_range(
+                SamplePosition::new(start as f64),
+                SamplePosition::new(30.0),
+                4,
+            );
+            let got: Vec<f32> = collect_ticks(&mut u, 30 + 2 * (30 - resume))
+                .iter()
+                .map(|f| f.0)
+                .collect();
+            let frames = (0..30).chain(resume..30).chain(resume..30);
+            for (n, (p, &g)) in frames.zip(got.iter()).enumerate() {
+                let want = if p >= 26 {
+                    let k = p - 26;
+                    let t = (k + 1) as f32 / 5.0;
+                    (p + 1) as f32 * (1.0 - t) + (lead + k + 1) as f32 * t
+                } else {
+                    (p + 1) as f32
+                };
+                assert!(
+                    (g - want).abs() < 1e-5,
+                    "loop from {start}: output {n} (frame {p}) read {g}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// **A stopped clock silences a placed read mid-clip**, through `process`
+    /// and through `tick`: the clock stops where it stands (its beat does not
+    /// move), and the read must not run on from its seat as if it still
+    /// rolled.
+    ///
+    /// Mutation (run): the `is_rolling` guard removed from `Seat::next` → the
+    /// seat runs on through the stop → fails.
+    #[test]
+    fn a_stopped_clock_silences_a_placed_read() {
+        let wave = ramp_wave(16_384, 44_100.0);
+        for via_tick in [false, true] {
+            let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+            let mut u = placed_unit(&wave, &transport, 1.0);
+            let block = |u: &mut MemorySource| {
+                if via_tick {
+                    collect_ticks(u, 64)
+                } else {
+                    collect_process(u, 64)
+                }
+            };
+            assert!(
+                block(&mut u).iter().all(|&(l, _)| l > 0.0),
+                "tick {via_tick}: rolling, the clip plays"
+            );
+            transport.set_rolling(false);
+            assert!(
+                block(&mut u).iter().all(|&(l, r)| l == 0.0 && r == 0.0),
+                "tick {via_tick}: stopped, the read plays on"
+            );
+        }
+    }
+
+    /// **A loop moved under a cursor that has been round the old one reads
+    /// the file where the cursor is** (the review's B1): wrapped once on
+    /// `[1000, 3000)` to frame 1500, then the loop moved to `[2000, 4000)` —
+    /// what `VoiceCommand::UpdateLoop` does while a loop point is dragged — the
+    /// next frames are the file's 1500, 1501, …, not 3500, …. The same after
+    /// the loop is switched off and on again. The ramp's value is its frame + 1.
+    ///
+    /// Mutation (run): both guards removed — `LoopSpan::taps` wrapping back
+    /// every tap behind `resume` when `looped`, and the loop setters leaving
+    /// `looped` set → 3501 → fails. (Either guard alone holds it;
+    /// `loop_span`'s own test pins the first.)
+    #[test]
+    fn a_loop_moved_under_a_looped_cursor_reads_where_the_cursor_is() {
+        for toggle in [false, true] {
+            let mut u = MemorySource::new(ramp_wave(8_000, 44_100.0));
+            u.set_loop_range(
+                SamplePosition::new(1_000.0),
+                SamplePosition::new(3_000.0),
+                0,
+            );
+            u.trigger_at(SamplePosition::new(2_999.0));
+            collect_ticks(&mut u, 501);
+            assert_eq!(u.position().get(), 1_500.0, "wrapped once, to 1500");
+            if toggle {
+                u.set_looping(false);
+            }
+            u.set_loop_range(
+                SamplePosition::new(2_000.0),
+                SamplePosition::new(4_000.0),
+                0,
+            );
+            let got: Vec<f32> = collect_ticks(&mut u, 3).iter().map(|f| f.0).collect();
+            assert_eq!(got, [1_501.0, 1_502.0, 1_503.0], "toggled {toggle}");
+        }
     }
 
     // --- loop wrap arithmetic ---

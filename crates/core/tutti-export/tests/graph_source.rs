@@ -636,32 +636,23 @@ fn first_difference(a: &[Vec<f32>], b: &[Vec<f32>]) -> Option<(usize, usize)> {
 ///
 /// The voice polls the render clock (its `Arc<dyn Timeline>`) on every
 /// `AudioUnit::process` call, which `Legacy` makes per 64-frame chunk. The
-/// graph render renders 1024-frame blocks, so unless the clock is seated on
-/// each chunk (`RenderClock::render_graph`, doc 013 §6) every chunk of a
-/// block reads the block's first beat, and the voice replays its first 64
-/// frames sixteen times (a dry 440 Hz voice measured 768 Hz). `NetSource`
-/// renders 64-frame blocks and advances the clock between them; the graph
-/// render advances it in the same steps and seats it on the positions those
-/// steps pass through, so the two agree to the bit.
+/// export asks for 1024-frame blocks, so unless the render moves the clock
+/// between chunks every chunk of a block reads the block's first beat, and
+/// the voice replays its first 64 frames sixteen times (a dry 440 Hz voice
+/// measured 768 Hz). `RenderClock::render_graph` therefore renders a graph
+/// holding a `Legacy` unit chunk-major, 64 frames across every node with
+/// the clock advanced between (doc 013's `Legacy` compatibility mode), as
+/// `NetSource` renders a `Net`, so the two agree to the bit.
 ///
 /// Why to the bit and not to rounding: the pitched voice runs through the
-/// vocoder, which turns an ulp of beat into far more. Measured with one
-/// `advance(1024)` a block and seats computed in one multiply each: the
-/// fifth-up voice left the `Net`'s render by 1e-3 at frame 3076.
+/// vocoder, which turns an ulp of beat into far more. Measured with the
+/// clock advanced a block at a time and the chunk positions computed in one
+/// multiply each: the fifth-up voice left the `Net`'s render by 1e-3 at
+/// frame 3076.
 ///
-/// Mutations (run):
-/// - `Legacy`'s adapter not calling `seat` (the clock stands at the
-///   block's first beat) → the backends part at frame 64, and the dry
-///   render leaves the tone there;
-/// - `OfflineTimeline::stepped` taking one step of all its frames (a seat
-///   computed in one multiply) → the planes differ by an ulp from frame
-///   448, below what the tone check can see: that is what the bit-identity
-///   is for;
-/// - `render_graph` advancing the block in one `advance(frames)` → the
-///   planes differ by an ulp from frame 2048;
-/// - `render_graph` not putting the clock back on the block's start before
-///   advancing it (so it advances from the last chunk's seat) → every block
-///   after the first starts 960 frames ahead.
+/// Mutation (run): `render_graph` rendering whole blocks with a `Legacy`
+/// unit present (`has_legacy` ignored) → the backends part at frame 64, and
+/// the dry render leaves the tone there.
 #[test]
 fn a_sampler_voice_renders_bit_identically_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
@@ -710,9 +701,8 @@ fn a_sampler_voice_renders_bit_identically_at_the_graph_block() {
 /// re-points it), renders what the `Net` path renders with the voice on
 /// that timeline from the start.
 ///
-/// Mutations (run): `Legacy`'s adapter not calling `seat` → the backends
-/// part at frame 64; `OfflineTimeline::stepped` in one step → they part by
-/// an ulp at frame 448.
+/// Mutation (run): `render_graph` rendering whole blocks with a `Legacy`
+/// unit present → the backends part at frame 64.
 #[test]
 fn a_forked_clip_reader_renders_bit_identically_at_the_graph_block() {
     use tutti_sampler::MemorySource;

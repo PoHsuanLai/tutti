@@ -46,13 +46,15 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///   simple host) and wrap the pair in the variant.
 ///
 /// The executor renders in blocks of its prepared `MaxBlock`, each handed the
-/// transport the render's clock reports ([`RenderClock::graph_block`]); the
-/// clock is seated on each 64-frame chunk its `Legacy` units run (a clip
-/// reader polls it per call, [`RenderClock::seat`]) and left where the block
-/// ends, so it reads what a `Net` render's did.
+/// transport the render's clock reports ([`RenderClock::graph_block`]), and
+/// the clock is advanced after each block, as for a `Net`. A graph holding a
+/// `Legacy` unit (a sampler voice, which polls the clock per 64-frame call)
+/// is rendered chunk-major, 64 frames at a time across every node
+/// ([`RenderClock::render_graph`]), so its clip readers read what a `Net`
+/// render's did.
 ///
 /// [`RenderClock::graph_block`]: tutti_core::transport::RenderClock::graph_block
-/// [`RenderClock::seat`]: tutti_core::transport::RenderClock::seat
+/// [`RenderClock::render_graph`]: tutti_core::transport::RenderClock::render_graph
 ///
 /// # Latency and tail
 ///

@@ -590,13 +590,13 @@ mod engine_tests {
     ///
     /// The voice is a clip reader: it polls the transport (its
     /// `Arc<dyn Timeline>`) on every 64-frame call. On `Native` that call is
-    /// `Legacy`'s, inside a graph block the engine's clock has already
-    /// advanced over, so it reads the right beat only because the engine
-    /// seats the playhead per chunk (`tutti_core`'s `LegacyClock`, doc 013
-    /// §6). On `Net` the builder inserts its `TransportClock` before any
-    /// voice, the net runs it first in each 64-frame chunk, and the voice
-    /// reads the beat it published at the end of the previous chunk: this
-    /// chunk's first frame, the same seat.
+    /// `Legacy`'s, and it reads the right beat because the engine renders a
+    /// plan holding a `Legacy` unit chunk-major, 64 frames across every node
+    /// with the playhead published after each (doc 013, "chunk-major
+    /// `Legacy` compatibility mode"). On `Net` the builder inserts its
+    /// `TransportClock` before any voice; the net then runs the voice first
+    /// in each 64-frame chunk, and it reads the beat the clock published at
+    /// the end of the previous chunk: this chunk's first frame, the same.
     #[cfg(feature = "sampler")]
     fn render_voice(backend: GraphBackend, cents: f32, frames: usize, block: usize) -> Vec<f32> {
         use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
@@ -656,9 +656,10 @@ mod engine_tests {
     /// clip reader sounds nothing; this is the adapter's path with the clock
     /// moving (doc 013, the #32 follow-up).
     ///
-    /// Mutation (run): `Legacy` not seating the clock per chunk (the adapter
-    /// then reads the block's end beat on every chunk) → `Native` parts from
-    /// `Net` at frame 0, at both block sizes; `Net` still matches the tone.
+    /// Mutation (run): the engine rendering whole device blocks with a
+    /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`)
+    /// → `Native` parts from `Net` at frame 64, at both block sizes; `Net`
+    /// still matches the tone.
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time_on_both_backends(block: usize) {
         let frames = 24_000;

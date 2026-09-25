@@ -462,35 +462,34 @@ fn env_graph(
 
 /// An offline render from bar 2 (beat 4), at 100 BPM, looping beats 6–7,
 /// driven by `OfflineTimeline::render_graph`, hands the graph the time a
-/// live graph engine hands it for the same timeline, at the two
-/// granularities the graph specifies (doc 013 §6):
+/// live graph engine hands it for the same timeline:
 ///
-/// - **per graph block, the `Env`**: the same play state, tempo and loop,
-///   no changes, and the same start beat;
-/// - **per `Legacy` chunk, the timeline a clip reader polls** (its
-///   `Arc<dyn Timeline>`, read on every `AudioUnit::process`): the same
-///   beat, which is the `Env`'s beat at the chunk's first frame
-///   (`Env::transport_at`). Both renderers seat their clock on each chunk
-///   while the block renders; the `Env` stays the block's.
+/// - **per block, the `Env`**: the same play state, tempo and loop, no
+///   changes, and the same start beat;
+/// - **per block, the timeline a clip reader polls** (its
+///   `Arc<dyn Timeline>`, read on every `AudioUnit::process`): the `Env`'s
+///   beat at the block's first frame, on both sides.
 ///
-/// The blocks correspond one to one because both sides render the same
-/// graph blocks (the offline side replays the live side's), and so do their
-/// chunks. The beats agree within a tolerance, not to the bit: the live
-/// clock accumulates frame by frame and the offline timeline 64 frames at a
-/// time (a `Net` render's steps), the same split as `OfflineTimeline` vs
-/// `TransportClock`.
+/// The graph holds a `Legacy` unit, so both render **chunk-major**: blocks
+/// of at most 64 frames (doc 013's `Legacy` compatibility mode), which is
+/// what makes the polled timeline right for every call, and every block
+/// here is checked to be one. The blocks correspond one to one because the
+/// offline side replays the live side's. The beats agree within a
+/// tolerance, not to the bit: the live clock accumulates frame by frame and
+/// the offline timeline a block at a time, the same split as
+/// `OfflineTimeline` vs `TransportClock`.
 ///
 /// Mutations (run):
 /// - `advance(frames)` before `graph_block` in `render_graph` → every
 ///   offline beat is one block ahead → fails on block 0;
 /// - drop the loop from `graph_block` → the offline beats run past 7 →
 ///   fails once the live one wraps;
-/// - `Legacy` not seating → every chunk past a block's first reads the
-///   block's end (live) or its start (offline) → fails on the per-chunk
-///   check;
-/// - `render_graph` not putting the timeline back on the block's start
-///   before advancing it → every block after the first starts past where
-///   the live one does → fails.
+/// - the engine rendering whole blocks with a `Legacy` unit present
+///   (`GraphRender::settle` ignoring `has_legacy`) → blocks past 64
+///   frames → fails the chunk-major check;
+/// - the engine publishing its playhead in the walk, before the render
+///   (`TransportClock::advance` writing back) → every live poll reads its
+///   block's end → fails on block 1.
 #[test]
 fn an_offline_render_sees_the_live_engine_transport() {
     const BAR_2: f64 = 4.0;
@@ -553,40 +552,36 @@ fn an_offline_render_sees_the_live_engine_transport() {
         wrapped |= i > 0 && l.beat < live_log[i - 1].transport.beat;
     }
 
-    // Per chunk: what the clip reader polled, both sides, against the `Env`
-    // at the chunk's first frame.
+    // Chunk-major: no block past `LEGACY_CHUNK`, on either side.
+    for (i, env) in live_log.iter().enumerate() {
+        assert!(
+            env.block_len.get() <= tutti_graph::LEGACY_CHUNK,
+            "block {i} is {} frames: a graph holding a `Legacy` unit renders \
+             chunk-major",
+            env.block_len.get()
+        );
+    }
+
+    // What the clip reader polled, both sides, against the `Env` at the
+    // block's first frame: one poll a block.
     let (live_polls, off_polls) = (
         live_polls.lock().expect("log"),
         off_polls.lock().expect("log"),
     );
-    let chunks = live_log
-        .iter()
-        .flat_map(|env| {
-            (0..env.block_len.get())
-                .step_by(tutti_graph::LEGACY_CHUNK)
-                .map(move |k| (env, k))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(live_polls.len(), chunks.len(), "one live poll a chunk");
-    assert_eq!(off_polls.len(), chunks.len(), "one offline poll a chunk");
-    let mut moved_within = false;
-    for (j, (&(env, k), (&l, &o))) in chunks
+    assert_eq!(live_polls.len(), live_log.len(), "one live poll a block");
+    assert_eq!(off_polls.len(), live_log.len(), "one offline poll a block");
+    for (i, (env, (&l, &o))) in live_log
         .iter()
         .zip(live_polls.iter().zip(off_polls.iter()))
         .enumerate()
     {
-        let at = tutti_graph::Offset::new(k, env.block_len).expect("inside the block");
-        let want = env.transport_at(at).beat.get();
+        let want = env.transport.beat.get();
         assert!(
-            (l - want).abs() < 1e-9 && (o - want).abs() < 1e-9,
-            "chunk {j} (frame {k} of the block at {}): live polled {l}, offline {o}, \
-             the Env says {want}",
+            (o - want).abs() < 1e-9 && (l - want).abs() < 1e-9,
+            "block {i} (at frame {}): live polled {l}, offline {o}, the Env says {want}",
             env.frame.get()
         );
-        moved_within |= k > 0 && l != env.transport.beat.get();
     }
-    // Not vacuous: a chunk inside a block read past the block's first beat.
-    assert!(moved_within, "the timeline moved within a block");
 
     // Not vacuous: it started on bar 2, it rolled, and it wrapped.
     assert_eq!(off_log[0].transport.beat, Beat(BAR_2));

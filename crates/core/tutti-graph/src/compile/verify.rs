@@ -730,7 +730,8 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
             && was.event_out == now.event_out
             && was.latency == now.latency
             && was.in_place == now.in_place
-            && was.event_resolution == now.event_resolution;
+            && was.event_resolution == now.event_resolution
+            && was.legacy == now.legacy;
         if !same {
             return Err(VerifyError(format!(
                 "node {} fades from {was:?} to {now:?}: only the tail may differ",

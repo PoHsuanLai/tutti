@@ -544,7 +544,10 @@ impl Editor {
             running.event_out,
         ) && shape.latency == running.latency
             && shape.in_place == running.in_place
-            && shape.event_resolution == running.event_resolution;
+            && shape.event_resolution == running.event_resolution
+            // A renderer chunks while the plan holds a `Legacy`: both halves
+            // of a fade must agree, or the outgoing one would run unchunked.
+            && shape.legacy == running.legacy;
         if !fits {
             return Err(CommitError::FadeShape { node: key });
         }

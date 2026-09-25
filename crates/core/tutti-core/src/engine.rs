@@ -21,14 +21,17 @@
 //!   [`TransportChange`](tutti_graph::TransportChange) in the block's `Env`,
 //!   and renders the whole block once. A node reads the transport at a frame
 //!   with `Env::transport_at`, and the graph's own `At::Beat` commands resolve
-//!   against the piece that reaches their beat. A `Legacy` unit reads no
-//!   `Env`: one that follows the transport polls the live `Transport` (a
-//!   sampler voice's `Arc<dyn Timeline>`) per 64-frame call, so while the
-//!   block renders the engine **seats** the published playhead on the beat
-//!   its clock had on each chunk's first frame (recorded as the walk
-//!   advances it), and puts it back at the block's end afterwards
-//!   ([`LegacyClock`], doc 013 §6). The play state stays the block's end
-//!   state for such a unit: only the position is seated.
+//!   against the piece that reaches their beat.
+//!
+//!   **Chunk-major while the plan holds a `Legacy` unit**
+//!   (`Plan::has_legacy`, doc 013's `Legacy` compatibility mode). A `Legacy`
+//!   unit reads no `Env`: one that follows the transport (a sampler voice, a
+//!   MIDI clip source) polls the live `Transport` on every 64-frame call. So
+//!   the engine then renders graph blocks of at most [`LEGACY_CHUNK`] frames,
+//!   across every node, each with its own walk, and publishes the playhead
+//!   after each: through a chunk it reads the chunk's first frame, as through
+//!   a `Net` whose clock node publishes after its chunk, and it only moves
+//!   forward. A graph with no `Legacy` unit renders whole blocks.
 //! - **Net**: the engine renders the `Net` piece by piece (it already renders
 //!   in 64-frame chunks, so this breaks no promise), applying the commands
 //!   between pieces; the `TransportClock` inside the net reads them at the
@@ -93,8 +96,8 @@
 //! callback never meets a graph it cannot render.
 
 use tutti_graph::{
-    CommitError, Due, Editor, Env, Executor, LegacyClock, Limits, Offset, Playhead,
-    TransportChanges, LEGACY_CHUNK, MAX_TRANSPORT_CHANGES,
+    CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
+    LEGACY_CHUNK, MAX_TRANSPORT_CHANGES,
 };
 
 use crate::transport::fsm::DEFAULT_DECLICK_FRAMES;
@@ -105,7 +108,7 @@ use crate::transport::{tempo_in_effect, Control};
 use crate::transport::{
     FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
 };
-use crate::{AudioThreadCell, Beat, InterleavedMut, Ordering, SampleRate, Samples};
+use crate::{AudioThreadCell, InterleavedMut, Ordering, SampleRate, Samples};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
 use fundsp::prelude::{BufferRef, U8};
@@ -224,12 +227,6 @@ struct GraphRender {
     /// the same clock itself ([`TransportClock::begin`] /
     /// [`TransportClock::advance`]) and the two backends see the same beats.
     clock: TransportClock,
-    /// The clock's beat on the first frame of each `Legacy` chunk
-    /// ([`LEGACY_CHUNK`] frames from the graph block's start) of the block
-    /// being rendered: recorded as the walk advances the clock, and
-    /// published to the live playhead chunk by chunk while the block renders
-    /// ([`Seats`]). Sized for a `stride`-frame block.
-    seats: Vec<Beat>,
     /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
     scratch: Vec<f32>,
     stride: usize,
@@ -328,7 +325,6 @@ impl Engine {
             backend: AudioThreadCell::new(Backend::Graph(GraphRender {
                 exec: executor,
                 clock: TransportClock::new(transport.clock_links(), rate),
-                seats: vec![Beat(0.0); stride.div_ceil(LEGACY_CHUNK)],
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
                 stride,
                 playhead: Playhead::new(),
@@ -406,7 +402,7 @@ impl Engine {
                         transport: t,
                         changes: TransportChanges::NONE,
                     });
-                    run_clock(&mut g.clock, &mut g.seats, 0, len, &t);
+                    g.clock.advance(len, &t);
                     g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
                     done += len;
                 }
@@ -458,7 +454,6 @@ impl Engine {
                     let frame0 = g.exec.frame();
                     let mut pieces = GraphPieces {
                         clock: &mut g.clock,
-                        seats: &mut g.seats,
                         settings: self.motion.settings(),
                         control: Control::read(self.motion.settings()),
                         changes: TransportChanges::NONE,
@@ -866,12 +861,9 @@ impl Pieces for NetPieces<'_> {
 }
 
 /// The native graph side: advance the engine's clock over each piece, and
-/// collect the cuts for the block's `Env` and the chunk seats; the render
-/// happens once, after.
+/// collect the cuts for the block's `Env`; the render happens once, after.
 struct GraphPieces<'a> {
     clock: &'a mut TransportClock,
-    /// [`GraphRender::seats`].
-    seats: &'a mut [Beat],
     settings: &'a crate::TransportSettings,
     /// The untimed inputs, read once at the walk's start; only an applied
     /// command changes them.
@@ -893,7 +885,7 @@ impl Pieces for GraphPieces<'_> {
     }
 
     fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
-        run_clock(self.clock, self.seats, start, end, t);
+        self.clock.advance(end - start, t);
     }
 
     fn room(&self) -> bool {
@@ -924,7 +916,14 @@ impl GraphRender {
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
-        (bound.min(self.stride), rate)
+        let bound = bound.min(self.stride);
+        // Chunk-major while a `Legacy` unit may poll the transport (the
+        // module docs): after `apply_pending`, so a commit that adds or
+        // removes the last one switches at this block.
+        if self.exec.plan().is_some_and(|p| p.has_legacy()) {
+            return (bound.min(LEGACY_CHUNK), rate);
+        }
+        (bound, rate)
     }
 
     /// Render one graph block of `len` frames into frames
@@ -953,14 +952,13 @@ impl GraphRender {
         let mut chunks = self.scratch.chunks_mut(stride);
         let mut outs: [&mut [f32]; MAX_ROOT_CHANNELS] =
             std::array::from_fn(|_| chunks.next().expect("MAX_ROOT_CHANNELS chunks"));
-        let seats = Seats {
-            clock: &self.clock,
-            seats: &self.seats[..len.div_ceil(LEGACY_CHUNK)],
-        };
         self.exec
-            .process_with_clock(len, transport, changes, &seats, &[], &mut outs[..width]);
-        // The last seat is wherever the last `Legacy` chunk began: put the
-        // playhead back where the block ends, where the walk left the clock.
+            .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
+        // Published after the block, not by the walk before it: through the
+        // block the live playhead still reads its first frame (the last
+        // block's end), which is what a `Legacy` unit polling it takes for
+        // its call's first frame, as through a `Net` whose clock node
+        // publishes after its chunk. And it only moves forward.
         self.clock.publish_position(self.clock.current_beat());
         if width == 0 {
             block.fill(0.0);
@@ -974,54 +972,6 @@ impl GraphRender {
             }
             tutti_types::fold_frame(src, &mut block[i * out_ch..(i + 1) * out_ch]);
         }
-    }
-}
-
-/// Advance `clock` over frames `start..end` of a graph block under `t`,
-/// recording in `seats` its beat on each [`LEGACY_CHUNK`] boundary it
-/// crosses (a `Legacy` chunk's first frame, counted from the block's start).
-///
-/// The clock steps frame by frame either way, so stepping it chunk by chunk
-/// lands on the bit it would reach in one call; only the position writeback
-/// and the steady-time count happen per chunk, and they end where one call
-/// would leave them. A cut at a chunk boundary records the transport after
-/// the cut: `walk` runs up to the cut, applies it, then runs on from it.
-fn run_clock(
-    clock: &mut TransportClock,
-    seats: &mut [Beat],
-    start: usize,
-    end: usize,
-    t: &GraphTransport,
-) {
-    let mut at = start;
-    while at < end {
-        if at.is_multiple_of(LEGACY_CHUNK) {
-            seats[at / LEGACY_CHUNK] = clock.current_beat();
-        }
-        let next = ((at / LEGACY_CHUNK + 1) * LEGACY_CHUNK).min(end);
-        clock.advance(next - at, t);
-        at = next;
-    }
-}
-
-/// The live [`LegacyClock`]: seats the playhead a `Transport` reports (and so
-/// every sampler voice or other `Legacy` unit polling it) on the beat the
-/// engine's clock had on each chunk's first frame, as a `Net` engine's clock
-/// node published it between its 64-frame chunks (doc 013 §6).
-struct Seats<'a> {
-    clock: &'a TransportClock,
-    /// [`GraphRender::seats`], for this block.
-    seats: &'a [Beat],
-}
-
-impl LegacyClock for Seats<'_> {
-    fn seat(&self, at: Offset) {
-        debug_assert!(
-            at.index().is_multiple_of(LEGACY_CHUNK),
-            "a chunk's first frame"
-        );
-        self.clock
-            .publish_position(self.seats[at.index() / LEGACY_CHUNK]);
     }
 }
 
@@ -1132,7 +1082,6 @@ mod tests {
         let mut pieces = Racing {
             inner: GraphPieces {
                 clock: &mut clock,
-                seats: &mut [Beat(0.0); 512 / LEGACY_CHUNK],
                 settings,
                 control: Control::read(settings),
                 changes: TransportChanges::NONE,
@@ -1176,7 +1125,6 @@ mod tests {
         let settings = engine.motion.settings();
         let mut pieces = GraphPieces {
             clock: &mut clock,
-            seats: &mut [Beat(0.0); 512 / LEGACY_CHUNK],
             settings,
             control: Control::read(settings),
             changes: TransportChanges::NONE,

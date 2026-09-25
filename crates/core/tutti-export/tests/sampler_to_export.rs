@@ -26,17 +26,19 @@
 //! wrong clock rate) leaves the output emphatically non-zero, so `!= 0.0` cannot
 //! see any of them.
 //!
-//! # The graph renders 1024-frame blocks; the voice reads per 64
+//! # Prepared at 1024 frames; rendered 64 at a time
 //!
 //! The voice runs in the native graph as a `tutti_graph::Legacy`, which calls
 //! it in 64-frame chunks from each block's start, and it reads the timeline
 //! **out of band** — `beat()` on its `Arc`, on every call. The graph is
-//! prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024), so the
-//! render clock has to move *inside* each block: `RenderClock::render_graph`
-//! seats it on every chunk's first frame (`LegacyClock`, doc 013 §6). Without
-//! that every chunk of a block reads the block's first beat and the voice
-//! replays its first 64 frames sixteen times: measured, the dry voice exports
-//! at ~768 Hz, not 440. (Until the seating landed, this file prepared at a
+//! prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024), and the
+//! render clock has to move between the voice's calls:
+//! `RenderClock::render_graph` renders a graph holding a `Legacy` unit
+//! chunk-major, 64 frames across every node (doc 013's `Legacy`
+//! compatibility mode). Rendered in whole 1024-frame blocks instead, every
+//! chunk of a block reads the block's first beat and the voice replays its
+//! first 64 frames sixteen times: measured, the dry voice exports at ~768 Hz,
+//! not 440. (Until chunk-major rendering landed, this file prepared at a
 //! 64-frame `MaxBlock` to dodge it.)
 //!
 //! Gated on `wav`, because the assertions decode the exported file through
@@ -93,8 +95,9 @@ fn tone(frames: usize) -> Arc<Wave> {
 /// rather than by two configs that happen to match.
 ///
 /// Prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`, what an export
-/// renders at: see the module docs. Mutation (run): `Legacy` not seating the
-/// clock per chunk → every case fails, the dry voice measuring ~768 Hz.
+/// renders at: see the module docs. Mutation (run): `render_graph` rendering
+/// whole blocks with a `Legacy` unit present → every case fails, the dry
+/// voice measuring ~768 Hz.
 fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),

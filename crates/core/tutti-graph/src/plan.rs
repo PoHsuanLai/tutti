@@ -797,6 +797,15 @@ impl Plan {
         &self.value_readers
     }
 
+    /// Whether any unit this plan runs is a [`Legacy`](crate::Legacy)
+    /// ([`Shape::legacy`]). A renderer then hands the executor blocks of at
+    /// most [`LEGACY_CHUNK`](crate::LEGACY_CHUNK) and moves its clock between
+    /// them (the `legacy` module docs, `src/legacy.rs`). A walk of the units:
+    /// ask it once per block, not per frame.
+    pub fn has_legacy(&self) -> bool {
+        self.units.iter().any(|u| u.shape.legacy)
+    }
+
     /// The unit compiled for `key`.
     pub fn unit(&self, key: NodeKey) -> Option<&PlanUnit> {
         self.units

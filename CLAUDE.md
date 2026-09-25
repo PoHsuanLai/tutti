@@ -83,6 +83,20 @@ cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D
 zig c++ -target x86_64-windows-gnu -std=c++17 -c -o /tmp/o.obj tu.cpp -I <sdk>
 ```
 
+**`--all-targets` fails on Linux at criterion's `alloca` build script.**
+cc picks gcc, and gcc cannot target MSVC; `--lib --tests` fails the same way,
+because criterion is a dev-dependency. Give the build script clang and a
+one-line stub for the one header it wants. Clippy never links, so the stub
+only has to let the C compile, and every Rust target is still checked in full:
+
+```bash
+mkdir -p /tmp/winstub
+printf '#include <stddef.h>\nvoid *_alloca(size_t);\n' > /tmp/winstub/malloc.h
+CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
+  CFLAGS_x86_64_pc_windows_msvc=-I/tmp/winstub \
+  cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+```
+
 These catch compile errors only. `nm` the object to confirm the branch you
 meant was taken. Windows behaviour that surprised us before (named-pipe
 timeouts, the MSVC CRT environment, VST3 UID layouts, `USERPROFILE`, bundle

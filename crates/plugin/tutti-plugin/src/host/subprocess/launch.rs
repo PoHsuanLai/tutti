@@ -713,12 +713,8 @@ mod tests {
         };
         // The listener above stands in for the server, so there is no child to
         // poll — but `handshake` takes one to notice a spawn that died. A
-        // long-lived `sleep` is the cheapest stand-in that stays alive for the
-        // whole test; it is killed below.
-        let mut stand_in = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("failed to spawn the stand-in child");
+        // lingering stand-in stays alive for the whole test; it is killed below.
+        let mut stand_in = spawn_stand_in(StandIn::Lingers);
         let err = handshake(&config, &mut stand_in)
             .expect_err("a v3 server must not complete the v4 handshake");
         let _ = stand_in.kill();
@@ -773,10 +769,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         });
 
-        let mut stand_in = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("failed to spawn the stand-in child");
+        let mut stand_in = spawn_stand_in(StandIn::Lingers);
         let result = connect_when_listening(&path, &mut stand_in);
         let _ = stand_in.kill();
         let _ = stand_in.wait();
@@ -799,6 +792,9 @@ mod tests {
     /// reporting a failure whose cause was known in milliseconds. The elapsed
     /// assertion is the point — a test that only checked for `Err` would pass
     /// on the slow path too.
+    ///
+    /// Mutation: delete the `try_wait` early return in `connect_when_listening`
+    /// and this fails on the elapsed assertion (the loop runs the full 5 s).
     #[test]
     fn a_server_that_never_binds_is_reported_before_the_timeout() {
         let path = std::env::temp_dir().join(format!("tutti_never_bound_{}", std::process::id()));
@@ -806,9 +802,7 @@ mod tests {
 
         // Exits immediately and binds nothing — the shape of a plugin-server
         // that dies on a missing dynamic library.
-        let mut dead = Command::new("true")
-            .spawn()
-            .expect("failed to spawn the exiting child");
+        let mut dead = spawn_stand_in(StandIn::Exits);
 
         let started = Instant::now();
         let err = connect_when_listening(&path, &mut dead)
@@ -825,5 +819,69 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Which throwaway child a connect test needs in place of a plugin-server.
+    enum StandIn {
+        /// Exits at once, binding nothing.
+        Exits,
+        /// Stays alive, binding nothing, until the test kills it.
+        Lingers,
+    }
+
+    /// Set only in a [`StandIn::Lingers`] child, so that [`stand_in_lingers`]
+    /// sleeps there and is an instant no-op in an ordinary test run.
+    const STAND_IN_ENV: &str = "TUTTI_LAUNCH_TEST_STAND_IN";
+
+    /// Spawns a stand-in by re-running **this test binary**, never a program
+    /// looked up on `PATH`.
+    ///
+    /// These were `sleep 30` and `true`. Neither is a Windows program: there
+    /// they resolve to whatever `PATH` offers (Git's MSYS `usr/bin` on CI) or to
+    /// nothing. An MSYS `true` can take seconds to start and exit under load,
+    /// and the never-binds test measures exactly that interval — on Windows CI
+    /// it took 5.7 s against its 2.5 s budget and failed, having tested the
+    /// runner's `PATH` rather than `connect_when_listening`. The test binary
+    /// exists on every target by construction, and its harness starts and
+    /// exits in milliseconds.
+    ///
+    /// - `Exits` asks the harness for an `--exact` name no test has: libtest
+    ///   filters everything out and exits 0 without running anything.
+    /// - `Lingers` runs [`stand_in_lingers`] alone, with [`STAND_IN_ENV`] set so
+    ///   it sleeps. If that name ever stops matching, the child exits at once
+    ///   instead and `the_connect_waits_for_a_socket_that_is_not_bound_yet`
+    ///   fails with "exited before binding" — the drift cannot pass silently.
+    fn spawn_stand_in(kind: StandIn) -> Child {
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let mut cmd = Command::new(exe);
+        match kind {
+            StandIn::Exits => {
+                cmd.args(["--exact", "no test in this binary has this name"]);
+            }
+            StandIn::Lingers => {
+                // libtest names a unit test by its path *within* the crate, so
+                // drop the leading `tutti_plugin::` from `module_path!()`.
+                let module = module_path!()
+                    .split_once("::")
+                    .map_or(module_path!(), |(_, rest)| rest);
+                cmd.args(["--exact", &format!("{module}::stand_in_lingers")])
+                    .env(STAND_IN_ENV, "1");
+            }
+        }
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to re-run the test binary as a stand-in child")
+    }
+
+    /// The body of a [`StandIn::Lingers`] child; a no-op anywhere else.
+    ///
+    /// 30 s is only a ceiling — every caller kills its stand-in as soon as it is
+    /// done — so a leaked one still goes away by itself.
+    #[test]
+    fn stand_in_lingers() {
+        if std::env::var_os(STAND_IN_ENV).is_some() {
+            thread::sleep(Duration::from_secs(30));
+        }
     }
 }

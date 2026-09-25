@@ -165,6 +165,7 @@ pub struct PluginHandle {
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
     midi_sender: MidiSender,
+    server_pid: Option<u32>,
 }
 
 impl PluginHandle {
@@ -195,6 +196,7 @@ impl PluginHandle {
             refresh_sink: client.refresh_sink().clone(),
             invalidate_sink: client.invalidate_sink().clone(),
             midi_sender: client.midi_sender(),
+            server_pid: client.process_guard().pid(),
         }
     }
 
@@ -242,6 +244,8 @@ impl PluginHandle {
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
             midi_sender,
+            // In-process: there is no subprocess to name.
+            server_pid: None,
         }
     }
 
@@ -272,6 +276,8 @@ impl PluginHandle {
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
             midi_sender: sender,
+            // `for_test` guards own no subprocess.
+            server_pid: None,
         }
     }
 
@@ -442,6 +448,18 @@ impl PluginHandle {
     /// Engine-wiring data from load (per-bus channel widths, latency, f64).
     pub fn loaded(&self) -> &LoadedPlugin {
         &self.loaded
+    }
+
+    /// The OS process id of the `plugin-server` hosting this plugin, or `None`
+    /// for an in-process plugin, which has no subprocess.
+    ///
+    /// Fixed at load, so free to call. The subprocess lives until the last
+    /// handle *and* the graph's audio unit have both dropped, and it is then
+    /// killed and reaped synchronously. So once they have all dropped, this id
+    /// names no child of this process. A caller that probes it after that
+    /// point is asking whether the subprocess was reaped, not what it is doing.
+    pub fn server_pid(&self) -> Option<u32> {
+        self.server_pid
     }
 
     /// What is known about this plugin's channel placement.

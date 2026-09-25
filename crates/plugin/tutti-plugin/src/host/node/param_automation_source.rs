@@ -208,6 +208,15 @@ impl Curve for OffsetCurve {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
         self.inner.value_at(beat).map(|v| v - self.subtract)
     }
+
+    /// Frozen when what it wraps is.
+    fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
+        let inner = self.inner.frozen()?;
+        Some(std::sync::Arc::new(Self {
+            inner,
+            subtract: self.subtract,
+        }))
+    }
 }
 
 /// A hosted-plugin parameter as a modulation **target** — the *sub-block* sink
@@ -331,6 +340,23 @@ impl Curve for PluginParamTarget {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
         self.layered.read().value_at(beat)
     }
+
+    /// The **authored** part, frozen: the base, the range and the
+    /// [`LayerKey::AUTOMATION`](tutti_nodes::LayerKey::AUTOMATION) layer as they
+    /// stand now, with every modulation layer (scalar or curve) dropped.
+    ///
+    /// This target is live state: the mod router writes its layers every frame
+    /// and a UI moves its base. A fork that shared it would have a live LFO
+    /// writing into an export. Modulation for an export has to come from the
+    /// export's own offline driver (not built yet), so until then a forked
+    /// plugin renders its base plus authored automation — doc 013 gap 7.
+    fn frozen(&self) -> Option<std::sync::Arc<dyn Curve>> {
+        let mut authored = (*self.layered.read()).clone();
+        authored.clear_mod_layers();
+        // The automation layer may itself read live state (a take in progress
+        // is an immutable `Recorder` once shared, but a wrapper is possible).
+        Some(authored.frozen().unwrap_or_else(|| std::sync::Arc::new(authored)))
+    }
 }
 
 /// How many samples between successive automation points within one block. A
@@ -386,15 +412,26 @@ impl ParamAutomationSource {
     }
 
     /// The same curves, read through `transport` — a source for a forked
-    /// instance (`host::node::fork`). The curves are shared (they are read,
-    /// never written, by a source); the rate cell is the fork's own.
+    /// instance (`host::node::fork`). Each curve is [frozen](Curve::frozen):
+    /// an immutable one is shared, one that reads live state (a
+    /// [`PluginParamTarget`] the mod router writes) is copied as it stands,
+    /// authored layers only, so no later live write reaches the fork. The
+    /// rate cell is the fork's own.
     pub(crate) fn rebound(
         &self,
         transport: Arc<dyn TransportState>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
         Self {
-            params: Arc::clone(&self.params),
+            params: self
+                .params
+                .iter()
+                .map(|p| TimedParam {
+                    param_id: p.param_id,
+                    curve: p.curve.frozen().unwrap_or_else(|| Arc::clone(&p.curve)),
+                })
+                .collect::<Vec<_>>()
+                .into(),
             transport,
             sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
@@ -625,6 +662,58 @@ mod tests {
         ModTarget::accumulate(&*target, LayerKey(1), 0.25);
         // … and the installed curve sees it.
         assert!((timed.curve.value_at(tutti_core::Beat::new(0.0)).unwrap() - 0.75).abs() < 1e-6);
+    }
+
+    /// **Live modulation does not reach a fork's automation.** A
+    /// `PluginParamTarget` installed as a `TimedParam` is live state the mod
+    /// router writes every frame; a forked source gets a frozen copy of its
+    /// authored part — base and `AUTOMATION` layer as they stood — and nothing
+    /// written to the live target afterwards (a layer edit, a mod offset, a
+    /// base move) reaches it. Modulation layers present at the fork are
+    /// dropped too, by decision (doc 013 gap 7).
+    ///
+    /// Mutation: share the curve in `rebound` (`Arc::clone(&p.curve)`) → the
+    /// fork reads every live write → fails. Mutation: keep modulation layers
+    /// in `PluginParamTarget::frozen` (drop `clear_mod_layers`) → the fork
+    /// reads the LFO present at the fork → fails. Mutation: don't forward
+    /// `frozen` through `OffsetCurve` → the wrapped target stays live → fails.
+    #[test]
+    fn a_rebound_source_freezes_live_modulation_targets() {
+        use tutti_nodes::{LayerKey, ModTarget};
+        let direct = Arc::new(PluginParamTarget::new(0.5, 0.0, 1.0));
+        direct.accumulate(LayerKey::AUTOMATION, 0.1);
+        direct.accumulate(LayerKey(3), 0.2); // live mod present at the fork
+        let wrapped = Arc::new(PluginParamTarget::new(0.5, 0.0, 1.0));
+        let live = ParamAutomationSource::new(
+            [
+                TimedParam {
+                    param_id: ParamAddress::Opaque(ParamId::new(1)),
+                    curve: direct.clone() as Arc<dyn Curve>,
+                },
+                TimedParam {
+                    param_id: ParamAddress::Opaque(ParamId::new(2)),
+                    curve: Arc::new(OffsetCurve::new(wrapped.clone(), 0.25)),
+                },
+            ],
+            Arc::new(TestTransport::new(120.0)),
+            SampleRate(48_000.0),
+        );
+        let fork = live.rebound(Arc::new(TestTransport::new(120.0)), SampleRate(48_000.0));
+        let at = |src: &ParamAutomationSource, i: usize| {
+            src.params[i].curve.value_at(tutti_core::Beat(0.0)).unwrap()
+        };
+        assert!((at(&fork, 0) - 0.6).abs() < 1e-6, "base + automation, no mod");
+        assert!((at(&fork, 1) - 0.25).abs() < 1e-6);
+
+        // After the fork, everything moves on the live targets.
+        direct.accumulate(LayerKey(3), 0.3);
+        direct.accumulate(LayerKey::AUTOMATION, -0.4);
+        direct.set_curve_layer(LayerKey(4), Arc::new(OffsetCurve::new(direct.clone(), 0.0)));
+        wrapped.set_base(0.9);
+        wrapped.accumulate(LayerKey(5), 0.05);
+        assert!((at(&live, 1) - 0.7).abs() < 1e-6, "the live side did move");
+        assert!((at(&fork, 0) - 0.6).abs() < 1e-6, "fork param 1 unchanged");
+        assert!((at(&fork, 1) - 0.25).abs() < 1e-6, "fork param 2 unchanged");
     }
 
     struct TestTransport {

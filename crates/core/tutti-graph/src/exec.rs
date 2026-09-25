@@ -32,8 +32,9 @@
 //! the executor would leak the box rather than free it on the audio thread.)
 //!
 //! **Where boxes are freed.** Drained boxes are dropped by the editor, on the
-//! control thread. If the executor is dropped with commits still queued, the
-//! rings go with it and those commits are dropped on the thread that drops
+//! control thread. If the executor is dropped with commits still queued (or
+//! held for a crossfade), the rings and the held list go with it and those
+//! commits are dropped on the thread that drops
 //! the executor — the control thread in practice, never the callback. If the
 //! editor is dropped, the executor keeps running its current plan; boxes it
 //! returns afterwards wait in the return ring until the executor is dropped.
@@ -88,6 +89,24 @@
 //!   output flagged silent (it returned `Silent`, `Idle`, or masks covering
 //!   every channel), and its declared tail has elapsed since its inputs went
 //!   quiet. A node never called yet is not quiet.
+//!
+//! # Crossfades
+//!
+//! [`Editor::replace`](crate::Editor::replace) (rules in `src/fade.rs`). A
+//! crossfade lives in the store beside its unit: the unit is the incoming
+//! one, and the crossfade holds the outgoing one and a scratch arena for its
+//! outputs, built on the control side with the commit. A node op with a
+//! fade running leaves the hot path for `fading_node_op`, which runs the
+//! outgoing unit, then the incoming one through the general borrow, then
+//! blends — touching only the op's own slots — and is never skipped. A
+//! replace while one runs waits in the unit's `queued` slot.
+//!
+//! **A commit that starts a fade is held, not sent back**, until every fade
+//! it started has ended (or been cut): then it goes back with the outgoing
+//! units in it, so they are freed on the control side like any retiree. A
+//! held box is still out, so the credit count above bounds how many are
+//! held, and a host can see [`CommitError::Backpressure`](crate::CommitError)
+//! while fades run.
 //!
 //! # Scheduled commands
 //!

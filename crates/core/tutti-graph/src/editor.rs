@@ -21,6 +21,9 @@
 //! compiling or advancing its plan. The return ring holds one more than that,
 //! so the executor's push always has room. `commit` drains the return ring
 //! first, so a caller that only ever commits never has to call `collect`.
+//! A commit that starts a crossfade ([`replace`](Editor::replace)) stays
+//! out until the fade ends, since the fade's outgoing unit rides back in
+//! it.
 //!
 //! # One `Prepare`
 //!

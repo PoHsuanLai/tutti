@@ -9,7 +9,9 @@
 //! sample-accuracy contract's type-level half (doc 013 §6: [`Offset`] vs
 //! `Frame`, timestamped commands, [`Io::sub_blocks`], [`Resolution`]),
 //! transport changes inside a block ([`TransportChanges`], carried by
-//! [`Env`]) and live re-preparation ([`Editor::reprepare`]).
+//! [`Env`]) and live re-preparation ([`Editor::reprepare`]). Of Phase 3 it
+//! has replace-with-fade ([`Editor::replace`], a [`Fade`] along a
+//! [`CrossfadeCurve`]).
 //!
 //! # The four layers (doc 013 §"The design")
 //!
@@ -114,6 +116,9 @@
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
 //! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
 //!   (commits, and timestamped commands), and their back-pressure.
+//! - [`Editor::replace`] and [`Fade`] — swapping a running unit with a
+//!   crossfade: both units run for the fade, the old one retires on the
+//!   control thread, and a replace during a fade waits for it.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //!
 //! # Import paths

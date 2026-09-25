@@ -13,6 +13,9 @@
 //!
 //! * **Butler writes, audio reads** — speed, direction, `src_ratio`, gain,
 //!   `reset_epoch` (ring-clear request), and both crossfades' buffers.
+//!   `src_ratio` has one more writer: the control thread re-derives it when
+//!   the session rate moves (`SessionRate::set`, a device restart), under the
+//!   plan's lock, which the butler also holds when it writes one.
 //! * **Audio writes, butler reads** — `underrun_count`, `buffer_fill_level`, and
 //!   the seek request (`seek_target` + `seek_request_epoch`), the mirror image of
 //!   `reset_epoch`.
@@ -285,8 +288,9 @@ impl RtState {
     }
 
     /// Publish the conversion ratio. Written by the butler when a stream starts,
-    /// from [`SrcRatio::for_rates`] — the same derivation the in-memory tier
-    /// uses, so neither tier can pick the ratio up backwards.
+    /// and re-derived when the session rate moves, from [`SrcRatio::for_rates`]
+    /// — the same derivation the in-memory tier uses, so neither tier can pick
+    /// the ratio up backwards.
     pub fn set_src_ratio(&self, ratio: SrcRatio) {
         self.playback
             .src_ratio

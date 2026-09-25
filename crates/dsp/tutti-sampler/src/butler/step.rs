@@ -32,7 +32,6 @@ use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::handle_loops;
 use super::preroll::apply_pdc_updates;
-use tutti_core::SampleRate;
 
 /// What the pacing layer should do after a [`ButlerCycle::step`].
 ///
@@ -76,16 +75,14 @@ pub enum StepOutcome {
 pub(crate) struct ButlerCycle {
     local: Local,
     config: BufferConfig,
-    sample_rate: SampleRate,
 }
 
 impl ButlerCycle {
     /// A cycle whose scratch is pre-sized for one `config.chunk_size` refill.
-    pub(crate) fn new(config: BufferConfig, sample_rate: SampleRate) -> Self {
+    pub(crate) fn new(config: BufferConfig) -> Self {
         Self {
             local: Local::new(config.chunk_size),
             config,
-            sample_rate,
         }
     }
 
@@ -107,10 +104,10 @@ impl ButlerCycle {
     ) -> StepOutcome {
         while let Some(cmd) = drain() {
             if matches!(cmd, ButlerCommand::Shutdown) {
-                handle_command(cmd, shared, &self.config, self.sample_rate, &mut self.local);
+                handle_command(cmd, shared, &self.config, &mut self.local);
                 return StepOutcome::Shutdown;
             }
-            handle_command(cmd, shared, &self.config, self.sample_rate, &mut self.local);
+            handle_command(cmd, shared, &self.config, &mut self.local);
         }
 
         if shared.plans.is_empty() {

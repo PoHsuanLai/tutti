@@ -1581,9 +1581,9 @@ ask again.
     second half lands through `commit_graph` (a crossfade asked for
     meanwhile waits in `PendingCrossfades`). Then the transport's rate
     (`Transport::set_sample_rate`, now shared by every clone), `AudioConfig`
-    and the hardware MIDI input's rate. `AudioConfig::channels` keeps the
-    graph's width. The driver is put back in the world even if the restart
-    panics.
+    and the hardware MIDI input's rate. (`AudioConfig::channels` kept the
+    graph's width then; see the next item.) The driver is put back in the
+    world even if the restart panics.
   - `tutti-core`'s engine follows the rate itself, on the first block that
     carries it: on `Graph` the block the re-prepare's **first** commit lands
     (`Executor::pending_prepare`), which is when the executor rescales its
@@ -1614,11 +1614,60 @@ ask again.
   resets. `Native` keeps every unit instance across a re-prepare and resets
   only time-based state.
 
-  Still
-  at the build rate after a restart (no way to change them yet): the
-  sampler's `DiskStreamer` and the MIDI `ClockMaster`; and the graph root
-  is not widened to a wider new device (a follow-up; until then
-  `AudioConfig::channels` keeps the graph's width and the engine folds).
+- **What #36 left at the build rate — done**, in the same hook
+  (`engine::restart`'s `rerate`):
+  - The sampler's `DiskStreamer` cached the session rate three times (the
+    streamer, `ButlerCycle`, every `Status`), so an open stream kept its
+    `SrcRatio` (file / session) and a streamed clip played 8.8% sharp and
+    fast after 44.1 to 48 kHz. The rate is now one shared cell
+    (`SessionRate`, in the butler's `Handles`);
+    `DiskStreamer::set_sample_rate` stores it and re-derives every open
+    stream's ratio from the file rate the butler now records on the `Link`
+    (the ratio is set under the plan's lock on both sides, so a stream the
+    butler opens concurrently cannot keep the old one). A placement gate's
+    file rate comes from that record too, not from `session × ratio`, so
+    seek targets stay in file frames whatever the session rate does. Pinned
+    in-crate (`a_rate_change_re_derives_every_streams_ratio`) and end to end
+    on both backends (a 44.1 kHz tone, streamed by a hand-stepped butler,
+    is 48 frames a cycle after the restart).
+  - The MIDI `ClockMaster`'s rate is an atomic with `set_sample_rate`: the
+    24-PPQN ticks land 1 000 frames apart at 48 kHz (120 BPM), not 918.75,
+    and the MTC quarter-frame phase carried across blocks (in frames) is
+    rescaled to the same wall-clock time. Its seek check compared the
+    beat's move with *this* block's due advance, so any change of rate,
+    block size or tempo between two blocks read as a locate (at 512-frame
+    blocks, 44.1 to 48 kHz is past the epsilon): a spurious Song Position
+    and an MTC phase reset. It now compares with the previous block's.
+  - The graph root is widened to a wider new device by the build's rule
+    (`root_width`: the device is a floor, and nothing is narrowed), so its
+    extra channels are routable rather than zero-filled by the fold;
+    `AudioConfig::channels` is the device's width again, as the build
+    publishes it. Clean on both backends because a live widening already
+    existed for `MasterSources` (`AudioGraphRes::widen_outputs`): on `Net`
+    the hook's commit is the arity-permitting one, and on `Native` the spec
+    edit waits for the re-prepare's second half and lands with the next
+    `commit_graph` (the per-channel compensation table then has the new
+    width).
+  - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` places
+    events in frames at its build rate) is rebuilt at the new rate:
+    `midi::sequence::rebuild` treats a change of `AudioConfig`'s rate as
+    dirty, with the all-notes-off every rebuild sends.
+
+  **Still at the build rate after a restart** (audited: everything else
+  that holds a rate is a graph unit, re-rated with the graph, or reads the
+  transport's shared rate):
+  - `SoundFontUnit` (`tutti-soundfont`): rustysynth fixes its rate at
+    `Synthesizer` construction and `set_sample_rate` is a no-op, so a
+    soundfont voice plays at the build rate's pitch. Fixing it means
+    rebuilding the synthesizer (and losing its voices), which is a
+    soundfont-crate change.
+  - A host-built `UmpOutRes` (`midi-hardware`): its `JrStream` stamps JR
+    timestamps and paces JR Clock at the rate it was built with. The host
+    constructs it, so the hook cannot see it; `JrStream` has no way to
+    re-rate yet (its stamper carries an origin in frames).
+  - Things a host builds from `AudioConfig` itself (an analyser over the
+    tap, a `Recorder`'s WAV header): `AudioConfig` changes on a restart,
+    which is the signal to rebuild them.
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

@@ -25,6 +25,7 @@ mod thread;
 
 pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
+pub(crate) use handlers::SessionRate;
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;

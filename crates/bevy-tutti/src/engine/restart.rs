@@ -18,8 +18,13 @@
 //!   that carries it, rescaling its frame clock and every scheduled
 //!   `At::Frame` transport command to the same wall-clock time, and stepping
 //!   the beat at the new rate — so the playhead continues without a jump;
-//! - [`TransportRes`]'s rate, [`AudioConfig`], and the hardware MIDI input's
-//!   timestamp rate;
+//! - the graph root, widened to a wider device as the build widens it
+//!   (`root_width`: the wider of the two, never narrowed), and
+//!   [`AudioConfig`], which takes the device's width and rate;
+//! - [`TransportRes`]'s rate, the hardware MIDI input's timestamp rate, the
+//!   sampler's disk streamer (every open stream's conversion ratio, so a
+//!   streamed clip keeps its pitch and speed) and the MIDI clock master (its
+//!   24-PPQN ticks and MTC quarter-frames land on the new rate's frames);
 //! - the compensation figures in samples ([`ChannelCompensation`],
 //!   [`GraphLatency`]): on `Net` recomputed and published before the first
 //!   block, with the delays resized in the same commit; on `Native` once the
@@ -41,12 +46,10 @@
 //! restart onto the old device at the old rate — `restart_device` with it,
 //! or a plain `TuttiDriver::restart` — moves nothing and plays again.
 //!
-//! Not re-rated here, and recorded in design doc 013: the sampler's disk
-//! streamer and the MIDI clock master each keep the rate they were built
-//! with (neither has a way to change it yet), and the graph root is not
-//! widened to a wider new device — so [`AudioConfig::channels`] keeps the
-//! width the graph outputs, not the new device's (the engine folds to the
-//! device's width either way).
+//! Not re-rated here, and recorded in design doc 013 (Phase 3 follow-ups):
+//! a `SoundFontUnit` (rustysynth fixes its rate at construction) and a
+//! host-built `UmpOutRes` (its JR clock). An installed MIDI clip is rebuilt at
+//! the new rate by `midi::sequence::rebuild`, which follows `AudioConfig`.
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -180,6 +183,16 @@ fn rerate(world: &mut World, spec: &OutputSpec, max_block: Option<Samples>) -> R
     let compensating = world.contains_resource::<GraphLatency>();
     let mut graph = world.resource_mut::<AudioGraphRes>();
     graph.rerate(rate, max_block, &transport)?;
+    // A wider device widens the root, by the build's rule, so its channels
+    // are there to be routed to rather than left silent; a narrower one keeps
+    // it, and the engine folds. The new channels read silence. `Net` commits
+    // the width below (the arity-permitting commit); `Native`'s spec edit
+    // waits for the re-prepare's second half and lands with the next
+    // `commit_graph`, as any edit made meanwhile does.
+    let width = crate::engine::build::root_width(graph.outputs(), spec.channels);
+    if width > graph.outputs() {
+        graph.widen_outputs(width);
+    }
     let backend = graph.backend();
     // `Net`: the re-rated net goes out now, so the first block at the new
     // rate renders it, with its compensation delays resized to the new
@@ -211,14 +224,24 @@ fn rerate(world: &mut World, spec: &OutputSpec, max_block: Option<Samples>) -> R
     if let Some(io) = world.get_resource::<crate::midi::MidiIoRes>() {
         io.ports().set_sample_rate(rate);
     }
-    // The graph's width, not the new device's: the root is not widened on
-    // a restart (doc 013), and the engine folds it to whatever the device is.
-    let channels = world
-        .get_resource::<AudioConfig>()
-        .map_or(spec.channels, |c| c.channels);
+    // Every open stream's ratio (file rate / session rate) is re-derived, so
+    // it plays on at its pitch; its position is in file frames, which the
+    // rate does not move.
+    #[cfg(feature = "sampler")]
+    if let Some(streamer) = world.get_resource::<crate::sampler::DiskStreamerRes>() {
+        streamer.set_sample_rate(rate);
+    }
+    // Ticked by the pre-block, which runs in the callback: nothing ticks it
+    // while the hook runs.
+    #[cfg(feature = "midi")]
+    if let Some(clock) = world.get_resource::<crate::midi::ClockMasterRes>() {
+        clock.master.set_sample_rate(rate);
+    }
+    // The device's width, as the build publishes it; the root is at least
+    // as wide (widened above).
     world.insert_resource(AudioConfig {
         sample_rate: rate,
-        channels,
+        channels: spec.channels,
     });
     Ok(())
 }
@@ -479,24 +502,281 @@ mod tests {
         );
         assert!(play(&mut app, &old, 441, 10).iter().any(|&x| x != 0.0));
 
-        // Within it, the same restart goes through — onto a 5.1 device,
-        // whose width `AudioConfig` does not take: the root stays stereo
-        // (it is not widened on a restart), and the engine folds.
+        // Within it, the same restart goes through (the widening onto the
+        // 5.1 device it picks is `a_restart_onto_a_wider_device_…`'s).
         let (driver, new) = ManualStreamDriver::new();
-        let surround = OutputSpec::new(
-            SampleRate(NEW),
-            ChannelLayout::from(6usize),
-            tutti_cpal::cpal::SampleFormat::F32,
-        );
-        restart_device_on(app.world_mut(), surround, driver, Some(Samples(2_048)))
-            .expect("at a block the engine holds");
+        restart_device_on(
+            app.world_mut(),
+            spec_with(NEW, 6),
+            driver,
+            Some(Samples(2_048)),
+        )
+        .expect("at a block the engine holds");
         assert!(new.is_open());
-        // Mutation (run): `rerate` publishing `spec.channels` → 6 → fails.
+    }
+
+    fn spec_with(rate: f64, channels: usize) -> OutputSpec {
+        OutputSpec::new(
+            SampleRate(rate),
+            ChannelLayout::from(channels),
+            tutti_cpal::cpal::SampleFormat::F32,
+        )
+    }
+
+    /// **A restart onto a wider device widens the root, as the build does;
+    /// onto a narrower one it keeps it.** Stereo at 44.1 kHz, then a 5.1
+    /// device at 48 kHz: the root is six wide (`root_width`, the device a
+    /// floor) — so a host routing to the surround channels finds them there
+    /// rather than zero-filled by the fold — `AudioConfig` publishes the
+    /// device's six, and the audio side renders six: the compensation
+    /// table, which the committed graph's figures fill (on `Native` the
+    /// re-prepare's resumed plan's), has an entry per root channel. Then
+    /// back onto a stereo device: the root keeps its six and the engine
+    /// folds, while `AudioConfig` says two.
+    ///
+    /// Mutations (run):
+    /// - `rerate` not widening → the root stays two → fails;
+    /// - `rerate` publishing the old `AudioConfig::channels` (as it did) →
+    ///   two after the 5.1 restart → fails.
+    fn a_restart_onto_a_wider_device_widens_the_root(backend: GraphBackend) {
+        let (mut app, _old, _, _) = engine_app(backend);
+        assert_eq!(app.world().resource::<AudioGraphRes>().outputs(), 2);
+
+        let (driver, surround) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_with(NEW, 6), driver, None).expect("restarts");
+        assert_eq!(
+            app.world().resource::<AudioGraphRes>().outputs(),
+            6,
+            "{backend:?}"
+        );
+        assert_eq!(
+            app.world().resource::<AudioConfig>().channels,
+            ChannelLayout::from(6usize)
+        );
+        for _ in 0..4 {
+            let block = surround.render_block(480).expect("the stream is open");
+            assert_eq!(block.len(), 480 * 6);
+            app.update();
+        }
+        let table = app.world().resource::<ChannelCompensation>().0.read();
+        assert_eq!(
+            table.len(),
+            6,
+            "{backend:?}: the committed root is six wide"
+        );
+        drop(table);
+
+        let (driver, stereo) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_at(NEW), driver, None).expect("restarts");
+        assert_eq!(app.world().resource::<AudioGraphRes>().outputs(), 6);
         assert_eq!(
             app.world().resource::<AudioConfig>().channels,
             ChannelLayout::STEREO
         );
+        let out = play(&mut app, &stereo, 480, 20);
+        assert!(
+            (period(&out[4_800..]) - 48.0).abs() < 0.01,
+            "{backend:?}: the six fold to the stereo device, the sine on the left"
+        );
     }
+    both_backends!(a_restart_onto_a_wider_device_widens_the_root);
+
+    /// Render `blocks` blocks of `frames` on `stream`, stepping the
+    /// hand-driven butler and running a frame of the app after each (the
+    /// butler refills where its thread would between callbacks): the left
+    /// channel.
+    #[cfg(feature = "sampler")]
+    fn stream(app: &mut App, stream: &ManualStream, frames: usize, blocks: usize) -> Vec<f32> {
+        let mut left = Vec::new();
+        for _ in 0..blocks {
+            let block = stream.render_block(frames).expect("the stream is open");
+            left.extend(block.iter().step_by(2));
+            let mut streamer = app
+                .world_mut()
+                .resource_mut::<crate::sampler::DiskStreamerRes>();
+            let _ = streamer.0.step_once();
+            app.update();
+        }
+        left
+    }
+
+    /// **A restart re-rates a disk-streamed clip**: a 1 kHz tone recorded at
+    /// 44.1 kHz, streamed by the butler, is 44.1 frames a cycle on the
+    /// 44.1 kHz device and 48 on the 48 kHz one — the stream's conversion
+    /// ratio (file rate / session rate) moves from 1 to 44.1/48 with the
+    /// restart. The clip carries on from where the playhead is: the voice's
+    /// placement gate converts the beat to file frames at the file's rate,
+    /// which the restart does not touch.
+    ///
+    /// The engine's threaded streamer is swapped for a hand-stepped one (the
+    /// same `DiskStreamerRes`, which the hook re-rates), so the butler's
+    /// refills are counted rather than raced.
+    ///
+    /// Mutation (run): `rerate` not calling `DiskStreamer::set_sample_rate`
+    /// → the ratio stays 1 and the tone plays at 44.1 frames a cycle on the
+    /// 48 kHz device (1.088 kHz) → fails on both.
+    #[cfg(feature = "sampler")]
+    fn a_restart_re_rates_a_disk_streamed_clip(backend: GraphBackend) {
+        use crate::sampler::DiskStreamerRes;
+        use tutti_core::{Beat, SamplePosition};
+        use tutti_sampler::{Command, DiskStreamer};
+
+        let (mut app, old, _, lim) = engine_app(backend);
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("tone_44k1.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).expect("writes");
+            for i in 0..(3 * 44_100) {
+                let s = (std::f32::consts::TAU * 1_000.0 * i as f32 / 44_100.0).sin() * 0.5;
+                w.write_sample(s).expect("writes");
+                w.write_sample(s).expect("writes");
+            }
+            w.finalize().expect("writes");
+        }
+
+        let mut streamer = DiskStreamer::manual(OLD, Default::default()).expect("builds");
+        streamer
+            .commands()
+            .send(Command::Stream {
+                channel_index: 0,
+                file_path: path,
+                offset: SamplePosition(0.0),
+            })
+            .expect("the butler is alive");
+        assert!(
+            streamer.step_until_settled(1_000) < 1_000,
+            "the ring primes"
+        );
+        let timeline = app.world().resource::<TransportRes>().timeline();
+        let voice = streamer
+            .status()
+            .take_disk_voice(0, timeline, Beat(0.0), None)
+            .expect("the link is installed");
+        app.world_mut().insert_resource(DiskStreamerRes(streamer));
+        let clip = app.world_mut().commands().spawn_audio_node(voice).id();
+        app.world_mut().insert_resource(
+            MasterSources::default()
+                .with(0, PortSource::node(clip))
+                .with(1, PortSource::node(lim)),
+        );
+        app.world_mut().flush();
+        app.update();
+        let t = transport(&app);
+        t.motion.try_send(MotionEvent::Play).expect("room");
+
+        let before = stream(&mut app, &old, 441, 100);
+        assert!(
+            (period(&before[4_410..]) - 44.1).abs() < 0.01,
+            "{backend:?}: the clip at 44.1 kHz, measured {}",
+            period(&before[4_410..])
+        );
+
+        let (driver, new) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_at(NEW), driver, None).expect("restarts");
+        let after = stream(&mut app, &new, 480, 100);
+        assert!(
+            (period(&after[4_800..]) - 48.0).abs() < 0.01,
+            "{backend:?}: the clip at 48 kHz keeps its pitch, measured {}",
+            period(&after[4_800..])
+        );
+    }
+    #[cfg(feature = "sampler")]
+    both_backends!(a_restart_re_rates_a_disk_streamed_clip);
+
+    /// Render `blocks` blocks of `frames` on `stream` and drain the clock
+    /// master's mailbox after each, a frame of the app between: every
+    /// event's status byte and its absolute frame (counted from `*frame`).
+    #[cfg(feature = "midi")]
+    fn clock(
+        app: &mut App,
+        stream: &ManualStream,
+        (frames, blocks): (usize, usize),
+        frame: &mut u64,
+    ) -> Vec<(u32, u64)> {
+        let mut out = Vec::new();
+        let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
+        for _ in 0..blocks {
+            stream.render_block(frames).expect("the stream is open");
+            let receiver = &app
+                .world()
+                .resource::<crate::midi::ClockMasterRes>()
+                .receiver;
+            let n = receiver.poll_into(&mut buf);
+            out.extend(
+                buf[..n]
+                    .iter()
+                    .map(|e| ((e.data[0] >> 16) & 0xFF, *frame + u64::from(e.frame_offset))),
+            );
+            *frame += frames as u64;
+            app.update();
+        }
+        out
+    }
+
+    /// **A restart re-rates the MIDI clock master.** At 120 BPM a 24-PPQN
+    /// tick is 1/48 s: 918.75 frames at 44.1 kHz, 1 000 at 48 kHz. Through
+    /// the engine's own pre-block, the ticks are 918.75 frames apart before
+    /// the restart and 1 000 after it, and the restart sends no Song
+    /// Position (it is not a locate: 512-frame blocks move the beat further
+    /// at 44.1 kHz than at 48, past the seek epsilon of the old check).
+    ///
+    /// Mutations (run):
+    /// - `rerate` not calling `ClockMaster::set_sample_rate` → the ticks
+    ///   after the restart stay 918.75 frames apart (the receiving gear ~8.8%
+    ///   fast) → fails on both;
+    /// - `ClockMaster::tick` comparing the beat's move with this block's
+    ///   advance rather than the previous block's (as it did) → a Song
+    ///   Position at the restart → fails on both.
+    #[cfg(feature = "midi")]
+    fn a_restart_re_rates_the_midi_clock(backend: GraphBackend) {
+        let (mut app, old, _, _) = engine_app(backend);
+        app.world()
+            .resource::<crate::midi::ClockMasterRes>()
+            .master
+            .set_enabled(true);
+        transport(&app)
+            .motion
+            .try_send(MotionEvent::Play)
+            .expect("room");
+        let ticks = |events: &[(u32, u64)]| -> f64 {
+            let at: Vec<u64> = events
+                .iter()
+                .filter(|(status, _)| *status == 0xF8)
+                .map(|&(_, at)| at)
+                .collect();
+            assert!(at.len() > 20, "ticks to measure");
+            (at[at.len() - 1] - at[0]) as f64 / (at.len() - 1) as f64
+        };
+
+        let mut frame = 0;
+        let before = clock(&mut app, &old, (512, 100), &mut frame);
+        assert!(
+            (ticks(&before) - 918.75).abs() < 0.05,
+            "{backend:?}: {}",
+            ticks(&before)
+        );
+
+        let (driver, new) = ManualStreamDriver::new();
+        restart_device_on(app.world_mut(), spec_at(NEW), driver, None).expect("restarts");
+        let after = clock(&mut app, &new, (512, 100), &mut frame);
+        assert!(
+            (ticks(&after) - 1_000.0).abs() < 0.05,
+            "{backend:?}: {}",
+            ticks(&after)
+        );
+        assert!(
+            !after.iter().any(|(status, _)| *status == 0xF2),
+            "{backend:?}: the restart is not a locate"
+        );
+    }
+    #[cfg(feature = "midi")]
+    both_backends!(a_restart_re_rates_the_midi_clock);
 
     /// **After a hook fails, a restart onto the old device and rate plays
     /// again.** The hook fails with the stream stopped (here: the

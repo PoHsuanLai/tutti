@@ -1,7 +1,7 @@
 //! Per-channel butler plan for a streaming playback.
 
 use std::sync::Arc;
-use tutti_core::{AtomicU64, Ordering, PlaybackRate, SrcRatio};
+use tutti_core::{AtomicU64, Ordering, PlaybackRate, SampleRate, SrcRatio};
 
 use super::cache::StreamPin;
 use super::command::RegionId;
@@ -49,6 +49,12 @@ pub(crate) struct Link {
     pub(crate) region_id: RegionId,
     pub(crate) read_position: Arc<AtomicU64>,
     pub(crate) loop_config: Option<LoopConfig>,
+    /// The file's own rate, as its header states it. Recorded rather than
+    /// recovered from the stream's [`SrcRatio`] (`file / session`): the ratio
+    /// is re-derived from this when the session rate moves
+    /// (`SessionRate::set`), and a placement gate converts beats to file
+    /// frames with it (`Status::take_disk_voice`).
+    pub(crate) file_rate: SampleRate,
     /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
     /// for exactly the stream's lifetime, so a fully-buffered (hence cold)
     /// stream is never evicted mid-read. `None` when the region streams
@@ -94,8 +100,14 @@ impl ChannelPlan {
     /// `cache_pin` keeps the streamed wave resident in the LRU cache for the
     /// stream's lifetime; it is stored in the `Link` and released when
     /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
-    /// resident cache entry (incremental disk streaming).
-    pub fn start_streaming(&mut self, consumer: SharedReader, cache_pin: Option<StreamPin>) {
+    /// resident cache entry (incremental disk streaming). `file_rate` is the
+    /// file's own rate (see [`Link::file_rate`]).
+    pub fn start_streaming(
+        &mut self,
+        consumer: SharedReader,
+        cache_pin: Option<StreamPin>,
+        file_rate: SampleRate,
+    ) {
         let (region_id, read_position) = {
             let cell = consumer.load();
             (cell.region_id(), cell.read_position_shared())
@@ -105,6 +117,7 @@ impl ChannelPlan {
             region_id,
             read_position,
             loop_config: None,
+            file_rate,
             _cache_pin: cache_pin,
         });
     }

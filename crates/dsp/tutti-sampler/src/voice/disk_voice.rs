@@ -607,9 +607,9 @@ pub struct DiskVoiceConfig {
     /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
     ///
-    /// Typed: it is produced from `session_rate * src_ratio` (both typed) and
-    /// was re-wrapped with `SampleRate::new` at its one real consumer, so the
-    /// `f64` existed only to cross this struct.
+    /// The rate the butler recorded from the file's header when it opened the
+    /// stream (`Status::take_disk_voice`), not one recovered from the session
+    /// rate: that one moves on a device restart, and the file's does not.
     pub file_sample_rate: SampleRate,
 }
 
@@ -762,8 +762,9 @@ impl DiskVoice {
         self.inner.gain()
     }
 
-    /// The file sample rate this stream decodes at — `session_rate × src_ratio`,
-    /// so the sample-rate conversion is **already folded in**. Composing it with
+    /// The file sample rate this stream decodes at — the file's own, which is
+    /// `session_rate × src_ratio`, so the sample-rate conversion is **already
+    /// folded in**. Composing it with
     /// a rate that also carries `src_ratio` applies the factor twice — which is
     /// why the placement gate composes with [`SrcRatio::UNITY`].
     pub fn file_sample_rate(&self) -> SampleRate {
@@ -778,8 +779,8 @@ impl DiskVoice {
     /// Composes with [`SrcRatio::UNITY`] — deliberately unlike the memory tier,
     /// and the asymmetry is real rather than cosmetic.
     ///
-    /// `file_sample_rate` here already carries the conversion: `ports.rs` builds
-    /// it as `session_rate × src_ratio`, which for a placement gate measuring
+    /// `file_sample_rate` here already carries the conversion: it is the file's
+    /// rate, `session_rate × src_ratio`, which for a placement gate measuring
     /// *file* samples is exactly the file rate. So `src_ratio` has been applied
     /// once by the time it reaches this call, and composing it again would apply it
     /// twice — on a 48 kHz file in a 44.1 kHz session the gate lands ~8.8% deep and
@@ -1117,8 +1118,9 @@ mod tests {
     /// A 48 kHz file in a 44.1 kHz session must seek to the offset the ring
     /// will actually reach — `src_ratio` applied exactly once.
     ///
-    /// `file_sample_rate` is reconstructed as `session_rate × src_ratio`
-    /// (`ports.rs`), so it already carries the conversion; multiplying the gate
+    /// `file_sample_rate` is the file's rate, `session_rate × src_ratio`
+    /// (`ports.rs` hands over the one the butler recorded), so it already
+    /// carries the conversion; multiplying the gate
     /// by `read_rate` (speed × src_ratio) applied it twice. Every other
     /// streaming fixture hardcodes 44100 against a default `src_ratio` of 1.0 —
     /// the one value that makes a double-multiply invisible.
@@ -1140,7 +1142,7 @@ mod tests {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                // What `ports.rs` reconstructs: session × src == the real file rate.
+                // The file's rate, as `ports.rs` hands it over: session × src.
                 file_sample_rate: SampleRate(44_100.0 * src),
             },
         );

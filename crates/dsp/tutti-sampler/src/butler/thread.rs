@@ -18,7 +18,7 @@ use tutti_core::Samples;
 use super::cache::LruCache;
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
-use super::handlers::Handles;
+use super::handlers::{Handles, SessionRate};
 use super::loop_body::butler_loop_async;
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
@@ -38,7 +38,6 @@ pub struct ButlerThread {
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
-    sample_rate: SampleRate,
     /// The synchronous cycle, when this controller is being driven by hand
     /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
     /// has been called on an unstarted controller; `start` refuses once it is
@@ -70,6 +69,7 @@ impl ButlerThread {
             )),
             metrics: Arc::new(Metrics::new()),
             pdc: None,
+            session_rate: SessionRate::new(sample_rate),
         };
 
         Self {
@@ -79,7 +79,6 @@ impl ButlerThread {
             shutdown: Arc::new(AtomicBool::new(false)),
             shared,
             config,
-            sample_rate,
             #[cfg(any(test, feature = "test-support"))]
             manual: None,
         }
@@ -135,13 +134,12 @@ impl ButlerThread {
         let shutdown = Arc::clone(&self.shutdown);
         let shared = self.shared.clone();
         let config = self.config;
-        let sample_rate = self.sample_rate;
 
         let handle = thread::Builder::new()
             .name("tutti-butler".into())
             .spawn(move || {
                 let _ = thread_priority::set_current_thread_priority(ThreadPriority::Max);
-                smol::block_on(butler_loop_async(rx, shared, config, sample_rate, shutdown));
+                smol::block_on(butler_loop_async(rx, shared, config, shutdown));
             })
             // Fatal init: spawning the disk-I/O butler thread is a prerequisite
             // for all streaming/recording. A spawn failure means the OS is out of
@@ -201,7 +199,7 @@ impl ButlerThread {
             .clone();
         let cycle = self
             .manual
-            .get_or_insert_with(|| ButlerCycle::new(self.config, self.sample_rate));
+            .get_or_insert_with(|| ButlerCycle::new(self.config));
         cycle.step(&self.shared, || rx.try_recv().ok())
     }
 
@@ -213,6 +211,19 @@ impl ButlerThread {
     /// change between two reads.
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
+    }
+
+    /// The session-rate cell, shared: a [`Status`](crate::Status) built from
+    /// it reads the rate as it is, not as it was.
+    pub(crate) fn session_rate(&self) -> SessionRate {
+        self.shared.session_rate.clone()
+    }
+
+    /// Move the session rate, re-deriving every open stream's ratio (see
+    /// [`SessionRate::set`]). Control thread; streams opened later derive
+    /// theirs against it.
+    pub(crate) fn set_session_rate(&self, rate: SampleRate) {
+        self.shared.session_rate.set(rate, &self.shared.plans);
     }
 }
 

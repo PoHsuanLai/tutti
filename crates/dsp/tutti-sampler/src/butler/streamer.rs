@@ -35,7 +35,6 @@ use tutti_core::Samples;
 pub struct DiskStreamer {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
-    sample_rate: SampleRate,
 }
 
 // `butler`/`butler_tx` hold a thread handle + command channel that can't
@@ -43,7 +42,7 @@ pub struct DiskStreamer {
 impl std::fmt::Debug for DiskStreamer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskStreamer")
-            .field("sample_rate", &self.sample_rate)
+            .field("sample_rate", &self.butler.session_rate().get())
             .finish_non_exhaustive()
     }
 }
@@ -55,8 +54,7 @@ impl DiskStreamer {
     /// `Default::default()` for the tuned defaults. Returns [`Err`] if any
     /// subsystem fails to initialize.
     pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let sample_rate = sample_rate.into();
-        let mut butler = ButlerThread::with_config(256, sample_rate, config.buffer_config);
+        let mut butler = ButlerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
             butler = butler.with_pdc(Arc::clone(pdc));
@@ -65,11 +63,7 @@ impl DiskStreamer {
         let butler_tx = butler.command_sender();
         butler.start();
 
-        Ok(DiskStreamer {
-            butler_tx,
-            butler,
-            sample_rate,
-        })
+        Ok(DiskStreamer { butler_tx, butler })
     }
 
     /// Build the system **without** spawning the butler thread; cycles are then
@@ -92,8 +86,7 @@ impl DiskStreamer {
     /// ```
     #[cfg(any(test, feature = "test-support"))]
     pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
-        let sample_rate = sample_rate.into();
-        let mut butler = ButlerThread::with_config(256, sample_rate, config.buffer_config);
+        let mut butler = ButlerThread::with_config(256, sample_rate.into(), config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
             butler = butler.with_pdc(Arc::clone(pdc));
@@ -101,11 +94,7 @@ impl DiskStreamer {
 
         let butler_tx = butler.command_sender();
 
-        Ok(DiskStreamer {
-            butler_tx,
-            butler,
-            sample_rate,
-        })
+        Ok(DiskStreamer { butler_tx, butler })
     }
 
     /// Run one butler cycle on the calling thread, reporting whether the
@@ -162,7 +151,25 @@ impl DiskStreamer {
     /// the channel-plan map (the reader-factory).
     #[must_use]
     pub fn status(&self) -> Status {
-        Status::new(self.sample_rate, self.butler.plans())
+        Status::new(self.butler.session_rate(), self.butler.plans())
+    }
+
+    /// Move the session rate to `sample_rate`: what a device restart at a new
+    /// rate does, between the stream's stop and its start.
+    ///
+    /// Every open stream keeps its file and its position (in file frames, which
+    /// the rate does not touch) and has its conversion ratio re-derived against
+    /// the new rate, so it plays on at the right pitch and speed from the next
+    /// block; a stream opened later derives its ratio against the new rate too,
+    /// and every [`Status`] — clones taken earlier included — reports it.
+    /// `&self`: the rate is one shared cell and the ratios are atomics, so a
+    /// host holding the streamer behind a shared reference can call it.
+    ///
+    /// Control thread only. Nothing changes for a disk voice already in the
+    /// graph beyond its ratio: its placement gate converts beats to file frames
+    /// at the file's own rate, which is not the session's.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        self.butler.set_session_rate(sample_rate.into());
     }
 }
 
@@ -315,6 +322,89 @@ mod tests {
             "the ring-reset epoch did not move from {before} in the cycle that applied a \
              backward seek — the butler did not reposition the stream"
         );
+    }
+
+    /// Write `seconds` of a stereo 440 Hz tone at `rate` to `path`.
+    fn write_tone(path: &std::path::Path, rate: u32, seconds: f64) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..(f64::from(rate) * seconds) as usize {
+            let s = (std::f32::consts::TAU * 440.0 * i as f32 / rate as f32).sin() * 0.4;
+            w.write_sample(s).unwrap();
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    /// **A session-rate change re-rates every stream, open or opened later.**
+    /// A streamer built at 44.1 kHz streams a 48 kHz file (ratio 48/44.1);
+    /// then the device restarts at 48 kHz (`set_sample_rate`):
+    ///
+    /// - the open stream's ratio is re-derived, to unity — it plays on at the
+    ///   right pitch and speed rather than 8.8% sharp;
+    /// - a `Status` taken *before* the restart reports the new rate;
+    /// - a disk voice taken after it still converts beats to file frames at
+    ///   the file's 48 kHz (its seek targets stay where they were);
+    /// - a 44.1 kHz file streamed after it gets 44.1/48, not unity.
+    ///
+    /// Mutations (run):
+    /// - `SessionRate::set` not re-deriving the open streams → the first
+    ///   ratio stays 48/44.1 → fails;
+    /// - `SessionRate::set` not storing the rate → the early `Status` reports
+    ///   44.1 kHz → fails;
+    /// - `handle_stream_file` deriving against the build's 44.1 kHz (what the
+    ///   old `ButlerCycle::sample_rate` copy did) → the later stream gets
+    ///   unity → fails;
+    /// - `status()` copying the rate into a fresh cell → the early `Status`
+    ///   reports 44.1 kHz → fails.
+    #[test]
+    fn a_rate_change_re_derives_every_streams_ratio() {
+        use crate::ports::Command;
+        use tutti_core::{Beat, SamplePosition, SrcRatio, Timeline, Transport};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (at_48, at_44) = (dir.path().join("48k.wav"), dir.path().join("44k.wav"));
+        write_tone(&at_48, 48_000, 1.0);
+        write_tone(&at_44, 44_100, 1.0);
+
+        let mut sampler = DiskStreamer::manual(44_100.0, Default::default()).unwrap();
+        let early = sampler.status();
+        let stream = |sampler: &mut DiskStreamer, channel_index, path: &std::path::Path| {
+            sampler
+                .commands()
+                .send(Command::Stream {
+                    channel_index,
+                    file_path: path.to_path_buf(),
+                    offset: SamplePosition(0.0),
+                })
+                .expect("the butler is alive in this test");
+            let _ = sampler.step_once();
+        };
+        let plans = sampler.butler.plans();
+        let ratio = |channel| plans.get(&channel).expect("streaming").rt_state.src_ratio();
+
+        stream(&mut sampler, 0, &at_48);
+        assert_eq!(ratio(0), SrcRatio::for_rates(48_000.0, 44_100.0));
+        assert!(ratio(0) != SrcRatio::UNITY, "setup: a converting stream");
+
+        sampler.set_sample_rate(48_000.0);
+        assert_eq!(ratio(0), SrcRatio::UNITY, "the open stream is re-rated");
+        assert_eq!(early.sample_rate(), SampleRate(48_000.0));
+
+        let clock: Arc<dyn Timeline> = Arc::new(Transport::new(48_000.0));
+        let voice = sampler
+            .status()
+            .take_disk_voice(0, clock, Beat(0.0), None)
+            .expect("the link is installed");
+        assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
+
+        stream(&mut sampler, 1, &at_44);
+        assert_eq!(ratio(1), SrcRatio::for_rates(44_100.0, 48_000.0));
     }
 
     /// Stepping and threading are exclusive owners of the butler's local state.

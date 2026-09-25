@@ -311,9 +311,7 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
             let mut planar = vec![vec![0.0f32; len]; 3];
             let mut outs: Vec<&mut [f32]> = planar.iter_mut().map(Vec::as_mut_slice).collect();
             exec.process(len, &tutti_graph::Transport::default(), &[], &mut outs);
-            for i in 0..len {
-                want.extend((0..3).map(|c| planar[c][i]));
-            }
+            want.extend((0..len).flat_map(|i| planar.iter().map(move |ch| ch[i])));
             done += len;
         }
     }

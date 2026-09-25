@@ -107,6 +107,11 @@ pub struct Engine {
 
 /// The graph runtime an engine renders. An enum rather than a trait object:
 /// two variants, matched once per block, keeps the RT path monomorphic.
+///
+/// The variants differ in size (the executor is about twice the `Net`
+/// side); there is one per engine, held in place for its life, so boxing
+/// either would buy a pointer hop a block and save nothing.
+#[allow(clippy::large_enum_variant)]
 enum Backend {
     Net(NetRender),
     Graph(GraphRender),

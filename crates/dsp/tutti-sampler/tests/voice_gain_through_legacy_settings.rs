@@ -58,11 +58,11 @@ fn graph_with_voice() -> (Editor, Executor, LegacyControls<VoiceNode>) {
         play: Playback::default(),
         channel_index: None,
     };
-    let (node, controls) = Legacy::controlled(VoiceNode::with_channels(
-        voice,
-        tutti_core::ChannelLayout::MONO,
-    ));
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (node, controls) = Legacy::controlled(
+        &mut ed,
+        VoiceNode::with_channels(voice, tutti_core::ChannelLayout::MONO),
+    );
     let key = NodeKey(1);
     ed.insert(key, "voice", node);
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];

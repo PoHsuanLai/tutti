@@ -82,7 +82,7 @@ fn process_is_allocation_free_in_steady_state() {
     ed.insert(NodeKey(7), "sum", TestNode::new(Kind::Sum { inputs: 3 }));
     // Controlled, so the gate drains a settings ring; pure, so it runs the
     // silence scan too.
-    let (lowpass, mut settings) = Legacy::controlled(lowpass_hz(800.0, 0.7));
+    let (lowpass, mut settings) = Legacy::controlled(&mut ed, lowpass_hz(800.0, 0.7));
     ed.insert(NodeKey(8), "lowpass", lowpass.assume_pure());
     ed.insert(
         NodeKey(9),

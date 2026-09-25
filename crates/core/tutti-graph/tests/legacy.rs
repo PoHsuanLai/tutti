@@ -61,8 +61,8 @@ fn legacy_nodes_render_what_net_renders() {
     // The graph side, built as the `Net` above is: two units, input piped
     // into the first, `connect`, output piped from the second.
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let fa = g.add_unit(Box::new(lowpass_hz(700.0, 0.8)));
-    let fb = g.add_unit(Box::new(lowpass_hz(2_300.0, 1.1)));
+    let fa = g.add_pure_unit(Box::new(lowpass_hz(700.0, 0.8)));
+    let fb = g.add_pure_unit(Box::new(lowpass_hz(2_300.0, 1.1)));
     g.pipe_input(fa).connect(fa, 0, fb, 0).pipe_output(fb);
     let mut r = g.renderer(prepare(256)).expect("commits");
     // Aliased in place: the adapter opts in, and this exercises its path.
@@ -489,14 +489,26 @@ impl AudioUnit for Params {
     ) {
         output.channel_f32_mut(0)[..size].fill(self.values[0]);
     }
+    /// `Value(v)` at `Index(i)` sets param `i`. As a filter's `set` does,
+    /// `Center(c)` sets param 0, and a `CenterQ`-shaped setting sets params 0
+    /// and 1 — two setting kinds that write one field, the case that makes
+    /// coalescing order matter. (`Setting` has no `center_q` constructor
+    /// since Phase 0b, so `Biquad(c, q, ..)` stands in for `CenterQ(c, q)`.)
     fn set(&mut self, setting: tutti_node::Setting) {
-        if let (tutti_node::Parameter::Value(v), tutti_node::Address::Index(i)) =
-            (setting.parameter(), setting.direction())
-        {
-            self.values[i] = *v;
+        let mut apply = |i: usize, v: f32| {
+            self.values[i] = v;
             if let Some(log) = &self.log {
-                log.lock().unwrap().push((i, *v));
+                log.lock().unwrap().push((i, v));
             }
+        };
+        match (setting.parameter(), setting.direction()) {
+            (tutti_node::Parameter::Value(v), tutti_node::Address::Index(i)) => apply(i, *v),
+            (tutti_node::Parameter::Center(c), _) => apply(0, *c),
+            (tutti_node::Parameter::Biquad(c, q, ..), _) => {
+                apply(0, *c);
+                apply(1, *q);
+            }
+            _ => {}
         }
     }
     fn inputs(&self) -> usize {
@@ -537,8 +549,8 @@ fn controlled_graph() -> (
 ) {
     let unit = Params::new();
     let log = Arc::clone(unit.log.as_ref().expect("the original logs"));
-    let (node, controls) = Legacy::controlled(unit);
     let (mut ed, mut exec) = Editor::new(prepare(64));
+    let (node, controls) = Legacy::controlled(&mut ed, unit);
     let key = NodeKey(1);
     ed.insert(key, "params", node);
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
@@ -629,4 +641,93 @@ fn flush_sends_what_is_held() {
     assert_eq!(controls.flush(), Delivery::Queued);
     exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
     assert_eq!(log.lock().unwrap().last(), Some(&(1, 1.0)));
+}
+
+/// Fill the ring with `LEGACY_SETTINGS_CAPACITY` settings for param 3, so
+/// whatever is sent next is held.
+fn fill(controls: &mut LegacyControls<Params>) {
+    for k in 0..LEGACY_SETTINGS_CAPACITY {
+        assert_eq!(controls.set(param(3, k as f32)), Delivery::Queued);
+    }
+}
+
+/// **Coalescing never reorders: A, B, A delivers B then A.** With the ring
+/// full, `A = 1`, `B = 2`, `A = 3` are held; what reaches the unit is each
+/// parameter's last value at its last send's position — a subsequence of
+/// what was sent.
+///
+/// Mutation: coalesce by replacing the held entry in place (the old rule) →
+/// the unit sees `A = 3` before `B` → fails.
+#[test]
+fn coalescing_keeps_last_occurrence_order() {
+    let (mut ed, mut exec, mut controls, log) = controlled_graph();
+    fill(&mut controls);
+    for (i, v) in [(0, 1.0), (1, 2.0), (0, 3.0)] {
+        assert_eq!(controls.set(param(i, v)), Delivery::Held);
+    }
+    let mut out = vec![0.0f32; 64];
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    ed.collect();
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    let log = log.lock().unwrap();
+    assert_eq!(&log[LEGACY_SETTINGS_CAPACITY..], &[(1, 2.0), (0, 3.0)]);
+}
+
+/// **Two setting kinds that write one field end where the shadow ends.**
+/// With the ring full, `Center(1000)`, `CenterQ(500, 0.7)` (spelled as a
+/// `Biquad`, see below), `Center(2000)`:
+/// the shadow applied all three, so its cutoff is 2000. Replacing the held
+/// `Center` in place would send `Center(2000)` before `CenterQ`, leaving the
+/// unit at 500 for good; moving it to the back keeps the two in step.
+///
+/// Mutation: coalesce in place → the unit ends at 500 while the shadow says
+/// 2000 → fails.
+#[test]
+fn a_coalesced_setting_leaves_the_unit_where_the_shadow_is() {
+    let (mut ed, mut exec, mut controls, _log) = controlled_graph();
+    fill(&mut controls);
+    let _ = controls.set(tutti_node::Setting::center(1_000.0));
+    // `CenterQ(500, 0.7)`: `Setting` lost its `center_q` constructor in
+    // Phase 0b, so the test unit reads `Biquad`'s first two fields as the
+    // same (cutoff, Q) pair — another kind that writes the cutoff field.
+    let _ = controls.set(tutti_node::Setting::biquad(500.0, 0.7, 0.0, 0.0, 0.0));
+    let _ = controls.set(tutti_node::Setting::center(2_000.0));
+    assert_eq!(controls.shadow().values[0], 2_000.0);
+    let mut out = vec![0.0f32; 64];
+    for _ in 0..2 {
+        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        ed.collect();
+    }
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert!(
+        out.iter().all(|&x| x == 2_000.0),
+        "the unit renders the shadow's cutoff; got {}",
+        out[0]
+    );
+}
+
+/// **A burst that fills the ring and then goes quiet is delivered by the
+/// editor**, with no further `set` or `flush`: `Editor::collect` flushes
+/// every controlled node built for it.
+///
+/// Mutation: drop the outbox flush from `Editor::collect` → the held
+/// settings never arrive → fails. Mutation: skip `register_outbox` in
+/// `Legacy::controlled` → fails.
+#[test]
+fn a_quiet_burst_is_delivered_after_the_next_collect() {
+    let (mut ed, mut exec, mut controls, log) = controlled_graph();
+    fill(&mut controls);
+    for i in 0..3 {
+        assert_eq!(controls.set(param(i, 10.0 + i as f32)), Delivery::Held);
+    }
+    let mut out = vec![0.0f32; 64];
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    ed.collect();
+    assert_eq!(controls.held(), 0, "flushed by the editor");
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    let log = log.lock().unwrap();
+    assert_eq!(
+        &log[LEGACY_SETTINGS_CAPACITY..],
+        &[(0, 10.0), (1, 11.0), (2, 12.0)]
+    );
 }

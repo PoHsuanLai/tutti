@@ -160,7 +160,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         })
         .collect();
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&transport, exec);
+    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
 
     let mut output = vec![0.0f32; 1024 * 2];
     // Applying the commit allocates; that is the control side's price and

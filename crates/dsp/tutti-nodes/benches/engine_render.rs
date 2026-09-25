@@ -352,7 +352,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
         port: 0,
     })];
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&Transport::new(SR), exec);
+    let engine = Engine::with_graph(&Transport::new(SR), &mut ed, exec).expect("within the limits");
     // Install the plan outside the timed loop; the editor may go.
     let mut warm = vec![0.0f32; 512 * 2];
     render(&engine, &mut warm, ChannelLayout::STEREO);

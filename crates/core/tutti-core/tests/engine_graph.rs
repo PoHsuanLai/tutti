@@ -294,7 +294,8 @@ fn graph_engine(
     ed.insert(NodeKey(1), "node", node);
     outputs(&mut ed, NodeKey(1), width);
     ed.commit().expect("commits");
-    (Engine::with_graph(transport, exec), ed)
+    let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");
+    (engine, ed)
 }
 
 // ---- the render ----------------------------------------------------------
@@ -886,4 +887,192 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
     let beats = beats.lock().expect("log");
     assert_ne!(beats[599], beats[600], "moving up to the stop");
     assert_eq!(beats[601], beats[1_000], "held from the stop");
+}
+
+// ---- limits, capacity, re-prepare --------------------------------------------
+
+/// A graph engine refuses what its fold scratch cannot hold: a graph with
+/// more than `MAX_ROOT_CHANNELS` global outputs at construction, and any
+/// later commit that would widen past it; and an executor that is not the
+/// editor's. Never silence.
+///
+/// Mutation (run): set no output limit in `with_graph_capacity`
+/// (`max_global_outputs: usize::MAX`) → both refusals pass → fails. Skip the
+/// pair check → the stranger's executor is accepted → fails.
+#[test]
+fn a_graph_engine_refuses_more_outputs_than_it_folds() {
+    use tutti_core::{GraphEngineError, MAX_ROOT_CHANNELS};
+    use tutti_graph::CommitError;
+
+    let transport = Transport::new(SR);
+    let (mut ed, exec) = Editor::new(prepare(256));
+    ed.insert(NodeKey(1), "node", Clocked);
+    // Ten outputs off a three-channel node's ports, repeated: a legal graph,
+    // wider than the scratch.
+    ed.spec_mut().topology.outputs = (0..10)
+        .map(|c| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port: c % 3,
+            })
+        })
+        .collect();
+    ed.commit().expect("no limits yet");
+    assert!(matches!(
+        Engine::with_graph(&transport, &mut ed, exec),
+        Err(GraphEngineError::Limits(CommitError::TooManyOutputs {
+            outputs: 10,
+            ..
+        }))
+    ));
+
+    let (engine, mut ed) = graph_engine(&transport, 256, Clocked, 3);
+    render(&engine, ChannelLayout::STEREO, &[256]);
+    ed.spec_mut().topology.outputs = (0..MAX_ROOT_CHANNELS as u16 + 1)
+        .map(|c| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port: c % 3,
+            })
+        })
+        .collect();
+    assert!(matches!(
+        ed.commit(),
+        Err(CommitError::TooManyOutputs {
+            outputs: 9,
+            limit: 8
+        })
+    ));
+
+    let (mut ed, _exec) = Editor::new(prepare(256));
+    let (_other, stranger) = Editor::new(prepare(256));
+    assert_eq!(
+        Engine::with_graph(&transport, &mut ed, stranger).err(),
+        Some(GraphEngineError::NotAPair)
+    );
+}
+
+/// Re-prepare the graph under a running engine, shrinking and then growing
+/// `MaxBlock`: the engine adopts each new maximum on the block the resume
+/// lands in (no stale split, no assertion in the callback), through both
+/// `process` and `process_segment`; and a re-prepare past its block
+/// capacity is refused on the control thread.
+///
+/// Mutation (run): read the block bound before `apply_pending` in `settle`
+/// (the reviewed order) → the shrink hands the executor a 512-frame block
+/// against a 256 maximum → panics → fails.
+#[test]
+fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
+    use tutti_graph::CommitError;
+
+    for segment in [false, true] {
+        let transport = Transport::new(SR);
+        let (mut ed, exec) = Editor::new(prepare(512));
+        ed.insert(NodeKey(1), "node", Clocked);
+        outputs(&mut ed, NodeKey(1), 3);
+        ed.commit().expect("commits");
+        let engine =
+            Engine::with_graph_capacity(&transport, &mut ed, exec, Samples(2048)).expect("fits");
+        assert_eq!(engine.graph_block_capacity(), Some(Samples(2048)));
+        let layout = ChannelLayout::from_count(3);
+        let go = |n: usize| {
+            let mut buf = vec![0.0f32; n * 3];
+            let mut out = InterleavedMut::new(&mut buf, layout);
+            if segment {
+                engine.process_segment(&mut out);
+            } else {
+                engine.process(&mut out);
+            }
+            buf
+        };
+        go(512);
+
+        // Past the capacity: refused, nothing sent.
+        assert!(matches!(
+            ed.reprepare(prepare(4096)),
+            Err(CommitError::BlockTooLong {
+                max_block: 4096,
+                limit: 2048
+            })
+        ));
+
+        // Shrink to 256: the resume lands in the next 512-frame device
+        // block, which is then rendered as two 256-frame graph blocks.
+        ed.reprepare(prepare(256)).expect("within the capacity");
+        go(512); // suspended: silence
+        ed.collect(); // sends the resume
+        let out = go(512);
+        assert_eq!(out[1], 256.0, "block length after the shrink");
+        assert_eq!(out[511 * 3 + 1], 256.0);
+
+        // Grow to 2048: one 2048-frame graph block, not eight 256-frame ones.
+        ed.reprepare(prepare(2048)).expect("at the capacity");
+        go(512);
+        ed.collect();
+        let out = go(2048);
+        assert_eq!(out[1], 2048.0, "block length after the growth");
+    }
+}
+
+/// On the Net path, beats resolve with the tempo the net's clock runs at: a
+/// tempo wiggle under the clock's hysteresis moves neither, so a beat-timed
+/// stop at beat 10 lands on the same frame through both backends.
+///
+/// Mutation (run): report the raw `settings.tempo()` in `NetPieces::begin`
+/// → the Net resolves beat 10 at 120.0005 BPM, two frames early → fails.
+#[test]
+fn a_tempo_wiggle_under_the_clock_hysteresis_moves_neither_backend() {
+    let net_t = Transport::new(SR);
+    let net_beats = Arc::new(Mutex::new(Vec::new()));
+    let net = net_engine(
+        &net_t,
+        Box::new(Surround {
+            channels: 1,
+            frame: 0,
+        }),
+        Some(Arc::clone(&net_beats)),
+    );
+    let graph_t = Transport::new(SR);
+    let graph_log = Arc::new(Mutex::new(Vec::new()));
+    let (graph, _ed) = graph_engine(
+        &graph_t,
+        512,
+        Gate {
+            log: Some(Arc::clone(&graph_log)),
+        },
+        1,
+    );
+    for t in [&net_t, &graph_t] {
+        t.settings.set_tempo(Bpm(120.0005));
+        t.motion.try_send(MotionEvent::Play).expect("room");
+        t.motion
+            .schedule(At::Beat(Beat(10.0)), MotionEvent::stop_now())
+            .expect("room");
+    }
+    for _ in 0..480 {
+        render(&net, ChannelLayout::MONO, &[512]);
+        render(&graph, ChannelLayout::MONO, &[512]);
+    }
+    let graph_log = graph_log.lock().expect("log");
+    let net_beats = net_beats.lock().expect("log");
+    // Beat 10 is frame 240 000 at 120 BPM; the playhead, accumulated frame
+    // by frame, reaches it a millionth of a frame late or so, so the stop
+    // may land one frame on. What must hold is that both backends stop on
+    // the same frame.
+    let stop = graph_log
+        .iter()
+        .position(|&(_, _, playing)| !playing)
+        .expect("the graph stopped");
+    assert!((240_000..=240_001).contains(&stop), "graph stops at {stop}");
+    // The Net clock moves on its last rolling frame and holds from the stop.
+    assert_ne!(
+        net_beats[stop - 1],
+        net_beats[stop],
+        "net moving up to {stop}"
+    );
+    assert_eq!(
+        net_beats[stop],
+        net_beats[stop + 1],
+        "net holds from {stop}"
+    );
 }

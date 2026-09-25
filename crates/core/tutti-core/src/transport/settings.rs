@@ -49,6 +49,11 @@ pub struct TransportSettings {
     /// CLAP's `steady_time`, which free-running effects key off precisely
     /// because the playhead is discontinuous.
     pub steady_time: Arc<AtomicI64>,
+    /// The tempo the clock is actually running at: [`tempo`](Self::tempo)
+    /// as the clock last took it, which ignores wiggles smaller than its
+    /// hysteresis. Written by the clock; what a beat must be resolved with
+    /// to agree with it.
+    pub tempo_in_force: Arc<AtomicF64>,
 }
 
 impl TransportSettings {
@@ -62,6 +67,7 @@ impl TransportSettings {
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
             steady_time: Arc::new(AtomicI64::new(0)),
+            tempo_in_force: Arc::new(AtomicF64::new(120.0)),
         }
     }
 

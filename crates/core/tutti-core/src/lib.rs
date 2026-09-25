@@ -29,7 +29,7 @@ pub use crossfade::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it — seven callsites did, all through the module path.
-pub use engine::{Engine, MAX_ROOT_CHANNELS};
+pub use engine::{Engine, GraphEngineError, DEFAULT_GRAPH_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
 
 // The value → runtime seam: `Topology` in, `Net` out. A module rather than root
 // re-exports, because `compile` and `Catalog` are words that only read right

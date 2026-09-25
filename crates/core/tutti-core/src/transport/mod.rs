@@ -24,6 +24,7 @@ mod timed;
 pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
+pub(crate) use clock::{tempo_in_effect, Control};
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};

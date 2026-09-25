@@ -29,24 +29,52 @@
 //!
 //! A block holds at most [`MAX_TRANSPORT_CHANGES`] cuts. A command due past
 //! that lands at the start of the next block and is counted late, like any
-//! command already past due ([`MotionFsm::late_commands`]).
+//! command already past due ([`MotionFsm::late_commands`]). (`At::NextBlock`
+//! commands, late ones and crossed beats all land at the block's first frame
+//! and need no cut, so they are never deferred.) Commands due on one frame
+//! apply in send order.
+//!
+//! **Untimed state is read once per block.** On the Graph path the tempo,
+//! loop and play state are read at the start of the walk; a store from the
+//! control thread during the block lands at the next one, and only an
+//! applied command changes them at a cut. The Net path cannot promise that:
+//! its `TransportClock` is a node in the net and reads the shared atomics at
+//! every 64-frame chunk, as it always has. The engine resolves beats for it
+//! with the tempo the clock actually runs at (`TransportSettings::
+//! tempo_in_force`, its hysteresis applied).
 //!
 //! **Beats** are resolved with the graph's rule (`tutti_graph::Env::due`):
 //! the first frame at or after the beat that playback reaches, the piece's
 //! own transport deciding. A beat continuous playback already crossed is late;
 //! one a seek or loop jumped over waits (`tutti_graph::Playhead`).
 //!
-//! **The declick** fades from the frame its stop or seek lands on. Its
-//! completion (the stop or jump the fade covers) takes effect at the end of
-//! the block it finishes in, as it always has: the output is silent from the
-//! fade's end, so the rest of that block is inaudible whatever the transport
-//! reports there. A later command in the same block that settles the motion
-//! (a `Play`) cancels the fade and its silence from its own frame.
+//! **The declick is audio only.** A declick stop or seek moves the transport
+//! on its command's frame, as an immediate one does (`MotionFsm` applies a
+//! fade's outcome when the fade starts); the fade then ramps the *output* to
+//! zero from that frame, and the output stays silent to the end of the block
+//! the fade ends in. Completing the fade only settles the motion mirror. A
+//! later command in the same block that settles the motion (a `Play`)
+//! cancels the fade and its silence from its own frame.
+//!
+//! # Limits of a graph engine
+//!
+//! [`Engine::with_graph`] bounds the graph's editor ([`Editor::set_limits`])
+//! to what its fold scratch holds: at most [`MAX_ROOT_CHANNELS`] global
+//! outputs, and a `MaxBlock` no larger than its block capacity (the larger
+//! of the prepared maximum and [`DEFAULT_GRAPH_BLOCK_CAPACITY`], or the
+//! capacity given to [`Engine::with_graph_capacity`]). A commit or a
+//! re-prepare past them is refused on the control thread
+//! (`CommitError::TooManyOutputs`, `CommitError::BlockTooLong`), so the
+//! callback never meets a graph it cannot render.
 
-use tutti_graph::{Due, Env, Executor, Offset, Playhead, TransportChanges, MAX_TRANSPORT_CHANGES};
+use tutti_graph::{
+    CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
+    MAX_TRANSPORT_CHANGES,
+};
 use tutti_types::{At, Frame};
 
-use crate::transport::{Declick, MotionFsm, MotionState, TransportClock};
+use crate::transport::{tempo_in_effect, Control};
+use crate::transport::{Declick, MotionFsm, MotionState, TransportClock, TransportCommand};
 use crate::{AudioThreadCell, InterleavedMut, Ordering, SampleRate, Samples};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
@@ -61,8 +89,37 @@ use fundsp::MAX_BUFFER_SIZE;
 ///
 /// For the native graph the ceiling is harder: the executor must be handed a
 /// buffer for **every** global output, and the engine's scratch holds this
-/// many. A graph with more global outputs renders silence.
+/// many. So a graph engine refuses more: [`Engine::with_graph`] bounds the
+/// editor to it, and a commit with more global outputs is an error on the
+/// control thread.
 pub const MAX_ROOT_CHANNELS: usize = 8;
+
+/// The block capacity a graph engine sizes its fold scratch for unless given
+/// another ([`Engine::with_graph_capacity`]): tutti-cpal's largest callback
+/// (`MAX_FRAMES`). The engine bounds its editor's re-prepares to it.
+pub const DEFAULT_GRAPH_BLOCK_CAPACITY: Samples = Samples(8192);
+
+/// Why [`Engine::with_graph`] refused a graph.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphEngineError {
+    /// The executor is not the editor's: they were not built together.
+    NotAPair,
+    /// What the editor already sent is past what the engine can run: more
+    /// than [`MAX_ROOT_CHANNELS`] global outputs, or a `MaxBlock` above the
+    /// block capacity.
+    Limits(CommitError),
+}
+
+impl core::fmt::Display for GraphEngineError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotAPair => f.write_str("the executor is not the editor's"),
+            Self::Limits(e) => write!(f, "the graph is past the engine's limits: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for GraphEngineError {}
 
 /// Type-level [`MAX_ROOT_CHANNELS`], for sizing the scratch [`BufferArray`].
 type MaxRootChannels = U8;
@@ -103,6 +160,8 @@ pub struct Engine {
     backend: AudioThreadCell<Backend>,
     /// Cached from the transport so the fade path avoids a double deref.
     declick: Declick,
+    /// A graph engine's block capacity (its editor's `MaxBlock` limit).
+    graph_capacity: Option<Samples>,
 }
 
 /// The graph runtime an engine renders. An enum rather than a trait object:
@@ -157,34 +216,76 @@ impl Engine {
                 playhead: Playhead::new(),
             })),
             declick,
+            graph_capacity: None,
         }
     }
 
     /// Build an engine that renders a native graph: `executor`, the audio
-    /// half of a [`tutti_graph::Editor`] pair, whose `Prepare` comes from the
-    /// device configuration (its rate, and the largest block the device
-    /// hands over).
+    /// half of `editor`'s pair, whose `Prepare` comes from the device
+    /// configuration (its rate, and the largest block the device hands
+    /// over). The block capacity is the larger of that maximum and
+    /// [`DEFAULT_GRAPH_BLOCK_CAPACITY`]; see
+    /// [`with_graph_capacity`](Self::with_graph_capacity).
+    pub fn with_graph(
+        transport: &crate::Transport,
+        editor: &mut Editor,
+        executor: Executor,
+    ) -> Result<Self, GraphEngineError> {
+        Self::with_graph_capacity(transport, editor, executor, DEFAULT_GRAPH_BLOCK_CAPACITY)
+    }
+
+    /// As [`with_graph`](Self::with_graph), with the fold scratch sized for
+    /// blocks of up to `capacity` frames (or the prepared maximum, if
+    /// larger).
     ///
-    /// The engine renders whole device blocks through it — no 64-frame
-    /// chunking; a device block longer than the prepared maximum is rendered
-    /// as consecutive graph blocks of at most that — and builds each block's
-    /// `Env` from `transport`: the frame is the executor's clock, which
-    /// tracks device time, and the transport snapshot comes from a
+    /// The engine renders whole device blocks through the executor — no
+    /// 64-frame chunking; a device block longer than the prepared maximum is
+    /// rendered as consecutive graph blocks of at most that — and builds each
+    /// block's `Env` from `transport`: the frame is the executor's clock,
+    /// which tracks device time, and the transport snapshot comes from a
     /// [`TransportClock`] the engine drives over `transport`'s
     /// [`clock_links`](crate::Transport::clock_links), so it publishes the
-    /// playhead and steady time as the clock node in a `Net` would.
+    /// playhead, steady time and tempo in force as the clock node in a `Net`
+    /// would.
+    ///
+    /// **Bounds the editor** ([`Editor::set_limits`]) to at most
+    /// [`MAX_ROOT_CHANNELS`] global outputs and a `MaxBlock` of at most the
+    /// capacity, so every later commit or re-prepare past them is refused
+    /// there, with a `CommitError`. Refused here, building nothing, when
+    /// `executor` is not `editor`'s, or when what the editor already sent is
+    /// past them. The editor is borrowed mutably for the check, so no commit
+    /// can slip in beside it.
     ///
     /// The graph must not also hold a `TransportClock` of its own: two clocks
     /// would both consume the seek and both write the playhead.
     ///
     /// Control thread. Allocates the fold scratch
-    /// (`MAX_ROOT_CHANNELS × max block` samples).
-    pub fn with_graph(transport: &crate::Transport, executor: Executor) -> Self {
-        let stride = executor.prepare().max_block().get();
+    /// (`MAX_ROOT_CHANNELS × capacity` samples).
+    pub fn with_graph_capacity(
+        transport: &crate::Transport,
+        editor: &mut Editor,
+        executor: Executor,
+        capacity: Samples,
+    ) -> Result<Self, GraphEngineError> {
+        if !editor.is_paired_with(&executor) {
+            return Err(GraphEngineError::NotAPair);
+        }
+        // Mid re-prepare, the editor's `Prepare` is the one the executor will
+        // adopt, and may be the larger.
+        let stride = capacity
+            .get()
+            .max(executor.prepare().max_block().get())
+            .max(editor.prepare().max_block().get());
+        editor
+            .set_limits(Limits {
+                max_global_outputs: MAX_ROOT_CHANNELS,
+                max_block: stride,
+            })
+            .map_err(GraphEngineError::Limits)?;
         let rate = executor.prepare().sample_rate();
         let motion = transport.motion.clone();
         let declick = motion.declick.clone();
-        Self {
+        Ok(Self {
             motion,
             backend: AudioThreadCell::new(Backend::Graph(GraphRender {
                 exec: executor,
@@ -194,7 +295,14 @@ impl Engine {
                 playhead: Playhead::new(),
             })),
             declick,
-        }
+            graph_capacity: Some(Samples(stride)),
+        })
+    }
+
+    /// A graph engine's block capacity: the largest `MaxBlock` its editor may
+    /// re-prepare to. `None` for a `Net` engine.
+    pub fn graph_block_capacity(&self) -> Option<Samples> {
+        self.graph_capacity
     }
 
     /// Render the whole of `output` — an interleaved device buffer that carries
@@ -246,8 +354,19 @@ impl Engine {
             Backend::Graph(g) => {
                 let mut done = 0;
                 while done < frames {
-                    let len = (frames - done).min(g.block_bound());
-                    let t = g.clock.begin();
+                    let (bound, rate) = g.settle();
+                    let len = (frames - done).min(bound);
+                    let control = Control::read(self.motion.settings());
+                    let t = g.clock.begin(&control, true);
+                    // Kept current, so a later `process` tells a late beat
+                    // from one jumped over across this block too.
+                    g.playhead.observe(&Env {
+                        frame: g.exec.frame(),
+                        sample_rate: rate,
+                        block_len: Samples(len),
+                        transport: t,
+                        changes: TransportChanges::NONE,
+                    });
                     g.clock.advance(len, &t);
                     g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
                     done += len;
@@ -295,17 +414,13 @@ impl Engine {
             Backend::Graph(g) => {
                 let mut done = 0;
                 while done < frames {
-                    let len = (frames - done).min(g.block_bound());
-                    let rate = g.exec.prepare().sample_rate();
-                    if rate != g.clock.sample_rate() {
-                        // A re-prepare changed the rate: the executor has
-                        // rescaled its frame clock; the beat increment
-                        // follows.
-                        AudioUnit::set_sample_rate(&mut g.clock, rate);
-                    }
+                    let (bound, rate) = g.settle();
+                    let len = (frames - done).min(bound);
                     let frame0 = g.exec.frame();
                     let mut pieces = GraphPieces {
                         clock: &mut g.clock,
+                        settings: self.motion.settings(),
+                        control: Control::read(self.motion.settings()),
                         changes: TransportChanges::NONE,
                     };
                     let walk = self.walk(frame0, len, rate, &mut g.playhead, &mut pieces);
@@ -334,7 +449,7 @@ impl Engine {
     ) -> Walk {
         let schedule = self.motion.timed();
         let mut walk = Walk {
-            start: pieces.begin(),
+            start: pieces.begin(None),
             ramps: Ramps::new(),
             faded_out: false,
         };
@@ -398,7 +513,7 @@ impl Engine {
                 // fade and its silence are over from this frame.
                 walk.faded_out = false;
             }
-            t = pieces.begin();
+            t = pieces.begin(Some(&cmd.command));
             match Offset::new(cursor, Samples(frames)) {
                 Some(o) if cursor > 0 => pieces.change(o, t),
                 _ => walk.start = t,
@@ -560,9 +675,9 @@ impl Ramps {
 
 /// One runtime's side of a block walk.
 trait Pieces {
-    /// The transport from the current frame on, after the commands applied
-    /// there.
-    fn begin(&mut self) -> GraphTransport;
+    /// The transport from the current frame on: at the block's start
+    /// (`after` is `None`), or after applying `after` there.
+    fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport;
     /// Run frames `start..end` of the block under `t`.
     fn run(&mut self, start: usize, end: usize, t: &GraphTransport);
     /// Whether another cut fits in this block.
@@ -583,7 +698,7 @@ struct NetPieces<'a> {
 }
 
 impl Pieces for NetPieces<'_> {
-    fn begin(&mut self) -> GraphTransport {
+    fn begin(&mut self, _: Option<&TransportCommand>) -> GraphTransport {
         let motion = &self.engine.motion;
         let settings = motion.settings();
         // A seek not yet taken by the clock is where it will emit from.
@@ -594,7 +709,12 @@ impl Pieces for NetPieces<'_> {
         };
         GraphTransport {
             playing: !settings.is_paused(),
-            tempo: settings.tempo(),
+            // The tempo the net's clock will run the next piece at: the one
+            // asked for, through its hysteresis.
+            tempo: tempo_in_effect(
+                settings.tempo(),
+                crate::Bpm(settings.tempo_in_force.load(Ordering::Acquire)),
+            ),
             beat,
             looping: settings.loop_span.range().map(|r| tutti_graph::LoopRange {
                 start: r.start(),
@@ -620,12 +740,24 @@ impl Pieces for NetPieces<'_> {
 /// collect the cuts for the block's `Env`; the render happens once, after.
 struct GraphPieces<'a> {
     clock: &'a mut TransportClock,
+    settings: &'a crate::TransportSettings,
+    /// The untimed inputs, read once at the walk's start; only an applied
+    /// command changes them.
+    control: Control,
     changes: TransportChanges,
 }
 
 impl Pieces for GraphPieces<'_> {
-    fn begin(&mut self) -> GraphTransport {
-        self.clock.begin()
+    fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport {
+        match after {
+            None => self.clock.begin(&self.control, true),
+            Some(command) => {
+                self.control.apply(command, self.settings);
+                // Only a motion command can have requested a seek.
+                let seeks = matches!(command, TransportCommand::Motion(_));
+                self.clock.begin(&self.control, seeks)
+            }
+        }
     }
 
     fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
@@ -644,11 +776,23 @@ impl Pieces for GraphPieces<'_> {
 }
 
 impl GraphRender {
-    /// The longest graph block this engine hands the executor: its prepared
-    /// maximum, and never more than the scratch was sized for (a re-prepare
-    /// may raise the maximum after the scratch was built).
-    fn block_bound(&self) -> usize {
-        self.exec.prepare().max_block().get().min(self.stride)
+    /// Bring the executor up to date before a graph block: install queued
+    /// commits (a re-prepare's resume adopts its `Prepare` here, so the block
+    /// length below is the new maximum and not a stale one), and follow a
+    /// rate change with the clock. Returns the longest block to hand the
+    /// executor, and its rate.
+    fn settle(&mut self) -> (usize, SampleRate) {
+        self.exec.apply_pending();
+        let rate = self.exec.prepare().sample_rate();
+        if rate != self.clock.sample_rate() {
+            // A re-prepare changed the rate: the executor has rescaled its
+            // frame clock; the beat increment follows.
+            AudioUnit::set_sample_rate(&mut self.clock, rate);
+        }
+        let bound = self.exec.prepare().max_block().get();
+        // The editor's limits keep every `MaxBlock` within the scratch.
+        debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
+        (bound.min(self.stride), rate)
     }
 
     /// Render one graph block of `len` frames into frames
@@ -663,16 +807,16 @@ impl GraphRender {
         transport: &GraphTransport,
         changes: &TransportChanges,
     ) {
-        // Before reading the width: a commit queued this block may change it.
-        self.exec.apply_pending();
+        // `settle` installed every queued commit, and a commit applied
+        // inside `process_with_changes` is one sent after it: the next block
+        // sees it. The editor's limits refuse a graph wider than the scratch.
         let width = self.exec.plan().map_or(0, |p| p.global_outputs());
+        debug_assert!(
+            width <= MAX_ROOT_CHANNELS,
+            "the editor's limits refuse this"
+        );
+        let width = width.min(MAX_ROOT_CHANNELS);
         let block = &mut output[at * out_ch..(at + len) * out_ch];
-        if width > MAX_ROOT_CHANNELS {
-            // No buffer to hand the executor for the extra channels. The
-            // clock still ran; the graph does not this block.
-            block.fill(0.0);
-            return;
-        }
         let stride = self.stride;
         let mut chunks = self.scratch.chunks_mut(stride);
         let mut outs: [&mut [f32]; MAX_ROOT_CHANNELS] =
@@ -746,5 +890,82 @@ fn render_net(
         }
 
         done += block;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Bpm, MotionEvent, Transport};
+    use tutti_graph::Prepare;
+
+    /// A graph walk's `Pieces` that stores a new tempo from "the control
+    /// thread" while each piece runs: the store races the walk, staged
+    /// deterministically.
+    struct Racing<'a> {
+        inner: GraphPieces<'a>,
+        settings: &'a crate::TransportSettings,
+    }
+
+    impl Pieces for Racing<'_> {
+        fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport {
+            self.inner.begin(after)
+        }
+        fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
+            self.inner.run(start, end, t);
+            self.settings.set_tempo(Bpm(200.0));
+        }
+        fn room(&self) -> bool {
+            self.inner.room()
+        }
+        fn change(&mut self, at: Offset, t: GraphTransport) {
+            self.inner.change(at, t);
+        }
+    }
+
+    /// An untimed store racing the walk does not land at a cut: the change a
+    /// timed `Play` records mid-block carries the tempo read at the block's
+    /// start, and only the command's own effect (rolling). The store lands
+    /// at the next block.
+    ///
+    /// Mutation (run): re-read `Control::read` after a command in
+    /// `GraphPieces::begin` (the reviewed behaviour) → the change carries
+    /// 200 BPM → fails.
+    #[test]
+    fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::with_graph(&transport, &mut ed, exec).expect("empty graph");
+        transport
+            .motion
+            .schedule(At::Frame(Frame(100)), MotionEvent::Play)
+            .expect("room");
+        let mut clock = TransportClock::new(transport.clock_links(), 48_000.0);
+        let settings = engine.motion.settings();
+        let mut pieces = Racing {
+            inner: GraphPieces {
+                clock: &mut clock,
+                settings,
+                control: Control::read(settings),
+                changes: TransportChanges::NONE,
+            },
+            settings,
+        };
+        let mut playhead = Playhead::new();
+        let walk = engine.walk(
+            Frame::ZERO,
+            512,
+            SampleRate(48_000.0),
+            &mut playhead,
+            &mut pieces,
+        );
+        assert!(!walk.start.playing);
+        let changes = pieces.inner.changes;
+        let change = changes.as_slice()[0];
+        assert_eq!(change.at.index(), 100);
+        assert!(change.to.playing, "the command's effect");
+        assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
+        // The next block reads it.
+        assert_eq!(Control::read(settings).tempo, Bpm(200.0));
     }
 }

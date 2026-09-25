@@ -16,6 +16,56 @@ use std::any;
 /// noise.
 const TEMPO_EPSILON: f64 = 0.001;
 
+/// The tempo a clock running at `in_force` takes when asked for `asked`:
+/// `asked`, unless it is within the hysteresis of `in_force`. The one
+/// spelling of the rule, for the clock and for whoever resolves a beat
+/// against it.
+#[inline]
+pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
+    if asked.differs_from(in_force, TEMPO_EPSILON) {
+        asked
+    } else {
+        in_force
+    }
+}
+
+/// The untimed transport inputs a native graph block is rendered under,
+/// read **once** per block (at the start of the engine's walk): a store from
+/// the control thread lands at the next block, never at a cut in this one.
+/// Only a command the engine applies changes them mid-block
+/// ([`Control::apply`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Control {
+    pub(crate) tempo: Bpm,
+    pub(crate) paused: bool,
+    pub(crate) looping: Option<super::LoopRange>,
+}
+
+impl Control {
+    /// Read the live inputs.
+    pub(crate) fn read(settings: &super::TransportSettings) -> Self {
+        Self {
+            tempo: settings.tempo(),
+            paused: settings.is_paused(),
+            looping: settings.loop_span.range(),
+        }
+    }
+
+    /// Carry `command`'s effect, and nothing else. A motion change's effect
+    /// is pausedness, which only the motion machine writes, on this thread.
+    pub(crate) fn apply(
+        &mut self,
+        command: &super::TransportCommand,
+        settings: &super::TransportSettings,
+    ) {
+        match *command {
+            super::TransportCommand::Tempo(bpm) => self.tempo = bpm,
+            super::TransportCommand::Loop(range) => self.looping = range,
+            super::TransportCommand::Motion(_) => self.paused = settings.is_paused(),
+        }
+    }
+}
+
 /// Split a beat into the two `f32` port values (whole, fraction).
 ///
 /// The inverse of [`beat_from_ports`](super::state::beat_from_ports); see
@@ -59,12 +109,21 @@ impl TransportClock {
         let sample_rate = sample_rate.into();
         let initial_tempo = Bpm(links.tempo.load(Ordering::Acquire));
 
-        Self {
+        let clock = Self {
             links,
             current_beat: Beat(0.0),
             sample_rate,
             beat_per_sample: super::state::beats_per_sample(initial_tempo, sample_rate),
             last_tempo: initial_tempo,
+        };
+        clock.publish_tempo();
+        clock
+    }
+
+    /// Publish the tempo in force (`last_tempo`) to the live transport.
+    fn publish_tempo(&self) {
+        if let Some(ref out) = self.links.tempo_in_force {
+            out.store(self.last_tempo.get(), Ordering::Release);
         }
     }
 
@@ -110,6 +169,7 @@ impl TransportClock {
         self.links.tempo.store(bpm.get(), Ordering::Release);
         self.beat_per_sample = super::state::beats_per_sample(bpm, self.sample_rate);
         self.last_tempo = bpm;
+        self.publish_tempo();
     }
 
     /// The beat this clock will emit next. Its own position, not the live
@@ -120,10 +180,18 @@ impl TransportClock {
 
     #[inline]
     fn update_tempo_if_changed(&mut self) {
-        let current_tempo = Bpm(self.links.tempo.load(Ordering::Acquire));
-        if current_tempo.differs_from(self.last_tempo, TEMPO_EPSILON) {
-            self.beat_per_sample = super::state::beats_per_sample(current_tempo, self.sample_rate);
-            self.last_tempo = current_tempo;
+        let asked = Bpm(self.links.tempo.load(Ordering::Acquire));
+        self.take_tempo(asked);
+    }
+
+    /// Take `asked` as the tempo, if it moved past the hysteresis.
+    #[inline]
+    fn take_tempo(&mut self, asked: Bpm) {
+        let tempo = tempo_in_effect(asked, self.last_tempo);
+        if tempo != self.last_tempo {
+            self.beat_per_sample = super::state::beats_per_sample(tempo, self.sample_rate);
+            self.last_tempo = tempo;
+            self.publish_tempo();
         }
     }
 
@@ -149,9 +217,11 @@ impl TransportClock {
         self.sample_rate
     }
 
-    /// Take a pending seek and a tempo change, and report the transport from
-    /// this frame on, as a native graph block sees it
-    /// ([`tutti_graph::Transport`]).
+    /// Take a pending seek (when `take_seek`) and `control`'s tempo, and
+    /// report the transport from this frame on under `control`, as a native
+    /// graph block sees it ([`tutti_graph::Transport`]). The seek is taken
+    /// only at a block's start and after a motion command, the two points
+    /// where the motion machine (this thread) can have requested one.
     ///
     /// The engine's graph backend has no clock node in its graph: it holds a
     /// `TransportClock` of its own and drives it with this and
@@ -160,23 +230,19 @@ impl TransportClock {
     /// this clock emits on its ports in a `Net`. `process` is `begin`, then
     /// emit-and-advance frame by frame; `begin` + `advance(n)` is the same
     /// arithmetic without the emit.
-    pub(crate) fn begin(&mut self) -> tutti_graph::Transport {
-        self.apply_pending_seek();
-        self.update_tempo_if_changed();
-        let looping = self
-            .links
-            .loop_span
-            .as_ref()
-            .and_then(LoopSpan::range)
-            .map(|r| tutti_graph::LoopRange {
-                start: r.start(),
-                end: r.end(),
-            });
+    pub(crate) fn begin(&mut self, control: &Control, take_seek: bool) -> tutti_graph::Transport {
+        if take_seek {
+            self.apply_pending_seek();
+        }
+        self.take_tempo(control.tempo);
         tutti_graph::Transport {
-            playing: !self.links.paused.load(Ordering::Acquire),
+            playing: !control.paused,
             tempo: self.last_tempo,
             beat: self.current_beat,
-            looping,
+            looping: control.looping.map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            }),
         }
     }
 
@@ -400,6 +466,7 @@ mod tests {
                 loop_span: Some(loop_span),
                 position_writeback: None,
                 steady_time: None,
+                tempo_in_force: None,
             },
             44100.0,
         )
@@ -419,6 +486,7 @@ mod tests {
                 loop_span: Some(LoopSpan::default()),
                 position_writeback: None,
                 steady_time: None,
+                tempo_in_force: None,
             },
             44100.0,
         );
@@ -648,6 +716,7 @@ mod tests {
                 loop_span: Some(loop_span),
                 position_writeback: None,
                 steady_time: None,
+                tempo_in_force: None,
             },
             44100.0,
         );
@@ -740,6 +809,7 @@ mod tests {
                 loop_span: Some(loop_span.clone()),
                 position_writeback: None,
                 steady_time: None,
+                tempo_in_force: None,
             },
             44100.0,
         );

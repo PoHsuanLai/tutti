@@ -372,6 +372,10 @@ pub struct ClockLinks {
     ///
     /// `None` = writes nothing live, matching `position_writeback`.
     pub steady_time: Option<Arc<AtomicI64>>,
+    /// Where the clock publishes the tempo it runs at (its hysteresis
+    /// applied), so a beat resolved elsewhere uses the same one. `None` =
+    /// writes nothing live.
+    pub tempo_in_force: Option<Arc<AtomicF64>>,
 }
 
 impl ClockLinks {
@@ -386,6 +390,7 @@ impl ClockLinks {
             loop_span: None,
             position_writeback: None,
             steady_time: None,
+            tempo_in_force: None,
         }
     }
 
@@ -406,6 +411,7 @@ impl ClockLinks {
             loop_span: _,
             position_writeback: _,
             steady_time: _,
+            tempo_in_force: _,
         } = self;
 
         Self {
@@ -415,6 +421,7 @@ impl ClockLinks {
             loop_span: None,
             position_writeback: None,
             steady_time: None,
+            tempo_in_force: None,
         }
     }
 }

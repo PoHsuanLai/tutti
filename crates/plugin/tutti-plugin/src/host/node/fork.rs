@@ -19,10 +19,30 @@
 //!
 //! 1. **Ask the live instance for its state** — the one thing the live side
 //!    is asked, over the control channel `PluginHandle::save_state` already
-//!    uses. It goes down the same command queue as every parameter write
-//!    before it, so a value set before the fork is in the state. Nothing
-//!    else of the live instance is touched: no reset, no rate change, no
-//!    block.
+//!    uses. Nothing else of the live instance is touched: no reset, no rate
+//!    change, no block. It is not free, though: the save runs on the live
+//!    bridge thread, which queues the live instance's blocks behind it for
+//!    as long as the plugin takes to serialise — the same stall a project
+//!    save causes. (Blocks it misses meanwhile read as silence, as for any
+//!    late reply.)
+//!
+//!    **Whether a parameter set just before the fork is in the state depends
+//!    on the write reaching the plugin, not on the fork.** The save goes down
+//!    the same command queue as `set_parameter`, after it, so the ordering is
+//!    right; and for CLAP (the reference probe; verified by `clap_fork.rs`)
+//!    a delivered write is in the next save. Not in general:
+//!    - `set_parameter` is fire-and-forget, and a write refused by a full
+//!      command queue is dropped — neither the live plugin nor the state
+//!      ever has it;
+//!    - CLAP skips a direct write to a `REQUIRES_PROCESS` parameter while the
+//!      plugin is processing (it can only arrive through a process call), so
+//!      until the next block delivers it, the state is the old value;
+//!    - VST3's host write goes to the edit controller, and a component whose
+//!      `getState` does not reflect controller-side values saves without it
+//!      until the processor has seen the change.
+//!
+//!    A host that needs a value in the fork sets it through the path the
+//!    plugin processes (automation), or renders a block before forking.
 //! 2. **Load a fresh instance** of the same file with the same bridge
 //!    settings in a **new `plugin-server` process**, on a socket of its own.
 //!    A server hosts exactly one plugin (`LoadPlugin` replaces whatever it
@@ -48,9 +68,22 @@
 //!    every block the subprocess had not finished yet into silence.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the fresh
-//! instance (if one started) is dropped with it, which kills its process.
-//! Through the graph it is `ForkError::Source { key, cause }`, the cause
-//! downcastable to `PluginForkError`. There is no fallback.
+//! instance (if one started) is dropped with it, which kills and reaps its
+//! process. Through the graph it is `ForkError::Source { key, cause }`, the
+//! cause downcastable to `PluginForkError`. There is no fallback.
+//!
+//! # When the fork fails while rendering
+//!
+//! The fork's server can die, or hang, mid-render. `process` cannot say so,
+//! and silence is a valid output, so every fork carries a [`ForkWatch`]
+//! ([`PluginClient::fork_health`], and through the graph the
+//! `tutti_graph::ForkHealth` probe `Editor::fork_health` reads):
+//! `ForkFaultKind::Crashed` when the fork's bridge has latched a crash,
+//! `ForkFaultKind::TimedOut` when a block missed its budget
+//! (`BridgeConfig::timeout_ms`), the cause a [`PluginRenderFault`]. After
+//! the first miss an offline fork stops waiting, so a hung server costs one
+//! budget, not one per block. A renderer checks the probe after rendering
+//! and reports the render as failed (tutti-export's `GraphSource`).
 //!
 //! # What a fork does not have
 //!
@@ -67,15 +100,19 @@
 //! not forkable; see its `forkable`.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use tutti_core::transport::{LoopRange, OfflineTransport, Timeline, TransportState};
 use tutti_core::{Beat, Bpm};
-use tutti_graph::{ForkCause, ForkMode, ForkSource, IntoNode, Legacy, Node, NodeParts};
+use tutti_graph::{
+    ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Legacy, Node,
+    NodeParts,
+};
 
-use super::{PluginClient, PluginControls};
-use crate::error::PluginForkError;
+use super::{PluginClient, PluginControls, ProcessGuard};
+use crate::error::{PluginForkError, PluginRenderFault};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::RenderMode;
 use crate::util::config::{unique_socket_path, BridgeConfig};
@@ -163,13 +200,96 @@ impl TransportState for OfflineState {
     }
 }
 
+/// Whether a forked instance has failed while rendering: its
+/// `tutti_graph::ForkHealth` probe. See "When the fork fails while
+/// rendering" in the module docs.
+pub(super) struct ForkWatch {
+    /// The fork's bridge and process. Weak: a probe the editor keeps must not
+    /// keep the fork alive after its node is gone (a dropped fork has nothing
+    /// left to fail), and the fork's own batcher holds this watch.
+    bridge: Weak<PluginBridge>,
+    server: Weak<ProcessGuard>,
+    /// Latched by the batcher when a block first misses `budget`.
+    gave_up: AtomicBool,
+    /// Latched, with its exit status, when the server was found dead.
+    died: Mutex<Option<String>>,
+    budget: Duration,
+}
+
+impl ForkWatch {
+    /// The per-block budget of an offline wait (`BridgeConfig::timeout_ms`).
+    pub(super) fn budget(&self) -> Duration {
+        self.budget
+    }
+
+    /// Whether an offline wait should not wait at all any more: a block
+    /// already missed its budget, or the server is dead.
+    pub(super) fn stopped_waiting(&self) -> bool {
+        self.gave_up.load(Ordering::Acquire) || lock(&self.died).is_some()
+    }
+
+    /// Latch a missed budget.
+    pub(super) fn give_up(&self) {
+        self.gave_up.store(true, Ordering::Release);
+    }
+
+    /// Ask the process whether it has exited, and latch it if so.
+    pub(super) fn server_died(&self) -> bool {
+        let mut died = lock(&self.died);
+        if died.is_some() {
+            return true;
+        }
+        let status = self.server.upgrade().and_then(|s| s.exited());
+        if let Some(status) = status {
+            *died = Some(format!("plugin-server exited: {status}"));
+        }
+        died.is_some()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl ForkHealth for ForkWatch {
+    /// A timeout first if one was latched (it happened before anything the
+    /// bridge noticed later), then a dead process or a crash the bridge
+    /// latched.
+    fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
+        if self.gave_up.load(Ordering::Acquire) {
+            let cause = PluginRenderFault::TimedOut {
+                budget: self.budget,
+            };
+            return Some((ForkFaultKind::TimedOut, ForkCause::new(cause)));
+        }
+        let crashed = |cause: String| {
+            let cause = PluginRenderFault::Crashed { cause };
+            (ForkFaultKind::Crashed, ForkCause::new(cause))
+        };
+        if self.server_died() {
+            return lock(&self.died).clone().map(crashed);
+        }
+        let bridge = self.bridge.upgrade()?;
+        bridge.is_crashed().then(|| {
+            crashed(
+                bridge
+                    .crash_cause()
+                    .unwrap_or_else(|| "no cause latched".to_string()),
+            )
+        })
+    }
+}
+
 /// A plugin node's [`ForkSource`], and what [`PluginClient::fork_instance`]
 /// runs: everything a fork needs from the live node, and nothing that keeps
-/// its process alive (no `ProcessGuard`), so a source held by an editor does
-/// not outlive the plugin it forks.
+/// it alive, so a source held by an editor does not outlive the plugin it
+/// forks.
 struct PluginFork {
-    /// The live bridge — asked for the state, nothing else.
-    bridge: Arc<PluginBridge>,
+    /// The live bridge — asked for the state, nothing else. Weak: once every
+    /// node and handle on the live instance is gone, a fork answers
+    /// [`PluginForkError::LiveGone`] at once instead of queueing a save on a
+    /// bridge with no process behind it.
+    bridge: Weak<PluginBridge>,
     origin: Arc<Origin>,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
@@ -180,7 +300,7 @@ struct PluginFork {
 impl PluginFork {
     fn of(client: &PluginClient) -> Self {
         Self {
-            bridge: Arc::clone(&client.bridge),
+            bridge: Arc::downgrade(&client.bridge),
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
             controls: client.controls.clone(),
@@ -189,11 +309,11 @@ impl PluginFork {
 
     /// The five steps in the module docs, in order.
     fn instance(&self, mode: ForkMode<'_>) -> Result<PluginClient, PluginForkError> {
-        // First, so a plugin that cannot save costs no subprocess.
-        let state = self
-            .bridge
-            .save_state()
-            .map_err(PluginForkError::SaveState)?;
+        // First, so a plugin that cannot save costs no subprocess. The `Arc`
+        // is dropped straight after: the fork holds no strong reference.
+        let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
+        let state = live.save_state().map_err(PluginForkError::SaveState)?;
+        drop(live);
 
         let path = self.origin.plugin_path.clone();
         let config = BridgeConfig {
@@ -221,22 +341,35 @@ impl PluginFork {
 
         let bind = Rebind::of(mode);
         self.controls.rebind_sources_into(&fork.controls, &bind);
+        let watch = Arc::new(ForkWatch {
+            bridge: Arc::downgrade(&fork.bridge),
+            server: Arc::downgrade(&fork.process_guard),
+            gave_up: AtomicBool::new(false),
+            died: Mutex::new(None),
+            budget: timeout,
+        });
         if let ForkMode::Offline(_) = mode {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
-            fork.io.set_offline_wait(timeout);
+            fork.io.set_offline_wait(Arc::clone(&watch));
         }
+        fork.fork_watch = Some(watch);
         Ok(fork)
     }
 }
 
 impl ForkSource for PluginFork {
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause> {
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let fork = self.instance(mode).map_err(ForkCause::new)?;
+        let health = fork.fork_health();
         // The fork runs as the live node does, through `Legacy`; `into_node`
         // so it carries no fork source of its own.
-        Ok(Legacy::new(fork).into_node().0)
+        let forked = Forked::new(Legacy::new(fork).into_node().0);
+        Ok(match health {
+            Some(health) => forked.with_health(health),
+            None => forked,
+        })
     }
 }
 
@@ -260,6 +393,17 @@ impl PluginClient {
     /// holding a plugin.
     pub fn fork_instance(&self, mode: ForkMode<'_>) -> Result<PluginClient, PluginForkError> {
         PluginFork::of(self).instance(mode)
+    }
+
+    /// On a fork ([`fork_instance`](Self::fork_instance)): the probe that
+    /// says whether it has failed while rendering — crashed, or timed out and
+    /// now rendering silence (the cause is a [`PluginRenderFault`]). `None`
+    /// on an instance that is not a fork. Check it after rendering; see
+    /// "When the fork fails while rendering" in the `fork` module docs.
+    pub fn fork_health(&self) -> Option<Arc<dyn ForkHealth>> {
+        self.fork_watch
+            .as_ref()
+            .map(|w| Arc::clone(w) as Arc<dyn ForkHealth>)
     }
 }
 

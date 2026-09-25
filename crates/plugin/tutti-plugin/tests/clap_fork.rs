@@ -20,16 +20,19 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv};
+use clap_probe::{exclusive, load_probe, load_probe_with, render, ProbeEnv};
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::time::{Duration, Instant};
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_core::{AudioUnit, BufferVec, SampleRate, Samples, F32};
-use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, Prepare, Renderer};
+use tutti_graph::{
+    Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
+};
 use tutti_plugin::handles::{PluginClient, PluginHandle};
-use tutti_plugin::PluginForkError;
+use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
 use tutti_plugin_types::{Normalized, ParamAddress, ParamId};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
@@ -134,9 +137,11 @@ fn env() -> ProbeEnv {
 ///
 /// Mutation: drop the `load_state` call in `PluginFork::instance` → the fork
 /// renders at 0 dB → fails. Mutation: drop `set_offline_wait` → unpaced blocks
-/// read silence → fails. Mutation: rebind the fork onto the live bridge (return
-/// a clone of the live client) → the two drivers interleave blocks into one
-/// instance → fails.
+/// read silence → fails. Mutation: return a clone of the live client as the
+/// "fork" → the fork's run is the live instance's run, and the live blocks
+/// driven after it no longer line up with a fresh instance's → fails. (The two
+/// run one after the other here; `a_fork_and_the_live_instance_do_not_reach_each_other`
+/// runs them overlapped.)
 #[test]
 fn a_fork_renders_like_the_live_instance_from_its_state() {
     let _lock = exclusive();
@@ -176,15 +181,20 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
     }
 }
 
-/// **Rendering a fork does not touch the live instance**, even with both
-/// rendering at once on two threads: the live output stays exactly what its
-/// own input and gain make, and its saved state is what it was before the
-/// fork. And **a live parameter change after the fork does not reach the
-/// fork**: the live gain moves to -15 dB mid-run, the fork stays at -6.
+/// **Rendering a fork does not touch the live instance**, with both rendering
+/// on two threads over the same span of time: the live output stays exactly
+/// what its own input and gain make, and its saved state is what it was
+/// before the fork. And **a live parameter change after the fork does not
+/// reach the fork**: the live gain moves to -15 dB, the fork stays at -6.
+///
+/// The overlap is enforced, not hoped for: both threads start from a barrier,
+/// the fork keeps rendering until the live run is done, and the test asserts
+/// the fork rendered blocks while the live run was still going.
 ///
 /// Mutation: return a clone of the live client from `fork_instance` → the fork
 /// thread's blocks land in the live instance, and the live gain change reaches
-/// the "fork" → fails on both halves.
+/// the "fork" → fails on both halves. Mutation: mark the live run done before
+/// it starts → the fork renders nothing while it runs → the overlap check fails.
 #[test]
 fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     let _lock = exclusive();
@@ -203,15 +213,35 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     // After the fork: the live instance moves to -15 dB.
     probe.client.set_parameter(GAIN, gain_at(-15.0));
 
-    const FORK_BLOCKS: usize = 400;
-    let fork_thread = std::thread::spawn(move || {
-        let mut fork: Box<dyn AudioUnit> = Box::new(fork);
-        drive_fork(fork.as_mut(), FORK_BLOCKS)
-    });
+    const MIN_FORK_BLOCKS: usize = 40;
+    let start = Arc::new(Barrier::new(2));
+    let live_done = Arc::new(AtomicBool::new(false));
+    let fork_thread = {
+        let (start, live_done) = (Arc::clone(&start), Arc::clone(&live_done));
+        std::thread::spawn(move || {
+            let mut fork: Box<dyn AudioUnit> = Box::new(fork);
+            start.wait();
+            let (mut blocks, mut during_live) = (Vec::new(), 0usize);
+            while blocks.len() < MIN_FORK_BLOCKS || !live_done.load(Ordering::SeqCst) {
+                if !live_done.load(Ordering::SeqCst) {
+                    during_live += 1;
+                }
+                blocks.push(drive(fork.as_mut(), blocks.len()));
+            }
+            (blocks, during_live)
+        })
+    };
 
     let mut live: Box<dyn AudioUnit> = Box::new(probe.client.clone());
+    start.wait();
     let lived = drive_live(live.as_mut(), 40);
-    let forked = fork_thread.join().expect("the fork thread renders");
+    live_done.store(true, Ordering::SeqCst);
+    let (forked, during_live) = fork_thread.join().expect("the fork thread renders");
+    assert!(
+        during_live >= 10,
+        "the fork rendered only {during_live} blocks while the live run was going; \
+         the two did not overlap"
+    );
 
     let mut collected = 0;
     for (b, block) in lived.iter().enumerate() {
@@ -343,4 +373,174 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
         &out[0][BLOCK..BLOCK + 4]
     );
     let _keep: &PluginClient = &probe.client;
+}
+
+/// Render `blocks` blocks of the offline fork of the plugin through the
+/// graph; return the forked editor (to ask its health) and how long it took.
+fn render_fork_of(probe: &clap_probe::LoadedProbe, blocks: usize) -> (Editor, Duration) {
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
+    let (mut editor, _exec) = Editor::new(prepare);
+    let key = NodeKey(3);
+    editor.insert(key, "plugin", probe.client.clone());
+    editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let offline = offline();
+    let (fork_ed, fork_exec) = editor
+        .fork(ForkTarget::Node(key), ForkMode::Offline(&offline), prepare)
+        .expect("forks");
+    assert_eq!(fork_ed.fork_health(), Ok(()), "healthy before rendering");
+    let mut renderer = Renderer::new(fork_ed, fork_exec);
+    let started = Instant::now();
+    renderer.render(BLOCK * blocks);
+    let took = started.elapsed();
+    let (fork_ed, _exec) = renderer.into_parts();
+    (fork_ed, took)
+}
+
+/// **A fork whose server dies mid-render is a named fault, promptly** — not
+/// a silent render that reports success. The fork's server (only: the switch
+/// is armed after the live one loaded) aborts on its 8th block; the render
+/// finishes without waiting out any budget, and the forked editor reports
+/// `Crashed` for the plugin's key with a `PluginRenderFault::Crashed` cause.
+///
+/// Mutation: hand no health probe from `PluginFork::fork` → `fork_health` is
+/// `Ok` → fails. Mutation: never ask the process (`server_died`) in the
+/// batcher's wait → the bridge, sent nothing, never notices the death, and the
+/// block waits out its 5 s budget → the time bound fails.
+#[test]
+fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
+    let _lock = exclusive();
+    let _env = env();
+    let probe = load_probe(SAMPLE_RATE);
+    let _crash = ProbeEnv::new().crash_on_block(8);
+
+    let (fork_ed, took) = render_fork_of(&probe, 40);
+    let fault = fork_ed.fork_health().expect_err("the fork crashed");
+    assert_eq!(fault.key, NodeKey(3));
+    assert_eq!(fault.kind, ForkFaultKind::Crashed, "{fault}");
+    assert!(
+        matches!(
+            fault.cause.downcast_ref::<PluginRenderFault>(),
+            Some(PluginRenderFault::Crashed { .. })
+        ),
+        "{fault:?}"
+    );
+    assert!(took < Duration::from_secs(4), "the render took {took:?}");
+}
+
+/// **A fork whose server hangs mid-render is a named fault after one budget,
+/// not one budget per block.** The fork's server parks from its 5th block
+/// for good; with a 1 s budget the 30-block render takes about a second, and
+/// the forked editor reports `TimedOut`.
+///
+/// Mutation: drop the `gave_up` early return in `Batcher::await_output` →
+/// every later block waits its own second (~25 s) → the time bound fails.
+/// Mutation: never latch `gave_up` → the same, and `fork_health` is `Ok`.
+#[test]
+fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
+    let _lock = exclusive();
+    let _env = env();
+    let config = BridgeConfig {
+        timeout_ms: 1_000,
+        ..BridgeConfig::default()
+    };
+    let probe = load_probe_with(config, SAMPLE_RATE);
+    let _hang = ProbeEnv::new().block_from(5);
+
+    let (fork_ed, took) = render_fork_of(&probe, 30);
+    let fault = fork_ed.fork_health().expect_err("the fork hung");
+    assert_eq!(fault.kind, ForkFaultKind::TimedOut, "{fault}");
+    assert!(
+        matches!(
+            fault.cause.downcast_ref::<PluginRenderFault>(),
+            Some(PluginRenderFault::TimedOut { budget }) if *budget == Duration::from_secs(1)
+        ),
+        "{fault:?}"
+    );
+    assert!(took < Duration::from_secs(5), "the render took {took:?}");
+}
+
+/// **A fork source whose live instance is gone says so at once**, without
+/// launching anything: `PluginForkError::LiveGone`. The source holds the live
+/// bridge weakly, so it cannot keep a dropped plugin alive either.
+///
+/// Mutation: answer a gone live bridge the way a strong `Arc` to a dead
+/// process would, `SaveState(PluginCrashed)` → not `LiveGone` →
+/// fails.
+#[test]
+fn a_fork_of_a_dropped_plugin_is_live_gone() {
+    let _lock = exclusive();
+    let _env = env();
+    let probe = load_probe(SAMPLE_RATE);
+    let parts = probe.client.clone().into_parts();
+    let source = parts.fork.expect("a plugin node is forkable");
+    drop(parts.node);
+    drop(probe);
+
+    let started = Instant::now();
+    let cause = match source.fork(ForkMode::Live) {
+        Ok(_) => panic!("forked a plugin that is gone"),
+        Err(cause) => cause,
+    };
+    assert!(
+        matches!(
+            cause.downcast_ref::<PluginForkError>(),
+            Some(PluginForkError::LiveGone)
+        ),
+        "{cause:?}"
+    );
+    assert!(started.elapsed() < Duration::from_millis(100));
+}
+
+/// This process's direct children, read from `/proc` (every thread's list:
+/// a child is listed under the thread that spawned it).
+#[cfg(target_os = "linux")]
+fn children() -> std::collections::BTreeSet<u32> {
+    let mut out = std::collections::BTreeSet::new();
+    for task in std::fs::read_dir("/proc/self/task").expect("procfs") {
+        let path = task.expect("task").path().join("children");
+        if let Ok(text) = std::fs::read_to_string(path) {
+            out.extend(
+                text.split_whitespace()
+                    .filter_map(|p| p.parse::<u32>().ok()),
+            );
+        }
+    }
+    out
+}
+
+/// **A fork's server is reaped**: once the fork is dropped, and when the fork
+/// fails (`LoadState`), its server is no longer a child of this process, not
+/// even a zombie. This reads `/proc` children rather than `kill -0` on a pid,
+/// because the fork's pid is internal and a leaked child shows up here
+/// whatever it is. Linux only (`/proc/self/task/*/children`); the guard is
+/// the same code on every platform.
+///
+/// Mutation: `std::mem::forget(fork)` on the `LoadState` error path in
+/// `PluginFork::instance` → the refused fork's server stays a child →
+/// fails. Mutation: skip `wait()` in `ProcessGuard::drop` → a zombie stays
+/// listed → fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_forks_server_is_reaped_when_the_fork_is_dropped_or_fails() {
+    let _lock = exclusive();
+    let _env = env();
+    let probe = load_probe(SAMPLE_RATE);
+    let baseline = children();
+    assert!(!baseline.is_empty(), "the live server is a child");
+
+    let fork = probe
+        .client
+        .fork_instance(ForkMode::Live)
+        .expect("the probe forks");
+    assert_eq!(children().len(), baseline.len() + 1, "the fork's server");
+    drop(fork);
+    assert_eq!(children(), baseline, "a dropped fork's server is reaped");
+
+    let _refuse = ProbeEnv::new().refuse_state_load(true);
+    let err = probe.client.fork_instance(ForkMode::Live).err();
+    assert!(
+        matches!(err, Some(PluginForkError::LoadState(_))),
+        "{err:?}"
+    );
+    assert_eq!(children(), baseline, "a failed fork's server is reaped");
 }

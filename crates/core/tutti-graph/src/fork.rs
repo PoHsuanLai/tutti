@@ -59,6 +59,21 @@
 //! - **No limits.** The pair is new, so [`Limits`](crate::Limits) start at
 //!   `NONE`; a host that runs a live duplicate sets its own.
 //!
+//! # When a forked unit fails
+//!
+//! A unit forked from outside the process — a hosted plugin, a fresh
+//! instance in a server of its own — can fail **while it renders**: its
+//! process dies, or stops answering. `Node::process` has no error channel,
+//! and silence is a valid output, so on its own such a render finishes and
+//! writes a silent file. So a source may hand over a [`ForkHealth`] probe
+//! with the unit ([`Forked::with_health`]); the forked editor keeps it, and
+//! [`Editor::fork_health`] reports the first [`ForkFault`] —
+//! [`ForkFaultKind::Crashed`] or [`ForkFaultKind::TimedOut`], separately.
+//! **A renderer of a fork checks it after rendering** and turns a fault into
+//! a failed render (tutti-export's `GraphSource`: `Error::ForkFailed { key,
+//! cause }`). A unit that faults keeps rendering silence without further
+//! waiting, so a failed render ends promptly.
+//!
 //! # [`ForkTarget::Node`]: the sub-graph feeding one node
 //!
 //! The fork holds the node and **exactly** what feeds it — every node it
@@ -105,7 +120,84 @@ pub trait ForkSource: Send {
     /// unit from outside the process — a hosted plugin, loaded afresh and
     /// handed the live instance's state — can, and must say so rather than
     /// fall back to anything that shares the live unit.
-    fn fork(&self, mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause>;
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause>;
+}
+
+/// What a [`ForkSource`] produces: the unit, and — for a unit that can fail
+/// *while it renders* — a probe the forked editor keeps
+/// ([`Editor::fork_health`]).
+pub struct Forked {
+    /// The fresh unit. The editor prepares it.
+    pub node: Box<dyn Node>,
+    /// Whether the unit has failed since it was forked. `None` for a unit
+    /// that cannot fail at run time (anything in this process).
+    pub health: Option<Arc<dyn ForkHealth>>,
+}
+
+impl Forked {
+    /// A unit with no health probe.
+    pub fn new(node: Box<dyn Node>) -> Self {
+        Self { node, health: None }
+    }
+
+    /// Attach `health`.
+    pub fn with_health(mut self, health: Arc<dyn ForkHealth>) -> Self {
+        self.health = Some(health);
+        self
+    }
+}
+
+/// Whether a forked unit has failed while rendering — its external process
+/// died, or stopped answering — so that the fork's output from then on is
+/// silence rather than what the graph describes. Read on the control thread
+/// (after, or between, rendered spans), never from the audio path.
+///
+/// A unit whose process fails cannot say so through `Node::process` (it has
+/// no error channel), and silence is a valid output: without a probe, a
+/// render through a dead plugin finishes "successfully" and writes a silent
+/// file.
+pub trait ForkHealth: Send + Sync {
+    /// `None` while healthy; the first failure otherwise. Latched: once
+    /// faulted, a unit stays faulted.
+    fn fault(&self) -> Option<(ForkFaultKind, ForkCause)>;
+}
+
+/// How a forked unit failed while rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForkFaultKind {
+    /// Its process died.
+    Crashed,
+    /// It stopped answering within its budget; it renders silence from then
+    /// on rather than wait again.
+    TimedOut,
+}
+
+/// A forked unit failed while rendering ([`Editor::fork_health`]): the
+/// render's output past that point is not what the graph describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkFault {
+    /// The node.
+    pub key: NodeKey,
+    /// How it failed.
+    pub kind: ForkFaultKind,
+    /// The unit's own account.
+    pub cause: ForkCause,
+}
+
+impl fmt::Display for ForkFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let how = match self.kind {
+            ForkFaultKind::Crashed => "crashed",
+            ForkFaultKind::TimedOut => "timed out",
+        };
+        write!(f, "forked node {:?} {how}: {}", self.key, self.cause)
+    }
+}
+
+impl Error for ForkFault {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.cause.get())
+    }
 }
 
 /// Why a [`ForkSource`] could not produce its unit: the source's own error,
@@ -325,10 +417,13 @@ impl Editor {
             Editor::with_event_capacity(prepare, self.event_capacity());
         for (key, source) in sources {
             let kind = &live.topology.nodes[&key].kind;
-            let unit = source
+            let forked = source
                 .fork(mode)
                 .map_err(|cause| ForkError::Source { key, cause })?;
-            editor.insert(key, kind, unit);
+            editor.insert(key, kind, forked.node);
+            if let Some(health) = forked.health {
+                editor.watch_fork(key, health);
+            }
         }
         let fork = editor.spec_mut();
         fork.topology.inputs = live.topology.inputs;
@@ -361,6 +456,30 @@ impl Editor {
         executor.apply_pending();
         editor.collect();
         Ok((editor, executor))
+    }
+
+    /// Whether every forked unit of this (forked) editor is still rendering
+    /// what the graph describes: the first [`ForkFault`] in key order, or
+    /// `Ok`. Always `Ok` on an editor that was not made by
+    /// [`fork`](Self::fork), and on a fork whose units cannot fail at run
+    /// time. See "When a forked unit fails" in the `fork` module docs.
+    ///
+    /// A renderer checks it **after** rendering (and may between spans): a
+    /// fault means the output past some point is silence, and the render must
+    /// be reported as failed, not written as if it had succeeded.
+    pub fn fork_health(&self) -> Result<(), ForkFault> {
+        let mut probes: Vec<_> = self.fork_probes().iter().collect();
+        probes.sort_by_key(|(key, _)| *key);
+        for (key, probe) in probes {
+            if let Some((kind, cause)) = probe.fault() {
+                return Err(ForkFault {
+                    key: *key,
+                    kind,
+                    cause,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// `key` and every node that feeds it, walking back along audio,

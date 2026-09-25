@@ -12,8 +12,9 @@ use common::{bits, prepare, Kind, TestNode};
 use fundsp::net::Net;
 use fundsp::prelude32::{lowpass_hz, mul, pass, sine_hz};
 use tutti_graph::{
-    CrossfadeCurve, Editor, EventEdge, EventIn, EventOut, Fade, ForkCause, ForkError, ForkMode,
-    ForkSource, ForkTarget, GraphBuilder, IntoNode, Legacy, Node, NodeParts, Renderer,
+    CrossfadeCurve, Editor, EventEdge, EventIn, EventOut, Fade, ForkCause, ForkError, ForkFault,
+    ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget, Forked, GraphBuilder, IntoNode,
+    Legacy, Node, NodeParts, Renderer,
 };
 use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 use tutti_node::signal::{Signal, SignalFrame};
@@ -160,8 +161,8 @@ struct Native(Kind);
 struct KindFork(Kind);
 
 impl ForkSource for KindFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause> {
-        Ok(Box::new(TestNode::new(self.0.clone())))
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        Ok(Forked::new(Box::new(TestNode::new(self.0.clone()))))
     }
 }
 
@@ -384,6 +385,93 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     );
 }
 
+/// A probe a test flips: 0 healthy, 1 crashed, 2 timed out.
+struct Flag(std::sync::atomic::AtomicU8);
+
+impl ForkHealth for Flag {
+    fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
+        match self.0.load(Ordering::SeqCst) {
+            0 => None,
+            1 => Some((ForkFaultKind::Crashed, ForkCause::new(RefusedState("died")))),
+            _ => Some((
+                ForkFaultKind::TimedOut,
+                ForkCause::new(RefusedState("hung")),
+            )),
+        }
+    }
+}
+
+/// A source whose units carry the shared [`Flag`].
+struct Watched(Arc<Flag>);
+
+impl IntoNode for Watched {
+    type Controls = ();
+    fn into_node(self) -> (Box<dyn Node>, ()) {
+        (
+            Box::new(TestNode::new(Kind::Const {
+                value: 1.0,
+                width: 1,
+            })),
+            (),
+        )
+    }
+    fn into_parts(self) -> NodeParts<()> {
+        let flag = Arc::clone(&self.0);
+        NodeParts {
+            node: self.into_node().0,
+            controls: (),
+            fork: Some(Box::new(WatchedFork(flag))),
+        }
+    }
+}
+
+struct WatchedFork(Arc<Flag>);
+
+impl ForkSource for WatchedFork {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        let node = Box::new(TestNode::new(Kind::Const {
+            value: 1.0,
+            width: 1,
+        }));
+        Ok(Forked::new(node).with_health(Arc::clone(&self.0) as Arc<dyn ForkHealth>))
+    }
+}
+
+/// **A forked unit that fails while rendering is reported by the forked
+/// editor**, with its key and how (crashed vs timed out); healthy is `Ok`,
+/// and the live editor, which holds no forked units, is always `Ok`.
+///
+/// Mutation: drop `watch_fork` in `Editor::fork` → the fault is never seen →
+/// fails. Mutation: `fork_health` returns `Ok(())` → fails.
+#[test]
+fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
+    let pre = prepare(64);
+    let flag = Arc::new(Flag(std::sync::atomic::AtomicU8::new(0)));
+    let (mut ed, _exec) = Editor::new(pre);
+    ed.insert(NodeKey(1), "legacy", Legacy::new(mul(2.0)));
+    ed.insert(NodeKey(4), "watched", Watched(Arc::clone(&flag)));
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(4), 0)];
+
+    let (fork, _fork_exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("forks");
+    assert_eq!(fork.fork_health(), Ok(()));
+    flag.0.store(1, Ordering::SeqCst);
+    let fault: ForkFault = fork.fork_health().expect_err("crashed");
+    assert_eq!(
+        (fault.key, fault.kind),
+        (NodeKey(4), ForkFaultKind::Crashed)
+    );
+    flag.0.store(2, Ordering::SeqCst);
+    let fault = fork.fork_health().expect_err("timed out");
+    assert_eq!(
+        (fault.key, fault.kind),
+        (NodeKey(4), ForkFaultKind::TimedOut)
+    );
+    assert_eq!(fault.cause.to_string(), "refused: hung");
+    assert_eq!(ed.fork_health(), Ok(()), "the live editor watches nothing");
+}
+
 /// Why a [`FailingFork`] fails: a type the test can downcast back out.
 #[derive(Debug, PartialEq)]
 struct RefusedState(&'static str);
@@ -401,7 +489,7 @@ impl std::error::Error for RefusedState {}
 struct FailingFork;
 
 impl ForkSource for FailingFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Box<dyn Node>, ForkCause> {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         Err(ForkCause::new(RefusedState("bad chunk")))
     }
 }

@@ -354,15 +354,17 @@ pub struct LoadedProbe {
 /// If the load fails — these tests are about what a *loaded* plugin does, so a
 /// failure to load is a broken fixture rather than an outcome worth asserting.
 pub fn load_probe(sample_rate: f64) -> LoadedProbe {
+    load_probe_with(BridgeConfig::default(), sample_rate)
+}
+
+/// [`load_probe`] with a bridge config of the caller's (a shorter
+/// `timeout_ms`, say).
+pub fn load_probe_with(config: BridgeConfig, sample_rate: f64) -> LoadedProbe {
     // SAFETY: `exclusive()` is held; see `ProbeEnv::set`.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server_path()) };
 
-    let client = PluginClient::new(
-        BridgeConfig::default(),
-        clap_probe_path().to_path_buf(),
-        sample_rate,
-    )
-    .expect("load the reference CLAP plugin through a real plugin-server");
+    let client = PluginClient::new(config, clap_probe_path().to_path_buf(), sample_rate)
+        .expect("load the reference CLAP plugin through a real plugin-server");
     let handle = PluginHandle::from_client(&client);
     LoadedProbe { client, handle }
 }

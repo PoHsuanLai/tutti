@@ -113,6 +113,9 @@ pub struct PluginClient {
     /// ([`fork_instance`](Self::fork_instance)). Shared across clones and
     /// never written.
     origin: Arc<fork::Origin>,
+    /// On a **fork** only: whether it has failed while rendering
+    /// ([`fork_health`](Self::fork_health)).
+    fork_watch: Option<Arc<fork::ForkWatch>>,
 }
 
 /// Everything the host produces for one process block, aggregated for the bridge
@@ -290,6 +293,10 @@ impl PluginClient {
         let sample_rate = sample_rate.into();
         // `.get()` at the wire: `launch` hands the rate to the subprocess.
         let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
+        // Guard the process before the first fallible step below: an `Err`
+        // from `PluginBridge::new` would otherwise drop a bare `Child`, which
+        // std neither kills nor waits.
+        let mut process_guard = ProcessGuard::launched(server.process, config.clone());
         let origin = Arc::new(fork::Origin {
             config: config.clone(),
             plugin_path: plugin_path.clone(),
@@ -324,7 +331,8 @@ impl PluginClient {
         // `max_buffer_size` here meant the batcher allocated 8192 samples per
         // channel to stage 64, and left the two sizes free to disagree.
         let max_buffer_size = config.max_buffer_size.min(BATCH_SIZE);
-        let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
+        process_guard.attach(bridge_thread);
+        let process_guard = Arc::new(process_guard);
         let param_sink = ParameterChangeSink::new();
         let refresh_sink = RefreshSink::new();
         let invalidate_sink = InvalidateSink::new();
@@ -387,6 +395,7 @@ impl PluginClient {
             midi: Midi::new(),
             midi_out: crate::protocol::MidiEventVec::new(),
             origin,
+            fork_watch: None,
         })
     }
 

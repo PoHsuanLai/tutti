@@ -993,8 +993,13 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    is a fork by **state transfer**. **Closed by PR 16** for out-of-process
    plugins (`tutti-plugin/src/host/node/fork.rs`):
    `PluginClient::fork_instance(ForkMode)` asks the live instance for its
-   saved state (the one control call it gets, ordered after every
-   parameter write before it), launches a fresh instance of the same file
+   saved state (the one control call it gets; it stalls the live bridge
+   thread for the length of the save, as a project save does. It is
+   ordered after every parameter write before it, but whether such a write
+   is *in* the state depends on it having reached the plugin: verified for
+   CLAP, not guaranteed for a write dropped on a full command queue, a CLAP
+   `REQUIRES_PROCESS` parameter written while processing, or VST3's
+   controller-side write), launches a fresh instance of the same file
    in a **new plugin-server process** (a server hosts one plugin; a
    process of its own also keeps a fork's crash and CPU off the live
    plugin), checks the plugin id, loads the state, and copies each
@@ -1021,6 +1026,27 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    not forkable**: a second `AEffect` from the same library in this
    process, and non-chunk plugins whose state is only the current
    program's parameters, need their own design and tests.
+
+   Two rules from its review. **Modulation does not reach a fork.** A
+   param-automation curve can be a live `PluginParamTarget` the mod router
+   writes every frame; a fork freezes each curve (`Curve::frozen`, a new
+   defaulted method in tutti-mod) and a target freezes to its **authored**
+   part — base and `AUTOMATION` layer as they stood — with every
+   modulation layer dropped. So an export renders a plugin's base plus
+   authored automation, without LFOs, until export has an offline
+   modulation driver of its own. **A fork that fails while rendering is
+   reported, not rendered as silence.** `ForkSource::fork` returns a
+   `Forked` (the unit and an optional `ForkHealth` probe); the forked
+   editor keeps the probes, and `Editor::fork_health()` returns the first
+   `ForkFault { key, kind: Crashed | TimedOut, cause }`. A plugin fork
+   crashes when its server exits (the wait asks the process, since the
+   bridge only notices a dead peer when it next sends) and times out when a
+   block misses `BridgeConfig::timeout_ms`; after the first miss it stops
+   waiting, so a hung server costs one budget per render, not per block.
+   **PR 12 / PR 7's `GraphSource` must check `fork_health()` after
+   rendering** and turn a fault into a failed export
+   (`Error::ForkFailed { key, cause }`); until then a crashed fork's export
+   ends promptly but is reported by nothing.
 
 **Fork audit, per unit** (every in-tree `impl AudioUnit`; "row" is its
 `IsolateRow` test, "—" where the unit reads no live cell, so there is
@@ -1059,7 +1085,8 @@ nothing to move):
 | `PolySynth` | tutti-polysynth | MIDI inbox and source; master volume, unison detune and spread | fresh port, voices cleared, cells detached | yes | `isolate_snapshots_volume_and_unison` |
 | `SoundFontUnit` | tutti-soundfont | MIDI inbox and source (the `SoundFont` is read-only) | fresh port | yes | — |
 | `MicMonitorNode` | tutti-io | the ring consumer | — | **no** | — |
-| `PluginClient`, `InProcessVst2Client` | tutti-plugin | the plugin | — | **no** (item 7) | — |
+| `PluginClient` | tutti-plugin | the plugin process | — | **no**: forks by state transfer through its own `ForkSource` (item 7) | `clap_fork.rs` |
+| `InProcessVst2Client` | tutti-plugin | the plugin | — | **no** (item 7) | — |
 
 Width changes mid-run, the master meter and tap, and pruning need nothing.
 

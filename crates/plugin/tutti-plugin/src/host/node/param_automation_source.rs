@@ -355,7 +355,11 @@ impl Curve for PluginParamTarget {
         authored.clear_mod_layers();
         // The automation layer may itself read live state (a take in progress
         // is an immutable `Recorder` once shared, but a wrapper is possible).
-        Some(authored.frozen().unwrap_or_else(|| std::sync::Arc::new(authored)))
+        Some(
+            authored
+                .frozen()
+                .unwrap_or_else(|| std::sync::Arc::new(authored)),
+        )
     }
 }
 
@@ -702,7 +706,10 @@ mod tests {
         let at = |src: &ParamAutomationSource, i: usize| {
             src.params[i].curve.value_at(tutti_core::Beat(0.0)).unwrap()
         };
-        assert!((at(&fork, 0) - 0.6).abs() < 1e-6, "base + automation, no mod");
+        assert!(
+            (at(&fork, 0) - 0.6).abs() < 1e-6,
+            "base + automation, no mod"
+        );
         assert!((at(&fork, 1) - 0.25).abs() < 1e-6);
 
         // After the fork, everything moves on the live targets.

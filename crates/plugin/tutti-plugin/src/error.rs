@@ -197,6 +197,11 @@ pub type Result<T> = std::result::Result<T, BridgeError>;
 /// from "the fresh instance did not start" (it may on a retry).
 #[derive(Error, Debug)]
 pub enum PluginForkError {
+    /// The live instance is gone — every node and handle holding it dropped
+    /// — so there is no state to fork from. Answered without any IPC.
+    #[error("the live instance is gone; there is no state to fork from")]
+    LiveGone,
+
     /// The live instance did not hand over its state — the plugin cannot save
     /// it (no state extension, or it refused), or the live bridge is gone.
     /// Asked before anything is loaded, so this costs no subprocess.
@@ -229,6 +234,30 @@ pub enum PluginForkError {
     /// The fresh instance refused the live instance's state.
     #[error("the fresh instance refused the live instance's state: {0}")]
     LoadState(#[source] StateError),
+}
+
+/// How a forked plugin instance failed **while rendering** — the cause behind
+/// a `tutti_graph::ForkFault` (see `PluginClient::fork_health`). From the
+/// failure on, the fork renders silence.
+#[derive(Error, Debug)]
+pub enum PluginRenderFault {
+    /// The fork's plugin-server died.
+    #[error("the forked instance's plugin-server died: {cause}")]
+    Crashed {
+        /// What the bridge latched when it noticed.
+        cause: String,
+    },
+    /// The fork's server did not publish a block within the budget
+    /// (`BridgeConfig::timeout_ms`). The fork stopped waiting: every later
+    /// block is silence, at once.
+    #[error(
+        "the forked instance did not answer a block within {budget:?}; \
+         it renders silence from then on"
+    )]
+    TimedOut {
+        /// The per-block budget it missed.
+        budget: std::time::Duration,
+    },
 }
 
 /// Widen the lean, format-agnostic [`PluginError`] (what the shared

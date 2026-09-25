@@ -655,6 +655,52 @@ passes pay back differently.
 - Params: `AudioParam<U,P>` writes go to `Param<U>` handles from `Controls`
   (sample-accurate automation as events); the `Setting` queue goes away.
 
+#### Phase 3 PR plan (scoped 2026-09-25)
+
+Six gaps have to close before the flip. Each is closed by the PR in brackets:
+
+1. **Silence skip.** It starves `Legacy` sources that are fed out-of-band
+   (SoundFont, PolySynth, VoicePool, plugin instruments, mic, a base-0
+   `AtomicSourceNode`): a silent block parks them for good. Legacy must report
+   `Modified` by default and opt in to skipping [PR 1].
+2. **No `Net::set(Setting)` path.** Some `set` impls write plain fields (the
+   sampler voice's `play.gain`) [PR 1].
+3. **No replace-with-fade** for `crossfade_audio_node` [PR 3].
+4. **No runtime latency change** for a plugin's latency atomic [PR 1].
+5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
+   hosts read its `BEAT_PORTS` [PR 6].
+6. **No `Fork`** for export [PR 2].
+
+Width changes mid-run, the master meter and tap, and pruning need nothing.
+
+| PR | Scope | Needs |
+|---|---|---|
+| 1 | tutti-graph Legacy parity: never skip by default, with `Legacy::pure`; `Legacy::controlled` returning a settings ring plus a never-processed shadow; `Editor::set_latency` | #18 |
+| 2 | tutti-graph `Fork`: `ForkSource`/`into_parts`, `Editor::fork(Master \| Node, Live \| Offline, Prepare)`, `ForkError::NotForkable`; Legacy forks via shadow clone, `isolate`, `rebind_offline`, `reset` | 1 |
+| 3 | tutti-graph `Editor::replace(key, node, Fade)`; `CrossfadeCurve` moves to tutti-graph | #18 |
+| 4 | tutti-graph `GraphBuilder` (a `Net`-like test helper) plus a render helper | #18 |
+| 5 | tutti-graph sample-accuracy contract suite (§6 Proof): direct, behind PDC, fan-in, across a recompile, ragged blocks; the harness behind a `contract` feature | 4 |
+| 6 | tutti-core `EnvClock` (emits `BEAT_PORTS` from `Cx.env`), and `OfflineTimeline` → graph `Transport` | #18 |
+| 7 | tutti-export `GraphSource` beside `NetSource` | 2, 4, 6 |
+| 8 | tutti-export tests and examples move to `GraphBuilder` | 7 |
+| 9 | bevy-tutti capture-at-insert controls (`MidiTarget`, `ModParamsHandle`, `PluginShadow`) replace every `node_as*`; `build_param_mod` returns parts. Still on `Net` | — |
+| 10 | bevy-tutti: `AudioGraphRes` becomes opaque (methods, `headless()`), still `Net` inside | 9 |
+| 11 | bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
+| 12 | bevy-tutti: export through `Fork` | 2, 7, 11 |
+| 13 | bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
+| 14 | tutti-export: graph-only API | 8, 13 |
+| 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
+
+The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
+control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in
+parallel; it has no consumer until Phase 4.
+
+Two things carry over from `Legacy` chunking in 64 frames: a block-oriented
+unit (convolver FFT, vocoder, plugin batcher) can differ from `Net` when
+blocks are not multiples of 64, so bit-identity tests use per-sample units or
+64-multiple blocks; and `Net`'s `ping` seeding of generators is lost, which
+affects tests only.
+
 ### Phase 4 — port nodes natively
 
 Mechanical, 43 impls: `route`→`Shape.latency`, drop `tick`/`footprint`/

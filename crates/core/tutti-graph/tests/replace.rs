@@ -164,16 +164,15 @@ impl Node for DropProbe {
 }
 
 /// The outgoing unit retires on the control thread: the commit that started
-/// the fade is held (it stays in flight) until the fade ends, then returns
-/// with the outgoing unit in it, which `collect` frees — never the executor.
+/// the fade comes back at once, and the crossfade comes back on the
+/// fade-return ring when it ends, carrying the outgoing unit, which
+/// `collect` frees — never the executor.
 ///
 /// Mutation: in `end_fades`, `drop` the ended crossfade instead of
-/// `finish_fade` → the outgoing unit is freed on the audio thread (the
-/// `NodeBox` guard panics in debug; the probe would read 2) → fails.
-/// Mutation: in `apply_pending`, send every box back at once (ignore
-/// `holds`) → `in_flight` is 0 while the fade runs, and the fade's end finds
-/// no held box → fails. Mutation: never end a fade (skip `end_fades`) → the
-/// outgoing unit never comes back → fails.
+/// `retire_fade` → the outgoing unit is freed on the audio thread (the
+/// guards panic in debug; the probe would read 2) → fails. Mutation: never
+/// end a fade (skip `end_fades`) → the outgoing unit never comes back →
+/// fails. Mutation: don't drain the fade-return ring in `collect` → fails.
 #[test]
 fn the_outgoing_unit_retires_on_the_control_thread() {
     let (mut ed, mut exec) = Editor::new(prepare(128));
@@ -211,7 +210,8 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
     ed.commit().expect("commits");
     dc(&mut exec, 64);
     assert!(ed.collect().is_empty(), "nothing retires mid-fade");
-    assert_eq!(ed.in_flight(), 1, "the fade holds its commit");
+    assert_eq!(ed.in_flight(), 0, "the fade does not hold its commit");
+    assert_eq!(ed.fades_in_flight(), 1);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
 
     dc(&mut exec, 64);
@@ -224,7 +224,60 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
     );
     assert_eq!(ed.collect(), vec![NODE]);
     assert_eq!(dropped.load(Ordering::SeqCst), 1, "freed by collect");
-    assert_eq!(ed.in_flight(), 0);
+    assert_eq!(ed.fades_in_flight(), 0);
+}
+
+/// A fade does not hold its commit: ten replaces, each committed on its own
+/// with a one-second fade still running, all go through, and so does a
+/// re-prepare — `Backpressure` is about commits in the queue, not fades in
+/// flight.
+///
+/// Mutation: hold a fade's commit until the fade ends (the design this
+/// replaced) → the fifth commit is `Backpressure` → fails. Mutation: set
+/// `FADE_CAPACITY` to 4 → the fifth is refused → fails.
+#[test]
+fn long_fades_do_not_block_commits() {
+    let (mut ed, mut exec) = Editor::new(prepare(128));
+    let keys: Vec<NodeKey> = (1..=10).map(NodeKey).collect();
+    for &k in &keys {
+        ed.insert(k, "gain", gain(1.0));
+    }
+    ed.commit().expect("commits");
+    exec.process(64, &Transport::default(), &[], &mut []);
+    let second = Fade::new(Samples(48_000), CrossfadeCurve::EqualAmplitude);
+    for &k in &keys {
+        ed.replace(k, gain(2.0), second).expect("fits");
+        ed.commit().expect("a running fade blocks nothing");
+        exec.process(64, &Transport::default(), &[], &mut []);
+    }
+    assert_eq!(ed.fades_in_flight(), 10);
+    ed.reprepare(prepare(64)).expect("nor a re-prepare");
+}
+
+/// A remove in the same commit as a long fade retires at once: its key is
+/// reported by the `collect` after the next block, not after the fade.
+///
+/// Mutation: hold a fade's commit until the fade ends → the removed key
+/// comes back only after the fade → fails.
+#[test]
+fn a_remove_beside_a_fade_retires_at_once() {
+    let (mut ed, mut exec) = gain_graph(1.0);
+    let other = NodeKey(2);
+    ed.insert(other, "gain", gain(1.0));
+    ed.commit().expect("commits");
+    dc(&mut exec, 16);
+    ed.collect();
+    ed.replace(
+        NODE,
+        gain(2.0),
+        Fade::new(Samples(48_000), CrossfadeCurve::EqualAmplitude),
+    )
+    .expect("fits");
+    ed.remove(other);
+    ed.commit().expect("commits");
+    dc(&mut exec, 16);
+    assert_eq!(ed.collect(), vec![other]);
+    assert_eq!(ed.fades_in_flight(), 1, "the fade still runs");
 }
 
 /// A replace whose unit differs in shape is refused, naming the key, and
@@ -377,7 +430,7 @@ fn a_replace_during_a_fade_waits_for_it() {
     let mut back = ed.collect();
     back.sort();
     assert_eq!(back, vec![NODE; 3]);
-    assert_eq!(ed.in_flight(), 0, "every held commit went back");
+    assert_eq!(ed.fades_in_flight(), 0, "every crossfade came back");
 }
 
 /// Counts the events it is handed; outputs the count.
@@ -464,14 +517,16 @@ fn events_go_to_the_incoming_unit_only() {
 
 /// A hard edit at a fading key cuts the fade: removing the node, or an
 /// `insert` over it, retires every unit there — the running one, the one
-/// fading out and one waiting — and releases the commits that held them. A
-/// re-prepare cuts it too, keeping the newest unit.
+/// fading out and one waiting — and every one is reported by `collect`. A
+/// re-prepare cuts it too, keeping the newest unit and reporting the two it
+/// cut.
 ///
 /// Mutation: in `apply`, retire a hard-replaced unit without its crossfades
-/// (skip `retire_fade`) → the held commits never go back → `in_flight`
-/// stays up → fails. Mutation: on suspend, check out the running unit
-/// rather than the waiting one → after the re-prepare the gain is 2, not 4
-/// → fails.
+/// (forget them instead of `retire_fade`) → two units never come back and
+/// `fades_in_flight` stays up → fails. The same on suspend → the
+/// re-prepare's cut units are never reported → fails. Mutation: on suspend,
+/// check out the running unit rather than the waiting one → after the
+/// re-prepare the gain is 2, not 4 → fails.
 #[test]
 fn a_hard_edit_cuts_a_fade() {
     let fade = Fade::new(Samples(1000), CrossfadeCurve::EqualAmplitude);
@@ -483,7 +538,7 @@ fn a_hard_edit_cuts_a_fade() {
         ed.replace(NODE, gain(4.0), fade).expect("fits");
         ed.commit().expect("commits");
         dc(&mut exec, 64);
-        assert_eq!(ed.in_flight(), 2, "a running and a waiting fade hold two");
+        assert_eq!(ed.fades_in_flight(), 2, "one running, one waiting");
         match cut {
             "remove" => {
                 ed.remove(NODE);
@@ -495,7 +550,7 @@ fn a_hard_edit_cuts_a_fade() {
         ed.commit().expect("commits");
         let out = dc(&mut exec, 64);
         let back = ed.collect();
-        assert_eq!(ed.in_flight(), 0, "{cut}: every held commit went back");
+        assert_eq!(ed.fades_in_flight(), 0, "{cut}: every crossfade came back");
         assert_eq!(back.len(), 3, "{cut}: three units retired: {back:?}");
         if cut == "insert" {
             assert!(out.iter().all(|&y| y == 8.0), "a swap, not a fade");
@@ -511,7 +566,11 @@ fn a_hard_edit_cuts_a_fade() {
     dc(&mut exec, 64);
     ed.reprepare(prepare(64)).expect("re-prepares");
     dc(&mut exec, 64);
-    ed.collect();
+    assert_eq!(
+        ed.collect(),
+        vec![NODE; 2],
+        "the re-prepare's cut units are reported"
+    );
     let out = dc(&mut exec, 64);
     assert!(
         out.iter().all(|&y| y == 4.0),
@@ -520,4 +579,5 @@ fn a_hard_edit_cuts_a_fade() {
     );
     ed.collect();
     assert_eq!(ed.in_flight(), 0);
+    assert_eq!(ed.fades_in_flight(), 0);
 }

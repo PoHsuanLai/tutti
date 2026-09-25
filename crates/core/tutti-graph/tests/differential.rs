@@ -1650,8 +1650,8 @@ fn mutate_with_fades(desc: &Desc, rng: &mut Rng) -> (Desc, BTreeMap<NodeKey, tut
 }
 
 /// Render until the editor has room for another commit — what a host does
-/// on `Backpressure`. A crossfade holds its commit until it ends, so rapid
-/// replaces run out of credit.
+/// on `Backpressure`. (A crossfade holds no commit, so this only waits for
+/// the queue itself; `Pair::switch` already applies and collects each.)
 fn wait_for_credit(pair: &mut Pair, frame: &mut u64) {
     loop {
         pair.editor.collect();
@@ -1671,8 +1671,8 @@ proptest! {
     /// included) over 1–250 frames, so fades end mid-block, run across other
     /// edits, queue behind a running fade and supersede a waiting one — and
     /// are cut by a removal or a hard regenerate of their key — under every
-    /// block schedule, ragged ones included. Afterwards every commit a fade
-    /// held has come back.
+    /// block schedule, ragged ones included. Afterwards every crossfade has
+    /// come back on the fade-return ring.
     ///
     /// Mutation: in `Executor::apply`, supersede nothing (keep the first
     /// waiting fade) → diverges on the first case where two replaces queue.
@@ -1700,35 +1700,73 @@ proptest! {
         // Long enough for every fade, waiting ones included, to end.
         run(&mut pair, &schedule(which, seed, 8 * 260), &mut frame);
         pair.editor.collect();
-        prop_assert_eq!(pair.editor.in_flight(), 0, "a commit a fade held never came back");
+        prop_assert_eq!(pair.editor.in_flight(), 0);
+        prop_assert_eq!(pair.editor.fades_in_flight(), 0, "a crossfade never came back");
     }
 }
 
 /// The fade generator is not vacuous: over a fixed range of seeds, replaces
-/// land while a fade still runs at their key (so they queue, or supersede
-/// one waiting), fades swap in another kind, and fades reach event nodes.
-/// Counted from the generator's own schedule, the way the proptest drives
-/// it (without the credit waits, which only add frames).
+/// land while a fade still runs at their key (so they queue) and while one
+/// already waits there (so they supersede it); `mutate` cuts running fades
+/// (removing or hard-regenerating their key); fades swap in another kind,
+/// reach event nodes, and run over in-place kinds (whose outgoing unit must
+/// run before the incoming one overwrites the shared slot). Counted by
+/// replaying the generator's schedule against the fade rules, the way the
+/// proptest drives it (without the credit waits, which only add frames).
 ///
 /// Mutation: make `random_fade` 1–2 frames long → no replace lands on a
-/// running fade → fails. Mutation: never swap the kind → fails.
+/// running fade → fails. Mutation: never swap the kind → fails. Mutation:
+/// never call `mutate` in `mutate_with_fades` → no cuts → fails. Mutation:
+/// never pick an in-place kind in `mutate_with_fades` → fails.
 #[test]
 fn the_fade_generator_covers_what_the_suite_claims() {
-    let (mut overlapping, mut other_kind, mut on_events) = (0, 0, 0);
+    let (mut queued, mut superseded, mut cut) = (0, 0, 0);
+    let (mut other_kind, mut on_events, mut in_place) = (0, 0, 0);
     for seed in 0..128u64 {
         let mut desc = random_graph(seed);
         let mut rng = Rng::new(seed ^ 0xFADE);
         let mut frame = 100u64;
-        // Per key, when its latest fade (as generated) would end.
-        let mut ends: BTreeMap<NodeKey, u64> = BTreeMap::new();
+        // Per key: when its running fade ends, and a waiting one's length.
+        let mut running: BTreeMap<NodeKey, u64> = BTreeMap::new();
+        let mut waiting: BTreeMap<NodeKey, u64> = BTreeMap::new();
         for _ in 0..8 {
             let (next, fades) = mutate_with_fades(&desc, &mut rng);
-            for (&k, f) in &fades {
-                if ends.get(&k).is_some_and(|&e| e > frame) {
-                    overlapping += 1;
+            // Bring each key's fades up to `frame`: an ended one hands over
+            // to the one waiting.
+            for (k, end) in running.iter_mut() {
+                while *end <= frame {
+                    match waiting.remove(k) {
+                        Some(len) => *end += len,
+                        None => break,
+                    }
                 }
-                let end = ends.get(&k).copied().unwrap_or(0).max(frame);
-                ends.insert(k, end + f.duration.get() as u64);
+            }
+            running.retain(|_, end| *end > frame);
+            // A key `mutate` removed or regenerated without a fade.
+            let gone: Vec<NodeKey> = running
+                .keys()
+                .copied()
+                .filter(|k| {
+                    !fades.contains_key(k)
+                        && (!next.kinds.contains_key(k)
+                            || next.spec.generation(*k) != desc.spec.generation(*k))
+                })
+                .collect();
+            for k in gone {
+                cut += 1;
+                running.remove(&k);
+                waiting.remove(&k);
+            }
+            for (&k, f) in &fades {
+                let len = f.duration.get() as u64;
+                if running.contains_key(&k) {
+                    queued += 1;
+                    if waiting.insert(k, len).is_some() {
+                        superseded += 1;
+                    }
+                } else {
+                    running.insert(k, frame + len);
+                }
                 if next.kinds[&k] != desc.kinds[&k] {
                     other_kind += 1;
                 }
@@ -1736,16 +1774,22 @@ fn the_fade_generator_covers_what_the_suite_claims() {
                 if s.event_in + s.event_out > 0 {
                     on_events += 1;
                 }
+                if s.in_place {
+                    in_place += 1;
+                }
             }
             frame += 1 + rng.below(300);
             desc = next;
         }
     }
-    eprintln!("overlapping {overlapping}, other kind {other_kind}, on event nodes {on_events}");
-    assert!(
-        overlapping > 50,
-        "only {overlapping} replaces over a running fade"
+    eprintln!(
+        "queued {queued}, superseded {superseded}, cut {cut}, other kind {other_kind}, \
+         on event nodes {on_events}, in place {in_place}"
     );
+    assert!(queued > 50, "only {queued} replaces over a running fade");
+    assert!(superseded > 10, "only {superseded} supersedes of a waiting fade");
+    assert!(cut > 10, "only {cut} fades cut by `mutate`");
     assert!(other_kind > 25, "only {other_kind} kind swaps");
     assert!(on_events > 50, "only {on_events} fades on event nodes");
+    assert!(in_place > 50, "only {in_place} fades on in-place kinds");
 }

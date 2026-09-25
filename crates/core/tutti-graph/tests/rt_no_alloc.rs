@@ -220,17 +220,17 @@ fn process_is_allocation_free_in_steady_state() {
 }
 
 /// Crossfades never allocate on the audio thread: both units running, the
-/// blend, a fade's end (its outgoing unit into the held commit, the commit
-/// back on the return ring) and the start of the fade waiting behind it —
+/// blend, a fade's end (the crossfade and its outgoing unit onto the
+/// fade-return ring) and the start of the fade waiting behind it —
 /// on an in-place stereo gain and on an event consumer (the general form).
 /// The commits are applied before the gate, since applying allocates by
 /// design; everything a fade does after that runs inside it.
 ///
-/// Mutation: reserve `Commit::faded` with no room (`Vec::new()` in
-/// `Commit::build`) → the first fade's end pushes past the reservation
-/// inside the gate → `push_reserved`'s assert fires (a release build would
-/// allocate there, and the gate abort) → fails. Mutation: allocate the blend's gains per block (collect them
-/// into a `Vec` in `fading_node_op`) → aborts.
+/// Mutation: build the fade-return ring with room for one crossfade
+/// (`FADE_CAPACITY` 1 in `channels`) → the second ending fade finds it full
+/// inside the gate → the push's assert fires → fails. Mutation: allocate
+/// the blend's gains per block (collect them into a `Vec` in
+/// `fading_node_op`) → aborts.
 #[test]
 fn crossfades_are_allocation_free() {
     let (mut ed, mut exec) = Editor::new(prepare(256));
@@ -307,7 +307,9 @@ fn crossfades_are_allocation_free() {
     .expect("fits");
     ed.commit().expect("commits");
     block(&mut exec, 64);
-    assert_eq!(ed.in_flight(), 2, "both fade commits are held");
+    assert!(ed.collect().is_empty(), "nothing has retired yet");
+    assert_eq!(ed.in_flight(), 0, "fades hold no commit");
+    assert_eq!(ed.fades_in_flight(), 3);
 
     let sizes = [256usize, 1, 7, 64, 100, 255, 33];
     assert_no_alloc::assert_no_alloc(|| {
@@ -319,5 +321,5 @@ fn crossfades_are_allocation_free() {
     let mut back = ed.collect();
     back.sort();
     assert_eq!(back, vec![NodeKey(1), NodeKey(1), NodeKey(3)]);
-    assert_eq!(ed.in_flight(), 0);
+    assert_eq!(ed.fades_in_flight(), 0);
 }

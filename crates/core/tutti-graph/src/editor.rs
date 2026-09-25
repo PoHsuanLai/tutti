@@ -21,9 +21,14 @@
 //! compiling or advancing its plan. The return ring holds one more than that,
 //! so the executor's push always has room. `commit` drains the return ring
 //! first, so a caller that only ever commits never has to call `collect`.
-//! A commit that starts a crossfade ([`replace`](Editor::replace)) stays
-//! out until the fade ends, since the fade's outgoing unit rides back in
-//! it.
+//!
+//! A crossfade ([`replace`](Editor::replace)) does **not** hold its commit:
+//! the box comes back as soon as it is applied. The fade's outgoing unit
+//! comes back on its own, on the fade-return ring, when the fade ends (or
+//! is cut), and `collect` drains that ring too. Each fade a commit starts
+//! takes one of [`FADE_CAPACITY`] slots on it, reserved before the commit
+//! is sent; a commit that would need more is `Backpressure` too — a cap no
+//! session reaches in practice.
 //!
 //! # One `Prepare`
 //!
@@ -57,7 +62,9 @@ use tutti_types::At;
 use crate::command::{command_channel, CommandId, CommandTx, ScheduleError};
 use crate::compile::{compile, CompileError, Shapes, VerifyError};
 use crate::event::EventKind;
-use crate::exec::{channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
+use crate::exec::{
+    channels, Channels, Commit, Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY,
+};
 use crate::fade::Fade;
 use crate::node::{IntoNode, Node, Prepare, Resolution, Shape};
 use crate::plan::{Delta, Placement, Plan};
@@ -214,6 +221,9 @@ pub struct Editor {
     commands: CommandTx,
     /// Commits sent and not yet drained back.
     out: usize,
+    /// Crossfades sent (started or waiting) and not yet drained back from
+    /// the fade-return ring: its slots in use.
+    fades_out: usize,
     /// Commits sent, ever: the sequence number of the last one.
     sent: u64,
     prepare: Prepare,
@@ -272,12 +282,13 @@ impl Editor {
     /// As [`new`](Self::new), with `cap` events per event slot per block
     /// (the declared event rate the delay FIFOs are sized from).
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
-        let (channels, queue, back) = channels();
+        let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
         let editor = Self {
             channels,
             commands,
             out: 0,
+            fades_out: 0,
             sent: 0,
             prepare,
             spec: GraphSpec::default(),
@@ -290,7 +301,7 @@ impl Editor {
             poisoned: None,
             limits: Limits::NONE,
         };
-        (editor, Executor::new(prepare, cap, queue, back, command_rx))
+        (editor, Executor::new(prepare, cap, ends, command_rx))
     }
 
     /// What units are prepared for now — after a
@@ -357,6 +368,13 @@ impl Editor {
     /// The shapes the units declared.
     pub fn shapes(&self) -> &Shapes {
         &self.shapes
+    }
+
+    /// Crossfades sent and not yet drained back: running, waiting, or
+    /// ended and waiting for [`collect`](Self::collect). At most
+    /// [`FADE_CAPACITY`].
+    pub fn fades_in_flight(&self) -> usize {
+        self.fades_out
     }
 
     /// Commits sent and not yet drained back.
@@ -522,7 +540,10 @@ impl Editor {
     }
 
     /// Drain the boxes the executor sent back and free what they retired,
-    /// here on the control thread. Returns the retired units' keys.
+    /// here on the control thread. Returns the retired units' keys, one per
+    /// unit: those a commit retired, and those a crossfade retired — an
+    /// outgoing unit whose fade ended or was cut (a re-prepare cuts every
+    /// fade), or a waiting one superseded before it ran.
     ///
     /// When the box coming back is a [`reprepare`](Self::reprepare)'s first
     /// half, this re-prepares the units it carries and sends the second.
@@ -537,7 +558,21 @@ impl Editor {
             keys.extend(done.retired());
             drop(done);
         }
+        while let Some(x) = self.channels.faded.try_pop() {
+            self.fades_out -= 1;
+            keys.extend(std::iter::repeat_n(x.key(), x.units()));
+            drop(x);
+        }
         keys
+    }
+
+    /// `Backpressure` if the crossfades `delta` starts would take more than
+    /// [`FADE_CAPACITY`] slots on the fade-return ring.
+    fn fade_room(&self, delta: &Delta) -> Result<(), CommitError> {
+        if self.fades_out + starting(delta) > FADE_CAPACITY {
+            return Err(CommitError::Backpressure);
+        }
+        Ok(())
     }
 
     /// Change the sample rate or the maximum block of a running graph.
@@ -757,7 +792,10 @@ impl Editor {
 
     /// Validate, compile against the plan sent last, and send the result with
     /// the units it places. Returns `Backpressure` — having compiled and sent
-    /// nothing — when [`QUEUE_CAPACITY`] commits are out.
+    /// nothing — when [`QUEUE_CAPACITY`] commits are out, or when the fades
+    /// it starts would put more than [`FADE_CAPACITY`] in flight. A running
+    /// fade holds neither: its commit comes back when applied, and its slot
+    /// on the fade-return ring is its own.
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
@@ -799,6 +837,7 @@ impl Editor {
         if let Some(&node) = needed.iter().find(|k| !self.pending.contains_key(k)) {
             return Err(CommitError::MissingUnit { node });
         }
+        self.fade_room(&delta)?;
         let units: BTreeMap<NodeKey, Box<dyn Node>> = needed
             .into_iter()
             .map(|k| (k, self.pending.remove(&k).expect("checked above")))
@@ -827,6 +866,7 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(plan.global_outputs())?;
+        self.fade_room(&delta)?;
         crate::compile::verify::verify_fades(self.base().map(|p| &**p), &plan, &delta)
             .map_err(CommitError::Fade)?;
         self.send(plan, delta, units);
@@ -914,7 +954,11 @@ impl Editor {
 
     /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
     /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
+    /// Its crossfades take their slots on the fade-return ring here
+    /// (checked by `fade_room`).
     fn send(&mut self, plan: Plan, delta: Delta, units: BTreeMap<NodeKey, Box<dyn Node>>) {
+        self.fades_out += starting(&delta);
+        debug_assert!(self.fades_out <= FADE_CAPACITY);
         let plan = Arc::new(plan);
         let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units);
         if self.channels.to_executor.try_push(commit).is_err() {
@@ -924,4 +968,11 @@ impl Editor {
         self.out += 1;
         self.plan = Some(plan);
     }
+}
+
+/// The crossfades `delta` starts: one per fade that is not a plain swap.
+/// Each is built into the commit and comes back once on the fade-return
+/// ring (`Commit::build`).
+fn starting(delta: &Delta) -> usize {
+    delta.fades.iter().filter(|(_, f)| !f.is_cut()).count()
 }

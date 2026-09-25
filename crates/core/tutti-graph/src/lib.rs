@@ -183,7 +183,7 @@ pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
     SubBlocks, Ump,
 };
-pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
+pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::Legacy;

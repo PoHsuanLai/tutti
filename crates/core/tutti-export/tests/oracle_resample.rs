@@ -61,7 +61,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_core::SampleRate(IN_RATE)))
         .expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph { editor, executor }
 }
 
 fn sine_graph(freq: f32) -> RenderGraph {

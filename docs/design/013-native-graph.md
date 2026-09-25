@@ -1213,7 +1213,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 11 | **Done.** bevy-tutti: native backend behind a switch (default `Net`); both backends run the same suites and A/B renders match | 1, 3, 6, 10 |
 | 12 | **Done.** bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | **Done** (see "PR 13 landed"). bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
-| 14 | tutti-export: graph-only API | 8, 13 |
+| 14 | **Done** (see "PR 14 landed"). tutti-export: graph-only API | 8, 13 |
 | 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
 | 16 | **Done.** tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
 
@@ -2379,6 +2379,67 @@ unit (convolver FFT, vocoder, plugin batcher) can differ from `Net` when
 blocks are not multiples of 64, so bit-identity tests use per-sample units or
 64-multiple blocks; and `Net`'s `ping` seeding of generators is lost, which
 affects tests only.
+
+**PR 14 landed: tutti-export renders only the native graph.** The `Net`
+arm and everything that existed only to render a `Net` are gone: the
+`RenderGraph::Net` variant and `From<Net>`, `NetSource` and `fold_net_frame`
+in `render/driver.rs`, and the free `reported_latency(&mut Net)` /
+`reported_tail(&Net)`. No seam is kept for PR 15: its `Net` fixtures are
+tutti-core's (`Engine::new(NetBackend)`), and none of them renders through
+tutti-export. Decisions and deviations:
+
+- **`RenderGraph` is a struct, not a one-variant enum**
+  (`RenderGraph { editor, executor }`, public fields), for PR 13's reason
+  about `GraphBackend`: one variant selects nothing. The fields stay public
+  because bevy-tutti's export hook edits the fork through `editor`; the
+  render still refuses a pair whose editor does not feed its executor.
+  bevy-tutti's `PreparedGraph::graph: &mut RenderGraph` is therefore the
+  graph-only type, and a hook can no longer assign a `Net` (#45's note).
+- **The entry points take `RenderGraph`, not `impl Into<RenderGraph>`**:
+  the conversion existed so a `Net` could be passed unchanged.
+- **`RenderGraph::reported_latency` takes `&self`** (it only reads the
+  plan). The re-rate trap PR 8 found (`reported_latency(&mut Net)` answering
+  at the net's last rate) goes with the function.
+- **The `tutti` umbrella re-exports `tutti-graph` as `tutti::graph`.** Its
+  `headless_export` example and `one_import` test render through the façade
+  alone, and an export graph is now built with `GraphBuilder`; without the
+  re-export "one dependency" stopped being true. tutti-core already depends
+  on tutti-graph, so nothing new is linked.
+
+**Tests.** Every test that rendered a `Net` through tutti-export renders
+the graph now, or keeps a test-only `Net` oracle that compiles without the
+arm:
+
+- `render/driver.rs`'s three `NetSource` unit tests (mono not sprayed into
+  surrounds, a narrow graph to a wide file, the clock never primed) run on
+  `GraphSource`, assertions unchanged; the clock test's `TransportClock`
+  node is the graph's `EnvClock`. Each was re-mutated against the graph
+  path.
+- `tests/graph_source.rs` (the `Net`-vs-graph equivalence suite) keeps every
+  bit-identity assertion against `net_render`, a test-only oracle that
+  renders a `Net` as `NetSource` and `drive` did (64-frame blocks, advance
+  after, `fold_frame`, trim and cap); the file cases write the oracle's
+  planes with `write_buffers` (the same encoders at `NetSource`'s 64-frame
+  pace) and, for the peak-normalized case, `Normalize::gain_for_rendered`
+  first. Two assertions went with the arm, both about the arm itself:
+  `RenderGraph::Net(net).reported_latency()` equal to the free
+  `reported_latency(&mut net)`, and the same pair for the tail. The latency
+  figure is now also pinned analytically (5 ms at 48 kHz, 240 frames).
+- bevy-tutti's `export_fork.rs`: `chain_net_era` and
+  `synths::poly_node_export_net_era` render through `render_net_era`, the
+  same oracle, instead of `RenderGraph::from(net)`; the two
+  `*_are_bit_identical_to_the_net_era` assertions are unchanged.
+
+None had to be re-pinned to recorded values: each Net-vs-graph comparison
+still runs against a `Net` rendered in the test. **Left for PR 15** (they use
+tutti-core's `Net`, not tutti-export's): bevy-tutti's `tests/net_parity.rs`
+(`NetEra`, over `Engine::new(NetBackend)`), `engine::build`'s
+`engine_tests` (`net_era`), the two oracles above (`net_render`,
+`render_net_era`, and what they render), the `tutti` umbrella's
+`one_import_renders_a_block`, `headless_engine` example and README snippet
+(`Engine::new(net.backend())`). Two comments in tutti-sampler still name
+`NetSource` / `fold_net_frame` (`tests/frame_exact_entry.rs`,
+`voice/memory_source.rs`); they were left to avoid colliding with #46.
 
 ### Phase 4 — port nodes natively
 

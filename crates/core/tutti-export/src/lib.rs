@@ -143,80 +143,6 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
     }
 }
 
-/// The look-ahead latency `net` reports, as a frame count.
-///
-/// The `Net` backend's answer; [`RenderGraph::reported_latency`] answers for
-/// either backend.
-///
-/// For a caller that wants `RenderConfig::latency` to be whatever the graph says —
-/// look-ahead limiters, linear-phase filters. It is a function rather than a
-/// `LatencyTrim::Reported` mode on the config because asking a graph is an
-/// *action*, and folding it into a value dragged a `&mut Net` into what is
-/// otherwise pure arithmetic:
-///
-/// ```
-/// # use tutti_core::dsp::Net;
-/// # use tutti_core::Hz;
-/// # use tutti_nodes::testing::Osc;
-/// # use tutti_export::{reported_latency, ExportConfig, RenderConfig};
-/// # let mut net = Net::new(0, 2);
-/// # let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
-/// # net.pipe_output(tone);
-/// let latency = reported_latency(&mut net);
-/// let config = ExportConfig {
-///     render: RenderConfig { latency, ..Default::default() },
-///     ..Default::default()
-/// };
-/// # let _ = config;
-/// ```
-///
-/// Floored: trimming a partial frame is not something a sink can do.
-pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
-    use tutti_core::AudioUnit;
-    Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
-}
-
-/// The tail `net` reports — how long it keeps ringing after its input stops.
-///
-/// The `Net` backend's answer; [`RenderGraph::reported_tail`] answers for
-/// either backend.
-///
-/// For a caller that wants [`RenderConfig::tail`] to be whatever the graph says:
-/// a reverb, a convolver, a hosted plugin that declared a decay. The mirror of
-/// [`reported_latency`], and a function for the same reason — asking a graph is
-/// an *action*, and folding it into a config value would drag a graph into
-/// arithmetic that is otherwise pure.
-///
-/// Returns the figure **and its caveats** rather than a frame count, because for
-/// two graphs there is no count: one that never decays, and one whose nodes were
-/// never taught to answer. Resolving either into a number is a decision, so it
-/// happens at the call site:
-///
-/// ```
-/// # use tutti_core::dsp::Net;
-/// # use tutti_core::Hz;
-/// # use tutti_nodes::testing::Osc;
-/// # use tutti_core::{SampleRate, Seconds};
-/// # use tutti_export::{reported_tail, ExportConfig, RenderConfig};
-/// # let mut net = Net::new(0, 2);
-/// # let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
-/// # net.pipe_output(tone);
-/// # let rate = SampleRate(48_000.0);
-/// let reported = reported_tail(&net);
-/// let tail = reported.samples().unwrap_or_else(|| {
-///     // This bounce stops four seconds into an unbounded tail.
-///     Seconds(4.0).to_samples(rate)
-/// });
-/// let config = ExportConfig {
-///     render: RenderConfig { tail, ..Default::default() },
-///     ..Default::default()
-/// };
-/// # let _ = config;
-/// ```
-pub fn reported_tail(net: &tutti_core::dsp::Net) -> tutti_types::GraphTail {
-    tutti_types::tail::graph_tail(net)
-}
-
 /// Write already-rendered audio to `path`.
 ///
 /// The third of the API, and what makes measure-then-apply usable: render to
@@ -241,23 +167,22 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
 /// chunk-major: [`RenderClock::render_graph`]) — pass
 /// [`FrozenClock`] for a graph with no time-dependent nodes.
 ///
-/// `graph` is either backend ([`RenderGraph`]); a `Net` converts on its own,
-/// so a caller holding one passes it as before.
+/// `graph` is a native graph, built for the render or forked from a live one
+/// ([`RenderGraph`]).
 pub fn render_to_file(
-    graph: impl Into<RenderGraph>,
+    mut graph: RenderGraph,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: &Path,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    let mut graph = graph.into();
     let plan = render::RenderPlan::new(&config.render);
     render::with_source(&mut graph, config.render.sample_rate, clock, |src| {
         encode::encode_to_file(src, config.render.sample_rate, &plan, config, path)
     })
 }
 
-/// Render `graph` (either backend, see [`RenderGraph`]) into memory.
+/// Render `graph` ([`RenderGraph`]) into memory.
 ///
 /// Applies the same gate as [`render_to_file`], and reports the rate it actually
 /// rendered at.
@@ -278,12 +203,11 @@ pub fn render_to_file(
 /// [`write_buffers`] dithers on the way out, at the real depth and after any
 /// resample — the only point where the LSB is known.
 pub fn render_to_buffers(
-    graph: impl Into<RenderGraph>,
+    mut graph: RenderGraph,
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
     let ch = frame_width(config.encode.channels)?;
-    let mut graph = graph.into();
     let plan = render::RenderPlan::new(&config.render);
 
     // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,

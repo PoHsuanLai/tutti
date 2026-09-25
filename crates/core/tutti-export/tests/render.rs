@@ -11,8 +11,8 @@
 //! results back — is likewise only linked under `wav`.
 //!
 //! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
-//! through `RenderGraph::Graph` (doc 013 Phase 3 PR 8); the `Net` backend's
-//! own behaviour, and its equivalence to this one, is `graph_source.rs`'s.
+//! as a `RenderGraph` (doc 013 Phase 3 PR 8); how the graph's renders
+//! compare with what fundsp's `Net` rendered is `graph_source.rs`'s.
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
@@ -31,7 +31,7 @@ const RATE: SampleRate = SampleRate(44_100.0);
 /// rate: a graph prepared at another is refused, not re-rated.
 fn built(g: GraphBuilder, rate: SampleRate) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph { editor, executor }
 }
 
 /// A stereo DC at 0.5, built for an export at `rate`.

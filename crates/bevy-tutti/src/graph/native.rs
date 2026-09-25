@@ -503,16 +503,14 @@ impl NativeGraph {
             tutti_graph::ForkMode::Offline(ctx),
             rate,
         )?;
-        if let tutti_export::RenderGraph::Graph { editor, .. } = &graph {
-            // The keys the fork holds are exactly what it forked.
-            let dropped = editor.spec().topology.nodes.keys().find(|k| {
-                self.nodes
-                    .get(k)
-                    .is_some_and(|e| !e.carries_midi && midi.contains(k))
-            });
-            if let Some(&key) = dropped {
-                return Err(tutti_export::Error::NotForkable { key });
-            }
+        // The keys the fork holds are exactly what it forked.
+        let dropped = graph.editor.spec().topology.nodes.keys().find(|k| {
+            self.nodes
+                .get(k)
+                .is_some_and(|e| !e.carries_midi && midi.contains(k))
+        });
+        if let Some(&key) = dropped {
+            return Err(tutti_export::Error::NotForkable { key });
         }
         Ok(graph)
     }

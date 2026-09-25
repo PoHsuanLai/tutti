@@ -137,19 +137,18 @@ pub fn start_exports(world: &mut World) {
     }
     // A fork's editor holds whatever the hook edited, uncommitted: send it,
     // and apply it here so the render's first block already runs it.
-    if let RenderGraph::Graph { editor, executor } = &mut graph {
-        if let Err(e) = editor.commit() {
-            world.trigger(ExportDone {
-                entity,
-                result: Err(ExportError::Render(invalid(format!(
-                    "the prepare hook left the forked graph uncommittable: {e}"
-                )))),
-            });
-            return;
-        }
-        executor.apply_pending();
-        editor.collect();
+    let RenderGraph { editor, executor } = &mut graph;
+    if let Err(e) = editor.commit() {
+        world.trigger(ExportDone {
+            entity,
+            result: Err(ExportError::Render(invalid(format!(
+                "the prepare hook left the forked graph uncommittable: {e}"
+            )))),
+        });
+        return;
     }
+    executor.apply_pending();
+    editor.collect();
 
     // The graph's own figures, asked of the graph that is rendered — after
     // the hook, which may have changed it.

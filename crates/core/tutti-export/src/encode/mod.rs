@@ -5,7 +5,7 @@
 //! The obvious shape is push — a `write(block)` sink the renderer feeds. It is
 //! the wrong one here, because flacenc is **pull**-based:
 //! `encode_with_fixed_block_size` calls `Source::read_samples` until the source
-//! is dry. The render is also a pull ([`NetSource`](crate::render::NetSource) is
+//! is dry. The render is also a pull ([`GraphSource`](crate::render::driver::GraphSource) is
 //! a [`FrameSource`](crate::render::FrameSource)), so making the encoder the
 //! driver lets FLAC hand that source straight to its library, and costs the push
 //! formats only a small loop they run internally. Everything streams, and there

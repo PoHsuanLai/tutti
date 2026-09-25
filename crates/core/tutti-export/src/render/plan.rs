@@ -1,7 +1,7 @@
 //! Frame-count arithmetic for one offline render.
 //!
 //! Derived once from (duration, rate, latency), and drives both how many frames
-//! the net must produce and how many leading frames the sink drops.
+//! the graph must produce and how many leading frames the sink drops.
 
 use crate::config::RenderConfig;
 use tutti_core::SampleRate;
@@ -15,7 +15,7 @@ use tutti_types::{BeatDuration, Bpm, Samples};
 /// driver reads the way it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RenderPlan {
-    /// Frames the net must produce, including latency slack when trimming.
+    /// Frames the graph must produce, including latency slack when trimming.
     pub total: Samples,
     /// Frames the sink keeps: the requested span plus the tail.
     pub output_length: Samples,
@@ -25,16 +25,16 @@ pub(crate) struct RenderPlan {
 
 impl RenderPlan {
     /// Derive the plan from a config. **Pure** — arithmetic over three FRAME
-    /// counts, and no `Net` in sight.
+    /// counts, and no graph in sight.
     ///
     /// That purity is the point: an "ask the graph" latency mode would make a
     /// frame-count calculation require a mutable audio graph, so it could not be
     /// tested, reused, or reasoned about without building one first. The caller
-    /// resolves the latency (see [`reported_latency`](crate::reported_latency))
+    /// resolves the latency (see [`RenderGraph::reported_latency`](crate::RenderGraph::reported_latency))
     /// and passes a number.
     pub fn new(config: &RenderConfig) -> Self {
         let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
-        // The tail extends what the sink KEEPS, not just what the net produces.
+        // The tail extends what the sink KEEPS, not just what the graph produces.
         // Two gates truncate independently — `total` bounds the pull loop and
         // `output_length` caps the kept frames — so extending only the first
         // would render the decay and then discard it.
@@ -141,7 +141,7 @@ mod tests {
         }
     }
 
-    /// Note there is no `Net` in any of these: the plan is arithmetic, so it is
+    /// Note there is no graph in any of these: the plan is arithmetic, so it is
     /// checked as arithmetic.
     #[test]
     fn no_trim_renders_exactly_the_audible_span() {
@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(
             plan.total,
             Samples(96_512),
-            "and the net must be pulled for it, plus the trimmed head"
+            "and the graph must be pulled for it, plus the trimmed head"
         );
     }
 }

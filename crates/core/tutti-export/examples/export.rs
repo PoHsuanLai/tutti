@@ -27,7 +27,7 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// is built for the render that takes it.
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph { editor, executor }
 }
 
 /// A 440 Hz tone at −12 dBFS, in stereo.

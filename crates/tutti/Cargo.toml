@@ -15,6 +15,10 @@ tutti-core = { path = "../core/tutti-core", default-features = false }
 tutti-types = { path = "../core/tutti-types", default-features = false }
 tutti-node = { path = "../core/tutti-node" }
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
+# The native graph (doc 013): what an export renders, and what
+# `Engine::with_graph` runs. tutti-core already depends on it, so naming it
+# here links nothing new.
+tutti-graph = { path = "../core/tutti-graph" }
 
 tutti-cpal = { path = "../core/tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../core/tutti-io", optional = true }

@@ -120,8 +120,7 @@
 //!   stream plays on the render's thread, and plays the voice's window of it
 //!   on the request's timeline, resampled to the render's rate and looped as
 //!   the stream is looped when the export starts. The live voice and its
-//!   butler are not touched. (A `Net` master export's plain clone still
-//!   reads the live voice's ring from the render thread.)
+//!   butler are not touched.
 //! - **Some nodes cannot be forked**, and an export that needs one (an
 //!   output reaches it) is refused naming the node's entity
 //!   ([`ExportError::NotForkable`]): a microphone monitor and an in-process

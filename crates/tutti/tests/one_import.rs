@@ -65,19 +65,24 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
 #[cfg(feature = "export")]
 #[test]
 fn a_graph_bounces_to_buffers_through_the_facade() {
-    let mut net = tutti::dsp::Net::new(0, 2);
-    let node = net.push(Box::new(tutti::nodes::testing::Const::frame(&[0.5, 0.5])));
-    net.pipe_output(node);
+    let rate = SampleRate(48_000.0);
+    let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let node = g.add_unit(Box::new(tutti::nodes::testing::Const::frame(&[0.5, 0.5])));
+    g.pipe_output(node);
+    let (editor, executor) = g
+        .build(tutti::export::RenderGraph::prepare(rate))
+        .expect("builds");
+    let graph = tutti::export::RenderGraph { editor, executor };
 
     let cfg = tutti::export::ExportConfig {
         render: tutti::export::RenderConfig {
-            sample_rate: SampleRate(48_000.0),
+            sample_rate: rate,
             duration_seconds: 0.01,
             ..Default::default()
         },
         ..Default::default()
     };
-    let rendered = tutti::export::render_to_buffers(net, &cfg, &tutti::core::FrozenClock)
+    let rendered = tutti::export::render_to_buffers(graph, &cfg, &tutti::core::FrozenClock)
         .expect("a DC graph renders");
     assert!(!rendered.planes.is_empty());
     assert!(rendered.planes[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));

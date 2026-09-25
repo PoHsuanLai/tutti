@@ -44,7 +44,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
         .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
         .expect("builds");
-    RenderGraph::Graph { editor, executor }
+    RenderGraph { editor, executor }
 }
 
 /// A graph emitting the constant `level` on both channels.

@@ -1798,10 +1798,15 @@ Recorded for later:
     edit waits for the re-prepare's second half and lands with the next
     `commit_graph` (the per-channel compensation table then has the new
     width).
-  - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` places
-    events in frames at its build rate) is rebuilt at the new rate:
-    `midi::sequence::rebuild` treats a change of `AudioConfig`'s rate as
-    dirty, with the all-notes-off every rebuild sends.
+  - An installed MIDI clip (`MidiClipSource`, whose `BeatCursor` placed
+    events in frames at its build rate) was rebuilt at the new rate:
+    `midi::sequence::rebuild` treated a change of `AudioConfig`'s rate as
+    dirty, with the all-notes-off every rebuild sends. **Superseded by PR
+    12:** a clip holds no rate — `MidiUnitIn::poll_unit` is handed the
+    polling unit's rate every block — so a re-rated unit places its clip at
+    the new rate with nothing rebuilt, and the rate-change rebuild (and its
+    all-notes-off mid-note) is gone. `midi_sequence.rs`'s
+    `a_rate_change_places_the_clip_at_the_new_rate` keeps #39's check.
 
   **Still at the build rate after a restart** (audited: everything else
   that holds a rate is a graph unit, re-rated with the graph, or reads the

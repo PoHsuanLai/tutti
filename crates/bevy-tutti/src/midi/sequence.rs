@@ -43,12 +43,11 @@ use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use tutti_core::SampleRate;
 use tutti_midi_runtime::{MidiClipSource, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 
 use super::endpoint::target::MidiTargetResolver;
-use crate::graph::{engine_ready, AudioConfig, GraphReconcileSystems, TransportRes};
+use crate::graph::{engine_ready, GraphReconcileSystems, TransportRes};
 use tutti_midi_types::cc;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
@@ -87,9 +86,11 @@ pub struct InstalledMidiSources(HashSet<Entity>);
 
 /// Recompile every changed install into a clip source and install it.
 ///
-/// Runs only when an install changed or went away, or the device's rate moved
-/// (a restart, `restart_device`): a clip source places its events in frames
-/// at the rate it was built with, so every install is rebuilt at the new one. Rebuilding is not free: a
+/// Runs only when an install changed or went away. **Not** when the device's
+/// rate moves (a restart, `restart_device`): a clip source holds no rate — its
+/// unit hands it the rate it runs at on every poll — so a clip installed at
+/// 48 kHz places its events at 96 kHz frames once its synth is re-rated, with
+/// nothing to rebuild. Rebuilding is not free: a
 /// fresh [`MidiClipSource`] carries a fresh cursor, so it restarts at the
 /// transport's current beat — and a rebuild landing between a note-on and its
 /// note-off would drop the note-off and leave the note sounding. Hence the
@@ -104,17 +105,12 @@ pub fn rebuild(
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut installed: ResMut<InstalledMidiSources>,
     resolver: MidiTargetResolver,
-    // Both `engine::build_into`'s, and `engine_ready` covers neither — it reads
-    // `AudioEngineState`, which a host can insert alone.
+    // `engine::build_into`'s, and `engine_ready` does not cover it — it reads
+    // `AudioEngineState`, which a host can insert alone. No sample rate: a
+    // clip is handed its unit's rate on every poll.
     transport: Option<Res<TransportRes>>,
-    config: Option<Res<AudioConfig>>,
-    // The rate the installed sources were built at, to tell a restart at a
-    // new rate from any other write to `AudioConfig`.
-    mut built_at: Local<Option<SampleRate>>,
 ) {
-    let rate = config.as_ref().map(|c| c.sample_rate);
-    let rerated = std::mem::replace(&mut *built_at, rate).is_some_and(|was| Some(was) != rate);
-    let dirty = !changed.is_empty() || !removed.is_empty() || !recaptured.is_empty() || rerated;
+    let dirty = !changed.is_empty() || !removed.is_empty() || !recaptured.is_empty();
     // Draining is what marks this frame's removals as seen, so it happens
     // whether or not a rebuild follows.
     removed.clear();
@@ -122,7 +118,7 @@ pub fn rebuild(
         return;
     }
     // After the drain, so a frame with no engine still marks removals seen.
-    let (Some(transport), Some(config)) = (transport, config) else {
+    let Some(transport) = transport else {
         return;
     };
 
@@ -171,7 +167,6 @@ pub fn rebuild(
             port.unit_id(),
             events,
             transport.timeline(),
-            config.sample_rate,
         )));
         installed.0.insert(target);
     }

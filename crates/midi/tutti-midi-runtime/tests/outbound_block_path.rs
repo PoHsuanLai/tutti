@@ -64,7 +64,7 @@ fn an_emitted_event_reaches_the_destination_inbox() {
     post.run();
 
     let mut buf = [MidiEvent::noop(); 16];
-    let n = dest.poll(BLOCK, &mut buf);
+    let n = dest.poll(BLOCK, tutti_core::SampleRate(48_000.0), &mut buf);
     assert_eq!(n, 1, "the emitted event reached the destination inbox");
 
     match buf[0].message() {
@@ -93,14 +93,14 @@ fn nothing_is_delivered_until_the_post_block_runs() {
 
     let mut buf = [MidiEvent::noop(); 16];
     assert_eq!(
-        dest.poll(BLOCK, &mut buf),
+        dest.poll(BLOCK, tutti_core::SampleRate(48_000.0), &mut buf),
         0,
         "an emitted event must not be visible before the post-block runs"
     );
 
     post.run();
     assert_eq!(
-        dest.poll(BLOCK, &mut buf),
+        dest.poll(BLOCK, tutti_core::SampleRate(48_000.0), &mut buf),
         1,
         "and must be visible immediately after"
     );

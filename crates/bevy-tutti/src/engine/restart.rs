@@ -48,8 +48,9 @@
 //!
 //! Not re-rated here, and recorded in design doc 013 (Phase 3 follow-ups):
 //! a `SoundFontUnit` (rustysynth fixes its rate at construction) and a
-//! host-built `UmpOutRes` (its JR clock). An installed MIDI clip is rebuilt at
-//! the new rate by `midi::sequence::rebuild`, which follows `AudioConfig`.
+//! host-built `UmpOutRes` (its JR clock). An installed MIDI clip needs
+//! nothing: it holds no rate, and its unit hands it the rate it runs at on
+//! every poll (`MidiInPort::poll`), so re-rating the unit re-rates the clip.
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;

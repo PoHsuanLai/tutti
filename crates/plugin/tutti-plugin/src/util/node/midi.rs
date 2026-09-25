@@ -178,12 +178,19 @@ impl Midi {
     }
 
     /// Drain the override-or-receiver events for this block into one buffer and
-    /// return it.
-    pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
+    /// return it. `sample_rate` is the plugin node's rate for the block, which
+    /// an installed clip places its events at (`MidiInPort::poll`).
+    pub fn drain_for_process(
+        &mut self,
+        block_size: usize,
+        sample_rate: tutti_core::SampleRate,
+    ) -> &MidiEventVec {
         self.drain.clear();
         // One lock-free poll: the port resolves receiver-or-installed-source
         // itself, so there is no branch (and no second code path) here.
-        let count = self.port.poll(block_size, &mut self.poll_scratch);
+        let count = self
+            .port
+            .poll(block_size, sample_rate, &mut self.poll_scratch);
         // Clamp to scratch capacity so `drain` never spills its SmallVec
         // inline storage and allocates on the audio thread.
         let count = count.min(self.poll_scratch.len());
@@ -193,8 +200,8 @@ impl Midi {
     }
 
     /// Sample-by-sample variant for the `tick` path.
-    pub fn drain_for_tick(&mut self) -> &MidiEventVec {
-        self.drain_for_process(1)
+    pub fn drain_for_tick(&mut self, sample_rate: tutti_core::SampleRate) -> &MidiEventVec {
+        self.drain_for_process(1, sample_rate)
     }
 }
 
@@ -209,12 +216,25 @@ mod tests {
         n: usize,
     }
     impl MidiUnitIn for CountingSource {
-        fn poll_unit(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
+        fn poll_unit(
+            &self,
+            _unit: MidiUnitId,
+            _block: usize,
+            _rate: tutti_core::SampleRate,
+            buffer: &mut [MidiEvent],
+        ) -> usize {
             let n = self.n.min(buffer.len());
             for slot in buffer.iter_mut().take(n) {
                 *slot = MidiEvent::noop();
             }
             n
+        }
+        fn rebind_offline(
+            &self,
+            _unit: MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn MidiUnitIn>> {
+            None
         }
     }
 
@@ -233,25 +253,43 @@ mod tests {
         clone_a.set_source(Arc::new(CountingSource { n: 3 }));
 
         assert_eq!(
-            clone_b.drain_for_process(64).len(),
+            clone_b
+                .drain_for_process(64, tutti_core::SampleRate(48_000.0))
+                .len(),
             3,
             "clone_b sees install"
         );
         assert_eq!(
-            original.drain_for_process(64).len(),
+            original
+                .drain_for_process(64, tutti_core::SampleRate(48_000.0))
+                .len(),
             3,
             "original sees install"
         );
         assert_eq!(
-            clone_a.drain_for_process(64).len(),
+            clone_a
+                .drain_for_process(64, tutti_core::SampleRate(48_000.0))
+                .len(),
             3,
             "clone_a sees install"
         );
 
         // Clearing on one clone clears for all.
         clone_b.clear_source();
-        assert_eq!(clone_a.drain_for_process(64).len(), 0, "clear propagates");
-        assert_eq!(original.drain_for_process(64).len(), 0, "clear propagates");
+        assert_eq!(
+            clone_a
+                .drain_for_process(64, tutti_core::SampleRate(48_000.0))
+                .len(),
+            0,
+            "clear propagates"
+        );
+        assert_eq!(
+            original
+                .drain_for_process(64, tutti_core::SampleRate(48_000.0))
+                .len(),
+            0,
+            "clear propagates"
+        );
     }
 
     /// The outbound analogue of [`source_install_propagates_across_clones`]:

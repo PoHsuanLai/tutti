@@ -273,7 +273,9 @@ impl SoundFontUnit {
     /// event at its offset (see [`Self::process`]) rather than collapsing every
     /// event to the block start.
     fn poll_midi_events_sorted(&mut self, block_size: usize) -> usize {
-        let count = self.midi.poll(block_size, &mut self.midi_buffer);
+        let count = self
+            .midi
+            .poll(block_size, self.sample_rate, &mut self.midi_buffer);
         if count > 1 {
             self.midi_buffer[..count].sort_unstable_by_key(|e| e.frame_offset);
         }

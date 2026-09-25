@@ -670,7 +670,9 @@ fn drive_f32(
     size: usize,
     sample_rate: f64,
 ) -> bool {
-    let midi_events = midi.drain_for_process(size).clone();
+    let midi_events = midi
+        .drain_for_process(size, tutti_core::SampleRate(sample_rate))
+        .clone();
     match inner.try_lock() {
         Some(mut instance) => {
             // Build slice-of-slices on the stack via scratch arrays we
@@ -728,7 +730,9 @@ fn drive_f64(
     size: usize,
     sample_rate: f64,
 ) -> bool {
-    let midi_events = midi.drain_for_process(size).clone();
+    let midi_events = midi
+        .drain_for_process(size, tutti_core::SampleRate(sample_rate))
+        .clone();
     match inner.try_lock() {
         Some(mut instance) => {
             const MAX_CHANNELS: usize = 16;

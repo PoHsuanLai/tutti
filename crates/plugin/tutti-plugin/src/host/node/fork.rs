@@ -65,7 +65,11 @@
 //!    too:** the source installed on the live node's MIDI port (a
 //!    `MidiClipSource`) is copied onto the fork's own port with a fresh
 //!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
-//!    exported instrument plays its notes (doc 013, PR 12).
+//!    exported instrument plays its notes (doc 013, PR 12). It is polled at
+//!    the fork's own rate each block, so it follows the fork's `Prepare`. A
+//!    source that cannot be rebound (`rebind_offline` answers `None`) fails
+//!    the fork ([`PluginForkError::MidiSource`]) rather than render the
+//!    notes it feeds as silence.
 //! 5. **Offline only:** tell it [`RenderMode::Offline`](crate::RenderMode),
 //!    and make its batcher wait for each block (see `Batcher::set_offline_wait`)
 //!    — the live pipeline never waits, which on a render worker would turn
@@ -94,8 +98,7 @@
 //! - **Live MIDI.** A fresh instance has a fresh MIDI port: no live inbox and
 //!   no MIDI-out routing — the `PolySynth::isolate` rule. Its clip source is
 //!   the live one's rebound offline (step 4) when the fork is offline; a
-//!   [`ForkMode::Live`] fork has none, and a source that is not a function of
-//!   a timeline (`MidiUnitIn::rebind_offline` answers `None`) is not carried.
+//!   [`ForkMode::Live`] fork has none.
 //! - **Running state.** Voices, delay lines, a reverb's tail: the state blob
 //!   is what a plugin saves for a project, not a snapshot of its DSP. A fork
 //!   starts silent, as every fork does.
@@ -355,8 +358,14 @@ impl PluginFork {
         // render's timeline (step 4). Offline only: a live duplicate reading
         // the live clip would need its own cursor on the live transport, which
         // no caller has asked for.
+        // A source the live instance plays that cannot be carried is a
+        // failure, not a silent fork: the render would drop its notes.
         if let ForkMode::Offline(ctx) = mode {
-            self.midi.rebind_offline_into(fork.midi.port(), ctx);
+            if self.midi.rebind_offline_into(fork.midi.port(), ctx)
+                == tutti_midi_runtime::OfflineRebind::NotRebindable
+            {
+                return Err(PluginForkError::MidiSource);
+            }
         }
         let watch = Arc::new(ForkWatch {
             bridge: Arc::downgrade(&fork.bridge),

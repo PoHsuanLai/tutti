@@ -145,15 +145,23 @@ impl MidiInPort {
     /// A full `buffer` truncates the *source*, since the mailbox fills first.
     /// Sizing it past the 256-slot mailbox capacity is what keeps that
     /// unreachable.
+    ///
+    /// `sample_rate` is the polling unit's rate for this block, handed to the
+    /// source as it is (see [`MidiUnitIn::poll_unit`]).
     #[inline]
-    pub fn poll(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+    pub fn poll(
+        &self,
+        block_size: usize,
+        sample_rate: tutti_core::SampleRate,
+        buffer: &mut [MidiEvent],
+    ) -> usize {
         let n = self.receiver.poll_into(buffer);
         match self.source.load().as_deref() {
             Some(source) if n < buffer.len() => {
                 // This port is the only thing that mints the selector: the id it
                 // passes is the id it owns, so an installed source cannot be
                 // asked for another unit's events.
-                n + source.poll_unit(self.unit_id, block_size, &mut buffer[n..])
+                n + source.poll_unit(self.unit_id, block_size, sample_rate, &mut buffer[n..])
             }
             _ => n,
         }
@@ -178,31 +186,38 @@ impl MidiInPort {
     /// ([`MidiUnitIn::rebind_offline`]). Control thread; reads this port's
     /// source cell, never its mailbox, so the live unit keeps every event.
     ///
-    /// Returns whether a source was installed: `false` when none is
-    /// installed here, or the one that is cannot be rebound (it is not a
-    /// function of a timeline, or `ctx` is not an `OfflineTransport`). The
-    /// fork's port is then left as it was, with no source.
-    pub fn rebind_offline_into(&self, fork: &MidiInPort, ctx: &dyn std::any::Any) -> bool {
-        let Some(rebound) = self
-            .source
-            .load()
-            .as_deref()
-            .and_then(|source| source.rebind_offline(fork.unit_id, ctx))
-        else {
-            return false;
+    /// What happened, and a caller must not collapse the last two:
+    /// [`OfflineRebind::NotRebindable`] means this unit **plays** a source
+    /// the render will not have, so an export would render its notes as
+    /// silence.
+    #[must_use = "a source that could not be rebound renders as silence; report it"]
+    pub fn rebind_offline_into(&self, fork: &MidiInPort, ctx: &dyn std::any::Any) -> OfflineRebind {
+        let guard = self.source.load();
+        let Some(source) = guard.as_deref() else {
+            return OfflineRebind::NoSource;
         };
-        fork.install(rebound);
-        true
-    }
-
-    /// Tell the installed source, if any, the rate its unit now runs at
-    /// ([`MidiUnitIn::set_sample_rate`]). Called from a unit's
-    /// `set_sample_rate`; lock-free.
-    pub fn set_source_sample_rate(&self, sample_rate: tutti_core::SampleRate) {
-        if let Some(source) = self.source.load().as_deref() {
-            source.set_sample_rate(sample_rate);
+        match source.rebind_offline(fork.unit_id, ctx) {
+            Some(rebound) => {
+                fork.install(rebound);
+                OfflineRebind::Rebound
+            }
+            None => OfflineRebind::NotRebindable,
         }
     }
+}
+
+/// What [`MidiInPort::rebind_offline_into`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfflineRebind {
+    /// No source is installed: nothing to carry, and nothing lost.
+    NoSource,
+    /// The installed source was rebound onto the render and installed on the
+    /// fork's port.
+    Rebound,
+    /// A source is installed, but it cannot be rebound (it is not a function
+    /// of a timeline, or the context is not one it reads). The fork's port
+    /// has no source, so what the live unit plays from it is not rendered.
+    NotRebindable,
 }
 
 impl Default for MidiInPort {
@@ -237,7 +252,21 @@ mod tests {
     /// A source that emits one note-on on its first poll — proves it was polled.
     struct OneNote(u8);
     impl MidiUnitIn for OneNote {
-        fn poll_unit(&self, _u: MidiUnitId, _b: usize, out: &mut [MidiEvent]) -> usize {
+        fn rebind_offline(
+            &self,
+            _unit: MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn MidiUnitIn>> {
+            None
+        }
+
+        fn poll_unit(
+            &self,
+            _u: MidiUnitId,
+            _b: usize,
+            _rate: tutti_core::SampleRate,
+            out: &mut [MidiEvent],
+        ) -> usize {
             if out.is_empty() {
                 return 0;
             }
@@ -251,7 +280,21 @@ mod tests {
     #[derive(Default)]
     struct RecordsUnit(std::sync::Mutex<Vec<MidiUnitId>>);
     impl MidiUnitIn for RecordsUnit {
-        fn poll_unit(&self, u: MidiUnitId, _b: usize, _out: &mut [MidiEvent]) -> usize {
+        fn rebind_offline(
+            &self,
+            _unit: MidiUnitId,
+            _ctx: &dyn std::any::Any,
+        ) -> Option<Arc<dyn MidiUnitIn>> {
+            None
+        }
+
+        fn poll_unit(
+            &self,
+            u: MidiUnitId,
+            _b: usize,
+            _rate: tutti_core::SampleRate,
+            _out: &mut [MidiEvent],
+        ) -> usize {
             self.0.lock().unwrap().push(u);
             0
         }
@@ -263,7 +306,7 @@ mod tests {
         // Push via the sender; poll drains it (the receiver is the default input).
         port.sender().queue(&[note_on(60)]);
         let mut buf = [MidiEvent::noop(); 8];
-        let n = port.poll(64, &mut buf);
+        let n = port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf);
         assert_eq!(n, 1);
         assert_eq!(buf[0].note(), Some(60));
     }
@@ -274,12 +317,12 @@ mod tests {
         port.install(Arc::new(OneNote(72)));
         // Even with the mailbox empty, the installed source yields a note.
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(port.poll(64, &mut buf), 1);
+        assert_eq!(port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf), 1);
         assert_eq!(buf[0].note(), Some(72));
 
         // Clearing drops it; empty mailbox → nothing polled.
         port.clear();
-        assert_eq!(port.poll(64, &mut buf), 0);
+        assert_eq!(port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf), 0);
     }
 
     /// The point of layering: a clip plays and the keyboard still sounds.
@@ -294,7 +337,7 @@ mod tests {
         port.sender().queue(&[note_on(60)]);
 
         let mut buf = [MidiEvent::noop(); 8];
-        let n = port.poll(64, &mut buf);
+        let n = port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf);
         assert_eq!(n, 2, "both halves must be polled");
 
         let mut notes: Vec<Option<u8>> = buf[..n].iter().map(|e| e.note()).collect();
@@ -313,7 +356,7 @@ mod tests {
 
         // Room for exactly the mailbox event.
         let mut buf = [MidiEvent::noop(); 1];
-        assert_eq!(port.poll(64, &mut buf), 1);
+        assert_eq!(port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf), 1);
         assert_eq!(buf[0].note(), Some(60), "the mailbox event survives");
     }
 
@@ -331,7 +374,7 @@ mod tests {
         port.install(recorder.clone());
 
         let mut buf = [MidiEvent::noop(); 4];
-        port.poll(64, &mut buf);
+        port.poll(64, tutti_core::SampleRate(48_000.0), &mut buf);
 
         assert_eq!(
             recorder.0.lock().unwrap().as_slice(),
@@ -354,11 +397,19 @@ mod tests {
 
         clone_a.install(Arc::new(OneNote(60)));
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(audio_clone.poll(64, &mut buf), 1, "install must be shared");
+        assert_eq!(
+            audio_clone.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
+            1,
+            "install must be shared"
+        );
 
         clone_a.clear();
         let fresh = live.clone();
-        assert_eq!(fresh.poll(64, &mut buf), 0, "clear must be shared");
+        assert_eq!(
+            fresh.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
+            0,
+            "clear must be shared"
+        );
     }
 
     #[test]
@@ -370,14 +421,22 @@ mod tests {
         // A note queued to the live sender must NOT reach the isolated clone.
         live.sender().queue(&[note_on(60)]);
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(render.poll(64, &mut buf), 0, "isolated clone sees nothing");
+        assert_eq!(
+            render.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
+            0,
+            "isolated clone sees nothing"
+        );
         // The live port still has its note (not stolen by the clone's poll).
-        assert_eq!(live.poll(64, &mut buf), 1, "live keeps its event");
+        assert_eq!(
+            live.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
+            1,
+            "live keeps its event"
+        );
 
         // An install on the live port must NOT leak into the isolated clone.
         live.install(Arc::new(OneNote(64)));
         assert_eq!(
-            render.poll(64, &mut buf),
+            render.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
             0,
             "install doesn't reach isolate"
         );
@@ -395,10 +454,14 @@ mod tests {
 
         let mut buf = [MidiEvent::noop(); 8];
         assert_eq!(
-            render.poll(64, &mut buf),
+            render.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
             0,
             "the isolated clone keeps no source"
         );
-        assert_eq!(live.poll(64, &mut buf), 1, "the live port keeps its own");
+        assert_eq!(
+            live.poll(64, tutti_core::SampleRate(48_000.0), &mut buf),
+            1,
+            "the live port keeps its own"
+        );
     }
 }

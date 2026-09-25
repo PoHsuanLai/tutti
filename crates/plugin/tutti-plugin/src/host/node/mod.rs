@@ -167,7 +167,10 @@ impl PluginClient {
         let ctx = BlockCtx { block_size };
         let features = self.loaded.features;
         BlockPayload {
-            midi: self.midi.drain_for_process(block_size).clone(),
+            midi: self
+                .midi
+                .drain_for_process(block_size, self.controls.sample_rate())
+                .clone(),
             params: self.controls.inputs.params.drain(ctx, features).clone(),
             harmony: self.controls.inputs.harmony.drain(ctx, features).clone(),
             transport: *self.controls.inputs.transport.drain(ctx, features),
@@ -278,10 +281,10 @@ impl PluginClient {
     /// (it's installed later with the correct rate by the host).
     pub(super) fn restamp_source_rates(&mut self, sample_rate: SampleRate) {
         self.controls.restamp(sample_rate);
-        // The installed MIDI source too: a clip places its events at the
-        // unit's rate, and a fork (launched at the live rate, then prepared at
-        // the export's) would otherwise place them at the live one.
-        self.midi.port().set_source_sample_rate(sample_rate);
+        // Not the MIDI clip: it holds no rate, and is handed this node's on
+        // every poll (`build_block_payload` reads `controls.sample_rate()`,
+        // which `restamp` just moved), so a fork launched at the live rate and
+        // prepared at an export's places its notes at the export's.
     }
 }
 

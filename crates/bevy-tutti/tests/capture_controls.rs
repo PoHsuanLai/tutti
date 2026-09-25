@@ -484,7 +484,7 @@ mod crossfade_consumers {
             .try_send(tutti_core::transport::MotionEvent::Play);
         transport.motion.drain();
         let mut buf = [MidiEvent::noop(); 256];
-        let n = port.poll(24_000, &mut buf);
+        let n = port.poll(24_000, SampleRate(SAMPLE_RATE), &mut buf);
         let sequenced = buf[..n].iter().any(|e| e.is_note_on());
 
         assert_eq!(

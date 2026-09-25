@@ -131,7 +131,10 @@ fn poll(app: &App, entity: Entity, block: usize) -> Vec<MidiEvent> {
         .get::<MidiTarget>(entity)
         .expect("has a MIDI port");
     let mut buf = [MidiEvent::noop(); 64];
-    let n = target.port().poll(block, &mut buf);
+    // The rate the synth polls at: its own, which is the device's
+    // (`AudioConfig`), re-rated with it by `restart_device`.
+    let rate = app.world().resource::<AudioConfig>().sample_rate;
+    let n = target.port().poll(block, rate, &mut buf);
     buf[..n].to_vec()
 }
 
@@ -241,17 +244,22 @@ fn a_rebuild_does_not_hang_the_previous_note(backend: GraphBackend) {
 }
 both_backends!(a_rebuild_does_not_hang_the_previous_note);
 
-/// **A device restart at a new rate rebuilds every installed clip at it.** A
-/// clip source places its events in frames at the rate it was built with
-/// (its `BeatCursor`'s), so a clip built at 48 kHz on a 96 kHz device puts a
-/// note a third of a beat in (120 BPM) at frame 8 000, where the device has
-/// reached only a sixth of a beat. `restart_device` moves the transport's rate
-/// and `AudioConfig`, as done by hand here; the rebuild follows `AudioConfig`
-/// and places the note at 16 000.
+/// **A device restart at a new rate places every installed clip at it.** A
+/// clip that kept the rate it was built with would, built at 48 kHz on a
+/// 96 kHz device, put a note a third of a beat in (120 BPM) at frame 8 000,
+/// where the device has reached only a sixth of a beat. `restart_device`
+/// moves the transport's rate and `AudioConfig` (and re-rates the synth), as
+/// done by hand here; the clip holds no rate — its synth hands it the rate
+/// it runs at on every poll (`MidiInPort::poll`, doc 013 PR 12) — so the
+/// clip installed at 48 kHz, not rebuilt, places the note at 16 000.
 ///
-/// Mutation (run): `rebuild` not treating a rate change as dirty → the 48 kHz
-/// clip stays installed and the note lands at 8 000 → fails.
-fn a_rate_change_rebuilds_the_clip_at_the_new_rate(backend: GraphBackend) {
+/// From #39, where the clip was rebuilt on a rate change; since PR 12 there
+/// is no rate in the clip to rebuild, and the rebuild was dropped.
+///
+/// Mutation (run): the clip advancing its beat window at a fixed 48 kHz
+/// instead of the rate it is polled at (`MidiClipSource::sync_to_transport`)
+/// → the note lands at 8 000 → fails.
+fn a_rate_change_places_the_clip_at_the_new_rate(backend: GraphBackend) {
     let mut app = app(backend);
     let synth = spawn_synth(&mut app);
     roll(&app);
@@ -278,7 +286,7 @@ fn a_rate_change_rebuilds_the_clip_at_the_new_rate(backend: GraphBackend) {
         note_on.frame_offset
     );
 }
-both_backends!(a_rate_change_rebuilds_the_clip_at_the_new_rate);
+both_backends!(a_rate_change_places_the_clip_at_the_new_rate);
 
 /// Removing the last install naming a target clears its source, so the synth
 /// stops playing rather than looping the old clip forever.

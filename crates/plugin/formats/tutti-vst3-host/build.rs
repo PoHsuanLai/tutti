@@ -27,6 +27,18 @@
 
 use std::path::{Path, PathBuf};
 
+/// Whether the crate is being built *for* `os`.
+///
+/// Not `cfg!(target_os = ..)`: inside a build script that names the OS the
+/// script itself runs on, the host. Every per-OS choice here (SDK sources, link
+/// flags, bundle layout, module extension) is about the plugin being built for
+/// the target, so a cross-build that asked `cfg!` compiled the host's platform
+/// sources into a target-OS plugin.
+fn target_os_is(os: &str) -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").expect("cargo sets CARGO_CFG_TARGET_OS for build scripts")
+        == os
+}
+
 /// The in-repo SDK, relative to this crate's manifest dir. Three git submodules
 /// (`pluginterfaces`, `base`, `public.sdk`) pinned at `v3.8.0_build_66` — see
 /// that directory's README for why the SDK superproject is not used directly.
@@ -103,13 +115,13 @@ const SDK_SOURCES: &[&str] = &[
 /// `bundleEntry`/`bundleExit` (macOS) or `InitDll`/`ExitDll` (Windows) — the
 /// symbols the host's module loader calls before `GetPluginFactory`.
 fn platform_sources() -> &'static [&'static str] {
-    if cfg!(target_os = "windows") {
+    if target_os_is("windows") {
         &[
             "public.sdk/source/main/dllmain.cpp",
             "public.sdk/source/common/systemclipboard_win32.cpp",
             "public.sdk/source/common/threadchecker_win32.cpp",
         ]
-    } else if cfg!(target_os = "macos") {
+    } else if target_os_is("macos") {
         &[
             "public.sdk/source/main/macmain.cpp",
             "public.sdk/source/common/systemclipboard_mac.mm",
@@ -510,7 +522,7 @@ fn build_sdk_sample(
 /// four frameworks. On Linux the equivalents are `libstdc++fs`/`pthread`/`dl`.
 /// Windows resolves its own through the MSVC defaults and needs nothing here.
 fn probe_link_args() -> Vec<String> {
-    if cfg!(target_os = "macos") {
+    if target_os_is("macos") {
         [
             "-framework",
             "CoreFoundation",
@@ -525,7 +537,7 @@ fn probe_link_args() -> Vec<String> {
         .iter()
         .map(|s| s.to_string())
         .collect()
-    } else if cfg!(target_os = "windows") {
+    } else if target_os_is("windows") {
         // `dllmain.cpp` calls `CoInitialize`, and `systemclipboard_win32.cpp`
         // the clipboard API, so the SDK's platform sources pull these in. They
         // are not optional on the `/link` line: with `/LD` the compiler driver
@@ -545,13 +557,13 @@ fn probe_link_args() -> Vec<String> {
 /// The per-platform subdirectory inside `Contents/` that the VST3 bundle spec
 /// requires, e.g. `x86_64-linux`.
 fn bundle_arch_dir() -> String {
-    if cfg!(target_os = "macos") {
+    if target_os_is("macos") {
         return "MacOS".to_string();
     }
     // VST3 spells both x86_64 and aarch64 the way Rust does, so the target arch
     // passes through unchanged.
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "x86_64".to_string());
-    if cfg!(target_os = "windows") {
+    if target_os_is("windows") {
         format!("{arch}-win")
     } else {
         format!("{arch}-linux")
@@ -559,9 +571,9 @@ fn bundle_arch_dir() -> String {
 }
 
 fn dylib_ext() -> &'static str {
-    if cfg!(target_os = "windows") {
+    if target_os_is("windows") {
         "vst3"
-    } else if cfg!(target_os = "macos") {
+    } else if target_os_is("macos") {
         "dylib"
     } else {
         "so"

@@ -25,6 +25,15 @@
 
 use std::path::PathBuf;
 
+/// Whether the crate is being built *for* `os`.
+///
+/// Not `cfg!(target_os = ..)`: inside a build script that names the OS the
+/// script itself runs on, the host, so a cross-build would get the host's answer.
+fn target_os_is(os: &str) -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").expect("cargo sets CARGO_CFG_TARGET_OS for build scripts")
+        == os
+}
+
 fn main() {
     tutti_fixture_resolve::emit_candidates("TUTTI_VST2_PROBE_CANDIDATES", "tutti_vst2_test_plugin");
     tutti_fixture_resolve::emit_candidates(
@@ -53,7 +62,7 @@ fn emit_plugin_server_candidates() {
 
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
     let profile_dir = tutti_fixture_resolve::target_dir().join(profile);
-    let name = if cfg!(target_os = "windows") {
+    let name = if target_os_is("windows") {
         "plugin-server.exe"
     } else {
         "plugin-server"

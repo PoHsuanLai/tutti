@@ -72,48 +72,9 @@ const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 /// subprocess, and neighbours starve each other) and the process-global
 /// environment the probe's switches ride on.
 ///
-/// A lock **directory**, not a `Mutex`: `cargo nextest` gives every test its own
-/// process, so a process-local lock is uncontended in each one and serializes
-/// nothing. `create_dir` is atomic and fails with `AlreadyExists` across
-/// processes, which is the one primitive available here without a new
-/// dependency. Stale locks are stolen after a deadline rather than hung on,
-/// because a crashed holder leaves no OS cleanup behind.
-mod probe_lock {
-    use std::path::PathBuf;
-    use std::time::{Duration, Instant};
-
-    fn path() -> PathBuf {
-        std::env::temp_dir().join("tutti-plugin-clap-probe.lock")
-    }
-
-    const STALE_AFTER: Duration = Duration::from_secs(10);
-
-    pub struct Guard;
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir(path());
-        }
-    }
-
-    pub fn acquire() -> Guard {
-        let p = path();
-        let deadline = Instant::now() + STALE_AFTER;
-        loop {
-            match std::fs::create_dir(&p) {
-                Ok(()) => return Guard,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if Instant::now() >= deadline {
-                        let _ = std::fs::remove_dir(&p);
-                        continue;
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(_) => return Guard,
-            }
-        }
-    }
-}
+/// The machine-wide lock directory ([`machine_lock`](super::machine_lock)),
+/// shared with `process_pipeline_tests` and the integration suites.
+use super::machine_lock as probe_lock;
 
 /// Clears the probe's environment switches on drop, including on an unwind.
 struct ProbeEnv(Vec<&'static str>);

@@ -367,15 +367,17 @@ const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 /// inheriting a problem this file has already had twice.
 ///
 /// A lock rather than a `--test-threads=1` note: a note is something a future
-/// runner has to know, and its absence shows up as a mystifying failure. Same
-/// reasoning and shape as `real_plugin_pressure.rs`'s `EXCLUSIVE`.
-static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Take the machine for the duration of a timing-sensitive test. Poisoning is
-/// irrelevant — the guard protects wall clock, not data — so one panicking test
-/// must not wedge every later one.
-fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-    EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner())
+/// runner has to know, and its absence shows up as a mystifying failure.
+///
+/// **It is the machine-wide lock ([`machine_lock`](super::machine_lock)), not
+/// a `static Mutex`.** It was a `Mutex`, which under `cargo nextest` (one
+/// process per test) serialized nothing — not these tests against each other,
+/// and not against the suites that spin a real `plugin-server` for seconds.
+/// The drain test's exact count of abandoned replies is only as good as the
+/// wall clock each block gets; see that module's docs for the failure it
+/// produced.
+fn exclusive() -> super::machine_lock::Guard {
+    super::machine_lock::acquire()
 }
 
 /// Classify what a block's output actually is, so a failure names the defect

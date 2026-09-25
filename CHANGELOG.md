@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **tutti-core's `Engine` renders only the native graph** (design doc 013,
+  Phase 3 PR 15; Phase 3 is done). The engine's fundsp `Net` backend is
+  removed: the `Engine::new(MotionFsm, NetBackend)` constructor, the
+  `Net` render path and the root re-export of `NetBackend`. `Net` itself
+  stays, as a graph container (`tutti_core::dsp::Net`, `topology::compile`),
+  until Phase 5 deletes fundsp. What changes for a host:
+
+  | Was | Now |
+  |---|---|
+  | `Engine::new(transport.motion.clone(), net.backend())` | build the graph natively and hand the engine its executor: `let (mut editor, executor) = GraphBuilder::new(..)` (`add_unit` where you had `push(Box::new(..))`; `connect`, `pipe`, `pipe_output` as on `Net`) `.build(Prepare::new(rate, max_block))?`, then `Engine::new(&transport, &mut editor, executor)?`. Keep the editor on the control thread: it is how you edit the graph from then on (`insert`, `spec_mut`, `commit`) |
+  | `Engine::with_graph(&transport, &mut editor, executor)` | `Engine::new(&transport, &mut editor, executor)`: renamed, since it is the one constructor and there is no other runtime to contrast it with |
+  | `Engine::with_graph_capacity(..)` | `Engine::with_capacity(..)` |
+  | `Engine::graph_block_capacity() -> Option<Samples>` (`None` for a `Net` engine) | `Engine::block_capacity() -> Samples` |
+  | a `TransportClock` pushed into the `Net` to move the playhead | nothing: the engine drives the transport's clock itself and hands each block its transport in `Env`. A node that wants the beat as a signal is fed by an `EnvClock` (never a second `TransportClock` in the graph) |
+  | a root wider than `MAX_ROOT_CHANNELS` clamped to it | refused, with `GraphEngineError::Limits(CommitError::TooManyOutputs { .. })` at construction or the commit that widens it, as it already was for a native graph |
+  | `tutti_core::NetBackend` | removed from tutti-core. `Net::backend()` still exists for a `Net` you drive yourself |
+  | `tutti_core::net_fade(curve)` | removed: nothing takes fundsp's `Fade` any more. `CrossfadeCurve` is unchanged |
+  | `unsafe Engine::settle_graph` answered `true` for a `Net` engine | it always settles the graph |
+
+  The `tutti` umbrella's `headless_engine` example, its README and
+  tutti-core's and tutti-cpal's READMEs build the native graph. The tests
+  that compared the native graph with a `Net` (tutti-core's `engine_graph`,
+  `env_clock`; tutti-export's `graph_source`; bevy-tutti's `net_parity`,
+  now `scene_render`, `engine::build`'s engine tests and `export_fork`) are
+  pinned to analytic figures, to invariants of the render, and, for samples
+  that call libm, to golden digests asserted on Linux/glibc.
+
 - **tutti-export renders only the native graph** (design doc 013, Phase 3 PR
   14). fundsp's `Net` is no longer an export source: the `Net` arm of
   `RenderGraph`, its conversion from a `Net`, and the `Net`-taking latency

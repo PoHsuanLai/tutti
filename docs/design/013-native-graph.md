@@ -588,8 +588,9 @@ planned (the trait methods, see below). What each item became:
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
   - **Done** — `real_fft`/`inverse_fft`: the sampler's vocoder calls
     `microfft` directly (`stretch/fft.rs`).
-  - **Done, for now in `tutti-core`** — `Fade` is `tutti_core::CrossfadeCurve`;
-    it moves to the graph crate when that exists.
+  - **Done** — `Fade` is `CrossfadeCurve`, now `tutti-graph`'s (Phase 3
+    PR 3), re-exported by `tutti-core`, whose `net_fade` converts it for
+    `Net::crossfade` until Phase 5.
 - **Done** — doc drift: the `LiveGraph` docs
   (`bevy-tutti/src/graph/topology.rs`), `tutti-core/src/topology.rs`'s "what
   this does not do", and the "27 `node_as` sites" count in `tutti-core/src/lib.rs`
@@ -628,7 +629,7 @@ or example.
 | `DEFAULT_SAMPLE_RATE: SampleRate` (fundsp `lib.rs:73`) **and** `tutti_node::DEFAULT_SR: f64` | `SampleRate` | keep one `SampleRate::DEFAULT` in `tutti-types`; delete both constants (34 prod sites in tutti-nodes) |
 | `F32x`, exported by `tutti_core::dsp` **and** `tutti_node` | none needed | test-only consumer (automation lane); dropped with the planar layout |
 | `BufferArray<U1/U2/U6>` (typenum widths) | `BufferVec` (runtime `ChannelLayout`) | 53 test sites + `engine.rs` scratch; switch to `BufferVec`, drop typenum `U*` |
-| `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`) |
+| `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`). **Done** (Phase 3 PR 3) |
 | `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until the Phase 5 deletion |
 | `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel in Phase 3 when params go through `Controls` |
 | `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; depend on the FFT crate directly in `tutti-sampler` |
@@ -885,7 +886,8 @@ Six gaps have to close before the flip. Each is closed by the PR in brackets:
    ahead of anything newer (`Delivery::Held`); nothing is dropped. The
    editor passed to `controlled` flushes held settings on every `collect`,
    so a burst that goes quiet is still delivered.
-3. **No replace-with-fade** for `crossfade_audio_node` [PR 3].
+3. ~~**No replace-with-fade** for `crossfade_audio_node`~~ [PR 3]. **Closed**:
+   `Editor::replace`, below.
 4. **No runtime latency change** for a plugin's latency atomic [PR 1].
    **Closed by PR 1:** `Editor::set_latency(key, Latency)` updates the spec
    and the shape; the next commit moves PDC without touching the unit. It is
@@ -956,6 +958,55 @@ Two notes for PR 8:
 - `tutti_spatial::build_vbap_mix` takes `&mut Net`, so the
   `surround_export` fixtures need a builder-side form of it before they
   can port.
+
+**PR 3 landed: `Editor::replace(key, node, Fade { duration, curve })`.**
+The rules (`tutti-graph/src/fade.rs`), each pinned by a test in
+`tests/replace.rs` and driven against the reference by the differential
+suite's `crossfades_are_bit_identical`:
+
+- For `duration` frames the executor runs **both** units on the op's
+  inputs, the outgoing one first (an in-place input is the incoming
+  unit's output), into a scratch arena built on the control side with the
+  commit, and writes `incoming · g_in + outgoing · g_out` into the op's
+  own slots. Frame `k` of the fade has position `(k + 1) / (duration + 1)`,
+  so the fade is exactly `duration` frames with no step at either end.
+  Allocation-free (`tests/rt_no_alloc.rs`).
+- **Shape rule: everything but the tail must match** — ports, latency,
+  in-place acceptance, event resolution — or `replace` returns
+  `CommitError::FadeShape` naming the key. A latency change is refused
+  rather than re-aligned: both units run under one op and one PDC. A
+  rebuild that changes latency (a plugin's) is a plain `insert`.
+- **Events go to the incoming unit only**; the outgoing unit finishes what
+  it holds and its event outputs are discarded.
+- **A replace during a fade is queued**, as fundsp's `Net::crossfade`
+  queues it: it starts from the running fade's incoming unit on the block
+  after that fade ends, and a newer replace supersedes a waiting one. Only
+  two units ever run, and no swap is a step. A hard edit (remove, `insert`)
+  or a re-prepare cuts a fade, keeping the newest unit.
+- **The outgoing unit retires on the control thread, and a fade holds no
+  commit** (changed in review: holding the commit until the fade ended let
+  four long fades block every later commit and `reprepare`, and kept a
+  unit removed in the same commit alive for the whole fade). The commit
+  comes back when applied; each crossfade comes back on its own on a
+  fade-return ring (`FADE_CAPACITY` = 256 slots, one reserved per fade when
+  its commit is sent, so the audio thread's push cannot fail) when it
+  ends, is cut or is superseded, and `collect` reports its units' keys —
+  a re-prepare's cut fades included.
+- The reference interpreter implements all of this on its own, sharing only
+  the gain law (`CrossfadeCurve::gains`); the verifier's rule 8,
+  `verify_fades`, checks every fade a delta carries against both plans and
+  runs on every `Editor::package`.
+
+For PR 11: `crossfade_audio_node` maps to
+`Editor::replace(key, unit, Fade::seconds(Seconds(0.005), rate, CrossfadeCurve::EqualAmplitude))`.
+**`set_latency` × fades (decided across PRs 1 and 3):** a runtime latency
+change at a key that is mid-fade, running or queued, is a hard edit for the
+fade. The next commit carries the key in `Delta::cuts`; the executor retires
+every unit there but the newest through the fade-return ring, and `collect`
+reports them. A `replace` not yet committed at that key lands as a plain
+swap. The reference derives the same cut from a spec latency change with no
+new generation (`tests/replace.rs`, `set_latency_cuts_a_fade` and
+`the_reference_cuts_a_fade_on_a_latency_change`).
 
 The plugin typestate moves to Phase 4: the shadow gives plugin bind a safe
 control path without it. `ParamKey<U, Rate>` (§6 item 2) can land in

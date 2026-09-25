@@ -78,6 +78,10 @@ struct Desc {
     /// old key must come with a new generation, or it *is* the old node as far
     /// as the value can tell (`Editor` enforces this with a counter).
     used: BTreeSet<NodeKey>,
+    /// Keys `mutate_with_fades` crossfaded in its last round: where fades
+    /// are likeliest to be running or waiting, so the next round aims
+    /// replaces and `set_latency` there often enough to queue and cut them.
+    recent: Vec<NodeKey>,
 }
 
 fn random_kind(rng: &mut Rng) -> Kind {
@@ -243,6 +247,7 @@ fn random_graph(seed: u64) -> Desc {
         kinds: BTreeMap::new(),
         order: Vec::new(),
         used: BTreeSet::new(),
+        recent: Vec::new(),
         spec: GraphSpec::new(Topology {
             inputs: ChannelLayout::from_count(1 + rng.below(3) as u16),
             ..Topology::default()
@@ -1573,4 +1578,316 @@ proptest! {
         pair.run(rest, &mut frame);
         prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands());
     }
+}
+
+/// Whether a unit of `b` may crossfade from one of `a`: the same shape in
+/// everything but the tail (`Editor::replace`'s rule, spelled out a third
+/// time so the generator does not borrow either implementation's).
+fn fits(a: &Kind, b: &Kind) -> bool {
+    let (a, b) = (shape(a), shape(b));
+    (
+        a.audio_in,
+        a.audio_out,
+        a.event_in,
+        a.event_out,
+        a.latency,
+        a.in_place,
+    ) == (
+        b.audio_in,
+        b.audio_out,
+        b.event_in,
+        b.event_out,
+        b.latency,
+        b.in_place,
+    ) && a.event_resolution == b.event_resolution
+}
+
+fn random_fade(rng: &mut Rng) -> tutti_graph::Fade {
+    let curve = if rng.chance(50) {
+        tutti_graph::CrossfadeCurve::EqualPower
+    } else {
+        tutti_graph::CrossfadeCurve::EqualAmplitude
+    };
+    // Mostly shorter than the rounds between edits, often longer, so fades
+    // end mid-block, run across edits, and queue behind each other.
+    tutti_graph::Fade::new(Samples(1 + rng.below(250) as usize), curve)
+}
+
+/// An edit that replaces one to three running nodes with a crossfade — the
+/// same kind with fresh state, or another kind that fits — sometimes on top
+/// of an ordinary `mutate`, which can remove, rewire or regenerate (without a
+/// fade, latency and all) a node that is fading.
+fn mutate_with_fades(desc: &Desc, rng: &mut Rng) -> (Desc, BTreeMap<NodeKey, tutti_graph::Fade>) {
+    let mut d = if rng.chance(40) {
+        mutate(desc, rng)
+    } else {
+        desc.clone()
+    };
+    let mut fades = BTreeMap::new();
+    for _ in 0..1 + rng.below(3) {
+        // Still running as `desc` had it: not removed or regenerated above.
+        let running: Vec<NodeKey> = desc
+            .order
+            .iter()
+            .copied()
+            .filter(|k| {
+                d.kinds.contains_key(k)
+                    && d.spec.generation(*k) == desc.spec.generation(*k)
+                    && !fades.contains_key(k)
+                    // A unit whose declared latency was set by hand cannot
+                    // fade: a new unit reports its own (`FadeShape`).
+                    && desc.spec.topology.nodes[k].latency
+                        == shape(&desc.kinds[k]).latency.samples()
+            })
+            .collect();
+        let recent: Vec<NodeKey> = running
+            .iter()
+            .copied()
+            .filter(|k| desc.recent.contains(k))
+            .collect();
+        let among = if !recent.is_empty() && rng.chance(40) {
+            &recent
+        } else {
+            &running
+        };
+        let Some(key) = rng.pick(among) else { break };
+        let old = desc.kinds[&key].clone();
+        let mut kind = old.clone();
+        if rng.chance(50) {
+            let other = random_kind(rng);
+            if fits(&old, &other) {
+                kind = other;
+            }
+        }
+        let gen = d.spec.generation(key) + 1;
+        d.spec.generations.insert(key, gen);
+        d.spec.topology.nodes.insert(key, spec_for(&kind));
+        d.kinds.insert(key, kind);
+        fades.insert(key, random_fade(rng));
+    }
+    // `set_latency` on kept nodes — idle, fading, or with a fade waiting
+    // (the proptest's schedule decides which): a new declared latency with
+    // no new generation, which cuts a fade there.
+    if rng.chance(35) {
+        for _ in 0..1 + rng.below(2) {
+            let kept: Vec<NodeKey> = desc
+                .order
+                .iter()
+                .copied()
+                .filter(|k| {
+                    d.kinds.contains_key(k)
+                        && d.spec.generation(*k) == desc.spec.generation(*k)
+                        && !fades.contains_key(k)
+                })
+                .collect();
+            // Mostly a key crossfaded last round, where a fade runs or
+            // waits; now and then any kept key.
+            let recent: Vec<NodeKey> = kept
+                .iter()
+                .copied()
+                .filter(|k| desc.recent.contains(k))
+                .collect();
+            let among = if !recent.is_empty() && rng.chance(70) {
+                &recent
+            } else {
+                &kept
+            };
+            let Some(key) = rng.pick(among) else { break };
+            let node = d.spec.topology.nodes.get_mut(&key).expect("kept");
+            node.latency = Samples(rng.below(41) as usize);
+        }
+    }
+    d.recent = fades.keys().copied().collect();
+    (d, fades)
+}
+
+/// Render until the editor has room for another commit — what a host does
+/// on `Backpressure`. (A crossfade holds no commit, so this only waits for
+/// the queue itself; `Pair::switch` already applies and collects each.)
+fn wait_for_credit(pair: &mut Pair, frame: &mut u64) {
+    loop {
+        pair.editor.collect();
+        if pair.editor.in_flight() < tutti_graph::QUEUE_CAPACITY {
+            return;
+        }
+        run(pair, &[64], frame);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// Replaces with crossfades, bit for bit against the reference, whose
+    /// fade semantics are its own: eight rounds of edits a random 1–300
+    /// frames apart, each crossfading one to three nodes (every kind, events
+    /// included) over 1–250 frames, so fades end mid-block, run across other
+    /// edits, queue behind a running fade and supersede a waiting one — and
+    /// are cut by a removal, a hard regenerate or a `set_latency` (a new
+    /// declared latency, no new generation) of their key — under every
+    /// block schedule, ragged ones included. Afterwards every crossfade has
+    /// come back on the fade-return ring.
+    ///
+    /// Mutation: in `Executor::apply`, supersede nothing (keep the first
+    /// waiting fade) → diverges on the first case where two replaces queue.
+    /// The same in `Reference::set_graph_with_fades` → diverges from the
+    /// other side. Mutation: in the reference, blend with the fade's position
+    /// at the block start for every sample (`gains(done, len)`) → diverges.
+    /// Mutation: hand the outgoing unit the node's slot events in the
+    /// executor → an event node's fade diverges. Mutation: drop the
+    /// latency-change cut from `Reference::set_graph_with_fades` → diverges.
+    /// Mutation: skip `Delta::cuts` in `Executor::apply` → diverges.
+    #[test]
+    fn crossfades_are_bit_identical(seed in any::<u64>(), which in 0usize..5) {
+        let mut desc = random_graph(seed);
+        let mut pair = Pair::new(MAX_BLOCK);
+        pair.switch(&desc.spec.validate().expect("valid"), &desc.kinds);
+        let mut rng = Rng::new(seed ^ 0xFADE);
+        let mut frame = 0;
+        run(&mut pair, &schedule(which, seed, 100), &mut frame);
+        for round in 0..8u64 {
+            let (next, fades) = mutate_with_fades(&desc, &mut rng);
+            wait_for_credit(&mut pair, &mut frame);
+            pair.switch_with_fades(&next.spec.validate().expect("valid"), &next.kinds, &fades);
+            let frames = 1 + rng.below(300) as usize;
+            run(&mut pair, &schedule(which, seed.wrapping_add(round), frames), &mut frame);
+            desc = next;
+        }
+        // Long enough for every fade, waiting ones included, to end.
+        run(&mut pair, &schedule(which, seed, 8 * 260), &mut frame);
+        pair.editor.collect();
+        prop_assert_eq!(pair.editor.in_flight(), 0);
+        prop_assert_eq!(pair.editor.fades_in_flight(), 0, "a crossfade never came back");
+    }
+}
+
+/// The fade generator is not vacuous: over a fixed range of seeds, replaces
+/// land while a fade still runs at their key (so they queue) and while one
+/// already waits there (so they supersede it); `mutate` cuts running fades
+/// (removing or hard-regenerating their key), and `set_latency` lands on
+/// idle keys, on running fades and on queued ones; fades swap in another kind,
+/// reach event nodes, and run over in-place kinds (whose outgoing unit must
+/// run before the incoming one overwrites the shared slot). Counted by
+/// replaying the generator's schedule against the fade rules, the way the
+/// proptest drives it (without the credit waits, which only add frames).
+///
+/// Mutation: make `random_fade` 1–2 frames long → no replace lands on a
+/// running fade → fails. Mutation: never swap the kind → fails. Mutation:
+/// never call `mutate` in `mutate_with_fades` → no cuts → fails. Mutation:
+/// never pick an in-place kind in `mutate_with_fades` → fails. Mutation:
+/// drop the `set_latency` edits from `mutate_with_fades` → the three
+/// latency counts are zero → fails.
+#[test]
+fn the_fade_generator_covers_what_the_suite_claims() {
+    let (mut queued, mut superseded, mut cut) = (0, 0, 0);
+    let (mut other_kind, mut on_events, mut in_place) = (0, 0, 0);
+    let (mut latency_on_idle, mut latency_on_fading, mut latency_on_queued) = (0, 0, 0);
+    for seed in 0..128u64 {
+        let mut desc = random_graph(seed);
+        let mut rng = Rng::new(seed ^ 0xFADE);
+        let mut frame = 100u64;
+        // Per key: when its running fade ends, and a waiting one's length.
+        let mut running: BTreeMap<NodeKey, u64> = BTreeMap::new();
+        let mut waiting: BTreeMap<NodeKey, u64> = BTreeMap::new();
+        for _ in 0..8 {
+            let (next, fades) = mutate_with_fades(&desc, &mut rng);
+            // Bring each key's fades up to `frame`: an ended one hands over
+            // to the one waiting.
+            for (k, end) in running.iter_mut() {
+                while *end <= frame {
+                    match waiting.remove(k) {
+                        Some(len) => *end += len,
+                        None => break,
+                    }
+                }
+            }
+            running.retain(|_, end| *end > frame);
+            // A key `mutate` removed or regenerated without a fade.
+            let gone: Vec<NodeKey> = running
+                .keys()
+                .copied()
+                .filter(|k| {
+                    !fades.contains_key(k)
+                        && (!next.kinds.contains_key(k)
+                            || next.spec.generation(*k) != desc.spec.generation(*k))
+                })
+                .collect();
+            for k in gone {
+                cut += 1;
+                running.remove(&k);
+                waiting.remove(&k);
+            }
+            // `set_latency` on a kept key: counted by what it lands on, and
+            // it cuts a fade there.
+            for (k, now) in &next.spec.topology.nodes {
+                let Some(was) = desc.spec.topology.nodes.get(k) else {
+                    continue;
+                };
+                if was.latency == now.latency
+                    || next.spec.generation(*k) != desc.spec.generation(*k)
+                {
+                    continue;
+                }
+                match (running.remove(k), waiting.remove(k)) {
+                    (Some(_), Some(_)) => latency_on_queued += 1,
+                    (Some(_), None) => latency_on_fading += 1,
+                    _ => latency_on_idle += 1,
+                }
+            }
+            for (&k, f) in &fades {
+                let len = f.duration.get() as u64;
+                match running.entry(k) {
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        queued += 1;
+                        if waiting.insert(k, len).is_some() {
+                            superseded += 1;
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(v) => {
+                        v.insert(frame + len);
+                    }
+                }
+                if next.kinds[&k] != desc.kinds[&k] {
+                    other_kind += 1;
+                }
+                let s = shape(&next.kinds[&k]);
+                if s.event_in + s.event_out > 0 {
+                    on_events += 1;
+                }
+                if s.in_place {
+                    in_place += 1;
+                }
+            }
+            frame += 1 + rng.below(300);
+            desc = next;
+        }
+    }
+    eprintln!(
+        "queued {queued}, superseded {superseded}, cut {cut}, other kind {other_kind}, \
+         on event nodes {on_events}, in place {in_place}"
+    );
+    assert!(queued > 50, "only {queued} replaces over a running fade");
+    assert!(
+        superseded > 10,
+        "only {superseded} supersedes of a waiting fade"
+    );
+    assert!(cut > 10, "only {cut} fades cut by `mutate`");
+    assert!(other_kind > 25, "only {other_kind} kind swaps");
+    assert!(on_events > 50, "only {on_events} fades on event nodes");
+    assert!(in_place > 50, "only {in_place} fades on in-place kinds");
+    eprintln!(
+        "set_latency on idle {latency_on_idle}, fading {latency_on_fading}, \
+         queued {latency_on_queued}"
+    );
+    assert!(
+        latency_on_idle > 25,
+        "only {latency_on_idle} latency changes on idle keys"
+    );
+    assert!(
+        latency_on_fading > 10,
+        "only {latency_on_fading} latency changes cutting a running fade"
+    );
+    assert!(
+        latency_on_queued > 5,
+        "only {latency_on_queued} latency changes cutting a queued fade"
+    );
 }

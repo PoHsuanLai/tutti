@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tutti_graph::{
-    compile, Cx, Editor, Event, EventKind, Executor, Io, Node, Plan, Prepare, Reference, Shape,
-    Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
+    compile, Cx, Editor, Event, EventKind, Executor, Fade, Io, Node, Plan, Prepare, Reference,
+    Shape, Shapes, Status, Transport, TransportChanges, Ump, ValidGraph,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail};
 
@@ -456,10 +456,60 @@ impl Pair {
     /// Switch both to `graph`, building fresh units for whatever is new or
     /// regenerated.
     pub fn switch(&mut self, graph: &ValidGraph, kinds: &BTreeMap<NodeKey, Kind>) {
-        let shapes = shapes_of(kinds);
-        let (plan, delta) = compile(graph, &shapes, &prepare(self.max_block), self.plan.as_ref())
-            .expect("compiles");
+        self.switch_with_fades(graph, kinds, &BTreeMap::new());
+    }
+
+    /// `switch`, with the regenerated keys in `fades` crossfading
+    /// (`Editor::replace`'s contract). The executor gets the fades for the
+    /// keys its delta replaces, as `Editor::commit` attaches them; the
+    /// reference gets them all and decides for itself.
+    ///
+    /// A node's **declared latency is the spec's**, as after
+    /// `Editor::set_latency`: the shapes compiled against take it from
+    /// `graph`, not from the kind. A kept unit whose declared latency
+    /// changed has its crossfade cut (`Delta::cuts`, as `Editor::commit`
+    /// attaches it, derived here from the two plans); the reference derives
+    /// the same from the two specs.
+    pub fn switch_with_fades(
+        &mut self,
+        graph: &ValidGraph,
+        kinds: &BTreeMap<NodeKey, Kind>,
+        fades: &BTreeMap<NodeKey, Fade>,
+    ) {
+        let mut shapes = shapes_of(kinds);
+        for (k, s) in shapes.iter_mut() {
+            if let Some(n) = graph.topology().nodes.get(k) {
+                s.latency = Latency::new(n.latency);
+            }
+        }
+        let (plan, mut delta) =
+            compile(graph, &shapes, &prepare(self.max_block), self.plan.as_ref())
+                .expect("compiles");
+        delta.cuts = plan
+            .units()
+            .iter()
+            .filter(|now| {
+                self.plan
+                    .as_ref()
+                    .and_then(|p| p.unit(now.key))
+                    .is_some_and(|was| {
+                        was.gen == now.gen
+                            && was.idx == now.idx
+                            && was.shape.latency != now.shape.latency
+                    })
+            })
+            .map(|u| tutti_graph::Placement {
+                key: u.key,
+                gen: u.gen,
+                idx: u.idx,
+            })
+            .collect();
         tutti_graph::verify(&plan).expect("verifies");
+        delta.fades = delta
+            .replace
+            .iter()
+            .filter_map(|&(_, new)| fades.get(&new.key).map(|&f| (new.key, f)))
+            .collect();
         let placed: Vec<NodeKey> = delta
             .insert
             .iter()
@@ -480,7 +530,7 @@ impl Pair {
         // The reference decides for itself what is new, from generations; give
         // it a fresh unit for every key it might need.
         let all = units_for(kinds, graph.topology().nodes.keys().copied());
-        self.reference.set_graph(graph, all);
+        self.reference.set_graph_with_fades(graph, all, fades);
     }
 
     /// Render one block through both; return (executor, reference) outputs.

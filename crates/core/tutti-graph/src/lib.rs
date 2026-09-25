@@ -9,7 +9,9 @@
 //! sample-accuracy contract's type-level half (doc 013 §6: [`Offset`] vs
 //! `Frame`, timestamped commands, [`Io::sub_blocks`], [`Resolution`]),
 //! transport changes inside a block ([`TransportChanges`], carried by
-//! [`Env`]) and live re-preparation ([`Editor::reprepare`]).
+//! [`Env`]) and live re-preparation ([`Editor::reprepare`]). Of Phase 3 it
+//! has replace-with-fade ([`Editor::replace`], a [`Fade`] along a
+//! [`CrossfadeCurve`]).
 //!
 //! # The four layers (doc 013 §"The design")
 //!
@@ -114,6 +116,9 @@
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
 //! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
 //!   (commits, and timestamped commands), and their back-pressure.
+//! - [`Editor::replace`] and [`Fade`] — swapping a running unit with a
+//!   crossfade: both units run for the fade, the old one retires on the
+//!   control thread, and a replace during a fade waits for it.
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
 //!   [`pure`](Legacy::pure), with a `Net::set` replacement
@@ -166,6 +171,7 @@ pub mod contract;
 mod editor;
 mod event;
 mod exec;
+mod fade;
 mod io;
 mod kernels;
 mod legacy;
@@ -183,7 +189,8 @@ pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
     SubBlocks, Ump,
 };
-pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, QUEUE_CAPACITY};
+pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
+pub use fade::{CrossfadeCurve, Fade};
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::{Delivery, Legacy, LegacyControls, LEGACY_SETTINGS_CAPACITY};
 pub use node::{
@@ -204,4 +211,13 @@ pub use time::{Due, Offset, Playhead};
 /// before it is captured. `compile` runs this in every debug build.
 pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
     compile::verify::verify(plan)
+}
+
+/// Check the crossfades `delta` carries into `plan`, from `prev` (the plan
+/// running before it): each names a key the delta replaces, once, and the
+/// unit it fades from has the shape of the one it fades to in everything but
+/// its tail — ports, latency, in-place acceptance, event resolution.
+/// [`Editor::package`] runs this on every delta it is handed.
+pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
+    compile::verify::verify_fades(prev, plan, delta)
 }

@@ -1,43 +1,31 @@
-//! The shape of a node swap: how `Net::crossfade` blends the outgoing unit
-//! into the incoming one.
+//! The shape of a node swap on the `Net` path: how `Net::crossfade` blends
+//! the outgoing unit into the incoming one.
+//!
+//! The curve itself is `tutti-graph`'s [`CrossfadeCurve`], re-exported at
+//! this crate's root: the native graph's `Editor::replace` follows it too, so
+//! it lives with the graph (doc 013, Phase 3 PR 3). `Net::crossfade` still
+//! takes the fork's `sequencer::Fade`, and the orphan rule forbids a `From`
+//! impl between two foreign types here, so the conversion is [`net_fade`].
+//! It goes with `Net` (doc 013, Phase 5).
 
-/// The gain curve a graph crossfade follows.
-///
-/// This is the engine's name for fundsp's `sequencer::Fade`, which used to be
-/// re-exported at the crate root and through both umbrella preludes — where it
-/// sat beside `tutti-sampler`'s private `Fade` struct (the butler's loop and
-/// seek crossfader), two unrelated things under one name. `Net::crossfade`
-/// still takes the fork's type, so the conversion is the `From` impl below and
-/// a caller writes `curve.into()` without ever naming the fork.
-///
-/// Which to pick is a property of the two signals, not of taste:
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CrossfadeCurve {
-    /// Equal **power**: a sine/cosine pair, so the summed power is constant
-    /// across the fade. Right for signals with independent phase — two
-    /// different sources — which add in power.
-    EqualPower,
-    /// Equal **amplitude**: a smooth (fifth-order) polynomial whose two halves
-    /// sum to one. Right for phase-coherent signals — the same source before
-    /// and after a parameter rebuild — which add in amplitude, so an
-    /// equal-power fade would bump the level by up to 3 dB mid-swap.
-    #[default]
-    EqualAmplitude,
-}
+use tutti_graph::CrossfadeCurve;
 
-impl From<CrossfadeCurve> for fundsp::sequencer::Fade {
-    fn from(curve: CrossfadeCurve) -> Self {
-        match curve {
-            CrossfadeCurve::EqualPower => Self::Power,
-            CrossfadeCurve::EqualAmplitude => Self::Smooth,
-        }
+/// The fork's fade for `curve`, for `Net::crossfade` — the only thing that
+/// still takes it. A caller writes `net_fade(curve)` without naming the fork.
+///
+/// The fork's two laws are the graph's two: equal power (a sine pair) and
+/// equal amplitude (fundsp's `smooth5`, the polynomial
+/// [`CrossfadeCurve::gains`] uses).
+pub fn net_fade(curve: CrossfadeCurve) -> fundsp::sequencer::Fade {
+    match curve {
+        CrossfadeCurve::EqualPower => fundsp::sequencer::Fade::Power,
+        CrossfadeCurve::EqualAmplitude => fundsp::sequencer::Fade::Smooth,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fundsp::sequencer::Fade;
 
     /// Each curve lands on the fork variant with the matching law.
     ///
@@ -48,10 +36,10 @@ mod tests {
     /// approximation, so its power sum is one to within ~0.2%, hence the looser
     /// tolerance there; a swapped law misses by 20% or more.)
     ///
-    /// Mutation: swapping the two arms of the `From` impl fails both sums.
+    /// Mutation: swapping the two arms of `net_fade` fails both sums.
     #[test]
     fn each_curve_maps_to_the_law_its_name_promises() {
-        let rise = |c: CrossfadeCurve, x: f32| Fade::from(c).at(x);
+        let rise = |c: CrossfadeCurve, x: f32| net_fade(c).at(x);
         for x in [0.1f32, 0.25, 0.4] {
             let (a, b) = (
                 rise(CrossfadeCurve::EqualAmplitude, x),
@@ -73,5 +61,21 @@ mod tests {
             );
         }
         assert_eq!(CrossfadeCurve::default(), CrossfadeCurve::EqualAmplitude);
+    }
+
+    /// The graph's equal-amplitude law is the fork's `smooth5`, so a swap
+    /// moved from `Net::crossfade` to `Editor::replace` sounds the same.
+    /// Frame `k` of an `n`-frame graph fade sits at `x = (k + 1) / (n + 1)`.
+    ///
+    /// Mutation: change the polynomial in `CrossfadeCurve::gains` → fails.
+    #[test]
+    fn the_graph_and_the_fork_share_the_equal_amplitude_law() {
+        let n = 9;
+        for k in 0..n {
+            let x = (k + 1) as f32 / (n + 1) as f32;
+            let (g_in, _) = CrossfadeCurve::EqualAmplitude.gains(k, n);
+            let fork = net_fade(CrossfadeCurve::EqualAmplitude).at(x);
+            assert!((g_in - fork).abs() < 1e-6, "frame {k}: {g_in} vs {fork}");
+        }
     }
 }

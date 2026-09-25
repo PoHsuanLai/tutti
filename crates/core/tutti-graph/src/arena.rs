@@ -231,6 +231,19 @@ impl Arena {
         )
     }
 
+    /// The first `outs.len()` slots' first `frames` samples, mutably, one per
+    /// entry of `outs` — a crossfade's scratch, whose slots are its outgoing
+    /// unit's output channels in order.
+    #[inline]
+    pub(crate) fn leading_mut<'a>(&'a mut self, frames: usize, outs: &mut [&'a mut [f32]]) {
+        for (o, lines) in outs
+            .iter_mut()
+            .zip(self.lines.chunks_exact_mut(self.stride))
+        {
+            *o = &mut bytemuck::cast_slice_mut::<Line, f32>(lines)[..frames];
+        }
+    }
+
     /// Copy slot `src` over slot `dst` (whole stride). Never allocates.
     pub(crate) fn copy_slot(&mut self, src: u32, dst: u32) {
         let st = self.stride;

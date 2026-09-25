@@ -21,11 +21,13 @@ pub use tutti_types::value::{
 
 mod engine;
 
-// The shape of a node swap (`Net::crossfade`). The engine's own enum rather
-// than the fork's `sequencer::Fade`, which a caller now reaches only through
-// `CrossfadeCurve`'s `From` impl — so no crate outside this one names it.
+// The shape of a node swap. The curve is the native graph's (its
+// `Editor::replace` follows it), re-exported here for the `Net` path;
+// `net_fade` converts it to the fork's `sequencer::Fade` for
+// `Net::crossfade`, so no crate outside this one names the fork's type.
 mod crossfade;
-pub use crossfade::CrossfadeCurve;
+pub use crossfade::net_fade;
+pub use tutti_graph::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it — seven callsites did, all through the module path.

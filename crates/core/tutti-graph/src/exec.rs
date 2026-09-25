@@ -32,8 +32,9 @@
 //! the executor would leak the box rather than free it on the audio thread.)
 //!
 //! **Where boxes are freed.** Drained boxes are dropped by the editor, on the
-//! control thread. If the executor is dropped with commits still queued, the
-//! rings go with it and those commits are dropped on the thread that drops
+//! control thread. If the executor is dropped with commits still queued (or
+//! crossfades still running), the rings go with it and those commits and
+//! crossfades are dropped on the thread that drops
 //! the executor — the control thread in practice, never the callback. If the
 //! editor is dropped, the executor keeps running its current plan; boxes it
 //! returns afterwards wait in the return ring until the executor is dropped.
@@ -97,6 +98,26 @@
 //! parked: that is how `Legacy` stays callable for a unit fed out of band
 //! (see `src/legacy.rs`).
 //!
+//! # Crossfades
+//!
+//! [`Editor::replace`](crate::Editor::replace) (rules in `src/fade.rs`). A
+//! crossfade lives in the store beside its unit: the unit is the incoming
+//! one, and the crossfade holds the outgoing one and a scratch arena for its
+//! outputs, built on the control side with the commit. A node op with a
+//! fade running leaves the hot path for `fading_node_op`, which runs the
+//! outgoing unit, then the incoming one through the general borrow, then
+//! blends — touching only the op's own slots — and is never skipped. A
+//! replace while one runs waits in the unit's `queued` slot.
+//!
+//! **A fade does not hold its commit**: the box goes back as soon as it is
+//! applied, like any other. Each crossfade comes back on its own, on a
+//! third ring (the **fade-return ring**, [`FADE_CAPACITY`] long), when it
+//! ends — or is cut, superseded, or placed with nothing to fade from —
+//! carrying its outgoing (or never-run) unit, so that unit is freed on the
+//! control side. The editor reserves a slot on that ring for every fade a
+//! commit starts, before sending it, and refuses a commit that would take
+//! more than [`FADE_CAPACITY`] fades in flight; so the push cannot fail.
+//!
 //! # Scheduled commands
 //!
 //! A third ring carries [`Editor::schedule`](crate::Editor::schedule)'s
@@ -132,6 +153,7 @@ use tutti_types::{AudioThread, Frame, NodeKey, Samples, ScopedNoDenormals, Tail}
 use crate::arena::{borrow_disjoint, borrow_sorted, Arena, Role};
 use crate::command::{overlay_capacity, CommandRx};
 use crate::event::{merge_into, Event, EventWriter, SortedEvents};
+use crate::fade::CrossfadeCurve;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::node::{
@@ -147,6 +169,15 @@ pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 /// Commits that may be out at once: sent and not yet drained back. The
 /// queue holds this many; the return ring one more.
 pub const QUEUE_CAPACITY: usize = 4;
+
+/// Crossfades that may be in flight at once — started or waiting, and not
+/// yet drained back by `Editor::collect` — across the whole graph. The
+/// fade-return ring holds this many, and a commit that would start more is
+/// refused (`CommitError::Backpressure`) before anything is sent. Each is a
+/// replace with a fade still running or waiting, so the cap is far above
+/// what a session does; it exists so the audio thread's push can never
+/// fail.
+pub const FADE_CAPACITY: usize = 256;
 
 /// A unit, owned. Crate-private, so the only code that can replace or drop
 /// the box is this crate's; its drop is checked against the audio-thread
@@ -203,6 +234,44 @@ impl Drop for NodeBox {
     }
 }
 
+/// One crossfade's own state (see the `fade` module, `src/fade.rs`). Built on
+/// the control side with the commit that asks for it, so its scratch is
+/// allocated there; it travels back in a commit box, so it is freed there
+/// too.
+pub(crate) struct Crossfade {
+    key: NodeKey,
+    /// The unit fading out, once the fade has started.
+    out: Option<NodeBox>,
+    /// The unit fading in, while this fade waits behind the one running at
+    /// its key. It moves into the store when this fade starts.
+    waiting: Option<NodeBox>,
+    /// The outgoing unit's outputs, one aligned slot per channel.
+    scratch: Arena,
+    /// Frames of the fade rendered so far.
+    done: usize,
+    len: usize,
+    curve: CrossfadeCurve,
+}
+
+impl Crossfade {
+    /// The units it carries back: the outgoing one, a waiting one that
+    /// never ran, or both after a re-prepare's cut.
+    pub(crate) fn units(&self) -> usize {
+        usize::from(self.out.is_some()) + usize::from(self.waiting.is_some())
+    }
+
+    /// Its key.
+    pub(crate) fn key(&self) -> NodeKey {
+        self.key
+    }
+}
+
+impl Drop for Crossfade {
+    fn drop(&mut self) {
+        AudioThread::check_not_current("a crossfade");
+    }
+}
+
 /// A plan and the unit changes that go with it — what travels to the
 /// executor and back. Crate-private: nobody outside the pair ever holds one.
 ///
@@ -218,7 +287,7 @@ pub(crate) struct Commit {
     suspend: Option<Prepare>,
     plan: Option<Arc<Plan>>,
     delta: Delta,
-    incoming: Vec<(UnitIdx, u32, NodeBox)>,
+    incoming: Vec<(UnitIdx, u32, NodeBox, Option<Box<Crossfade>>)>,
     retired: Vec<(NodeKey, NodeBox)>,
     old_state: Option<State>,
 }
@@ -241,12 +310,31 @@ impl Commit {
             .iter()
             .copied()
             .chain(delta.replace.iter().map(|&(_, new)| new));
+        let max_block = plan.prepare.max_block().get();
         let incoming = wanted
             .map(|p| {
                 let unit = units
                     .remove(&p.key)
                     .unwrap_or_else(|| panic!("no unit supplied for node {}", p.key.0));
-                (p.idx, p.gen, NodeBox::new(unit))
+                // A fade's scratch holds the outgoing unit's outputs, which
+                // have the incoming unit's width (`verify_fades`).
+                let fade = delta
+                    .fades
+                    .iter()
+                    .find(|(k, f)| *k == p.key && !f.is_cut())
+                    .map(|&(key, f)| {
+                        let width = plan.unit(key).map_or(0, |u| u.shape.audio_out.count());
+                        Box::new(Crossfade {
+                            key,
+                            out: None,
+                            waiting: None,
+                            scratch: Arena::new(width as usize, max_block),
+                            done: 0,
+                            len: f.duration.get(),
+                            curve: f.curve,
+                        })
+                    });
+                (p.idx, p.gen, NodeBox::new(unit), fade)
             })
             .collect();
         assert!(
@@ -283,6 +371,13 @@ impl Commit {
         })
     }
 
+    /// Whether this commit crossfades `key` in.
+    fn fades_in(&self, key: NodeKey) -> bool {
+        self.incoming
+            .iter()
+            .any(|(_, _, _, x)| x.as_ref().is_some_and(|x| x.key == key))
+    }
+
     /// Whether this box is a re-prepare's first half.
     pub(crate) fn is_suspend(&self) -> bool {
         self.suspend.is_some()
@@ -302,23 +397,77 @@ impl Commit {
     }
 }
 
+/// Send an applied box back to the editor. The push cannot fail by the
+/// credit count (module docs); were it ever full, leak rather than free on
+/// the audio thread.
+fn send_back(back: &mut HeapProd<Box<Commit>>, commit: Box<Commit>) {
+    if let Err(full) = back.try_push(commit) {
+        debug_assert!(false, "the return ring is full");
+        std::mem::forget(full);
+    }
+}
+
+/// Send a crossfade that ended, or was cut, superseded or never started,
+/// back to the editor on the fade-return ring, with the units it carries.
+/// The push cannot fail: the editor reserved this crossfade's slot before
+/// sending the commit that built it (module docs). Were it ever full, leak
+/// rather than free on the audio thread.
+fn retire_fade(fade_back: &mut HeapProd<Box<Crossfade>>, x: Box<Crossfade>) {
+    if let Err(full) = fade_back.try_push(x) {
+        debug_assert!(false, "the fade-return ring is full");
+        std::mem::forget(full);
+    }
+}
+
+/// Cut `u`'s crossfades: the newest unit at the key (a waiting one, if
+/// any — the one the plan's generation names) becomes `u`'s unit, and the
+/// others go back on the fade-return ring with their crossfades.
+fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) {
+    if let Some(mut q) = u.queued.take() {
+        let newest = q.waiting.take().expect("a queued fade holds its unit");
+        q.out = Some(std::mem::replace(&mut u.node, newest));
+        retire_fade(fade_back, q);
+    }
+    if let Some(f) = u.fade.take() {
+        retire_fade(fade_back, f);
+        // A cut is a step: never skip the next call on stale flags.
+        u.quiet = 0;
+        u.last_quiet = false;
+        u.last_idle = false;
+    }
+}
+
 /// The queue pair between an editor and its executor.
 pub(crate) struct Channels {
     pub(crate) to_executor: HeapProd<Box<Commit>>,
     pub(crate) returned: HeapCons<Box<Commit>>,
+    /// Crossfades coming back (see the module docs, "Crossfades").
+    pub(crate) faded: HeapCons<Box<Crossfade>>,
 }
 
-/// Build the queue pair: the editor's ends and the executor's.
-pub(crate) fn channels() -> (Channels, HeapCons<Box<Commit>>, HeapProd<Box<Commit>>) {
+/// The executor's ends of the rings.
+pub(crate) struct ExecutorEnds {
+    queue: HeapCons<Box<Commit>>,
+    back: HeapProd<Box<Commit>>,
+    fade_back: HeapProd<Box<Crossfade>>,
+}
+
+/// Build the rings: the editor's ends and the executor's.
+pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     let (tx, rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY).split();
     let (back_tx, back_rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY + 1).split();
+    let (fade_tx, fade_rx) = HeapRb::<Box<Crossfade>>::new(FADE_CAPACITY).split();
     (
         Channels {
             to_executor: tx,
             returned: back_rx,
+            faded: fade_rx,
         },
-        rx,
-        back_tx,
+        ExecutorEnds {
+            queue: rx,
+            back: back_tx,
+            fade_back: fade_tx,
+        },
     )
 }
 
@@ -332,6 +481,24 @@ struct Unit {
     last_quiet: bool,
     /// Whether the last call returned [`Status::Idle`].
     last_idle: bool,
+    /// The crossfade running here: `node` is its incoming unit.
+    fade: Option<Box<Crossfade>>,
+    /// A crossfade waiting for `fade` to end.
+    queued: Option<Box<Crossfade>>,
+}
+
+impl Unit {
+    fn new(gen: u32, node: NodeBox) -> Self {
+        Self {
+            gen,
+            node,
+            quiet: 0,
+            last_quiet: false,
+            last_idle: false,
+            fade: None,
+            queued: None,
+        }
+    }
 }
 
 enum Ring {
@@ -399,6 +566,8 @@ pub struct Executor {
     event_cap: usize,
     queue: HeapCons<Box<Commit>>,
     back: HeapProd<Box<Commit>>,
+    /// Where crossfades go back (see the module docs, "Crossfades").
+    fade_back: HeapProd<Box<Crossfade>>,
     plan: Option<Arc<Plan>>,
     store: Vec<Option<Unit>>,
     state: State,
@@ -431,15 +600,15 @@ impl Executor {
     pub(crate) fn new(
         prepare: Prepare,
         cap: usize,
-        queue: HeapCons<Box<Commit>>,
-        back: HeapProd<Box<Commit>>,
+        ends: ExecutorEnds,
         commands: CommandRx,
     ) -> Self {
         Self {
             prepare,
             event_cap: cap,
-            queue,
-            back,
+            queue: ends.queue,
+            back: ends.back,
+            fade_back: ends.fade_back,
             plan: None,
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
@@ -521,12 +690,7 @@ impl Executor {
         let _rt = AudioThread::enter();
         while let Some(mut commit) = self.queue.try_pop() {
             self.apply(&mut commit);
-            if let Err(full) = self.back.try_push(commit) {
-                // Unreachable by the credit count (module docs). Leak rather
-                // than free on the audio thread.
-                debug_assert!(false, "the return ring is full");
-                std::mem::forget(full);
-            }
+            send_back(&mut self.back, commit);
         }
     }
 
@@ -537,12 +701,19 @@ impl Executor {
             // re-prepare on the control thread. The plan and every piece of
             // delay and feedback state stay where they are, for the resume
             // commit's rebuild to carry — or, after a rate change, to reset.
+            //
+            // A re-prepare cuts every crossfade: what is checked out is the
+            // newest unit at each key (a waiting one, if any), the one the
+            // plan's generation names; the others go back with their fades.
             if let Some(plan) = &self.plan {
                 for u in &plan.units {
-                    if let Some(unit) = self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
-                    {
-                        c.retired.push((u.key, unit.node));
-                    }
+                    let Some(mut unit) =
+                        self.store.get_mut(u.idx.0 as usize).and_then(Option::take)
+                    else {
+                        continue;
+                    };
+                    cut_fades(&mut unit, &mut self.fade_back);
+                    c.retired.push((u.key, unit.node));
                 }
             }
             let (old, new) = (
@@ -576,35 +747,77 @@ impl Executor {
             "a plan compiled for another Prepare: every unit is prepared for the executor's"
         );
 
-        for p in &c.delta.retire {
+        // A retired key, or one replaced without a fade, goes whole: its
+        // unit and any crossfade running or waiting there. A key replaced
+        // with a fade stays, for the incoming unit to fade in over it.
+        for i in 0..c.delta.retire.len() + c.delta.replace.len() {
+            let p = match i.checked_sub(c.delta.retire.len()) {
+                None => c.delta.retire[i],
+                Some(j) => {
+                    let (old, new) = c.delta.replace[j];
+                    if c.fades_in(new.key) {
+                        continue;
+                    }
+                    old
+                }
+            };
             if let Some(u) = self.store.get_mut(p.idx.0 as usize).and_then(Option::take) {
                 debug_assert_eq!(u.gen, p.gen, "retiring the unit the delta named");
                 c.retired.push((p.key, u.node));
+                for f in [u.fade, u.queued].into_iter().flatten() {
+                    retire_fade(&mut self.fade_back, f);
+                }
             }
         }
-        for (old, _) in &c.delta.replace {
+        // Cuts: a kept unit's crossfades go, its newest unit stays.
+        for p in &c.delta.cuts {
             if let Some(u) = self
                 .store
-                .get_mut(old.idx.0 as usize)
-                .and_then(Option::take)
+                .get_mut(p.idx.0 as usize)
+                .and_then(Option::as_mut)
             {
-                c.retired.push((old.key, u.node));
+                debug_assert_eq!(u.gen, p.gen, "cutting the unit the delta named");
+                cut_fades(u, &mut self.fade_back);
             }
         }
         if self.store.len() < c.delta.store_len as usize {
             self.store.resize_with(c.delta.store_len as usize, || None);
         }
-        for (idx, gen, node) in c.incoming.drain(..) {
+        // Taken out and put back, so the list's buffer is not freed here.
+        let mut incoming = std::mem::take(&mut c.incoming);
+        for (idx, gen, node, fade) in incoming.drain(..) {
             let slot = &mut self.store[idx.0 as usize];
-            debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
-            *slot = Some(Unit {
-                gen,
-                node,
-                quiet: 0,
-                last_quiet: false,
-                last_idle: false,
-            });
+            match (fade, slot.as_mut()) {
+                (Some(mut x), Some(u)) => {
+                    // A crossfade: the unit at this key fades out — or, with
+                    // a fade already running here, this one waits for it,
+                    // superseding one that was waiting.
+                    u.gen = gen;
+                    if u.fade.is_some() {
+                        x.waiting = Some(node);
+                        if let Some(q) = u.queued.replace(x) {
+                            retire_fade(&mut self.fade_back, q);
+                        }
+                    } else {
+                        x.out = Some(std::mem::replace(&mut u.node, node));
+                        u.fade = Some(x);
+                        u.quiet = 0;
+                        u.last_quiet = false;
+                        u.last_idle = false;
+                    }
+                }
+                (fade, _) => {
+                    debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
+                    *slot = Some(Unit::new(gen, node));
+                    // Nothing to fade from (reachable only through
+                    // `package`): the crossfade goes back unused.
+                    if let Some(x) = fade {
+                        retire_fade(&mut self.fade_back, x);
+                    }
+                }
+            }
         }
+        c.incoming = incoming;
 
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref());
@@ -870,6 +1083,7 @@ impl Executor {
             event_cap,
             queue: _,
             back: _,
+            fade_back,
             plan,
             store,
             state,
@@ -920,6 +1134,7 @@ impl Executor {
             changes: *changes,
         };
         commands.gather(&env, plan, *applied, has_due);
+        let mut fade_ended = false;
 
         // Feedback reads happen before any op: the delay is a whole
         // `MaxBlock`, so nothing this block's captures queue is due yet.
@@ -1015,6 +1230,13 @@ impl Executor {
                         dropped,
                     };
                     let borrows = &plan.nodes.borrows[..];
+                    if u.fade.is_some() {
+                        // A crossfade runs here: both units, then the blend.
+                        // Off the hot path, whatever the form.
+                        let ports = rec.ports(&plan.nodes.slots);
+                        fade_ended |= fading_node_op(u, &head, &mut st, ports, borrows);
+                        continue;
+                    }
                     // Each arm hands `node_op` its port slots. For the three
                     // direct forms they are literal one-element arrays, so
                     // once `node_op` is inlined every per-port loop in it —
@@ -1137,8 +1359,138 @@ impl Executor {
         for f in event_fb.iter_mut().flatten() {
             f.advance(frames);
         }
+        if fade_ended {
+            end_fades(plan, store, fade_back);
+        }
         *frame += Samples(frames);
     }
+}
+
+/// After a block in which a crossfade reached its end: retire each ended
+/// fade's outgoing unit into the commit that started it, and start the fade
+/// waiting behind it, if any — from the next block on.
+#[cold]
+#[inline(never)]
+fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<Box<Crossfade>>) {
+    for rec in &plan.nodes.recs {
+        let Some(u) = store[rec.store as usize].as_mut() else {
+            continue;
+        };
+        if !u.fade.as_ref().is_some_and(|x| x.done >= x.len) {
+            continue;
+        }
+        let ended = u.fade.take().expect("checked");
+        retire_fade(fade_back, ended);
+        if let Some(mut next) = u.queued.take() {
+            let incoming = next.waiting.take().expect("a queued fade holds its unit");
+            next.out = Some(std::mem::replace(&mut u.node, incoming));
+            u.fade = Some(next);
+            u.quiet = 0;
+            u.last_quiet = false;
+            u.last_idle = false;
+        }
+    }
+}
+
+/// A node op with a crossfade running: the outgoing unit on the op's inputs
+/// into its scratch, then the incoming unit as any op runs (events and all,
+/// through the general borrow), then the blend into the op's output slots.
+/// Returns whether the fade reached its end in this block.
+///
+/// The outgoing unit runs **first**: an input aliased in place is also the
+/// incoming unit's output, and holds the input only until that unit runs.
+/// It is handed its own output buffers (never in place), no events, and
+/// event writers that accept nothing — see the `fade` module (`src/fade.rs`).
+/// Only the op's own slots are touched, so the verifier's rules about the op
+/// cover the fade too.
+#[cold]
+#[inline(never)]
+fn fading_node_op(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &mut OpState<'_>,
+    [ain, aout, ein, eout]: [&[u32]; 4],
+    borrows: &[(u32, Role)],
+) -> bool {
+    let frames = h.frames;
+    let x = u.fade.as_mut().expect("a fading unit");
+    let status = {
+        let (silent, constant) = in_masks(ain, st.flags);
+        let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
+        for (i, &s) in ins.iter_mut().zip(ain) {
+            *i = st.arena.slot(s, frames);
+        }
+        let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| &mut [][..]);
+        x.scratch.leading_mut(frames, &mut outs[..aout.len()]);
+        for o in &mut outs[..aout.len()] {
+            o.fill(0.0);
+        }
+        let evin = [SortedEvents::EMPTY; MAX_PORTS];
+        let mut evout: [EventWriter<'_>; MAX_PORTS] =
+            std::array::from_fn(|_| EventWriter::detached());
+        let io = Io::new(
+            h.max,
+            frames,
+            &ins[..ain.len()],
+            &mut outs[..aout.len()],
+            silent,
+            constant,
+            InPlaceMask::NONE,
+            &evin[..ein.len()],
+            &mut evout[..eout.len()],
+        );
+        let cx = Cx {
+            env: h.env,
+            arrival: h.rec.arrival,
+        };
+        x.out
+            .as_mut()
+            .expect("a running fade holds its outgoing unit")
+            .process(&cx, io)
+    };
+    // The outgoing unit's status, applied to its scratch as `finish` applies
+    // one to the arena.
+    for c in 0..aout.len() {
+        let o = x.scratch.slot_mut(c as u32, frames);
+        match status {
+            Status::Modified | Status::Masked { .. } => {}
+            Status::Silent | Status::Idle => o.fill(0.0),
+            Status::Constant => {
+                let v = o[0];
+                o.fill(v);
+            }
+            Status::Bypass => match ain.get(c) {
+                Some(&i) => o.copy_from_slice(st.arena.slot(i, frames)),
+                None => o.fill(0.0),
+            },
+        }
+    }
+
+    node_op(u, h, st, [ain, aout, ein, eout], |call, node, st| {
+        let (inject, overlay) = (&*st.inject, &st.overlay[..]);
+        let extra = Extra { inject, overlay };
+        let (arena, events) = (&mut *st.arena, &mut *st.events);
+        call.run::<MAX_PORTS, MAX_PORTS>(node, arena, events, borrows, extra)
+    });
+
+    // The blend: `incoming * g_in + outgoing * g_out` while the fade lasts,
+    // the incoming unit alone after it (`CrossfadeCurve::gains`).
+    let x = u.fade.as_mut().expect("still fading");
+    let n = (x.len - x.done).min(frames);
+    for (c, &s) in (0u32..).zip(aout) {
+        let y = st.arena.slot_mut(s, frames);
+        let out = x.scratch.slot(c, frames);
+        for (i, (y, &o)) in y[..n].iter_mut().zip(&out[..n]).enumerate() {
+            let (g_in, g_out) = x.curve.gains(x.done + i, x.len);
+            *y = *y * g_in + o * g_out;
+        }
+        st.flags[s as usize] = 0;
+    }
+    x.done += n;
+    // Never skipped while fading: the next block's skip test reads these.
+    u.last_quiet = false;
+    u.last_idle = false;
+    x.done >= x.len
 }
 
 /// Per audio slot: every sample of the block is exact `0.0`.

@@ -41,6 +41,21 @@
 //!   flushed like a delay when the key disappears.
 //! - Blocks run under a flush-to-zero guard, as the executor's do, so the two
 //!   agree about denormals too.
+//! - **Crossfades** ([`set_graph_with_fades`](Reference::set_graph_with_fades))
+//!   are kept per key, beside the unit map, never in it: the outgoing unit
+//!   runs first on a copy of the node's inputs with no events, the incoming
+//!   one runs as any node does, and each output sample `i` of the block is
+//!   `incoming * g_in + outgoing * g_out` with the gains of frame
+//!   `done + i` of the fade while that is inside it. A replace while a fade
+//!   runs waits in the entry (the newest wins) and starts, from the running
+//!   fade's incoming unit, on the block after that fade ends. A hard edit at
+//!   the key, or a re-prepare, drops the entry. Only the gain law
+//!   ([`CrossfadeCurve::gains`](crate::CrossfadeCurve::gains)) is shared
+//!   with the executor. Like every node here, the outgoing unit is handed
+//!   `SilenceMask::NONE` and `ConstantMask::NONE`, where the executor passes
+//!   it (and the incoming unit) the real input masks; a unit that renders
+//!   differently with a hint than without one diverges, which is the
+//!   point.
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 
@@ -72,6 +87,8 @@ pub struct Reference {
     prepare: Prepare,
     graph: Option<ValidGraph>,
     units: BTreeMap<NodeKey, (u32, Box<dyn Node>)>,
+    /// Crossfades by key: `units` holds the incoming unit.
+    fading: BTreeMap<NodeKey, RefFade>,
     arrival: BTreeMap<NodeKey, Latency>,
     delays: BTreeMap<DelayKey, Samples>,
     audio_lines: BTreeMap<DelayKey, VecDeque<f32>>,
@@ -106,6 +123,7 @@ impl Reference {
             prepare,
             graph: None,
             units: BTreeMap::new(),
+            fading: BTreeMap::new(),
             arrival: BTreeMap::new(),
             delays: BTreeMap::new(),
             audio_lines: BTreeMap::new(),
@@ -190,6 +208,12 @@ impl Reference {
                 }
             }
         }
+        // Every crossfade is cut: the newest unit at its key stays.
+        for (key, f) in std::mem::take(&mut self.fading) {
+            if let (Some((unit, _)), Some(slot)) = (f.next, self.units.get_mut(&key)) {
+                slot.1 = unit;
+            }
+        }
         self.suspended = Some(prepare);
     }
 
@@ -266,10 +290,96 @@ impl Reference {
     /// # Panics
     ///
     /// If `fresh` lacks a needed unit.
-    pub fn set_graph(&mut self, graph: &ValidGraph, mut fresh: BTreeMap<NodeKey, Box<dyn Node>>) {
+    pub fn set_graph(&mut self, graph: &ValidGraph, fresh: BTreeMap<NodeKey, Box<dyn Node>>) {
+        self.set_graph_with_fades(graph, fresh, &BTreeMap::new());
+    }
+
+    /// As [`set_graph`](Self::set_graph), with the regenerated keys in
+    /// `fades` crossfading from the unit they had rather than swapping it —
+    /// `Editor::replace`'s contract, derived here on its own (see the module
+    /// docs). A fade naming a key that is not regenerated, or has no unit
+    /// here to fade from, is ignored; a zero-length one is a swap.
+    ///
+    /// # Panics
+    ///
+    /// If a fade's two units differ in shape beyond their tails — the editor
+    /// refuses those, and the reference is only driven alongside it.
+    pub fn set_graph_with_fades(
+        &mut self,
+        graph: &ValidGraph,
+        mut fresh: BTreeMap<NodeKey, Box<dyn Node>>,
+        fades: &BTreeMap<NodeKey, crate::Fade>,
+    ) {
         let t = graph.topology();
+        // A node whose declared latency changed without a new generation
+        // (`Editor::set_latency`) has its crossfade cut: both units of a
+        // fade must share the latency the graph compensates. Derived here
+        // from the two values, not told.
+        if let Some(old) = self.graph.as_ref() {
+            let moved: Vec<NodeKey> = self
+                .fading
+                .keys()
+                .copied()
+                .filter(|k| {
+                    let (was, now) = (old.topology().nodes.get(k), t.nodes.get(k));
+                    matches!((was, now), (Some(a), Some(b)) if a.latency != b.latency)
+                        && old.generation(*k) == graph.generation(*k)
+                })
+                .collect();
+            for key in moved {
+                let f = self.fading.remove(&key).expect("listed");
+                if let (Some((unit, _)), Some(slot)) = (f.next, self.units.get_mut(&key)) {
+                    slot.1 = unit;
+                }
+            }
+        }
+        for (&key, fade) in fades {
+            let gen = graph.generation(key);
+            let changed = self.units.get(&key).is_some_and(|(g, _)| *g != gen);
+            if fade.duration.is_zero() || !t.nodes.contains_key(&key) || !changed {
+                continue;
+            }
+            let mut incoming = fresh
+                .remove(&key)
+                .unwrap_or_else(|| panic!("no unit for node {}", key.0));
+            incoming.prepare(&self.prepare);
+            let slot = self.units.get_mut(&key).expect("checked");
+            let (was, now) = (slot.1.shape(), incoming.shape());
+            assert!(
+                was.audio_in == now.audio_in
+                    && was.audio_out == now.audio_out
+                    && was.event_in == now.event_in
+                    && was.event_out == now.event_out
+                    && was.latency == now.latency
+                    && was.in_place == now.in_place
+                    && was.event_resolution == now.event_resolution,
+                "node {} crossfades between shapes",
+                key.0
+            );
+            slot.0 = gen;
+            match self.fading.get_mut(&key) {
+                // Behind the running fade; a unit waiting there never ran.
+                Some(running) => running.next = Some((incoming, *fade)),
+                None => {
+                    let old = std::mem::replace(&mut slot.1, incoming);
+                    self.fading.insert(
+                        key,
+                        RefFade {
+                            old,
+                            done: 0,
+                            len: fade.duration.get(),
+                            curve: fade.curve,
+                            next: None,
+                        },
+                    );
+                }
+            }
+        }
         self.units
             .retain(|k, (gen, _)| t.nodes.contains_key(k) && *gen == graph.generation(*k));
+        // A key swapped or removed takes its crossfade with it.
+        let units = &self.units;
+        self.fading.retain(|k, _| units.contains_key(k));
         for &key in t.nodes.keys() {
             if !self.units.contains_key(&key) {
                 let mut unit = fresh
@@ -627,6 +737,32 @@ impl Reference {
             );
         }
 
+        // Crossfades that reached their end this block: the outgoing unit
+        // goes, and one waiting starts — from the next block.
+        let ended: Vec<NodeKey> = self
+            .fading
+            .iter()
+            .filter(|(_, f)| f.done >= f.len)
+            .map(|(&k, _)| k)
+            .collect();
+        for key in ended {
+            let f = self.fading.remove(&key).expect("listed");
+            if let Some((unit, fade)) = f.next {
+                let slot = self.units.get_mut(&key).expect("a fading node has a unit");
+                let old = std::mem::replace(&mut slot.1, unit);
+                self.fading.insert(
+                    key,
+                    RefFade {
+                        old,
+                        done: 0,
+                        len: fade.duration.get(),
+                        curve: fade.curve,
+                        next: None,
+                    },
+                );
+            }
+        }
+
         for (ch, source) in t.outputs.iter().enumerate() {
             let mut buf = match source {
                 Source::Node(p) => audio[p].clone(),
@@ -734,6 +870,42 @@ impl Reference {
         }
 
         let n_out = shape.audio_out.count() as usize;
+        let cx = Cx {
+            env,
+            arrival: self.arrival[&key],
+        };
+        // A crossfade here: the outgoing unit first, on its own copy of the
+        // inputs, with no events; what it emits goes nowhere.
+        let outgoing: Option<Vec<Vec<f32>>> = self.fading.get_mut(&key).map(|f| {
+            let mut o: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
+            let copies = ins.clone();
+            let status = {
+                let in_refs: Vec<&[f32]> = copies.iter().map(Vec::as_slice).collect();
+                let mut out_refs: Vec<&mut [f32]> = o.iter_mut().map(Vec::as_mut_slice).collect();
+                let none: Vec<SortedEvents<'_>> =
+                    vec![SortedEvents::EMPTY; shape.event_in as usize];
+                let mut sink: Vec<Vec<Event>> = vec![Vec::new(); shape.event_out as usize];
+                let drops = Cell::new(0);
+                let mut writers: Vec<EventWriter<'_>> = sink
+                    .iter_mut()
+                    .map(|b| EventWriter::new(b, usize::MAX, frames as u32, &drops))
+                    .collect();
+                let io = Io::new(
+                    self.prepare.max_block(),
+                    frames,
+                    &in_refs,
+                    &mut out_refs,
+                    SilenceMask::NONE,
+                    ConstantMask::NONE,
+                    InPlaceMask::NONE,
+                    &none,
+                    &mut writers,
+                );
+                f.old.process(&cx, io)
+            };
+            settle(status, &copies, &mut o);
+            o
+        });
         let mut outs: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
         let mut ev_bufs: Vec<Vec<Event>> = vec![Vec::new(); shape.event_out as usize];
         let status = {
@@ -748,10 +920,6 @@ impl Reference {
                 .iter_mut()
                 .map(|b| EventWriter::new(b, usize::MAX, frames as u32, &drops))
                 .collect();
-            let cx = Cx {
-                env,
-                arrival: self.arrival[&key],
-            };
             let io = Io::new(
                 self.prepare.max_block(),
                 frames,
@@ -769,21 +937,20 @@ impl Reference {
                 .1
                 .process(&cx, io)
         };
-        match status {
-            Status::Modified | Status::Masked { .. } => {}
-            Status::Silent | Status::Idle => outs.iter_mut().for_each(|o| o.fill(0.0)),
-            Status::Constant => outs.iter_mut().for_each(|o| {
-                let v = o[0];
-                o.fill(v);
-            }),
-            Status::Bypass => {
-                for (c, o) in outs.iter_mut().enumerate() {
-                    match ins.get(c) {
-                        Some(i) => o.copy_from_slice(i),
-                        None => o.fill(0.0),
-                    }
+        settle(status, &ins, &mut outs);
+        if let Some(old) = outgoing {
+            let f = self.fading.get_mut(&key).expect("fading");
+            for i in 0..frames {
+                let k = f.done + i;
+                if k >= f.len {
+                    break;
+                }
+                let (g_in, g_out) = f.curve.gains(k, f.len);
+                for (o, x) in outs.iter_mut().zip(&old) {
+                    o[i] = o[i] * g_in + x[i] * g_out;
                 }
             }
+            f.done = (f.done + frames).min(f.len);
         }
         for (port, o) in outs.into_iter().enumerate() {
             audio.insert(
@@ -804,6 +971,36 @@ impl Reference {
             );
         }
     }
+}
+
+/// Apply a node's status to the outputs it was handed.
+fn settle(status: Status, ins: &[Vec<f32>], outs: &mut [Vec<f32>]) {
+    match status {
+        Status::Modified | Status::Masked { .. } => {}
+        Status::Silent | Status::Idle => outs.iter_mut().for_each(|o| o.fill(0.0)),
+        Status::Constant => outs.iter_mut().for_each(|o| {
+            let v = o[0];
+            o.fill(v);
+        }),
+        Status::Bypass => {
+            for (c, o) in outs.iter_mut().enumerate() {
+                match ins.get(c) {
+                    Some(i) => o.copy_from_slice(i),
+                    None => o.fill(0.0),
+                }
+            }
+        }
+    }
+}
+
+/// A crossfade in the reference: the unit fading out, how far the fade has
+/// got, and a replace waiting behind it.
+struct RefFade {
+    old: Box<dyn Node>,
+    done: usize,
+    len: usize,
+    curve: crate::CrossfadeCurve,
+    next: Option<(Box<dyn Node>, crate::Fade)>,
 }
 
 /// A command waiting in the reference.

@@ -16,8 +16,8 @@ use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{
-    Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Legacy, ParamRamp, Transport, Ump,
-    LEGACY_SETTINGS_CAPACITY,
+    CrossfadeCurve, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Legacy,
+    ParamRamp, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::Setting;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
@@ -231,4 +231,109 @@ fn process_is_allocation_free_in_steady_state() {
         1,
         "every timed command landed inside the gate; the beat still waits"
     );
+}
+
+/// Crossfades never allocate on the audio thread: both units running, the
+/// blend, a fade's end (the crossfade and its outgoing unit onto the
+/// fade-return ring) and the start of the fade waiting behind it —
+/// on an in-place stereo gain and on an event consumer (the general form).
+/// The commits are applied before the gate, since applying allocates by
+/// design; everything a fade does after that runs inside it.
+///
+/// Mutation: build the fade-return ring with room for one crossfade
+/// (`FADE_CAPACITY` 1 in `channels`) → the second ending fade finds it full
+/// inside the gate → the push's assert fires → fails. Mutation: allocate
+/// the blend's gains per block (collect them into a `Vec` in
+/// `fading_node_op`) → aborts.
+#[test]
+fn crossfades_are_allocation_free() {
+    let (mut ed, mut exec) = Editor::new(prepare(256));
+    ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
+    let gain = |g| TestNode::new(Kind::Gain { gain: g, width: 2 });
+    ed.insert(NodeKey(1), "gain", gain(1.0));
+    ed.insert(
+        NodeKey(2),
+        "emit",
+        TestNode::new(Kind::Emitter {
+            period: 9,
+            phase: 0,
+        }),
+    );
+    ed.insert(
+        NodeKey(3),
+        "consume",
+        TestNode::new(Kind::Consumer { inputs: 1 }),
+    );
+    let consumer = EventIn {
+        node: NodeKey(3),
+        port: 0,
+    };
+    ed.spec_mut().connect_events(
+        consumer,
+        EventEdge::Direct(EventOut {
+            node: NodeKey(2),
+            port: 0,
+        }),
+    );
+    let t = &mut ed.spec_mut().topology;
+    t.edges.insert(at(1, 0), Edge::Direct(Source::Global(0)));
+    t.edges.insert(at(1, 1), Edge::Direct(Source::Global(1)));
+    t.outputs = vec![
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        }),
+        Source::Node(OutPort {
+            node: NodeKey(3),
+            port: 0,
+        }),
+    ];
+    ed.commit().expect("commits");
+
+    let input = vec![0.25f32; 256];
+    let mut l = vec![0.0f32; 256];
+    let mut r = vec![0.0f32; 256];
+    let transport = Transport::default();
+    let mut block = |exec: &mut tutti_graph::Executor, n: usize| {
+        exec.process(
+            n,
+            &transport,
+            &[&input[..], &input[..]],
+            &mut [&mut l[..], &mut r[..]],
+        );
+    };
+    block(&mut exec, 64);
+    ed.collect();
+
+    // A long fade, one queued behind it, and one on the event node.
+    let fade = |n| Fade::new(Samples(n), CrossfadeCurve::EqualPower);
+    ed.replace(NodeKey(1), gain(2.0), fade(3_000))
+        .expect("fits");
+    ed.commit().expect("commits");
+    block(&mut exec, 64);
+    ed.replace(NodeKey(1), gain(4.0), fade(2_000))
+        .expect("fits");
+    ed.replace(
+        NodeKey(3),
+        TestNode::new(Kind::Consumer { inputs: 1 }),
+        fade(500),
+    )
+    .expect("fits");
+    ed.commit().expect("commits");
+    block(&mut exec, 64);
+    assert!(ed.collect().is_empty(), "nothing has retired yet");
+    assert_eq!(ed.in_flight(), 0, "fades hold no commit");
+    assert_eq!(ed.fades_in_flight(), 3);
+
+    let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..200 {
+            block(&mut exec, sizes[i % sizes.len()]);
+        }
+    });
+    // Three outgoing units came back: both fades at key 1 and the one at 3.
+    let mut back = ed.collect();
+    back.sort();
+    assert_eq!(back, vec![NodeKey(1), NodeKey(1), NodeKey(3)]);
+    assert_eq!(ed.fades_in_flight(), 0);
 }

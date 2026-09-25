@@ -46,6 +46,7 @@ use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples, Tail};
 
 use crate::arena::Role;
+use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
 use crate::spec::{EventIn, EventOut};
@@ -851,6 +852,19 @@ pub struct Delta {
     pub retire: Vec<Placement>,
     /// Keys whose generation changed: `(old, new)`, same index.
     pub replace: Vec<(Placement, Placement)>,
+    /// Replaces that crossfade rather than swap: each names a key in
+    /// `replace`, at most once. `compile` never fills this — a fade is an
+    /// edit, not part of the graph value — the editor attaches it (see
+    /// [`Editor::replace`](crate::Editor::replace)), and
+    /// [`verify_fades`](crate::verify_fades) checks it.
+    pub fades: Vec<(NodeKey, Fade)>,
+    /// Kept units whose crossfade, running or waiting, is **cut**: every
+    /// unit at the key but the newest retires. A hard edit that is not a new
+    /// generation — [`Editor::set_latency`](crate::Editor::set_latency) —
+    /// attaches it, since a fade's two units must share the latency the
+    /// plan compensates. Harmless on a key with no fade. `compile` never
+    /// fills it; [`verify_fades`](crate::verify_fades) checks it.
+    pub cuts: Vec<Placement>,
     /// The store length the new plan needs.
     pub store_len: u32,
 }

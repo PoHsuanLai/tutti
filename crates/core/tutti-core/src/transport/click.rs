@@ -1177,6 +1177,9 @@ mod tests {
     #[test]
     fn render_is_bit_identical_to_the_audionode_era() {
         /// FNV-1a over the little-endian `f32` bits, in emission order.
+        ///
+        /// Gated like its one use below, or MSVC builds see it as dead code.
+        #[cfg(not(target_env = "msvc"))]
         fn digest(samples: &[f32]) -> u64 {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for s in samples {

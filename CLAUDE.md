@@ -98,10 +98,11 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
   cargo clippy -p tutti-plugin --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 ```
 
-`just check-windows` runs this over the plugin crates with every format
-feature. CI's `clippy (windows)` job runs the whole workspace on a
-`windows-latest` runner, because `ogg_next_sys` and `tutti-vst3-host`'s
-`conformance` probe need real Windows C headers and cannot cross-compile.
+`just check-windows` runs this over the workspace and over the plugin crates
+with every format feature. It excludes the five members that cannot
+cross-compile: `ogg_next_sys` (via `tutti-export`) and `tutti-vst3-host`'s
+`conformance` probe need real Windows C headers. CI's `clippy (windows)` job
+runs everything natively on a `windows-latest` runner.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
 type those constants as `c_uint` on unix and `c_int` on Windows, so
 `kFoo as i32` passes Linux clippy and fails `unnecessary_cast` on Windows.

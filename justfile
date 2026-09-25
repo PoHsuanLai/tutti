@@ -282,13 +282,15 @@ lint:
 # cannot target MSVC; clang can, and wants only a one-line `malloc.h` stub for
 # `_alloca`. Clippy never links, so the stub has only to let the C compile.
 #
-# This is the half of CI's `clippy (windows)` job that Linux can do: the plugin
-# crates with every format feature. The rest cannot cross-compile, because it
-# needs a real Windows C toolchain and headers, not a stub — `ogg_next_sys`
-# (the vorbis codec) includes `<string.h>`, and `tutti-vst3-host`'s
-# `conformance` feature (on in its own tests and `tutti-plugin-server`'s)
-# compiles and links the `audio-probe` DLL against the SDK's Win32 sources.
-# That is why the CI job runs on `windows-latest` and covers the workspace.
+# This is the part of CI's `clippy (windows)` job that Linux can do: the
+# workspace minus five members, then the plugin crates with every format
+# feature. The excluded members cannot cross-compile, because they need a real
+# Windows C toolchain and headers, not a stub. `ogg_next_sys` (the vorbis codec,
+# via tutti-export, which `tutti` and `bevy-tutti` depend on) includes
+# `<string.h>`. `tutti-vst3-host`'s `conformance` feature (on in its own tests
+# and `tutti-plugin-server`'s) compiles and links the `audio-probe` DLL against
+# the SDK's Win32 sources. That is why the CI job runs on `windows-latest`.
+# Their lib targets are still checked below where they can be.
 # `au` is macOS-only and compiles to nothing here.
 check-windows:
     #!/usr/bin/env bash
@@ -299,6 +301,9 @@ check-windows:
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
+    win --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti \
+        --exclude tutti-export --exclude tutti --exclude bevy-tutti \
+        --exclude tutti-vst3-host --exclude tutti-plugin-server
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets
     win -p tutti-vst2-host --all-targets

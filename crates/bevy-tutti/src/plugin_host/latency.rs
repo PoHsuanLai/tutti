@@ -86,7 +86,7 @@ pub struct CompensatedLatency(
 /// run before the `Compensate` phase to be seen in the same frame.
 ///
 /// **On the native backend the graph is also told to look again**
-/// ([`AudioGraphRes::refresh_node_latency`], which feeds
+/// (`AudioGraphRes::refresh_node_latency`, which feeds
 /// `Editor::set_latency`). `Net` re-probes the unit — a clone sharing the
 /// plugin's latency cell — on every compensation pass; the native editor holds
 /// the latency it probed at insert, so it re-probes the node's shadow (the

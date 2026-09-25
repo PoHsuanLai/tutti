@@ -489,6 +489,12 @@ jobs:
       - run: cargo doc -p tutti-graph --no-deps --features contract
         env:
           RUSTDOCFLAGS: -D warnings
+      # bevy-tutti gates most of its surface behind features (`full`, and
+      # `plugin`, which `full` leaves out), so the workspace line above
+      # documents little of it: two broken links sat there unseen.
+      - run: cargo doc -p bevy-tutti --no-deps --features full,plugin
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why these two crates and not the rest: ~95% of this repo's `unsafe` is a C

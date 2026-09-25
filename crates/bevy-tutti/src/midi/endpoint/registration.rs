@@ -33,7 +33,7 @@ use crate::graph::{engine_ready, GraphReconcileSystems};
 /// Carries the id purely so [`unregister_midi_sender`] can remove the right
 /// entry after the node — and with it the port that knew the id — is already
 /// gone. It is *not* an address to route by: resolution reads the entity's
-/// [`MidiTarget`](MidiTarget), which a `crossfade` replaces along with the
+/// [`MidiTarget`], which a `crossfade` replaces along with the
 /// node's port while keeping its `NodeId`. [`register_midi_senders`] catches up
 /// with that replacement a frame later, so between the two this id names the
 /// outgoing port — which is exactly what unregistering it needs, and exactly

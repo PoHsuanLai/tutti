@@ -3,6 +3,7 @@
 //!
 //! - [`memory_source`] — in-memory playback ([`MemorySource`]).
 //! - [`disk_voice`] — disk-streaming playback, fed by the butler thread.
+//! - `offline_read` — a forked disk voice's file, read on demand offline.
 //! - [`types`] — the voice vocabulary: `Voice`, `VoiceSource`, `Playback`.
 //! - [`slot`] — a voice plus its stretch filter, and the per-sample read.
 //! - [`command`] — the ECS → audio-thread protocol and its handle.
@@ -17,6 +18,8 @@ pub mod memory_source;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `DiskStreamer`.
 pub mod disk_voice;
+// A forked disk voice reads its file here instead of the butler's ring.
+mod offline_read;
 // The voice pool, one file per duty. Each holds Bevy-free DSP; the ECS pieces
 // are gated inside `pool`.
 pub mod command;

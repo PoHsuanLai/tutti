@@ -427,12 +427,17 @@ impl AudioUnit for VoiceNode {
         }
     }
 
-    /// Answers for the voice it holds: a memory voice is forkable, a disk
-    /// voice is not (see `DiskVoice::forkable`). The rest of what `isolate`
-    /// touches — the stretch bank, the cursor, the command channel — it
-    /// severs completely.
+    /// Answers for the voice it holds (both tiers sever everything they
+    /// share; a disk voice reads its file itself once rebound, see
+    /// `DiskVoice::isolate`). The rest of what `isolate` touches — the
+    /// stretch bank, the cursor, the command channel — it severs completely.
     fn forkable(&self) -> bool {
         self.slot.voice.forkable()
+    }
+
+    /// Answers for the voice it holds: a severed disk voice's failure latch.
+    fn render_fault(&self) -> Option<std::sync::Arc<dyn tutti_core::RenderFault>> {
+        self.slot.voice.render_fault()
     }
 
     /// The host's door to a live voice's scalar controls.

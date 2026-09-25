@@ -45,7 +45,9 @@ pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;
 pub use tail::Tail;
-pub use timeline::{first_frame_at_or_after, TimelineSegment, FRAME_TOLERANCE};
+pub use timeline::{
+    first_frame_at_or_after, snap_to_whole_frame, TimelineSegment, FRAME_TOLERANCE,
+};
 pub use unit_param::{ParamAddr, ParamKey, UnitParam, UnitParamOutOfRange};
 pub use units::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,

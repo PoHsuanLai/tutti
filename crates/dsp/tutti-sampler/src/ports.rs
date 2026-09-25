@@ -277,6 +277,11 @@ impl Status {
     /// the stream, so a session rate that moves later (a device restart) leaves
     /// the gate's frames where they were.
     ///
+    /// The voice also keeps a read-only handle onto the butler's record of
+    /// the stream, so a fork of it for an offline render (an export) can read
+    /// the same file on its own rather than through the live ring; see
+    /// `DiskVoice::rebind_offline`.
+    ///
     /// Returns `None` while the butler has not installed the link yet; a caller
     /// polls again next frame rather than treating it as a failure.
     pub fn take_disk_voice(
@@ -286,21 +291,24 @@ impl Status {
         start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> Option<DiskVoice> {
-        let (inner, rt_state, file_sample_rate) =
+        let (inner, rt_state, file_sample_rate, origin) =
             crate::butler::control::take_streaming_unit(&self.plans, channel_index)?;
 
-        Some(DiskVoice::new(
-            inner,
-            rt_state,
-            DiskVoiceConfig {
-                timeline: transport,
-                window: VoiceWindow {
-                    start: start_beat,
-                    duration,
+        Some(
+            DiskVoice::new(
+                inner,
+                rt_state,
+                DiskVoiceConfig {
+                    timeline: transport,
+                    window: VoiceWindow {
+                        start: start_beat,
+                        duration,
+                    },
+                    file_sample_rate,
                 },
-                file_sample_rate,
-            },
-        ))
+            )
+            .with_origin(origin),
+        )
     }
 }
 

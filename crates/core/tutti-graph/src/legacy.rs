@@ -201,7 +201,7 @@ use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::{ChannelLayout, Latency, Samples};
 
 use crate::editor::Editor;
-use crate::fork::{ForkCause, ForkMode, ForkSource, Forked};
+use crate::fork::{ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked};
 use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, IntoNode, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask, Status,
@@ -466,10 +466,30 @@ impl ForkSource for LegacyFork {
             hook(unit.as_mut(), mode)?;
         }
         unit.reset();
+        // Asked of the copy itself, once it is rebound: a unit that can fail
+        // while it renders offline hands its probe over here, and the forked
+        // editor keeps it (`Editor::fork_health`).
+        let health = unit.render_fault();
         let mut node = Adapter::new(unit);
         node.pure = self.pure;
         // A clone cannot fail; only a hook can.
-        Ok(Forked::new(Box::new(node)))
+        let forked = Forked::new(Box::new(node));
+        Ok(match health {
+            Some(probe) => forked.with_health(Arc::new(UnitHealth(probe))),
+            None => forked,
+        })
+    }
+}
+
+/// A forked unit's [`RenderFault`](tutti_node::RenderFault) probe, as the
+/// fork's [`ForkHealth`]: a failure it reports is [`ForkFaultKind::Failed`].
+struct UnitHealth(Arc<dyn tutti_node::RenderFault>);
+
+impl ForkHealth for UnitHealth {
+    fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
+        self.0
+            .fault()
+            .map(|cause| (ForkFaultKind::Failed, ForkCause::from_arc(cause)))
     }
 }
 

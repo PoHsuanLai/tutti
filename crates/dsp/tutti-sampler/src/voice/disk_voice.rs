@@ -23,8 +23,11 @@ use tutti_core::{
 
 use super::interp::cubic_hermite;
 use super::memory_source::VoiceWindow;
+use super::offline_read::OfflineRead;
 use super::types::Direction;
+use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
+use tutti_core::{FaultLatch, RenderFault};
 
 /// Per-block fetch budget in **frames**, reserved once per unit so the RT
 /// `clear()` + `push()` in `process_normal_samples` can never reallocate.
@@ -408,11 +411,10 @@ impl AudioUnit for DiskSource {
     /// requested. `shared_state` is dropped as well so a later `rebind_offline`
     /// cannot re-arm a seek through it.
     ///
-    /// The honest severed state is *silent*: there is no second ring to hand
-    /// this clone, and manufacturing one would mean re-opening the file off a
-    /// butler that is not running. A disk-backed voice therefore contributes
-    /// nothing to an isolated render unless something refills it — which is what
-    /// a caller's prepare step is for.
+    /// The honest severed state of this bare unit is *silent*: there is no
+    /// second ring to hand this clone. A [`DiskVoice`], which knows where on
+    /// the timeline it plays and which stream it came from, does not stop
+    /// there: its copy reads the file itself (see its `isolate`).
     fn isolate(&mut self) {
         self.playing.store(false, Ordering::Relaxed);
         self.shared_state = None;
@@ -637,8 +639,22 @@ impl std::fmt::Debug for DiskVoiceConfig {
 /// polls it and repositions the stream click-free. Nothing on this path
 /// allocates, locks, or touches the disk, so `tick`/`process` stay real-time
 /// safe.
+///
+/// # A fork reads the file itself
+///
+/// A copy taken for an offline render (a graph fork for an export) cannot
+/// play through the butler: the ring's one consumer is the live audio thread,
+/// and a seek moves the live stream. So [`isolate`](AudioUnit::isolate) cuts
+/// this copy off from both, and
+/// [`rebind_offline`](AudioUnit::rebind_offline) hands it the stream's file,
+/// as the butler records it (path, rate, loop), to read on demand on the
+/// render's thread. It plays the same window of the file on the render's
+/// timeline, read as the memory tier reads it; see `offline_read`. That path
+/// blocks on file I/O and is never taken live.
 pub struct DiskVoice {
     inner: DiskSource,
+    /// The playback controls: the butler's cell, shared with `inner`, while
+    /// live; a private snapshot of it once isolated.
     shared_state: Arc<RtState>,
 
     /// Transport clock — the gate reads its beat position.
@@ -661,6 +677,86 @@ pub struct DiskVoice {
     /// Whether the previous frame was inside the voice window. A false→true edge
     /// (playhead entering the voice) always forces a seek.
     was_inside: bool,
+
+    /// The butler stream this voice consumes, as a read-only handle onto the
+    /// butler's record of it: what a fork reads its file from. `None` for a
+    /// voice not built by [`Status::take_disk_voice`](crate::Status::take_disk_voice)
+    /// (a test's bare ring), whose fork then plays silence.
+    origin: Option<StreamOrigin>,
+
+    /// `Some` once this copy is severed from the live stream
+    /// ([`isolate`](AudioUnit::isolate)): it then never touches the ring or
+    /// the butler again, and plays what this holds instead. Boxed: a live
+    /// voice (every voice in a pool) should not carry the pages' room, and
+    /// it is built on the control thread, where a fork is taken.
+    offline: Option<Box<Offline>>,
+
+    /// The rate `set_sample_rate` last gave this unit, `None` until one did:
+    /// what a severed copy renders at. Not `inner`'s rate, which defaults to
+    /// 44.1 kHz, so a copy never told a rate renders nothing and says so
+    /// rather than play off pitch. (A copy keeps the rate it was cloned with:
+    /// a `Net` export tells a unit its rate only when the rate changes.)
+    sample_rate: Option<SampleRate>,
+}
+
+/// A severed disk voice's own playback: the file it reads, where in the file
+/// the clock last seated it, and where its failures go.
+#[derive(Clone, Debug, Default)]
+struct Offline {
+    /// The file, from the butler's record at
+    /// [`rebind_offline`](AudioUnit::rebind_offline). `None` before a rebind,
+    /// or when the stream was gone by then: silence.
+    read: Option<OfflineRead>,
+    /// Where the clock last seated the read. `None` outside the window.
+    seat: Option<Seat>,
+    /// The first failure since this copy was severed (its stream gone, its
+    /// file unreadable, no render rate), handed to the fork by
+    /// [`render_fault`](AudioUnit::render_fault). Fresh at every `isolate`,
+    /// so a copy never reports another's.
+    fault: Arc<FaultLatch>,
+}
+
+/// Why a severed disk voice renders silence where its file should be, other
+/// than the file itself (`OfflineReadError`).
+#[derive(Debug)]
+enum OfflineFault {
+    /// Its stream ended (stopped, or its channel restarted on another file)
+    /// before the copy was rebound.
+    StreamGone,
+    /// It was asked to render before `set_sample_rate` gave it a rate.
+    NoRenderRate,
+}
+
+impl std::fmt::Display for OfflineFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::StreamGone => {
+                "its disk stream had ended (stopped, or its channel restarted on another \
+                 file) when it was forked, so there was no file to play"
+            }
+            Self::NoRenderRate => "it was rendered before it was given a sample rate",
+        })
+    }
+}
+
+impl std::error::Error for OfflineFault {}
+
+/// A read position seated from the clock, and how far it has run since.
+///
+/// The clock moves between calls (per block, or per 64-frame chunk under
+/// `Legacy`), not per frame, and a voice in a [`VoiceNode`](super::VoiceNode)
+/// is read a frame at a time through `tick`. So the read seats where the gate
+/// puts the playhead whenever the clock reads a beat it did not read last
+/// time, and steps from there by the read rate: frame `frames` of the seat is
+/// `origin + rate × frames`, the memory tier's own `start + rate × i`.
+#[derive(Clone, Copy, Debug)]
+struct Seat {
+    /// The beat the clock read when the read seated.
+    beat: Beat,
+    /// The file position the gate gave for it.
+    origin: SamplePosition,
+    /// Frames read since.
+    frames: usize,
 }
 
 // Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
@@ -674,6 +770,8 @@ impl std::fmt::Debug for DiskVoice {
             .field("file_sample_rate", &self.file_sample_rate)
             .field("streamed_offset", &self.streamed_offset)
             .field("was_inside", &self.was_inside)
+            .field("has_origin", &self.origin.is_some())
+            .field("offline", &self.offline)
             .finish_non_exhaustive()
     }
 }
@@ -688,6 +786,9 @@ impl Clone for DiskVoice {
             file_sample_rate: self.file_sample_rate,
             streamed_offset: self.streamed_offset,
             was_inside: self.was_inside,
+            origin: self.origin.clone(),
+            offline: self.offline.clone(),
+            sample_rate: self.sample_rate,
         }
     }
 }
@@ -708,7 +809,17 @@ impl DiskVoice {
             file_sample_rate: config.file_sample_rate,
             streamed_offset: NO_SEEK_TARGET,
             was_inside: false,
+            origin: None,
+            offline: None,
+            sample_rate: None,
         }
+    }
+
+    /// Record which butler stream this voice consumes, so a fork of it can
+    /// read the same file (see "A fork reads the file itself").
+    pub(crate) fn with_origin(mut self, origin: StreamOrigin) -> Self {
+        self.origin = Some(origin);
+        self
     }
 
     /// The transport clock this voice's gate reads.
@@ -747,19 +858,27 @@ impl DiskVoice {
         // force a re-seek on the next inside-frame.
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
+        // And a severed copy re-seats from the clock (a fork applies the
+        // placement its node last queued; `VoiceNode::isolate`).
+        if let Some(offline) = self.offline.as_mut() {
+            offline.seat = None;
+        }
     }
 
     /// Publish a new output gain. `&self`: the write lands in the shared
     /// `RtState`, so no exclusivity is needed — and asking for `&mut` would
     /// wrongly suggest this is a restructuring change requiring a respawn.
+    ///
+    /// Written to this voice's own cell rather than through `inner`: live the
+    /// two are one cell, and a severed copy's `inner` has none.
     pub fn set_gain(&self, gain: Amplitude) {
-        self.inner.set_gain(gain);
+        self.shared_state.set_gain(gain);
     }
 
     /// The current output gain, read from the shared state — so a clone reports
     /// what the frontend last published, not what it was cloned at.
     pub fn gain(&self) -> Amplitude {
-        self.inner.gain()
+        self.shared_state.gain()
     }
 
     /// The file sample rate this stream decodes at — the file's own, which is
@@ -905,6 +1024,104 @@ impl DiskVoice {
             self.streamed_offset = offset;
         }
     }
+
+    /// The rate a severed copy reads its file at, relative to the gate's
+    /// frame: varispeed and the stretcher's rate, no conversion (the gate
+    /// measures in the file's own frames, as [`window_position`](Self::window_position)
+    /// explains).
+    #[inline]
+    fn offline_window_rate(&self) -> ReadRate {
+        self.shared_state
+            .effective_speed()
+            .read_rate(SrcRatio::UNITY)
+            .then(self.shared_state.stretch_rate())
+    }
+
+    /// One output frame of a severed copy, into `out` (every element).
+    ///
+    /// The gate is the live one ([`window_position`](super::interp::window_position),
+    /// by the file's rate); where the live voice pops the ring, this reads the
+    /// file at the seated position (see [`Seat`]), stepping by the window
+    /// rate with the conversion from the file's rate to the render's —
+    /// derived from the two rates themselves, not read from the cell the
+    /// butler keeps for the live session. The stretcher's rate reaches the
+    /// seat as well as the step, as the memory tier's
+    /// `stretched_window_position` has it, or a stretched read would be
+    /// re-seated a block ahead of where the last one ended.
+    ///
+    /// Once the playhead is past the window's end, the file is closed: a
+    /// render holding many voices keeps a file open per voice sounding.
+    fn offline_frame(&mut self, out: &mut [f32]) {
+        let beat = self.timeline.beat();
+        let seated = self
+            .offline
+            .as_ref()
+            .and_then(|offline| offline.seat)
+            .filter(|seat| seat.beat == beat);
+        let seat = match seated {
+            Some(seat) => Seat {
+                frames: seat.frames + 1,
+                ..seat
+            },
+            None => match super::interp::window_position(
+                self.timeline.as_ref(),
+                self.window.start,
+                self.window.duration,
+                self.file_sample_rate,
+                self.offline_window_rate(),
+            ) {
+                Some(origin) => Seat {
+                    beat,
+                    origin,
+                    frames: 0,
+                },
+                None => {
+                    let past = self.window.duration.is_some_and(|duration| {
+                        self.timeline.is_rolling() && beat >= self.window.start + duration
+                    });
+                    if let Some(offline) = self.offline.as_mut() {
+                        offline.seat = None;
+                        if past {
+                            if let Some(read) = offline.read.as_mut() {
+                                read.close();
+                            }
+                        }
+                    }
+                    out.fill(0.0);
+                    return;
+                }
+            },
+        };
+        let direction = self.shared_state.direction();
+        let gain = self.shared_state.gain().get();
+        let (speed, stretch) = (
+            self.shared_state.effective_speed(),
+            self.shared_state.stretch_rate(),
+        );
+        let file_rate = self.file_sample_rate;
+        let render_rate = self.sample_rate;
+        let Some(offline) = self.offline.as_mut() else {
+            out.fill(0.0);
+            return;
+        };
+        let Some(render_rate) = render_rate else {
+            offline.fault.latch(OfflineFault::NoRenderRate);
+            out.fill(0.0);
+            return;
+        };
+        let rate = speed
+            .read_rate(SrcRatio::for_rates(file_rate, render_rate))
+            .then(stretch);
+        let pos = seat.origin + rate.advance(Samples(seat.frames));
+        offline.seat = Some(seat);
+        match offline.read.as_mut() {
+            Some(read) => read.read_into(pos, direction, out),
+            None => out.fill(0.0),
+        }
+        for s in out.iter_mut() {
+            *s *= gain;
+        }
+    }
 }
 
 impl AudioUnit for DiskVoice {
@@ -922,57 +1139,114 @@ impl AudioUnit for DiskVoice {
         self.inner.reset();
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
+        if let Some(offline) = self.offline.as_mut() {
+            offline.seat = None;
+        }
     }
 
-    /// Sever the inner stream, then keep the gate shut.
+    /// Sever this copy from the live stream, whole: it will never pop the
+    /// ring or ask the butler for anything again.
     ///
-    /// Forwarding is the whole point: `inner` is what holds the shared ring, and
-    /// a `DiskVoice` inside a voice pool is not a graph vertex, so nothing else
+    /// Forwarding is half of it: `inner` is what holds the shared ring, and a
+    /// `DiskVoice` inside a voice pool is not a graph vertex, so nothing else
     /// will reach it. Without this, an isolated render pops frames the live
     /// audio thread is waiting on.
     ///
-    /// `was_inside` is left false and the offset cleared so the gate does not
-    /// think it is mid-window on an inner source that can no longer produce.
+    /// The other half is this voice's own handle on the stream's control cell
+    /// (`shared_state`), through which the gate asks the butler to seek
+    /// (`maybe_seek` → `request_seek`): left shared, a render's first
+    /// in-window frame would reposition the **live** voice's ring. It is
+    /// replaced by a private cell holding the controls' current values
+    /// (`RtState::detached`), which is also what makes the controls a
+    /// snapshot, as every forked unit's are. From here on `tick`/`process`
+    /// take the severed path (`offline_frame`), which reads neither.
+    ///
+    /// What the copy then plays comes from
+    /// [`rebind_offline`](AudioUnit::rebind_offline); until then, silence.
+    /// A copy isolated again (a fork of an isolated shadow) keeps the file it
+    /// was handed.
     fn isolate(&mut self) {
         self.inner.isolate();
+        self.shared_state = Arc::new(self.shared_state.detached());
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
+        let fault = Arc::new(FaultLatch::default());
+        let read = self
+            .offline
+            .take()
+            .and_then(|offline| offline.read)
+            .map(|read| read.relatched(Arc::clone(&fault)));
+        self.offline = Some(Box::new(Offline {
+            read,
+            seat: None,
+            fault,
+        }));
     }
 
-    /// Not forkable: `isolate` severs `inner`'s ring, but this voice keeps
-    /// its own `Arc<RtState>` (`shared_state`), and the first in-window
-    /// frame after a rebind asks it for a seek (`maybe_seek` →
-    /// `request_seek`) — on the **live** butler, which then repositions the
-    /// live voice's ring. Until `isolate` cuts that handle too, a graph fork
-    /// holding a disk voice is refused rather than glitching live playback.
-    fn forkable(&self) -> bool {
-        false
+    /// The copy's failure latch, once it is severed; `None` live.
+    fn render_fault(&self) -> Option<Arc<dyn RenderFault>> {
+        self.offline
+            .as_ref()
+            .map(|offline| Arc::clone(&offline.fault) as Arc<dyn RenderFault>)
     }
 
-    /// Re-point the placement gate's clock at the render's transport.
+    /// Re-point the placement gate's clock at the render's transport, and
+    /// hand this copy the stream's file to read.
     ///
     /// The gate reads `timeline`'s beat to decide whether this voice is inside
     /// its window. Bound to the live clock during an offline render, the window
-    /// never opens (or opens at the wrong beat) and the voice renders silence —
-    /// the same failure the wrapper types have, which the predecessor rebind
-    /// covered for them and not for this one.
+    /// never opens (or opens at the wrong beat) and the voice renders silence.
     ///
-    /// Forces a re-seek: the streamed offset was computed against the old
-    /// clock's position, so carrying it over would read the wrong file region.
+    /// The file is the one the butler's record of the stream names **now**
+    /// (see `StreamOrigin`), with the loop set on it now: the moment a graph
+    /// fork is taken, since a fork calls this right after `isolate`. A voice
+    /// rebound without having been isolated is isolated first: one on the
+    /// render's clock must never drive the live butler. The handle on the
+    /// stream's record is dropped once read — the render never needs it
+    /// again. A stream that has ended by now is a latched failure
+    /// ([`render_fault`](AudioUnit::render_fault)): the export fails naming
+    /// the voice rather than write its silence.
+    ///
+    /// Takes the stream record's lock, so control thread only, as every
+    /// rebind is.
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
         let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
             return;
         };
+        if self.offline.is_none() {
+            self.isolate();
+        }
         self.timeline = transport.clone();
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
+        let file = self.origin.take().map(|origin| origin.describe());
+        let offline = self.offline.get_or_insert_with(Box::default);
+        offline.seat = None;
+        match file {
+            Some(Some(file)) => {
+                offline.read = Some(OfflineRead::new(file, Arc::clone(&offline.fault)));
+            }
+            Some(None) => {
+                offline.fault.latch(OfflineFault::StreamGone);
+                offline.read = None;
+            }
+            // Nothing to read from (a voice over a bare ring), or rebound
+            // before: keep what it has.
+            None => {}
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.inner.set_sample_rate(sample_rate);
+        self.sample_rate = Some(sample_rate);
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        if self.offline.is_some() {
+            let n = self.outputs().min(output.len());
+            self.offline_frame(&mut output[..n]);
+            return;
+        }
         if self.enter_window().is_some() {
             self.inner.tick(input, output);
         } else {
@@ -985,6 +1259,22 @@ impl AudioUnit for DiskVoice {
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        if self.offline.is_some() {
+            // A frame at a time, as `tick` reads it: one path, so the two
+            // entry points cannot come apart.
+            let n = self
+                .outputs()
+                .min(output.channels())
+                .min(MAX_SAMPLER_CHANNELS);
+            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+            for i in 0..size {
+                self.offline_frame(&mut frame[..n]);
+                for (c, &s) in frame[..n].iter().enumerate() {
+                    output.set_f32(c, i, s);
+                }
+            }
+            return;
+        }
         if self.enter_window().is_some() {
             self.inner.process(size, input, output);
         } else {
@@ -1215,30 +1505,144 @@ mod tests {
         );
     }
 
-    /// **A disk voice refuses to be forked, and so does a `VoiceNode` holding
-    /// one** — `isolate` leaves its own `Arc<RtState>` live, so a fork would
-    /// seek the live butler (see `DiskVoice::forkable`). Pinned by
-    /// `forkable()` rather than by the race itself, which no single-threaded
-    /// assertion here can observe.
-    ///
-    /// Mutation: drop `DiskVoice::forkable` (the default is `true`) → fails.
-    /// Mutation: drop `VoiceNode::forkable`'s forwarding → the node answers
-    /// `true` → fails.
+    /// **A severed copy past its window closes its file**, and one inside it
+    /// holds it open: a render of many voices keeps a file open per voice
+    /// sounding. Mutation (run): the close removed from `offline_frame`'s
+    /// past-the-window branch → still open → fails.
     #[test]
-    fn a_disk_voice_and_its_node_are_not_forkable() {
-        let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let voice = make_clip_reader(&samples, transport, Beat::new(0.0), None);
-        assert!(!voice.forkable());
+    fn a_fork_closes_its_file_once_past_its_window() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("ramp.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).expect("writes");
+        for i in 0..60_000 {
+            w.write_sample(i as f32 * 1e-5).expect("writes");
+            w.write_sample(i as f32 * 1e-5).expect("writes");
+        }
+        w.finalize().expect("writes");
+        let mut streamer =
+            crate::DiskStreamer::manual(SampleRate(48_000.0), Default::default()).expect("builds");
+        streamer
+            .commands()
+            .send(crate::Command::Stream {
+                channel_index: 0,
+                file_path: path,
+                offset: SamplePosition(0.0),
+            })
+            .expect("the butler is alive");
+        let _ = streamer.step_until_settled(1_000);
+        let live: Arc<dyn Timeline> = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+        // Beats [0, 1): 24 000 frames at 120 BPM.
+        let voice = streamer
+            .status()
+            .take_disk_voice(0, live, Beat::new(0.0), Some(BeatDuration::new(1.0)))
+            .expect("the link is installed");
+
+        let render = Arc::new(tutti_core::transport::OfflineTimeline::new(
+            &tutti_core::transport::OfflineTimelineConfig {
+                start_beat: Beat::new(0.0),
+                tempo: Bpm::new(120.0),
+                sample_rate: SampleRate(48_000.0),
+                loop_range: None,
+            },
+        ));
+        let ctx: tutti_core::transport::OfflineTransport = render.clone();
+        let mut copy = voice.clone();
+        copy.isolate();
+        copy.rebind_offline(&ctx);
+        copy.reset();
+        copy.set_sample_rate(SampleRate(48_000.0));
+        let is_open = |copy: &DiskVoice| {
+            copy.offline
+                .as_ref()
+                .and_then(|offline| offline.read.as_ref())
+                .is_some_and(OfflineRead::is_open)
+        };
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        let mut played = 0;
+        while played < 30_000 {
+            copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+            played += 64;
+            render.advance(64);
+            if played == 1_024 {
+                assert!(is_open(&copy), "the file is open while the clip plays");
+            }
+        }
+        assert!(!is_open(&copy), "the file is still open past the window");
+    }
+
+    /// **A copy severed for an offline render never touches the live stream**:
+    /// rendered inside its window on the render's clock, it pops nothing off
+    /// the live ring, asks the live butler for no seek, and its controls are
+    /// its own. A copy only *rebound* (no `isolate` first) is severed too.
+    /// So a disk voice, and a `VoiceNode` holding one, can be forked
+    /// (`forkable`, which a fork trusts). What such a copy plays instead is
+    /// `tests/offline_disk_voice.rs`'s.
+    ///
+    /// Mutation (run): `isolate` keeping the live `shared_state` → the copy's
+    /// gain write lands on the live cell → fails. Mutation (run):
+    /// `rebind_offline` not isolating a live copy first → that copy's gate
+    /// asks the live butler for a seek → fails.
+    #[test]
+    fn a_severed_copy_never_touches_the_live_stream() {
+        let samples: Vec<_> = (1..4096).map(|i| (i as f32, i as f32)).collect();
+        let live_clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let live = make_clip_reader(&samples, live_clock, Beat::new(0.0), None);
+        let ring = live.inner.consumer.load().read_position_shared();
+        let (ring_before, seek_before) = (
+            ring.load(Ordering::Acquire),
+            live.shared_state.seek_request(),
+        );
+
+        let render: tutti_core::transport::OfflineTransport =
+            MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut isolated = live.clone();
+        isolated.isolate();
+        isolated.rebind_offline(&render);
+        let mut rebound_only = live.clone();
+        rebound_only.rebind_offline(&render);
+
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        for copy in [&mut isolated, &mut rebound_only] {
+            copy.reset();
+            for _ in 0..16 {
+                copy.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+            }
+            copy.set_gain(Amplitude::new(0.25));
+        }
+
+        assert_eq!(
+            ring.load(Ordering::Acquire),
+            ring_before,
+            "a copy popped the live ring"
+        );
+        assert_eq!(
+            live.shared_state.seek_request(),
+            seek_before,
+            "a copy asked the live butler to seek"
+        );
+        assert_eq!(
+            live.gain(),
+            Amplitude::new(1.0),
+            "a copy moved the live gain"
+        );
+        assert!(live.forkable());
         let node = crate::voice::node::VoiceNode::with_channels(
             crate::voice::types::Voice {
-                source: crate::voice::types::VoiceSource::Disk(voice),
+                source: crate::voice::types::VoiceSource::Disk(live),
                 play: crate::voice::types::Playback::default(),
                 channel_index: None,
             },
             2usize,
         );
-        assert!(!node.forkable());
+        assert!(node.forkable());
     }
 
     #[test]

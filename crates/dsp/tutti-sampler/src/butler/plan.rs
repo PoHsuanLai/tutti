@@ -5,6 +5,7 @@ use tutti_core::{AtomicU64, Ordering, PlaybackRate, SampleRate, SrcRatio};
 
 use super::cache::StreamPin;
 use super::command::RegionId;
+use super::control::StreamRecord;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
 use crate::voice::types::Direction;
@@ -48,13 +49,21 @@ pub(crate) struct Link {
     pub(crate) consumer: SharedReader,
     pub(crate) region_id: RegionId,
     pub(crate) read_position: Arc<AtomicU64>,
-    pub(crate) loop_config: Option<LoopConfig>,
+    /// The loop, as the butler runs it. Written only through
+    /// [`set_loop`](Self::set_loop), which also tells the stream's
+    /// [`StreamRecord`].
+    loop_config: Option<LoopConfig>,
     /// The file's own rate, as its header states it. Recorded rather than
     /// recovered from the stream's [`SrcRatio`] (`file / session`): the ratio
     /// is re-derived from this when the session rate moves
     /// (`SessionRate::set`), and a placement gate converts beats to file
     /// frames with it (`Status::take_disk_voice`).
     pub(crate) file_rate: SampleRate,
+    /// What a fork of a voice on this stream needs to play the same file
+    /// itself: the stream's own small record, shared with every voice taken
+    /// from it (`take_streaming_unit`). The region writer that also knows the
+    /// path is butler-thread-local, out of any other thread's reach.
+    pub(crate) record: Arc<StreamRecord>,
     /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
     /// for exactly the stream's lifetime, so a fully-buffered (hence cold)
     /// stream is never evicted mid-read. `None` when the region streams
@@ -62,6 +71,37 @@ pub(crate) struct Link {
     /// Dropped by `stop_streaming` (which drops the whole `Link`), releasing the
     /// pin.
     pub(crate) _cache_pin: Option<StreamPin>,
+}
+
+impl Link {
+    /// The active loop config, if looping.
+    pub(crate) fn loop_config(&self) -> Option<&LoopConfig> {
+        self.loop_config.as_ref()
+    }
+
+    /// Set or clear the loop, and tell the stream's record: the one place a
+    /// loop changes, so the butler's loop and the one a fork reads cannot
+    /// disagree.
+    pub(crate) fn set_loop(&mut self, config: Option<LoopConfig>) {
+        self.record
+            .set_loop(config.as_ref().map_or(crate::voice::LoopSetting::Off, |c| {
+                crate::voice::LoopSetting::On {
+                    start: tutti_core::SamplePosition(c.range.0 as f64),
+                    end: tutti_core::SamplePosition(c.range.1 as f64),
+                    crossfade_frames: c.crossfade_frames,
+                }
+            }));
+        self.loop_config = config;
+    }
+}
+
+/// The stream is over the moment its link goes (stopped, or replaced by a
+/// new stream on the channel), so a voice still holding its record — on a
+/// ring the butler no longer feeds — forks to silence, as it plays live.
+impl Drop for Link {
+    fn drop(&mut self) {
+        self.record.end();
+    }
 }
 
 /// Per-channel butler-thread state.
@@ -101,12 +141,16 @@ impl ChannelPlan {
     /// stream's lifetime; it is stored in the `Link` and released when
     /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
     /// resident cache entry (incremental disk streaming). `file_rate` is the
-    /// file's own rate (see [`Link::file_rate`]).
+    /// file's own rate (see [`Link::file_rate`]); `file_path` the file, and
+    /// `cache` the butler's wave cache, both for the stream's
+    /// [`StreamRecord`].
     pub fn start_streaming(
         &mut self,
         consumer: SharedReader,
         cache_pin: Option<StreamPin>,
         file_rate: SampleRate,
+        file_path: std::path::PathBuf,
+        cache: std::sync::Weak<super::cache::LruCache>,
     ) {
         let (region_id, read_position) = {
             let cell = consumer.load();
@@ -118,6 +162,7 @@ impl ChannelPlan {
             read_position,
             loop_config: None,
             file_rate,
+            record: Arc::new(StreamRecord::new(file_path, file_rate, cache)),
             _cache_pin: cache_pin,
         });
     }

@@ -49,7 +49,7 @@ pub(crate) fn handle_loops(
                 let Some(link) = stream_state.link.as_ref() else {
                     continue;
                 };
-                let Some(loop_cfg) = link.loop_config.as_ref() else {
+                let Some(loop_cfg) = link.loop_config() else {
                     continue;
                 };
                 let fade_len = loop_cfg.crossfade_frames;
@@ -90,8 +90,7 @@ pub(crate) fn handle_loops(
                 let prefill_samples =
                     if let Some(wave) = load_wave(cache, metrics, writer.file_path()) {
                         let loop_end = link
-                            .loop_config
-                            .as_ref()
+                            .loop_config()
                             .map_or(wave.len(), |c| c.range.1 as usize);
                         let loop_len = loop_end - loop_start as usize;
                         // Both sides are FRAME counts — `write_space()` is

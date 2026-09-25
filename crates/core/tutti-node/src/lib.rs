@@ -51,7 +51,7 @@ pub mod setting;
 pub mod signal;
 pub mod value;
 
-pub use audiounit::AudioUnit;
+pub use audiounit::{AudioUnit, FaultLatch, RenderFault};
 pub use math::AttoHash;
 pub use setting::{Address, NodeAddr, Parameter, Setting};
 pub use signal::{Routing, Signal, SignalFrame};

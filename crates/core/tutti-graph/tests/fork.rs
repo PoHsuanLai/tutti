@@ -545,6 +545,72 @@ fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
     assert_eq!(ed.fork_health(), Ok(()), "the live editor watches nothing");
 }
 
+/// A unit whose offline copy fails on its first rendered block: a latch its
+/// `isolate` makes fresh (a copy never reports the live unit's failures, nor
+/// the live unit a copy's), handed over by `render_fault`.
+#[derive(Clone)]
+struct FailsOffline {
+    outs: usize,
+    latch: Arc<tutti_node::FaultLatch>,
+}
+
+impl AudioUnit for FailsOffline {
+    probe_boilerplate!();
+    fn isolate(&mut self) {
+        self.latch = Arc::default();
+    }
+    fn render_fault(&self) -> Option<Arc<dyn tutti_node::RenderFault>> {
+        Some(Arc::clone(&self.latch) as Arc<dyn tutti_node::RenderFault>)
+    }
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        output.fill(0.0);
+    }
+    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        self.latch.latch(RefusedState("unreadable"));
+        for c in 0..self.outs {
+            output.channel_f32_mut(c)[..size].fill(0.0);
+        }
+    }
+}
+
+/// **A `Legacy` unit that fails while rendering offline fails its fork**:
+/// the copy's `render_fault` probe reaches the forked editor, which reports
+/// it (`ForkFaultKind::Failed`, the unit's own cause) once the copy has
+/// rendered, and not before; the live editor and the live unit see nothing.
+///
+/// Mutation (run): `LegacyFork::fork` not asking `render_fault` (a plain
+/// `Forked::new`) → the fault is never seen → fails.
+#[test]
+fn a_legacy_unit_that_fails_offline_is_a_fork_fault() {
+    let pre = prepare(64);
+    let live = FailsOffline {
+        outs: 1,
+        latch: Arc::default(),
+    };
+    let live_latch = Arc::clone(&live.latch);
+    let (mut ed, _exec) = Editor::new(pre);
+    ed.insert(NodeKey(2), "disk", Legacy::new(live));
+    ed.spec_mut().topology.outputs = vec![out(NodeKey(2), 0)];
+
+    let (fork, fork_exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, pre)
+        .expect("forks");
+    assert_eq!(fork.fork_health(), Ok(()), "healthy before it renders");
+    let mut renderer = Renderer::new(fork, fork_exec);
+    renderer.render(64);
+    let fault = renderer
+        .editor()
+        .fork_health()
+        .expect_err("the copy failed");
+    assert_eq!((fault.key, fault.kind), (NodeKey(2), ForkFaultKind::Failed));
+    assert_eq!(fault.cause.to_string(), "refused: unreadable");
+    assert_eq!(ed.fork_health(), Ok(()));
+    assert!(
+        tutti_node::RenderFault::fault(&*live_latch).is_none(),
+        "the live unit saw the copy's failure"
+    );
+}
+
 /// Why a [`FailingFork`] fails: a type the test can downcast back out.
 #[derive(Debug, PartialEq)]
 struct RefusedState(&'static str);

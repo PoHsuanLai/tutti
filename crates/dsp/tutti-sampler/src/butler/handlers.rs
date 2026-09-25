@@ -151,7 +151,7 @@ pub(super) fn handle_command(
         ButlerCommand::ClearStreamLoop { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
                 if let Some(link) = plan.link.as_mut() {
-                    link.loop_config = None;
+                    link.set_loop(None);
                 }
             }
         }
@@ -296,7 +296,13 @@ fn handle_stream_file(
     let cache_pin = Some(shared.cache.pin(&file_path));
 
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        plan.start_streaming(share_reader(consumer), cache_pin, file_sr);
+        plan.start_streaming(
+            share_reader(consumer),
+            cache_pin,
+            file_sr,
+            file_path,
+            Arc::downgrade(&shared.cache),
+        );
         plan.pdc_preroll = pdc_preroll;
         // Same derivation the in-memory tier uses
         // (`MemorySource::set_session_sample_rate`), through the one shared
@@ -347,11 +353,11 @@ fn handle_set_stream_loop(
         None
     };
 
-    link.loop_config = Some(LoopConfig {
+    link.set_loop(Some(LoopConfig {
         range,
         crossfade_frames,
         preloop_buffer,
-    });
+    }));
 }
 
 /// Reposition a live stream to an absolute file sample offset (timeline seek),

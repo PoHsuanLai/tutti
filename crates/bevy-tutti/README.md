@@ -297,9 +297,10 @@ thread.
 On `GraphBackend::Native` it renders a **fork** of the live graph: every node
 isolated, rebound onto the request's offline timeline and reset, a hosted
 plugin as a fresh instance loaded with the live one's state (its MIDI clip
-rebound too). The live graph keeps playing untouched. A node that cannot be
-copied (a mic monitor, a disk-streamed voice) refuses the export by entity
-and `Name`, as does a plugin fork that crashes mid-render (`ExportError`).
+rebound too), a disk-streamed voice reading its file itself. The live graph
+keeps playing untouched. A node that cannot be copied (a mic monitor)
+refuses the export by entity and `Name`, as does a plugin fork that crashes
+mid-render (`ExportError`).
 
 The underlying engine call is also available directly:
 

@@ -358,16 +358,19 @@ impl Node for From {
 /// - from its end on it is the new filter as if it had run from the fade's
 ///   start (a hand-wired graph whose filter hears silence until then: a
 ///   state-variable filter fed zeros stays at rest), to the bit;
-/// - inside it every frame lies between the two (the waveshaper is
-///   monotonic, and the fade blends the filters' outputs), nearer the old at
-///   its first frame and the new at its last.
+/// - inside it, frame `k` of the fade is the waveshaper (`tanh(drive · x)`)
+///   of the two filters' outputs (hand-wired, before the shaper) blended by
+///   the law written out here: `x = (k + 1) / 241`, `g_in = x³(6x² − 15x +
+///   10)`, `g_out = 1 − g_in`. Within 1e-6: the blend and `tanh` are
+///   computed in `f64` here, in `f32` by the graph.
 ///
 /// Until doc 013 PR 15 the oracle was `NetEra`'s `Net::crossfade` on the same
 /// law, bit for bit before and after, within two fade steps inside.
 ///
-/// Mutation (run): `NativeGraph::replace` landing the unit with
-/// `Editor::insert` even when it fits (a hard swap) → the fade's first frame
-/// is the new filter's, not near the old → fails.
+/// Mutations (run): `NativeGraph::replace` landing the unit with
+/// `Editor::insert` even when it fits (a hard swap) → the fade's frames are
+/// the new filter's → fails; `CrossfadeCurve::gains` a linear `g_in = x` →
+/// the fade's frames part from the law → fails.
 #[test]
 fn a_crossfade_follows_its_law_to_the_new_filter() {
     const FADE_AT: usize = 1_024;
@@ -386,20 +389,28 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     }
 
     let old = render(&mut scene(false).side, 3_072, 256);
-    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    // The shaper's input on both sides of the fade, and its output after it:
+    // the old filter, the new one heard from the fade's start, and the new
+    // one shaped.
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from_count(3));
     let osc = g.add_unit(Box::new(saw()));
+    let old_filter = g.add_unit(Box::new(low_pass(1_200.0)));
     let gate = g.add(From {
         from: FADE_AT as u64,
     });
     let filter = g.add_unit(Box::new(low_pass(300.0)));
     let drive = g.add_unit(Box::new(shaper(DRIVE)));
-    g.connect(osc, 0, gate, 0)
+    g.connect(osc, 0, old_filter, 0)
+        .connect(osc, 0, gate, 0)
         .connect(gate, 0, filter, 0)
         .connect(filter, 0, drive, 0)
-        .connect_output(drive, 0, 0);
-    let new = render_builder(g, 3_072);
+        .connect_output(old_filter, 0, 0)
+        .connect_output(filter, 0, 1)
+        .connect_output(drive, 0, 2);
+    let taps = render_builder(g, 3_072);
 
-    let (b, old, new) = (&b[0], &old[0], &new[0]);
+    let (b, old) = (&b[0], &old[0]);
+    let (old_in, new_in, new) = (&taps[0], &taps[1], &taps[2]);
     assert_eq!(
         first_difference(&[old[..FADE_AT].to_vec()], &[b[..FADE_AT].to_vec()]),
         None,
@@ -413,32 +424,22 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
         None,
         "after the fade: the new filter, run from the fade's start"
     );
-    for f in FADE_AT..FADE_AT + FADE {
-        let (lo, hi) = (old[f].min(new[f]), old[f].max(new[f]));
+    for k in 0..FADE {
+        let f = FADE_AT + k;
+        let x = (k + 1) as f64 / (FADE + 1) as f64;
+        let g_in = x * x * x * (6.0 * x * x - 15.0 * x + 10.0);
+        let blend = (1.0 - g_in) * f64::from(old_in[f]) + g_in * f64::from(new_in[f]);
+        let want = (f64::from(DRIVE) * blend).tanh();
         assert!(
-            (lo - 1e-6..=hi + 1e-6).contains(&b[f]),
-            "frame {f}: {} is not between the old {} and the new {}",
-            b[f],
-            old[f],
-            new[f]
+            (f64::from(b[f]) - want).abs() < 1e-6,
+            "fade frame {k}: {}, the law gives {want}",
+            b[f]
         );
     }
-    let near = |f: usize, to: &[f32], from: &[f32]| (b[f] - to[f]).abs() < (b[f] - from[f]).abs();
-    // Not vacuous: the two filters part inside the fade.
-    let first = (FADE_AT..FADE_AT + FADE)
-        .find(|&f| (old[f] - new[f]).abs() > 1e-3)
-        .expect("the filters differ inside the fade");
-    let last = (FADE_AT..FADE_AT + FADE)
-        .rev()
-        .find(|&f| (old[f] - new[f]).abs() > 1e-3)
-        .expect("the filters differ inside the fade");
+    // Not vacuous: the two filters part inside the fade, so the law is heard.
     assert!(
-        first < FADE_AT + FADE / 4 && near(first, old, new),
-        "frame {first}: the fade starts on the old filter"
-    );
-    assert!(
-        last >= FADE_AT + 3 * FADE / 4 && near(last, new, old),
-        "frame {last}: the fade ends on the new filter"
+        (FADE_AT..FADE_AT + FADE).any(|f| (old_in[f] - new_in[f]).abs() > 1e-2),
+        "the filters differ inside the fade"
     );
 }
 

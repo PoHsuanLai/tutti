@@ -3,8 +3,10 @@
 //! [`TransportClock`](super::TransportClock) emits in a `Net`, computed from
 //! the block's [`Env`](tutti_graph::Env) instead of the transport's atomics.
 //!
-//! Doc 013, Phase 3 gap 5: the engine drives its own `TransportClock`
-//! and forbids a second one in the graph ([`Engine::new`]), yet
+//! Doc 013, Phase 3 gap 5: the engine drives its own `TransportClock`,
+//! and the graph must not hold a second one ([`Engine::new`]: two clocks
+//! would both consume a seek and both write the playhead; nothing refuses
+//! it, so it is the host's rule to keep), yet
 //! `ClickNode`, the LFO and automation beat inputs, and every host that
 //! wires a node to the engine's clock read the beat as a signal. This is
 //! that signal on the native graph, and it touches nothing shared: no seek

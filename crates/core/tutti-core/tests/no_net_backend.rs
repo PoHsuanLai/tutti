@@ -25,7 +25,10 @@ fn names_net_backend(line: &str) -> bool {
         "realnet",
         "Backend::Net",
         "render_net",
+        // The method and its path form (`Net::backend(net)`, UFCS), which
+        // `.backend()` alone does not see.
         ".backend()",
+        "::backend(",
     ]
     .iter()
     .any(|p| line.contains(p))
@@ -94,13 +97,16 @@ fn no_net_backend_in_the_crates_code() {
 ///
 /// Mutation (run): `code_lines` keeping comment lines → this fails (and the
 /// check above fails on the docs in `src/lib.rs` that name `NetBackend`).
+/// Mutation (run): the `::backend(` pattern removed → the UFCS line on the
+/// fifth line is missed → fails.
 #[test]
 fn the_scan_skips_only_comments() {
     let text = "use fundsp::realnet::NetBackend;\n    Backend::Net(net) => {}\n    \
-                // NetBackend is gone\n    /// `render_net` was here\n";
+                // NetBackend is gone\n    /// `render_net` was here\n    \
+                let b = Box::new(dsp::Net::backend(net));\n";
     let hits: Vec<usize> = code_lines(text)
         .filter(|(_, l)| names_net_backend(l))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(hits, vec![1, 2]);
+    assert_eq!(hits, vec![1, 2, 5]);
 }

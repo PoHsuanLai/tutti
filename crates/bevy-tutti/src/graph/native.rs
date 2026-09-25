@@ -516,7 +516,8 @@ impl NativeGraph {
     }
 
     /// The beat generator a graph engine needs in place of a
-    /// `TransportClock` (`Engine::new` forbids one in the graph).
+    /// `TransportClock`, which the graph must not hold (see `Engine::new`:
+    /// the engine drives its own).
     ///
     /// Forkable by clone (`ForkByClone`): it is a unit struct that reads only
     /// its block's `Env`, so a clone shares nothing, and a fork's renderer

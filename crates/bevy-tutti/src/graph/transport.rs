@@ -157,7 +157,8 @@ impl std::ops::Deref for MetronomeRes {
 pub struct EngineNodes {
     /// The beat clock: an [`EnvClock`](tutti_core::EnvClock), which emits a
     /// `TransportClock`'s beat ports from each block's `Env` (the graph engine
-    /// drives its own `TransportClock` and forbids a second in the graph).
+    /// drives its own `TransportClock`, and the graph must not hold a
+    /// second: see `Engine::new`).
     ///
     /// Emits the beat on [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS)
     /// output ports — **port 0 whole beats, port 1 the fraction** — which is the

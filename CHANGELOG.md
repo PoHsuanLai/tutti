@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `Engine::with_graph(&transport, &mut editor, executor)` | `Engine::new(&transport, &mut editor, executor)`: renamed, since it is the one constructor and there is no other runtime to contrast it with |
   | `Engine::with_graph_capacity(..)` | `Engine::with_capacity(..)` |
   | `Engine::graph_block_capacity() -> Option<Samples>` (`None` for a `Net` engine) | `Engine::block_capacity() -> Samples` |
-  | a `TransportClock` pushed into the `Net` to move the playhead | nothing: the engine drives the transport's clock itself and hands each block its transport in `Env`. A node that wants the beat as a signal is fed by an `EnvClock` (never a second `TransportClock` in the graph) |
+  | `tutti_core::DEFAULT_GRAPH_BLOCK_CAPACITY` | `tutti_core::DEFAULT_BLOCK_CAPACITY` (the same 8 192 frames) |
+  | a `TransportClock` pushed into the `Net` to move the playhead | nothing: the engine drives the transport's clock itself and hands each block its transport in `Env`. A node that wants the beat as a signal is fed by an `EnvClock`. The graph must not hold a `TransportClock` of its own (it would consume the transport's seeks); nothing refuses one, so keep the rule yourself |
   | a root wider than `MAX_ROOT_CHANNELS` clamped to it | refused, with `GraphEngineError::Limits(CommitError::TooManyOutputs { .. })` at construction or the commit that widens it, as it already was for a native graph |
   | `tutti_core::NetBackend` | removed from tutti-core. `Net::backend()` still exists for a `Net` you drive yourself |
   | `tutti_core::net_fade(curve)` | removed: nothing takes fundsp's `Fade` any more. `CrossfadeCurve` is unchanged |

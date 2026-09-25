@@ -2580,8 +2580,16 @@ store between pieces. Decisions:
   An old `Engine::new(motion, backend)` caller meets an arity error rather
   than a changed meaning, and the CHANGELOG's table gives the port.
   `graph_block_capacity() -> Option<Samples>` (`None` for a `Net` engine) is
-  `block_capacity() -> Samples`; `GraphEngineError` keeps its name (it is the
-  graph the engine refuses).
+  `block_capacity() -> Samples`, and `DEFAULT_GRAPH_BLOCK_CAPACITY`
+  `DEFAULT_BLOCK_CAPACITY` (review). `GraphEngineError` keeps its name (it is
+  the graph the engine refuses), and so does `settle_graph` (it settles the
+  graph specifically, and was just made `unsafe` in #45).
+- **A second `TransportClock` in the graph is the caller's rule, not
+  enforced.** The docs had said `Engine::new` "forbids" one; nothing did.
+  Refusing it needs the unit's id, which tutti-graph never sees (a `Legacy`
+  probe records a shape, not an id), so enforcement would be new plumbing
+  through `Legacy` and `Limits` for one id; the docs now say "must not" and
+  why (two clocks both consume a seek and both write the playhead).
 - **`TransportClock` stays**: it is the engine's own clock
   (`GraphRender::clock`, driven by `begin`/`advance`). Its `AudioUnit` half
   (the beat on ports inside a `Net`) now runs only in its own tests and a
@@ -2590,12 +2598,24 @@ store between pieces. Decisions:
 - **Chunk-major `Legacy` rendering stays.** It exists for `Legacy` units
   that poll a timeline, not for `Net` parity; it goes with `Legacy` (Phase
   4), as planned.
-- **`net_fade` is removed** (nothing takes fundsp's `Fade` any more; the
-  law is pinned in `fade.rs`). `tempo_in_effect` is private to the clock,
+- **`net_fade` is removed** (nothing takes fundsp's `Fade` any more). Its
+  test had pinned `CrossfadeCurve::EqualAmplitude` to fundsp's `smooth5`,
+  and the review found nothing else pinned the law: `fade.rs` checked only
+  sums, monotony, symmetry and the ends (a linear `g = x` passes them), and
+  the differential suite shares `gains()`. `fade.rs` now pins each curve to
+  its closed form (`EqualAmplitude` to the bit at dyadic positions, both
+  against `f64` elsewhere), and `scene_render.rs` computes the crossfade's
+  frames from the law written out. `tempo_in_effect` is private to the clock,
   its one caller now that no walk resolves beats against a `Net`'s clock.
 - **A guard**, `tutti-core/tests/no_net_backend.rs`: no code line of
   tutti-core's `src/` names `NetBackend`, `realnet`, `Backend::Net`,
-  `render_net` or `.backend()` (comments may, to say what replaced them).
+  `render_net`, `.backend()` or `::backend(` (the path form,
+  `Net::backend(net)`, added in review; comments may, to say what replaced
+  them).
+- **The offline chunk-major mode is pinned** (review):
+  `legacy_chunk_major.rs::an_offline_render_is_chunk_major_while_a_legacy_unit_is_present`
+  renders shared-cursor `Legacy` probes through `RenderClock::render_graph`;
+  nothing failed before when it ignored `has_legacy`.
 
 **Every `Net` comparison is pinned to what it stood for.** No oracle here
 renders a `Net`. Where a test compared the native graph with a `Net`, its
@@ -2652,17 +2672,21 @@ everywhere. Per file:
   frames, the trimmed render is the untrimmed one shifted; tail → 2 999
   frames and the direct convolution through the tail; the sampler voice →
   the dry voice is the tone to the bit, the clock ends on the closed form,
-  the pitched digest; the forked clip reader → the tone.
+  the pitched digest and its spectral peak; the forked clip reader → the
+  tone. (A zero-crossing count reads the vocoder's output 2% sharp, from
+  low-level phase artefacts; the Hann-windowed spectrum peaks at 658.75 Hz.)
 - **bevy-tutti**: `net_parity.rs` is `scene_render.rs` (`NetEra` removed):
   the compensated scene's dry channel is the uncompensated one delayed by
   the lookahead, its latent channel the same units hand-wired with
   `GraphBuilder`, plus the scene digest; unaligned blocks against 64-frame
   blocks; a param write against the scene built at the new drive; a
   crossfade against the old filter before it, a hand-wired new filter
-  (silent until the fade) after it, and between the two inside it.
+  (silent until the fade) after it, and inside it the hand-wired filters'
+  outputs blended by the law written out and shaped by `tanh`.
   `engine::build`'s `engine_tests` (`net_era` removed): the click's onsets
   (already analytic) + digest; the voice's dry tone to the bit, the pitched
-  voice against itself at 64-frame blocks + digest. `export_fork.rs`
+  voice against itself at 64-frame blocks + digest + its spectral peak
+  (659.26 Hz, a fifth up, within 1%, on every target). `export_fork.rs`
   (`render_net_era`, `chain_net_era`, `poly_node_export_net_era` removed):
   the master and node exports against the chain wired fresh with
   `GraphBuilder` + digest; the synth node export against the synth's own

@@ -231,8 +231,8 @@ impl AudioGraphRes {
     /// [`EngineNodes::clock`](crate::graph::EngineNodes::clock) — unwired.
     ///
     /// For a headless graph that wants the beat clock an engine-built one
-    /// has. A graph engine drives its own `TransportClock` and forbids a
-    /// second in the graph; an `EnvClock` emits the same samples from each
+    /// has. A graph engine drives its own `TransportClock`, and the graph
+    /// must not hold a second; an `EnvClock` emits the same samples from each
     /// block's `Env` (doc 013, Phase 3 gap 5).
     pub fn insert_beat_clock(&mut self) -> AudioNode {
         self.write().insert_env_clock()

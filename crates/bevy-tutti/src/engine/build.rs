@@ -316,8 +316,8 @@ struct Assembled {
 /// what this builder did on `Net` before the rate was passed here.)
 ///
 /// The clock is an `EnvClock` ([`AudioGraphRes::insert_beat_clock`]): a
-/// graph engine drives its own `TransportClock` and forbids a second in the
-/// graph. It emits the beat on a `TransportClock`'s two ports, and the
+/// graph engine drives its own `TransportClock`, and the graph must not hold a
+/// second. It emits the beat on a `TransportClock`'s two ports, and the
 /// metronome is wired to them by the `PortSources` [`build_into`] declares.
 fn assemble(
     rate: SampleRate,
@@ -623,8 +623,8 @@ mod engine_tests {
 
     /// **The builder's engine clicks on every beat, across a seek**, and
     /// (Linux/glibc) clicks the samples the `Net`-era engine clicked. The
-    /// click reads an `EnvClock` (the engine drives its own `TransportClock`
-    /// and forbids a second); on `Net` it read a `TransportClock` in the
+    /// click reads an `EnvClock` (the engine drives its own `TransportClock`,
+    /// and the graph must not hold a second); on `Net` it read a `TransportClock` in the
     /// graph, wired to the click the same way. The transport starts before
     /// the first block, so `ClickNode`'s play gate — read once per 64-frame
     /// chunk, from the live flag, which on the engine is already the whole
@@ -742,6 +742,37 @@ mod engine_tests {
         run(&engine, &transport, frames, block, false)
     }
 
+    #[cfg(feature = "sampler")]
+    /// The dominant frequency of `x[from..]` between 500 and 900 Hz: the peak of
+    /// its Hann-windowed spectrum, scanned in quarter-hertz steps. A tolerance
+    /// check on it is portable (a last-ulp libm difference moves no peak).
+    ///
+    /// Not zero crossings: the vocoder's output carries low-level phase
+    /// artefacts that add crossings, and a crossing count read the fifth-up
+    /// voice 2% sharp (672.7 Hz) where its spectrum peaks at 658.75 Hz.
+    fn dominant_frequency(x: &[f32], from: usize, rate: f64) -> f64 {
+        use std::f64::consts::TAU;
+        let w = &x[from..];
+        let n = w.len() as f64;
+        let mut best = (0.0, 0.0);
+        let mut f = 500.0;
+        while f < 900.0 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, &s) in w.iter().enumerate() {
+                let hann = 0.5 - 0.5 * (TAU * i as f64 / n).cos();
+                let p = TAU * f * i as f64 / rate;
+                re += f64::from(s) * hann * p.cos();
+                im -= f64::from(s) * hann * p.sin();
+            }
+            let m = re * re + im * im;
+            if m > best.1 {
+                best = (f, m);
+            }
+            f += 0.25;
+        }
+        best.0
+    }
+
     /// **A sampler voice plays in time through the builder's engine**, at
     /// `block`-frame device blocks with a rolling transport: the dry voice is
     /// the tone it plays, to the bit, on both channels; the voice a fifth up
@@ -754,10 +785,11 @@ mod engine_tests {
     /// moving (doc 013, the #32 follow-up). Until doc 013 PR 15 both voices
     /// were compared, bit for bit, with the `Net`-era engine (`net_era`).
     ///
-    /// Mutation (run): the engine publishing its playhead in the walk,
+    /// Mutations (run): the engine publishing its playhead in the walk,
     /// before the render (`TransportClock::advance` writing back) → the voice
     /// reads a chunk ahead and the dry render leaves the tone, at both block
-    /// sizes.
+    /// sizes; `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave
+    /// → the pitched voice is not a fifth up, on every target.
     ///
     /// Not caught here: the engine rendering whole device blocks with a
     /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`).
@@ -785,6 +817,16 @@ mod engine_tests {
                     );
                 }
             } else {
+                // Portable, where the digest is not: a fifth up from 440 Hz
+                // is 440 · 2^(7/12) ≈ 659.26 Hz. Past the vocoder's first few
+                // thousand frames, within 1% (a semitone is 6%).
+                let left: Vec<f32> = native.iter().step_by(2).copied().collect();
+                let want = 440.0 * 2f64.powf(7.0 / 12.0);
+                let got = dominant_frequency(&left, 4_096, RATE);
+                assert!(
+                    (got - want).abs() < want * 1e-2,
+                    "{block}-frame blocks: {got} Hz, a fifth up is {want} Hz"
+                );
                 let by64 = render_voice(cents, frames, 64);
                 if let Some(i) = by64
                     .iter()

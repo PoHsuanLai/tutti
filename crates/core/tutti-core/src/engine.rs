@@ -77,7 +77,7 @@
 //! [`Engine::new`] bounds the graph's editor ([`Editor::set_limits`]) to
 //! what its fold scratch holds: at most [`MAX_ROOT_CHANNELS`] global
 //! outputs, and a `MaxBlock` no larger than its block capacity (the larger
-//! of the prepared maximum and [`DEFAULT_GRAPH_BLOCK_CAPACITY`], or the
+//! of the prepared maximum and [`DEFAULT_BLOCK_CAPACITY`], or the
 //! capacity given to [`Engine::with_capacity`]). A commit or a re-prepare
 //! past them is refused on the control thread
 //! (`CommitError::TooManyOutputs`, `CommitError::BlockTooLong`), so the
@@ -109,7 +109,7 @@ pub const MAX_ROOT_CHANNELS: usize = 8;
 /// The block capacity an engine sizes its fold scratch for unless given
 /// another ([`Engine::with_capacity`]): tutti-cpal's largest callback
 /// (`MAX_FRAMES`). The engine bounds its editor's re-prepares to it.
-pub const DEFAULT_GRAPH_BLOCK_CAPACITY: Samples = Samples(8192);
+pub const DEFAULT_BLOCK_CAPACITY: Samples = Samples(8192);
 
 /// Why [`Engine::new`] refused a graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,14 +192,14 @@ impl Engine {
     /// half of `editor`'s pair, whose `Prepare` comes from the device
     /// configuration (its rate, and the largest block the device hands
     /// over). The block capacity is the larger of that maximum and
-    /// [`DEFAULT_GRAPH_BLOCK_CAPACITY`]; see
+    /// [`DEFAULT_BLOCK_CAPACITY`]; see
     /// [`with_capacity`](Self::with_capacity).
     pub fn new(
         transport: &crate::Transport,
         editor: &mut Editor,
         executor: Executor,
     ) -> Result<Self, GraphEngineError> {
-        Self::with_capacity(transport, editor, executor, DEFAULT_GRAPH_BLOCK_CAPACITY)
+        Self::with_capacity(transport, editor, executor, DEFAULT_BLOCK_CAPACITY)
     }
 
     /// As [`new`](Self::new), with the fold scratch sized for blocks of up
@@ -224,7 +224,9 @@ impl Engine {
     /// can slip in beside it.
     ///
     /// The graph must not also hold a `TransportClock` of its own: two clocks
-    /// would both consume the seek and both write the playhead. A node that
+    /// would both consume the seek and both write the playhead. Nothing
+    /// refuses one (the graph never sees a unit's id), so this is the
+    /// caller's rule to keep. A node that
     /// takes the beat as a signal (`ClickNode`, a beat-driven LFO or
     /// automation lane) is fed by an [`EnvClock`](crate::EnvClock) instead,
     /// which emits the same samples from the block's `Env` and shares

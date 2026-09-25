@@ -278,6 +278,10 @@ impl PluginClient {
     /// (it's installed later with the correct rate by the host).
     pub(super) fn restamp_source_rates(&mut self, sample_rate: SampleRate) {
         self.controls.restamp(sample_rate);
+        // The installed MIDI source too: a clip places its events at the
+        // unit's rate, and a fork (launched at the live rate, then prepared at
+        // the export's) would otherwise place them at the live one.
+        self.midi.port().set_source_sample_rate(sample_rate);
     }
 }
 

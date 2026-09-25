@@ -61,7 +61,11 @@
 //!    the fork reading the offline timeline ([`ForkMode::Offline`] with an
 //!    `OfflineTransport`), or the live transport ([`ForkMode::Live`]). An
 //!    offline context of any other type binds nothing: the fork's slots stay
-//!    empty rather than read the live playhead.
+//!    empty rather than read the live playhead. **Offline only, the MIDI clip
+//!    too:** the source installed on the live node's MIDI port (a
+//!    `MidiClipSource`) is copied onto the fork's own port with a fresh
+//!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
+//!    exported instrument plays its notes (doc 013, PR 12).
 //! 5. **Offline only:** tell it [`RenderMode::Offline`](crate::RenderMode),
 //!    and make its batcher wait for each block (see `Batcher::set_offline_wait`)
 //!    — the live pipeline never waits, which on a render worker would turn
@@ -87,9 +91,11 @@
 //!
 //! # What a fork does not have
 //!
-//! - **MIDI.** A fresh instance has a fresh MIDI port: no live inbox, no
-//!   installed clip source, no MIDI-out routing — the `PolySynth::isolate`
-//!   rule. A render that needs notes installs its own source on the fork.
+//! - **Live MIDI.** A fresh instance has a fresh MIDI port: no live inbox and
+//!   no MIDI-out routing — the `PolySynth::isolate` rule. Its clip source is
+//!   the live one's rebound offline (step 4) when the fork is offline; a
+//!   [`ForkMode::Live`] fork has none, and a source that is not a function of
+//!   a timeline (`MidiUnitIn::rebind_offline` answers `None`) is not carried.
 //! - **Running state.** Voices, delay lines, a reverb's tail: the state blob
 //!   is what a plugin saves for a project, not a snapshot of its DSP. A fork
 //!   starts silent, as every fork does.
@@ -295,6 +301,9 @@ struct PluginFork {
     id: String,
     /// The live node's controls: its installed sources and its rate.
     controls: PluginControls,
+    /// The live node's MIDI port — a clone sharing its source cell, read at
+    /// fork time for the clip source to rebind; its mailbox is never polled.
+    midi: tutti_midi_runtime::MidiInPort,
 }
 
 impl PluginFork {
@@ -304,6 +313,7 @@ impl PluginFork {
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
             controls: client.controls.clone(),
+            midi: client.midi.port().clone(),
         }
     }
 
@@ -341,6 +351,13 @@ impl PluginFork {
 
         let bind = Rebind::of(mode);
         self.controls.rebind_sources_into(&fork.controls, &bind);
+        // The clip the live instance plays, onto the fork's own port and the
+        // render's timeline (step 4). Offline only: a live duplicate reading
+        // the live clip would need its own cursor on the live transport, which
+        // no caller has asked for.
+        if let ForkMode::Offline(ctx) = mode {
+            self.midi.rebind_offline_into(fork.midi.port(), ctx);
+        }
         let watch = Arc::new(ForkWatch {
             bridge: Arc::downgrade(&fork.bridge),
             server: Arc::downgrade(&fork.process_guard),
@@ -393,6 +410,19 @@ impl PluginClient {
     /// holding a plugin.
     pub fn fork_instance(&self, mode: ForkMode<'_>) -> Result<PluginClient, PluginForkError> {
         PluginFork::of(self).instance(mode)
+    }
+
+    /// The [`ForkSource`] [`IntoNode::into_parts`] hands the editor: a fork
+    /// of this plugin by state transfer ([`fork_instance`](Self::fork_instance)).
+    ///
+    /// For a host that inserts the plugin through its own node builder rather
+    /// than `IntoNode` — one wrapping it in a `Legacy::controlled` for a
+    /// settings ring and a shadow — and must still hand the editor a way to
+    /// fork it: `NodeParts { node, controls, fork: Some(client.fork_source()) }`.
+    /// Holds nothing that keeps this instance alive (see
+    /// [`PluginForkError::LiveGone`]).
+    pub fn fork_source(&self) -> Box<dyn ForkSource> {
+        Box::new(PluginFork::of(self))
     }
 
     /// On a fork ([`fork_instance`](Self::fork_instance)): the probe that

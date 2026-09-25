@@ -469,7 +469,138 @@ pub struct ParamModShaping {
     pub curve: CurveType,
 }
 
-/// Create an audio-rate param edge's nodes, **unwired**.
+/// One node of a [`ParamModParts`], named by its role in the chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamModPart {
+    /// The [`AtomicSourceNode`] holding the authored base.
+    Base,
+    /// The [`ParamSumNode`]: `base + Σ offsets`, clamped once.
+    Sum,
+    /// The `i`th [`ParamShaperNode`], in edge order.
+    Shaper(usize),
+}
+
+/// One edge *inside* an audio-rate param chain: output 0 of `from` feeds input
+/// `port` of `to`.
+///
+/// Only the chain's own edges. What feeds each shaper and which sink port the
+/// sum drives are the caller's wiring — see [`ParamModShaping`] for why the
+/// chain never learns its sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamModEdge {
+    /// The node whose output 0 is the signal.
+    pub from: ParamModPart,
+    /// The node that reads it.
+    pub to: ParamModPart,
+    /// `to`'s input port.
+    pub port: usize,
+}
+
+/// An audio-rate param edge's nodes, **not yet in any graph**, with the edges
+/// between them and the handles that outlive them.
+///
+/// The graph-agnostic half of [`build_param_mod`]: the owned units, the chain's
+/// internal edges as data ([`edges`](Self::edges)), and the two cells a host has
+/// to keep ([`base_cell`](Self::base_cell), [`bounds`](Self::bounds)). A caller
+/// inserts the units into whatever graph it drives and wires the edges there;
+/// [`insert_into`](Self::insert_into) is that step for a `Net`.
+///
+/// The handles are taken at construction, before any unit moves, so they cannot
+/// be lost by inserting the units.
+pub struct ParamModParts {
+    /// Feeds the sum's port 0 ([`ParamModPart::Base`]).
+    pub base: AtomicSourceNode,
+    /// `base + Σ offsets`, clamped ([`ParamModPart::Sum`]).
+    pub sum: ParamSumNode,
+    /// One per edge, in the order their offsets occupy the sum's ports `1..=N`
+    /// ([`ParamModPart::Shaper`]).
+    pub shapers: Vec<ParamShaperNode>,
+    base_cell: Arc<AtomicF32>,
+    bounds: Arc<ClampBounds>,
+}
+
+impl ParamModParts {
+    /// The cell the sum's base port reads — see
+    /// [`ParamModChain::base_cell`], which is this same cell once inserted.
+    pub fn base_cell(&self) -> Arc<AtomicF32> {
+        Arc::clone(&self.base_cell)
+    }
+
+    /// The sum's live clamp range — see [`ParamModChain::bounds`].
+    pub fn bounds(&self) -> Arc<ClampBounds> {
+        Arc::clone(&self.bounds)
+    }
+
+    /// The chain's internal edges: the base into the sum's port 0, and shaper
+    /// `i` into the sum's port `i + 1`.
+    ///
+    /// Port 0 is the base and offsets start at 1; getting that off by one
+    /// overwrites the base with the first offset, so it is stated once, here,
+    /// rather than at every caller.
+    pub fn edges(&self) -> impl Iterator<Item = ParamModEdge> + '_ {
+        std::iter::once(ParamModEdge {
+            from: ParamModPart::Base,
+            to: ParamModPart::Sum,
+            port: 0,
+        })
+        .chain((0..self.shapers.len()).map(|i| ParamModEdge {
+            from: ParamModPart::Shaper(i),
+            to: ParamModPart::Sum,
+            port: i + 1,
+        }))
+    }
+
+    /// Push every unit into `net`, **unwired**, and return their ids with the
+    /// handles.
+    ///
+    /// The `Net` adapter. It makes no connections — not even
+    /// [`edges`](Self::edges) — because a declarative host wires them itself
+    /// (see [`build_param_mod`]).
+    pub fn insert_into(self, net: &mut Net) -> ParamModChain {
+        let base = net.push(Box::new(self.base));
+        let sum = net.push(Box::new(self.sum));
+        let shapers = self
+            .shapers
+            .into_iter()
+            .map(|shaper| net.push(Box::new(shaper)))
+            .collect();
+        ParamModChain {
+            base,
+            sum,
+            shapers,
+            base_cell: self.base_cell,
+            bounds: self.bounds,
+        }
+    }
+}
+
+/// Build an audio-rate param edge's nodes as owned parts, in no graph.
+///
+/// For a caller that inserts into its own graph. `base`, `min` and `max` are the
+/// param's authored value and bounds in its own units. They stay bare `f32`:
+/// the sum is unit-erased by construction (see [`ParamSumNode`]), matching
+/// `LayeredCurve`'s own erasure on the control-rate side.
+pub fn param_mod_parts(base: f32, min: f32, max: f32, edges: &[ParamModShaping]) -> ParamModParts {
+    let base_unit = AtomicSourceNode::new(base);
+    // Taken *before* the unit can move anywhere — this handle is the whole
+    // point of the return value.
+    let base_cell = base_unit.shared();
+    let sum = ParamSumNode::new(edges.len(), min, max);
+    let bounds = sum.bounds();
+    let shapers = edges
+        .iter()
+        .map(|e| ParamShaperNode::new(e.depth, e.polarity, e.curve))
+        .collect();
+    ParamModParts {
+        base: base_unit,
+        sum,
+        shapers,
+        base_cell,
+        bounds,
+    }
+}
+
+/// Create an audio-rate param edge's nodes in `net`, **unwired**.
 ///
 /// For a host that owns its own wiring. `bevy-tutti` is one: it declares edges
 /// as `PortSources` components and diffs them against `Net` each frame, so an
@@ -477,13 +608,11 @@ pub struct ParamModShaping {
 /// Such a host wants the nodes and the base cell, and makes the connections
 /// itself.
 ///
+/// [`param_mod_parts`] followed by [`ParamModParts::insert_into`]; a host whose
+/// graph is not a `Net` uses the first half alone.
+///
 /// A host driving `Net` directly wants [`wire_param_mod`], which is this plus
 /// the connections.
-///
-/// `base`, `min` and `max` are the param's authored value and bounds in its own
-/// units. They stay bare `f32`: the sum is unit-erased by construction (see
-/// [`ParamSumNode`]), matching `LayeredCurve`'s own erasure on the control-rate
-/// side.
 pub fn build_param_mod(
     net: &mut Net,
     base: f32,
@@ -491,28 +620,7 @@ pub fn build_param_mod(
     max: f32,
     edges: &[ParamModShaping],
 ) -> ParamModChain {
-    let base_unit = AtomicSourceNode::new(base);
-    // Taken *before* the unit is moved into the net — this handle is the whole
-    // point of the return value.
-    let base_cell = base_unit.shared();
-
-    let base_id = net.push(Box::new(base_unit));
-    let sum_unit = ParamSumNode::new(edges.len(), min, max);
-    // Taken before the unit moves into the net, same as the base cell.
-    let bounds = sum_unit.bounds();
-    let sum_id = net.push(Box::new(sum_unit));
-    let shapers = edges
-        .iter()
-        .map(|e| net.push(Box::new(ParamShaperNode::new(e.depth, e.polarity, e.curve))))
-        .collect();
-
-    ParamModChain {
-        base: base_id,
-        sum: sum_id,
-        shapers,
-        base_cell,
-        bounds,
-    }
+    param_mod_parts(base, min, max, edges).insert_into(net)
 }
 
 /// Create an audio-rate param edge and connect it: `base + Σ shaped(source) →
@@ -539,14 +647,21 @@ pub fn wire_param_mod(
     edges: &[(NodeId, ParamModShaping)],
 ) -> ParamModChain {
     let shaping: Vec<ParamModShaping> = edges.iter().map(|&(_, s)| s).collect();
-    let chain = build_param_mod(net, base, min, max, &shaping);
+    let parts = param_mod_parts(base, min, max, &shaping);
+    // Collected before `insert_into` consumes the parts.
+    let internal: Vec<ParamModEdge> = parts.edges().collect();
+    let chain = parts.insert_into(net);
 
-    net.connect(chain.base, 0, chain.sum, 0); // port 0 = base
-    for (i, (&(source, _), &shaper)) in edges.iter().zip(chain.shapers.iter()).enumerate() {
+    let id = |part: ParamModPart| match part {
+        ParamModPart::Base => chain.base,
+        ParamModPart::Sum => chain.sum,
+        ParamModPart::Shaper(i) => chain.shapers[i],
+    };
+    for edge in internal {
+        net.connect(id(edge.from), 0, id(edge.to), edge.port);
+    }
+    for (&(source, _), &shaper) in edges.iter().zip(chain.shapers.iter()) {
         net.connect(source, 0, shaper, 0);
-        // Offsets occupy ports 1..=N; port 0 is the base and must not be
-        // overwritten by an off-by-one here.
-        net.connect(shaper, 0, chain.sum, i + 1);
     }
     net.connect(chain.sum, 0, sink, port);
 

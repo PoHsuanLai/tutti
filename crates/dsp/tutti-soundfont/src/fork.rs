@@ -235,14 +235,12 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
     }
 
-    /// 87.890625 BPM from beat 0 at `rate`: a beat of exactly 32 768 frames
-    /// at 48 kHz (65 536 at 96), whole blocks and a multiple of the unit's
-    /// 8-frame resolution, which the timeline's per-chunk `f64` beat holds
-    /// exactly.
+    /// 90 BPM from beat 0 at `rate`: a beat is 32 000 frames at 48 kHz
+    /// (64 000 at 96), a multiple of the unit's 8-frame resolution.
     fn offline(rate: SampleRate) -> Arc<OfflineTimeline> {
         Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
-            tempo: Bpm(87.890625),
+            tempo: Bpm(90.0),
             sample_rate: rate,
             loop_range: None,
         }))
@@ -267,7 +265,7 @@ mod tests {
     /// render's rate, on the live unit's preset, and leaves the live clip
     /// alone.** A 48 kHz unit on preset 24 (a guitar, not the default piano),
     /// forked for a render at 48 and at 96 kHz: silent until beat 1 (frame
-    /// 32 768, or 65 536 at 96 kHz), then sample for sample what a fresh unit
+    /// 32 000, or 64 000 at 96 kHz), then sample for sample what a fresh unit
     /// built at the render's rate on that preset renders for the note. The
     /// fork shares the decoded SoundFont.
     ///
@@ -307,7 +305,7 @@ mod tests {
             // What a graph does when it prepares the fork.
             fork.set_sample_rate(rate);
 
-            let beat = (32_768.0 * rate.get() / LIVE.get()) as usize;
+            let beat = (32_000.0 * rate.get() / LIVE.get()) as usize;
             let out = render(&mut fork, &timeline, beat + 4_096);
             let reference = {
                 let mut fresh = unit(&font, rate, 24);

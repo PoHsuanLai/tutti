@@ -1134,10 +1134,11 @@ mod plugin {
 /// which `graph::native` hands the editor at insert, and a fork rebinds the
 /// live port's clip onto the render's timeline.
 ///
-/// Every tempo here is 87.890625 BPM: a beat is exactly 32 768 frames at
-/// 48 kHz (65 536 at 96 kHz), whole 64-frame chunks the offline timeline's
-/// accumulated `f64` beat holds exactly (doc 013, PR 12's follow-up), so an
-/// onset can be asserted to the frame.
+/// Every tempo here is 90 BPM: a beat is 32 000 frames at 48 kHz (64 000 at
+/// 96 kHz), placed to the frame since clips place on integer frames (#40).
+///
+/// Native only but for the A/B: a `Net` export has no fork, and its synth
+/// plays no clip unless the host refills one (the A/B does, to compare).
 #[cfg(all(feature = "midi", feature = "synth", feature = "soundfont"))]
 mod synths {
     use super::*;
@@ -1152,8 +1153,8 @@ mod synths {
     use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
-    /// A beat at 87.890625 BPM and 48 kHz, in frames.
-    const BEAT_48K: usize = 32_768;
+    /// A beat at 90 BPM and 48 kHz, in frames.
+    const BEAT_48K: usize = 32_000;
     /// Frames of the note compared against a reference render.
     const NOTE: usize = 4_096;
     /// A preset of the test soundfont that is not the default piano, so a
@@ -1247,11 +1248,11 @@ mod synths {
         app.update();
     }
 
-    /// An 87.890625 BPM timeline from beat 0 at `rate`.
+    /// A 90 BPM timeline from beat 0 at `rate`.
     fn timeline(rate: f64) -> Arc<OfflineTimeline> {
         Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
-            tempo: Bpm(87.890625),
+            tempo: Bpm(90.0),
             sample_rate: SampleRate(rate),
             loop_range: None,
         }))
@@ -1383,7 +1384,7 @@ mod synths {
     /// Mutation (run): `own_fork_source` answering `None` → silent at both
     /// rates. Mutation (run): `RateFollowing::set_sample_rate` doing nothing
     /// → at 96 kHz the 48 kHz unit places the note by its own rate, and it
-    /// enters at frame 65 545 for 65 625.
+    /// enters at frame 64 009 for 64 089.
     #[test]
     fn an_exported_soundfont_plays_its_clip() {
         let font = font();
@@ -1408,8 +1409,8 @@ mod synths {
     ///
     /// Mutation (run): `own_fork_source` answering `None` → the native render
     /// is silent ("the note sounds" fails). Mutation (run): the hook
-    /// installing the clip 1/512 beat (one 64-frame chunk) late → the two
-    /// part at the native onset, frame 32 769.
+    /// installing the clip 0.002 beat (one 64-frame chunk) late → the two
+    /// part at the native onset, frame 32 001.
     #[test]
     fn native_and_net_synth_exports_are_bit_identical() {
         let render = |backend: GraphBackend| {

@@ -163,13 +163,11 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
     }
 
-    /// A timeline at 87.890625 BPM from beat 0: a beat of exactly 32 768
-    /// frames at 48 kHz, which the timeline's per-chunk `f64` beat holds
-    /// exactly (doc 013, PR 12's "offline timeline's accumulated beat").
+    /// A timeline at 90 BPM from beat 0: a beat is 32 000 frames at 48 kHz.
     fn offline() -> Arc<OfflineTimeline> {
         Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
-            tempo: Bpm(87.890625),
+            tempo: Bpm(90.0),
             sample_rate: RATE,
             loop_range: None,
         }))
@@ -194,7 +192,7 @@ mod tests {
     /// leaves the live clip alone.** The clip is installed on the live
     /// synth's port after its fork source was made (as bevy-tutti's
     /// `MidiSourceInstall` does after insert); the fork's note sounds from
-    /// beat 1 — frame 32 768 — and not a frame before; the live port still
+    /// beat 1 — frame 32 000 — and not a frame before; the live port still
     /// holds its own source.
     ///
     /// Mutation (run): dropping the `rebind_offline_into` call in
@@ -235,7 +233,7 @@ mod tests {
         };
         assert_eq!(
             out.iter().position(|&s| s != 0.0),
-            Some(32_768 + lead),
+            Some(32_000 + lead),
             "the note sounds from beat 1"
         );
         assert_eq!(

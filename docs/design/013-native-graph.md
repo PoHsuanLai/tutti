@@ -1445,11 +1445,14 @@ ask again.
 
 **Phase 3 follow-ups** (recorded, not done here):
 
-- **An engine-driven sampler A/B.** `AudioSide::render` renders under a
-  stopped transport, so the A/B suite cannot see a clip reader's clock.
-  Once the `Legacy` per-64-chunk timeline fix for clip readers lands
-  (tutti-core / tutti-export), add a sampler A/B through
-  `Engine::process` at 256- and 512-frame blocks with a rolling transport.
+- **An engine-driven sampler A/B — done** with the `Legacy` per-chunk
+  timeline fix. `AudioSide::render` renders under a stopped transport, so
+  the A/B suite cannot see a clip reader's clock; bevy-tutti's
+  `engine::build` tests now render a placed sampler voice (dry and a fifth
+  up) through the builder's own engine (`assemble`, the beat clock it
+  inserts) with a rolling transport at 256- and 512-frame blocks: `Native`
+  matches `Net` bit for bit, and the dry voice is the tone. Without the
+  per-chunk seat, `Native` parts from `Net` at frame 0.
 - **`TuttiDriver::restart` at a new device rate** re-prepares nothing: the
   graph keeps its old rate (on `Net` its units, on `Native` its `Prepare`),
   and `AudioConfig` and `Transport` keep the old one too. It predates PR 11

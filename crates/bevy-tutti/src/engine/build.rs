@@ -574,4 +574,135 @@ mod engine_tests {
             assert_eq!(on, vec![1, 24_001, 48_001], "{backend:?}");
         }
     }
+
+    // ---- a clip reader through the builder's engine -------------------------
+
+    /// The tone's frame `i`: 440 Hz at `RATE`.
+    #[cfg(feature = "sampler")]
+    fn tone_at(i: usize) -> f32 {
+        (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin()
+    }
+
+    /// An engine from [`assemble`] with one sampler voice, placed at beat 0 on
+    /// the live transport and pitched by `cents`, on both global outputs;
+    /// the transport rolling from the first block. `frames` stereo frames in
+    /// `block`-frame device blocks.
+    ///
+    /// The voice is a clip reader: it polls the transport (its
+    /// `Arc<dyn Timeline>`) on every 64-frame call. On `Native` that call is
+    /// `Legacy`'s, inside a graph block the engine's clock has already
+    /// advanced over, so it reads the right beat only because the engine
+    /// seats the playhead per chunk (`tutti_core`'s `LegacyClock`, doc 013
+    /// §6). On `Net` the builder inserts its `TransportClock` before any
+    /// voice, the net runs it first in each 64-frame chunk, and the voice
+    /// reads the beat it published at the end of the previous chunk: this
+    /// chunk's first frame, the same seat.
+    #[cfg(feature = "sampler")]
+    fn render_voice(backend: GraphBackend, cents: f32, frames: usize, block: usize) -> Vec<f32> {
+        use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+        let transport = Transport::new(SampleRate(RATE));
+        let settings = Arc::new(ClickSettings::new());
+        let Assembled {
+            mut graph, engine, ..
+        } = assemble(backend, SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+
+        let mut wave = tutti_io::Wave::new(1, RATE);
+        for i in 0..RATE as usize {
+            wave.push_frame(&[tone_at(i)]);
+        }
+        let source = MemorySource::with_transport(
+            Arc::new(wave),
+            Arc::new(transport.clone()) as Arc<dyn tutti_core::Timeline>,
+            tutti_core::Beat(0.0),
+            None,
+        );
+        let (mut pool, _handle) = VoicePool::new();
+        pool.insert_voice(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Memory(source),
+                play: Playback {
+                    pitch: tutti_core::Cents::new(cents),
+                    ..Default::default()
+                },
+                channel_index: None,
+            },
+        );
+        let voice = graph.insert(pool);
+        for port in 0..2 {
+            graph.set_output_source(port, GraphSource::Node(voice, port));
+        }
+        assert!(graph.commit(), "{backend:?}: the first commit goes through");
+
+        transport.motion.try_send(MotionEvent::Play).expect("room");
+        let mut out = Vec::with_capacity(frames * 2);
+        let mut buf = vec![0.0f32; block * 2];
+        while out.len() < frames * 2 {
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            out.extend_from_slice(&buf);
+        }
+        out.truncate(frames * 2);
+        drop(graph);
+        out
+    }
+
+    /// **A sampler voice plays in time through the builder's engine on both
+    /// backends**, at `block`-frame device blocks with a rolling transport:
+    /// dry and a fifth up, `Native` renders `Net`'s samples bit for bit, and
+    /// the dry voice is the tone it plays, frame for frame (so the two cannot
+    /// agree on a wrong answer).
+    ///
+    /// `graph_backends.rs`'s A/B renders under a stopped transport, where a
+    /// clip reader sounds nothing; this is the adapter's path with the clock
+    /// moving (doc 013, the #32 follow-up).
+    ///
+    /// Mutation (run): `Legacy` not seating the clock per chunk (the adapter
+    /// then reads the block's end beat on every chunk) → `Native` parts from
+    /// `Net` at frame 0, at both block sizes; `Net` still matches the tone.
+    #[cfg(feature = "sampler")]
+    fn a_voice_plays_in_time_on_both_backends(block: usize) {
+        let frames = 24_000;
+        for cents in [0.0f32, 700.0] {
+            let net = render_voice(GraphBackend::Net, cents, frames, block);
+            let native = render_voice(GraphBackend::Native, cents, frames, block);
+            if cents == 0.0 {
+                for (i, s) in net.as_chunks::<2>().0.iter().enumerate() {
+                    let want = tone_at(i);
+                    assert!(
+                        (s[0] - want).abs() < 1e-3,
+                        "{block}-frame blocks, Net: frame {i} read {}, the tone is {want}",
+                        s[0]
+                    );
+                }
+            }
+            let peak = net.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
+            if let Some(i) = net
+                .iter()
+                .zip(&native)
+                .position(|(a, b)| a.to_bits() != b.to_bits())
+            {
+                panic!(
+                    "{block}-frame blocks, {cents} cents: Native parts from Net at frame {} \
+                     (channel {}): net {} native {}",
+                    i / 2,
+                    i % 2,
+                    net[i],
+                    native[i]
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "sampler")]
+    #[test]
+    fn a_voice_plays_in_time_on_both_backends_at_256_frame_blocks() {
+        a_voice_plays_in_time_on_both_backends(256);
+    }
+
+    #[cfg(feature = "sampler")]
+    #[test]
+    fn a_voice_plays_in_time_on_both_backends_at_512_frame_blocks() {
+        a_voice_plays_in_time_on_both_backends(512);
+    }
 }

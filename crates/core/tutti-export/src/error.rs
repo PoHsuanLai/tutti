@@ -72,15 +72,15 @@ pub enum Error {
     Unmeasurable(String),
 
     /// A native graph could not be forked for the render because the node at
-    /// `key` cannot be: it handed the editor no fork source (a plugin, a mic
-    /// monitor, a `Legacy` built unforkable), so a copy would drive or share
+    /// `key` cannot be: it handed the editor no fork source (a mic monitor, an
+    /// in-process VST2 plugin, a `Legacy` built unforkable), so a copy would share
     /// the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
     /// nothing was rendered.
     ///
     /// A variant of its own rather than inside [`Fork`](Self::Fork) because it
     /// is the one a host acts on — "remove or freeze this node" — and the key
     /// is what it acts on.
-    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a plugin, a mic monitor, or a node built unforkable)")]
+    #[error("Cannot export: node {key:?} cannot be forked for an offline render (a mic monitor, an in-process VST2 plugin, or a node built unforkable)")]
     NotForkable {
         /// The node, as the live graph keys it.
         key: tutti_types::NodeKey,
@@ -91,6 +91,24 @@ pub enum Error {
     /// has no outputs, or the forked graph did not commit.
     #[error("Cannot fork the graph for export: {0}")]
     Fork(tutti_graph::ForkError),
+
+    /// A forked unit failed **while the render ran**: a hosted plugin's
+    /// server crashed, or stopped answering (`kind`). Past that point the
+    /// render holds silence where the unit's output belongs, so the export is
+    /// reported as failed rather than written as if it had succeeded. The
+    /// editor's `fork_health` is checked after every native-graph render
+    /// (see "When a forked unit fails" in tutti-graph's `fork` docs). A file
+    /// export may already have written the file; it is not a valid render.
+    #[error("Export failed: forked node {key:?} {kind:?} during the render: {cause}")]
+    ForkFailed {
+        /// The node, as the live graph keys it.
+        key: tutti_types::NodeKey,
+        /// Crashed or timed out.
+        kind: tutti_graph::ForkFaultKind,
+        /// The unit's own account (for a plugin, a
+        /// `tutti_plugin::PluginRenderFault`).
+        cause: tutti_graph::ForkCause,
+    },
 }
 
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error

@@ -70,8 +70,8 @@
 //! [`Editor::fork_health`] reports the first [`ForkFault`] —
 //! [`ForkFaultKind::Crashed`] or [`ForkFaultKind::TimedOut`], separately.
 //! **A renderer of a fork checks it after rendering** and turns a fault into
-//! a failed render (tutti-export's `GraphSource`: `Error::ForkFailed { key,
-//! cause }`). A unit that faults keeps rendering silence without further
+//! a failed render (tutti-export does: `Error::ForkFailed { key, kind, cause
+//! }`). A unit that faults keeps rendering silence without further
 //! waiting, so a failed render ends promptly.
 //!
 //! # [`ForkTarget::Node`]: the sub-graph feeding one node

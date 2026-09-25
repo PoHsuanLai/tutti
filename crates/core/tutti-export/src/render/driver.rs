@@ -379,7 +379,19 @@ pub(crate) fn with_source<R>(
     match graph {
         RenderGraph::Net(net) => f(&mut NetSource::new(net, sample_rate, clock)),
         RenderGraph::Graph { editor, executor } => {
-            f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)
+            let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
+            // A forked unit that failed mid-render (a plugin's server crashed
+            // or hung) rendered silence from then on, and `process` has no
+            // error channel: the probe is the only place the failure shows.
+            // A render that passed it is a render of what the graph describes.
+            editor
+                .fork_health()
+                .map_err(|fault| crate::Error::ForkFailed {
+                    key: fault.key,
+                    kind: fault.kind,
+                    cause: fault.cause,
+                })?;
+            Ok(rendered)
         }
     }
 }

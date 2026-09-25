@@ -544,3 +544,84 @@ fn a_forks_server_is_reaped_when_the_fork_is_dropped_or_fails() {
     );
     assert_eq!(children(), baseline, "a failed fork's server is reaped");
 }
+
+/// Export the plugin through `tutti_export` exactly as an export does: fork
+/// the live graph offline with `RenderGraph::fork`, render half a second to
+/// buffers.
+fn export_through_a_fork(
+    probe: &clap_probe::LoadedProbe,
+) -> tutti_export::Result<tutti_export::Rendered> {
+    let rate = SampleRate(SAMPLE_RATE);
+    let (mut live, _exec) = Editor::new(Prepare::new(rate, Samples(BLOCK)));
+    let key = NodeKey(9);
+    live.insert(key, "plugin", probe.client.clone());
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let offline = offline();
+    let graph = tutti_export::RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&offline),
+        rate,
+    )
+    .expect("a graph holding a plugin forks");
+    let config = tutti_export::ExportConfig {
+        render: tutti_export::RenderConfig {
+            sample_rate: rate,
+            duration_seconds: 0.5,
+            ..Default::default()
+        },
+        encode: tutti_export::EncodeConfig {
+            channels: tutti_export::ChannelLayout::MONO,
+            ..Default::default()
+        },
+        dither: tutti_export::Dither::Off,
+        ..Default::default()
+    };
+    tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+}
+
+/// **An export through a fork whose plugin server dies, or hangs, fails with
+/// a named error** — `Error::ForkFailed { key, kind, cause }` — instead of
+/// returning half a second of mostly silence as a successful render. A healthy
+/// fork exports fine (and audibly), so the check is not a blanket refusal.
+///
+/// Mutation: skip the `fork_health` check in tutti-export's `with_source` →
+/// both failing exports return `Ok` → fails.
+#[test]
+fn an_export_through_a_failing_fork_fails_by_name() {
+    let _lock = exclusive();
+    let _env = env();
+    let config = BridgeConfig {
+        timeout_ms: 1_000,
+        ..BridgeConfig::default()
+    };
+    let probe = load_probe_with(config, SAMPLE_RATE);
+    probe.client.set_parameter(GAIN, gain_at(-6.0));
+
+    let healthy = export_through_a_fork(&probe).expect("a healthy fork exports");
+    assert!(healthy.planes[0].iter().any(|&s| s != 0.0), "audible");
+
+    let failed = |kind: ForkFaultKind| {
+        let started = Instant::now();
+        match export_through_a_fork(&probe) {
+            Err(tutti_export::Error::ForkFailed {
+                key,
+                kind: got,
+                cause,
+            }) => {
+                assert_eq!(key, NodeKey(9));
+                assert_eq!(got, kind, "{cause}");
+                assert!(cause.downcast_ref::<PluginRenderFault>().is_some());
+            }
+            Err(other) => panic!("expected ForkFailed, got {other}"),
+            Ok(_) => panic!("an export through a {kind:?} fork reported success"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+    };
+    {
+        let _crash = ProbeEnv::new().crash_on_block(8);
+        failed(ForkFaultKind::Crashed);
+    }
+    let _hang = ProbeEnv::new().block_from(5);
+    failed(ForkFaultKind::TimedOut);
+}

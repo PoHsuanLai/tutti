@@ -128,8 +128,12 @@ impl RenderGraph {
     /// # Errors
     ///
     /// [`Error::NotForkable`] naming the first node that cannot be forked (a
-    /// plugin, a mic monitor), checked before anything is forked; any other
-    /// fork failure is [`Error::Fork`].
+    /// mic monitor, an in-process VST2 plugin, a plugin inserted as a boxed
+    /// `AudioUnit` rather than a `PluginClient`), checked before anything is
+    /// forked; any other fork failure is [`Error::Fork`] (a plugin fork whose
+    /// fresh instance did not load or refused the state is
+    /// `ForkError::Source`). A fork that fails *during* the render is
+    /// [`Error::ForkFailed`] from the render call.
     pub fn fork(
         live: &Editor,
         target: ForkTarget,

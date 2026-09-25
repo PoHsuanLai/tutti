@@ -1043,10 +1043,11 @@ Seven gaps have to close before the flip. Each is closed by the PR in brackets:
    bridge only notices a dead peer when it next sends) and times out when a
    block misses `BridgeConfig::timeout_ms`; after the first miss it stops
    waiting, so a hung server costs one budget per render, not per block.
-   **PR 12 / PR 7's `GraphSource` must check `fork_health()` after
-   rendering** and turn a fault into a failed export
-   (`Error::ForkFailed { key, cause }`); until then a crashed fork's export
-   ends promptly but is reported by nothing.
+   **tutti-export checks `fork_health()` after every native-graph render**
+   (`render::with_source`) and turns a fault into
+   `Error::ForkFailed { key, kind, cause }`: an export through a crashed or
+   hung plugin fork fails by name, promptly, instead of returning silence as
+   a success (pinned by `tutti-plugin/tests/clap_fork.rs`).
 
 **Fork audit, per unit** (every in-tree `impl AudioUnit`; "row" is its
 `IsolateRow` test, "—" where the unit reads no live cell, so there is

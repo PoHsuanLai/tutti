@@ -83,7 +83,7 @@
 //! (`BridgeConfig::timeout_ms`), the cause a [`PluginRenderFault`]. After
 //! the first miss an offline fork stops waiting, so a hung server costs one
 //! budget, not one per block. A renderer checks the probe after rendering
-//! and reports the render as failed (tutti-export's `GraphSource`).
+//! and reports the render as failed (tutti-export: `Error::ForkFailed`).
 //!
 //! # What a fork does not have
 //!

@@ -64,7 +64,7 @@ pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
 #[cfg(feature = "modulation")]
 pub use bind::{plugin_bind_params, PluginParamsBound};
-pub use bind::{plugin_bind_transport, PluginTransportBound};
+pub use bind::{plugin_bind_transport, PluginShadow, PluginTransportBound};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
     editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,

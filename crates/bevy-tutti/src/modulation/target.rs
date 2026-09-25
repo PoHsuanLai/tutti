@@ -1,17 +1,29 @@
 //! Turning an entity + a param address into a live accumulator.
 //!
 //! This is the one step the adapter cannot do generically, and the reason is
-//! worth stating: [`ModParams`] is implemented on concrete
-//! node types (`Compressor`, `ModDelayNode`, `PolySynth`, …), and reaching one
-//! through the graph needs [`node_as::<T>`](tutti_core::dsp::Net::node_as) —
-//! which takes a concrete `T`. There is no `&dyn ModParams` to recover from a
-//! `&dyn AudioUnit`, so no amount of Bevy plumbing can dispatch it.
+//! worth stating: [`ModParams`] is implemented on concrete node types
+//! (`Compressor`, `ModDelayNode`, `PolySynth`, …). There is no `&dyn ModParams`
+//! to recover from a `&dyn AudioUnit`, so no amount of Bevy plumbing can
+//! dispatch it.
 //!
 //! So the host supplies the dispatch. [`ModTargetRegistry`] holds a list of
-//! resolvers; each knows how to try one node type. Registering the node types an
+//! captures; each knows how to try one node type. Registering the node types an
 //! app actually uses is a few lines, and the alternative — a match over every
 //! node type in the engine — is the DAW vocabulary this crate exists to stay out
 //! of.
+//!
+//! # Captured at insert, not resolved from the graph
+//!
+//! The registry runs **once per unit, before the unit goes into the graph** (see
+//! [`CapturedControls`](crate::graph::CapturedControls)). A registered type's
+//! capture keeps a clone of the unit as its [`ModParams`], stored on the entity
+//! as a [`ModParamsHandle`]; resolution asks that, and never the graph.
+//!
+//! The clone is sound for the same reason a graph that clones its nodes on
+//! commit is: every [`ModParams`] impl answers with an accumulator over the
+//! node's *shared* param atomic, so the clone's accumulator writes the cell the
+//! running node reads. Register types before spawning them — a node inserted
+//! while its type was unregistered has no handle and is not modulatable.
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -36,17 +48,14 @@ use tutti_core::AudioNode;
 use tutti_mod::{ModBus, ModParams, ModTarget};
 use tutti_types::ParamAddr;
 
-use crate::graph::AudioGraphRes;
 use crate::modulation::components::ParamRange;
 
-/// One node type's resolver: given the graph and a node, hand back an
-/// accumulator for `param` if this node is a `T` that exposes it.
-type ResolveFn = fn(
-    &AudioGraphRes,
-    tutti_core::dsp::NodeId,
-    ParamAddr,
-    &ParamRange,
-) -> Option<Arc<dyn ModTarget>>;
+/// A unit's control-rate params, held apart from the graph.
+type SharedModParams = Arc<dyn ModParams + Send + Sync>;
+
+/// One node type's capture: given an owned unit, keep it as [`ModParams`] if it
+/// is a `T`.
+type CaptureFn = fn(&dyn tutti_core::AudioUnit) -> Option<SharedModParams>;
 
 /// The node types this app can modulate, plus any sinks it supplies directly.
 ///
@@ -55,7 +64,7 @@ type ResolveFn = fn(
 /// [`insert_target`](Self::insert_target) adds one already-built sink.
 #[derive(Resource, Default)]
 pub struct ModTargetRegistry {
-    resolvers: Vec<ResolveFn>,
+    captures: Vec<CaptureFn>,
     /// Sinks the host built itself, keyed by the param they serve. Consulted
     /// before the node resolvers — see [`insert_target`](Self::insert_target).
     supplied: HashMap<(Entity, ParamAddr), Arc<dyn ModTarget>>,
@@ -64,17 +73,28 @@ pub struct ModTargetRegistry {
 impl ModTargetRegistry {
     /// Teach the registry to resolve params on node type `T`.
     ///
-    /// Resolvers are tried in registration order and the first match wins;
-    /// since each is a downcast to a distinct concrete type, order only decides
-    /// which of two *equally valid* answers is taken, and there are none.
-    pub fn register<T: ModParams + tutti_core::AudioUnit + 'static>(&mut self) -> &mut Self {
-        self.resolvers.push(|graph, node, param, range| {
-            graph
-                .0
-                .node_as::<T>(node)?
-                .mod_target(param, range.base, range.min, range.max)
+    /// Captures are tried in registration order and the first match wins;
+    /// since each matches one distinct concrete type, order only decides which
+    /// of two *equally valid* answers is taken, and there are none.
+    ///
+    /// `Clone` because the capture keeps a clone of the unit — see the module
+    /// docs. Takes effect for units inserted after this call.
+    pub fn register<T: ModParams + tutti_core::AudioUnit + Clone + 'static>(
+        &mut self,
+    ) -> &mut Self {
+        self.captures.push(|unit| {
+            let node = unit.as_any().downcast_ref::<T>()?;
+            Some(Arc::new(node.clone()) as SharedModParams)
         });
         self
+    }
+
+    /// `unit`'s control-rate params, if its type was registered.
+    ///
+    /// Run on the owned unit **before** it enters the graph; the answer goes on
+    /// the entity as a [`ModParamsHandle`].
+    pub fn capture(&self, unit: &dyn tutti_core::AudioUnit) -> Option<SharedModParams> {
+        self.captures.iter().find_map(|c| c(unit))
     }
 
     /// Supply an already-built sink for `(entity, param)`, replacing any
@@ -83,7 +103,7 @@ impl ModTargetRegistry {
     /// [`register`](Self::register) asks a *node type* for its accumulator,
     /// which is how a native param resolves — and every native node answers with
     /// an [`AtomicTarget`](tutti_mod::AtomicTarget). A sink that no `AudioUnit`
-    /// owns has no node to be downcast from and is otherwise unreachable: a
+    /// owns has no node to capture it from and is otherwise unreachable: a
     /// plugin's per-block param target, or any accumulator a host evaluates at
     /// its own rate.
     ///
@@ -123,17 +143,57 @@ impl ModTargetRegistry {
     fn supplied(&self, entity: Entity, param: ParamAddr) -> Option<Arc<dyn ModTarget>> {
         self.supplied.get(&(entity, param)).map(Arc::clone)
     }
+}
 
-    fn resolve(
-        &self,
-        graph: &AudioGraphRes,
+/// An entity's node, as [`ModParams`] — captured when the node was inserted.
+///
+/// Written by the node-insertion paths from [`ModTargetRegistry::capture`], and
+/// read by [`ModTargetResolver`]. A host that binds [`AudioNode`] itself after
+/// pushing a unit by hand attaches one with
+/// [`CapturedControls`](crate::graph::CapturedControls) or [`of`](Self::of).
+///
+/// Holds a clone of the unit. It never processes audio; it exists to mint
+/// accumulators over the cells it shares with the running node.
+#[derive(Component, Clone)]
+pub struct ModParamsHandle {
+    node: tutti_core::dsp::NodeId,
+    params: SharedModParams,
+}
+
+impl ModParamsHandle {
+    /// Captured params for the unit that became `node`.
+    ///
+    /// `node` is what makes a leftover handle inert: resolution skips one whose
+    /// node is not the entity's current [`AudioNode`].
+    pub fn new(node: tutti_core::dsp::NodeId, params: Arc<dyn ModParams + Send + Sync>) -> Self {
+        Self { node, params }
+    }
+
+    /// Capture a typed `unit` directly, for a caller that has the concrete type
+    /// in hand and no registry to consult.
+    pub fn of<T: ModParams + Clone + Send + Sync + 'static>(
         node: tutti_core::dsp::NodeId,
-        param: ParamAddr,
-        range: &ParamRange,
-    ) -> Option<Arc<dyn ModTarget>> {
-        self.resolvers
-            .iter()
-            .find_map(|r| r(graph, node, param, range))
+        unit: &T,
+    ) -> Self {
+        Self::new(node, Arc::new(unit.clone()))
+    }
+
+    /// The graph node these params were captured from.
+    pub fn node(&self) -> tutti_core::dsp::NodeId {
+        self.node
+    }
+
+    /// The captured params.
+    pub fn params(&self) -> &(dyn ModParams + Send + Sync) {
+        &*self.params
+    }
+}
+
+impl std::fmt::Debug for ModParamsHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModParamsHandle")
+            .field("node", &self.node)
+            .finish_non_exhaustive()
     }
 }
 
@@ -152,18 +212,10 @@ pub struct ModBusRes(pub Arc<ModBus>);
 /// individually buys nothing.
 #[derive(SystemParam)]
 pub struct ModTargetResolver<'w, 's> {
-    /// `Option` because a `SystemParam` validates before its system runs: a hard
-    /// `Res` here panics the schedule for every caller, whatever their own
-    /// signature says. The graph is `build_into`'s, while `engine_ready` only
-    /// reads `AudioEngineState`.
-    ///
-    /// Note this degrades rather than disables: [`resolve`](Self::resolve)
-    /// checks host-supplied targets and a source's own rate *before* the graph,
-    /// and neither needs one. Only the node-downcast tier goes quiet.
-    graph: Option<Res<'w, AudioGraphRes>>,
     registry: Res<'w, ModTargetRegistry>,
     bus: Res<'w, ModBusRes>,
-    nodes: Query<'w, 's, &'static AudioNode>,
+    /// Each node's params as captured at insert, with the node they came from.
+    nodes: Query<'w, 's, (&'static AudioNode, &'static ModParamsHandle)>,
     /// Source entities whose own rate is modulated. A separate query because a
     /// modulation source is *not* a graph node — see [`resolve`](Self::resolve).
     rate_cells: Query<'w, 's, &'static crate::modulation::ModRateCell>,
@@ -184,12 +236,13 @@ impl ModTargetResolver<'_, '_> {
     ///    `AudioNode`, so the graph path below could never have served it. The
     ///    accumulator mirrors straight into that cell, which is what makes an
     ///    LFO able to drive another LFO's rate.
-    /// 3. **A graph node's param** — the ordinary case, resolved by downcast
-    ///    through the registry.
+    /// 3. **A graph node's param** — the ordinary case, answered by the
+    ///    [`ModParamsHandle`] captured when the node was inserted.
     ///
     /// `None` covers several ordinary situations — the entity has no graph node
-    /// yet (a node materialises a frame after its entity), its node type was
-    /// never registered, or that type does not expose this param. A route that
+    /// yet (a node materialises a frame after its entity), its node type was not
+    /// registered when the node was inserted, or that type does not expose this
+    /// param. A route that
     /// cannot resolve is skipped and retried on the next rebuild rather than
     /// logged.
     pub fn resolve(
@@ -204,9 +257,14 @@ impl ModTargetResolver<'_, '_> {
         if let Some(target) = self.resolve_rate(entity, param, range) {
             return Some(target);
         }
-        let graph = self.graph.as_ref()?;
-        let node = self.nodes.get(entity).ok()?;
-        self.registry.resolve(graph, node.0, param, range)
+        let (node, handle) = self.nodes.get(entity).ok()?;
+        if handle.node != node.0 {
+            // Captured for a node this entity no longer carries.
+            return None;
+        }
+        handle
+            .params
+            .mod_target(param, range.base, range.min, range.max)
     }
 
     /// The accumulator for a source's own rate — an [`AtomicTarget`] mirroring

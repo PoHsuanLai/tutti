@@ -128,8 +128,8 @@ pub use param_ports::ParamPorts;
 
 pub mod param_mod;
 pub use param_mod::{
-    build_param_mod, wire_param_mod, AtomicSourceNode, ClampBounds, ParamModChain, ParamModShaping,
-    ParamShaperNode, ParamSumNode,
+    build_param_mod, param_mod_parts, wire_param_mod, AtomicSourceNode, ClampBounds, ParamModChain,
+    ParamModEdge, ParamModPart, ParamModParts, ParamModShaping, ParamShaperNode, ParamSumNode,
 };
 
 // The native `ModParams` impls (the trait itself lives in tutti-mod).

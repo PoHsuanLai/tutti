@@ -31,10 +31,11 @@
 //!
 //! A MIDI-receiving node owns a [`MidiInPort`](tutti_midi_runtime::MidiInPort):
 //! its routing address, its push mailbox, and the slot a beat-scheduled source
-//! installs into. The ECS layer never stores that address — it resolves it from
-//! the graph each time, because a `crossfade` can replace a node's unit while
-//! keeping its `NodeId`, leaving any stored copy silently stale. See
-//! [`endpoint::target`] for the registry a host fills in, and
+//! installs into. The port is captured from the unit as the node is inserted
+//! and kept on the entity as a [`MidiTarget`]; every insertion path does this,
+//! including a `crossfade`, which replaces a node's unit (and its port) while
+//! keeping its `NodeId`. See [`endpoint::target`] for the registry a host fills
+//! in — before spawning the node types it names — and
 //! [`endpoint::registration`] for how a node's sender gets on (and off) the
 //! bus.
 //!
@@ -134,9 +135,10 @@ pub mod test_support {
 pub use endpoint::bus::{MidiBusRes, MpeModeConfig, MpeModeRes};
 pub use endpoint::out_sink::MidiOutSinkRes;
 pub use endpoint::registration::{
-    register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
+    register_midi_senders, unregister_midi_sender, unregister_removed_midi_target, MidiRegistered,
+    MidiRegistrationPlugin,
 };
-pub use endpoint::target::{MidiNode, MidiTargetRegistry, MidiTargetResolver};
+pub use endpoint::target::{MidiNode, MidiTarget, MidiTargetRegistry, MidiTargetResolver};
 
 pub use inbound::route::{
     rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,

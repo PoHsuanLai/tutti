@@ -34,7 +34,8 @@
 //! # What `CompensatedLatency` owns
 //!
 //! Not a copy of the plugin's latency — that would be a second owner of a value
-//! `PluginClient` already holds, needing invalidation this could not see. It
+//! the plugin's shared latency cell already holds, needing invalidation this
+//! could not see. It
 //! records *what the last compensation pass was planned against*, which is
 //! distinct state: the plugin answers "what is my latency now", this answers
 //! "what did the graph last align for". A difference between them is exactly
@@ -51,13 +52,17 @@
 //! integration test loading a real binary, and no such harness exists in this
 //! crate yet. Stated rather than implied, because the negative tests pass
 //! whether or not the system does anything at all.
+//!
+//! What *is* pinned elsewhere is the half this poll depends on: that the latency
+//! cell a [`PluginShadow`] holds is the node's own, shared with every clone
+//! (`tutti-plugin`'s `latency_and_tail_are_shared_between_handles`).
 
 use bevy_ecs::prelude::*;
 
 use tutti_core::{AudioNode, Samples};
-use tutti_plugin::handles::PluginClient;
 
-use crate::graph::{AudioGraphRes, GraphDirty};
+use crate::graph::GraphDirty;
+use crate::plugin_host::PluginShadow;
 
 /// The latency the last compensation pass was planned against.
 ///
@@ -68,7 +73,7 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompensatedLatency(
     /// In [`Samples`], as the plugin's node reports it — *not* the plugin's
-    /// current latency, which lives on `PluginClient`.
+    /// current latency, which lives in its shared latency cell.
     pub Samples,
 );
 
@@ -80,25 +85,31 @@ pub struct CompensatedLatency(
 /// `commit_graph` clears the flag after publishing, so this must run before the
 /// `Compensate` phase to be seen in the same frame.
 ///
-/// Runs over the graph rather than over `PluginEmitter`, because `latency()`
-/// lives on the node (`PluginClient`) and not on the handle. An entity whose
-/// `AudioNode` is not a `PluginClient` is skipped, which is the same guard
-/// `plugin_host::bind` uses: a node can lose its plugin identity between frames.
+/// Runs over [`PluginShadow`] rather than over `PluginEmitter`, because the
+/// latency cell belongs to the node and not to the handle. An entity with no
+/// shadow — a node that is not a `PluginClient` — is skipped, and so is one
+/// whose shadow was captured for a node it no longer carries: the same guard
+/// `plugin_host::bind` uses, since a node can lose its plugin identity between
+/// frames.
 pub fn plugin_latency_poll(
     mut commands: Commands,
-    graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    plugins: Query<(Entity, &AudioNode, Option<&CompensatedLatency>)>,
+    plugins: Query<(
+        Entity,
+        &AudioNode,
+        &PluginShadow,
+        Option<&CompensatedLatency>,
+    )>,
 ) {
-    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+    let Some(mut dirty) = dirty else {
         return;
     };
 
-    for (entity, node, compensated) in plugins.iter() {
-        let Some(client) = graph.0.node_as_mut::<PluginClient>(node.0) else {
+    for (entity, node, shadow, compensated) in plugins.iter() {
+        let Some(controls) = shadow.controls_for(node) else {
             continue;
         };
-        let current = client.latency();
+        let current = controls.latency();
 
         if !needs_recompensation(compensated.map(|c| c.0), current) {
             continue;
@@ -130,6 +141,7 @@ fn needs_recompensation(compensated: Option<Samples>, current: Samples) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::AudioGraphRes;
     use crate::AudioEngineState;
     use bevy_app::prelude::*;
     use tutti_core::dsp::Net;

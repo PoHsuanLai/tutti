@@ -783,7 +783,13 @@ passes pay back differently.
   `rebound` exception, `compensate_graph`'s re-minting and the
   `PdcDelay`/`PDC_DELAY_ID` exclusions, `commit_output_arity_change` pinning.
 - `node_as*` sites → `Controls` returned at insert (MIDI endpoint target,
-  modulation target/driver, plugin bind/latency).
+  modulation target/driver, plugin bind/latency). **Done on `Net` (PR 9):**
+  every insertion path captures `MidiTarget` / `ModParamsHandle` /
+  `PluginShadow` from the owned unit (`bevy_tutti::graph::capture`), readers
+  never touch the graph, and `tests/no_graph_downcasts.rs` keeps it that way.
+  `PluginClient`'s sample rate became a shared cell to make its `PluginControls`
+  valid off the node. `build_param_mod` is now `param_mod_parts` (owned units,
+  internal edges as data, handles) plus a `Net` adapter.
 - `export/run.rs` → `Fork` instead of `clone_isolated`/`isolate_for_offline`.
 - `tutti-export` (38 `Net::new`, 34 `pipe_*`) and tests → a `GraphBuilder`
   helper over `Topology`.

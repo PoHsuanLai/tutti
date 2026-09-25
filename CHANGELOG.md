@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **bevy-tutti captures a node's controls when the node is inserted, and never
+  reaches back into the graph for them.** `MidiTargetRegistry` and
+  `ModTargetRegistry` are now read once per unit, as it goes in (by
+  `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node`, soundfont
+  promotion and plugin load), and the answers live on the entity as
+  `MidiTarget`, `ModParamsHandle` and `PluginShadow`. Two consequences for a
+  host:
+  - **Register a node type before spawning nodes of it.** A node inserted while
+    its type was unregistered carries no captured controls and stays
+    unaddressable; registering later does not reach it.
+  - **`ModTargetRegistry::register::<T>` now requires `T: Clone`**, because the
+    capture keeps a clone of the unit as its `ModParams`. Every engine node is
+    `Clone`; a host's own node type needs the derive.
+  - A host that pushes a unit into `AudioGraphRes` itself and binds
+    `AudioNode` by hand runs the same capture with
+    `CapturedControls::capture(world, &unit)` and `.bind(&mut entity, node)`.
+
+  `tutti_plugin::handles::PluginControls` (from `PluginClient::controls()`) is
+  the plugin half: the node's input slots, latency, tail and sample rate, all
+  shared with it. `tutti_nodes::param_mod_parts` builds an audio-rate param
+  chain as owned parts; `build_param_mod` is unchanged.
+
 - **`AudioUnit` lost seven derived methods and `footprint` is defaulted.**
   `get_mono`, `get_stereo`, `filter_mono`, `filter_stereo`, `response`,
   `response_db` and `display` had no caller outside the fundsp fork; they are

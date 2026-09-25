@@ -148,6 +148,23 @@ mod midi {
         assert_eq!(resolved(&mut app, entity), None);
     }
 
+    /// Taking the node away takes the captured port with it.
+    ///
+    /// Mutation: dropping the `drop_captured` call from
+    /// `reconcile_node_despawn` leaves the `MidiTarget` on the entity.
+    #[test]
+    fn removing_the_node_drops_the_captured_target() {
+        let mut app = app();
+        let (unit, _) = synth();
+        let entity = app.world_mut().commands().spawn_audio_node(unit).id();
+        app.update();
+        assert!(app.world().get::<MidiTarget>(entity).is_some());
+
+        app.world_mut().entity_mut(entity).remove::<AudioNode>();
+        app.update();
+        assert!(app.world().get::<MidiTarget>(entity).is_none());
+    }
+
     /// An `AudioNode` replaced by hand, with no fresh capture, leaves the old
     /// target behind; resolution must not hand it out for the new node.
     ///
@@ -249,6 +266,27 @@ mod modulation {
         );
     }
 
+    /// Taking the node away drops the handle — and with it the clone of the
+    /// unit it holds, which for a convolver or a synth is not small.
+    ///
+    /// Mutation: dropping the `drop_captured` call from
+    /// `reconcile_node_despawn` leaves the handle on the entity.
+    #[test]
+    fn removing_the_node_drops_the_captured_handle() {
+        let mut app = app();
+        let target = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, BASE))
+            .id();
+        app.update();
+        assert!(app.world().get::<ModParamsHandle>(target).is_some());
+
+        app.world_mut().entity_mut(target).remove::<AudioNode>();
+        app.update();
+        assert!(app.world().get::<ModParamsHandle>(target).is_none());
+    }
+
     /// A handle captured for another node is ignored.
     ///
     /// Mutation: dropping the `handle.node != node.0` check in
@@ -281,5 +319,183 @@ mod modulation {
             .add(tutti_nodes::testing::Const::mono(0.0));
         app.world_mut().entity_mut(target).insert(AudioNode(other));
         assert!(!resolves(&mut app), "the leftover handle does not");
+    }
+}
+
+/// After a crossfade, everything that reads a captured control reaches the
+/// **incoming** unit: its MIDI route, its modulation, and its sequence.
+///
+/// Each consumer compiles what it read into something longer-lived — a route
+/// table naming a port id, an accumulator mirroring into an atomic, a clip
+/// installed on a port — and rebuilds only when its inputs change. A crossfade
+/// changes none of the declarations, only the captured controls, so each has to
+/// treat a changed capture as a reason to rebuild.
+///
+/// # Mutation
+///
+/// Each arm is pinned by its own assertion:
+///
+/// - dropping `recaptured` from the MIDI route `rebuild`'s dirty check leaves
+///   the route naming the outgoing port;
+/// - dropping `Changed<ModParamsHandle>` from the modulation
+///   `mark_dirty_on_route_change` leaves the accumulator on the outgoing unit's
+///   volume atomic (the incoming one reads its untouched value);
+/// - dropping `recaptured` from the sequence `rebuild` leaves the clip on the
+///   outgoing port, so the incoming one polls no note.
+#[cfg(all(feature = "midi", feature = "synth", feature = "modulation"))]
+mod crossfade_consumers {
+    use bevy_app::prelude::*;
+
+    use bevy_tutti::graph::{
+        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode,
+        TransportRes,
+    };
+    use bevy_tutti::midi::{
+        MidiRouteRule, MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
+    };
+    use bevy_tutti::modulation::{
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
+        TuttiModulationPlugin,
+    };
+    use bevy_tutti::AudioEngineState;
+    use tutti_core::dsp::Net;
+    use tutti_core::transport::Transport;
+    use tutti_core::{AudioUnit as _, Beat, SampleRate};
+    use tutti_midi_runtime::TimedMidiEvent;
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
+    use tutti_polysynth::{PolySynth, SynthConfig};
+    use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
+
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const BASE_VOLUME: f32 = 0.5;
+
+    fn synth() -> PolySynth {
+        PolySynth::new(SynthConfig::default()).expect("builds a synth")
+    }
+
+    #[test]
+    fn a_crossfaded_synth_keeps_its_route_its_modulation_and_its_sequence() {
+        let mut net = Net::new(0, 2);
+        net.set_sample_rate(SampleRate(SAMPLE_RATE));
+        let _backend = net.backend();
+
+        let mut app = App::new();
+        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
+        app.insert_resource(AudioConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            channels: tutti_core::ChannelLayout::STEREO,
+        });
+        app.insert_resource(AudioEngineState::Running);
+        app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
+            SAMPLE_RATE,
+        ));
+        let (routing, rt_view) = bevy_tutti::midi::test_support::routing_table_for_test();
+        app.insert_resource(routing);
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            bevy_asset::AssetPlugin::default(),
+        ));
+        app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin, TuttiModulationPlugin));
+        app.world_mut()
+            .resource_mut::<MidiTargetRegistry>()
+            .register::<PolySynth>();
+        app.world_mut()
+            .resource_mut::<ModTargetRegistry>()
+            .register::<PolySynth>();
+
+        // One synth, with all three consumers pointed at it.
+        let outgoing = synth();
+        let outgoing_volume = outgoing.volume_atomic();
+        let target = app
+            .world_mut()
+            .commands()
+            .spawn_audio_node(outgoing)
+            .insert(ModParamRange::default().with(
+                ParamAddr::Unit(UnitParam::Volume),
+                BASE_VOLUME,
+                0.0,
+                1.0,
+            ))
+            .id();
+        app.world_mut()
+            .spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(target));
+        // A square at zero rate holds a constant offset.
+        let lfo = app
+            .world_mut()
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModSourceRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Volume)).with_depth(Depth(0.2)),
+        );
+        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, u16::MAX);
+        app.world_mut().spawn(MidiSourceInstall::new(
+            target,
+            vec![TimedMidiEvent::new(Beat(0.25), on)],
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        // Every consumer is bound to the outgoing unit before the crossfade, so
+        // what follows is a *re*-binding and not a first binding that happened
+        // to land late.
+        let driven = outgoing_volume.load(std::sync::atomic::Ordering::Acquire);
+        assert!(
+            (driven - BASE_VOLUME).abs() > 0.05,
+            "precondition: the LFO drives the outgoing unit"
+        );
+
+        // The incoming unit, with a handle on its own volume atomic.
+        let incoming = synth();
+        let volume = incoming.volume_atomic();
+        let untouched = volume.load(std::sync::atomic::Ordering::Acquire);
+        assert!(
+            (untouched - driven).abs() > 0.05,
+            "precondition: the incoming unit's own volume ({untouched}) is not already \
+             the driven value ({driven}), or the assertion below proves nothing"
+        );
+        crossfade_audio_node(&mut app.world_mut().commands(), target, Box::new(incoming));
+        app.update();
+        app.update();
+        let port = app
+            .world()
+            .get::<MidiTarget>(target)
+            .unwrap()
+            .port()
+            .clone();
+        let new_id: MidiUnitId = port.unit_id();
+
+        // MIDI route: the table names the incoming port.
+        let routed: Vec<MidiUnitId> = rt_view.read().route(&on).collect();
+
+        // Modulation: the accumulator mirrors into the incoming unit's atomic.
+        let modulated = volume.load(std::sync::atomic::Ordering::Acquire);
+
+        // Sequence: the clip plays out of the incoming port.
+        let transport = app.world().resource::<TransportRes>().clone();
+        let _ = transport
+            .motion
+            .try_send(tutti_core::transport::MotionEvent::Play);
+        transport.motion.drain();
+        let mut buf = [MidiEvent::noop(); 256];
+        let n = port.poll(24_000, &mut buf);
+        let sequenced = buf[..n].iter().any(|e| e.is_note_on());
+
+        assert_eq!(
+            routed,
+            vec![new_id],
+            "the MIDI route names the incoming port"
+        );
+        assert!(
+            (modulated - driven).abs() < 1e-3,
+            "the LFO must drive the incoming unit's volume to {driven}; it reads \
+             {modulated} (untouched: {untouched})"
+        );
+        assert!(sequenced, "the sequence must play out of the incoming port");
     }
 }

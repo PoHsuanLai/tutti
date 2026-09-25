@@ -217,3 +217,108 @@ struct Observed {
     transport_bound: bool,
     compensated_latency: Option<Samples>,
 }
+
+/// Spawn a request for the probe on the master and run frames until it loads.
+fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
+    let entity = app
+        .world_mut()
+        .spawn(PluginRequest {
+            id: PluginId::from_path(clap_probe()),
+            sample_rate: SampleRate(SAMPLE_RATE),
+            ..Default::default()
+        })
+        .id();
+    app.insert_resource(MasterSources::from(entity));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while app.world().get::<PluginLoadTerminated>(entity).is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the plugin never finished loading"
+        );
+        app.update();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.update();
+    entity
+}
+
+/// A crossfaded plugin is bound again: the incoming `PluginClient` gets the
+/// transport (and, with modulation, its param automation) installed, and the
+/// latency poll records the incoming plugin's figure.
+///
+/// The binding systems latch on `PluginTransportBound` / `PluginParamsBound`,
+/// which describe the *outgoing* client. A crossfade keeps the entity and its
+/// markers, so unless the re-capture clears them the incoming client never has
+/// anything installed — a plugin that plays with a stopped default transport
+/// and no automation, and nothing logs.
+///
+/// # Mutation
+///
+/// Deleting the marker-clearing block at the top of
+/// `CapturedControls::replace` fails the transport (and params) assertion: the
+/// incoming client's slots stay empty. Not replacing the shadow at all
+/// (dropping the `plugin` arm of `replace`) fails the latency assertion too,
+/// since the poll keeps reading the outgoing client's 137.
+#[test]
+fn a_crossfaded_plugin_is_bound_again() {
+    let mut app = app();
+    #[cfg(feature = "modulation")]
+    app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
+    let entity = load_probe_entity(&mut app);
+    #[cfg(feature = "modulation")]
+    app.world_mut().entity_mut(entity).insert(
+        bevy_tutti::modulation::ModParamRange::default().with(
+            tutti_types::ParamAddr::Id(0),
+            0.5,
+            0.0,
+            1.0,
+        ),
+    );
+    app.update();
+    assert!(
+        app.world().get::<PluginTransportBound>(entity).is_some(),
+        "precondition: the outgoing plugin was bound"
+    );
+
+    // A second instance of the probe, told a different latency so the poll's
+    // record says which client it read.
+    let incoming = tutti_plugin::handles::PluginClient::new(
+        tutti_plugin::BridgeConfig::default(),
+        clap_probe(),
+        SampleRate(SAMPLE_RATE),
+    )
+    .expect("load a second instance of the reference plugin");
+    const INCOMING_LATENCY: usize = 211;
+    incoming.set_latency(Samples(INCOMING_LATENCY));
+    let controls = incoming.controls();
+    bevy_tutti::graph::crossfade_audio_node(
+        &mut app.world_mut().commands(),
+        entity,
+        Box::new(incoming),
+    );
+    app.update();
+    app.update();
+
+    assert!(
+        controls.has_transport_source(),
+        "the incoming plugin must get the transport installed"
+    );
+    #[cfg(feature = "modulation")]
+    assert!(
+        controls.has_param_automation_source(),
+        "and its param automation"
+    );
+    assert_eq!(
+        app.world().get::<CompensatedLatency>(entity).map(|c| c.0),
+        Some(Samples(INCOMING_LATENCY)),
+        "the latency poll must read the incoming plugin"
+    );
+
+    // And when the node goes — the dead-plugin teardown takes `AudioNode` off
+    // exactly like this — the shadow goes with it, so a dead plugin's slots
+    // are not kept alive by the entity. Mutation: dropping the
+    // `drop_captured` call from `reconcile_node_despawn` fails this.
+    app.world_mut().entity_mut(entity).remove::<AudioNode>();
+    app.update();
+    assert!(app.world().get::<PluginShadow>(entity).is_none());
+}

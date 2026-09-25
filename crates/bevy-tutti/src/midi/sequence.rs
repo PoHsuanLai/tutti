@@ -94,6 +94,10 @@ pub struct InstalledMidiSources(HashSet<Entity>);
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
     changed: Query<Entity, Changed<MidiSourceInstall>>,
+    // A crossfade replaces the target's port, and the clip installed on the
+    // outgoing port plays into a unit nothing renders. A changed capture is a
+    // port that needs its install again.
+    recaptured: Query<(), Changed<super::MidiTarget>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut installed: ResMut<InstalledMidiSources>,
     resolver: MidiTargetResolver,
@@ -102,7 +106,7 @@ pub fn rebuild(
     transport: Option<Res<TransportRes>>,
     config: Option<Res<AudioConfig>>,
 ) {
-    let dirty = !changed.is_empty() || !removed.is_empty();
+    let dirty = !changed.is_empty() || !removed.is_empty() || !recaptured.is_empty();
     // Draining is what marks this frame's removals as seen, so it happens
     // whether or not a rebuild follows.
     removed.clear();

@@ -26,6 +26,20 @@
 //! that is not the entity's current [`AudioNode`] — a leftover from a node that
 //! was replaced by hand is inert rather than stale.
 //!
+//! **That guard is `NodeId` equality and nothing more.** It catches a different
+//! node bound to the entity; it cannot see a unit replaced *under the same id*.
+//! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
+//! a host that calls `Net::crossfade` (or `Net::replace`) on `AudioGraphRes`
+//! directly bypasses both the capture and the guard, and the entity keeps
+//! driving the outgoing unit's controls. Go through `crossfade_audio_node`, or
+//! re-run [`CapturedControls::capture`] and [`bind`](CapturedControls::bind)
+//! yourself.
+//!
+//! When the node goes (its `AudioNode` is removed, or the entity despawned) the
+//! captured components go with it — `drop_captured` runs from the removal
+//! observer. They are not free to keep: a `ModParamsHandle` holds a whole clone
+//! of the unit, which for a convolver or a synth is its IR or its voices.
+//!
 //! Every node-insertion path in this crate runs the capture:
 //! [`spawn_audio_node`](crate::graph::SpawnAudioNode),
 //! [`insert_audio_node`](crate::graph::InsertAudioNode),
@@ -112,8 +126,25 @@ impl CapturedControls {
     ///
     /// A control this unit does not have is **removed**: the old unit's port or
     /// params would otherwise stay reachable under the new unit's node id.
+    ///
+    /// The plugin binding latches are cleared too. `PluginTransportBound` and
+    /// `PluginParamsBound` say "*this* plugin has its transport and automation
+    /// installed", and the incoming `PluginClient` has neither: left in place
+    /// they would stop the binding systems from ever installing them.
+    /// `CompensatedLatency` records what PDC was last planned against for the
+    /// outgoing node; clearing it makes the latency poll re-plan for the
+    /// incoming one on its next pass.
     pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: NodeId) {
         let _ = (&entity, node);
+        #[cfg(feature = "plugin")]
+        {
+            entity.remove::<(
+                crate::plugin_host::PluginTransportBound,
+                crate::plugin_host::CompensatedLatency,
+            )>();
+            #[cfg(feature = "modulation")]
+            entity.remove::<crate::plugin_host::PluginParamsBound>();
+        }
         #[cfg(feature = "midi")]
         match self.midi {
             Some(port) => {
@@ -142,6 +173,26 @@ impl CapturedControls {
             }
         }
     }
+}
+
+/// Remove every captured control from `entity`, for when its node is gone.
+///
+/// Called from the `On<Remove, AudioNode>` observer
+/// ([`reconcile_node_despawn`](crate::graph::reconcile_node_despawn)), which
+/// covers a despawn, a host taking `AudioNode` off, and the dead-plugin
+/// teardown in `plugin_host::health`. `try_remove`, because on a despawn the
+/// entity is gone by the time the command applies, and that is fine.
+pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
+    let Ok(mut e) = commands.get_entity(entity) else {
+        return;
+    };
+    let _ = &mut e;
+    #[cfg(feature = "midi")]
+    e.try_remove::<crate::midi::MidiTarget>();
+    #[cfg(feature = "modulation")]
+    e.try_remove::<crate::modulation::ModParamsHandle>();
+    #[cfg(feature = "plugin")]
+    e.try_remove::<crate::plugin_host::PluginShadow>();
 }
 
 /// The registries a system needs to capture controls, for insertion paths that

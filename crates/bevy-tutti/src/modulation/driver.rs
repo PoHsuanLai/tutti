@@ -139,6 +139,9 @@ pub fn rebuild(
     mut collected: ResMut<CollectedModSources>,
     routes: Query<&ModRoute>,
     ranges: Query<&ModParamRange>,
+    // A re-captured `ModParamsHandle` (a crossfade) is not listed here: it
+    // raises `collected.dirty` in `source::mark_dirty_on_route_change`, which
+    // must see it anyway so the rebuild has sources to bind.
     changed: Query<Entity, Or<(Changed<ModRoute>, Changed<ModParamRange>)>>,
     mut removed: RemovedComponents<ModRoute>,
 ) {

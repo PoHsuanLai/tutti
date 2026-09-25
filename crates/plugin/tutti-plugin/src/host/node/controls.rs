@@ -214,6 +214,17 @@ impl PluginControls {
         )));
     }
 
+    /// Whether a transport reader is installed — what a host's binding checks
+    /// after swapping the node under it.
+    pub fn has_transport_source(&self) -> bool {
+        self.inputs.transport.source_ref().load().is_some()
+    }
+
+    /// Whether a parameter-automation source is installed.
+    pub fn has_param_automation_source(&self) -> bool {
+        self.inputs.params.source_ref().load().is_some()
+    }
+
     /// Drop the transport reader; subsequent blocks feed a stopped default.
     pub fn clear_transport_source(&self) {
         self.inputs.transport.clear();

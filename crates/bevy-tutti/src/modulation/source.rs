@@ -319,6 +319,11 @@ pub(crate) fn mark_dirty_on_route_change(
         Or<(
             Changed<ModRoute>,
             Changed<crate::modulation::components::ModParamRange>,
+            // A crossfade re-captures the target's params: the accumulators
+            // built from the old handle mirror into the *outgoing* unit's
+            // atomics, which nothing renders. Raising `dirty` rebuilds them
+            // against the new handle, with the sources collected.
+            Changed<crate::modulation::ModParamsHandle>,
         )>,
     >,
     mut removed: RemovedComponents<ModRoute>,

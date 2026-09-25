@@ -378,12 +378,9 @@ pub(crate) fn with_source<R>(
 ) -> crate::Result<R> {
     match graph {
         RenderGraph::Net(net) => f(&mut NetSource::new(net, sample_rate, clock)),
-        RenderGraph::Graph { editor, executor } => f(&mut GraphSource::new(
-            editor,
-            executor,
-            sample_rate,
-            clock,
-        )?),
+        RenderGraph::Graph { editor, executor } => {
+            f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)
+        }
     }
 }
 

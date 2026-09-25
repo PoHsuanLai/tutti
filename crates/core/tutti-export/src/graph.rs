@@ -18,9 +18,10 @@ use crate::{Error, Result};
 /// on a long bounce, short enough that a block's planes stay in cache. A
 /// multiple of 64 on purpose: a `Legacy` unit runs in 64-frame chunks from
 /// each block's start, so at a multiple of 64 its chunks fall on the frames
-/// `Net`'s 64-frame blocks do, and a block-oriented unit (a convolver's FFT
-/// partitions) renders the same samples through either backend (doc 013,
-/// "Two things carry over from `Legacy` chunking").
+/// `Net`'s 64-frame blocks do, and a unit whose output depends on how its
+/// calls are cut (the VBAP panner ramps its gains across each call) renders
+/// the same samples through either backend (doc 013, "Two things carry over
+/// from `Legacy` chunking"; pinned by `tests/graph_source.rs`).
 pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 
 /// The graph an export renders, in either backend.
@@ -83,6 +84,10 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 ///     .expect("renders");
 /// assert_eq!(out.frames().get(), 4_800);
 /// ```
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one value per export, moved once into the render; boxing the pair would put a `Box` in every caller's pattern for no saving"
+)]
 pub enum RenderGraph {
     /// fundsp's `Net`, re-rated to the render's rate and pulled in 64-frame
     /// blocks.

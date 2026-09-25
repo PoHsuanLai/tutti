@@ -20,8 +20,9 @@
 //!
 //! The `Net` renders 64-frame blocks and the graph `GRAPH_MAX_BLOCK` (1024).
 //! A `Legacy` unit is run in 64-frame chunks from each block's start, so at a
-//! multiple of 64 every chunk lands on the frames a `Net` block does, and even
-//! a block-oriented unit (the convolver's FFT partitions) agrees. That is why
+//! multiple of 64 every chunk lands on the frames a `Net` block does, and a
+//! unit whose output depends on the call partition (the VBAP panner, which
+//! ramps its gains across each call) agrees. That is why
 //! `GRAPH_MAX_BLOCK` is a multiple of 64; the durations below are deliberately
 //! *not*, so the last block is short on both sides.
 //!
@@ -39,8 +40,8 @@ use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTrans
 use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, Hz, SampleRate};
 use tutti_export::{
     render_normalized_to_file, render_to_buffers, render_to_file, AudioFormat, BitDepth,
-    ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
-    RenderConfig, RenderGraph, Resample, GRAPH_MAX_BLOCK,
+    ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize, RenderConfig,
+    RenderGraph, Resample, GRAPH_MAX_BLOCK,
 };
 use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare};
 use tutti_nodes::testing::{Const, Osc};
@@ -89,8 +90,13 @@ fn forked(g: GraphBuilder) -> RenderGraph {
         sample_rate: RATE,
         ..Default::default()
     }));
-    RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&timeline), RATE)
-        .expect("every node here is forkable")
+    RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&timeline),
+        RATE,
+    )
+    .expect("every node here is forkable")
 }
 
 /// A graph built twice from the same units: `(net, builder)`.
@@ -230,11 +236,16 @@ fn same_buffers(pair: Pair, config: &ExportConfig, via: Via) -> Vec<Vec<f32>> {
     assert_eq!(a.channels(), b.channels());
     assert_eq!(a.frames(), b.frames(), "the two backends differ in length");
     for (c, (x, y)) in a.planes.iter().zip(&b.planes).enumerate() {
-        if let Some(i) = x.iter().zip(y).position(|(p, q)| p.to_bits() != q.to_bits()) {
+        if let Some(i) = x
+            .iter()
+            .zip(y)
+            .position(|(p, q)| p.to_bits() != q.to_bits())
+        {
             panic!(
                 "{}-wide: channel {c} differs first at frame {i}: net {} graph {}",
                 a.channels(),
-                x[i], y[i]
+                x[i],
+                y[i]
             );
         }
     }
@@ -259,21 +270,18 @@ fn same_file(
 
 /// Not vacuous: a render that is all zeros would agree with anything.
 fn assert_audible(planes: &[Vec<f32>]) {
-    let peak = planes
-        .iter()
-        .flatten()
-        .fold(0.0f32, |m, s| m.max(s.abs()));
+    let peak = planes.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()));
     assert!(peak > 0.05, "the render is (nearly) silent: peak {peak}");
 }
 
 /// The sine oracle's graph, through both backends, built for the export and
 /// forked from a live graph.
 ///
-/// Mutation (run): render the graph path's frames folded from plane 0 only
-/// (`fold_graph_frame` reading `planes[0]` for every channel) → still equal
-/// here (both channels carry the same sine), so the surround case below is
-/// what catches it; skip the graph's last short block (`block_size` rounded
-/// down to a multiple of 64 in `GraphSource::fill`) → the lengths differ.
+/// Mutations (run): `block_size` rounded down to a multiple of 64 in
+/// `GraphSource::fill` (the last, short block is never rendered) → the
+/// lengths differ; the graph's output scaled by `1.0 + f32::EPSILON` → the
+/// planes differ. (Folding every channel from plane 0 passes here — both
+/// channels carry the same sine — and fails the surround case.)
 #[test]
 fn a_sine_renders_bit_identically_through_both_backends() {
     let cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
@@ -305,8 +313,7 @@ fn a_resampled_export_is_byte_identical_through_both_backends() {
 /// The dBTP case: a peak-normalized export (render, measure, gain, write)
 /// through both backends lands on the same bytes.
 ///
-/// Mutation (run): as above; also a `GraphSource` that renders the first
-/// block twice (not advancing `produced`) → the files differ.
+/// Mutation (run): as above → the files differ.
 #[test]
 fn a_peak_normalized_export_is_byte_identical_through_both_backends() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
@@ -319,6 +326,8 @@ fn a_peak_normalized_export_is_byte_identical_through_both_backends() {
 /// The dither case: triangular dither to 16 bits, on a DC level between two
 /// codes so every sample is perturbed. Dither is seeded per export and runs
 /// sample by sample, so equal renders dither identically.
+///
+/// Mutation (run): as above → the files differ.
 #[test]
 fn a_dithered_export_is_byte_identical_through_both_backends() {
     let mut cfg = config(BitDepth::Int16, ChannelLayout::STEREO);
@@ -338,28 +347,51 @@ fn a_dithered_export_is_byte_identical_through_both_backends() {
 /// The surround case: a quad VBAP mix, exported at its own width and folded
 /// down to stereo and to mono by the ITU matrix, through both backends.
 ///
-/// Mutation (run): `fold_graph_frame` reading `planes[0]` for every source
-/// channel → the quad render differs on channel 1.
+/// This is also the case that pins the block rule in the module docs: the
+/// VBAP panner ramps its gains across each call, so it is the unit here whose
+/// output depends on where the 64-frame chunks fall.
+///
+/// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
+/// channel → the quad render differs on channel 1; `GRAPH_MAX_BLOCK = 1000`
+/// (not a multiple of 64) → the panners' ramps restart on other frames and
+/// the renders differ.
 #[test]
 fn a_surround_mix_renders_bit_identically_at_every_width() {
-    for width in [ChannelLayout::QUAD, ChannelLayout::STEREO, ChannelLayout::MONO] {
+    for width in [
+        ChannelLayout::QUAD,
+        ChannelLayout::STEREO,
+        ChannelLayout::MONO,
+    ] {
         let planes = same_buffers(quad_vbap(), &config(BitDepth::Float32, width), Via::Built);
         assert_audible(&planes);
     }
-    let quad = same_buffers(quad_vbap(), &config(BitDepth::Float32, ChannelLayout::QUAD), Via::Forked);
+    let quad = same_buffers(
+        quad_vbap(),
+        &config(BitDepth::Float32, ChannelLayout::QUAD),
+        Via::Forked,
+    );
     // Not vacuous: the rear-left source put energy in channel 2.
     assert!(quad[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
 }
 
-/// A convolver — block-oriented, latency- and tail-bearing — renders
-/// bit-identically, which is the 64-frame chunking claim in the module docs.
+/// A convolver — FFT-partitioned, latency- and tail-bearing — renders
+/// bit-identically at the graph's block.
 ///
-/// Mutation (run): `GRAPH_MAX_BLOCK = 1000` (not a multiple of 64) → the
-/// convolver's partitions fall on other frames and the planes differ.
+/// It turns out not to be the block-sensitive one: it buffers its partitions
+/// internally, so `GRAPH_MAX_BLOCK = 1000` still passes here (run) and the
+/// surround case is what catches that. The assertion on the constant below
+/// is the cheap guard; this test is here for the latency/tail-bearing unit.
+///
+/// Mutations (run): `block_size` rounded down to a multiple of 64, or the
+/// output scaled by `1.0 + f32::EPSILON` → the planes differ.
 #[test]
 fn a_convolver_renders_bit_identically_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get() % 64, 0);
-    let planes = same_buffers(convolved(), &config(BitDepth::Float32, ChannelLayout::MONO), Via::Built);
+    let planes = same_buffers(
+        convolved(),
+        &config(BitDepth::Float32, ChannelLayout::MONO),
+        Via::Built,
+    );
     assert_audible(&planes);
 }
 
@@ -381,14 +413,21 @@ fn the_latency_trim_equals_the_net_paths() {
     let net_latency = RenderGraph::Net(net.clone()).reported_latency();
     let graph_latency = graph.reported_latency();
     assert_eq!(net_latency, tutti_export::reported_latency(&mut net));
-    assert!(net_latency.get() > 0, "not vacuous: the limiter looks ahead");
+    assert!(
+        net_latency.get() > 0,
+        "not vacuous: the limiter looks ahead"
+    );
     assert_eq!(graph_latency, net_latency);
 
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.latency = graph_latency;
     let (net, g) = limited();
     let planes = same_buffers((net, g), &cfg, Via::Built);
-    assert_eq!(planes[0].len(), 14_462, "the trim does not shorten the output");
+    assert_eq!(
+        planes[0].len(),
+        14_462,
+        "the trim does not shorten the output"
+    );
     assert_audible(&planes);
 }
 
@@ -419,7 +458,7 @@ fn the_tail_length_equals_the_net_paths() {
 /// here a `Legacy` built unforkable) is refused with the node's key, and
 /// nothing renders.
 ///
-/// Mutation (run): map every `ForkError` to `Error::Fork` in
+/// Mutation (run): `ForkError::NotForkable` wrapped in `Error::Fork` in
 /// `RenderGraph::fork` → the match below fails.
 #[test]
 fn an_unforkable_node_is_an_export_error_naming_it() {
@@ -467,8 +506,8 @@ fn a_graph_prepared_at_another_rate_is_refused() {
 /// timeline ends exactly the render's frames on.
 ///
 /// Mutations (run):
-/// - `GraphSource::fill` passing `Transport::default()` instead of the
-///   clock's → every beat reads 0;
+/// - `GraphSource::fill` rendering through `FrozenClock` (a stopped
+///   transport at beat 0) and only advancing the clock → every beat reads 0;
 /// - `RenderClock::render_graph` advancing before processing → the first
 ///   frame reads a block past the start beat.
 #[test]

@@ -106,6 +106,13 @@
 //!   is rendering offline. Its MIDI clip comes with it, rebound onto the
 //!   render's timeline, so an exported instrument plays its notes; its live
 //!   MIDI inbox does not. The fork launches in the frame the export starts.
+//! - **A built-in synth plays its clip too**: a `PolySynth` or
+//!   `SoundFontUnit` forks through its own source, which rebinds the clip
+//!   installed on the live synth's port onto the render's timeline (a
+//!   SoundFont fork also renders at the export's rate). A MIDI source that
+//!   cannot be rebound refuses the export by name
+//!   ([`ExportError::ForkSource`]) rather than render its notes as silence,
+//!   for a synth as for a plugin.
 //! - **Some nodes cannot be forked**, and an export that needs one (an
 //!   output reaches it) is refused naming the node's entity
 //!   ([`ExportError::NotForkable`]): a microphone monitor, an

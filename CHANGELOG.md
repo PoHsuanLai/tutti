@@ -288,6 +288,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A synth instrument exported silent on the native graph** (design doc
+  013, PR 12's follow-up). A forked `PolySynth` or `SoundFontUnit` was
+  cloned from its `Legacy::controlled` shadow, whose MIDI port was severed
+  when the node was inserted — before any `MidiSourceInstall` clip reached
+  the live port — so a native export played none of its notes. Each synth
+  now has a fork source of its own, as a hosted plugin has:
+  - `PolySynth::fork_source` / `fork_instance` and
+    `SoundFontUnit::fork_source` / `fork_instance` (new) keep a template
+    sharing the live synth's port and control cells; a fork isolates it,
+    rebinds the live port's clip onto the render's timeline
+    (`MidiInPort::rebind_offline_into`) and resets. A MIDI source that
+    cannot be rebound fails the fork by name — `tutti_polysynth::Error::MidiSource`
+    and `tutti_soundfont::Error::MidiSource` (new variants), reaching a host
+    as `ExportError::ForkSource` naming the synth's entity — never silence.
+  - bevy-tutti's native backend hands the editor that source for every
+    `PolySynth` and `SoundFontUnit` it inserts or crossfades in, whatever
+    the path (`spawn_audio_node`, `insert_audio_node`, the soundfont
+    promotion, `AudioGraphRes::insert`).
+  - A `PolySynth` fork reads its `Param` cells (volume, unison detune and
+    spread) at the fork, not at insert as the shadow did; `isolate`
+    detaches them, so a live move afterwards does not reach the render.
+  - A `SoundFontUnit` fork shares the decoded SoundFont and keeps the live
+    unit's preset, and renders at the export's rate: its node re-rates on
+    prepare through `SoundFontUnit::with_sample_rate` (new; a copy at another
+    rate, keeping the channel state, via the vendored
+    `Synthesizer::with_sample_rate`). A live unit's rate stays fixed.
+
 - **`FileIn` streamed every Ogg Vorbis file as empty.** Vorbis's first packet
   decodes to zero frames, and the streamer took any zero-frame packet for
   end-of-stream, so a streamed `.ogg` clip played silence from its first block

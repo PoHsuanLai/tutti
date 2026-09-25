@@ -9,7 +9,7 @@
 //!
 //! | `AudioGraphRes` | here |
 //! |---|---|
-//! | `insert` | `Legacy::controlled` at a [`NodeKey`] minted from a fresh `NodeId` |
+//! | `insert` | `Legacy::controlled` at a [`NodeKey`] minted from a fresh `NodeId`; a synth with its own fork source |
 //! | `set_source`, `set_output_source`, `widen_outputs` | written into `editor.spec_mut()` |
 //! | `set_param` | the node's `LegacyControls` (its settings ring, and its shadow) |
 //! | `replace` | `Editor::replace` with a [`Fade`]; a plain `insert` when there is nothing to fade from |
@@ -63,7 +63,8 @@ use tutti_core::{
     Tail,
 };
 use tutti_graph::{
-    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, Prepare, Resolution, Transport,
+    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, NodeParts, Prepare, Resolution,
+    Transport,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -245,6 +246,56 @@ fn declared_latency(unit: &mut dyn AudioUnit) -> Latency {
     ))
 }
 
+/// `unit` as every unit goes in — [`Legacy::controlled`]: its node, settings
+/// ring and shadow — with the fork source a fork of it needs: the unit's own
+/// ([`own_fork_source`]) where it has one, otherwise the shadow clone
+/// `Legacy` hands every forkable unit.
+fn controlled(
+    editor: &mut Editor,
+    unit: Box<dyn AudioUnit>,
+) -> (NodeParts<()>, LegacyControls<Boxed>) {
+    // Before the unit moves: the source keeps a template of it.
+    let own = own_fork_source(unit.as_ref());
+    let (legacy, controls) = Legacy::controlled(editor, Boxed(unit));
+    let mut parts = tutti_graph::IntoNode::into_parts(legacy);
+    if own.is_some() {
+        parts.fork = own;
+    }
+    (parts, controls)
+}
+
+/// The fork source a unit brings of its own, for a unit a clone of its
+/// `Legacy::controlled` shadow cannot fork: a synth that plays a clip.
+///
+/// The shadow is isolated when the node is inserted, so its MIDI port was
+/// severed before any `MidiSourceInstall` reached the live one, and an
+/// export of a synth rendered silence (doc 013, PR 12's follow-up). A synth's
+/// own source (`PolySynth::fork_source`, `SoundFontUnit::fork_source`) keeps
+/// a template sharing the live port, and a fork rebinds the clip installed on
+/// it onto the render's timeline — failing the export by name
+/// (`ExportError::ForkSource`) when the source cannot be rebound. The same
+/// shape as a hosted plugin's (`insert_plugin`).
+///
+/// Asked of the **owned** unit, before it is inserted, as every capture in
+/// `graph::capture` is — not a read of the graph. Every insertion path (a
+/// spawn, `insert_audio_node`, the soundfont promotion, a crossfade, a host's
+/// own `AudioGraphRes::insert`) funnels through `insert` or `replace`, so
+/// none can miss it. A host's own MIDI-receiving unit type is not in this
+/// list and forks from its shadow, without its clip.
+fn own_fork_source(unit: &dyn AudioUnit) -> Option<Box<dyn tutti_graph::ForkSource>> {
+    let any = unit.as_any();
+    #[cfg(feature = "synth")]
+    if let Some(synth) = any.downcast_ref::<tutti_polysynth::PolySynth>() {
+        return Some(synth.fork_source());
+    }
+    #[cfg(feature = "soundfont")]
+    if let Some(unit) = any.downcast_ref::<tutti_soundfont::SoundFontUnit>() {
+        return Some(unit.fork_source());
+    }
+    let _ = any;
+    None
+}
+
 impl NativeGraph {
     /// An empty graph with `inputs` global inputs and `outputs` global
     /// outputs, prepared for `rate`, its executor local.
@@ -365,8 +416,8 @@ impl NativeGraph {
 
     pub(crate) fn insert(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
         let node = AudioNode(NodeId::new());
-        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(unit));
-        self.editor.insert(key(node), UNIT_KIND, legacy);
+        let (parts, controls) = controlled(&mut self.editor, unit);
+        self.editor.insert(key(node), UNIT_KIND, parts);
         self.nodes.insert(
             key(node),
             Entry {
@@ -541,7 +592,7 @@ impl NativeGraph {
                 && s.event_resolution == Resolution::Block
                 && s.latency == probe_latency(unit.as_mut(), rate)
         });
-        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(unit));
+        let (legacy, controls) = controlled(&mut self.editor, unit);
         if fits {
             let fade = Fade::seconds(fade, rate, curve);
             if let Err(e) = self.editor.replace(k, legacy, fade) {

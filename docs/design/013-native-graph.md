@@ -3133,8 +3133,8 @@ vocoder retirement channel for voices the pool removes.
 
 - **Event ports.** MIDI, parameter automation, harmony and note expression
   still arrive through their `InputSlot`s and the MIDI port, each polling a
-  timeline of its own per call. Converting them waits on the event-port work
-  in tutti-graph (`feat/graph-event-ports`). The seam is `PluginInputs`
+  timeline of its own per call. tutti-graph's event ports have landed (#50);
+  converting the plugin's inputs to them is the next PR. The seam is `PluginInputs`
   (`host/node/controls.rs`) and the payload build in `graph_node.rs`: each
   slot's `drain` becomes a read of the node's event port. Because they still
   read time out of band, **the node declares `Shape::legacy`**, and a plan

@@ -10,9 +10,12 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
+use tutti_core::Real;
 
-use tutti_core::{ChannelLayout, Drive, Hz, Param, ParamFeed, Resonance, SampleRate};
+use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate};
+use tutti_graph::{
+    Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
+};
 use tutti_types::UnitParam;
 
 use crate::ramp::{self, finite_or, LastGood, Ramp};
@@ -179,8 +182,7 @@ fn ladder_step<F: Real>(
 /// across clones, all read **once per block**. A held cutoff/resonance costs
 /// nothing; a moved one is ramped across the block with a coefficient solve
 /// every 16 samples; a moved drive is ramped linearly across the block, since
-/// it multiplies straight into the saturator and would otherwise step. `tick`
-/// is a block of one.
+/// it multiplies straight into the saturator and would otherwise step.
 ///
 /// **Resonance is `0.0..=1.0`, not a [`Q`](tutti_core::Q).** It scales the
 /// ladder's feedback: `0.0` is no emphasis, and toward `1.0` the filter
@@ -198,13 +200,21 @@ fn ladder_step<F: Real>(
 ///
 /// `N` audio inputs, `N` outputs. Cutoff, Q and drive are modulatable by the
 /// graph (design doc 013 item 6), in that port order ([`LADDER_PARAMS`]). A
-/// fed cutoff or Q is sampled at the solve points (every 16 samples and the
-/// block's last sample) with the coefficients interpolated between them; a
-/// fed drive is read every sample, since drive needs no solve. Unfed, the
-/// filter reads its atomics once per block, at the cost of one branch.
+/// modulated cutoff or Q is sampled at the solve points (every 16 samples
+/// and the block's last sample) with the coefficients interpolated between
+/// them; a modulated drive is read every sample, since drive needs no solve.
+/// Unmodulated, the filter reads its cells once per block, at the cost of
+/// one branch.
 ///
 /// The param is `UnitParam::Q` for consistency with the other filters, but
 /// it carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_core::Q).
+///
+/// # In a graph
+///
+/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over cutoff, resonance (as `UnitParam::Q`) and drive, and a fork of it
+/// starts from the values last set through that set. The graph prepares it
+/// at the device rate before its first block.
 pub struct LadderFilterNode<F: Real = f64> {
     ladder_type: LadderType,
     frequency: Param<Hz>,
@@ -218,15 +228,12 @@ pub struct LadderFilterNode<F: Real = f64> {
     /// its target rather than ramping in from a value nothing set.
     last_drive: Option<Drive>,
     /// Stage state, four words per channel; `len()` is the audio width. Built
-    /// at construction and never resized in `tick`/`process` (RT no-alloc).
+    /// at construction and never resized in `process` (RT no-alloc).
     stages: Vec<[F; 4]>,
     /// The last finite cutoff / resonance / drive the cells held: a
     /// non-finite write reads as unchanged, so it never reaches the solve or
     /// the saturator (see [`LastGood`]).
     good: [LastGood; 3],
-    /// Per-frame cutoff, resonance and drive from the graph, when it
-    /// modulates them ([`LADDER_PARAMS`]).
-    feed: ParamFeed,
 }
 
 /// The params a [`LadderFilterNode`] lets the graph modulate, in port order.
@@ -239,16 +246,7 @@ impl<F: Real> LadderFilterNode<F> {
     /// `resonance` is clamped to `0.0..=1.0`; `0.0` gives no emphasis at the
     /// cutoff and values near `1.0` approach self-oscillation.
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: the coefficients
-    /// computed here are relative to Nyquist, which is not known until the
-    /// device is open. Call [`AudioUnit::set_sample_rate`] before the first
-    /// `process`; it recomputes them. Skip it at 48 kHz and the corner sits
-    /// 8.8% high, and the resonance peak moves with it — on a ladder that is
-    /// the audible half, since the emphasis is what the ear tracks. See the
-    /// crate-level "born at a placeholder rate" section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The coefficients are solved at the rate [`Node::prepare`] hands it.
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
@@ -261,7 +259,7 @@ impl<F: Real> LadderFilterNode<F> {
     ///
     /// All channels share the authored params — one linked control surface —
     /// and one coefficient solve; only the four stage words are replicated per
-    /// channel. Starts at the placeholder rate, as [`new`](Self::new) does.
+    /// channel.
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         ladder_type: LadderType,
@@ -286,11 +284,10 @@ impl<F: Real> LadderFilterNode<F> {
                 LastGood::new(resonance.get()),
                 LastGood::new(Drive::UNITY.get()),
             ],
-            feed: ParamFeed::new(&LADDER_PARAMS),
         }
     }
 
-    /// Audio channel width (`inputs()` audio ports == `outputs()`).
+    /// Audio channel width (as many inputs as outputs).
     #[inline]
     fn width(&self) -> usize {
         self.stages.len()
@@ -394,8 +391,8 @@ impl<F: Real> LadderFilterNode<F> {
     fn run_held(
         &mut self,
         size: usize,
-        input: &BufferRef,
-        output: &mut BufferMut,
+        input: &Inputs<'_>,
+        output: &mut Outputs<'_, '_>,
         drive_at: impl Fn(usize) -> F + Copy,
     ) {
         let w = self.width();
@@ -421,14 +418,16 @@ impl<F: Real> LadderFilterNode<F> {
         &mut self,
         first: usize,
         size: usize,
-        input: &BufferRef,
-        output: &mut BufferMut,
+        input: &Inputs<'_>,
+        output: &mut Outputs<'_, '_>,
         drive_at: impl Fn(usize) -> F,
     ) {
         let (c, ty) = (self.coeffs, self.ladder_type);
-        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.channel_f32(first + k)[..size]);
-        let ys: [&mut [f32]; N] =
-            core::array::from_fn(|k| &mut output.channel_f32_mut(first + k)[..size]);
+        let xs: [&[f32]; N] = core::array::from_fn(|k| &input.get(first + k)[..size]);
+        let mut group = output.iter_mut().skip(first);
+        let ys: [&mut [f32]; N] = core::array::from_fn(|_| {
+            &mut group.next().expect("the group is inside the width")[..size]
+        });
         let mut st: [[F; 4]; N] = core::array::from_fn(|k| self.stages[first + k]);
         for i in 0..size {
             let d = drive_at(i);
@@ -446,8 +445,8 @@ impl<F: Real> LadderFilterNode<F> {
     fn run_swept(
         &mut self,
         size: usize,
-        input: &BufferRef,
-        output: &mut BufferMut,
+        input: &Inputs<'_>,
+        output: &mut Outputs<'_, '_>,
         param_at: impl Fn(usize) -> (Hz, Resonance),
         drive_at: impl Fn(usize) -> F,
     ) {
@@ -471,8 +470,8 @@ impl<F: Real> LadderFilterNode<F> {
                 };
                 let drive = drive_at(i);
                 for (ch, s) in self.stages.iter_mut().enumerate() {
-                    let y = ladder_step(&k, ty, s, F::from_f32(input.at_f32(ch, i)), drive);
-                    output.set_f32(ch, i, y.to_f32());
+                    let y = ladder_step(&k, ty, s, F::from_f32(input.get(ch)[i]), drive);
+                    output.get(ch)[i] = y.to_f32();
                 }
             }
             prev = next;
@@ -491,8 +490,8 @@ impl<F: Real> LadderFilterNode<F> {
     fn render(
         &mut self,
         size: usize,
-        input: &BufferRef,
-        output: &mut BufferMut,
+        input: &Inputs<'_>,
+        output: &mut Outputs<'_, '_>,
         base_freq: Hz,
         base_res: Resonance,
         cutoff: Option<&[f32]>,
@@ -538,71 +537,36 @@ impl<F: Real> LadderFilterNode<F> {
     }
 }
 
-impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
-    fn inputs(&self) -> usize {
-        self.width()
+impl<F: Real + 'static> Node for LadderFilterNode<F> {
+    fn shape(&self) -> Shape {
+        let width = ChannelLayout::from_count(self.width() as u16);
+        Shape::audio(width, width).with_params(&LADDER_PARAMS)
     }
 
-    fn outputs(&self) -> usize {
-        self.width()
-    }
-
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.frequency.detach();
-        self.resonance.detach();
-        self.drive.detach();
-    }
-
-    fn reset(&mut self) {
-        let zero = F::from_f64(0.0);
-        self.stages.fill([zero; 4]);
-        self.last_drive = None;
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
         self.coeffs.invalidate();
     }
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // A block of one: every control read once, solved at if it moved.
-        // Fed samples fall back to the cell's value when non-finite: `clamp`
-        // passes NaN, and an infinite drive times a zero input is NaN.
-        let (base_freq, base_res, base_drive) = self.read_controls();
-        let freq = self.feed.get(0, 1).map_or(base_freq, |v| Hz(v[0].max(1.0)));
-        let res = self.feed.get(1, 1).map_or(base_res, |v| {
-            Resonance(finite_or(v[0], base_res.get()).clamp(0.0, 1.0))
-        });
-        let drive = self.feed.get(2, 1).map_or(base_drive, |v| {
-            Drive(finite_or(v[0], base_drive.get()).max(0.1))
-        });
-        self.coeffs = self.solve_toward(&self.coeffs, freq, res);
-        self.last_drive = Some(drive);
-        let (c, ty, d) = (self.coeffs, self.ladder_type, F::from_f32(drive.get()));
-        for (ch, s) in self.stages.iter_mut().enumerate() {
-            output[ch] = ladder_step(&c, ty, s, F::from_f32(input[ch]), d).to_f32();
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
         if size == 0 {
-            return;
+            return Status::Modified;
         }
         // Every control is read here, once, for the whole block.
         let (base_freq, base_res, base_drive) = self.read_controls();
         let bd = base_drive.get();
 
-        // Drive: a fed drive is read per sample; the atomic ramps from where
-        // the last block ended. Each source gets its own monomorphised
-        // render, so a held drive is a constant in the loop. The feed is
-        // moved out for the render, which takes `&mut self`; moving it
-        // allocates nothing.
-        let feed = ParamFeed::take(&mut self.feed);
-        let (cutoff, res, fed_drive) = (feed.get(0, size), feed.get(1, size), feed.get(2, size));
+        // Drive: a modulated drive is read per sample; the cell ramps from
+        // where the last block ended. Each source gets its own monomorphised
+        // render, so a held drive is a constant in the loop.
+        let (cutoff, res, fed_drive) = (
+            io.param(0).frames(),
+            io.param(1).frames(),
+            io.param(2).frames(),
+        );
+        let (inputs, mut outputs) = io.split();
+        let (input, output) = (&inputs, &mut outputs);
         let drive_from = self.last_drive.unwrap_or(base_drive);
         let drive_ramp = Ramp::new(drive_from.get(), base_drive.get(), size);
         self.last_drive = Some(match fed_drive {
@@ -622,11 +586,13 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
                 F::from_f32(drive_ramp.at(i))
             }),
         }
-        self.feed = feed;
+        Status::Modified
     }
 
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
+    fn reset(&mut self) {
+        let zero = F::from_f64(0.0);
+        self.stages.fill([zero; 4]);
+        self.last_drive = None;
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
@@ -637,49 +603,42 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
             _ => None,
         }
     }
+}
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Cutoff => self.set_frequency(value),
-                tutti_core::UnitParam::Q => self.set_resonance(value),
-                tutti_core::UnitParam::Drive => self.set_drive(value),
-                _ => {}
-            }
-        }
+impl<F: Real + 'static> ParamNode for LadderFilterNode<F> {
+    /// Cutoff, resonance (as `UnitParam::Q`) and drive.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Cutoff, self.frequency.as_atomic())
+            .param(UnitParam::Q, self.resonance.as_atomic())
+            .param(UnitParam::Drive, self.drive.as_atomic())
+            .build()
     }
 
-    fn get_id(&self) -> u64 {
-        // Keyed on the audio width: width 1 keeps the mono id, every other
-        // width the wide twin's.
-        if self.width() == 1 {
-            crate::node_id::LADDER_FILTER_ID
-        } else {
-            crate::node_id::LADDER_FILTER_ID ^ 0xDA02
-        }
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.width());
-        for c in 0..self.width() {
-            out.set(c, input.at(c).distort(0.0));
-        }
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>() + 4 * self.width() * core::mem::size_of::<F>()
+    /// A clone with its three cells detached (at their values now) and its
+    /// stages cleared.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.frequency.detach();
+        fork.resonance.detach();
+        fork.drive.detach();
+        Node::reset(&mut fork);
+        fork
     }
 }
 
+/// Inserted with its [`ParamSet`] as its controls and a fork that starts from
+/// the values last set through it ([`tutti_graph::param_parts`]).
+impl<F: Real + 'static> IntoNode for LadderFilterNode<F> {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
+    }
+}
+
+/// Shares the control cells (the template [`tutti_graph::param_parts`] forks
+/// from); the stages are copied.
 impl<F: Real> Clone for LadderFilterNode<F> {
     fn clone(&self) -> Self {
         Self {
@@ -692,7 +651,6 @@ impl<F: Real> Clone for LadderFilterNode<F> {
             last_drive: self.last_drive,
             stages: self.stages.clone(),
             good: self.good,
-            feed: self.feed.clone(),
         }
     }
 }
@@ -701,11 +659,30 @@ impl<F: Real> Clone for LadderFilterNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, process_mono, rms};
+    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
+    use tutti_graph::contract::assert_param_fork;
+
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it.
+    ///
+    /// Mutation (run): drop `fork.drive.detach()` in `fork_fresh` → "a live
+    /// write reached the fork" for `Drive` → fails.
+    #[test]
+    fn a_fork_shares_no_cell() {
+        assert_param_fork(LadderFilterNode::<f64>::with_channels(
+            ChannelLayout::STEREO,
+            LadderType::LP24,
+            800.0,
+            0.3,
+        ));
+    }
 
     #[test]
     fn test_ladder_lp24_attenuates_high_freq() {
-        let mut filter = LadderFilterNode::<f64>::new(LadderType::LP24, 500.0, 0.0);
-        filter.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut filter = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 500.0, 0.0),
+            RATE_44K,
+        );
 
         let low = generate_sine(100.0, 44100.0, 4096);
         let high = generate_sine(5000.0, 44100.0, 4096);
@@ -725,8 +702,10 @@ mod tests {
 
     #[test]
     fn test_ladder_hp24_attenuates_low_freq() {
-        let mut filter = LadderFilterNode::<f64>::new(LadderType::HP24, 2000.0, 0.0);
-        filter.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut filter = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::HP24, 2000.0, 0.0),
+            RATE_44K,
+        );
 
         let low = generate_sine(100.0, 44100.0, 4096);
         let high = generate_sine(5000.0, 44100.0, 4096);
@@ -746,11 +725,15 @@ mod tests {
 
     #[test]
     fn test_ladder_resonance_boosts_cutoff() {
-        let mut no_res = LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0);
-        no_res.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut no_res = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0),
+            RATE_44K,
+        );
 
-        let mut with_res = LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.8);
-        with_res.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut with_res = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.8),
+            RATE_44K,
+        );
 
         let at_cutoff = generate_sine(1000.0, 44100.0, 4096);
 
@@ -768,11 +751,15 @@ mod tests {
 
     #[test]
     fn test_ladder_drive_adds_saturation() {
-        let mut clean = LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0);
-        clean.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut clean = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0),
+            RATE_44K,
+        );
 
-        let mut driven = LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0);
-        driven.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut driven = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 5000.0, 0.0),
+            RATE_44K,
+        );
         driven.set_drive(10.0);
 
         let sine = generate_sine(440.0, 44100.0, 4096);
@@ -791,8 +778,10 @@ mod tests {
 
     #[test]
     fn test_ladder_reset() {
-        let mut filter = LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.5);
-        filter.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut filter = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.5),
+            RATE_44K,
+        );
 
         let sine = generate_sine(440.0, 44100.0, 100);
         let _ = process_mono(&mut filter, &sine);
@@ -800,7 +789,7 @@ mod tests {
         filter.reset();
 
         let mut out = [0.0f32];
-        filter.tick(&[0.0], &mut out);
+        tick(&mut filter, &[0.0], &mut out);
         assert!(
             out[0].abs() < 0.0001,
             "After reset, output should be near zero"
@@ -809,11 +798,15 @@ mod tests {
 
     #[test]
     fn test_ladder_lp12_less_steep_than_lp24() {
-        let mut lp12 = LadderFilterNode::<f64>::new(LadderType::LP12, 1000.0, 0.0);
-        lp12.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lp12 = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP12, 1000.0, 0.0),
+            RATE_44K,
+        );
 
-        let mut lp24 = LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0);
-        lp24.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lp24 = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.0),
+            RATE_44K,
+        );
 
         let high = generate_sine(5000.0, 44100.0, 4096);
 
@@ -831,10 +824,14 @@ mod tests {
 
     #[test]
     fn test_ladder_f32_state_agrees_with_f64_for_mid_cutoff() {
-        let mut ladder_f64 = LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.3);
-        let mut ladder_f32 = LadderFilterNode::<f32>::new(LadderType::LP24, 1000.0, 0.3);
-        ladder_f64.set_sample_rate(tutti_core::SampleRate(44100.0));
-        ladder_f32.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut ladder_f64 = prepared_at(
+            LadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.3),
+            RATE_44K,
+        );
+        let mut ladder_f32 = prepared_at(
+            LadderFilterNode::<f32>::new(LadderType::LP24, 1000.0, 0.3),
+            RATE_44K,
+        );
 
         let input = generate_sine(500.0, 44100.0, 2048);
         let out_f64 = process_mono(&mut ladder_f64, &input);
@@ -851,28 +848,33 @@ mod tests {
 
     // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// Tick a stereo ladder with `params` (cutoff, Q, drive: `Some` held at
-    /// a value, `None` unfed) in its feed each sample.
+    /// Run a stereo ladder a frame at a time with `params` (cutoff, Q,
+    /// drive: `Some` held at a value, `None` reading its base) on its param
+    /// ports each frame.
     fn process_stereo_ladder(
-        node: &mut dyn AudioUnit,
+        node: &mut dyn Node,
         l: &[f32],
         r: &[f32],
         params: [Option<f32>; 3],
     ) -> (Vec<f32>, Vec<f32>) {
-        let held: Vec<Option<Vec<f32>>> =
-            params.iter().map(|p| p.map(|v| vec![v; l.len()])).collect();
-        let refs: Vec<Option<&[f32]>> = held.iter().map(|p| p.as_deref()).collect();
-        let out = crate::testing::tick_fed(node, &[l, r], &refs);
-        (out[0].clone(), out[1].clone())
+        let (mut out_l, mut out_r) = (Vec::new(), Vec::new());
+        let mut o = [0.0f32; 2];
+        for (&a, &b) in l.iter().zip(r) {
+            tick_fed(node, &[a, b], &params, &mut o);
+            out_l.push(o[0]);
+            out_r.push(o[1]);
+        }
+        (out_l, out_r)
     }
 
     #[test]
     fn ladder_with_channels_reports_arity_and_is_independent() {
-        let mut wide =
-            LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
-        wide.set_sample_rate(tutti_core::SampleRate(44100.0));
-        assert_eq!(wide.inputs(), 6);
-        assert_eq!(wide.outputs(), 6);
+        let mut wide = prepared_at(
+            LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3),
+            RATE_44K,
+        );
+        assert_eq!(wide.shape().audio_in.count(), 6);
+        assert_eq!(wide.shape().audio_out.count(), 6);
 
         // Drive only channel 4; the rest must stay silent.
         let sig = generate_sine(300.0, 44100.0, 2048);
@@ -881,10 +883,10 @@ mod tests {
         let mut outbuf = [0.0f32; 6];
         for i in 0..len {
             // Rebuilt per sample, not cleared in place: only channel 4 is
-            // driven, so every other channel must re-enter `tick` at zero.
+            // driven, so every other channel must re-enter each frame at zero.
             let mut inbuf = [0.0f32; 6];
             inbuf[4] = sig[i];
-            wide.tick(&inbuf, &mut outbuf);
+            tick(&mut wide, &inbuf, &mut outbuf);
             for c in 0..6 {
                 out[c][i] = outbuf[c];
             }
@@ -897,18 +899,21 @@ mod tests {
         }
     }
 
-    /// The feed declares cutoff, Q then drive, and never changes the arity.
+    /// The shape declares cutoff, Q then drive, and never changes the arity.
     ///
     /// Mutation (run): swap `LADDER_PARAMS`' Q and drive → the first
     /// assertion fails.
     #[test]
-    fn the_feed_declares_cutoff_q_then_drive() {
-        let mut f = LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
+    fn the_shape_declares_cutoff_q_then_drive() {
+        let f = LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
         assert_eq!(
-            f.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..])
+            f.shape().params.as_slice(),
+            &[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..]
         );
-        assert_eq!((f.inputs(), f.outputs()), (6, 6));
+        assert_eq!(
+            (f.shape().audio_in.count(), f.shape().audio_out.count()),
+            (6, 6)
+        );
         assert_eq!(f.param_base(0), Some(1000.0));
         assert_eq!(f.param_base(1), Some(0.3));
         assert_eq!(f.param_base(2), Some(1.0), "drive starts clean");
@@ -920,13 +925,15 @@ mod tests {
             .map(|i| ((i * 7 + 3) % 100) as f32 / 50.0 - 1.0)
             .collect();
         let run = |cutoff: f32| -> f32 {
-            let mut f = LadderFilterNode::<f64>::with_channels(
-                ChannelLayout::STEREO,
-                LadderType::LP24,
-                200.0,
-                0.3,
+            let mut f = prepared_at(
+                LadderFilterNode::<f64>::with_channels(
+                    ChannelLayout::STEREO,
+                    LadderType::LP24,
+                    200.0,
+                    0.3,
+                ),
+                RATE_44K,
             );
-            f.set_sample_rate(tutti_core::SampleRate(44100.0));
             let (out_l, _) =
                 process_stereo_ladder(&mut f, &noise, &noise, [Some(cutoff), None, None]);
             rms(&out_l[256..])
@@ -945,22 +952,26 @@ mod tests {
         // same output as a plain node.
         let signal = generate_sine(440.0, 44100.0, 1024);
 
-        let mut plain = LadderFilterNode::<f64>::with_channels(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1000.0,
-            0.3,
+        let mut plain = prepared_at(
+            LadderFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                LadderType::LP24,
+                1000.0,
+                0.3,
+            ),
+            RATE_44K,
         );
-        plain.set_sample_rate(tutti_core::SampleRate(44100.0));
         let (plain_l, _) = process_stereo_ladder(&mut plain, &signal, &signal, [None; 3]);
 
-        let mut modn = LadderFilterNode::<f64>::with_channels(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1000.0,
-            0.3,
+        let mut modn = prepared_at(
+            LadderFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                LadderType::LP24,
+                1000.0,
+                0.3,
+            ),
+            RATE_44K,
         );
-        modn.set_sample_rate(tutti_core::SampleRate(44100.0));
         let (mod_l, _) =
             process_stereo_ladder(&mut modn, &signal, &signal, [Some(1000.0), None, None]);
 
@@ -976,15 +987,9 @@ mod tests {
 
     // ── Per-block reads ──────────────────────────────────────────────────────
 
+    /// Unprepared: `change_between_node_blocks` prepares each copy at 48 kHz.
     fn ladder_48k() -> LadderFilterNode<f64> {
-        let mut n = LadderFilterNode::<f64>::with_channels(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            500.0,
-            0.4,
-        );
-        n.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        n
+        LadderFilterNode::<f64>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 500.0, 0.4)
     }
 
     /// A cutoff change made between blocks is read by the next block, ramped
@@ -994,9 +999,9 @@ mod tests {
     /// (a jump) fails `assert_ramps_in`.
     #[test]
     fn a_cutoff_change_is_read_next_block_and_ramped_across_it() {
-        use crate::test_support::{change_between_blocks, noise};
+        use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(5, 128);
-        let run = change_between_blocks(
+        let run = change_between_node_blocks(
             ladder_48k,
             |n| n.set_frequency(7_000.0),
             &[&x[..64], &x[..64]],
@@ -1013,20 +1018,18 @@ mod tests {
     /// fails `assert_ramps_in`.
     #[test]
     fn a_drive_change_is_read_next_block_and_ramped_across_it() {
-        use crate::test_support::{change_between_blocks, noise};
+        use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(6, 128);
         // A high-pass tap, so the saturator's input reaches the output
         // unfiltered and the drive step is audible on the first sample.
-        let run = change_between_blocks(
+        let run = change_between_node_blocks(
             || {
-                let mut n = LadderFilterNode::<f64>::with_channels(
+                LadderFilterNode::<f64>::with_channels(
                     ChannelLayout::STEREO,
                     LadderType::HP24,
                     500.0,
                     0.4,
-                );
-                n.set_sample_rate(tutti_core::SampleRate(48_000.0));
-                n
+                )
             },
             |n| n.set_drive(9.0),
             &[&x[..64], &x[..64]],
@@ -1042,17 +1045,20 @@ mod tests {
     /// Mutation: indexing lane 0 for every channel in `run_held` fails.
     #[test]
     fn six_channels_are_six_mono_ladders() {
-        use crate::test_support::{noise, process_block};
+        use crate::test_support::{drive_block, noise, prepared};
         let inputs: Vec<Vec<f32>> = (0..6).map(|c| noise(c + 20, 64)).collect();
         let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
-        let mut wide = LadderFilterNode::<f64>::with_channels(6usize, LadderType::HP12, 800.0, 0.7);
-        wide.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        let out = process_block(&mut wide, &refs);
+        let mut wide = prepared(LadderFilterNode::<f64>::with_channels(
+            6usize,
+            LadderType::HP12,
+            800.0,
+            0.7,
+        ));
+        let out = drive_block(&mut wide, &refs);
         for (c, input) in inputs.iter().enumerate() {
-            let mut mono = LadderFilterNode::<f64>::new(LadderType::HP12, 800.0, 0.7);
-            mono.set_sample_rate(tutti_core::SampleRate(48_000.0));
+            let mut mono = prepared(LadderFilterNode::<f64>::new(LadderType::HP12, 800.0, 0.7));
             assert_eq!(
-                process_block(&mut mono, &[&input[..]])[0],
+                drive_block(&mut mono, &[&input[..]])[0],
                 out[c],
                 "channel {c}"
             );

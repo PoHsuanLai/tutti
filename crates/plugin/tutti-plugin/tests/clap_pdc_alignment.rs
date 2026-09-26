@@ -212,7 +212,7 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     // an explicit adder. `ChannelSumNode`, which sums rather than averages: two
     // aligned arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one
     // arrival alone cannot produce.
-    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::MONO)));
+    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
 
     for port in 0..plugin_inputs {
         g.set_source(key, port, Source::Global(0));

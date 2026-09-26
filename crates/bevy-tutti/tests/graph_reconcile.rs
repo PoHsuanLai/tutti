@@ -289,13 +289,11 @@ mod audio_param {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::{
-        AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
-        TransportRes,
+        AudioGraphRes, AudioParam, AudioParamAppExt, GraphNode, GraphReconcilePlugin, TransportRes,
     };
     #[cfg(feature = "modulation")]
     use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
-        TuttiModulationPlugin,
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -320,32 +318,28 @@ mod audio_param {
         let drive = DriveCell(unit.drive());
         let mut graph = AudioGraphRes::headless(0, 1);
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        // A setting goes into the node's settings ring and reaches the unit on
-        // its next block, on any graph. So `node_drive` renders a frame before
-        // it reads. (On `Net`, before design doc 013's PR 13, these tests used
-        // a graph with no audio side, where a setting applied straight to the
-        // only copy of the node.)
+        // A native node: a param set by address writes the cell it reads, which
+        // it reads on its next block. `node_drive` renders a frame before it
+        // reads all the same. (Through `Legacy` a setting went into a settings
+        // ring first: `a_param_reaches_a_legacy_unit_through_its_ring` below
+        // keeps that path pinned.)
 
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(GraphReconcilePlugin);
         #[cfg(feature = "modulation")]
-        {
-            app.add_plugins(TuttiModulationPlugin);
-            // Before the node is bound: the registry is consulted once, when the
-            // node's controls are captured, so a type registered afterwards
-            // would leave this node unmodulatable.
-            app.world_mut()
-                .resource_mut::<ModTargetRegistry>()
-                .register::<DistortionNode>();
-        }
+        app.add_plugins(TuttiModulationPlugin);
         app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 
-        let controls = CapturedControls::capture(app.world(), &unit);
+        // Captured before it goes in, as every insertion path does: a native
+        // node's controls are its `ParamSet`, addressed on the node so an
+        // `AudioParam` writes through it (what `spawn_graph_node` does).
+        let controls = unit.captured();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(unit);
+            let (node, params) = graph.insert_node(unit);
+            graph.set_node_params(node, DistortionNode::params(&params));
             graph.set_outputs_from(node);
             node
         };
@@ -377,6 +371,45 @@ mod audio_param {
     #[test]
     fn an_inserted_param_reaches_the_node() {
         let (mut app, entity) = app_with_node();
+
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(DriveParam::new(Drive(4.0)));
+        app.update();
+
+        assert_eq!(node_drive(&mut app, entity), 4.0);
+    }
+
+    /// An `AudioParam` on an `AudioUnit` bound through `Legacy` reaches the
+    /// unit through its settings ring on the next block — the path every
+    /// test here took while the node was `DistortionNode` under `Legacy`,
+    /// kept on the suites' own [`DriveUnit`](crate::common::drive_unit::DriveUnit).
+    ///
+    /// Mutation (run): make `DriveUnit::set` ignore `Drive` → the drive stays
+    /// at 1 → fails.
+    #[test]
+    fn a_param_reaches_a_legacy_unit_through_its_ring() {
+        use crate::common::drive_unit::DriveUnit;
+
+        let mut app = App::new();
+        let unit = DriveUnit::new(INITIAL_DRIVE);
+        let drive = DriveCell(unit.drive());
+        let mut graph = AudioGraphRes::headless(0, 1);
+        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        app.insert_resource(graph);
+        app.insert_resource(TransportRes(Transport::new(48_000.0)));
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins(GraphReconcilePlugin);
+        #[cfg(feature = "modulation")]
+        app.add_plugins(TuttiModulationPlugin);
+        app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert(unit);
+            graph.set_outputs_from(node);
+            node
+        };
+        let entity = app.world_mut().spawn((drive, node)).id();
 
         app.world_mut()
             .entity_mut(entity)
@@ -480,8 +513,8 @@ mod audio_param {
     #[cfg(feature = "modulation")]
     #[test]
     fn an_authored_write_to_a_modulated_param_moves_the_base() {
-        // `app_with_node` registers `DistortionNode` for modulation before it
-        // binds the node — the registry is read once, at capture.
+        // `app_with_node` captures the node's `ParamSet` before it binds the
+        // node — the capture is read once, before insertion.
         let (mut app, entity) = app_with_node();
 
         app.world_mut().entity_mut(entity).insert((

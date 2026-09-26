@@ -34,13 +34,10 @@ fn insert(g: &mut GraphBuilder, parts: VbapMixParts, sources: &[NodeKey]) -> Nod
         .into_iter()
         .map(|p| g.add_unit(Box::new(p)))
         .collect();
-    let lfe = parts.lfe.map(|send| {
-        (
-            g.add_unit(Box::new(send.sum)),
-            g.add_with_controls(send.lowpass).0,
-        )
-    });
-    let sum = g.add_unit(Box::new(parts.sum));
+    let lfe = parts
+        .lfe
+        .map(|send| (g.add(send.sum), g.add_with_controls(send.lowpass).0));
+    let sum = g.add(parts.sum);
     let key = |n: VbapMixNode| match n {
         VbapMixNode::Source(i) => sources[i],
         VbapMixNode::Panner(i) => panners[i],

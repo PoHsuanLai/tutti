@@ -161,7 +161,19 @@ param_graph_node!(
     tutti_nodes::SvfFilterNode<f64>,
     tutti_nodes::EqBandNode<f32>,
     tutti_nodes::EqBandNode<f64>,
+    tutti_nodes::LadderFilterNode<f32>,
+    tutti_nodes::LadderFilterNode<f64>,
+    tutti_nodes::CompressorNode,
+    tutti_nodes::GateNode,
+    tutti_nodes::LimiterNode,
+    tutti_nodes::BrickwallLimiterNode,
+    tutti_nodes::DistortionNode,
+    tutti_nodes::BusStripNode,
 );
+
+/// The width adapters: no controls, forked by clone.
+impl GraphNode for tutti_nodes::DownmixNode {}
+impl GraphNode for tutti_nodes::ChannelSumNode {}
 
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}

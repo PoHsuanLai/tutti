@@ -449,12 +449,16 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
 /// This is what makes the mechanism usable: one unreporting node on the output
 /// path makes the whole graph's tail unspendable, so declaring `None` on the
 /// nodes that genuinely have none is load-bearing, not cosmetic.
+///
+/// Mutation (run): `.with_tail(Tail::Unknown)` in `DistortionNode::shape` →
+/// fails. (`Shape::audio` starts at `Tail::None`, so a node that forgot to
+/// declare would pass here; the declaration is kept explicit on the node.)
 #[test]
 fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
-    use tutti_core::AudioUnit;
+    use tutti_graph::Node;
 
-    let mut dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
-    assert_eq!(dist.tail(), tutti_types::Tail::None);
+    let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
+    assert_eq!(dist.shape().tail, tutti_types::Tail::None);
 }
 
 /// `render_to_buffers` reports the rate its samples are actually at, and gives

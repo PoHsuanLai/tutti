@@ -342,10 +342,9 @@ mod tests {
     use super::*;
     use bevy_app::prelude::*;
 
-    use crate::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
+    use crate::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use crate::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
-        TuttiModulationPlugin,
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use crate::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -364,18 +363,17 @@ mod tests {
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
-        // Registered first, then captured and pushed: the capture is what makes
-        // the node modulatable, and it only runs on the unit before insertion.
+        // Captured, then pushed: the capture is what makes the node
+        // modulatable, and it only runs on the node before insertion. A
+        // native node's capture is its `ParamSet`'s cells — no registry
+        // entry.
         let unit = DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
         let drive = DriveCell(unit.drive());
-        let controls = CapturedControls::capture(app.world(), &unit);
+        let controls = crate::graph::GraphNode::captured(&unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(unit);
+            let (node, _params) = graph.insert_node(unit);
             graph.set_outputs_from(node);
             node
         };

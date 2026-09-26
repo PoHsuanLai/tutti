@@ -179,3 +179,36 @@ impl<N> ChangeRun<N> {
         }
     }
 }
+
+/// The rate the per-frame unit tests ran their nodes at before the port.
+pub(crate) const RATE_44K: SampleRate = SampleRate(44_100.0);
+
+/// A native node prepared at `rate` for blocks of up to 1024 frames: what
+/// `set_sample_rate(rate)` did for an `AudioUnit`.
+pub(crate) fn prepared_at<N: Node>(node: N, rate: SampleRate) -> N {
+    tutti_graph::contract::prepared(node, rate, 1024)
+}
+
+/// One frame of a native node — a block of one, what `tick` was: `input`
+/// holds one sample per audio input, and `out` receives one per output.
+pub(crate) fn tick(node: &mut dyn Node, input: &[f32], out: &mut [f32]) {
+    tick_fed(node, input, &[], out);
+}
+
+/// [`tick`] with declared param `k` fed `params[k]` for the frame (`None`
+/// reads its base): what feeding a `ParamFeed` before a `tick` was.
+pub(crate) fn tick_fed(
+    node: &mut dyn Node,
+    input: &[f32],
+    params: &[Option<f32>],
+    out: &mut [f32],
+) {
+    let ins: Vec<&[f32]> = input.iter().map(std::slice::from_ref).collect();
+    let ps: Vec<Option<&[f32]>> = params
+        .iter()
+        .map(|p| p.as_ref().map(std::slice::from_ref))
+        .collect();
+    for (o, c) in out.iter_mut().zip(drive(node, RATE, &ins, &ps)) {
+        *o = c[0];
+    }
+}

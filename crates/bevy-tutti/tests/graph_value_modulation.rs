@@ -22,10 +22,10 @@ mod common;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
-use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin};
+use bevy_tutti::graph::{AudioGraphRes, GraphNode, GraphReconcilePlugin};
 use bevy_tutti::modulation::audio_rate::ModSourceNode;
 use bevy_tutti::modulation::{
-    ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
+    ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::AudioNode;
@@ -43,15 +43,17 @@ fn app_with_target() -> (App, Entity) {
     app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
     app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-    app.world_mut()
-        .resource_mut::<ModTargetRegistry>()
-        .register::<DistortionNode>();
 
     let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
-    // Its controls, captured from the unit before it moves — the step every
-    // insertion path in `bevy_tutti::graph` runs.
-    let controls = CapturedControls::capture(app.world(), &dist);
-    let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+    // Its controls, captured from the node before it moves — the step every
+    // insertion path in `bevy_tutti::graph` runs; a native node's are its
+    // `ParamSet`'s cells, with no registry entry.
+    let controls = GraphNode::captured(&dist);
+    let node = app
+        .world_mut()
+        .resource_mut::<AudioGraphRes>()
+        .insert_node(dist)
+        .0;
     let mut target = app.world_mut().spawn(ModParamRange::default().with(
         ParamAddr::Unit(UnitParam::Drive),
         5.0,

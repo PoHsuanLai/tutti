@@ -147,13 +147,10 @@ impl VbapMixParts {
             .into_iter()
             .map(|p| g.add_unit(Box::new(p)))
             .collect();
-        let lfe = self.lfe.map(|send| {
-            (
-                g.add_unit(Box::new(send.sum)),
-                g.add_with_controls(send.lowpass).0,
-            )
-        });
-        let sum = g.add_unit(Box::new(self.sum));
+        let lfe = self
+            .lfe
+            .map(|send| (g.add(send.sum), g.add_with_controls(send.lowpass).0));
+        let sum = g.add(self.sum);
         let id = |n: VbapMixNode| match n {
             VbapMixNode::Source(i) => sources[i],
             VbapMixNode::Panner(i) => panners[i],

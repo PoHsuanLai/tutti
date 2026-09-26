@@ -118,7 +118,7 @@ fn ladder(c: &mut Criterion) {
             1_000.0,
             0.5,
         );
-        run(c, "ladder", w, Box::new(node), noise_block(w));
+        run_node(c, "ladder", w, node, None);
     }
 }
 

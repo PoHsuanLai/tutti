@@ -1,8 +1,9 @@
 //! Width-generic summing bus — the fan-in that folds several N-channel sources
 //! into one N-channel mix.
 //!
-//! A `Net` input port holds exactly one source: it is a total function from port
-//! to source, with no fan-in. So summing several signals into one is a *node's*
+//! A graph's audio input port holds exactly one source: it is a total function
+//! from port to source, with no fan-in (design doc 013: audio fan-in is a node,
+//! because a mix is a choice of gains). So summing several signals into one is a *node's*
 //! job, and every consumer that mixes needs one — a surround master folding its
 //! panners, a DAW bus folding its tracks.
 //!
@@ -12,7 +13,7 @@
 //! a `typenum` and builds its children from a generator, so it can neither read a
 //! count at runtime nor accept wires arriving from elsewhere in the graph. A
 //! mixer folds a *runtime* number of sources at a *runtime* channel count, which
-//! is why this is a small hand-written [`AudioUnit`](tutti_core::AudioUnit).
+//! is why this is a small hand-written graph node.
 //!
 //! `K` sources × `channels` each, interleaved per source, summed channel-wise
 //! into `channels` outputs. Input port `s * channels + c` is source `s`'s channel
@@ -25,8 +26,8 @@
 //! feature would make a VBAP dependency the price of summing two stereo
 //! signals.
 
-use tutti_core::Signal;
 use tutti_core::{ChannelLayout, Tail};
+use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 
 /// A dynamic-arity, dynamic-width summing bus: `sources * channels` inputs →
 /// `channels` outputs, summed per channel.
@@ -37,10 +38,17 @@ use tutti_core::{ChannelLayout, Tail};
 /// into one 5.1 master.
 ///
 /// **Arity is fixed at construction.** There is no grow/shrink API, because the
-/// input count is the unit's `AudioUnit::inputs()` and a graph cannot re-arity a
-/// live node. A reconciler whose source count changes builds a new one and
-/// re-wires (`Net::crossfade` keeps the `NodeId`, so declarations naming it stay
-/// valid).
+/// input count is the node's declared shape and a graph cannot re-arity a live
+/// node. A reconciler whose source count changes builds a new one and
+/// re-inserts it under the same key, so declarations naming it stay valid.
+///
+/// **It adds no latency, and hides none.** A sum is only as early as its latest
+/// arrival; under the native graph that alignment is the compiler's PDC, which
+/// delays every earlier input of the bus to its latest one — the bus itself
+/// declares zero.
+///
+/// A native node with no controls: inserted, its controls are `()` and a fork
+/// of it is a clone (it shares nothing).
 #[derive(Clone, Debug)]
 pub struct ChannelSumNode {
     sources: usize,
@@ -84,123 +92,51 @@ impl ChannelSumNode {
     }
 }
 
-impl tutti_core::AudioUnit for ChannelSumNode {
-    fn inputs(&self) -> usize {
-        self.sources * self.channels()
+impl Node for ChannelSumNode {
+    /// `sources * channels` in, `channels` out. Summing is per-frame, so it
+    /// stops with its inputs.
+    fn shape(&self) -> Shape {
+        let ins = ChannelLayout::from_count((self.sources * self.channels()) as u16);
+        Shape::audio(ins, self.layout).with_tail(Tail::None)
     }
 
-    fn outputs(&self) -> usize {
-        self.channels()
-    }
+    fn prepare(&mut self, _: &Prepare) {}
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
         // Bound once: it is the loop bound and the indexing stride, both
         // loop-invariant.
         let channels = self.channels();
-        for c in 0..channels {
-            let mut acc = 0.0f32;
-            for s in 0..self.sources {
-                acc += input[s * channels + c];
-            }
-            output[c] = acc;
-        }
-    }
-
-    fn process(
-        &mut self,
-        size: usize,
-        input: &tutti_core::BufferRef,
-        output: &mut tutti_core::BufferMut,
-    ) {
-        let channels = self.channels();
+        let (inputs, mut outputs) = io.split();
         for i in 0..size {
             for c in 0..channels {
                 let mut acc = 0.0f32;
                 for s in 0..self.sources {
-                    acc += input.at_f32(s * channels + c, i);
+                    acc += inputs.get(s * channels + c)[i];
                 }
-                output.set_f32(c, i, acc);
+                outputs.get(c)[i] = acc;
             }
         }
+        Status::Modified
     }
 
-    /// Each output carries the **largest** latency among the inputs it sums.
-    ///
-    /// A sum is only as early as its latest arrival: the output sample at `n`
-    /// holds source `s`'s sample at `n - latency_s` for every `s`, so the
-    /// output is not complete until the most-delayed contribution lands. That
-    /// is the figure `AudioUnit::latency` — and through it the graph's PDC
-    /// and an export's latency trim — needs, so a lookahead limiter or a
-    /// plugin feeding one side of a bus still counts.
-    ///
-    /// This used to report `Latency(0)` whatever arrived, which hid every
-    /// upstream latency behind the bus. (fundsp's `sum` combined linearly and
-    /// kept the *smaller*, which under-reports the same way whenever the paths
-    /// differ.) Constant inputs carry no latency and sum as constants; an input
-    /// with nothing known about it makes the output unknown, rather than a
-    /// guess.
-    fn route(
-        &mut self,
-        input: &tutti_core::SignalFrame,
-        _frequency: f64,
-    ) -> tutti_core::SignalFrame {
-        let channels = self.channels();
-        let mut output = tutti_core::SignalFrame::new(channels);
-        for c in 0..channels {
-            let mut latency: Option<f64> = None;
-            let mut constant = 0.0;
-            let mut unknown = false;
-            for s in 0..self.sources {
-                let port = s * channels + c;
-                if port >= input.len() {
-                    unknown = true;
-                    continue;
-                }
-                match input.at(port) {
-                    Signal::Latency(l) | Signal::Response(_, l) => {
-                        latency = Some(latency.map_or(l, |m: f64| m.max(l)));
-                    }
-                    Signal::Value(v) => constant += v,
-                    Signal::Unknown => unknown = true,
-                }
-            }
-            let signal = match (unknown, latency) {
-                (true, _) => Signal::Unknown,
-                (false, Some(l)) => Signal::Latency(l),
-                (false, None) => Signal::Value(constant),
-            };
-            output.set(c, signal);
-        }
-        output
-    }
+    fn reset(&mut self) {}
+}
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::CHANNEL_SUM_ID
-    }
+/// No controls; a fork is a clone ([`ForkByClone`]): the node holds only its
+/// arity.
+impl IntoNode for ChannelSumNode {
+    type Controls = ();
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    /// Summing is per-frame, so this stops with its inputs.
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<()> {
+        ForkByClone(self).into_parts()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::AudioUnit;
+    use crate::test_support::tick;
 
     /// Input arity is `sources * channels` -- the fan-in is flattened, so a
     /// miscounted product silently reads a neighbouring source's channel.
@@ -218,8 +154,16 @@ mod tests {
         ];
         for (sources, layout, inputs, channels, clamped_sources) in cases {
             let u = ChannelSumNode::new(sources, layout);
-            assert_eq!(u.inputs(), inputs, "inputs for {sources} x {layout:?}");
-            assert_eq!(u.outputs(), channels, "outputs for {sources} x {layout:?}");
+            assert_eq!(
+                usize::from(u.shape().audio_in.count()),
+                inputs,
+                "inputs for {sources} x {layout:?}"
+            );
+            assert_eq!(
+                usize::from(u.shape().audio_out.count()),
+                channels,
+                "outputs for {sources} x {layout:?}"
+            );
             assert_eq!(
                 u.channels(),
                 channels,
@@ -239,7 +183,7 @@ mod tests {
         let mut u = ChannelSumNode::new(2, ChannelLayout::QUAD);
         let input = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
         let mut out = [0.0f32; 4];
-        u.tick(&input, &mut out);
+        tick(&mut u, &input, &mut out);
         assert_eq!(out, [11.0, 22.0, 33.0, 44.0]);
     }
 
@@ -250,39 +194,46 @@ mod tests {
         // 3 stereo sources interleaved per source: (L,R),(L,R),(L,R).
         let input = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
         let mut out = [0.0f32; 2];
-        u.tick(&input, &mut out);
+        tick(&mut u, &input, &mut out);
         assert!((out[0] - 0.9).abs() < 1e-6); // 0.1+0.3+0.5
         assert!((out[1] - 1.2).abs() < 1e-6); // 0.2+0.4+0.6
     }
 
-    /// The bus reports its latest input, per channel — so a latency-bearing
-    /// node upstream of a bus is not hidden by it.
+    /// A latency-bearing node upstream of a bus is not hidden by it: the
+    /// graph aligns every input of the bus to its latest one, so an impulse
+    /// on both sources at frame 0 sums **once**, at the late side's latency.
+    /// (Under `Net` this was the bus's `route` reporting the largest input
+    /// latency; natively it is the compiler's PDC, and this pins that the bus
+    /// declares nothing that defeats it — no latency of its own, and every
+    /// input a real port.)
     ///
-    /// Mutation: the old `Latency(0)` body fails the first assertion; taking
-    /// the `min` rather than the `max` fails it too (it reads 3, not 64).
+    /// Mutation (run): sum only source 0 in `process` → the output is 1.0,
+    /// not 2.0 → fails. (A latency the bus declares but does not add is not
+    /// caught here: the bus is the graph's last node, so nothing downstream
+    /// is compensated against it.)
     #[test]
-    fn route_carries_the_largest_input_latency_per_channel() {
-        let mut u = ChannelSumNode::new(2, ChannelLayout::STEREO);
-        let mut input = tutti_core::SignalFrame::new(4);
-        // Source 0: L at 3, R at 10. Source 1: L at 64, R at 0.
-        input.set(0, Signal::Latency(3.0));
-        input.set(1, Signal::Latency(10.0));
-        input.set(2, Signal::Latency(64.0));
-        input.set(3, Signal::Latency(0.0));
-        let out = u.route(&input, 1.0);
-        assert!(matches!(out.at(0), Signal::Latency(l) if l == 64.0), "L");
-        assert!(matches!(out.at(1), Signal::Latency(l) if l == 10.0), "R");
+    fn a_late_input_is_aligned_not_hidden() {
+        use tutti_graph::contract::Lookahead;
+        use tutti_graph::{GraphBuilder, Prepare};
+        use tutti_types::{Latency, SampleRate, Samples};
 
-        // A constant contributes no latency; an unknown poisons the channel.
-        input.set(2, Signal::Value(0.5));
-        input.set(1, Signal::Unknown);
-        let out = u.route(&input, 1.0);
-        assert!(matches!(out.at(0), Signal::Latency(l) if l == 3.0));
-        assert!(matches!(out.at(1), Signal::Unknown));
-
-        // And through the trait's own `latency()`, which is what a graph walk
-        // reads: all inputs at latency 0 gives 0, not `None`.
-        assert_eq!(u.latency(), Some(0.0));
+        let mut g = GraphBuilder::new(ChannelLayout::STEREO, ChannelLayout::MONO);
+        let late = g.add(ForkByClone(Lookahead::new(Latency::new(Samples(64)))));
+        let bus = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
+        g.connect_input(0, bus, 0);
+        g.connect_input(1, late, 0);
+        g.connect(late, 0, bus, 1);
+        g.connect_output(bus, 0, 0);
+        let mut r = g
+            .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+            .expect("builds");
+        let mut impulse = vec![0.0f32; 256];
+        impulse[0] = 1.0;
+        let out = r.render_input(&[&impulse, &impulse]).remove(0);
+        for (i, &y) in out.iter().enumerate() {
+            let want = if i == 64 { 2.0 } else { 0.0 };
+            assert_eq!(y, want, "frame {i}");
+        }
     }
 
     /// Summing, not averaging — the property that rules out fundsp's
@@ -296,7 +247,7 @@ mod tests {
     fn sums_rather_than_averages() {
         let mut u = ChannelSumNode::new(4, ChannelLayout::MONO);
         let mut out = [0.0f32; 1];
-        u.tick(&[1.0, 1.0, 1.0, 1.0], &mut out);
+        tick(&mut u, &[1.0, 1.0, 1.0, 1.0], &mut out);
         assert_eq!(out[0], 4.0, "must sum; averaging would give 1.0");
     }
 }

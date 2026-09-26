@@ -9,3 +9,8 @@
 #[cfg(feature = "plugin")]
 #[allow(dead_code)]
 pub mod plugin;
+
+/// A test-local `AudioUnit` modulatable through the `ModTargetRegistry`,
+/// for suites whose subject is that path. Not every suite uses it.
+#[allow(dead_code)]
+pub mod drive_unit;

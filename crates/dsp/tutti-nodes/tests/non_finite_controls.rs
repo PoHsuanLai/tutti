@@ -183,7 +183,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "ladder",
         || {
             LadderFilterNode::<f64>::with_channels(
@@ -242,7 +242,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "compressor",
         || CompressorNode::stereo(-20.0, 4.0, 0.001, 0.05).with_soft_knee(6.0),
         |n| {
@@ -256,7 +256,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "gate",
         || GateNode::stereo(-30.0, 0.001, 0.01, 0.05),
         |n| {

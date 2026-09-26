@@ -34,10 +34,10 @@ mod mod_audio_rate_reconcile {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
-    use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, GraphSource};
+    use bevy_tutti::graph::{AudioGraphRes, GraphNode, GraphReconcilePlugin, GraphSource};
     use bevy_tutti::modulation::audio_rate::{AudioRateRoutes, ModSourceNode};
     use bevy_tutti::modulation::{
-        ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
+        ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
@@ -53,17 +53,22 @@ mod mod_audio_rate_reconcile {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
         // Any distortion: its drive is modulatable by the graph whatever it
         // was built with, so there is no port to be born with any more.
         let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
-        // Its controls, captured from the unit before it moves — the same
-        // step every insertion path in `bevy_tutti::graph` runs.
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        // Its controls, captured from the node before it moves — the same
+        // step every insertion path in `bevy_tutti::graph` runs; a native
+        // node's are its `ParamSet`, addressed on the node so `write_param`
+        // reaches it (what `spawn_graph_node` does).
+        let controls = GraphNode::captured(&dist);
+        let drive = DriveCell(dist.drive());
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let (node, params) = graph.insert_node(dist);
+            graph.set_node_params(node, DistortionNode::params(&params));
+            node
+        };
 
         let mut target = app.world_mut().spawn(ModParamRange::default().with(
             ParamAddr::Unit(UnitParam::Drive),
@@ -71,11 +76,17 @@ mod mod_audio_rate_reconcile {
             0.0,
             10.0,
         ));
+        target.insert(drive);
         controls.bind(&mut target, node);
         let target = target.id();
 
         (app, target)
     }
+
+    /// The distortion's own drive cell, taken before it moved into the graph:
+    /// what its `param_base` answers, and what an authored write moves.
+    #[derive(Component)]
+    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
 
     fn spawn_lfo(app: &mut App) -> Entity {
         app.world_mut()
@@ -117,15 +128,14 @@ mod mod_audio_rate_reconcile {
     }
 
     /// The base the graph's modulation of `param` rides on: the node's own
-    /// control, read through the unit's `param_base` on its shadow (which
-    /// every `set_param` reaches). No downcast.
+    /// control — the drive cell its `param_base` reads, which every
+    /// `set_param` reaches through the node's `ParamSet`. No downcast.
     fn node_base(app: &App, target: Entity) -> f32 {
-        let node = node_id(app, target);
         app.world()
-            .resource::<AudioGraphRes>()
-            .inspect(node, |u| u.param_base(0))
-            .flatten()
-            .expect("the distortion answers its base")
+            .get::<DriveCell>(target)
+            .expect("the distortion's drive cell")
+            .0
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// **A bus strip's Volume and Pan reach audio rate.**
@@ -150,17 +160,15 @@ mod mod_audio_rate_reconcile {
             app.insert_resource(AudioGraphRes::headless(0, 2));
             app.insert_resource(AudioEngineState::Running);
             app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-            app.world_mut()
-                .resource_mut::<ModTargetRegistry>()
-                .register::<tutti_nodes::BusStripNode>();
 
             let strip =
                 tutti_nodes::BusStripNode::with_channels(tutti_types::ChannelLayout::STEREO);
-            let controls = CapturedControls::capture(app.world(), &strip);
+            let controls = GraphNode::captured(&strip);
             let node = app
                 .world_mut()
                 .resource_mut::<AudioGraphRes>()
-                .insert(strip);
+                .insert_node(strip)
+                .0;
             assert!(
                 app.world()
                     .resource::<AudioGraphRes>()
@@ -430,9 +438,6 @@ mod mod_audio_rate_reconcile {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
 
         // The sink exists as an entity with its declared range, but carries **no**
         // `AudioNode` yet — exactly what a projection produces before the spawner
@@ -461,8 +466,12 @@ mod mod_audio_rate_reconcile {
 
         // The node arrives a frame later, as a deferred insert would.
         let dist = DistortionNode::new(ShapeKind::Tanh, 5.0);
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        let controls = GraphNode::captured(&dist);
+        let node = app
+            .world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .insert_node(dist)
+            .0;
         let mut sink = app.world_mut().entity_mut(target);
         controls.bind(&mut sink, node);
 

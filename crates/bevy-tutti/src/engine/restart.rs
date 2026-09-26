@@ -247,7 +247,7 @@ mod tests {
     use crate::engine::build::build_on;
     use crate::graph::latency::{ChannelCompensation, GraphLatency};
     use crate::graph::{GraphReconcilePlugin, MasterSources, PortSource, PortSources};
-    use crate::graph::{PendingCrossfades, SpawnAudioNode};
+    use crate::graph::{PendingCrossfades, SpawnAudioNode, SpawnGraphNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;
     use tutti_core::{At, ChannelLayout, Db, Frame, Hz, MotionEvent, SampleRate};
@@ -285,7 +285,7 @@ mod tests {
         let mut commands = app.world_mut().commands();
         let osc = commands.spawn_audio_node(Osc::sine(Hz(1_000.0))).id();
         let lim = commands
-            .spawn_audio_node(LimiterNode::with_channels(
+            .spawn_graph_node(LimiterNode::with_channels(
                 ChannelLayout::MONO,
                 Db(0.0),
                 Db(0.0),

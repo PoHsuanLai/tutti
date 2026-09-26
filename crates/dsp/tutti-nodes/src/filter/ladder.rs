@@ -12,7 +12,7 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::Real;
 
-use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate};
+use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -538,9 +538,17 @@ impl<F: Real> LadderFilterNode<F> {
 }
 
 impl<F: Real + 'static> Node for LadderFilterNode<F> {
+    /// `N` in and out, cutoff, Q and drive modulatable ([`LADDER_PARAMS`]).
+    ///
+    /// Its tail is [`Tail::Unknown`], as it reported under `Legacy`: a
+    /// resonant ladder rings on after its input stops, for as long as its
+    /// resonance and cutoff say, so it is never skipped on a silent block
+    /// (a `Tail::None` would cut the ring-out).
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
-        Shape::audio(width, width).with_params(&LADDER_PARAMS)
+        Shape::audio(width, width)
+            .with_tail(Tail::Unknown)
+            .with_params(&LADDER_PARAMS)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -899,10 +907,12 @@ mod tests {
         }
     }
 
-    /// The shape declares cutoff, Q then drive, and never changes the arity.
+    /// The shape declares cutoff, Q then drive, never changes the arity, and
+    /// keeps the `Tail::Unknown` the ladder reported under `Legacy`.
     ///
     /// Mutation (run): swap `LADDER_PARAMS`' Q and drive → the first
-    /// assertion fails.
+    /// assertion fails. Mutation (run): drop `.with_tail(Tail::Unknown)` →
+    /// the shape's default `Tail::None` → the tail assertion fails.
     #[test]
     fn the_shape_declares_cutoff_q_then_drive() {
         let f = LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
@@ -917,6 +927,7 @@ mod tests {
         assert_eq!(f.param_base(0), Some(1000.0));
         assert_eq!(f.param_base(1), Some(0.3));
         assert_eq!(f.param_base(2), Some(1.0), "drive starts clean");
+        assert_eq!(f.shape().tail, Tail::Unknown, "a resonant ladder rings on");
     }
 
     #[test]

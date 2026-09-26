@@ -71,7 +71,7 @@
 //! checks the other promise a node crate makes here: that a forkable unit's
 //! `isolate` severs every live control it reads, so a fork renders the
 //! controls as they were at fork time. [`NativeIsolateRow`] is the same
-//! check for a native [`ParamNode`](crate::ParamNode), whose fork is
+//! check for a native [`ParamNode`], whose fork is
 //! `fork_fresh`: every cell a control writes, addressed by its `ParamSet`
 //! or not. See `src/contract/snapshot.rs`.
 

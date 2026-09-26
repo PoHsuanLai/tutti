@@ -782,6 +782,76 @@ fn a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame() {
     );
 }
 
+/// **A clip node's note reaches the plugin's event input on its frame**,
+/// through the pipeline, in an export and in chunks that begin inside a
+/// render pass. The clip node (key 1) feeds the plugin's MIDI event input;
+/// the plugin's own port is empty. As
+/// [`a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame`], but
+/// the note arrives on the event port: 480-frame chunks, 400-frame blocks cut
+/// into 64-frame passes, the note at 6 300 in the chunk from 6 240.
+///
+/// Mutation: `Chunks::take` sending nothing → the gate never opens → fails.
+/// Mutation: an event's chunk frame taken as its block offset (`o` for
+/// `at + o - from`) → the chunk from 6 240 begins 240 frames into the block
+/// from 6 000, so the note lands 240 frames late → fails. Mutation: no
+/// event input declared (`with_events(0, 0)`) → the edge is refused at
+/// compile → fails.
+#[test]
+fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
+    use tutti_graph::{EventEdge, EventIn, EventOut};
+    use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_types::Beat;
+
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    const CHUNK: usize = 480;
+    const BLOCK: usize = 400;
+    const NOTE_FRAME: usize = 6_300;
+
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+    let (mut live, _exec) = Editor::new(prepare);
+    let (clip, key) = (NodeKey(1), NodeKey(9));
+    live.insert(
+        clip,
+        "clip",
+        MidiClipNode::new([TimedMidiEvent::new(
+            Beat(NOTE_FRAME as f64 / 24_000.0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        )]),
+    );
+    let _controls = live.insert(key, "plugin", probe.client.bind());
+    live.spec_mut().connect_events(
+        EventIn { node: key, port: 0 },
+        EventEdge::Direct(EventOut {
+            node: clip,
+            port: 0,
+        }),
+    );
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(timeline.clone());
+    let (_fork_ed, mut fork_exec) = live
+        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .expect("a clip node and a plugin fork");
+
+    let mut out = Vec::new();
+    let mut block = vec![0.0f32; BLOCK];
+    while out.len() < NOTE_FRAME + 2 * CHUNK {
+        timeline.render_graph(&mut fork_exec, BLOCK, &[], &mut [&mut block[..]]);
+        out.extend_from_slice(&block);
+    }
+    assert_eq!(
+        out.iter().position(|&s| s != 0.0),
+        Some(NOTE_FRAME + CHUNK),
+        "the note sounds on its frame, one chunk late"
+    );
+}
+
 /// A ramp source reading its block's `Env`: frame `t` is [`ramp`]`(t)`. Forks
 /// by clone (it holds nothing), so an export of a graph it feeds forks it.
 #[derive(Clone)]

@@ -179,4 +179,5 @@ pub use file::{
 pub use plugin::TuttiMidiPlugin;
 pub use sequence::{
     rebuild as rebuild_midi_sources, InstalledMidiSources, MidiSequencePlugin, MidiSourceInstall,
+    SequencedClips,
 };

@@ -906,6 +906,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with the event input by offset, the port's first at an equal offset.
     Inserting the synth through `Legacy` (bevy-tutti's path) is unchanged.
   - tutti-midi-runtime depends on tutti-graph (was a dev-dependency).
+  - A hosted plugin's node declares a MIDI event input: what reaches it is
+    sent with the chunk its frames go into, on its frame, beside its own
+    port's MIDI (`Chunks::take`).
+  - bevy-tutti: `SpawnGraphNode::spawn_graph_node` inserts a node that brings
+    its own `IntoNode` (a `MidiClipNode`, a `PolySynth` as a graph node),
+    keeping its controls on the entity as `NodeControls<C>` and capturing a
+    synth's MIDI port as before (`GraphNode::captured`,
+    `CapturedControls::for_midi_port`). `EventSources` on a sink entity
+    declares what feeds its event input (a list: event inputs fan in);
+    `GraphEventsPlugin` (part of `GraphReconcilePlugin`) writes it into the
+    graph. `AudioGraphRes::{insert_node, set_event_sources, event_sources,
+    node_event_inputs}` are the imperative forms.
+  - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
+    graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
+    own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a
+    target inserted as an `AudioUnit` still gets a `MidiClipSource` on its
+    port.
 
 - **`just check-features` / `just test-features`, and a `dark features` CI job
   — the feature-gated code nothing was compiling.**

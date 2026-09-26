@@ -194,6 +194,18 @@ impl GraphNode for tutti_nodes::automation::AutomationLaneNode {}
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}
 
+/// The VBAP panner as a graph node. Its position, spread and width are typed
+/// cells no `UnitParam` addresses, so it has no [`ParamSet`]: its
+/// `VbapPannerControls` land on the entity as [`NodeControls`].
+#[cfg(feature = "spatial")]
+impl GraphNode for tutti_spatial::VbapPannerNode {}
+
+/// The binaural panner as a graph node, its `HrtfBinauralControls` on the
+/// entity as [`NodeControls`] (see the VBAP panner's impl for why not a
+/// [`ParamSet`]).
+#[cfg(feature = "hrtf")]
+impl GraphNode for tutti_spatial::HrtfBinauralNode {}
+
 /// The synth as a graph node: one MIDI event input. A keyboard reaches it
 /// through a `LiveMidiInput` (with the `midi` feature), routing through a
 /// `MidiRouteRule`.

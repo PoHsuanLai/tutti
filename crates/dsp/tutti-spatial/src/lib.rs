@@ -17,14 +17,15 @@
 //!
 //! A [`VbapPannerNode`] is **stereo-in**, N-out: it distributes a source across
 //! the layout's speakers by bearing, and a mono source presents the same sample
-//! on both input ports. Moving the source is a lock-free write, so it may happen
-//! while the node renders — but see the `reset` deviation below before reaching
-//! for that method to clear a tail.
+//! on both input ports. Moving the source is a lock-free write through the
+//! controls its insert hands back ([`VbapPannerControls`]), so it may happen
+//! while the node renders.
 //!
-//! The renderer table, both quick starts, the angle-algebra constraint and the
-//! `reset` deviation are in the crate README, included below.
+//! The renderer table, both quick starts, the angle-algebra constraint and
+//! what `reset` keeps are in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
+mod fork;
 mod layout;
 mod node_id;
 mod smoothing;
@@ -40,8 +41,8 @@ pub use target::SpatialTarget;
 
 pub use vbap::{
     build_vbap_mix, vbap_mix_parts, VbapError, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts,
-    VbapPannerNode, VbapSource,
+    VbapPannerControls, VbapPannerNode, VbapSource,
 };
 
 #[cfg(feature = "hrtf")]
-pub use hrtf::{HrtfBinauralError, HrtfBinauralNode};
+pub use hrtf::{HrtfBinauralControls, HrtfBinauralError, HrtfBinauralNode};

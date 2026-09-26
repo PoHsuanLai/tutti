@@ -1,20 +1,21 @@
 //! The sample-accuracy contract (doc 013 §6, "Proof") for the binaural
-//! renderer, run through `Legacy` on the audio-impulse path: an impulse at
+//! renderer, a native node, on the audio-impulse path: an impulse at
 //! frame `F` leaves at exactly `F + arrival + FRAME_LEN - 1` on every path
 //! (direct, behind PDC, across a recompile, across ragged blocks — see
 //! `tutti_graph::contract`).
 //!
-//! This is D2's row: `route` used to pass the input straight through while
-//! every sample left a frame late, so PDC never saw the delay and binaural
-//! tracks arrived late against the mix. The row pins the declared figure
-//! (511 at the panner's 4 × 128 frame) *and* that the output leaves on it,
-//! wherever in the HRTF frame and in the graph's block the impulse falls.
+//! This is D2's row: the `AudioUnit`'s `route` used to pass the input
+//! straight through while every sample left a frame late, so PDC never saw
+//! the delay and binaural tracks arrived late against the mix. The row pins
+//! the declared figure (511 at the panner's 4 × 128 frame) *and* that the
+//! output leaves on it, wherever in the HRTF frame and in the graph's block
+//! the impulse falls.
 //!
-//! Mutations (run): make `route` pass input 0 straight through again (D2) →
-//! every path fails (declared 0, output 511 late). Set `LATENCY` to
-//! `FRAME_LEN` → every path fails (declared one frame late).
+//! Mutations (run): declare `Latency::ZERO` in `shape` (D2 again) → every
+//! path fails (declared 0, output 511 late). Set `LATENCY` to `FRAME_LEN` →
+//! every path fails (declared one frame late).
 
-use tutti_core::{AudioUnit, Samples};
+use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::contract_tests;
 use tutti_spatial::HrtfBinauralNode;
@@ -69,19 +70,18 @@ fn synthetic_hrir_sphere(sample_rate: u32, ir_len: usize) -> Vec<u8> {
 fn node() -> HrtfBinauralNode {
     let rate = SAMPLE_RATE.get() as u32;
     let bytes = synthetic_hrir_sphere(rate, 64);
-    let mut node = HrtfBinauralNode::new(&bytes, SAMPLE_RATE).expect("the sphere parses");
+    // Born at the contract's rate; the graph prepares it at that rate too.
+    let node = HrtfBinauralNode::new(&bytes, SAMPLE_RATE).expect("the sphere parses");
     node.set_position(90.0, 0.0);
-    // `Legacy` sets the rate again in `prepare`; the node is born at it.
-    node.set_sample_rate(SAMPLE_RATE);
     node
 }
 
 /// The impulse on the left input; each output is a fold of both inputs, so
 /// either ear hears it on the same frame. Checked on each ear.
 fn hrtf_row(ear: u16) -> Row {
-    Row::legacy(
+    Row::new(
         &format!("HrtfBinauralNode (output {ear})"),
-        node,
+        || Box::new(node()),
         Excite::Impulse {
             port: 0,
             amplitude: 0.5,

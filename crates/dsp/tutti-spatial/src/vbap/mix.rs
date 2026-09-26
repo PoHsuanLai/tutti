@@ -135,8 +135,12 @@ impl VbapMixParts {
     /// [`VbapMixNode::Source`]`(i)` to `sources[i]`. Returns the sum's key.
     ///
     /// The [`GraphBuilder`] adapter. It adds in `build_vbap_mix`'s historical
-    /// order (panners, the LFE send, the sum). The low-pass's controls are
-    /// dropped: the send's cutoff is fixed.
+    /// order (panners, the LFE send, the sum). The panners are native nodes,
+    /// added with their controls, which are dropped here with the low-pass's:
+    /// the placement is the one [`vbap_mix_parts`] set, and the send's cutoff
+    /// is fixed. A caller that moves sources later takes each panner's
+    /// [`VbapPannerNode::controls`] from [`panners`](Self::panners) before
+    /// inserting.
     ///
     /// # Panics
     ///
@@ -145,7 +149,7 @@ impl VbapMixParts {
         let panners: Vec<NodeKey> = self
             .panners
             .into_iter()
-            .map(|p| g.add_unit(Box::new(p)))
+            .map(|p| g.add_with_controls(p).0)
             .collect();
         let lfe = self
             .lfe

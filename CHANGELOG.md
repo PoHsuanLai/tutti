@@ -22,9 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads its base, never 0**, so modulation is connected and disconnected
   by any commit, crossfaded over `PARAM_DECLICK` frames rather than
   stepped. Param sources are PDC-aligned like inputs
-  (`DelayKey::ParamAudio` / `ParamEvent`), and `Editor::fork` (so an
-  export) copies the modulation and forks its sources. A crossfade's two
-  units must declare the same params (`CommitError::FadeShape` otherwise). This replaces the per-param
+  (`DelayKey::ParamAudio` / `ParamEvent`); a delay that appears or grows
+  on an audio source holds its last value rather than dropping to 0. An
+  event source's held ramp is the source's, kept across another source
+  joining or leaving. A unit's first block (an insert, a replace, a fork)
+  starts at its modulated value, undeclicked, and `Editor::fork` (so an
+  export) copies the modulation, forks its sources and starts each event
+  source at the ramp the live unit holds. A crossfade's two units must
+  declare the same params (`CommitError::FadeShape` otherwise); the base
+  across a crossfade ramps over one block, as any control move does. A
+  NaN range bound is refused (`GraphInvalid::BadParamRange`). **A range
+  change recompiles** (the old `ClampBounds` moved without a commit; a
+  per-port range control is a recorded follow-up in doc 013). This
+  replaces the per-param
   sub-graph (`AtomicSourceNode → ParamSumNode ← ParamShaperNode × N`) and
   the extra input ports a node had to be born with. What changes for a
   caller:
@@ -36,9 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `ParamShaperNode`, `ParamSumNode`, `AtomicSourceNode`, `ClampBounds`, `ParamModChain`, `ParamModParts`, `ParamModPart`, `ParamModEdge`, `param_mod_parts`, `build_param_mod`, `wire_param_mod` | removed. A modulation edge is `GraphSpec::connect_param(ParamIn { node, param }, ParamFrom::Audio(out), shaping)`; `ParamModShaping::shaping()` bakes a route's depth / polarity / curve into the `ShapeLut` (bit for bit the old shaper's table: `tests/param_mod_oracle.rs`); the range is `GraphSpec::set_param_range`; the base is the node's own control |
   | an `AudioUnit` read a modulated param from an input channel | an `AudioUnit` with a `ParamFeed` (new, `tutti_node`; `AudioUnit::param_feed` / `param_base`) is fed its modulated params per 64-frame chunk by `Legacy`, and reads its own control when a param is not fed. A forwarding wrapper must forward both methods |
   | `Op::Node { .., in_place }` | gains `params: Span` (into `Plan::param_ports`, each with its sources in `Plan::param_sources`) |
-  | `GraphSpec`, `ValidGraph` | gain `params` (`ValidGraph::params`); `GraphInvalid` gains `UnknownParamNode`, `UnsortedParamSources`, `TooManyParamSources`; `CompileError` gains `UnknownParam`, `ParamSourceOutOfRange`; `CycleEdge` gains `Param`; `DelayKey` gains `ParamAudio`, `ParamEvent`; `Shape` gains `params` |
+  | `GraphSpec`, `ValidGraph` | gain `params` (`ValidGraph::params`); `GraphInvalid` gains `UnknownParamNode`, `UnsortedParamSources`, `TooManyParamSources`, `BadParamRange`; `CompileError` gains `UnknownParam`, `ParamSourceOutOfRange`; `CycleEdge` gains `Param`; `DelayKey` gains `ParamAudio`, `ParamEvent`; `Shape` gains `params`; `ParamSourceOp` carries its `from` |
+  | `ClampBounds` moved a range with an atomic store | a range change (`GraphSpec::set_param_range`) is a commit, and recompiles |
+  | `ParamFeed::new` / `ParamPorts::new` only panicked on a list they cannot carry | `ParamFeed::try_new` (`ParamFeedError`) and `ParamPorts::try_new` (`ParamPortsError`) name it; `new` panics with that error. `MAX_FED_PARAMS == MAX_PARAM_PORTS` is asserted at compile time |
   | bevy-tutti: `ParamPortMap`, `DeclareParamPorts::with_param_ports` | removed: nothing to declare at spawn, the node's shape says it |
-  | bevy-tutti: `AudioRateChains` (`base_cell`, `ParamChain`), `ShaperShaping` | `AudioRateRoutes` (`AudioRateParam`: the node, each route's source node and shaping, the range, the base). The modulation lives in the graph value: `AudioGraphRes::param_mod`, set with `set_param_mod` / `clear_param_mod` |
+  | bevy-tutti: `AudioRateChains` (`base_cell`, `ParamChain`), `ShaperShaping` | `AudioRateRoutes` (`AudioRateParam`: the node, each route's source node and shaping, the range, the base). The modulation lives in the graph value: `AudioGraphRes::param_mod`, set with `set_param_mod` (which returns `Result<(), GraphInvalid>`, refusing a NaN bound, more than `MAX_PARAM_SOURCES` sources or a node listed twice) / `clear_param_mod`. Two routes from one `ModSource` onto one param sum into one table (`ParamModShaping::summed`); routes past `MAX_PARAM_SOURCES` source nodes are dropped with a warning; a NaN range keeps the route on the value path |
   | bevy-tutti: `write_param(graph, matrix, chains, ..)` sent an audio-rate param's write to the chain's base cell | `write_param(graph, matrix, ..)`: an audio-rate param's base is the node's own control, so the write goes through `set_param` like an unmodulated one — and so reaches a fork, which the base cell never did |
 
   New tests: `tutti-graph`'s `tests/param_mod.rs` (base-only equals the
@@ -489,6 +501,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
 ### Fixed
+
+- **tutti-graph: an event PDC delay no longer refuses input against room
+  its own due backlog is about to free.** `EventFifo::run` queued the
+  block's input before emitting what was already due, so a FIFO a
+  recompile retuned shorter (its backlog all due at once) refused new
+  events past its limit that the same block would have delivered — the
+  executor dropped an event the reference interpreter delivered
+  (`differential::recompiles_preserve_state_identically`, seed
+  3280887136571273968, which = 3, failing on main). The backlog now goes
+  out first. Kept as the plain test
+  `recompile_regression_3280887136571273968` (the regressions file stores
+  proptest's RNG seeds, not generated values) and pinned in
+  `kernels::tests::a_due_backlog_makes_room_for_the_blocks_input`.
 
 - **Four tutti-sampler reads were wrong on the memory tier, three of them on
   a forked disk voice too** (design doc 013's follow-ups to "Disk voices

@@ -3084,15 +3084,35 @@ under both.
     new shaping — told by a signature the compiler computes over them)
     crossfades from where it was (its last value, or the base) to the new
     value over `PARAM_DECLICK` = 256 frames. Nothing else is smoothed: a
-    modulator's own step lands on its frame.
+    modulator's own step lands on its frame. A unit's **first** block (an
+    insert, a hard replace, a fork's first commit, a re-prepare's resume)
+    is not a change: it starts at its modulated value, so an export matches
+    the live graph from frame 0.
   - **Event sources**: each `ParamRamp` addressed to the port's param
     starts a linear ramp of that source's value on its frame, landing on
     the target on its last frame (a zero-length ramp is a step); the value
-    starts at 0 and is an offset like an audio source's.
+    starts at 0 and is an offset like an audio source's. A source's state
+    (its ramp, its last value) is kept by `ParamFrom`, not by its slot, so
+    another source joining or leaving the port, or this one being
+    reshaped, does not reset a held value. A fork starts each event source
+    at the ramp the live unit holds (the executor publishes them per unit
+    to a seqlocked `ParamTap` the editor keeps per key).
   - **PDC**: param sources take part in the one Kahn order and the arrival
     solve, and an early one is delayed to the node's arrival
     (`DelayKey::ParamAudio` / `ParamEvent`; a vanished event delay's
     pending ramps are dropped, not flushed: its source was disconnected).
+    An audio source's delay that appears (the node's arrival moved) starts
+    full of the source's last value, and one that grows is padded with it,
+    so the port holds rather than dropping to its base for the delay's
+    length.
+  - **Range**: a NaN bound is refused by `GraphSpec::validate`
+    (`GraphInvalid::BadParamRange`); it would otherwise reach
+    `f32::clamp` on the audio thread. Crossed bounds are ordered.
+  - **Crossfade base**: a fade keeps the key's param state; the base is
+    the incoming unit's control, ramped over one block like any control
+    move, not over the fade: ramping it over the fade would hold the
+    incoming unit off its own control for the fade's length, and the
+    audio crossfade already covers the swap.
   - The step runs whether or not the node is then skipped, so its ramps
     and declick follow the timeline as the reference's do.
   - A crossfade keeps the key's param state, so its two units must declare
@@ -3134,26 +3154,44 @@ under both.
 **Tests.** tutti-graph: `tests/param_mod.rs` (base-only equals the plain
 param; one and several sources sum and clamp; base ramps; declicked
 connect and disconnect; sample-exact audio steps and ramps under block
-sizes 1–128; a node without a base; `Editor::remove`; a differential
-proptest against the reference interpreter over random modulated graphs
-with PDC-delayed sources, recompiles, base moves and regenerations), the
+sizes 1–128; a node without a base; `Editor::remove` of a source and of a
+modulated target; no declick on a unit's first block; a held event value
+surviving another source joining; a param delay appearing or growing
+without a dropout; a fork carrying held and in-flight ramps; a NaN range
+refused; a differential proptest against the reference interpreter over
+random modulated graphs with PDC-delayed sources, latency changes,
+recompiles, base moves and regenerations), the verifier's param
+corruptions (rule 9, the param reads other rules see, the in-place
+check), the
 contract suite's `Excite::Param` row (`param_echo`: a modulation step at
 frame `F` lands at `F + arrival` on every audio path), a no-alloc gate
 (`modulated_params_are_allocation_free`, declicks included), `Legacy`'s
 feed bridge. tutti-nodes: `graph_param_mod.rs` (each fed param is the one
 the DSP reads, at widths 1, 2, 6, through the graph; an authored write
 moves the base under modulation; a crossed range; an unmodulated param
-adds nothing to the plan). bevy-tutti's modulation suites keep their
-properties, asserted on the graph value and on renders.
+adds nothing to the plan; a fork matches the live graph from frame 0).
+bevy-tutti's modulation suites keep their properties, asserted on the
+graph value and on renders; the reconciler sums two routes from one
+source, caps a param at `MAX_PARAM_SOURCES` source nodes (dropping the
+rest with a warning, so the graph keeps committing) and never declares a
+NaN range; `AudioGraphRes::set_param_mod` refuses what a commit would
+fail on, by name.
 
 **Deferred / open.**
 
 - A native node declaring params reads `Io::param` itself; none of the
   ported nodes is native yet (they are `Legacy` + `ParamFeed`), so the
   per-frame slice crosses one copy per 64-frame chunk into the feed.
-- A range change recompiles (the range is part of the value). The old
-  `ClampBounds` moved without one; a host that animates a range should
-  modulate the param instead.
+- **Follow-up: a range change recompiles** (the range is part of the
+  value, and of the plan's `ParamPortOp`). The old `ClampBounds` moved
+  without one, so a UI dragging a range now costs a commit per move where
+  it cost an atomic store. The fix is a per-port range control in
+  `ParamState` written from the control side (as a base is), with the
+  spec's range as its initial value; not done here. Until then a host
+  that animates a range should modulate the param instead.
+- A re-prepare resumes each unit with fresh param state: event sources'
+  held ramps restart at 0 (a sample-rate change would make their frame
+  counts wrong anyway), as the reference does.
 - Event-sourced offsets are unshaped ramps of the target value; a
   curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.
 - Param edges are direct only: no feedback modulation (a node modulating

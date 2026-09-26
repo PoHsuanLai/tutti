@@ -3162,10 +3162,9 @@ vocoder retirement channel for voices the pool removes.
   timeline of its own per call. tutti-graph's event ports have landed (#50);
   converting the plugin's inputs to them is the next PR. The seam is `PluginInputs`
   (`host/node/controls.rs`) and the payload build in `graph_node.rs`: each
-  slot's `drain` becomes a read of the node's event port. Because they still
-  read time out of band, **the node declares `Shape::legacy`**, and a plan
-  holding a plugin is still rendered in `LEGACY_CHUNK` blocks; the flag goes
-  with the slots.
+  slot's `drain` becomes a read of the node's event port. (MIDI has an event
+  input since item 5's second part. The node no longer declares
+  `Shape::legacy`: see "Item 5, first part landed".)
 - **Arrival latency.** The node reads the transport at its chunk's own frame,
   not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
   A plugin behind a latent path therefore sees the uncompensated playhead, as
@@ -3397,6 +3396,17 @@ under both.
   plugin) plays through a clip node of its own (`SequencedClips`, fed through
   `EventFeeds`), edited in place with `set_events`; a `Legacy` target keeps
   its port source.
+- **The plugin is no longer `legacy`.** Its timeline-polling inputs (the
+  port's clip source, automation, harmony, note expression) are read when a
+  chunk begins, for the frames from the call's first through the chunk's
+  last, and re-based to the chunk (the fix #51's review made). That is right
+  wherever the timeline stands at the call's first frame, and every host that
+  renders the graph moves it once per call (the engine per block,
+  `RenderClock::render_graph` per block or per `LEGACY_CHUNK` pass), so the
+  64-frame passes bought nothing. A plan holding plugins and native nodes
+  renders whole blocks; one that also holds a `Legacy` unit still renders in
+  passes, which the plugin handles the same way. Pinned both ways by
+  `clap_fork`'s `a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame`.
 
 **Not yet (next PRs of item 5).**
 
@@ -3405,8 +3415,10 @@ under both.
   last MIDI unit that is. The synth's and plugin's `rebind_offline_into`
   go with them.
 - **The plugin's other three inputs** (automation, harmony, note
-  expression) move off their timeline-polling `InputSlot`s; the plugin then
-  drops `Shape::legacy`.
+  expression) still poll a timeline each, through their `InputSlot`s. They
+  no longer need the plugin to be `legacy` (above); they go when their
+  sources become event source nodes (the automation lane as a ramp source,
+  harmony through a published table or a node that reads `Env`).
 - **Plugin MIDI out onto an event output.** The server publishes a chunk's
   audio before its reply is queued, so a reply drained when the chunk's
   audio is collected can miss it; the offline wait must wait for the reply

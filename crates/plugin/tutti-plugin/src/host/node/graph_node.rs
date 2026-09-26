@@ -45,20 +45,21 @@ impl Node for PluginClient<Bound> {
     /// arpeggiator) is sent with the chunk its frames go into, on its frame,
     /// alongside what the plugin's own MIDI port holds.
     ///
-    /// **`legacy`**: the node still reads four inputs out of band — its MIDI
-    /// port's installed clip source, parameter automation, harmony and note
-    /// expression each poll a timeline of their own, once per call, as an
-    /// `AudioUnit` did. A plan holding it is therefore rendered in blocks of at most 64
-    /// frames with the timeline moved between them (tutti-graph's
-    /// `LEGACY_CHUNK` mode). The transport is not one of them: it is read from
-    /// `Env`. The flag goes when those inputs become event ports (doc 013).
+    /// **Not `legacy`**, though four inputs are still read out of band — its
+    /// MIDI port's installed clip source, parameter automation, harmony and
+    /// note expression each poll a timeline of their own. They are read when
+    /// a chunk begins, for the frames from the call's first to the chunk's
+    /// last, and re-based to the chunk (`PluginChunks`): right wherever the
+    /// timeline stands at the call's first frame, which a host that moves it
+    /// once per block (tutti-core's engine, `RenderClock::render_graph`)
+    /// keeps, in whole blocks as in `LEGACY_CHUNK` passes. So a plan holding
+    /// a plugin renders whole blocks. The transport itself is read from `Env`.
     fn shape(&self) -> Shape {
         let c = self;
         Shape::audio(width(c.inputs), width(c.outputs))
             .with_events(1, 0)
             .with_latency(c.controls.declared_latency())
             .with_tail(c.controls.tail())
-            .with_legacy()
     }
 
     /// Settle the pipeline's chunk for `p`'s `MaxBlock`, and tell the plugin

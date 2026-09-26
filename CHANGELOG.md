@@ -918,6 +918,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `GraphEventsPlugin` (part of `GraphReconcilePlugin`) writes it into the
     graph. `AudioGraphRes::{insert_node, set_event_sources, event_sources,
     node_event_inputs}` are the imperative forms.
+  - A hosted plugin's node no longer declares `Shape::legacy`: a plan
+    holding plugins and graph nodes renders whole blocks instead of 64-frame
+    passes. Its timeline-polling inputs are read when a chunk begins and
+    re-based to it, which is right in either mode.
   - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
     graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
     own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a

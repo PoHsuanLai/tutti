@@ -39,10 +39,43 @@ use crate::protocol::{
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use smallvec::smallvec;
 use std::sync::Arc;
-use tutti_core::{BufferVec, F32};
 
 const CHANNELS: usize = 2;
 const GAIN: f32 = 2.0;
+
+/// `CHANNELS` planar channels of `BATCH_SIZE` frames: the buffers the
+/// batcher is handed, as the plugin node hands them. Fixed-size arrays so a
+/// test can borrow them as the batcher's slice-of-slices without allocating
+/// (the no-alloc tests run the borrow inside the guard).
+struct Planar([Vec<f32>; CHANNELS]);
+
+impl Planar {
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| vec![0.0; BATCH_SIZE]))
+    }
+
+    fn set_scalar(&mut self, ch: usize, i: usize, v: f32) {
+        self.0[ch][i] = v;
+    }
+
+    fn at_scalar(&self, ch: usize, i: usize) -> f32 {
+        self.0[ch][i]
+    }
+
+    fn clear(&mut self) {
+        for c in &mut self.0 {
+            c.fill(0.0);
+        }
+    }
+
+    fn ins(&self) -> [&[f32]; CHANNELS] {
+        self.0.each_ref().map(Vec::as_slice)
+    }
+
+    fn outs(&mut self) -> [&mut [f32]; CHANNELS] {
+        self.0.each_mut().map(Vec::as_mut_slice)
+    }
+}
 
 fn unique_socket_path(label: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -114,6 +147,16 @@ fn bridge_with_doubling_server() -> (Arc<PluginBridge>, BridgeThread, std::threa
 fn bridge_with_server_stall(
     stall: std::time::Duration,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
+    bridge_with_server(stereo_layout(), stall, |out| out)
+}
+
+/// The mock server over `layout`: output channel `ch` is input channel
+/// `route(ch)` times [`GAIN`], after sleeping `stall`.
+fn bridge_with_server(
+    layout: SlabLayout,
+    stall: std::time::Duration,
+    route: fn(usize) -> usize,
+) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
     use interprocess::local_socket::{traits::Listener as _, ListenerOptions};
 
     let path = unique_socket_path("process-sync");
@@ -121,7 +164,7 @@ fn bridge_with_server_stall(
     let name = crate::util::transport::control::socket_name(&path).unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
 
-    let layout = stereo_layout();
+    let out_channels: usize = layout.outputs.iter().map(|l| l.count() as usize).sum();
     let shm_name = unique_shm_name("process-sync");
     let host_slab = Arc::new(AudioSlab::create(shm_name.clone(), layout.clone()).unwrap());
     // The server side maps the SAME backing file as a view, mirroring the real
@@ -175,9 +218,9 @@ fn bridge_with_server_stall(
                         // this block's INPUT slot, and write into its OUTPUT slot
                         // — two disjoint regions, not one shared in place.
                         if server_slab.has_input(seq) {
-                            for ch in 0..CHANNELS {
+                            for ch in 0..out_channels {
                                 let got = server_slab
-                                    .read_input_into(seq, ch, &mut scratch[..n])
+                                    .read_input_into(seq, route(ch), &mut scratch[..n])
                                     .unwrap_or(0);
                                 for s in scratch[..got].iter_mut() {
                                     *s *= GAIN;
@@ -211,6 +254,52 @@ fn bridge_with_server_stall(
     std::thread::sleep(std::time::Duration::from_millis(50));
 
     (bridge, bridge_thread, server_thread)
+}
+
+/// **A sidechain input reaches the plugin.** A stereo main bus plus a mono
+/// sidechain is three input ports; the batcher stages every one into the
+/// matching channel of the slab's input region, so a graph edge into the
+/// node's port 2 is what the plugin reads on its sidechain. The mock server
+/// here outputs the sidechain (input 2) on output 0 and the main left
+/// (input 0) on output 1, one chunk late.
+///
+/// Replaces the tick-mode `write_accepts_sidechain_port`, which pinned the
+/// same property on the per-sample storage that no longer exists.
+///
+/// Mutation: stage `input.iter().take(2)` (the main bus only) in
+/// `Batcher::process` → output 0 reads silence → fails.
+#[test]
+fn a_sidechain_port_reaches_the_plugin() {
+    let _lock = exclusive();
+    let layout = SlabLayout {
+        inputs: smallvec![ChannelLayout::STEREO, ChannelLayout::MONO],
+        ..stereo_layout()
+    };
+    let (bridge, _thread, _server) =
+        bridge_with_server(layout, std::time::Duration::ZERO, |out| [2, 0][out]);
+    let mut batcher = Batcher::new(3, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+    let main = vec![1.0f32; BATCH_SIZE];
+    let side = vec![5.0f32; BATCH_SIZE];
+    let mut out = Planar::new();
+    let mut midi_out = MidiEventVec::new();
+    for block in 0..2u64 {
+        out.clear();
+        batcher.process(
+            &bridge,
+            BATCH_SIZE,
+            &[&main, &main, &side],
+            &mut out.outs(),
+            BlockPayload::default(),
+            &mut midi_out,
+        );
+        wait_for_reply(&bridge, block + 1, std::time::Duration::from_secs(2));
+    }
+    assert_eq!(
+        out.at_scalar(0, 0),
+        5.0 * GAIN,
+        "the sidechain, on output 0"
+    );
+    assert_eq!(out.at_scalar(1, 0), 1.0 * GAIN, "the main bus, on output 1");
 }
 
 /// Distinct non-constant ramp per block: block `b` channel `ch` sample `i`
@@ -250,8 +339,8 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
     let mut midi_out = MidiEventVec::new();
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     let mut captured = Vec::with_capacity(blocks);
 
     for block in 0..blocks {
@@ -262,11 +351,11 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
         }
         output.clear();
 
-        batcher.process::<f32>(
+        batcher.process(
             &bridge,
             BATCH_SIZE,
-            &input.buffer_ref(),
-            &mut output.buffer_mut(),
+            &input.ins(),
+            &mut output.outs(),
             BlockPayload::default(),
             &mut midi_out,
         );
@@ -554,8 +643,8 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
     }
     slab.publish_output(DECOY_SEQ);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     let mut midi_out = MidiEventVec::new();
 
     // Block 0 submits seq 1 and collects nothing; block 1 submits seq 2 and
@@ -567,11 +656,11 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
             }
         }
         output.clear();
-        batcher.process::<f32>(
+        batcher.process(
             &bridge,
             BATCH_SIZE,
-            &input.buffer_ref(),
-            &mut output.buffer_mut(),
+            &input.ins(),
+            &mut output.outs(),
             BlockPayload::default(),
             &mut midi_out,
         );
@@ -671,8 +760,8 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
         .map(|_| Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE))
         .collect();
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     for ch in 0..CHANNELS {
         for i in 0..BATCH_SIZE {
             input.set_scalar(ch, i, ramp_sample(0, ch, i));
@@ -684,11 +773,11 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
     for _ in 0..BLOCKS {
         for (batcher, (bridge, _, _)) in batchers.iter_mut().zip(rigs.iter()) {
             output.clear();
-            batcher.process::<f32>(
+            batcher.process(
                 bridge,
                 BATCH_SIZE,
-                &input.buffer_ref(),
-                &mut output.buffer_mut(),
+                &input.ins(),
+                &mut output.outs(),
                 BlockPayload::default(),
                 &mut midi_out,
             );
@@ -748,15 +837,15 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread) {
 fn drive_one_block(
     batcher: &mut Batcher,
     bridge: &PluginBridge,
-    input: &BufferVec<F32>,
-    output: &mut BufferVec<F32>,
+    input: &Planar,
+    output: &mut Planar,
     midi_out: &mut MidiEventVec,
 ) {
-    batcher.process::<f32>(
+    batcher.process(
         bridge,
         BATCH_SIZE,
-        &input.buffer_ref(),
-        &mut output.buffer_mut(),
+        &input.ins(),
+        &mut output.outs(),
         BlockPayload::default(),
         midi_out,
     );
@@ -803,8 +892,8 @@ fn a_stalled_but_live_server_does_not_allocate_on_the_audio_thread() {
         bridge_with_server_stall(std::time::Duration::from_millis(10));
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     for ch in 0..CHANNELS {
         for i in 0..BATCH_SIZE {
             input.set_scalar(ch, i, ramp_sample(0, ch, i));
@@ -834,8 +923,8 @@ fn silence_on_a_missing_reply_does_not_allocate() {
     let (bridge, mut bridge_thread) = bridge_with_no_server();
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     for ch in 0..CHANNELS {
         for i in 0..BATCH_SIZE {
             input.set_scalar(ch, i, ramp_sample(0, ch, i));
@@ -885,8 +974,8 @@ fn silence_on_a_crashed_bridge_does_not_allocate() {
     let (bridge, mut bridge_thread) = bridge_with_no_server();
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     for ch in 0..CHANNELS {
         for i in 0..BATCH_SIZE {
             input.set_scalar(ch, i, ramp_sample(0, ch, i));
@@ -968,8 +1057,8 @@ fn a_late_reply_does_not_permanently_crash_the_bridge() {
         bridge_with_server_stall(std::time::Duration::from_millis(120));
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     let mut midi_out = MidiEventVec::new();
 
     for ch in 0..CHANNELS {
@@ -978,11 +1067,11 @@ fn a_late_reply_does_not_permanently_crash_the_bridge() {
         }
     }
     output.clear();
-    batcher.process::<f32>(
+    batcher.process(
         &bridge,
         BATCH_SIZE,
-        &input.buffer_ref(),
-        &mut output.buffer_mut(),
+        &input.ins(),
+        &mut output.outs(),
         BlockPayload::default(),
         &mut midi_out,
     );
@@ -1040,8 +1129,8 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
         bridge_with_first_block_stalled(std::time::Duration::from_millis(120));
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
 
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut input = Planar::new();
+    let mut output = Planar::new();
     let mut midi_out = MidiEventVec::new();
     let blocks = 6;
     // Which block each drained MIDI event was stamped by, per driving block.
@@ -1054,11 +1143,11 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
             }
         }
         output.clear();
-        batcher.process::<f32>(
+        batcher.process(
             &bridge,
             BATCH_SIZE,
-            &input.buffer_ref(),
-            &mut output.buffer_mut(),
+            &input.ins(),
+            &mut output.outs(),
             BlockPayload::default(),
             &mut midi_out,
         );

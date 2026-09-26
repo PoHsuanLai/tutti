@@ -47,6 +47,8 @@ pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use metering::MeteringRes;
+#[cfg(feature = "plugin")]
+pub(crate) use native::clamp_latency;
 pub use native::{AudioSide, ReplaceRefused};
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;
@@ -55,6 +57,8 @@ pub use pump::{
 };
 pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
+#[cfg(feature = "plugin")]
+pub use spawn::crossfade_plugin_node;
 pub use spawn::{crossfade_audio_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode};
 pub use tap::AudioTapRes;
 pub use topology::LiveGraph;

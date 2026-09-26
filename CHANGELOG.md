@@ -93,6 +93,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module) are replaced by those; bevy-tutti's modulation tests keep their
   properties, asserted on the graph value and on what renders.
 
+- **A hosted out-of-process plugin is a native graph node, bound by
+  typestate** (design doc 013, rewrite-order item 4, the plugin half).
+  `PluginClient` is no longer a fundsp `AudioUnit` (neither `<F32>` nor
+  `<F64>`) and runs through no `Legacy` adapter: a loaded client is
+  `PluginClient<Unbound>`, `bind()` makes it `PluginClient<Bound>`, and only
+  that is an `IntoNode` — inserting it hands back its `PluginControls` and a
+  fork source (a fork by state transfer), so an unbound plugin cannot be
+  inserted or processed (a `compile_fail` doctest pins it). Its transport is
+  a pure function of the block's `Env` and the meter: nothing polls a
+  timeline, so a plugin has the right transport from its first block, live
+  and in an export's fork. Its latency is declared in its `Shape`
+  (`PluginControls::declared_latency`: the plugin's figure plus the pipeline's
+  chunk); a runtime change reaches PDC at the next commit through
+  `Editor::set_latency`. The in-process VST2 client is unchanged (still an
+  `AudioUnit`, still polls its transport). What changes for a caller:
+
+  | Was | Now |
+  |---|---|
+  | `PluginClient` as a `Box<dyn AudioUnit>` (`Net::push`, `Legacy::new`, `GraphBuilder::add_unit`) | `editor.insert(key, kind, client.bind())` (or `GraphBuilder::add_with_controls(client.bind())`), which returns its `PluginControls` |
+  | `IntoNode for PluginClient` (`Controls = ()`, through `Legacy`) | `IntoNode for PluginClient<Bound>` (`Controls = PluginControls`); `PluginClient<Unbound>` is not a node |
+  | `PluginClient: Clone` | not `Clone`: a node exists once, in the graph. Keep `PluginControls` / `PluginHandle` (shared handles) instead |
+  | `Plugin::into_unit()` / `Plugin::into_parts()` (a `Box<dyn AudioUnit>`) | `Plugin` is itself an `IntoNode` (`Controls = Option<PluginControls>`, `None` for in-process VST2): `editor.insert(key, kind, plugin)`. Clone `plugin.handle()` first to keep it. `into_client()` still returns the (unbound) `PluginClient`, or the VST2 node boxed |
+  | `PluginClient::set_transport_source(reader, meter)`, `clear_transport_source`, `PluginControls::{set_transport_source, has_transport_source, clear_transport_source}`, `TransportView::{set_source, clear}` | the transport needs no install. Give the meter: `PluginClient::set_meter`, `PluginControls::{set_meter, clear_meter, has_meter}`, `TransportView::{set_meter, clear_meter}`. `Plugin::set_transport_source(reader, meter)` stays; the subprocess backend takes only the meter |
+  | the declared latency was `AudioUnit::latency()` (`route`) | `PluginControls::declared_latency()`, what the node's `Shape` declares; `PluginClient::latency()` is still the plugin's own figure |
+  | offline, the transport snapshot's continuous-sample counter was 0 and the loop was reported off | it is the render's frame, and the loop is the render's |
+  | `PluginHandle::from_client(&PluginClient)` | generic over the state: `from_client(&PluginClient<S>)` |
+  | `tutti_plugin::backend::route_with_latency` from `host::node` | the same function, re-exported from `util::node` (only the in-process VST2 node still uses it) |
+  | tutti-graph: `Transport` had no recording flag | `Transport::recording` and `with_recording` (additive); tutti-core's engine sets it from the transport settings, and `Env::transport_at` keeps it |
+  | bevy-tutti: `plugin_bind_transport`, `PluginTransportBound` | `plugin_bind_meter`, `PluginMeterBound` (installs `MetronomeRes`'s meter; the transport is the graph's) |
+  | bevy-tutti: `CompensatedLatency` | removed: the latency poll compares the plugin's `declared_latency` with the editor's own figure (`AudioGraphRes::node_latency`), which is the record of what PDC was planned against |
+  | bevy-tutti: a plugin captured by `CapturedControls::capture(&dyn AudioUnit)` (downcast), `PluginClient` registered with `MidiTargetRegistry` | `CapturedControls::for_plugin(&client)`: the shadow and the MIDI target, typed; `register_plugin_node_types` is removed |
+  | bevy-tutti: `crossfade_audio_node(.., Box::new(plugin_client))` | `crossfade_plugin_node(commands, entity, client)`; `AudioGraphRes::{insert_plugin, replace_plugin}` are public, and `ReplaceRefused` is generic over what it hands back (`ReplaceRefused<U = Box<dyn AudioUnit>>`) |
+  | bevy-tutti: `AudioGraphRes::inspect` on a plugin node read its `Legacy` shadow | `None`: a plugin node has no shadow; its controls are the entity's `PluginShadow` |
+
+  The IPC pipeline keeps a **64-frame internal chunk** whatever the block
+  (doc 013's open `Batcher` question, decided): a node handed a longer block
+  ships 64-frame chunks, so its pipeline latency stays 64 frames. Tick mode
+  and `TickStorage` are gone from the batcher; the chunk comes from
+  `prepare(max_block)`. The plugin's MIDI, parameter automation, harmony and
+  note expression still arrive through `InputSlot`s (event ports come
+  later), so the node still declares `Shape::legacy` and a graph holding it
+  is still rendered in 64-frame blocks.
+
 - **tutti-graph: events as ports, the graph side** (design doc 013,
   "Rewrite order" item 5; no MIDI node is ported yet, and `Legacy` MIDI
   through `MidiInPort` mailboxes is unchanged). What changes for a caller:

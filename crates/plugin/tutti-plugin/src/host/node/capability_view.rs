@@ -4,8 +4,8 @@
 //! MIDI-out target) is dropped at drain time when the plugin did not advertise
 //! the matching [`Features`] bit. That gate is correct and stays — but it fires
 //! a block later, on the audio thread, where nothing can be reported. A caller
-//! that installs a transport reader into a plugin which never asked for
-//! transport sees the install succeed and the data silently vanish.
+//! that installs a meter into a plugin which never asked for transport sees
+//! the install succeed and the data silently vanish.
 //!
 //! These views move that answer to the call site. Each accessor on
 //! [`PluginClient`](super::PluginClient) returns `None` for a plugin that
@@ -14,13 +14,13 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use tutti_core::{meter::MeterMap, transport::Transport, RtPublish};
+//! # use tutti_core::{meter::MeterMap, RtPublish};
 //! # use tutti_plugin::handles::PluginClient;
-//! # fn ex(client: &mut PluginClient, reader: Transport, meter: Arc<RtPublish<MeterMap>>) {
+//! # fn ex(client: &mut PluginClient, meter: Arc<RtPublish<MeterMap>>) {
 //! // `None` for a plugin that declined transport, so the install is not
 //! // reachable at all rather than reachable and inert.
 //! if let Some(mut t) = client.transport() {
-//!     t.set_source(reader, meter);
+//!     t.set_meter(meter);
 //! }
 //! # }
 //! ```
@@ -133,26 +133,25 @@ impl NoteExpressionView<'_> {
     }
 }
 
-/// Installs the per-block transport snapshot. Reached via
+/// Configures the per-block transport snapshot. Reached via
 /// [`PluginClient::transport`].
+///
+/// The transport itself is not installed: the node reads it from each block's
+/// `Env` once it is in a graph. What is left to give it is the meter.
 pub struct TransportView<'a>(&'a mut PluginClient);
 
 impl TransportView<'_> {
-    /// Install the transport and meter map the per-block snapshot is read from.
+    /// Install the meter map the snapshot's signature and bar are read from.
     ///
     /// The meter map arrives as an `RtPublish` because the audio thread reads it
     /// once per block and never holds an owning handle.
-    pub fn set_source(
-        &mut self,
-        reader: tutti_core::transport::Transport,
-        meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
-    ) {
-        self.0.set_transport_source(reader, meter);
+    pub fn set_meter(&mut self, meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>) {
+        self.0.set_meter(meter);
     }
 
-    /// Drop the reader; subsequent blocks feed a default (stopped) snapshot.
-    pub fn clear(&mut self) {
-        self.0.clear_transport_source();
+    /// Drop the meter; subsequent blocks tell the plugin 4/4 from bar 0.
+    pub fn clear_meter(&mut self) {
+        self.0.controls.clear_meter();
     }
 }
 
@@ -180,8 +179,8 @@ impl PluginClient {
         (!declined(self, Features::NOTE_EXPRESSION)).then_some(NoteExpressionView(self))
     }
 
-    /// The transport installer, or `None` if the plugin declared it does not
-    /// want a transport snapshot.
+    /// The transport's meter installer, or `None` if the plugin declared it
+    /// does not want a transport snapshot.
     pub fn transport(&mut self) -> Option<TransportView<'_>> {
         (!declined(self, Features::TRANSPORT)).then_some(TransportView(self))
     }

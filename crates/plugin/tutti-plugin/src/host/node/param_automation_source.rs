@@ -447,7 +447,7 @@ impl ParamAutomationSource {
     }
 
     /// The rate `refill` is currently dividing by.
-    fn rate(&self) -> SampleRate {
+    pub(super) fn rate(&self) -> SampleRate {
         SampleRate::from(self.sample_rate.load(Ordering::Acquire))
     }
 

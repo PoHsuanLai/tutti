@@ -82,12 +82,6 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "ModTargetRegistry's capture, on the owned unit before insertion.",
     ),
     (
-        "src/graph/capture.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "the PluginClient capture, on the owned unit before insertion.",
-    ),
-    (
         "tests/export_fork.rs",
         "downcast_ref / downcast_mut",
         5,

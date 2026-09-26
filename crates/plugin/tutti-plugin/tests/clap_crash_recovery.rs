@@ -39,11 +39,10 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, render, ProbeEnv};
+use clap_probe::{exclusive, load_probe, render, ProbeEnv, Rig};
 
 use std::time::{Duration, Instant};
 
-use tutti_core::{AudioUnit, BufferVec, F32};
 use tutti_plugin::handles::PluginStatus;
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -119,21 +118,10 @@ const TAG_P0C0: f32 = 1.0;
 const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 
 /// Drive one block of DC through `unit` and return output channel 0.
-fn drive_block(unit: &mut Box<dyn AudioUnit>) -> Vec<f32> {
-    let inputs = AudioUnit::inputs(&**unit);
-    let outputs = AudioUnit::outputs(&**unit);
-    let mut input = BufferVec::<F32>::new(inputs.max(1));
-    let mut output = BufferVec::<F32>::new(outputs.max(1));
-
-    for ch in 0..inputs {
-        for i in 0..BLOCK {
-            input.set_scalar(ch, i, INPUT_DC);
-        }
-    }
-    output.clear();
-    unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+fn drive_block(unit: &mut Rig) -> Vec<f32> {
+    let out = unit.run(BLOCK, |_, _| INPUT_DC);
     std::thread::sleep(PACE);
-    (0..BLOCK).map(|i| output.at_f32(0, i)).collect()
+    out.into_iter().next().expect("the probe has outputs")
 }
 
 /// Drive blocks until the host reports the plugin dead, and say how many it took.
@@ -150,10 +138,7 @@ fn drive_block(unit: &mut Box<dyn AudioUnit>) -> Vec<f32> {
 /// Driving until the observed status flips is the handshake. The bound is
 /// [`DRIVE_TO_DEATH_MAX`] blocks, so a plugin that genuinely never dies still
 /// ends the loop and fails an assertion rather than spinning.
-fn drive_until_dead(
-    unit: &mut Box<dyn AudioUnit>,
-    handle: &tutti_plugin::handles::PluginHandle,
-) -> usize {
+fn drive_until_dead(unit: &mut Rig, handle: &tutti_plugin::handles::PluginHandle) -> usize {
     for driven in 1..=DRIVE_TO_DEATH_MAX {
         let _ = drive_block(unit);
         if handle.status().is_dead() {
@@ -206,7 +191,7 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
          means the load failed rather than the render crashing"
     );
 
-    let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
+    let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
 
     // --- Before the crash: real audio, not silence and not the input echoed.
     //
@@ -327,7 +312,7 @@ fn rendering_through_a_dead_plugin_does_not_block() {
         .crash_on_block(1);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle.clone();
-    let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
+    let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
 
     // Get it dead first, so the measured blocks are all post-crash.
     let driven = drive_until_dead(&mut unit, &handle);
@@ -372,7 +357,7 @@ fn dropping_a_crashed_plugin_is_clean() {
     let handle = probe.handle.clone();
 
     {
-        let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
+        let mut unit = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
         let driven = drive_until_dead(&mut unit, &handle);
         assert!(
             handle.status().is_dead(),

@@ -33,7 +33,8 @@ use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value,
     clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
+    CLAP_TRANSPORT_IS_RECORDING,
 };
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
@@ -49,6 +50,7 @@ use clap_sys::ext::render::{
 };
 use clap_sys::ext::tail::{clap_plugin_tail, CLAP_EXT_TAIL};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
+use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::{clap_process, clap_process_status, CLAP_PROCESS_CONTINUE};
@@ -1021,7 +1023,24 @@ pub enum RenderMode {
     /// plugin. Reads CLAP note events and MIDI-1 note messages alike, so it
     /// holds whichever dialect the host negotiated.
     Notes = 4,
+    /// The transport oracle: every output channel carries the block's
+    /// `clap_event_transport` in its first [`TRANSPORT_ECHO_FRAMES`] frames,
+    /// and zero after. Input is ignored. Frame by frame:
+    ///
+    /// 0. `song_pos_beats`, in beats;
+    /// 1. `tempo`;
+    /// 2. the flags this host sets from its own state, as a sum: `1.0`
+    ///    playing, `2.0` recording, `4.0` loop active;
+    /// 3. `loop_start_beats`, in beats;
+    /// 4. `loop_end_beats`, in beats.
+    ///
+    /// All zero when the host passes no transport. What an out-of-process host
+    /// told the plugin, read back through the audio it returns.
+    Transport = 5,
 }
+
+/// Frames [`RenderMode::Transport`] writes per block.
+pub const TRANSPORT_ECHO_FRAMES: usize = 5;
 
 impl RenderMode {
     fn from_u32(v: u32) -> Self {
@@ -1030,6 +1049,7 @@ impl RenderMode {
             2 => Self::TagOnly,
             3 => Self::Latency,
             4 => Self::Notes,
+            5 => Self::Transport,
             _ => Self::Inert,
         }
     }
@@ -1238,6 +1258,21 @@ unsafe fn render_output(p: &clap_process) {
                     let tag = probe_tag(port, ch);
                     for i in 0..frames {
                         dst[i] = src.map(|s| s[i]).unwrap_or(0.0) + tag;
+                    }
+                }
+                RenderMode::Transport => {
+                    dst.fill(0.0);
+                    if !p.transport.is_null() && frames >= TRANSPORT_ECHO_FRAMES {
+                        let t: &clap_event_transport = &*p.transport;
+                        let beats = |b: i64| (b as f64 / CLAP_BEATTIME_FACTOR as f64) as f32;
+                        let flag = |bit: u32, v: f32| if t.flags & bit != 0 { v } else { 0.0 };
+                        dst[0] = beats(t.song_pos_beats);
+                        dst[1] = t.tempo as f32;
+                        dst[2] = flag(CLAP_TRANSPORT_IS_PLAYING, 1.0)
+                            + flag(CLAP_TRANSPORT_IS_RECORDING, 2.0)
+                            + flag(CLAP_TRANSPORT_IS_LOOP_ACTIVE, 4.0);
+                        dst[3] = beats(t.loop_start_beats);
+                        dst[4] = beats(t.loop_end_beats);
                     }
                 }
                 RenderMode::Notes => {

@@ -116,13 +116,16 @@ fn main() -> Result<()> {
     }
 
     // 3. Hand over the node. Consuming and explicit: a plugin *has* a node, it
-    //    is not one — `inputs()` counts audio buses only, and would describe a
-    //    synth as taking nothing while it consumes MIDI every block.
-    let unit = plugin.into_unit();
+    //    is not one — its audio ports count buses only, and would describe a
+    //    synth as taking nothing while it consumes MIDI every block. `Plugin`
+    //    is itself an `IntoNode`: `editor.insert(key, kind, plugin)` puts it in
+    //    a graph and hands back its controls.
+    let (node, _controls) = tutti_graph::IntoNode::into_node(plugin);
+    let shape = node.shape();
     println!(
         "\nnode ready: {} audio in, {} audio out",
-        unit.inputs(),
-        unit.outputs()
+        shape.audio_in.count(),
+        shape.audio_out.count()
     );
 
     Ok(())

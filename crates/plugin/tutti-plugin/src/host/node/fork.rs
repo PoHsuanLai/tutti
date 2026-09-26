@@ -3,15 +3,14 @@
 //! (gap 7), which the graph's export (`tutti_graph::Editor::fork`, PR 12)
 //! needs before a graph holding a plugin can be rendered offline.
 //!
-//! # Why not clone and `isolate`, as every other node forks
+//! # Why not a copy of the node
 //!
-//! A [`PluginClient`]'s clones share its one bridge to its one plugin process,
-//! and no `isolate` can cut that: the audio *is* the other process. A fork
-//! built from a clone would drive the live plugin from the render thread —
-//! two callers interleaving blocks into one instance's state. So
-//! `AudioUnit::forkable()` stays `false` (its promise is about `isolate`, and
-//! [`Legacy`] would otherwise fork the node by cloning it), and the node hands
-//! the editor its **own** [`ForkSource`] through [`IntoNode`] instead.
+//! A [`PluginClient`]'s audio *is* another process, reached through one
+//! bridge: a copy of the node would drive the live plugin from the render
+//! thread — two callers interleaving blocks into one instance's state. So the
+//! node is not `Clone`, and a bound client hands the editor its **own**
+//! [`ForkSource`] through [`IntoNode`] instead: the fork source on the bound
+//! type (doc 013 §2's `Fork`).
 //!
 //! # What a fork is
 //!
@@ -56,12 +55,14 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Rebind its per-block sources** (transport, parameter automation,
-//!    harmony, note expression): each installed live source is copied onto
-//!    the fork reading the offline timeline ([`ForkMode::Offline`] with an
-//!    `OfflineTransport`), or the live transport ([`ForkMode::Live`]). An
-//!    offline context of any other type binds nothing: the fork's slots stay
-//!    empty rather than read the live playhead. **Offline only, the MIDI clip
+//! 4. **Rebind its per-block sources** (parameter automation, harmony, note
+//!    expression): each installed live source is copied onto the fork reading
+//!    the offline timeline ([`ForkMode::Offline`] with an `OfflineTransport`),
+//!    or the live transport ([`ForkMode::Live`]). An offline context of any
+//!    other type binds nothing: the fork's slots stay empty rather than read
+//!    the live playhead. **The transport is not one of them**: the fork reads
+//!    it from its own graph's `Env`, which for an offline fork is the
+//!    render's, so there is nothing to rebind; it gets the live node's meter. **Offline only, the MIDI clip
 //!    too:** the source installed on the live node's MIDI port (a
 //!    `MidiClipSource`) is copied onto the fork's own port with a fresh
 //!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
@@ -70,10 +71,11 @@
 //!    source that cannot be rebound (`rebind_offline` answers `None`) fails
 //!    the fork ([`PluginForkError::MidiSource`]) rather than render the
 //!    notes it feeds as silence.
-//! 5. **Offline only:** tell it [`RenderMode::Offline`](crate::RenderMode),
-//!    and make its batcher wait for each block (see `Batcher::set_offline_wait`)
-//!    — the live pipeline never waits, which on a render worker would turn
-//!    every block the subprocess had not finished yet into silence.
+//! 5. **Bind it**, and **offline only:** tell it
+//!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
+//!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
+//!    waits, which on a render worker would turn every chunk the subprocess
+//!    had not finished yet into silence.
 //!
 //! Any failure is a [`PluginForkError`] naming the step, and the fresh
 //! instance (if one started) is dropped with it, which kills and reaps its
@@ -116,11 +118,11 @@ use std::time::Duration;
 use tutti_core::transport::{LoopRange, OfflineTransport, Timeline, TransportState};
 use tutti_core::{Beat, Bpm};
 use tutti_graph::{
-    ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Legacy, Node,
-    NodeParts,
+    ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
 };
 
-use super::{PluginClient, PluginControls, ProcessGuard};
+use super::graph_node::PluginNode;
+use super::{Bound, PluginClient, PluginControls, ProcessGuard};
 use crate::error::{PluginForkError, PluginRenderFault};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::RenderMode;
@@ -168,7 +170,8 @@ impl Rebind {
     }
 }
 
-/// An offline timeline as the [`TransportState`] the plugin sources read.
+/// An offline timeline as the [`TransportState`] the parameter-automation
+/// source reads.
 ///
 /// The answers are the ones `TransportState` documents for an offline render:
 /// not recording, no loop region (an `OfflineTimeline` folds its loop into its
@@ -310,7 +313,7 @@ struct PluginFork {
 }
 
 impl PluginFork {
-    fn of(client: &PluginClient) -> Self {
+    fn of<S>(client: &PluginClient<S>) -> Self {
         Self {
             bridge: Arc::downgrade(&client.bridge),
             origin: Arc::clone(&client.origin),
@@ -321,7 +324,7 @@ impl PluginFork {
     }
 
     /// The five steps in the module docs, in order.
-    fn instance(&self, mode: ForkMode<'_>) -> Result<PluginClient, PluginForkError> {
+    fn instance(&self, mode: ForkMode<'_>) -> Result<PluginClient<Bound>, PluginForkError> {
         // First, so a plugin that cannot save costs no subprocess. The `Arc`
         // is dropped straight after: the fork holds no strong reference.
         let live = self.bridge.upgrade().ok_or(PluginForkError::LiveGone)?;
@@ -336,11 +339,12 @@ impl PluginFork {
             ..self.origin.config.clone()
         };
         let timeout = Duration::from_millis(config.timeout_ms);
-        let mut fork = PluginClient::new(config, path.clone(), self.controls.sample_rate())
-            .map_err(|source| PluginForkError::Load {
+        let fork = PluginClient::new(config, path.clone(), self.controls.sample_rate()).map_err(
+            |source| PluginForkError::Load {
                 path: path.clone(),
                 source,
-            })?;
+            },
+        )?;
         if fork.descriptor.id != self.id {
             return Err(PluginForkError::Mismatch {
                 path,
@@ -374,11 +378,12 @@ impl PluginFork {
             died: Mutex::new(None),
             budget: timeout,
         });
+        let mut fork = fork.bind();
         if let ForkMode::Offline(_) = mode {
             // Advisory: a plugin without the concept keeps rendering as it
             // would live, which is not an error (`Features::RENDER_MODE`).
             let _ = fork.set_render_mode(RenderMode::Offline);
-            fork.io.set_offline_wait(Arc::clone(&watch));
+            fork.state.io.set_offline_wait(Arc::clone(&watch));
         }
         fork.fork_watch = Some(watch);
         Ok(fork)
@@ -389,9 +394,9 @@ impl ForkSource for PluginFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let fork = self.instance(mode).map_err(ForkCause::new)?;
         let health = fork.fork_health();
-        // The fork runs as the live node does, through `Legacy`; `into_node`
-        // so it carries no fork source of its own.
-        let forked = Forked::new(Legacy::new(fork).into_node().0);
+        // The fork runs as the live node does, natively; boxed bare, so it
+        // carries no fork source of its own.
+        let forked = Forked::new(Box::new(PluginNode(fork)));
         Ok(match health {
             Some(health) => forked.with_health(health),
             None => forked,
@@ -399,25 +404,30 @@ impl ForkSource for PluginFork {
     }
 }
 
-impl PluginClient {
-    /// A fresh instance of this plugin carrying this one's saved state: a
-    /// fork by state transfer. Control thread; blocks on a subprocess launch
-    /// and two state transfers (half a second or more).
+impl<S> PluginClient<S> {
+    /// A fresh instance of this plugin carrying this one's saved state, bound
+    /// and ready to insert: a fork by state transfer. Control thread; blocks
+    /// on a subprocess launch and two state transfers (half a second or
+    /// more).
     ///
     /// `mode` is the graph's: [`ForkMode::Offline`] with a
-    /// `&OfflineTransport` binds the fork's transport-driven sources to that
+    /// `&OfflineTransport` binds the fork's timeline-driven sources to that
     /// timeline, tells the plugin it is rendering offline, and makes it wait
-    /// for each block; [`ForkMode::Live`] keeps its sources on the live
-    /// transport. See the `fork` module docs (`src/host/node/fork.rs`) for
+    /// for each chunk; [`ForkMode::Live`] keeps its sources on the live
+    /// transport. Either way the fork reads the transport from the `Env` of
+    /// the graph it is rendered in. See the `fork` module docs (`src/host/node/fork.rs`) for
     /// the steps and what a fork does not carry (MIDI, running DSP state).
     ///
     /// This instance is only asked for its state. What the fork renders, and
     /// any parameter changed on either afterwards, does not reach the other.
     ///
-    /// Inserting a `PluginClient` into a graph ([`IntoNode`]) hands the
+    /// Inserting a bound `PluginClient` into a graph ([`IntoNode`]) hands the
     /// editor a fork source that calls this, so `Editor::fork` forks a graph
     /// holding a plugin.
-    pub fn fork_instance(&self, mode: ForkMode<'_>) -> Result<PluginClient, PluginForkError> {
+    pub fn fork_instance(
+        &self,
+        mode: ForkMode<'_>,
+    ) -> Result<PluginClient<Bound>, PluginForkError> {
         PluginFork::of(self).instance(mode)
     }
 
@@ -425,9 +435,8 @@ impl PluginClient {
     /// of this plugin by state transfer ([`fork_instance`](Self::fork_instance)).
     ///
     /// For a host that inserts the plugin through its own node builder rather
-    /// than `IntoNode` — one wrapping it in a `Legacy::controlled` for a
-    /// settings ring and a shadow — and must still hand the editor a way to
-    /// fork it: `NodeParts { node, controls, fork: Some(client.fork_source()) }`.
+    /// than `IntoNode`, and must still hand the editor a way to fork it:
+    /// `NodeParts { node, controls, fork: Some(client.fork_source()) }`.
     /// Holds nothing that keeps this instance alive (see
     /// [`PluginForkError::LiveGone`]).
     pub fn fork_source(&self) -> Box<dyn ForkSource> {
@@ -446,21 +455,27 @@ impl PluginClient {
     }
 }
 
-/// A hosted plugin as a graph node: run through [`Legacy`] (a plugin is an
-/// `AudioUnit`), with a [`ForkSource`] that forks it by state transfer.
-impl IntoNode for PluginClient {
-    type Controls = ();
+/// A bound plugin as a graph node: the node itself, the [`PluginControls`] a
+/// host drives it through from then on (the typed control surface doc 013 §2
+/// hands back at insert), and a [`ForkSource`] that forks it by state
+/// transfer.
+///
+/// Only [`Bound`]: an unbound plugin is not a node (see the `host::node`
+/// module docs for the `compile_fail` pin).
+impl IntoNode for PluginClient<Bound> {
+    type Controls = PluginControls;
 
-    fn into_node(self) -> (Box<dyn Node>, ()) {
-        Legacy::new(self).into_node()
+    fn into_node(self) -> (Box<dyn Node>, PluginControls) {
+        let controls = self.controls();
+        (Box::new(PluginNode(self)), controls)
     }
 
-    fn into_parts(self) -> NodeParts<()> {
+    fn into_parts(self) -> NodeParts<PluginControls> {
         let fork = PluginFork::of(&self);
-        let (node, ()) = Legacy::new(self).into_node();
+        let (node, controls) = self.into_node();
         NodeParts {
             node,
-            controls: (),
+            controls,
             fork: Some(Box::new(fork)),
         }
     }

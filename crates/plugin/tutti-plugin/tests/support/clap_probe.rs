@@ -32,8 +32,82 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use tutti_plugin::handles::{PluginClient, PluginHandle};
+use tutti_graph::{GraphBuilder, Prepare, Renderer};
+use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_plugin::BridgeConfig;
+use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+
+/// A bound plugin as the only node of a native graph: the global inputs feed
+/// its inputs in order, its outputs feed the global outputs. What a test
+/// drives where it once drove the client as an `AudioUnit` — the executor
+/// hands the node its `Env` and its whole block, as the engine does.
+pub struct Rig {
+    renderer: Renderer,
+    key: NodeKey,
+    /// What inserting the plugin handed back.
+    pub controls: PluginControls,
+    inputs: usize,
+    outputs: usize,
+}
+
+impl Rig {
+    /// `client` in a graph prepared for `rate` and blocks of `block` frames.
+    pub fn new(client: PluginClient<Bound>, rate: f64, block: usize) -> Self {
+        let (inputs, outputs) = (client.inputs(), client.outputs());
+        let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
+        let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
+        let (key, controls) = g.add_with_controls(client);
+        g.pipe_input(key).pipe_output(key);
+        let renderer = g
+            .renderer(Prepare::new(SampleRate(rate), Samples(block)))
+            .expect("a one-plugin graph compiles");
+        Self {
+            renderer,
+            key,
+            controls,
+            inputs,
+            outputs,
+        }
+    }
+
+    /// The plugin's audio inputs.
+    pub fn inputs(&self) -> usize {
+        self.inputs
+    }
+
+    /// The plugin's audio outputs.
+    pub fn outputs(&self) -> usize {
+        self.outputs
+    }
+
+    /// Render `frames`, input channel `c` frame `i` being `input(c, i)`; one
+    /// `Vec` per output channel.
+    pub fn run(&mut self, frames: usize, input: impl Fn(usize, usize) -> f32) -> Vec<Vec<f32>> {
+        if self.inputs == 0 {
+            return self.renderer.render(frames);
+        }
+        let chans: Vec<Vec<f32>> = (0..self.inputs)
+            .map(|c| (0..frames).map(|i| input(c, i)).collect())
+            .collect();
+        let refs: Vec<&[f32]> = chans.iter().map(Vec::as_slice).collect();
+        self.renderer.render_input(&refs)
+    }
+
+    /// The node's latency as the graph compiles it: its declared `Shape`.
+    pub fn latency(&self) -> Samples {
+        self.renderer.editor().spec().topology.nodes[&self.key].latency
+    }
+
+    /// The renderer, to set the transport or edit the graph.
+    pub fn renderer(&mut self) -> &mut Renderer {
+        &mut self.renderer
+    }
+
+    /// The plugin's key in the graph.
+    pub fn key(&self) -> NodeKey {
+        self.key
+    }
+}
 
 /// `;`-separated candidate paths for the reference CLAP cdylib, from `build.rs`.
 const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
@@ -242,6 +316,7 @@ pub mod render {
     pub const TAG_PASSTHROUGH: u32 = 1;
     pub const TAG_ONLY: u32 = 2;
     pub const LATENCY: u32 = 3;
+    pub const TRANSPORT: u32 = 5;
 }
 
 /// Environment the probe reads **in the subprocess**, on load.

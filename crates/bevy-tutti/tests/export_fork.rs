@@ -930,9 +930,10 @@ mod plugin {
     /// neighbouring frame's value everywhere. (A constant input could not
     /// tell a trim of 64 from one of 201.)
     ///
-    /// Mutation (run): `plugin_load_promote` inserting the plugin boxed
-    /// (`insert_boxed(plugin.into_unit())`, the path before PR 12) → the
-    /// export is refused as not forkable, naming "Probe". Mutation (run):
+    /// Mutation: hand the editor no fork source from `IntoNode for
+    /// PluginClient<Bound>` (`fork: None`; before PR 12 the same came of
+    /// inserting the plugin boxed) → the export is refused as not forkable,
+    /// naming "Probe". Mutation (run):
     /// trimming one frame less than the plan's latency
     /// (`reported_latency() - 1` in `start_exports`) → every frame reads its
     /// predecessor.

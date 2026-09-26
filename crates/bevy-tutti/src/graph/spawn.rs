@@ -195,8 +195,42 @@ pub fn crossfade_audio_node(
             return;
         }
         let controls = CapturedControls::capture(world, new_unit.as_ref());
-        apply_crossfade(world, entity, new_unit, controls);
+        apply_crossfade(world, entity, Incoming::Unit(new_unit), controls);
     });
+}
+
+/// [`crossfade_audio_node`] for a hosted plugin: swap `entity`'s node for the
+/// loaded `client`, fading when the running node is a plugin of the same
+/// ports and latency (a plain swap otherwise), and replace the entity's
+/// captured controls with the incoming plugin's
+/// ([`CapturedControls::for_plugin`]). A plugin is a native graph node, not an
+/// `AudioUnit`, so it has a path of its own; it is bound on the way in.
+#[cfg(feature = "plugin")]
+pub fn crossfade_plugin_node(
+    commands: &mut Commands<'_, '_>,
+    entity: Entity,
+    client: tutti_plugin::handles::PluginClient,
+) {
+    commands.queue(move |world: &mut World| {
+        if world.get::<AudioNode>(entity).is_none() {
+            bevy_log::warn!(
+                "crossfade_plugin_node: entity {:?} has no AudioNode; nothing to crossfade",
+                entity
+            );
+            return;
+        }
+        let controls = CapturedControls::for_plugin(&client);
+        apply_crossfade(world, entity, Incoming::Plugin(Box::new(client)), controls);
+    });
+}
+
+/// What a crossfade swaps in.
+enum Incoming {
+    /// An `AudioUnit`, through `Legacy`.
+    Unit(Box<dyn AudioUnit>),
+    /// A hosted plugin, a native node.
+    #[cfg(feature = "plugin")]
+    Plugin(Box<tutti_plugin::handles::PluginClient>),
 }
 
 /// Crossfades [`crossfade_audio_node`] could not apply yet, because the graph
@@ -209,7 +243,7 @@ pub fn crossfade_audio_node(
 /// crossfade waits, and the unit then goes with the request, not with an
 /// entity that is gone.
 #[derive(Resource, Default)]
-pub struct PendingCrossfades(Vec<(Entity, Box<dyn AudioUnit>, CapturedControls)>);
+pub struct PendingCrossfades(Vec<(Entity, Incoming, CapturedControls)>);
 
 impl PendingCrossfades {
     /// How many crossfades are waiting.
@@ -232,7 +266,7 @@ impl PendingCrossfades {
 fn apply_crossfade(
     world: &mut World,
     entity: Entity,
-    unit: Box<dyn AudioUnit>,
+    unit: Incoming,
     mut controls: CapturedControls,
 ) {
     let Some(node) = world.get::<AudioNode>(entity).copied() else {
@@ -249,13 +283,26 @@ fn apply_crossfade(
         );
         return;
     };
-    match graph.replace_with(
-        node,
-        unit,
-        tutti_core::Seconds(0.005),
-        tutti_core::CrossfadeCurve::EqualAmplitude,
-        &mut controls,
-    ) {
+    let fade = tutti_core::Seconds(0.005);
+    let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
+    let landed = match unit {
+        Incoming::Unit(unit) => graph
+            .replace_with(node, unit, fade, curve, &mut controls)
+            .map_err(|refused| match refused {
+                ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
+                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+            }),
+        #[cfg(feature = "plugin")]
+        Incoming::Plugin(client) => {
+            graph
+                .replace_plugin(node, client, fade, curve)
+                .map_err(|refused| match refused {
+                    ReplaceRefused::Busy(client) => ReplaceRefused::Busy(Incoming::Plugin(client)),
+                    ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+                })
+        }
+    };
+    match landed {
         Ok(()) => {
             if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
                 dirty.0 = true;

@@ -1,21 +1,21 @@
 //! Does plugin delay compensation actually align a plugin path against a dry
 //! one — through a **real out-of-process plugin**, end to end?
 //!
-//! Every existing latency test in this tree stops one step short of the
+//! Every other latency test in this tree stops one step short of the
 //! question. `vst2_latency.rs` and the VST3 suites assert that the host *reads*
-//! the plugin's declared figure; `tutti_types::latency`'s own tests assert the
-//! planner's graph math against a hand-built fixture; `bevy-tutti`'s assert that
-//! the compensation system runs and republishes. None of them puts a real plugin
-//! in a real `Net` beside a real dry path and looks at the samples, so the one
-//! thing that could still be wrong — that the figure the host reports, the
-//! figure the planner plans against, and the delay the audio actually suffers
-//! are the *same number* — was untested.
+//! the plugin's declared figure; `tutti-graph`'s own tests assert the
+//! compiler's PDC against hand-built nodes; `bevy-tutti`'s assert that the
+//! latency poll reaches the editor. None of them puts a real plugin in a real
+//! graph beside a real dry path and looks at the samples, so the one thing that
+//! could still be wrong — that the figure the host reports, the figure the
+//! planner plans against, and the delay the audio actually suffers are the
+//! *same number* — is pinned here.
 //!
 //! It is not one number, which is exactly why. An out-of-process plugin's
-//! latency is its own declared figure **plus** the block the pipeline holds:
-//! `PluginClient` submits block N and collects block N−1, so a sample entering
-//! leaves one `BATCH_SIZE` block later than the plugin alone accounts for.
-//! `AudioUnit::route` declares the sum ([`EXPECTED_TOTAL_LATENCY`]), and getting
+//! latency is its own declared figure **plus** the chunk the pipeline holds:
+//! the node submits chunk N and collects chunk N−1, so a sample entering
+//! leaves one 64-frame chunk later than the plugin alone accounts for. The
+//! node's `Shape` declares the sum ([`EXPECTED_TOTAL_LATENCY`]), and getting
 //! that addition wrong is invisible to any test that reads the plugin's figure
 //! back — the host would report 137, the plugin really would delay 137, and the
 //! audio would still arrive 64 samples late against its dry twin.
@@ -28,29 +28,11 @@
 //!             └──────────── dry ───────────────────────────▶ ┘
 //! ```
 //!
-//! With compensation, both arrivals land on the same sample and sum to exactly
-//! twice the impulse. Without it, they land [`EXPECTED_TOTAL_LATENCY`] apart.
-//! The two runs are the same graph and the same driving loop; only
-//! `latency::compensate` is called or not.
-//!
-//! # Why `Net` directly rather than `tutti_core::topology::compile`
-//!
-//! `compile` builds nodes from a `Catalog` keyed by a **kind string**, so
-//! expressing a plugin node means writing a `Catalog` impl whose `build` loads a
-//! subprocess — a fixture bigger than the test, and one that would put a second
-//! construction path under assertions meant for the first. `Net` is also what
-//! `bevy_tutti::graph::latency::compensate_graph` itself drives
-//! (`AudioGraphRes::compensate`, over the `Net` it keeps), so this exercises the production path
-//! rather than a parallel one. `Net` implements both `LatencyGraph` and
-//! `DelayInsertion` (`fundsp-tutti/src/latency/mod.rs`), which is all the
-//! planner needs.
-//!
-//! Nothing here calls `Net::commit`, and its absence is deliberate rather than
-//! an omission: `commit` publishes a graph to a *backend* for the audio thread
-//! to render, and asserts one exists. These tests drive `AudioUnit::process` on
-//! the `Net` itself, which reads the front graph directly — so a commit would
-//! have nothing to publish to and panics on the assertion. A host that renders
-//! through a backend commits; a test that renders the graph in place does not.
+//! A native `tutti-graph` graph, compiled and rendered as the engine renders
+//! one: the compiler's PDC pass delays the dry path, so both arrivals land on
+//! the same sample and sum to exactly twice the impulse. The plugin path alone
+//! arrives [`EXPECTED_TOTAL_LATENCY`] late. And a latency the plugin changes at
+//! runtime reaches PDC at the next commit, through `Editor::set_latency`.
 
 #![cfg(feature = "clap")]
 
@@ -61,14 +43,18 @@
 mod clap_probe;
 use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 
-use tutti_core::dsp::Net;
-use tutti_core::{latency, AudioUnit, BufferVec, ChannelLayout, SampleRate, Samples, F32};
+use tutti_core::{ChannelLayout, SampleRate, Samples};
+use tutti_graph::{GraphBuilder, Prepare, Renderer};
 use tutti_nodes::testing::Through;
 use tutti_nodes::ChannelSumNode;
+use tutti_plugin::handles::{Bound, PluginClient, PluginControls};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::NodeKey;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
-/// fundsp's block size, and the one block the out-of-process pipeline holds.
+/// The block size every rig here renders, and the chunk the out-of-process
+/// pipeline holds.
 const BLOCK: usize = 64;
 
 /// What the CLAP probe declares through `clap.latency` in `RenderMode::Latency`,
@@ -82,11 +68,11 @@ const BLOCK: usize = 64;
 const PROBE_LATENCY: usize = 137;
 
 /// The total an out-of-process plugin node declares: the plugin's own figure
-/// plus the block the pipeline holds.
+/// plus the chunk the pipeline holds.
 ///
 /// The sum is the thing under test. `PluginClient::latency()` reports only the
-/// first term — it is the plugin's declaration — while `AudioUnit::route` adds
-/// the second, and only `route` reaches `latency::plan`.
+/// first term — it is the plugin's declaration — while the node's `Shape`
+/// declares the sum, and only the `Shape` reaches the compiler's PDC pass.
 const EXPECTED_TOTAL_LATENCY: usize = PROBE_LATENCY + BLOCK;
 
 /// Blocks to render. Comfortably past `EXPECTED_TOTAL_LATENCY` (201) so the
@@ -136,22 +122,21 @@ const PACE: std::time::Duration = PERIOD.saturating_mul(20);
 /// routing and delay, not rounding, so an epsilon would only hide a defect.
 const IMPULSE: f32 = 1.0;
 
-/// Render `BLOCKS` blocks of an impulse through `net`, returning output
+/// Render `BLOCKS` blocks of an impulse through `graph`, returning output
 /// channel 0.
 ///
 /// One impulse at [`IMPULSE_AT`] and silence everywhere else, so every nonzero
 /// sample in the result is an arrival and its index is an arrival time.
-fn render_impulse(net: &mut Net) -> Vec<f32> {
-    let mut input = BufferVec::<F32>::new(1);
-    let mut output = BufferVec::<F32>::new(1);
+fn render_impulse(graph: &mut Renderer) -> Vec<f32> {
+    let silence = [0.0f32; BLOCK];
     let mut captured = Vec::with_capacity(TOTAL_FRAMES);
 
     // Warm the pipeline on silence before the impulse goes in.
     //
-    // The out-of-process pipeline submits block N and collects block N-1, and
-    // `Batcher::collectable` substitutes silence for any block the server has
-    // not answered yet — start-up, or a block that missed its budget. Those
-    // silences are correct, but they are *lossy*: a starved block does not
+    // The out-of-process pipeline submits chunk N and collects chunk N-1, and
+    // `Batcher::collectable` substitutes silence for any chunk the server has
+    // not answered yet — start-up, or a chunk that missed its budget. Those
+    // silences are correct, but they are *lossy*: a starved chunk does not
     // arrive late, it never arrives. Feeding the impulse into a cold pipeline
     // therefore risks dropping the one sample the whole assertion rests on, and
     // the failure reads as "the plugin contributed nothing" — which is also
@@ -162,23 +147,18 @@ fn render_impulse(net: &mut Net) -> Vec<f32> {
     // would have to be a genuine mid-run starvation rather than the cold start
     // every run has.
     for _ in 0..WARMUP_BLOCKS {
-        input.clear();
-        output.clear();
-        net.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        graph.render_input(&[&silence]);
         std::thread::sleep(PACE);
     }
 
     for block in 0..BLOCKS {
-        input.clear();
+        let mut input = [0.0f32; BLOCK];
         let base = block * BLOCK;
         if (base..base + BLOCK).contains(&IMPULSE_AT) {
-            input.set_scalar(0, IMPULSE_AT - base, IMPULSE);
+            input[IMPULSE_AT - base] = IMPULSE;
         }
-        output.clear();
-        net.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        for i in 0..BLOCK {
-            captured.push(output.at_f32(0, i));
-        }
+        let out = graph.render_input(&[&input]);
+        captured.extend_from_slice(&out[0]);
         // Pace to the real block period.
         //
         // Not politeness — correctness. The pipeline never waits for a reply, so
@@ -203,53 +183,82 @@ fn arrivals(samples: &[f32]) -> Vec<(usize, f32)> {
         .collect()
 }
 
+/// A native graph with one global input and one output, holding `plugin`
+/// fed by the input on every port; `sum` decides what reaches the output.
+struct Rig {
+    graph: Renderer,
+    plugin: NodeKey,
+    controls: PluginControls,
+}
+
 /// Build the two-path graph: one input fanned to a plugin path and a dry path,
-/// summed into output channel 0.
-///
-/// Returns the `Net` and the plugin's `NodeId`. Nothing is committed and no
-/// compensation is run — the caller decides, which is the whole point.
+/// summed into output channel 0. The compiler's PDC pass aligns the two, as it
+/// does for every graph (doc 013 §3, "Latency solve").
 ///
 /// **`set_source` per edge, never `connect`/`pipe`.** The latter walk *every*
-/// port of a node, so a later wiring call silently clobbers an earlier one; this
-/// is the same discipline `tutti_core::topology::compile` and
-/// `bevy_tutti::graph::wire::rebuild` follow.
-fn build_graph(plugin: Box<dyn AudioUnit>) -> Net {
-    use tutti_core::dsp::Source;
-
-    // The probe is a stereo effect (2 in, 2 out), and `Net` requires every input
-    // port of every node to have a source — an unwired port renders silence, and
-    // silence out of the plugin path is indistinguishable from "the plugin
-    // contributed nothing", which is exactly what this suite is trying to
-    // measure. So both of its ports are fed from the same mono impulse and only
-    // channel 0 is read back.
-    let plugin_inputs = AudioUnit::inputs(&*plugin);
-    let mut net = Net::new(1, 1);
-    net.set_sample_rate(SampleRate(SAMPLE_RATE));
-
-    let plugin_id = net.push(plugin);
-    // The dry twin. A pass-through rather than wiring the global input straight to the
-    // sum: the planner delays an *edge into a node*, and a path that is only a
-    // global-to-output link has no node on it to delay.
-    let dry = net.push(Box::new(Through::mono()));
-    // Summing is a node's job — `Net` holds one source per input port, so a
-    // fan-in has to be an explicit adder.
-    //
-    // `ChannelSumNode` and NOT fundsp's `join::<U2>()`: join *averages* its
-    // inputs, so two aligned arrivals of `IMPULSE` would come out as `IMPULSE` —
-    // exactly what one arrival alone produces. The assertion that both paths contributed
-    // would then be satisfied by either of them arriving alone, which is the
-    // thing it exists to rule out.
-    let sum = net.push(Box::new(ChannelSumNode::new(2, ChannelLayout::MONO)));
+/// port of a node, so a later wiring call silently clobbers an earlier one.
+fn two_paths(plugin: PluginClient<Bound>) -> Rig {
+    // The probe is a stereo effect (2 in, 2 out). Both of its ports are fed
+    // from the same mono impulse and only channel 0 is read back: an unwired
+    // port renders silence, which out of the plugin path is indistinguishable
+    // from "the plugin contributed nothing", exactly what this suite measures.
+    let plugin_inputs = plugin.inputs();
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (key, controls) = g.add_with_controls(plugin);
+    // The dry twin. A pass-through rather than wiring the global input straight
+    // to the sum, so each path is a node the compiler aligns.
+    let dry = g.add_unit(Box::new(Through::mono()));
+    // Summing is a node's job — a port holds one source, so a fan-in has to be
+    // an explicit adder. `ChannelSumNode`, which sums rather than averages: two
+    // aligned arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one
+    // arrival alone cannot produce.
+    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::MONO)));
 
     for port in 0..plugin_inputs {
-        net.set_source(plugin_id, port, Source::Global(0));
+        g.set_source(key, port, Source::Global(0));
     }
-    net.set_source(dry, 0, Source::Global(0));
-    net.set_source(sum, 0, Source::Local(plugin_id, 0));
-    net.set_source(sum, 1, Source::Local(dry, 0));
-    net.set_output_source(0, Source::Local(sum, 0));
+    g.set_source(dry, 0, Source::Global(0));
+    g.set_source(sum, 0, Source::Node(OutPort { node: key, port: 0 }));
+    g.set_source(sum, 1, Source::Node(OutPort { node: dry, port: 0 }));
+    g.set_output(0, Source::Node(OutPort { node: sum, port: 0 }));
+    finish(g, key, controls)
+}
 
-    net
+/// The plugin alone: input to every port, its port 0 to the output. No other
+/// path, so the compiler inserts no delay and the output is exactly what the
+/// plugin path suffers.
+fn plugin_alone(plugin: PluginClient<Bound>) -> Rig {
+    let plugin_inputs = plugin.inputs();
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (key, controls) = g.add_with_controls(plugin);
+    for port in 0..plugin_inputs {
+        g.set_source(key, port, Source::Global(0));
+    }
+    g.set_output(0, Source::Node(OutPort { node: key, port: 0 }));
+    finish(g, key, controls)
+}
+
+fn finish(g: GraphBuilder, plugin: NodeKey, controls: PluginControls) -> Rig {
+    let graph = g
+        .renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .expect("the rig compiles");
+    Rig {
+        graph,
+        plugin,
+        controls,
+    }
+}
+
+impl Rig {
+    /// The compiled plan's total latency: the worst path's.
+    fn total_latency(&self) -> Samples {
+        self.graph
+            .editor()
+            .base()
+            .expect("committed")
+            .total_latency()
+            .samples()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,14 +266,20 @@ fn build_graph(plugin: Box<dyn AudioUnit>) -> Net {
 // ---------------------------------------------------------------------------
 
 /// The host reports the plugin's own declared latency, and the node declares
-/// that plus the pipeline block.
+/// that plus the pipeline chunk — at insert, to the compiler, and through the
+/// controls a host keeps.
 ///
-/// Both halves, because they are different claims and the second is the one the
-/// planner uses. `PluginClient::latency()` is the plugin's figure;
-/// `AudioUnit::latency()` derives from `route()`, which adds the block the
-/// pipeline holds. A test that checked only the first would pass while the
-/// planner compensated by the wrong amount — which is precisely the bug this
-/// suite exists to make visible.
+/// Three readings, because they are different claims and the second is the
+/// one the planner uses. `PluginClient::latency()` is the plugin's figure;
+/// the node's `Shape` adds the chunk the pipeline holds; the controls'
+/// `declared_latency` is what a host hands `Editor::set_latency` when the
+/// figure moves, and must be the same sum. A test that checked only the first
+/// would pass while the planner compensated by the wrong amount — which is
+/// precisely the bug this suite exists to make visible.
+///
+/// Mutation: declare `Latency::new(self.latency())` in the node's `Shape`
+/// (drop the pipeline) → the graph's figure is 137 → fails. Mutation: the
+/// same in `PluginControls::declared_latency` → fails the third.
 #[test]
 fn the_probe_declares_the_latency_this_suite_expects() {
     let _lock = exclusive();
@@ -277,84 +292,56 @@ fn the_probe_declares_the_latency_this_suite_expects() {
         "the host must report the plugin's own declared figure"
     );
 
-    let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
+    let rig = plugin_alone(probe.client.bind());
     assert_eq!(
-        unit.latency().map(|l| l as usize),
-        Some(EXPECTED_TOTAL_LATENCY),
-        "the NODE must declare the plugin's figure PLUS the pipeline block \
-         ({PROBE_LATENCY} + {BLOCK}); only this reaches `latency::plan`"
+        rig.graph.editor().spec().topology.nodes[&rig.plugin].latency,
+        Samples(EXPECTED_TOTAL_LATENCY),
+        "the NODE must declare the plugin's figure PLUS the pipeline chunk \
+         ({PROBE_LATENCY} + {BLOCK}); only this reaches the compiler's PDC"
     );
-}
-
-/// Cloning the node carries its latency.
-///
-/// Not incidental: `LatencyGraph::latency for Net` probes a node by
-/// `dyn_clone::clone_box`-ing it, because `AudioUnit::latency` takes `&mut
-/// self`. A clone that reported zero would make the planner see an
-/// all-zero-latency graph and insert no delays at all — while
-/// `PluginClient::latency()` kept answering 137 to anyone who asked directly.
-/// The alignment test below would fail, but with a symptom (nothing was
-/// compensated) far from the cause, so it is pinned here.
-#[test]
-fn a_cloned_node_still_declares_its_latency() {
-    let _lock = exclusive();
-    let _env = ProbeEnv::new().render_mode(render::LATENCY);
-    let probe = load_probe(SAMPLE_RATE);
-
-    let unit: Box<dyn AudioUnit> = Box::new(probe.client);
-    let mut cloned = dyn_clone::clone_box(&*unit);
     assert_eq!(
-        cloned.latency().map(|l| l as usize),
-        Some(EXPECTED_TOTAL_LATENCY),
-        "a clone must carry the latency: the planner probes every node by \
-         cloning it, so a clone that forgets reports a zero-latency graph"
+        rig.controls.declared_latency().samples(),
+        Samples(EXPECTED_TOTAL_LATENCY),
+        "the controls a host keeps declare the same sum"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Uncompensated: the two paths arrive apart.
+// What the plugin path suffers.
 // ---------------------------------------------------------------------------
 
-/// Without compensation the dry and plugin arrivals are exactly
-/// [`EXPECTED_TOTAL_LATENCY`] apart.
+/// The plugin path, alone, arrives exactly [`EXPECTED_TOTAL_LATENCY`] late.
 ///
 /// The baseline the compensated test is measured against, and a real assertion
 /// in its own right: it pins the *actual* delay the audio suffers, which is the
 /// third of the three numbers that must agree. The two tests together say the
 /// declared figure and the suffered delay are the same; either alone says only
-/// that one of them has some value.
+/// that one of them has some value. (Under `Net` this ran the two-path graph
+/// uncompensated; the native graph always compensates, so the plugin path is
+/// measured on its own, where there is nothing to compensate.)
 #[test]
-fn without_compensation_the_two_paths_arrive_a_full_latency_apart() {
+fn the_plugin_path_alone_arrives_a_full_latency_late() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
 
-    let mut net = build_graph(Box::new(probe.client));
-
-    let out = render_impulse(&mut net);
+    let mut rig = plugin_alone(probe.client.bind());
+    let out = render_impulse(&mut rig.graph);
     assert!(
         !handle.status().is_dead(),
         "the plugin must survive the run"
     );
 
     let hits = arrivals(&out);
+    assert_eq!(hits.len(), 1, "exactly one arrival, got {hits:?}");
+    let (wet_at, wet_v) = hits[0];
     assert_eq!(
-        hits.len(),
-        2,
-        "expected exactly two arrivals (dry, then plugin), got {hits:?}"
-    );
-
-    let (dry_at, dry_v) = hits[0];
-    let (wet_at, wet_v) = hits[1];
-    assert_eq!(dry_at, IMPULSE_AT, "the dry path is undelayed");
-    assert_eq!(dry_v, IMPULSE, "the dry path passes the impulse unchanged");
-    assert_eq!(
-        wet_at - dry_at,
+        wet_at - IMPULSE_AT,
         EXPECTED_TOTAL_LATENCY,
         "the plugin path must arrive exactly {EXPECTED_TOTAL_LATENCY} samples \
          late ({PROBE_LATENCY} declared + {BLOCK} pipeline). A gap of \
-         {PROBE_LATENCY} means the pipeline block is not really there; a gap of \
+         {PROBE_LATENCY} means the pipeline chunk is not really there; a gap of \
          {BLOCK} means the plugin is not delaying."
     );
     assert_eq!(
@@ -383,16 +370,14 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
 
-    let mut net = build_graph(Box::new(probe.client));
-    let plan = latency::compensate(&mut net);
-
+    let mut rig = two_paths(probe.client.bind());
     assert_eq!(
-        plan.total(),
+        rig.total_latency(),
         Samples(EXPECTED_TOTAL_LATENCY),
         "the plan's total is the worst path's latency"
     );
 
-    let out = render_impulse(&mut net);
+    let out = render_impulse(&mut rig.graph);
     assert!(
         !handle.status().is_dead(),
         "the plugin must survive the run"
@@ -420,46 +405,55 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
     );
 }
 
-/// Re-planning after the plugin's latency changes at runtime realigns the graph.
+/// **A plugin latency change reaches PDC at the next commit.** The plugin's
+/// figure moves (what its `latency.changed` delivers into its cell), the host
+/// hands the controls' declared latency to `Editor::set_latency` — the node's
+/// `Shape` changes — and the next commit re-plans the graph around it.
 ///
 /// A plugin may raise its latency mid-session — a CLAP host is told so through
 /// `clap.latency`'s host extension, and `PluginClient::set_latency` is the seam
-/// that lands it. What that does *not* do on its own is re-run PDC: the node
-/// reports a new figure and the delays already spliced into the graph still
-/// carry the old one, so the graph is misaligned by exactly the difference until
-/// something re-plans.
+/// that lands it. What that does *not* do on its own is re-run PDC: the node's
+/// figure is the editor's until told, so the graph is misaligned by exactly
+/// the difference until something re-plans. This is the case a static rig
+/// cannot reach, and the one where a stale compensation is most damaging — the
+/// graph was aligned, so nothing looks broken until you measure it.
 ///
-/// This is the case a static rig cannot reach, and the one where a stale
-/// compensation is most damaging — the graph was aligned, so nothing looks
-/// broken until you measure it.
+/// Mutation: skip the `set_latency` call → the total stays 201 and the paths
+/// stay aligned → fails. Mutation: `declared_latency` without the pipeline
+/// chunk → the total is 201 + 64 − 64 → fails.
 #[test]
-fn re_planning_realigns_after_a_runtime_latency_change() {
+fn a_latency_change_reaches_pdc_at_the_next_commit() {
     const EXTRA: usize = 64;
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
     let probe = load_probe(SAMPLE_RATE);
     let handle = probe.handle;
-    let client = probe.client.clone();
 
-    let mut net = build_graph(Box::new(probe.client));
-    let _ = latency::compensate(&mut net);
+    let mut rig = two_paths(probe.client.bind());
+    assert_eq!(rig.total_latency(), Samples(EXPECTED_TOTAL_LATENCY));
 
     // The plugin now claims more latency than it did at load. Its *rendering*
     // is unchanged — the probe still delays by 137 — which is deliberate: the
     // question here is whether the planner re-reads the declaration and
-    // re-splices, not whether the audio moved.
-    client.set_latency(Samples(PROBE_LATENCY + EXTRA));
-    let replan = latency::compensate(&mut net);
+    // re-plans, not whether the audio moved.
+    rig.controls.set_latency(Samples(PROBE_LATENCY + EXTRA));
+    let declared = rig.controls.declared_latency();
+    rig.graph
+        .editor_mut()
+        .set_latency(rig.plugin, declared)
+        .expect("a latency inside what PDC compensates");
+    rig.graph
+        .editor_mut()
+        .commit()
+        .expect("the re-plan commits");
 
     assert_eq!(
-        replan.total(),
+        rig.total_latency(),
         Samples(EXPECTED_TOTAL_LATENCY + EXTRA),
-        "the re-plan must read the plugin's NEW figure. The old total means \
-         `clear_delays` did not remove the previous compensation, or the node's \
-         `route` cached its latency instead of reading the live cell."
+        "the re-plan must carry the plugin's NEW figure plus the pipeline chunk"
     );
 
-    let out = render_impulse(&mut net);
+    let out = render_impulse(&mut rig.graph);
     assert!(
         !handle.status().is_dead(),
         "the plugin must survive the run"

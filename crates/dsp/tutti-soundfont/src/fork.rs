@@ -54,8 +54,12 @@ use tutti_midi_runtime::OfflineRebind;
 use crate::{Error, SoundFontUnit};
 
 /// [`SoundFontUnit::fork_source`]'s source: the template in the module docs.
-struct SoundFontFork {
+pub(crate) struct SoundFontFork {
     template: SoundFontUnit,
+    /// Whether the fork is a graph node (the unit was inserted as one,
+    /// `IntoNode for SoundFontUnit`, which re-rates in `prepare`) rather than
+    /// a `Legacy` one.
+    native: bool,
 }
 
 impl SoundFontFork {
@@ -68,6 +72,11 @@ impl SoundFontFork {
 
 impl ForkSource for SoundFontFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        if self.native {
+            // A graph node follows its graph's rate itself (`Node::prepare`).
+            let fork = self.template.fork_instance(mode).map_err(ForkCause::new)?;
+            return Ok(Forked::new(Box::new(fork)));
+        }
         let fork = self.unit(mode).map_err(ForkCause::new)?;
         // Run through `Legacy`, as a host runs the live unit; `into_node` so
         // it carries no fork source of its own (a fork is not forked again).
@@ -185,6 +194,15 @@ impl SoundFontUnit {
     fn fork_template(&self) -> SoundFontFork {
         SoundFontFork {
             template: self.clone(),
+            native: false,
+        }
+    }
+
+    /// The fork source of a unit inserted as a graph node.
+    pub(crate) fn native_fork(&self) -> SoundFontFork {
+        SoundFontFork {
+            template: self.clone(),
+            native: true,
         }
     }
 }

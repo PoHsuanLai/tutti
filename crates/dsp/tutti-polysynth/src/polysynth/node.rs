@@ -11,10 +11,7 @@
 //! port goes when every sender is an event source (doc 013 item 5).
 
 use tutti_core::{AudioUnit, ChannelLayout};
-use tutti_graph::{
-    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, SortedEvents, Status,
-};
-use tutti_midi_types::MidiEvent;
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, SortedEvents, Status};
 
 use super::PolySynth;
 use crate::fork::SynthFork;
@@ -34,35 +31,8 @@ impl PolySynth {
     /// Returns how many the scratch holds, sorted by offset.
     fn gather_events(&mut self, frames: usize, events: SortedEvents<'_>) -> usize {
         let rate = self.bank.sample_rate();
-        let n = self
-            .midi
-            .poll(frames, rate, &mut self.midi_buffer[..MAILBOX])
-            .min(MAILBOX);
-        if n > 1 {
-            self.midi_buffer[..n].sort_unstable_by_key(|e| e.frame_offset);
-        }
-        let midi = |e: &tutti_graph::Event| match e.kind {
-            EventKind::Midi(ump) => Some((e.offset.index() as u32, ump.0)),
-            EventKind::Ramp(_) => None,
-        };
-        let slice = events.as_slice();
-        let total = slice.iter().filter_map(midi).count();
-        let m = total.min(MIDI_BUFFER - n);
-        // Merge from the back, in place: the port's `n` sorted events sit at
-        // the front, and the event input's first `m` (sorted too) are taken
-        // last to first.
-        let mut i = n;
-        let mut k = n + m;
-        for (offset, words) in slice.iter().rev().filter_map(midi).skip(total - m) {
-            while i > 0 && self.midi_buffer[i - 1].frame_offset > offset {
-                k -= 1;
-                i -= 1;
-                self.midi_buffer[k] = self.midi_buffer[i];
-            }
-            k -= 1;
-            self.midi_buffer[k] = MidiEvent::from_ump(offset, &words);
-        }
-        n + m
+        self.midi
+            .gather(frames, rate, &mut self.midi_buffer, MAILBOX, events)
     }
 }
 

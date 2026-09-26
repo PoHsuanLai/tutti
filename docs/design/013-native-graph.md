@@ -3408,12 +3408,22 @@ under both.
   passes, which the plugin handles the same way. Pinned both ways by
   `clap_fork`'s `a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame`.
 
+- **SoundFont as a graph node**, the synth's shape at `Resolution::Frames(8)`
+  (rustysynth's chunk). It follows its graph's rate: `prepare` rebuilds the
+  synthesizer at the prepared rate (control thread), which closes the "can't
+  re-rate live on a device restart" follow-up for the path bevy-tutti now
+  takes. The port/event-input merge moved to `MidiInPort::gather`, shared.
+
 **Not yet (next PRs of item 5).**
 
-- **`MidiClipSource` and the port's installed-source cell** go once no
-  target is inserted through `Legacy` with a clip: SoundFont (below) is the
-  last MIDI unit that is. The synth's and plugin's `rebind_offline_into`
-  go with them.
+- **`MidiClipSource`, the port's installed-source cell and
+  `MidiTargetRegistry`.** Every MIDI node bevy-tutti inserts itself (the
+  SoundFont player, a plugin) is now a graph node, and a synth can be
+  (`spawn_graph_node`); the registry's generic path remains for a host's own
+  `AudioUnit` with a MIDI port (and a synth spawned with
+  `spawn_audio_node`). Deleting it is a breaking change for those hosts:
+  an owner decision, then the synth's and plugin's `rebind_offline_into` go
+  with it.
 - **The plugin's other three inputs** (automation, harmony, note
   expression) still poll a timeline each, through their `InputSlot`s. They
   no longer need the plugin to be `legacy` (above); they go when their

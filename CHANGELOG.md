@@ -528,6 +528,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A live disk voice on a looped stream played 576 frames and then
+  silence, and every live reposition cost frames and drift** (tutti-sampler;
+  design doc 013, "The live disk loop and its repositions (#48)"). The
+  butler compared the reader's consumed-frame count against the loop's file
+  frames and flushed the ring on every cycle past the loop's end; its RT loop
+  crossfade replayed the tail it faded out; and every reposition (a seek, a
+  PDC change) flushed a FIFO ring, which dropped what it had just refilled,
+  replayed its fade-in, restarted the reader from a zero history, and left
+  the voice further behind its clock each time. The streaming tier's ring is
+  now **indexed by position**:
+  - The butler writes what each straight position holds under the stream's
+    mapping — the file, a loop's sequence (fade blended in, wrapping to
+    `resume`), or the file mirrored in reverse — and keeps the window filled
+    ahead of where the reader says it plays. Nothing is flushed.
+  - A `DiskVoice` seats on the clock exactly as the memory tier does and
+    reads its taps from the ring by position through the memory tier's tap
+    layout, so it plays the memory tier's samples at the same clock frame, bit
+    for bit, at any rate (a 44.1 kHz file at 48 kHz included). The 2-frame
+    lag the old reader's history added at unity is gone.
+  - A seek, a transport loop, a varispeed change or a PDC change costs no
+    frame and never drifts: the reader plays on from a rendered continuation
+    of what it was playing while the butler moves the window, then crossfades
+    to the new position (the seek crossfade,
+    `BufferConfig::seek_crossfade_frames`). Fades chain without a step, a
+    continuation that runs out ramps out, and the ring ramps back in after an
+    underrun. A PDC change now moves from where the reader plays.
+  - A loop or direction edit switches the ring where the old and new
+    mappings part — exactly there when that is ahead of the reader (heard as
+    on the memory tier), otherwise just past the block the reader is in,
+    crossfaded from a record of the old loop. Setting the same loop again, or
+    one that changes nothing the ring holds, is free. Reverse ignores the loop
+    and mirrors the file, as on the memory tier and a fork; past the file's end
+    both are silent.
+  - A loop change reads only its fade's lead-in (and a short loop's body,
+    kept so a streamed refill does not seek once per wrap), never the whole
+    file, and never while holding the plan map. A lead-in that cannot be read
+    plays the loop hard, is logged, and is what a fork of the stream plays too.
+  - The wave cache refuses a single wave larger than its whole byte budget;
+    a stream of a format that cannot seek holds its file itself.
+  - **`Status::take_disk_voice` returns `Result<DiskVoice, TakeVoiceError>`**
+    (was `Option`): `NotStreaming` where it returned `None`, and
+    `ReaderTaken` for a second voice on one stream — a stream serves one live
+    voice. `Command::Seek` moves a free-running reader only; a placed voice
+    follows its clock.
+  - **tutti-types / tutti-core: `PosRing`**, the position-indexed ring the
+    stream's reader and the butler share (one writer, one reader, a window of
+    positions, reads by position that no write ever lands under), with a loom
+    model of its protocol (`tests/pos_ring_loom.rs`, in CI's loom job).
+    `PosRing::new` returns its one `PosWriter` and one `PosReader`; a read
+    goes through the `PosClaim` a claim returns, and a reader that reads
+    nothing this block calls `PosReader::idle`.
+  - The live read keys a jump on the clock's `segment_generation` (a
+    free-running source's seek epoch) as well as on its position, so a seek
+    to where the clock already stands is crossfaded as a jump.
+  - Removed (all crate-private but one): `DiskVoice::seek` — a placed voice
+    follows its clock, so seek the clock; `Command::Seek` still moves a
+    free-running reader. Also `LoopStatus`, the ring flush and seek-request
+    epochs, the seeking flag, the seek and loop crossfaders, and the reader's
+    consumed-frame counter.
+
 - **tutti-graph: an event PDC delay no longer refuses input against room
   its own due backlog is about to free.** `EventFifo::run` queued the
   block's input before emitting what was already due, so a FIFO a
@@ -584,10 +644,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `MemorySource` reads a loop's fade from the wave in place: its internal
     crossfade buffer, and that buffer's 4096-frame cap on `crossfade_frames`,
     are gone, and `loop_setting()` returns the crossfade length asked for.
-  - **Not fixed: a live disk voice on a looped stream.** The butler's loop
-    bookkeeping compares a consumed-frame counter against the loop's file
-    frames, so past the loop's end it flushes the ring on every cycle; doc
-    013 records it ("The live disk loop") and the fix.
+  - **Not fixed here: a live disk voice on a looped stream.** Fixed since:
+    the entry above.
 
 - **A synth instrument exported silent on the native graph** (design doc
   013, PR 12's follow-up). A forked `PolySynth` or `SoundFontUnit` was

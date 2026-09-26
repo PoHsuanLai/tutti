@@ -15,11 +15,10 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
-use super::loops::{buffer_size_for_file, capture_lead_in};
+use super::loops::{apply_mapping, buffer_size_for_file, LeadIn, Mapping, RingLoop, RingMap};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
-use super::prefetch::{share_reader, RegionBuffer};
-use super::preroll::reposition_click_free;
+use super::prefetch::RegionBuffer;
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
@@ -125,7 +124,14 @@ pub(super) fn handle_command(
             file_path,
             offset_samples,
         } => {
-            handle_stream_file(channel_index, file_path, offset_samples, shared, local);
+            handle_stream_file(
+                channel_index,
+                file_path,
+                offset_samples,
+                shared,
+                config,
+                local,
+            );
         }
         ButlerCommand::StopStreaming { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
@@ -146,21 +152,23 @@ pub(super) fn handle_command(
             range,
             crossfade_frames,
         } => {
-            handle_set_stream_loop(channel_index, range, crossfade_frames, shared, local);
+            handle_set_stream_loop(
+                channel_index,
+                Some((range, crossfade_frames)),
+                shared,
+                config,
+                local,
+            );
         }
         ButlerCommand::ClearStreamLoop { channel_index } => {
-            if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-                if let Some(link) = plan.link.as_mut() {
-                    link.set_loop(None);
-                }
-            }
+            handle_set_stream_loop(channel_index, None, shared, config, local);
         }
 
         ButlerCommand::SeekStream {
             channel_index,
             file_position,
         } => {
-            handle_seek_stream(channel_index, file_position, shared, config, local);
+            handle_seek_stream(channel_index, file_position, shared, local);
         }
 
         ButlerCommand::SetVarispeed {
@@ -218,6 +226,7 @@ fn handle_stream_file(
     file_path: PathBuf,
     offset_samples: usize,
     shared: &Handles,
+    config: &BufferConfig,
     local: &mut Local,
 ) {
     // Probe metadata (frame count / sample rate) for ring sizing + src_ratio
@@ -225,27 +234,39 @@ fn handle_stream_file(
     // back to the whole-file `load_wave` + `LruCache` path when the format
     // isn't seekable (no frame count) or opening the stream decoder fails.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    let (file_length, file_sr, file_channels, decoder) = match open_stream(&file_path) {
+    let (file_length, file_sr, file_channels, decoder, resident) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
             // Decoder metadata carries the header's integer rate.
             SampleRate::from(meta.sample_rate),
             decoder.channels(),
             Some(decoder),
+            None,
         ),
         None => {
             let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
                 return;
             };
-            (wave.len() as u64, wave.sample_rate(), wave.channels(), None)
+            (
+                wave.len() as u64,
+                wave.sample_rate(),
+                wave.channels(),
+                None,
+                Some(wave),
+            )
         }
     };
     #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
-    let (file_length, file_sr, file_channels) = {
+    let (file_length, file_sr, file_channels, resident) = {
         let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
             return;
         };
-        (wave.len() as u64, wave.sample_rate(), wave.channels())
+        (
+            wave.len() as u64,
+            wave.sample_rate(),
+            wave.channels(),
+            Some(wave),
+        )
     };
 
     // Sizing only: a rate that moves before the ratio is set below changes the
@@ -259,16 +280,22 @@ fn handle_stream_file(
     // `mut` is used by the `set_decoder` call below, which every codec feature
     // gates — so a build with none of them on sees an unused `mut` rather than
     // a dead binding.
-    #[cfg_attr(
-        not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
-        allow(unused_mut)
-    )]
-    let (mut producer, consumer) =
-        RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity, file_channels);
+    let (mut producer, consumer) = RegionBuffer::for_file(
+        region_id,
+        file_path.clone(),
+        buffer_capacity,
+        file_channels,
+        file_length as usize,
+    );
 
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     if let Some(decoder) = decoder {
         producer.set_decoder(decoder);
+    }
+    // A file that cannot seek is held whole by its writer, not only by the
+    // cache: a file too large for the cache still streams.
+    if let Some(wave) = resident {
+        producer.set_resident(wave);
     }
 
     let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
@@ -279,12 +306,33 @@ fn handle_stream_file(
             .get() as u64
     });
 
-    let adjusted_offset = (offset_samples as u64).saturating_sub(pdc_preroll);
-    producer.set_file_position(adjusted_offset);
-
-    local.regions.register(region_id, producer);
+    // The window starts where the reader will play: the offset, pre-rolled.
+    // A free-running reader starts at the offset; a placed voice at its clock.
+    let start = (offset_samples as u64).saturating_sub(pdc_preroll);
+    RegionBuffer::place(
+        &mut producer,
+        start,
+        offset_samples as u64,
+        pdc_preroll,
+        config.seek_crossfade_frames,
+    );
 
     shared.plans.entry(channel_index).or_default();
+    // A channel left reversed streams its new file reversed.
+    let reverse = shared
+        .plans
+        .get(&channel_index)
+        .is_some_and(|plan| plan.rt_state.is_reverse());
+    if reverse {
+        let mapping = Mapping {
+            reverse: true,
+            ..Mapping::plain(file_length as usize)
+        };
+        consumer.publish_map(RingMap::plain(mapping.arrangement(), 0));
+        producer.set_content(super::loops::Content::new(mapping));
+    }
+
+    local.regions.register(region_id, producer);
 
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
     // fallback path `load_wave` inserted the whole file into the cache, so this
@@ -297,9 +345,10 @@ fn handle_stream_file(
 
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
         plan.start_streaming(
-            share_reader(consumer),
+            consumer,
             cache_pin,
             file_sr,
+            file_length,
             file_path,
             Arc::downgrade(&shared.cache),
         );
@@ -314,69 +363,93 @@ fn handle_stream_file(
     }
 }
 
-/// Populate a streaming channel's `link.loop_config`, so `handle_loops`
-/// wraps the disk decoder at the loop bounds and `refill_forward` respects
-/// them. When a crossfade is requested, its fadein — the frames leading into
-/// the loop's start, `[start - fade, start)` (`capture_lead_in`) — is
-/// captured once here (off the audio thread) into `preloop_buffer`, so the
-/// per-loop crossfade in `handle_loops` doesn't re-read it every wrap.
+/// Set (`Some((range, crossfade_frames))`) or clear (`None`) a streaming
+/// channel's loop.
+///
+/// The new mapping goes through [`apply_mapping`]: free when it changes no
+/// frame the ring holds, else a switch the reader crosses (see `loops`'
+/// module docs) — heard where the memory tier hears it when that is far
+/// enough ahead, else just past the block the reader is in, crossfaded. A
+/// reversed stream ignores its loop, so there the change is only stored.
+///
+/// Only the frames the loop needs are read — its fade's lead-in, and its body
+/// when it is short (`RingLoop::capture`), through the region's decoder — and
+/// the plan's lock is released before any read: a loop change never decodes
+/// the whole file, and never holds the plan map while it reads. A lead-in that
+/// cannot be read plays the loop hard, is logged, and is what the stream's
+/// record says (so a fork plays it hard too).
 ///
 /// No-op when the channel isn't currently streaming (no `link`) — the loop
 /// config has nowhere to live without an active stream.
 fn handle_set_stream_loop(
     channel_index: usize,
-    range: (u64, u64),
-    crossfade_frames: usize,
+    setting: Option<((u64, u64), usize)>,
     shared: &Handles,
+    config: &BufferConfig,
     local: &mut Local,
 ) {
-    let Some(mut plan) = shared.plans.get_mut(&channel_index) else {
+    let Some((region_id, len, rate)) = shared.plans.get(&channel_index).and_then(|plan| {
+        let link = plan.link.as_ref()?;
+        Some((
+            link.region_id,
+            link.file_frames as usize,
+            plan.rt_state.read_rate().get(),
+        ))
+    }) else {
         return;
     };
-    let Some(link) = plan.link.as_mut() else {
+    let Some(writer) = local.regions.get_mut(region_id) else {
         return;
     };
 
-    // Capture the fadein (the lead-in to the loop's start) once, off the
-    // audio thread, so the per-wrap crossfade in `handle_loops` never re-reads
-    // the file.
-    let preloop_buffer = if crossfade_frames > 0 {
-        local
-            .regions
-            .get(link.region_id)
-            // Width comes from the ring, not the wave: the ring's stride is what
-            // the RT crossfade will index this buffer with.
-            .and_then(|writer| {
-                load_wave(&shared.cache, &shared.metrics, writer.file_path())
-                    .map(|wave| (wave, writer.channels()))
-            })
-            .map(|(wave, ch)| capture_lead_in(&wave, range, crossfade_frames, ch))
-    } else {
-        None
+    let channels = writer.channels();
+    let mut recorded = setting;
+    let ring_loop = setting.and_then(|(range, crossfade_frames)| {
+        let (ring_loop, lead_in) =
+            RingLoop::capture(range, crossfade_frames, len, channels, &mut |at, out| {
+                writer.read_file(at, out)
+            })?;
+        if lead_in == LeadIn::Unreadable {
+            tracing::warn!(
+                "could not read the crossfade lead-in of loop {range:?} in {}; \
+                 the loop plays hard",
+                writer.file_path().display()
+            );
+            recorded = Some((range, 0));
+        }
+        Some(ring_loop)
+    });
+    let new = Mapping {
+        ring_loop,
+        ..writer.content().current.clone()
     };
+    apply_mapping(writer, new, config.seek_crossfade_frames, rate);
 
-    link.set_loop(Some(LoopConfig {
-        range,
-        crossfade_frames,
-        preloop_buffer,
-    }));
+    if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
+        if let Some(link) = plan.link.as_mut() {
+            link.set_loop(recorded.map(|(range, crossfade_frames)| LoopConfig {
+                range,
+                crossfade_frames,
+            }));
+        }
+    }
 }
 
-/// Reposition a live stream to an absolute file sample offset (timeline seek),
-/// click-free. Mirrors the PDC reposition
-/// ([`apply_pdc_updates`](super::io::pdc::apply_pdc_updates)) but with an
-/// explicit target instead of a preroll delta: capture the fadeout tail before
-/// moving, flush the ring, seek the writer, capture the fadein head at the new
-/// position, and hand both to the audio thread's seek crossfader. `pdc_preroll`
-/// is applied to the target (a larger preroll seeks earlier) but not mutated.
+/// Seek a stream's free-running reader to absolute file frame
+/// `file_position`, and move the butler's window there (less the channel's
+/// PDC preroll) so it is filled before the reader asks.
 ///
-/// No-op when the channel isn't streaming (no `link`) or its region writer is
-/// gone.
+/// Free-running readers only. A placed voice follows its clock (seek the
+/// clock), and it is the one that says where it plays: moving the window for
+/// it here would be a second writer of that position, dragging the window away
+/// from the voice until its next block said otherwise. So on a stream whose
+/// live reader is placed, the request is relayed and the window left alone.
+///
+/// No-op when the channel isn't streaming.
 pub(super) fn handle_seek_stream(
     channel_index: usize,
     file_position: u64,
     shared: &Handles,
-    config: &BufferConfig,
     local: &mut Local,
 ) {
     let Some(plan) = shared.plans.get(&channel_index) else {
@@ -385,20 +458,12 @@ pub(super) fn handle_seek_stream(
     let Some(link) = plan.link.as_ref() else {
         return;
     };
-    let Some(writer) = local.regions.get_mut(link.region_id) else {
-        return;
-    };
-
-    let new_pos = file_position.saturating_sub(plan.pdc_preroll);
-
-    reposition_click_free(
-        &plan,
-        writer,
-        new_pos,
-        &shared.cache,
-        &shared.metrics,
-        config,
-    );
+    link.consumer.request_seek(file_position);
+    if !link.consumer.placed() {
+        if let Some(writer) = local.regions.get_mut(link.region_id) {
+            writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -167,7 +167,7 @@ impl ButlerThread {
     }
 
     /// Run exactly one butler cycle on the **calling** thread: drain every
-    /// queued command, then apply PDC preroll, seeks, loop wraps and refills.
+    /// queued command, then apply PDC preroll, seeks and refills.
     /// Returns once that work is done, reporting what the pacing layer *would*
     /// have done next.
     ///
@@ -211,6 +211,12 @@ impl ButlerThread {
     /// change between two reads.
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
+    }
+
+    /// The butler's wave cache (tests).
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> Arc<LruCache> {
+        Arc::clone(&self.shared.cache)
     }
 
     /// The session-rate cell, shared: a [`Status`](crate::Status) built from

@@ -2022,13 +2022,14 @@ mod disk {
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("ramp.wav");
         write_ramp(&path, RATE as u32, LEN);
-        let streamer = streamer_on(&path);
+        // A stream serves one live voice, so each of the two has its own.
+        let (streamer, other) = (streamer_on(&path), streamer_on(&path));
         let live = timeline(90.0) as Arc<dyn Timeline>;
 
         let mut app = app_over(graph_on());
         let (disk_node, memory_node) = {
             let bare = disk_voice(&streamer, live.clone(), 3.0);
-            let wrapped = node_of(VoiceSource::Disk(disk_voice(&streamer, live.clone(), 3.0)));
+            let wrapped = node_of(VoiceSource::Disk(disk_voice(&other, live.clone(), 3.0)));
             let mut wave = tutti_io::Wave::new(2, RATE);
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);

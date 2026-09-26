@@ -76,8 +76,8 @@ impl RegionMap {
         self.writers.get_mut(idx)
     }
 
-    /// Read-only slice — used by the parallel refill path when collecting
-    /// work items (before handing `writers_mut` to rayon).
+    /// Read-only slice (tests).
+    #[cfg(test)]
     pub(super) fn writers(&self) -> &[RegionOut] {
         &self.writers
     }
@@ -123,9 +123,9 @@ mod tests {
         reg.register(id, make_writer(id));
 
         let w = reg.get_mut(id).unwrap();
-        w.set_file_position(42);
+        w.set_play(42);
 
-        assert_eq!(reg.get(id).unwrap().file_position(), 42);
+        assert_eq!(reg.get(id).unwrap().play(), 42);
     }
 
     #[test]

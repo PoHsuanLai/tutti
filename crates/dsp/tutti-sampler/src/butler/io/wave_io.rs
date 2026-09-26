@@ -3,7 +3,9 @@
 //! The butler moves frames from a resident (whole-file) [`Wave`] into a
 //! per-region ring buffer. This module owns the source end: [`WaveIn`] is the
 //! one place the planar `wave.at(0,i)/at(1,i)` unpack lives — a cursor over a
-//! `Wave` with mono up-mix, optional loop wrap, and zero-pad past end.
+//! `Wave` with mono up-mix and zero-pad past end. A loop is not its business:
+//! the refill cuts its reads at the loop's end and places each run
+//! (`loops::Mapping::fill`), so a `WaveIn` always reads the file straight on.
 //!
 //! Both ends speak flat interleaved `&[f32]` at a **runtime** width, with the
 //! stride owned by the type and every count denominated in **frames**. The sink
@@ -63,44 +65,9 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
     fold_frame(&src[..n], out);
 }
 
-/// Wrap `pos` back into `[start, end)` when it has run past the end. All three
-/// are file **frames**.
-///
-/// Modulo, not a single subtraction: at high varispeed one advance can overshoot
-/// a short loop by more than its own length, and subtracting once would land
-/// outside the region.
-///
-/// # Panics
-///
-/// Callers guarantee `end > start`; an empty range divides by zero.
-#[inline]
-pub(crate) fn wrap_into(pos: usize, start: usize, end: usize) -> usize {
-    if pos >= end {
-        start + ((pos - start) % (end - start))
-    } else {
-        pos
-    }
-}
-
-/// Wrap `pos` into the half-open loop range if it has run past the end.
-///
-/// `pos` and `loop_range` are file **frames**; `None`, or a range that is empty
-/// or inverted, is the identity — which is what makes this safe to call where
-/// [`wrap_into`] would divide by zero. The single source of truth for the
-/// loop-wrap arithmetic shared by [`WaveIn`] and the streaming/whole-file
-/// forward refills.
-#[inline]
-pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize {
-    match loop_range {
-        Some((start, end)) if end > start => wrap_into(pos, start as usize, end as usize),
-        _ => pos,
-    }
-}
-
-/// A forward reader over a resident `Wave`, reading from an internal cursor
-/// with optional loop wrap. Past the end (with no loop) it yields silence, so it
-/// is an *unbounded* source — the caller bounds the transfer by the size of the
-/// scratch buffer it fills.
+/// A forward reader over a resident `Wave`, reading from an internal cursor.
+/// Past the end it yields silence, so it is an *unbounded* source — the
+/// caller bounds the transfer by the size of the scratch buffer it fills.
 ///
 /// # Deliberately NOT an [`AudioIn`], and not because of the width
 ///
@@ -144,42 +111,24 @@ pub(crate) struct WaveIn<'w> {
     /// [`wave_frame_into`]'s policy reconciles per frame.
     channels: ChannelLayout,
     cursor: usize,
-    /// `(start, end)` half-open loop bounds in **frames**, if looping.
-    /// Pre-validated non-empty at construction.
-    loop_bounds: Option<(usize, usize)>,
 }
 
 impl<'w> WaveIn<'w> {
     /// A cursor over `wave` starting at frame `start`, emitting frames at
-    /// `channels` wide.
-    ///
-    /// `loop_range` is `(start, end)` in file **frames**, half-open; an empty or
-    /// inverted range is treated as no loop, so the reader runs off the end into
-    /// silence instead of wrapping on a degenerate region. `channels` is floored
-    /// at one — the output width is independent of `wave.channels()`, which
-    /// [`wave_frame_into`]'s policy reconciles per frame.
-    pub(crate) fn new(
-        wave: &'w Wave,
-        start: usize,
-        loop_range: Option<(u64, u64)>,
-        channels: impl Into<ChannelLayout>,
-    ) -> Self {
-        let loop_bounds = loop_range.and_then(|(start, end)| {
-            let start = start as usize;
-            let end = end as usize;
-            (end > start).then_some((start, end))
-        });
+    /// `channels` wide. `channels` is floored at one — the output width is
+    /// independent of `wave.channels()`, which [`wave_frame_into`]'s policy
+    /// reconciles per frame.
+    pub(crate) fn new(wave: &'w Wave, start: usize, channels: impl Into<ChannelLayout>) -> Self {
         Self {
             wave,
             channels: nonempty(channels.into()),
             cursor: start,
-            loop_bounds,
         }
     }
 
     /// Fill `out` with interleaved frames at this source's width, advancing the
-    /// cursor (with loop wrap). Always fills the whole buffer — past the end
-    /// with no loop that means zero-padded silence.
+    /// cursor. Always fills the whole buffer — past the end that means
+    /// zero-padded silence.
     ///
     /// # Why the return is not an `AudioIn::poll_into` count
     ///
@@ -187,32 +136,20 @@ impl<'w> WaveIn<'w> {
     /// `chunks_exact_mut`, with no early exit, so this returns
     /// `out.len() / ch` **unconditionally** — a pure function of the buffer the
     /// caller passed in, carrying no information back about the source. It is a
-    /// convenience, not a signal, and the one production caller
-    /// (`refill::refill_forward`) discards it and takes its frame count from
-    /// `RegionOut::push_interleaved` instead. See the type-level docs for why
+    /// convenience, not a signal, and the production callers
+    /// (`loops::Mapping::fill`'s runs) discard it; the refill takes its frame
+    /// count from `RegionOut::push_interleaved` instead. See the type-level docs for why
     /// that disqualifies `WaveIn` from the trait.
     pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {
         // Stride derived once, above the frame loop.
         let ch = self.channels.count() as usize;
         let mut frames = 0;
         for frame in out.chunks_exact_mut(ch) {
-            self.cursor = self.wrap(self.cursor);
             wave_frame_into(self.wave, self.cursor, frame);
             self.cursor += 1;
             frames += 1;
         }
-        self.cursor = self.wrap(self.cursor);
         frames
-    }
-
-    /// `loop_bounds` is pre-validated non-empty at construction, so this only
-    /// has to apply the shared arithmetic.
-    #[inline]
-    fn wrap(&self, pos: usize) -> usize {
-        match self.loop_bounds {
-            Some((start, end)) => wrap_into(pos, start, end),
-            None => pos,
-        }
     }
 }
 
@@ -310,7 +247,7 @@ mod tests {
     #[test]
     fn wave_in_polls_forward_frames() {
         let wave = test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]);
-        let mut src = WaveIn::new(&wave, 0, None, 2usize);
+        let mut src = WaveIn::new(&wave, 0, 2usize);
         let mut out = [0.0f32; 6];
         assert_eq!(src.fill_interleaved(&mut out), 3);
         assert_eq!(out, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
@@ -319,27 +256,16 @@ mod tests {
     #[test]
     fn wave_in_zero_pads_past_end() {
         let wave = test_wave(&[(0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, None, 2usize);
+        let mut src = WaveIn::new(&wave, 1, 2usize);
         let mut out = [9.0f32; 4];
         src.fill_interleaved(&mut out);
         assert_eq!(out, [0.0; 4]);
     }
 
     #[test]
-    fn wave_in_wraps_within_loop() {
-        // samples 0..4, loop [1,3): after index 2 the next read wraps to 1.
-        let wave = test_wave(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
-        let mut src = WaveIn::new(&wave, 1, Some((1, 3)), 2usize);
-        let mut out = [0.0f32; 10];
-        src.fill_interleaved(&mut out);
-        // 1,2 then wrap -> 1,2 then 1
-        assert_eq!(out, [1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0]);
-    }
-
-    #[test]
     fn wave_in_reads_six_channels() {
         let wave = indexed_wave(6, 4);
-        let mut src = WaveIn::new(&wave, 0, None, 6usize);
+        let mut src = WaveIn::new(&wave, 0, 6usize);
         let mut out = [0.0f32; 12];
         assert_eq!(src.fill_interleaved(&mut out), 2);
         for f in 0..2 {
@@ -347,17 +273,5 @@ mod tests {
                 assert_eq!(out[f * 6 + c], (c + 1) as f32, "frame {f} channel {c}");
             }
         }
-    }
-
-    #[test]
-    fn wrap_position_identity_without_loop() {
-        assert_eq!(wrap_position(250, None), 250);
-    }
-
-    #[test]
-    fn wrap_position_wraps_past_loop_end() {
-        assert_eq!(wrap_position(200, Some((100, 200))), 100);
-        assert_eq!(wrap_position(250, Some((100, 200))), 150);
-        assert_eq!(wrap_position(150, Some((100, 200))), 150); // before end: identity
     }
 }

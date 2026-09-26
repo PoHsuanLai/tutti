@@ -1,10 +1,9 @@
-//! Live-input monitoring node — the mic twin of the disk-streaming unit.
+//! Live-input monitoring node.
 //!
-//! `DiskSource` (tutti-sampler) drains a ring the *butler* fills off disk;
-//! [`MicMonitorNode`] drains a ring a *capture device* fills. Both are
-//! `AudioUnit`s with 0 inputs / 2 outputs whose whole job is "pop the next frame
-//! the producer pushed, or emit silence on underrun." The producer end lives in
-//! the device layer (`tutti-cpal`'s `MicIn`); this node is device-free so it can
+//! [`MicMonitorNode`] drains a ring a *capture device* fills: an `AudioUnit`
+//! with 0 inputs / 2 outputs whose whole job is "pop the next frame the
+//! producer pushed, or emit silence on underrun." The producer end lives in the
+//! device layer (`tutti-cpal`'s `MicIn`); this node is device-free so it can
 //! sit anywhere in the graph — `pipe` it through effects and the mic is heard
 //! live and effected while the same ring records to a [`WavOut`](crate::WavOut).
 //!
@@ -37,10 +36,9 @@
 //! [`reset`](MicMonitorNode::reset) is a deliberate no-op (fundsp drives `reset`
 //! / `set_sample_rate` on the frontend, on the main thread, and popping there
 //! would race the backend's `tick`). Only `tick`/`process` pop, and fundsp ticks
-//! only the backend copy on the one audio thread, so pops serialize. This is the
-//! same discipline `DiskSource` follows — its `reset` likewise leaves
-//! the shared `SharedReader` untouched. The device callback only ever *pushes*
-//! (the producer half, holding `HeapProd` directly), never pops.
+//! only the backend copy on the one audio thread, so pops serialize. The device
+//! callback only ever *pushes* (the producer half, holding `HeapProd`
+//! directly), never pops.
 
 use std::sync::Arc;
 
@@ -81,7 +79,7 @@ impl std::fmt::Debug for MicRing {
 }
 
 /// Wrap a freshly-split ring consumer into a [`MicRing`] for handoff to the
-/// audio thread. Mirrors `butler::share_reader` for the disk-stream path.
+/// audio thread.
 #[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
 pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
     MicRing(Arc::new(AudioThreadCell::new(consumer)))
@@ -192,9 +190,8 @@ impl AudioUnit for MicMonitorNode {
         // `HeapCons` from another thread — a data race on the SPSC read index.
         //
         // So the ring is popped ONLY from `tick`/`process` (the single backend
-        // consumer), exactly as `DiskSource::reset` leaves its shared
-        // `SharedReader` untouched. The monitor ring self-limits to ~10ms, so
-        // there's no stale backlog worth draining anyway.
+        // consumer). The monitor ring self-limits to ~10ms, so there's no
+        // stale backlog worth draining anyway.
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {

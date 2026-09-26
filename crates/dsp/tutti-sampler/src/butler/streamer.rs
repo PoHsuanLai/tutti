@@ -227,18 +227,16 @@ mod tests {
     /// audio downstream of it, so a regression that repositioned late (rather
     /// than not at all) fails here first and unambiguously.
     ///
-    /// # Why the ring-reset epoch, and not a position
+    /// # Why the ring's window
     ///
-    /// The obvious probe is `link.read_position` — and it is the wrong one. That
-    /// counter tracks frames the *reader* has consumed, so with nothing
-    /// rendering it sits at 0 no matter what the butler does; asserting on it
-    /// reported "the butler did not reposition" for a butler that had. The
-    /// writer's `file_position` would be right but lives in butler-thread-local
-    /// state that nothing else can reach.
+    /// The ring publishes the positions it holds (`Ring::window`), on the
+    /// shared ring the plan's link holds, and nothing but a refill moves it.
+    /// A seek moves where the reader plays (`Ring::set_play`), and the refill
+    /// follows: the window must hold the target within the one cycle that
+    /// applied the command.
     ///
-    /// The reset epoch works because `reposition_click_free` bumps it via
-    /// `plan.flush_buffer()`, on the *shared* plan, and nothing else in a quiet
-    /// stream moves it. So a change means the butler ran the reposition path.
+    /// Mutation (run): the seek not moving the play position (`set_play`
+    /// dropped from `handle_seek_stream`) → the window stays at 20 s → fails.
     ///
     /// # No thread, no timeout
     ///
@@ -295,14 +293,15 @@ mod tests {
             "one butler cycle after a Stream command and no link is installed"
         );
 
-        // The ring-reset epoch is the butler's own signal that it repositioned:
-        // `reposition_click_free` calls `plan.flush_buffer()`, which bumps it.
-        // Unlike `read_position` (a *reader* consumption counter, which stays 0
-        // when nothing is rendering) this moves purely as a result of the seek.
-        let reset_epoch =
-            || -> u64 { plans.get(&0).map(|p| p.rt_state.reset_epoch()).unwrap_or(0) };
-
-        let before = reset_epoch();
+        let window = || {
+            plans
+                .get(&0)
+                .and_then(|p| p.link.as_ref().map(|l| l.consumer.window()))
+                .unwrap_or_default()
+        };
+        let target = (5.0 * SR) as u64;
+        let (from, _) = window();
+        assert!(from > target, "the stream starts at 20 s, not holding 5 s");
 
         // Seek backward, which is the direction a "refill forward from here"
         // implementation is most likely to drop.
@@ -316,11 +315,75 @@ mod tests {
 
         let _ = sampler.step_once();
 
-        assert_ne!(
-            reset_epoch(),
-            before,
-            "the ring-reset epoch did not move from {before} in the cycle that applied a \
-             backward seek — the butler did not reposition the stream"
+        let (from, to) = window();
+        assert!(
+            from <= target && target < to,
+            "the ring holds [{from}, {to}) in the cycle that applied a backward seek to \
+             {target} — the butler did not reposition the stream"
+        );
+    }
+
+    /// **A loop change on a streamed file reads only the frames it needs**:
+    /// its fade's lead-in and a short loop's body, through the stream's own
+    /// decoder — never the whole file, which blocked every other stream while
+    /// it decoded and held the plan map (the review of #48). Observed through
+    /// the cache the whole-file read filled: a hard loop, a crossfaded one and
+    /// a cleared one leave it empty, and the loop still plays (the ring holds
+    /// the loop's frames past its end).
+    ///
+    /// Mutation (run): the handler reading the file whole for the lead-in
+    /// (`load_wave`, the old path) → the cache holds the file → fails.
+    #[test]
+    fn a_loop_change_reads_only_the_frames_it_needs() {
+        use crate::ports::Command;
+        use crate::voice::LoopSetting;
+        use tutti_core::SamplePosition;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("loop.wav");
+        write_tone(&path, 48_000, 2.0);
+        let mut sampler = DiskStreamer::manual(48_000.0, Default::default()).unwrap();
+        let send = |sampler: &DiskStreamer, command| {
+            sampler
+                .commands()
+                .send(command)
+                .expect("the butler is alive")
+        };
+        send(
+            &sampler,
+            Command::Stream {
+                channel_index: 0,
+                file_path: path.clone(),
+                offset: SamplePosition(0.0),
+            },
+        );
+        let _ = sampler.step_until_settled(1_000);
+        for fade in [0usize, 500] {
+            send(
+                &sampler,
+                Command::Loop {
+                    channel_index: 0,
+                    setting: LoopSetting::On {
+                        start: SamplePosition(10_000.0),
+                        end: SamplePosition(20_000.0),
+                        crossfade_frames: fade,
+                    },
+                },
+            );
+            let _ = sampler.step_until_settled(1_000);
+        }
+        let plans = sampler.butler.plans();
+        let window = plans
+            .get(&0)
+            .and_then(|p| p.link.as_ref().map(|l| l.consumer.window()))
+            .unwrap_or_default();
+        assert!(
+            window.1 > 40_000,
+            "the loop plays on past its end: {window:?}"
+        );
+        assert!(
+            sampler.butler.cache().get(&path).is_none(),
+            "a loop change decoded the whole file"
         );
     }
 

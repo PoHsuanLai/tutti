@@ -282,7 +282,8 @@ stereo device, a stereo ring); it cannot carry one that is a property of the
 width as a const parameter, which cannot carry a runtime width", and hand-rolled
 the identical slice-plus-stride shape instead. That was evidence *against* the
 const, not for it. `tutti-sampler`'s `RegionOut::push_interleaved` /
-`RegionReader::read_into` is the proven convention the traits now generalize —
+`RegionReader::read_into` (the FIFO reader #48 replaced) was the proven
+convention the traits now generalize —
 flat slice in, runtime `channels` field, frames out.
 
 **That drop was temporary, and half of it has been undone — do not cite it as

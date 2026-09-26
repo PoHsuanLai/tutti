@@ -8,7 +8,6 @@ mod cache;
 mod command;
 mod config;
 pub(crate) mod control;
-mod crossfader;
 mod handlers;
 mod io;
 mod loop_body;
@@ -26,6 +25,9 @@ mod thread;
 pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
 pub(crate) use handlers::SessionRate;
+#[cfg(test)]
+pub(crate) use loops::GUARD_FRAMES;
+pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
@@ -34,6 +36,7 @@ pub(crate) use thread::ButlerThread;
 // The butler's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
 pub use control::ButlerGone;
+pub use prefetch::TakeVoiceError;
 pub use streamer::{DiskStreamer, DiskStreamerConfig};
 
 // The hand-driven cycle's verdict. Public only alongside the driver that
@@ -47,4 +50,4 @@ pub use step::StepOutcome;
 #[cfg(test)]
 pub(crate) use command::RegionId;
 #[cfg(test)]
-pub(crate) use prefetch::{share_reader, RegionBuffer};
+pub(crate) use prefetch::RegionBuffer;

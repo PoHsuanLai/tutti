@@ -273,12 +273,15 @@ the race. Every type below exists because the audit found the bug it prevents.
 - **#48 (`fix/live-disk-loop`)**: the seat is keyed here for the memory
   tier and the forked (offline) disk voice, which both seat through
   `Seat::next`; that reads the generation itself, and #48's `live_loop.rs`
-  still calls it, so it inherits the key. Left for #48 after it merges: the
-  **live** disk read (`voice/live_read.rs`) decides a jump from the
-  position it is asked for, and should key on `segment_generation` too, so
-  a seek to the same beat, or a one-block transport loop, refills from the
-  gate rather than reading on. Its new `Timeline` impls (test clocks) need
-  a `segment_generation`.
+  still calls it, so it inherits the key. **Done in #48:** the **live** disk
+  read (`voice/live_read.rs`) keys a jump on the segment too — the block's
+  first seat's generation for a placed voice, the relayed seek's epoch for a
+  free-running source — so a seek that lands exactly on the continuation (to
+  the beat the clock stands on) is a jump, crossfaded like any other, not
+  read on (`live_loop::a_seek_to_where_the_clock_stands_is_a_jump`). A
+  one-block transport loop lands off the continuation, so its position
+  already told. The crate's test clock (`MockTransport::seek`) moves its
+  generation.
 
 **Deleted, once the native graph lands.** Each existed to work around fundsp:
 
@@ -1952,38 +1955,26 @@ Recorded for later:
   memory tier and the disk fork, and in what the butler captures; "Sampler
   tier bugs (after #43)". The live butler loop has deeper faults, the next
   item.
-- **The live disk loop (found fixing S3).** A live `DiskVoice` on a looped
-  stream does not loop correctly, crossfaded or not, because the butler's
-  loop bookkeeping compares a counter against file frames:
-  `ChannelPlan::check_loop_status` reads `Link::read_position`, which counts
-  frames the audio thread has *consumed* since the stream started (and
-  every ring flush adds the frames it drops), against the loop's points in
-  *file* frames. Once past the loop's end it never comes back under it, so
-  `LoopStatus::AtEnd` fires on every butler cycle: the ring is flushed and
-  refilled from the loop start each cycle. Measured with a hand-stepped
-  butler (a 48 kHz ramp, loop `[1000, 3000)`, a voice placed at beat 0):
-  the voice played its first 576 frames and was silent from then on,
-  through 9 000 frames, with or without a fade. Separately, the ring
-  already loops (both refills wrap at the loop's end, `wrap_position`), so
-  the flush is redundant as well as wrong; and the RT loop crossfade
-  (`RtState::start_loop_crossfade`) replaces the ring's output for `fade`
-  frames without consuming it, so after the fade the ring plays the tail
-  it faded out again. The fix is to bake the crossfade into the refill,
-  which knows every frame's file position (blend frames `[end - fade, end)`
-  toward `LoopSpan::fade_at`'s lead-in as they are written, from the
-  `preloop_buffer` the butler already captures), and to drop
-  `handle_loops`' `AtEnd` flush and the RT loop crossfade. The refill
-  must also wrap to `LoopSpan::resume`, not the loop's start: a loop whose
-  fade goes into its head (too little before `start`) repeats `[start +
-  fade, end)`. Nothing pins live looping today (no test drives a
-  `Command::Loop` through a live voice); the offline fork and the memory
-  tier are correct.
+- ~~**The live disk loop (found fixing S3)**~~: done, "The live disk loop
+  and its repositions (#48)" (below).
+- ~~**The butler's repositions (found fixing the live disk loop)**~~: done,
+  same section. The first cut of #48 routed loop changes through the
+  butler's seek path and recorded its faults here; the review of #48 held it
+  on them, and the ring was redesigned instead. They were: the seek crossfade
+  replayed its fade-in and ran at one frame per output frame; a flush
+  cleared frames refilled after it, and a voice taken after a flush never
+  applied it; the reader restarted from a zero history; the ring's head was
+  unknowable while a flush was pending (two repositions in one cycle resumed
+  at frame 0); a PDC change moved the writer's cursor, skipping what was
+  buffered; and the live tier played `3 - r` frames behind the memory tier,
+  so every reposition left it further behind its clock (five loop edits: 72
+  ms). None of these mechanisms exists any more.
 - **A crossfade curve on `LoopSetting`.** Every loop fade is linear, which
   holds the level of correlated material across the seam (a sustained tone)
   but dips about 3 dB midway on uncorrelated material (noise, a mix). An
   option for an equal-power curve, linear by default, would be one field on
-  `LoopSetting::On` and one weight in `LoopSpan::fade_at` (and the
-  butler's refill, once it bakes the fade).
+  `LoopSetting::On` and one weight in `LoopSpan::fade_at`, which the
+  butler blends a stream's ring by too (`loops::RingLoop::blend_run`).
 - ~~**Taps across a loop seam read past the loop (N2, review of #43)**~~:
   done, "Sampler tier bugs (after #43)".
 - **Re-rate a live `SoundFontUnit` on a device restart.** `restart_device`
@@ -2197,7 +2188,8 @@ reads a position through the same code, so the fixes cannot part them:
   cut that wrapped every tap behind the start, reading 2 000 frames off
   when a loop point was dragged). The butler captures its crossfade buffers by the same
   rule (`loops::capture_lead_in`, `loop_fade_len`), though its live loop
-  has faults of its own (the follow-up above). `MemorySource` reads its fade
+  had faults of its own (the follow-up above; fixed since, "The live disk
+  loop and its repositions (#48)"). `MemorySource` reads its fade
   from the wave in place, so its `LoopCrossfade` buffer (and its
   4096-frame cap) is gone and a loop change is a store.
 - **A placed `MemorySource` honours its loop** going forward, as a disk
@@ -2227,6 +2219,177 @@ silent; a varispeed change mid-chunk continues it; the bit-identity table
 above, with rows that force the fork onto paged reads so the two sides do
 not share their fetch-and-blend — what both tiers share, `LoopSpan` and the
 seat, is pinned by the hand-computed oracles, not by the table).
+
+**The live disk loop and its repositions (#48).** A live `DiskVoice` on a
+looped stream played its first 576 frames and then silence: the butler
+compared the reader's `read_position` (frames consumed, plus every flush)
+against the loop's file frames, so past the loop's end `LoopStatus::AtEnd`
+fired on every cycle and flushed the ring; and the RT loop crossfade replaced
+the ring's output without consuming it, replaying the tail it faded out. The
+fix writes the loop into the ring as `LoopSpan`'s sequence. Its first cut
+kept the ring a FIFO and moved it with a flush, which made every loop edit a
+reposition with the faults listed in the follow-ups above; the review of #48
+held it, and the ring was redesigned so a reposition has nothing to flush.
+
+- **The ring is indexed by straight position** (`butler::prefetch::Ring`).
+  Slot `s mod N` holds what straight position `s` — the file counted straight
+  on, the position a placed voice's gate and seat give, less the channel's
+  PDC preroll — holds under the stream's mapping (`butler::loops::Mapping`):
+  the file; on a loop, `LoopSpan`'s sequence, each fade frame blended toward
+  its lead-in as it is written (`RingLoop::blend_run`, `loop_span::blend`),
+  wrapping to `resume`; reversed, the file mirrored (`len - 1 - s`, loop
+  ignored, as on every tier). The ring publishes the window `[from, to)` it
+  holds as one packed atomic word. Nothing is consumed and nothing flushed.
+- **The live reader is the memory tier's read with the ring as its source**
+  (`voice::live_read`). A `DiskVoice` seats on the clock exactly as a placed
+  `MemorySource` and a fork do (`interp::Seat`: the same gate, the same step
+  — varispeed, the conversion derived from the two rates, the stretch) and
+  reads the four taps a position needs from the ring by position, laid out as
+  the memory tier lays them out (`loops::Arrangement::taps`: `tap_indices`
+  unlooped and mirrored in reverse; on a loop the straight neighbours, which
+  hold the loop's sequence through any wrap — placement is exact in `f64`, so
+  the fraction is the memory tier's). So a live voice plays the memory tier's
+  samples at the same clock frame, bit for bit, at any rate, from its first
+  frame: there is no history to prime and no `3 - r` lag. The loop and its
+  fade are applied in the file's own frames, before the reader resamples.
+- **The butler follows the reader.** The reader publishes where it plays
+  (`Ring::play`) and the ranges its block may read; the refill keeps the
+  window filled from just behind the reader to most of a ring ahead of it
+  (`io::refill`). A reader outside the window — a seek, a transport loop, a
+  varispeed change, a PDC change (the preroll is published on the ring and
+  taken off the reader's position) — moves the window there; a jump inside it
+  costs nothing, and a reader a little past its end is caught up rather than
+  moved.
+- **The no-tear protocol is `tutti_types::PosRing`'s**, beside `RtPublish`,
+  and checked the same way: its atomics become loom's under `--cfg loom`, and
+  `tutti-types/tests/pos_ring_loom.rs` models a reader making two claims
+  against a writer that pushes round the ring, retracts then pushes, and
+  resets then pushes, every sample tagged with its position and generation.
+  (tutti-sampler cannot build under the flag: `event-listener`, under its
+  async channels, reacts to `cfg(loom)` without depending on loom — the same
+  constraint that made `tutti-shm-model` a separate crate. So the protocol
+  moved to where it can be checked, rather than be modelled by a replica.) A
+  write never lands in a slot the reader's block may read: going round the
+  ring, the writer raises the window's start, then a `SeqCst` fence, then
+  loads the reader's ranges, which the reader stored before its own fence and
+  window load, and skips their aliases; a shrink (a retraction, a reset, a
+  raise) stores the smaller window and then bumps a generation, and the
+  positions it removed that the reader's range covers stay untouched until
+  the reader echoes the new generation (the second review of #48, B3: a
+  retraction freed positions a block in flight still held). Ordered by fences
+  and release/acquire, not by `SeqCst` accesses, which loom does not model as
+  totally ordered. A threaded stress test (a real writer and reader, random
+  claims, tagged samples) runs at a scale loom cannot.
+- **One writer and one reader, by type** (the review of `PosRing`):
+  `PosRing::new` returns a `PosWriter` (its methods `&mut self`) and a
+  `PosReader` whose `claim` returns a `PosClaim` borrowing it — samples are
+  read only through a claim, and a claim ends before the next. The ring's
+  reader waits in the stream's `Ring` until a voice takes it, so
+  `TakeVoiceError::ReaderTaken` is an empty slot, not a flag. A voice's
+  clones share its reader by a `try_lock` no block waits on, because
+  `Net::commit` renders from a clone; a fork severs itself in `isolate`. The
+  same review found a write cut short left the window's start where the
+  whole write would have put it: positions it had not overwritten left the
+  window uncounted as stale, so a reset then let a rewrite land under a
+  block that held them (B1). A write now takes out only what it overwrote.
+  And a reader that stops claiming (a stopped source, a stopped clock)
+  says so (`PosReader::idle`: no ranges), or the ranges of its last block
+  stopped the refill at their aliases while it was paused (S2).
+- **A discontinuity costs 0 frames, never drifts, and never steps.** At a
+  jump, and when the reader crosses an edit's switch, it renders the
+  continuation of what it was *playing* into a buffer of its own — the old
+  position's frames from the ring, or the butler's record of the old loop,
+  and in the middle of a fade the fade itself at its own weights — and plays
+  that while the butler moves the window, then crossfades to the clock's
+  position over the ring's fade length (`BufferConfig::seek_crossfade_frames`).
+  Rendered, not referenced: a later publish cannot swap it mid-fade (the
+  second review's B2, a step of 1.06 on a sine when a second edit arrived
+  mid-fade), and it keeps the rate it was rendered at. A continuation that
+  runs out ramps out over 64 frames, and the ring ramps back in after an
+  underrun (S1), rather than cutting to silence and back.
+- **A loop or direction edit is a switch** (`loops::apply_mapping`). The
+  butler finds where the old and new mappings first fill a slot differently.
+  Nowhere in the window: free (later writes use the new mapping; setting the
+  same loop again is nothing at all). Far enough ahead: the ring is rewritten
+  from exactly there, and the reader goes from the old sequence to the new
+  one where they part, as the memory tier does. Otherwise: from a guard (256
+  frames) past the block in flight, with a record of what the old mapping
+  would have played across it (`FadeRecord`, published with the arrangement
+  the reader switches at, `RingMap`), which the reader crossfades from — and
+  plays alone if it arrives before the rewrite. A second edit in the same
+  cycle supersedes a pending switch. A reversed stream's loop edit changes no
+  slot, so it is only stored. Positions behind the reader that the edit
+  changed are dropped from the window, so a jump back there (a DAW's cycle
+  mode) moves the window and reads the new loop, not the old one on every
+  pass (the second review's B1). The switch is chosen again if the reader
+  reaches it while the butler reads the record. The divergence search runs
+  a run of consecutive frames at a time, not a position at a time.
+  **Decided (review of #48):** the guard's
+  latency near the playhead (about 256 frames, crossfaded, where the memory
+  tier cuts at once) is accepted for live playback, and documented on
+  `LoopSetting::On` and `Command::Loop`. An export fork taken after an edit
+  renders the edited loop from its start (the stream's record holds it), so
+  live and export agree past the switch (`live_loop::a_fork_after_a_loop_edit_renders_the_edited_loop`).
+- **A loop change reads only what it needs** (`RingLoop::capture`): its
+  fade's lead-in, and a loop up to 65 536 frames long keeps its body resident
+  so a streamed refill does not seek the decoder once per wrap — through the
+  stream's own decoder, with the plan map released first. A lead-in that
+  cannot be read plays the loop hard, is logged, and is what the stream's
+  record says, so a fork plays it hard too. The whole-file fallback (a format
+  that cannot seek) holds its file on its writer, and the LRU refuses a wave
+  larger than its whole byte budget rather than evicting everything for it.
+- **A free-running `DiskSource`** (the voice's bare reader) keeps its own
+  position from the stream's origin at the read rate, and follows a
+  `Command::Seek` the butler relays (`Ring::request_seek`), including one
+  made before it was taken. A placed voice follows its clock: seek the clock;
+  a `Command::Seek` on its stream moves nothing (S3).
+- **One live reader per stream** (S2): `take_disk_voice` refuses a second
+  with `TakeVoiceError::ReaderTaken`, since two readers would pull the one
+  window two ways.
+- Removed: `LoopStatus`, `check_loop_status`, `handle_loops`, the reset and
+  seek-request epochs and the seeking flag in `RtState`, the seek and loop
+  crossfaders (`butler::crossfader`), `reposition_click_free`, the reader's
+  `read_position` counter, `WaveIn`'s loop wrap, `DiskVoice::seek`.
+
+Tests (each mutation run; the mutation is on the test; every mutation
+caught — 44 in the first round, and in the second review's round the ring's
+through `PosRing`'s tests, the loom model (the generation check removed —
+B3 before its fix — fails `retract_then_push` and `reset_then_push`; the
+start raise removed, the reader loading its window before storing its
+ranges, the generation bumped before the shrunk window, and every access
+`Relaxed` with no fences each fail too) and the stress test; B1, B2, S1–S3
+through the live tests below): tutti-sampler `voice::disk_voice::live_loop`, a live `DiskVoice` on a
+hand-stepped butler with the default crossfade, against a placed
+`MemorySource` on its own copy of the clock given the same edits at the same
+blocks: bit-identical from the first frame across many wraps — crossfaded,
+hard, from frame 0, a loop whose end is past the file, at 1x, 1.5x, 0.75x and
+a 44.1 kHz file at 48 kHz — with the ring never moving and nothing unread;
+continuous at the wrap on a sine that clicks cut hard; entering past the
+loop's end and with a 12 000-frame preroll; reversed, the loop ignored and
+the file mirrored, a loop edit while reversed moving nothing; a loop change
+bit-identical outside its switch span, crossfaded inside it, nothing unread;
+eight loop edits, transport jumps inside and outside the window and a
+varispeed change, bit-identical outside each event's span through to the end
+(nothing drifts), nothing unread; two changes in one cycle, and a jump with a
+change, settling to the last; the same loop again changing nothing, and a
+loop end moved far ahead switching exactly where the loops part,
+bit-identical to the memory tier throughout; a looped stream refilled in
+parallel; a jump back behind an edit's switch; fades chaining without a
+step (an edit during an edit, a jump during an edit, an edit during a jump);
+a starved reader ramping out and back in; a relayed seek leaving a placed
+voice's window alone; a second live voice refused; a fork after an edit
+rendering the edited loop. `loops::tests` (the lead-in rule and a hard fallback; the fill's
+sequence, head mode, a short loop's body; six channels; the reverse mirror;
+every mapping's taps against the memory tier's read, bit for bit, on a
+non-dyadic grid; where two mappings part). `prefetch::tests` (the window
+word; frames by position at six channels, through the trait too; a write
+never going round onto the reader; never reusing a slot the block in flight
+reads, and `first_alias` against a brute-force search; reset and
+retraction). `cache::tests` (an oversize wave refused), `preroll::tests`,
+`streamer::tests` (a backward seek moves the window; a loop change reads no
+whole file), `disk_voice::tests` (one file frame per output frame; the
+conversion applied once; a varispeed change moves the read; a severed copy
+never touches the live ring; a free-running source follows a relayed seek).
 
 **Phase 3 follow-ups** (recorded, not done here):
 

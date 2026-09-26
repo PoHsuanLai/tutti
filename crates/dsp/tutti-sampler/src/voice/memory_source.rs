@@ -95,8 +95,20 @@ pub enum LoopSetting {
     ///   `start + fade`: the loop that repeats is `[start + fade, end)`. The
     ///   fade is at most half the loop's length there.
     ///
-    /// Every tier reads the same rule. (The live butler's loop has faults of
-    /// its own; see doc 013, "The live disk loop".)
+    /// Every tier reads the same rule.
+    ///
+    /// **When a change is heard.** On the memory tier a change is a store,
+    /// heard at the next frame. On a live disk stream (`Command::Loop`) the
+    /// butler rewrites the ring it has read ahead, from where the old and new
+    /// loops first differ: when that is far enough ahead of the playhead, the
+    /// change is heard exactly where the memory tier hears it; when it is at
+    /// or near the playhead, it lands about 256 frames past the block being
+    /// played (plus up to a butler cycle), crossfaded over the stream's seek
+    /// crossfade (`BufferConfig::seek_crossfade_frames`) from what the old
+    /// loop would have played. From there on the live voice plays the new
+    /// loop exactly as the memory tier does. An export fork taken after the
+    /// change reads the new loop from the start of its render (doc 013, "The
+    /// live disk loop and its repositions (#48)").
     On {
         start: SamplePosition,
         end: SamplePosition,

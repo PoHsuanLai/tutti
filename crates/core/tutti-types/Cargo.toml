@@ -41,8 +41,9 @@ serde = { version = "1", optional = true, features = ["derive"] }
 # defines vocabulary, not ECS surface.
 bevy_reflect = { workspace = true, optional = true }
 
-# `RtPublish`'s atomics become loom's under `--cfg loom`, so the model in
-# `tests/rt_publish_loom.rs` checks the shipped protocol rather than a replica.
+# `RtPublish`'s and `PosRing`'s atomics become loom's under `--cfg loom`, so the
+# models in `tests/rt_publish_loom.rs` and `tests/pos_ring_loom.rs` check the
+# shipped protocols rather than replicas.
 # Only that flag pulls this in; a normal build never sees loom.
 #
 #     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom

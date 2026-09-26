@@ -198,8 +198,10 @@ Non-scalar state handed to the audio thread goes through
 - Never `publish` from the audio thread.
 - Do not try to prove the race with a no-alloc test. The loom model and miri
   cover it; a single-threaded gate can only pin the reader's code path.
-- Nullable hot-swap slots (`SharedReader`, `InputSlot`, `Midi::out`) stay on
-  `ArcSwapOption`. Control-thread-only cells stay plain.
+- Nullable hot-swap slots (`InputSlot`, `Midi::out`) stay on
+  `ArcSwapOption`. Control-thread-only cells stay plain. (The sampler's
+  `SharedReader` is a plain `Arc` of a position-indexed ring of atomics;
+  nothing swaps it.)
 
 ## Buffers: edges vs graph nodes
 

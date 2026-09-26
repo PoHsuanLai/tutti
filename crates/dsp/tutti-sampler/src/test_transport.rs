@@ -25,6 +25,8 @@ pub struct MockTransport {
     /// `f64` bits — `AtomicF64` is not in std.
     beat: AtomicU64,
     tempo: AtomicU64,
+    /// The segment generation: moved on by [`seek`](Self::seek) only.
+    generation: AtomicU64,
 }
 
 impl MockTransport {
@@ -34,6 +36,7 @@ impl MockTransport {
             playing: AtomicBool::new(true),
             beat: AtomicU64::new(beat.get().to_bits()),
             tempo: AtomicU64::new(tempo.get().to_bits()),
+            generation: AtomicU64::new(0),
         })
     }
 
@@ -53,6 +56,14 @@ impl MockTransport {
     /// Jump the playhead — a seek or a scrub. The discontinuity this creates is
     /// the thing under test in the stretch-flush tests.
     pub fn set_beat(&self, beat: Beat) {
+        self.beat.store(beat.get().to_bits(), Ordering::Relaxed);
+    }
+
+    /// A seek as the engine's clock makes one: a new segment, then the beat
+    /// (the order `Timeline::segment_generation` documents). To the beat it
+    /// stands on, only the generation tells it from no seek at all.
+    pub fn seek(&self, beat: Beat) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.beat.store(beat.get().to_bits(), Ordering::Relaxed);
     }
 
@@ -87,7 +98,7 @@ impl Timeline for MockTransport {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
     fn segment_generation(&self) -> u64 {
-        0
+        self.generation.load(Ordering::Relaxed)
     }
 }
 

@@ -634,15 +634,15 @@ mod tests {
         const BLOCK: usize = 64;
         const BLOCKS: usize = 8;
 
-        use crate::butler::{share_reader, RegionBuffer, RegionId};
+        use crate::butler::{RegionBuffer, RegionId};
         use crate::voice::{DiskSource, DiskVoice, DiskVoiceConfig, VoiceWindow};
         use std::path::PathBuf;
-        use std::sync::atomic::Ordering;
 
-        // How many source frames the ring gives up over a fixed render, at a
-        // given stretch factor. `read_position` is the ring's own consumption
-        // counter, so this measures what the reader actually took rather than
-        // what anything claims it should have.
+        // How far into its source the reader got over a fixed render, at a
+        // given stretch factor: the position it last published to the butler
+        // (`Ring::play`, what the butler fills ahead of), so this measures
+        // where the reader actually read rather than what anything claims it
+        // should have.
         let consumed = |factor: f32| -> u64 {
             let (mut pool, handle) = VoicePool::new();
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
@@ -659,12 +659,12 @@ mod tests {
             let (mut writer, reader) =
                 RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192 + 64, 2usize);
             writer.push_interleaved(&flat);
-            let read_pos = reader.read_position_shared();
+            let ring = std::sync::Arc::clone(&reader);
             // ONE `RtState`, shared by the source and the gate — `DiskVoice::new`
             // requires it, and the published stretch rate is read back through
             // the same cell. Two separate states here made the fix look inert.
             let state = Arc::new(RtState::new());
-            let inner = DiskSource::new(share_reader(reader), Arc::clone(&state));
+            let inner = DiskSource::new(reader, Arc::clone(&state));
             let voice = DiskVoice::new(
                 inner,
                 Arc::clone(&state),
@@ -700,7 +700,7 @@ mod tests {
                 pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
                 transport.advance(BLOCK as i64, 44_100.0);
             }
-            read_pos.load(Ordering::Relaxed)
+            ring.play()
         };
 
         let unstretched = consumed(1.0);
@@ -1305,7 +1305,7 @@ mod tests {
     /// `detached()` and `isolate()` all have no butler.
     #[test]
     fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
-        use crate::butler::{share_reader, RegionBuffer, RegionId, RtState};
+        use crate::butler::{RegionBuffer, RegionId, RtState};
         use crate::voice::disk_voice::DiskSource;
         use crate::voice::disk_voice::{DiskVoice, DiskVoiceConfig};
 
@@ -1317,7 +1317,7 @@ mod tests {
             RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2usize);
         drop(writer);
         let state = std::sync::Arc::new(RtState::new());
-        let inner = DiskSource::new(share_reader(reader), state.clone());
+        let inner = DiskSource::new(reader, state.clone());
         let clip_reader = DiskVoice::new(
             inner,
             state,

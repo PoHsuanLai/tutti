@@ -211,6 +211,12 @@ impl Seat {
         }
     }
 
+    /// The clock's segment generation this seat seated in.
+    #[inline]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The position this seat reads at.
     #[inline]
     pub(crate) fn position(&self) -> SamplePosition {

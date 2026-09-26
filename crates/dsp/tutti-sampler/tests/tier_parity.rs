@@ -406,10 +406,10 @@ fn stream_at(
             Beat::new(0.0),
             None,
         )
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|e| {
             panic!(
-                "the butler applied its commands and reported its rings full, but installed no \
-                 link for channel {channel} streaming from {at_sec}s"
+                "the butler applied its commands and reported its rings full, but gave no \
+                 voice for channel {channel} streaming from {at_sec}s: {e}"
             )
         });
     voice.set_sample_rate(SampleRate(SR));
@@ -627,10 +627,9 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
 ///
 /// # This was `#[ignore]`d, and stepping is what un-ignored it
 ///
-/// The engine was never at fault. `reposition_click_free` flushes the ring and
-/// moves the writer, and the in-crate
+/// The engine was never at fault: the in-crate
 /// `butler::streamer::tests::a_backward_seek_repositions_the_live_stream` has
-/// always shown that happening. What failed was the *harness*: it polled for the
+/// always shown the butler moving the stream. What failed was the *harness*: it polled for the
 /// new material by rendering, each poll advanced the clock, a placed voice
 /// follows the clock, and the read head chased its own tail — so the target moved
 /// while the test waited for it.
@@ -677,38 +676,14 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
             })
             .expect("the butler is alive in this test");
 
-        // Render *with* the butler cycling. Two seek requests converge here and
-        // both need a cycle to be applied: the `Command::Seek` just queued, and
-        // the one `DiskVoice`'s own placement gate raises on the next block
-        // because the playhead jumped past `SEEK_EPSILON_SAMPLES`. Priming
-        // before rendering would apply only the first — the gate has not run
-        // yet — and the reader would drain the pre-seek ring.
-        //
-        // The discarded first span is the transition itself: the ring is flushed
-        // and refilling, and the crossfade is in it. `a_seek_transition_does_not_clip`
-        // is the test that looks at that span; this one is about where the
-        // stream *settles*.
-        // Two discarded spans, then the measurement. The discards cover the
-        // transition: the ring is flushed on reposition, the crossfade plays out
-        // of it, and the refill from the new offset has to overtake both. A
-        // backward seek needs more of that than a forward one — it was still
-        // 0.44 s late after one span — because it discards a ring that was
-        // already prefetched ahead of the old position.
-        //
-        // Fixed spans rather than a poll: each is a known 85 ms of transport,
-        // and what is being asserted is *where the stream settles*, not how
-        // quickly it gets there. `a_seek_transition_does_not_clip` is the test
-        // that looks inside the transition.
-        // The **first** span after the seek, and only the first.
-        //
-        // Re-seeking the clock does not rewind the reader — the jump is far
-        // inside `SEEK_EPSILON_SAMPLES`, so the placement gate reads it as
-        // contiguous playback and plays on. Each further span therefore reads
-        // the *next* 85 ms of file, drifting +8.5 Hz per span at this chirp
-        // rate, and a test that rendered a few "settling" spans first would be
-        // measuring a position it walked to rather than the one the seek
-        // reached. That drift is the harness, not the engine, and taking the
-        // first span is what removes it.
+        // Render *with* the butler cycling. The placed voice reads where the
+        // clock now is (the `Command::Seek` moves the butler's window there
+        // too); the butler fills it on the cycle after the first block, which
+        // plays the old continuation and then crossfades to the target.
+        // `a_seek_transition_does_not_clip` is the test that looks at that
+        // transition; this one is about where the stream *settles*: the first
+        // 85 ms span after the seek, which the transition is a small part
+        // of.
         clock.seek_seconds(target);
         let got = render_streamed(&mut voice, &mut streamer, &clock, 64);
         let want = chirp_hz_at(target);

@@ -9,9 +9,9 @@
 //! fixed-capacity `RtScratch` buffers make `process` non-allocating for any
 //! block size up to the preallocated maximum.
 //!
-//! `DiskSource` is **not** covered here: it needs a real `RegionReader` from a
-//! live butler, so its non-allocation is guarded by the streaming-buffer tests
-//! in the `butler` module instead.
+//! `DiskSource` is **not** covered here: it needs a crate-private ring, so its
+//! non-allocation (steady state, a jump's scratch copy and fade, `tick`) is
+//! guarded in-crate, in `voice::disk_voice`'s tests.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

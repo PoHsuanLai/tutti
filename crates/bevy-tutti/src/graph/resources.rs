@@ -306,6 +306,36 @@ impl AudioGraphRes {
         self.write().insert(unit, fork)
     }
 
+    /// Insert a node that brings its own [`IntoNode`](tutti_graph::IntoNode)
+    /// — a MIDI clip node, a synth inserted as a graph node — handing back
+    /// its controls. Its fork source
+    /// goes to the editor, so an export forks it as its type says.
+    ///
+    /// [`spawn_graph_node`](crate::graph::SpawnGraphNode::spawn_graph_node)
+    /// is the ECS form, which binds an entity to it.
+    pub fn insert_node<N: tutti_graph::IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
+        self.write().insert_node(node)
+    }
+
+    /// How many event inputs `node` declares: 0 for a unit inserted as an
+    /// `AudioUnit` (through `Legacy`), which takes MIDI only on its port.
+    pub fn node_event_inputs(&self, node: AudioNode) -> usize {
+        self.read().node_event_inputs(node)
+    }
+
+    /// Feed `sink`'s event input `port` from exactly `sources` (each node's
+    /// event output 0). Event inputs merge their sources by offset, so any
+    /// number may feed one port. Takes effect with the frame's commit.
+    /// [`EventSources`](crate::graph::EventSources) is the ECS form.
+    pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[AudioNode]) {
+        self.write().set_event_sources(sink, port, sources);
+    }
+
+    /// The nodes feeding `sink`'s event input `port`, as the graph holds them.
+    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<AudioNode> {
+        self.read().event_sources(sink, port)
+    }
+
     /// Insert a hosted plugin: bound (`PluginClient::bind`) and inserted as
     /// the native node it then is, handing the editor its fork source (a fork
     /// by state transfer) and its latency (its `Shape`). Capture its controls

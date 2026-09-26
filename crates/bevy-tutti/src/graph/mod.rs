@@ -29,6 +29,7 @@
 pub mod capture;
 pub mod commit;
 pub mod despawn;
+pub mod events;
 pub mod latency;
 pub mod metering;
 pub(crate) mod native;
@@ -46,6 +47,10 @@ pub mod wire;
 pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
+pub use events::{
+    EventFeeds, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
+    SpawnGraphNode,
+};
 pub use metering::MeteringRes;
 #[cfg(feature = "plugin")]
 pub(crate) use native::clamp_latency;

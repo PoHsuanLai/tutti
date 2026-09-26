@@ -51,6 +51,7 @@ const GAIN: f32 = 2.0;
 /// kept as drained (unshifted), so a test reads what the bridge returned.
 impl super::batcher::Chunks for MidiEventVec {
     fn begin(&mut self, _at: usize, _chunk: usize) {}
+    fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
 
     fn payload(&mut self, _frames: usize) -> BlockPayload {
         BlockPayload::default()

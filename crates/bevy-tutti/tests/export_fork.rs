@@ -1049,10 +1049,10 @@ mod plugin {
         );
     }
 
-    /// **An exported plugin instrument plays its notes.** A fork has a fresh
-    /// MIDI port, so the clip the live instance plays (`MidiSourceInstall`,
-    /// installed on its port) is rebound onto the fork's port and the render's
-    /// timeline. A note from beat 1 to beat 2 holds the probe's gate open
+    /// **An exported plugin instrument plays its notes.** The plugin has a
+    /// MIDI event input, so its `MidiSourceInstall` plays through a clip node
+    /// wired to it (doc 013 item 5), which the export forks with it and which
+    /// reads the render's `Env`. A note from beat 1 to beat 2 holds the probe's gate open
     /// from beat 1 to beat 2 of the render's timeline, heard one pipeline
     /// chunk (the export's 1024-frame block) later, and nowhere else.
     ///
@@ -1073,9 +1073,11 @@ mod plugin {
     /// notes at the rate the fork polls it at (a beat is 64 000 frames
     /// there).
     ///
-    /// Mutation (run): dropping the `rebind_offline_into` call in
-    /// tutti-plugin's `PluginFork::instance` → the fork renders silence, at
-    /// both rates. The plugin polling its MIDI port at a fixed 48 kHz instead
+    /// Mutation (run): the event wiring never writing the clip node's edge
+    /// (`graph::events::reconcile`) → the fork renders silence, at both
+    /// rates. (Before the clip node, dropping the `rebind_offline_into` call
+    /// in `PluginFork::instance` did the same; that call now serves a clip a
+    /// host installs on the port itself.) The plugin polling its MIDI port at a fixed 48 kHz instead
     /// of its own rate (`build_block_payload`) → at 96 kHz the notes land
     /// where 48 kHz puts them. Gathering a chunk's MIDI at its submission
     /// rather than its start (tutti-plugin's `PluginChunks::begin`) → the

@@ -180,6 +180,9 @@ pub(super) trait Chunks {
     /// A chunk of `chunk` frames begins at frame `at` of this call (its first
     /// frame is the next input frame the batcher takes).
     fn begin(&mut self, at: usize, chunk: usize);
+    /// This call's frames `from..from + n` go into the current chunk at its
+    /// frame `at`.
+    fn take(&mut self, from: usize, n: usize, at: usize);
     /// The payload of the chunk being submitted now, `frames` long: what
     /// [`begin`](Self::begin) gathered for it.
     fn payload(&mut self, frames: usize) -> BlockPayload;
@@ -482,6 +485,7 @@ impl Batcher {
             }
             let n = (chunk - self.pos).min(frames - i);
             let (at, to) = (self.pos, self.pos + n);
+            host.take(i, n, at);
             for (row, out) in self.ring.iter().zip(output.iter_mut()) {
                 out[i..i + n].copy_from_slice(&row[at..to]);
             }

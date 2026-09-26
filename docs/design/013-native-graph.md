@@ -3382,15 +3382,36 @@ under both.
   (`polysynth::node` unit test), and `rt_no_alloc`'s clip → native synth
   through a stop and a restart.
 
+- **The plugin's MIDI event input.** The plugin node declares one; the
+  batcher hands the node each span of a block's frames as it goes into the
+  current chunk (`Chunks::take`), and the events on those frames join the
+  chunk's MIDI at the chunk's frames (sorted at submission, dropped past the
+  inline capacity rather than allocate). Pinned by `clap_fork`'s
+  `a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame`.
+- **bevy-tutti's event wiring.** `spawn_graph_node` inserts any node with its
+  own `IntoNode` (controls kept on the entity as `NodeControls<C>`, a synth's
+  port still captured as its `MidiTarget`); `EventSources` on a sink declares
+  its event input's sources, a list since event inputs fan in, and
+  `GraphEventsPlugin` writes what differs before `Compensate`. A
+  `MidiSourceInstall` on a target with an event input (a graph-node synth, a
+  plugin) plays through a clip node of its own (`SequencedClips`, fed through
+  `EventFeeds`), edited in place with `set_events`; a `Legacy` target keeps
+  its port source.
+
 **Not yet (next PRs of item 5).**
 
-- **bevy-tutti still inserts the synth through `Legacy`** and installs clips
-  on its port (`MidiSourceInstall`, `MidiTargetRegistry`). Declared event
-  wiring (an event-source analogue of `PortSources`) and a native insert
-  path come next; then `MidiClipSource`, the port's installed-source cell and
-  the synth's `rebind_offline_into` go.
-- **The plugin's four inputs** (MIDI, automation, harmony, note expression)
-  move to event ports; the plugin then drops `Shape::legacy`.
+- **`MidiClipSource` and the port's installed-source cell** go once no
+  target is inserted through `Legacy` with a clip: SoundFont (below) is the
+  last MIDI unit that is. The synth's and plugin's `rebind_offline_into`
+  go with them.
+- **The plugin's other three inputs** (automation, harmony, note
+  expression) move off their timeline-polling `InputSlot`s; the plugin then
+  drops `Shape::legacy`.
+- **Plugin MIDI out onto an event output.** The server publishes a chunk's
+  audio before its reply is queued, so a reply drained when the chunk's
+  audio is collected can miss it; the offline wait must wait for the reply
+  too, or an export's MIDI out is nondeterministic. With the hardware-out
+  sink, below.
 - **SoundFont, the hardware input (`MidiPreBlock`) and MIDI out** become
   native nodes; the mailbox, `MidiInPort`, `MidiPostBlock` and
   `MidiTargetRegistry` are deleted.

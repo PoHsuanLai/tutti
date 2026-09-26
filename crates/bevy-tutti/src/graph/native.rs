@@ -61,9 +61,9 @@ use tutti_core::{
     Tail,
 };
 use tutti_graph::{
-    CommitError, Editor, Executor, Fade, GraphInvalid, Legacy, LegacyControls, NodeParts,
-    ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping, Prepare, Resolution, Transport,
-    MAX_PARAM_SOURCES,
+    CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
+    Legacy, LegacyControls, NodeParts, ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping,
+    Prepare, Resolution, Transport, MAX_PARAM_SOURCES,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -631,6 +631,79 @@ impl NativeGraph {
     /// hands it the render's transport. Inserted plainly it would have no
     /// fork source, and every engine-built graph (whose click and beat-driven
     /// nodes it feeds) would refuse a master export as not forkable.
+    /// Insert a node that brings its own [`IntoNode`]: its controls come
+    /// back to the caller, and its fork source (which carries whatever MIDI
+    /// it plays: a clip node's events, a synth's installed clip) goes to the
+    /// editor. No settings ring and no shadow, as for a plugin.
+    pub(crate) fn insert_node<N: IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
+        let id = AudioNode(NodeId::new());
+        let controls = self.editor.insert(key(id), N::kind(), node);
+        self.nodes.insert(
+            key(id),
+            Entry {
+                node: id,
+                controls: None,
+                carries_midi: true,
+            },
+        );
+        self.edited = true;
+        (id, controls)
+    }
+
+    /// How many event inputs `node` declares (0 for a `Legacy` unit).
+    pub(crate) fn node_event_inputs(&self, node: AudioNode) -> usize {
+        self.shape(node).map_or(0, |s| usize::from(s.event_in))
+    }
+
+    /// Feed `sink`'s event input `port` from exactly `sources`' event output
+    /// 0 (fan-in merges them by offset; the graph orders ties by source).
+    /// Touches nothing when that is what it already holds.
+    pub(crate) fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[AudioNode]) {
+        let at = EventIn {
+            node: key(sink),
+            port,
+        };
+        let mut want: Vec<EventOut> = sources
+            .iter()
+            .map(|s| EventOut {
+                node: key(*s),
+                port: 0,
+            })
+            .collect();
+        want.sort();
+        want.dedup();
+        let spec = self.editor.spec_mut();
+        let have: Vec<EventOut> = spec
+            .events
+            .get(&at)
+            .map(|v| v.iter().map(|e| e.from()).collect())
+            .unwrap_or_default();
+        if have == want {
+            return;
+        }
+        spec.events.remove(&at);
+        for from in want {
+            spec.connect_events(at, EventEdge::Direct(from));
+        }
+        self.edited = true;
+    }
+
+    /// The nodes feeding `sink`'s event input `port`, in the graph's order.
+    pub(crate) fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<AudioNode> {
+        let at = EventIn {
+            node: key(sink),
+            port,
+        };
+        self.editor
+            .spec()
+            .events
+            .get(&at)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| self.nodes.get(&e.from().node).map(|n| n.node))
+            .collect()
+    }
+
     pub(crate) fn insert_env_clock(&mut self) -> AudioNode {
         let node = AudioNode(NodeId::new());
         self.editor.insert(

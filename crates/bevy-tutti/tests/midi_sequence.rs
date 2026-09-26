@@ -356,3 +356,132 @@ fn velocity_keeps_its_full_width() {
         "the exact values must arrive, not merely differ: {velocities:?}"
     );
 }
+
+/// A synth inserted as a graph node, with a MIDI event input.
+fn spawn_graph_synth(app: &mut App) -> Entity {
+    use bevy_tutti::graph::SpawnGraphNode;
+    let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
+    let entity = app.world_mut().commands().spawn_graph_node(synth).id();
+    app.world_mut().flush();
+    entity
+}
+
+fn node_of(app: &App, entity: Entity) -> tutti_core::AudioNode {
+    *app.world()
+        .get::<tutti_core::AudioNode>(entity)
+        .expect("bound to a node")
+}
+
+/// **`EventSources` wires a clip node's events to a synth's event input, and
+/// removing it unwires them.** Both are inserted as graph nodes
+/// (`spawn_graph_node`); the declaration on the synth reaches the graph's
+/// event edges on the next update, and its removal empties them.
+///
+/// Mutation: `reconcile` never writing (`set_event_sources` skipped) → the
+/// first assertion fails. Mutation: dropping a sink with no declaration from
+/// the wanted set → the edge outlives its declaration → the second fails.
+#[test]
+fn event_sources_wire_a_clip_node_to_a_graph_synth() {
+    use bevy_tutti::graph::{EventSources, NodeControls, SpawnGraphNode};
+    use tutti_midi_runtime::{MidiClipControls, MidiClipNode};
+
+    let mut app = app();
+    let synth = spawn_graph_synth(&mut app);
+    let clip = app
+        .world_mut()
+        .commands()
+        .spawn_graph_node(MidiClipNode::new(note(
+            60,
+            Beat(0.0),
+            BeatDuration(1.0),
+            MF,
+        )))
+        .id();
+    app.world_mut().flush();
+    assert!(
+        app.world()
+            .get::<NodeControls<MidiClipControls>>(clip)
+            .is_some(),
+        "a graph node's controls are kept on its entity"
+    );
+    assert!(
+        app.world().get::<MidiTarget>(synth).is_some(),
+        "a graph synth's port is still captured, for keyboards and routing"
+    );
+    app.world_mut()
+        .entity_mut(synth)
+        .insert(EventSources::from(clip));
+    app.update();
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert_eq!(graph.node_event_inputs(node_of(&app, synth)), 1);
+    assert_eq!(
+        graph.event_sources(node_of(&app, synth), 0),
+        vec![node_of(&app, clip)]
+    );
+
+    app.world_mut().entity_mut(synth).remove::<EventSources>();
+    app.update();
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert!(graph.event_sources(node_of(&app, synth), 0).is_empty());
+}
+
+/// **An install on a synth with an event input plays through a clip node of
+/// its own, edited in place, removed with the last install**, and nothing is
+/// installed on the synth's port (which would play the clip twice).
+///
+/// Mutation: always taking the port path (ignoring `node_event_inputs`) →
+/// no clip node → fails. Mutation: a fresh clip node per edit → the node
+/// changes across the edit → fails. Mutation: keeping the clip node when the
+/// install goes → it is still in the graph → fails.
+#[test]
+fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
+    use bevy_tutti::midi::SequencedClips;
+
+    let mut app = app();
+    let synth = spawn_graph_synth(&mut app);
+    let install = app
+        .world_mut()
+        .spawn(MidiSourceInstall::new(
+            synth,
+            note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+        ))
+        .id();
+    app.update();
+    let clip = app
+        .world()
+        .resource::<SequencedClips>()
+        .node(synth)
+        .expect("the synth plays through a clip node");
+    assert_eq!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .event_sources(node_of(&app, synth), 0),
+        vec![clip]
+    );
+    roll(&app);
+    assert!(
+        poll(&app, synth, 64).is_empty(),
+        "the clip is not also installed on the synth's port"
+    );
+
+    app.world_mut()
+        .get_mut::<MidiSourceInstall>(install)
+        .unwrap()
+        .events = note(62, Beat(0.0), BeatDuration(1.0), MF).to_vec();
+    app.update();
+    assert_eq!(
+        app.world().resource::<SequencedClips>().node(synth),
+        Some(clip),
+        "an edit replaces the clip's events in place"
+    );
+
+    app.world_mut().despawn(install);
+    app.update();
+    assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert!(
+        !graph.contains(clip),
+        "the clip node goes with the last install"
+    );
+    assert!(graph.event_sources(node_of(&app, synth), 0).is_empty());
+}

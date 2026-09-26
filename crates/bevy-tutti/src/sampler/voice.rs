@@ -10,7 +10,7 @@
 //!
 //! # Why not `VoicePool`
 //!
-//! The sampler ships a [`VoicePool`](tutti_sampler::VoicePool) that mixes many
+//! The sampler ships a [`VoicePool`] that mixes many
 //! voices behind one node, and its markers (`VoicePoolRef` / `VoicePoolNode`) say
 //! "live on the track entity". That is the right shape for a host whose model is
 //! *track owns clips*. It is the wrong shape for a host whose model is a graph of

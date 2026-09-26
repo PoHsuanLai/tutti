@@ -15,9 +15,8 @@ native graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
 is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
 the compiler's, export forks the live graph with `Editor::fork`), and
 tutti-export renders only it. `Net` is left as a container, not a runtime,
-until Phase 5 deletes fundsp: `topology::compile`, the `Net` forms of two
-builders (`build_vbap_mix` / `VbapMixParts::insert_into`,
-`ParamModParts::insert_into`), the
+until Phase 5 deletes fundsp: `topology::compile`, the `Net` form of one
+builder (`build_vbap_mix` / `VbapMixParts::insert_into`), the
 nodes' own tests and `tutti-graph`'s A/B bench wire units in one
 (`tests/no_net_backend.rs` keeps `NetBackend` out of tutti-core). Until the
 migration lands:

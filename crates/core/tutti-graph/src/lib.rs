@@ -42,6 +42,10 @@
 //!   off-by-a-block bug does not compile (doc 013 §6, item 1).
 //! - **[`SortedEvents`]** — an event slice that is sorted and inside the
 //!   block by construction.
+//! - **[`Shape::event_capacity`]** — each event output port's declared
+//!   events per block, from which every buffer downstream is sized at
+//!   compile and prepare time; a writer past it drops the newest and counts
+//!   it, and nothing downstream of a writer can refuse an event.
 //! - **[`Io::sub_blocks`]** — the block split at event offsets, so a node
 //!   written against it is sample-accurate by construction (item 4).
 //! - **[`At`](tutti_types::At)** — every scheduled command
@@ -103,8 +107,11 @@
 //! 4. **Events are graph ports** ([`Event`], [`EventIn`], [`EventOut`]), so the
 //!    one PDC pass aligns MIDI and automation with audio.
 //! 5. **Fan-in is allowed on event ports only**, merged deterministically by
-//!    `(offset, source order)`. Audio keeps one source per port — summing is a
-//!    node's job, and `Topology` still makes audio fan-in unrepresentable.
+//!    `(offset, source order)`, source order being the source port's
+//!    `(NodeKey, port)` — a property of the wiring, not of the order a spec
+//!    lists its edges in. Audio keeps one source per port — summing is a
+//!    node's job, and `Topology` still makes audio fan-in unrepresentable;
+//!    events merge losslessly, so they need no `Sum`.
 //! 6. **Automation is linear ramp events first** ([`ParamRamp`]); curve
 //!    segments can be added as another [`EventKind`] when a non-linear shape
 //!    needs sample accuracy without sub-chunking.
@@ -213,8 +220,8 @@ pub use node::{
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use plan::{
-    Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, Op, Placement, Plan, PlanUnit,
-    Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, Placement,
+    Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
 };
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
@@ -230,7 +237,8 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
 /// Check the crossfades `delta` carries into `plan`, from `prev` (the plan
 /// running before it): each names a key the delta replaces, once, and the
 /// unit it fades from has the shape of the one it fades to in everything but
-/// its tail — ports, latency, in-place acceptance, event resolution.
+/// its tail — ports, latency, in-place acceptance, event resolution, event
+/// capacity.
 /// [`Editor::package`] runs this on every delta it is handed.
 pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
     compile::verify::verify_fades(prev, plan, delta)

@@ -575,7 +575,7 @@ pub(crate) fn overlay_capacity(plan: &Plan, cap: usize, flushed: usize) -> usize
             crate::plan::Op::Node { event_in, .. } => Some(
                 plan.event_list[event_in.range()]
                     .iter()
-                    .map(|&s| plan.event_slot_weight[s as usize] as usize * cap)
+                    .map(|&s| plan.event_slot_capacity[s as usize].events(cap))
                     .sum::<usize>(),
             ),
             _ => None,

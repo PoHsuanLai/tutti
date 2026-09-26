@@ -124,7 +124,7 @@ pub enum CommitError {
     },
     /// [`Editor::replace`] was handed a unit whose shape differs from the
     /// running one's in more than its tail — ports, latency, in-place
-    /// acceptance or event resolution. Nothing changed; swap it with
+    /// acceptance, event resolution or event capacity. Nothing changed; swap it with
     /// [`Editor::insert`] instead.
     FadeShape {
         /// The node.
@@ -328,8 +328,11 @@ impl Editor {
         Self::with_event_capacity(prepare, DEFAULT_EVENT_CAPACITY)
     }
 
-    /// As [`new`](Self::new), with `cap` events per event slot per block
-    /// (the declared event rate the delay FIFOs are sized from).
+    /// As [`new`](Self::new), with `cap` events per block as the default
+    /// capacity of an event output port whose node declares none
+    /// ([`Shape::event_capacity`](crate::Shape::event_capacity)) — its
+    /// writer's limit, and the rate the delay FIFOs fed by it are sized
+    /// from. A declared capacity overrides it for that node's ports.
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
@@ -549,6 +552,10 @@ impl Editor {
         ) && shape.latency == running.latency
             && shape.in_place == running.in_place
             && shape.event_resolution == running.event_resolution
+            // The plan sizes the node's event ports from its declaration, and
+            // a replace waiting behind a running fade runs the old unit under
+            // the new plan: both must fit the same buffers.
+            && shape.event_capacity == running.event_capacity
             // A renderer chunks while the plan holds a `Legacy`: both halves
             // of a fade must agree, or the outgoing one would run unchunked.
             && shape.legacy == running.legacy;

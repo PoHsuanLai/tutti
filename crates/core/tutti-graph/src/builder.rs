@@ -475,10 +475,11 @@ impl GraphBuilder {
         self.pipe_output(key);
     }
 
-    /// Append `from`'s event output `from_port` to the merge list of `to`'s
-    /// event input `to_port` ([`GraphSpec::connect_events`]). Event ports
-    /// take fan-in: events at equal offsets arrive in the order the edges
-    /// were connected.
+    /// Add `from`'s event output `from_port` to the sources of `to`'s event
+    /// input `to_port` ([`GraphSpec::connect_events`]). Event ports take
+    /// fan-in: events at equal offsets arrive in source order, the source
+    /// port's `(NodeKey, port)` — for nodes this builder added, the order
+    /// they were added in (keys are handed out increasing).
     ///
     /// # Panics
     ///

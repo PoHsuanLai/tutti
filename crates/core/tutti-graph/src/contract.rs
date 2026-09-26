@@ -193,16 +193,26 @@ pub enum Path {
     /// Mutation (run): in `compile`, treat every audio and event gap as zero
     /// (no `Delay`/`EventDelay` op) → the excitation arrives
     /// `SIBLING_LATENCY` early → this path, both recompile paths and every
-    /// `Blocks*` path fail, while `Direct`, `EventFanIn` and the scheduled
-    /// paths (whose commands are compensated separately) pass.
+    /// `Blocks*` path fail — and `EventFanIn`, on its PDC half — while
+    /// `Direct` and the scheduled paths (whose commands are compensated
+    /// separately) pass.
     BehindPdc,
     /// Through an event fan-in merge: two sources on the node's port, the
-    /// exciting one second in source order, the first sending the same
-    /// event a few frames **later**: usually in the same block, so a merge
-    /// that is not by offset hands the node the two out of order.
+    /// exciting one second in source order (the higher key), the first
+    /// sending the same event a few frames **later**: usually in the same
+    /// block, so a merge that is not by offset hands the node the two out of
+    /// order. Direct, and behind PDC: there the latent sibling is a third
+    /// source on the same port, so both emitters' events are delayed
+    /// [`SIBLING_LATENCY`] frames on their way into the merge — across one
+    /// or two block boundaries — and still arrive in offset order.
     ///
     /// Both responses are expected, the second at `f + gap`, and nothing
     /// else.
+    ///
+    /// Mutation (run): in `compile`, delay only an event input's first two
+    /// sources (`d if !d.is_zero() && refs.len() < 2`) → behind PDC the
+    /// exciting emitter, third on the port, arrives `SIBLING_LATENCY` early
+    /// → only this path fails, on its PDC half.
     ///
     /// Mutation (run): in `merge_into`, take the first source with an event
     /// left rather than the earliest offset → only this path fails (not for
@@ -418,7 +428,7 @@ impl Row {
         let (topos, feed, edit, blocks): (&[Topo], Feed, Edit, Option<Schedule>) = match path {
             Path::Direct => (&[Topo::Direct], Feed::Source, Edit::None, None),
             Path::BehindPdc => (&[Topo::Pdc], Feed::Source, Edit::None, None),
-            Path::EventFanIn => (&[Topo::Direct], Feed::FanIn, Edit::None, None),
+            Path::EventFanIn => (BOTH, Feed::FanIn, Edit::None, None),
             Path::RecompileUnrelated => (&[Topo::Pdc], Feed::Source, Edit::Unrelated, None),
             Path::RecompileUpstreamGeneration => {
                 (&[Topo::Pdc], Feed::Source, Edit::Regenerate, None)

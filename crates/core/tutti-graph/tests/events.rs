@@ -501,11 +501,17 @@ fn a_vanishing_event_delay_flushes_instead_of_dropping() {
 
 /// B1: 65 and 200 sources into one event port compile (to a tree of merges
 /// of at most `MAX_PORTS`), and deliver in `(offset, source order)` — here
-/// every source fires on the same frame, so the order is the source order.
+/// every source fires on the same frame, so the order is the source order,
+/// the source's `NodeKey` (owner decision 6 as refined for events as
+/// ports: the order the spec lists its edges in no longer counts — this
+/// test pinned list order before, and lists the sources in reverse so that
+/// a merge falling back to it is caught).
 ///
 /// Mutation: in `merge_tree`, merge the runs in reverse order → the first
 /// tie goes to source 64 → fails. Mutation: remove the `n <= MAX_PORTS` arm
 /// (always one flat merge) → the executor panics on the audio thread → fails.
+/// Mutation: drop the `sort_by_key(|e| e.from())` in `compile` → list order
+/// (reversed) → fails.
 #[test]
 fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
     for width in [65usize, 200] {
@@ -524,17 +530,21 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
             .insert(REC, NodeSpec::new("r", rs.audio_in, rs.audio_out));
         shapes.insert(REC, rs);
         let mut g = GraphSpec::new(t);
-        // Source order is the REVERSE of key order, so a merge that fell back
-        // to key order would be caught too.
-        for i in (0..width).rev() {
-            g.connect_events(
-                EventIn { node: REC, port: 0 },
-                EventEdge::Direct(EventOut {
-                    node: NodeKey(i as u64),
-                    port: 0,
-                }),
-            );
-        }
+        // Listed in the REVERSE of key order (by hand, not through
+        // `connect_events`, which keeps source order), so a merge that fell
+        // back to the listed order would be caught.
+        g.events.insert(
+            EventIn { node: REC, port: 0 },
+            (0..width)
+                .rev()
+                .map(|i| {
+                    EventEdge::Direct(EventOut {
+                        node: NodeKey(i as u64),
+                        port: 0,
+                    })
+                })
+                .collect(),
+        );
         let valid = g.validate().unwrap();
         let prep = prepare(MAX);
         let (plan, delta) = compile(&valid, &shapes, &prep, None).expect("wide fan-in compiles");
@@ -586,7 +596,7 @@ fn wide_event_fan_in_is_a_merge_tree_in_source_order() {
             .iter()
             .map(|&(_, id, _, _)| id / 1000)
             .collect();
-        let want: Vec<u32> = (0..width as u32).rev().collect();
+        let want: Vec<u32> = (0..width as u32).collect();
         assert_eq!(
             got, want,
             "{width} sources, all at offset 0, in source order"

@@ -30,9 +30,11 @@
 //!
 //!    Emits a `Delay` op per mismatched audio port and per mismatched event
 //!    *source*, plus per-output alignment rings, with state keyed by
-//!    [`DelayKey`]. An event fan-in wider than [`MAX_PORTS`] becomes a tree
-//!    of merges over contiguous source ranges, which keeps the
-//!    `(offset, source order)` rule exactly.
+//!    [`DelayKey`]. An event fan-in merges its sources by `(offset, source
+//!    port)` — ties go to the lower `(NodeKey, port)` source, whatever order
+//!    the spec lists them in. One wider than [`MAX_PORTS`] becomes a tree
+//!    of merges over contiguous source ranges, which keeps that rule
+//!    exactly.
 //! 5. **Emit ops** in the serial order, recording every value's writer and
 //!    readers, and the op DAG.
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
@@ -59,8 +61,8 @@ use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
 use crate::plan::{
-    Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, NodeTables, Op, Placement, Plan,
-    PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, NodeTables, Op,
+    Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 
@@ -669,13 +671,21 @@ pub fn compile(
             ain.push(r);
         }
 
-        // Event inputs: delay each source that needs it, then merge fan-in.
+        // Event inputs: delay each source that needs it, then merge fan-in
+        // in **source order**, `(source NodeKey, source port)` — not the
+        // order the edges were listed in (owner decision 6, doc 013). The
+        // tie-break at equal offsets is then a property of the wiring alone:
+        // two specs that list the same sources differently merge alike, so
+        // a host that rebuilds its spec from an unordered store (the ECS)
+        // cannot reorder a chord by accident. Sources are distinct
+        // (`GraphSpec::validate`), so the order is total.
         let mut ein = Vec::with_capacity(shape.event_in as usize);
         for port in 0..shape.event_in {
             let at = EventIn { node: key, port };
-            let sources = graph.events().get(&at).map(Vec::as_slice).unwrap_or(&[]);
+            let mut sources: Vec<EventEdge> = graph.events().get(&at).cloned().unwrap_or_default();
+            sources.sort_by_key(|e| e.from());
             let mut refs: Vec<ERef> = Vec::with_capacity(sources.len());
-            for e in sources {
+            for e in &sources {
                 refs.push(match *e {
                     EventEdge::Feedback { from, delay } => {
                         ERef::Fb(fb_index(event_fb_key(at, from, delay), &event_fb))
@@ -843,28 +853,59 @@ pub fn compile(
     let aslot = |v: u32| audio_fixed + audio_colour.slot[v as usize];
     let eslot = |v: u32| event_fixed + event_colour.slot[v as usize];
 
-    // Event slot capacities, in units of the executor's per-slot capacity: a
-    // node output or a delay output holds one; a merge holds all its inputs
-    // together, so it can never drop an event (a note-off least of all).
-    let mut value_weight = vec![1u32; em.event.len()];
+    // Event slot capacities (`EventSlotCapacity`): a node output holds what
+    // its shape declares, a delay output (and a feedback slot) all its FIFO
+    // can hold at its source's declared rate — what can fall due in one
+    // block — and a merge all its inputs together, so a merge can never drop
+    // an event (a note-off least of all).
+    // Emitted in topological order, so a merge's inputs are priced first.
+    let block = prepare.max_block().get();
+    let fb_cap = |key: &FeedbackKey| match *key {
+        FeedbackKey::Event { from, delay, .. } => {
+            EventSlotCapacity::fifo(node_shapes[dense[&from.node]].event_capacity, delay, block)
+        }
+        _ => unreachable!("event feedback keys are events"),
+    };
+    let mut value_cap = vec![EventSlotCapacity::NONE; em.event.len()];
     for pre in &em.pre {
-        if let Pre::EventMerge { srcs, dst } = pre {
-            value_weight[*dst as usize] = srcs
-                .iter()
-                .map(|r| match *r {
-                    ERef::Val(v) => value_weight[v as usize],
-                    ERef::Fb(_) => 1,
-                    ERef::Empty => 0,
-                })
-                .sum::<u32>()
-                .max(1);
+        match pre {
+            Pre::Node { unit, eout, .. } => {
+                let port = EventSlotCapacity::port(node_shapes[*unit as usize].event_capacity);
+                for &v in eout {
+                    value_cap[v as usize] = port;
+                }
+            }
+            Pre::EventDelay { delay, dst, .. } => {
+                let d = &em.delays[*delay as usize];
+                let DelayKey::Event { from, .. } = d.key else {
+                    unreachable!("an event delay is keyed as events")
+                };
+                value_cap[*dst as usize] = EventSlotCapacity::fifo(
+                    node_shapes[dense[&from.node]].event_capacity,
+                    d.len,
+                    block,
+                );
+            }
+            Pre::EventMerge { srcs, dst } => {
+                value_cap[*dst as usize] = srcs.iter().fold(EventSlotCapacity::NONE, |acc, r| {
+                    acc.plus(match *r {
+                        ERef::Val(v) => value_cap[v as usize],
+                        ERef::Fb(f) => fb_cap(&event_fb[f as usize]),
+                        ERef::Empty => EventSlotCapacity::NONE,
+                    })
+                });
+            }
+            _ => {}
         }
     }
-    let mut event_slot_weight = vec![1u32; (event_fixed + event_colour.count) as usize];
-    event_slot_weight[EMPTY_SLOT as usize] = 0;
-    for (v, &w) in value_weight.iter().enumerate() {
+    let mut event_slot_capacity =
+        vec![EventSlotCapacity::NONE; (event_fixed + event_colour.count) as usize];
+    for (f, key) in event_fb.iter().enumerate() {
+        event_slot_capacity[1 + f] = fb_cap(key);
+    }
+    for (v, &c) in value_cap.iter().enumerate() {
         let s = eslot(v as u32) as usize;
-        event_slot_weight[s] = event_slot_weight[s].max(w);
+        event_slot_capacity[s] = event_slot_capacity[s].covering(c);
     }
     let aref_slot = |r: ARef| match r {
         ARef::Val(v) => aslot(v),
@@ -1059,7 +1100,7 @@ pub fn compile(
         task_activation,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
-        event_slot_weight,
+        event_slot_capacity,
         audio_feedback: audio_fb
             .iter()
             .enumerate()
@@ -1098,7 +1139,8 @@ pub fn compile(
     Ok((plan, delta))
 }
 
-/// Merge `refs` into one event stream, in `(offset, source order)`.
+/// Merge `refs` (already in source order) into one event stream, in
+/// `(offset, source order)`.
 ///
 /// Up to [`MAX_PORTS`] sources is one `EventMerge` op. Wider fan-in becomes a
 /// tree: contiguous runs of at most `MAX_PORTS` sources merge first, and the

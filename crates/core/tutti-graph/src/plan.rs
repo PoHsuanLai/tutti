@@ -18,9 +18,11 @@
 //!
 //! Slot 0 is never written. A feedback slot is filled by the executor before
 //! the first op of each block, from the feedback's delay state, and is never
-//! written by an op. Event slots hold [`Plan::event_slot_weight`] times the
-//! executor's per-slot event capacity: a merge's output holds as many events
-//! as all its inputs together, so a merge can never drop one. Coloured slots are shared between values whose lifetimes
+//! written by an op. Event slots hold [`Plan::event_slot_capacity`] events:
+//! a node's output port what its shape declares
+//! ([`Shape::event_capacity`]), a delay's output (and a feedback slot) all
+//! its FIFO can hold at its source's declared rate, and a merge's output as many as all its inputs together, so a merge can
+//! never drop one. Coloured slots are shared between values whose lifetimes
 //! cannot overlap under *any* schedule that respects the op DAG — see
 //! `compile`'s colouring pass.
 //!
@@ -41,6 +43,8 @@
 //!   feed the new loop and a changed delay starts a fresh ring. Event
 //!   feedback is keyed per edge (sink, source, generation, delay), and a
 //!   disappearing key flushes like a PDC event delay.
+
+use std::num::NonZeroU32;
 
 use tutti_types::graph::{InPort, OutPort, Source};
 use tutti_types::{Latency, NodeKey, Samples, Tail};
@@ -169,6 +173,103 @@ pub struct FeedbackSpec {
     pub slot: u32,
 }
 
+/// How many events one event slot holds per block, in the two currencies a
+/// plan knows: events that ports **declared**
+/// ([`Shape::event_capacity`]), and ports that declared nothing, each worth
+/// the executor's default capacity — which the compiler does not know (it is
+/// the editor's, [`Editor::with_event_capacity`](crate::Editor::with_event_capacity)).
+/// [`events`](Self::events) prices it once the default is known.
+///
+/// A slot holding a node's output port holds that port's capacity; a PDC
+/// delay's output or a feedback slot, everything its FIFO can hold
+/// (priced from the FIFO bound: what can fall due in one block); a merge's
+/// output, the **sum** of its
+/// inputs' — so a merge never drops. A slot shared by several values (the
+/// colouring pass) holds the largest of each currency.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EventSlotCapacity {
+    /// Events declared by the ports the slot may hold, summed.
+    pub declared: u32,
+    /// Ports the slot may hold that declared no capacity.
+    pub defaults: u32,
+}
+
+impl EventSlotCapacity {
+    /// Holds nothing: the empty slot.
+    pub const NONE: Self = Self {
+        declared: 0,
+        defaults: 0,
+    };
+
+    /// What one event output port declaring `cap` fills.
+    pub const fn port(cap: Option<NonZeroU32>) -> Self {
+        match cap {
+            Some(n) => Self {
+                declared: n.get(),
+                defaults: 0,
+            },
+            None => Self {
+                declared: 0,
+                defaults: 1,
+            },
+        }
+    }
+
+    /// What the output of an event delay (a PDC delay, or a feedback edge)
+    /// of `len` frames fed by a port declaring `cap` can hold: everything its
+    /// FIFO can (`EventFifo::bound`, `src/kernels.rs`), since that is what
+    /// can fall due in one block — events the source wrote across several
+    /// of its blocks, or a backlog a retune made overdue. Pricing it at the
+    /// source's one block would deliver the rest a block late.
+    pub(crate) fn fifo(cap: Option<NonZeroU32>, len: Samples, max_block: usize) -> Self {
+        let fifo_bound = |n: usize| crate::kernels::EventFifo::bound(len.get(), n, max_block);
+        match cap {
+            Some(n) => Self {
+                declared: u32::try_from(fifo_bound(n.get() as usize)).unwrap_or(u32::MAX),
+                defaults: 0,
+            },
+            // `limit + limit / 4 + 8` with `limit = default × blocks`: at
+            // most `default × (blocks + ⌈blocks / 4⌉) + 8`, whatever the
+            // default turns out to be.
+            None => {
+                let blocks = crate::kernels::EventFifo::blocks(len.get(), max_block);
+                Self {
+                    declared: 8,
+                    defaults: u32::try_from(blocks + blocks.div_ceil(4)).unwrap_or(u32::MAX),
+                }
+            }
+        }
+    }
+
+    /// Room for both: a merge of the two.
+    #[must_use]
+    pub const fn plus(self, other: Self) -> Self {
+        Self {
+            declared: self.declared.saturating_add(other.declared),
+            defaults: self.defaults.saturating_add(other.defaults),
+        }
+    }
+
+    /// Room for either: a slot shared by the two.
+    #[must_use]
+    pub fn covering(self, other: Self) -> Self {
+        Self {
+            declared: self.declared.max(other.declared),
+            defaults: self.defaults.max(other.defaults),
+        }
+    }
+
+    /// Whether this holds everything `need` does, in both currencies.
+    pub const fn holds(self, need: Self) -> bool {
+        self.declared >= need.declared && self.defaults >= need.defaults
+    }
+
+    /// Events, with each undeclared port worth `default`.
+    pub fn events(self, default: usize) -> usize {
+        (self.declared as usize).saturating_add((self.defaults as usize).saturating_mul(default))
+    }
+}
+
 /// One node of the plan, resolved to its place in the unit store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanUnit {
@@ -217,9 +318,10 @@ pub enum Op {
         dst: u32,
     },
     /// Merge several event streams by `(offset, source order)` — the event
-    /// fan-in of owner decision 6.
+    /// fan-in of owner decision 6. Source order is the source port's
+    /// `(NodeKey, port)`.
     EventMerge {
-        /// Event slots read, in merge order (into [`Plan::event_list`]).
+        /// Event slots read, in source order (into [`Plan::event_list`]).
         srcs: Span,
         /// Event slot written.
         dst: u32,
@@ -399,6 +501,10 @@ pub(crate) struct NodeRec {
     pub(crate) arrival: Latency,
     /// Declared tail, for the silence skip.
     pub(crate) tail: Tail,
+    /// Declared events per event output port per block
+    /// ([`Shape::event_capacity`]), which its writers enforce; `None` for
+    /// the executor's default.
+    pub(crate) event_capacity: Option<NonZeroU32>,
     /// Channels aliased in place.
     pub(crate) in_place: InPlaceMask,
     /// Start of this op's slots in [`NodeTables::slots`]: audio inputs,
@@ -537,6 +643,7 @@ impl NodeTables {
                 gen: pu.gen,
                 arrival: pu.arrival,
                 tail: pu.shape.tail,
+                event_capacity: pu.shape.event_capacity,
                 in_place,
                 ports,
                 ain: ain.len() as u16,
@@ -561,6 +668,7 @@ impl NodeTables {
                     gen: units[u].gen,
                     arrival: units[u].arrival,
                     tail: units[u].shape.tail,
+                    event_capacity: units[u].shape.event_capacity,
                     in_place: InPlaceMask::NONE,
                     ports: 0,
                     ain: 0,
@@ -643,7 +751,7 @@ pub struct Plan {
     pub(crate) task_activation: Vec<u32>,
     pub(crate) audio_slots: u32,
     pub(crate) event_slots: u32,
-    pub(crate) event_slot_weight: Vec<u32>,
+    pub(crate) event_slot_capacity: Vec<EventSlotCapacity>,
     pub(crate) audio_feedback: Vec<FeedbackSpec>,
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
@@ -727,9 +835,19 @@ impl Plan {
         }
     }
 
-    /// How many event capacities each event slot holds (see the module docs).
-    pub fn event_slot_weight(&self) -> &[u32] {
-        &self.event_slot_weight
+    /// How many events each event slot holds per block (see the module
+    /// docs), by slot index.
+    pub fn event_slot_capacity(&self) -> &[EventSlotCapacity] {
+        &self.event_slot_capacity
+    }
+
+    /// What event output port `port` declared it writes per block
+    /// ([`Shape::event_capacity`]): `None` for the executor's default, or
+    /// for a port this plan does not have.
+    pub fn event_port_capacity(&self, port: EventOut) -> Option<NonZeroU32> {
+        self.unit(port.node)
+            .filter(|u| port.port < u.shape.event_out)
+            .and_then(|u| u.shape.event_capacity)
     }
 
     /// Feedback slots of `kind`.

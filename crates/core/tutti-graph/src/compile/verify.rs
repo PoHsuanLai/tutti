@@ -20,7 +20,11 @@
 //!    task successor lists; each task's activation count equals its number of
 //!    distinct predecessor tasks; the task graph is acyclic.
 //! 6. **Tables**: every delay index is used by exactly one op, every unit by
-//!    exactly one `Node` op, and no two units share a store index.
+//!    exactly one `Node` op, and no two units share a store index. Every
+//!    event slot holds what is written into it: a node output what the
+//!    node's shape declares, a delay output and a feedback slot all their
+//!    FIFO can hold at the source's declared rate, a merge the sum of its
+//!    inputs' (so nothing past a writer can refuse or hold back an event).
 //! 7. **The lowered node tables** the executor actually reads say what the
 //!    ops say, record by record — checked against each op directly, not by
 //!    re-running the lowering — so rules 1–6 are about what runs.
@@ -32,7 +36,8 @@
 //!    scratch, outside the arena, never shared. What a fade adds is a claim
 //!    about *two* units under one op: each fade names a key the delta
 //!    replaces (once), and the unit it fades from was compiled with the
-//!    same ports, latency, in-place acceptance and event resolution as the
+//!    same ports, latency, in-place acceptance, event resolution and event
+//!    capacity as the
 //!    one it fades to — so the op, its PDC and its borrows are right for
 //!    both, and the scratch sized from the plan fits the outgoing unit.
 //!
@@ -41,7 +46,7 @@
 
 use crate::io::PortKind;
 use crate::node::InPlaceMask;
-use crate::plan::{Delta, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{Delta, EventSlotCapacity, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -360,6 +365,7 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             || rec.gen != pu.gen
             || rec.arrival != pu.arrival
             || rec.tail != pu.shape.tail
+            || rec.event_capacity != pu.shape.event_capacity
             || rec.in_place != in_place
         {
             return Err(bad("disagrees with its unit or its in-place mask"));
@@ -629,45 +635,98 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
             unit_uses[u]
         )));
     }
-    // A merge's slot holds all its inputs, or it could drop a note-off. The
-    // need is derived from the *values* each merge reads (a slot can be
-    // shared with a heavier value, so slot weights would overstate it): one
-    // capacity per node or delay output, the sum for a merge.
+    // Every event slot holds what is written into it, or an event could be
+    // refused past the writer (a note-off least of all), or delivered a
+    // block late. The need is derived from the *values* (a slot can be
+    // shared with a larger value, so slot capacities would overstate it): a
+    // node output what its shape declares, a delay output and a feedback
+    // slot all their FIFO can hold at the source's declared rate, a merge
+    // the sum of its inputs.
+    let block = plan.prepare.max_block().get();
     let fixed = 1 + plan.event_feedback.len() as u32;
-    let mut op_weight = vec![1u32; plan.ops.len()];
+    let slot_cap = |s: u32| {
+        plan.event_slot_capacity
+            .get(s as usize)
+            .copied()
+            .unwrap_or_default()
+    };
+    for (f, spec) in plan.event_feedback.iter().enumerate() {
+        let crate::plan::FeedbackKey::Event { from, delay, .. } = spec.key else {
+            return Err(VerifyError(format!(
+                "event feedback {f} is not keyed as events"
+            )));
+        };
+        let need = EventSlotCapacity::fifo(plan.event_port_capacity(from), delay, block);
+        if !slot_cap(spec.slot).holds(need) {
+            return Err(VerifyError(format!(
+                "event feedback slot {} holds {:?}, its FIFO {need:?}",
+                spec.slot,
+                slot_cap(spec.slot)
+            )));
+        }
+    }
+    let mut op_need = vec![EventSlotCapacity::NONE; plan.ops.len()];
     for (m, op) in plan.ops.iter().enumerate() {
-        if let Op::EventMerge { srcs, dst } = *op {
-            let mut need = 0u32;
-            for &s in &plan.event_list[srcs.range()] {
-                need += if s == EMPTY_SLOT {
-                    0
-                } else if s < fixed {
-                    1
-                } else {
-                    let v = plan
-                        .event_values
-                        .iter()
-                        .find(|v| {
-                            v.slot == s
-                                && plan.value_readers[v.readers.range()].contains(&(m as u32))
-                        })
-                        .ok_or_else(|| {
-                            VerifyError(format!("merge op {m} reads event slot {s} of no value"))
-                        })?;
-                    op_weight[v.writer as usize]
+        // What op `m` reads from slot `s`, priced by its writer.
+        let read_need = |s: u32, op_need: &[EventSlotCapacity]| {
+            if s == EMPTY_SLOT {
+                return Ok(EventSlotCapacity::NONE);
+            }
+            if s < fixed {
+                let spec = &plan.event_feedback[(s - 1) as usize];
+                return match spec.key {
+                    crate::plan::FeedbackKey::Event { from, delay, .. } => Ok(
+                        EventSlotCapacity::fifo(plan.event_port_capacity(from), delay, block),
+                    ),
+                    _ => Err(VerifyError(format!("event slot {s} is not event feedback"))),
                 };
             }
-            op_weight[m] = need.max(1);
-            let have = plan
-                .event_slot_weight
-                .get(dst as usize)
-                .copied()
-                .unwrap_or(0);
-            if have < need {
-                return Err(VerifyError(format!(
-                    "merge into event slot {dst} holds {have} capacities, its inputs {need}"
-                )));
+            plan.event_values
+                .iter()
+                .find(|v| {
+                    v.slot == s && plan.value_readers[v.readers.range()].contains(&(m as u32))
+                })
+                .map(|v| op_need[v.writer as usize])
+                .ok_or_else(|| VerifyError(format!("op {m} reads event slot {s} of no value")))
+        };
+        op_need[m] = match *op {
+            Op::Node { unit, .. } => plan
+                .units
+                .get(unit as usize)
+                .map_or(EventSlotCapacity::NONE, |u| {
+                    EventSlotCapacity::port(u.shape.event_capacity)
+                }),
+            Op::EventDelay { delay, .. } => {
+                let d = plan
+                    .delays
+                    .get(delay as usize)
+                    .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
+                let crate::plan::DelayKey::Event { from, .. } = d.key else {
+                    return Err(VerifyError(format!(
+                        "event delay {delay} is not keyed as events"
+                    )));
+                };
+                EventSlotCapacity::fifo(plan.event_port_capacity(from), d.len, block)
             }
+            Op::EventMerge { srcs, .. } => {
+                let mut need = EventSlotCapacity::NONE;
+                for &s in &plan.event_list[srcs.range()] {
+                    need = need.plus(read_need(s, &op_need)?);
+                }
+                need
+            }
+            _ => EventSlotCapacity::NONE,
+        };
+    }
+    for v in &plan.event_values {
+        let need = op_need[v.writer as usize];
+        if !slot_cap(v.slot).holds(need) {
+            return Err(VerifyError(format!(
+                "event slot {} holds {:?}, but op {} writes {need:?} into it",
+                v.slot,
+                slot_cap(v.slot),
+                v.writer
+            )));
         }
     }
     let mut idx: Vec<u32> = plan.units.iter().map(|u| u.idx.0).collect();
@@ -731,6 +790,7 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
             && was.latency == now.latency
             && was.in_place == now.in_place
             && was.event_resolution == now.event_resolution
+            && was.event_capacity == now.event_capacity
             && was.legacy == now.legacy;
         if !same {
             return Err(VerifyError(format!(
@@ -1223,9 +1283,12 @@ mod tests {
     }
 
     /// A merge whose slot is smaller than its inputs together is refused —
-    /// it could drop a note-off.
+    /// it could drop a note-off — in either currency: one source declares
+    /// 5 events, the other takes the default.
     ///
-    /// Mutation: delete the `have < need` check → the shrunken slot passes →
+    /// Mutation: delete the `holds` check on event values → the shrunken
+    /// slots pass → fails. Mutation: compare only `declared` in
+    /// `EventSlotCapacity::holds` → the slot short of a default passes →
     /// fails.
     #[test]
     fn the_verifier_rejects_a_merge_slot_too_small() {
@@ -1233,8 +1296,9 @@ mod tests {
         let mut t = Topology::default();
         let mut shapes = Shapes::new();
         let src = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+        let declared = src.with_event_capacity(5);
         let sink = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0);
-        for (k, s) in [(1, src), (2, src), (3, sink)] {
+        for (k, s) in [(1, declared), (2, src), (3, sink)] {
             t.nodes
                 .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
             shapes.insert(NodeKey(k), s);
@@ -1267,12 +1331,28 @@ mod tests {
             })
             .expect("a merge");
         assert_eq!(
-            good.event_slot_weight[dst as usize], 2,
-            "two inputs, two capacities"
+            good.event_slot_capacity[dst as usize],
+            EventSlotCapacity {
+                declared: 5,
+                defaults: 1
+            },
+            "five declared events and one default"
         );
-        let mut bad = good.clone();
-        bad.event_slot_weight[dst as usize] = 1;
-        assert!(verify(&bad).unwrap_err().0.contains("capacities"));
+        for short in [
+            EventSlotCapacity {
+                declared: 4,
+                defaults: 1,
+            },
+            EventSlotCapacity {
+                declared: 5,
+                defaults: 0,
+            },
+        ] {
+            let mut bad = good.clone();
+            bad.event_slot_capacity[dst as usize] = short;
+            let err = verify(&bad).unwrap_err().0;
+            assert!(err.contains("writes"), "{short:?}: {err}");
+        }
     }
 
     /// Rule 8: a fade must name a key its delta replaces, once, between
@@ -1282,6 +1362,8 @@ mod tests {
     /// untouched key passes → fails. Mutation: drop the "twice" check →
     /// fails. Mutation: compare the tails too → the tail-only change is
     /// refused → fails. Mutation: drop the in-place comparison → fails.
+    /// Mutation: drop the event-capacity comparison → the fade to a unit
+    /// declaring another capacity passes → fails.
     #[test]
     fn fades_are_checked_against_both_plans() {
         use crate::fade::{CrossfadeCurve, Fade};
@@ -1336,5 +1418,11 @@ mod tests {
         )
         .unwrap_err();
         assert!(in_place.0.contains("only the tail"), "{in_place}");
+        let capacity = check(
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_event_capacity(4),
+            vec![(a, fade)],
+        )
+        .unwrap_err();
+        assert!(capacity.0.contains("only the tail"), "{capacity}");
     }
 }

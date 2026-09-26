@@ -17,7 +17,8 @@
 //!   already sounding, the way a DAW swaps an instrument. A note it holds is
 //!   faded out with it, not released.
 //! - **The shapes must agree** in everything the plan was compiled from:
-//!   ports, latency, in-place acceptance and event resolution. Only the tail
+//!   ports, latency, in-place acceptance, event resolution and event
+//!   capacity (the plan sizes the port's buffers from it). Only the tail
 //!   may differ (a fading node is never skipped). A latency change is
 //!   refused rather than re-aligned: the running plan's PDC is compiled for
 //!   one latency, and both units must be aligned to it. Swap a unit whose

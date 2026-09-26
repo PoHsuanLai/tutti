@@ -1,5 +1,5 @@
-//! `InProcessVst2Client` — fundsp [`AudioUnit`] node that drives a VST2
-//! plugin from the host audio thread.
+//! `InProcessVst2Client` — the native graph node (`node.rs`) that drives a
+//! VST2 plugin from the host audio thread.
 //!
 //! The instance lives behind `Arc<Mutex<tutti_vst2_host::Vst2Instance>>` shared
 //! with the matching control backend. Audio thread acquires with
@@ -7,15 +7,14 @@
 //! [`InProcessVst2Client::contention_count`].
 //!
 //! All per-block scratch — channel buffers, ref-vector storage, MIDI
-//! drain — is pre-allocated at construction. The `process()` /
-//! `tick()` paths are allocation-free in steady state (verified by the
+//! drain — is sized in the node's `prepare`, to the graph's largest block.
+//! A block is allocation-free in steady state (verified by the
 //! `assert_no_alloc` regression test in `tests/`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
@@ -23,41 +22,33 @@ use crate::host::node::input_slot::InputSlot;
 use crate::host::node::transport_source::PolledTransport;
 use crate::protocol::{Features, MidiEventVec, TransportInfo};
 
-/// Maximum block size the scratch buffers are pre-sized for. Matches fundsp's
-/// `MAX_BUFFER_SIZE` so a single block lands in one `process()` call.
-const BLOCK_SIZE: usize = 64;
-
-/// Per-channel f32/f64 staging buffers + reusable ref vectors.
+/// Per-channel f32 staging buffers.
 ///
 /// The `vst2-host` API takes `&[&[f32]]` / `&mut [&mut [f32]]`, so caller
 /// samples are staged into owned contiguous `Vec<f32>` arrays and
-/// reborrow them as slice-of-slices each call. The Vecs are sized
-/// once at construction; the ref-vector capacity is also pre-reserved.
+/// reborrow them as slice-of-slices each call. Sized in the node's
+/// `prepare` to the graph's largest block (`frames`), never on the audio
+/// thread.
 pub(super) struct ProcessScratch {
     pub(super) f32_in: Vec<Vec<f32>>,
     pub(super) f32_out: Vec<Vec<f32>>,
-    f64_in: Vec<Vec<f64>>,
-    f64_out: Vec<Vec<f64>>,
 }
 
 impl ProcessScratch {
-    fn new(num_inputs: usize, num_outputs: usize) -> Self {
+    fn new(num_inputs: usize, num_outputs: usize, frames: usize) -> Self {
         Self {
-            f32_in: (0..num_inputs).map(|_| vec![0.0; BLOCK_SIZE]).collect(),
-            f32_out: (0..num_outputs).map(|_| vec![0.0; BLOCK_SIZE]).collect(),
-            f64_in: (0..num_inputs).map(|_| vec![0.0; BLOCK_SIZE]).collect(),
-            f64_out: (0..num_outputs).map(|_| vec![0.0; BLOCK_SIZE]).collect(),
+            f32_in: (0..num_inputs).map(|_| vec![0.0; frames]).collect(),
+            f32_out: (0..num_outputs).map(|_| vec![0.0; frames]).collect(),
         }
     }
 }
 
-/// An in-process VST2 plugin: a graph node (MIDI in and out on event ports,
-/// see `node.rs`), and an `AudioUnit` to drive by hand.
+/// An in-process VST2 plugin, as a graph node: MIDI in and out on event
+/// ports, see `node.rs`.
 pub struct InProcessVst2Client {
     pub(super) inner: Arc<Mutex<Vst2Instance>>,
     pub(super) metadata: PluginInfo,
-    /// The block's MIDI in: what [`queue_midi`](Self::queue_midi) left for a
-    /// hand-driven block, or a graph block's event input.
+    /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
     /// Per-block transport snapshot, gated on [`Features::TRANSPORT`]. The
     /// producer cell is shared across fundsp graph-commit clones (see
@@ -70,22 +61,26 @@ pub struct InProcessVst2Client {
     pub(super) features: Features,
     /// Per-clone audio scratch handed to `vst::AudioBuffer::from_raw`.
     pub(super) scratch: RenderScratch,
-    /// Per-clone f32/f64 staging arrays (pre-allocated, reused).
+    /// Per-clone f32 staging arrays (sized in `prepare`, reused).
     pub(super) process_scratch: ProcessScratch,
+    /// The block length `scratch` and `process_scratch` are sized for: the
+    /// largest block the node was prepared for (zero before it is).
+    pub(super) frames: usize,
     pub(super) sample_rate: f64,
     /// A rate the graph handed this node that the plugin has not been told
     /// about yet, or [`NO_PENDING_RATE`] when there is none.
     ///
-    /// `AudioUnit::set_sample_rate` arrives on the audio thread, and telling a
-    /// VST2 plugin its rate means bracketing `effSetSampleRate` in
+    /// Telling a VST2 plugin its rate means bracketing `effSetSampleRate` in
     /// `effMainsChanged` — the pair plugins allocate and free their
-    /// rate-dependent buffers in. So the rate is parked here by
-    /// [`queue_sample_rate`] and dispatched from the main thread by
-    /// [`drain_sample_rate`], the same deferral the out-of-process client gets
-    /// from its command queue.
+    /// rate-dependent buffers in, and which must not race the audio
+    /// thread's `process` on a plugin that is running. So the rate the node
+    /// is prepared at is parked here by [`queue_sample_rate`] and dispatched
+    /// from the main thread by [`drain_sample_rate`] (the editor idle pump),
+    /// the same deferral the out-of-process client gets from its command
+    /// queue.
     ///
-    /// Shared across the fundsp graph-commit clones, so a rate reaching any
-    /// clone is visible to whichever one the backend drains.
+    /// Shared across clones, so a rate reaching any clone is visible to
+    /// whichever one the backend drains.
     pending_sample_rate: Arc<AtomicU64>,
     /// Bumped on every audio-thread `try_lock` failure. Shared across
     /// clones so the handle can read the global count.
@@ -146,10 +141,13 @@ impl InProcessVst2Client {
         pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
     ) -> Self {
-        let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, BLOCK_SIZE);
+        // Empty until the node is prepared: `prepare` sizes both to the
+        // graph's largest block.
+        let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, 0);
         let process_scratch = ProcessScratch::new(
             metadata.num_inputs.count() as usize,
             metadata.num_outputs.count() as usize,
+            0,
         );
         Self {
             inner,
@@ -159,21 +157,11 @@ impl InProcessVst2Client {
             features,
             scratch,
             process_scratch,
+            frames: 0,
             sample_rate,
             pending_sample_rate,
             contention_count,
         }
-    }
-
-    /// Give the next hand-driven block (`AudioUnit::process` / `tick`) these
-    /// events, each on its `frame_offset`; returns how many were taken (up to
-    /// 256 between blocks). In a graph the plugin plays its event input
-    /// instead.
-    pub fn queue_midi(&mut self, events: &[MidiEvent]) -> usize {
-        let room = self.midi.inline_size() - self.midi.len().min(self.midi.inline_size());
-        let n = events.len().min(room);
-        self.midi.extend_from_slice(&events[..n]);
-        n
     }
 
     /// Install a transport reader so the plugin receives a live per-block
@@ -208,8 +196,8 @@ impl InProcessVst2Client {
 
     /// Restamp the installed transport source with a new sample rate.
     ///
-    /// Called from both `AudioUnit::set_sample_rate` impls. The source holds its
-    /// rate in a shared atomic, so this reaches the clone the audio thread runs;
+    /// Called from [`set_rate`](Self::set_rate). The source holds its rate in
+    /// a shared atomic, so this reaches the clone the audio thread runs;
     /// a no-op when no source is installed, since one installed later is stamped
     /// with `self.sample_rate` at that point.
     fn restamp_transport_rate(&self) {
@@ -240,31 +228,33 @@ impl InProcessVst2Client {
 impl Clone for InProcessVst2Client {
     fn clone(&self) -> Self {
         // Arc-clone the live plugin; allocate fresh scratch for this clone
-        // (matches Batcher::clone in the subprocess client). Queued MIDI
-        // stays with the original.
-        // Done at clone time, not on the audio thread.
+        // (matches Batcher::clone in the subprocess client), at the frames
+        // this one is sized for. Done at clone time, not on the audio thread.
         let scratch = RenderScratch::new(
             self.metadata.num_inputs,
             self.metadata.num_outputs,
-            BLOCK_SIZE,
+            self.frames,
         );
         let process_scratch = ProcessScratch::new(
             self.metadata.num_inputs.count() as usize,
             self.metadata.num_outputs.count() as usize,
+            self.frames,
         );
         Self {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
             midi: MidiEventVec::new(),
             // `InputSlot::clone` shares the producer cell rather than the
-            // Option, so an install on any clone reaches the one fundsp runs.
+            // Option, so an install on any clone reaches the one the graph
+            // runs.
             transport: self.transport.clone(),
             features: self.features,
             scratch,
             process_scratch,
+            frames: self.frames,
             sample_rate: self.sample_rate,
-            // Shared, not copied: fundsp clones the unit on every graph commit,
-            // so a rate parked on one clone must be drainable through another.
+            // Shared, not copied: a rate parked on one clone must be drainable
+            // through another.
             pending_sample_rate: Arc::clone(&self.pending_sample_rate),
             contention_count: Arc::clone(&self.contention_count),
         }
@@ -272,334 +262,37 @@ impl Clone for InProcessVst2Client {
 }
 
 impl InProcessVst2Client {
-    pub(super) fn ensure_scratch_size(&mut self, size: usize) {
-        // If a graph reconfigures to a larger block size, grow once.
-        // Steady-state never hits this branch.
-        if size > BLOCK_SIZE {
-            for ch in self.process_scratch.f32_in.iter_mut() {
-                if ch.len() < size {
-                    ch.resize(size, 0.0);
-                }
-            }
-            for ch in self.process_scratch.f32_out.iter_mut() {
-                if ch.len() < size {
-                    ch.resize(size, 0.0);
-                }
-            }
-            for ch in self.process_scratch.f64_in.iter_mut() {
-                if ch.len() < size {
-                    ch.resize(size, 0.0);
-                }
-            }
-            for ch in self.process_scratch.f64_out.iter_mut() {
-                if ch.len() < size {
-                    ch.resize(size, 0.0);
-                }
-            }
+    /// Size the scratch for blocks of up to `frames`: a no-op when it
+    /// already is. Control thread (the node's `prepare`): it allocates.
+    pub(super) fn ensure_scratch_size(&mut self, frames: usize) {
+        if frames <= self.frames {
+            return;
+        }
+        self.frames = frames;
+        self.scratch =
+            RenderScratch::new(self.metadata.num_inputs, self.metadata.num_outputs, frames);
+        for ch in self
+            .process_scratch
+            .f32_in
+            .iter_mut()
+            .chain(self.process_scratch.f32_out.iter_mut())
+        {
+            ch.resize(frames, 0.0);
         }
     }
-}
 
-impl AudioUnit for InProcessVst2Client {
-    /// Never forked: a clone shares the one in-process plugin instance, so a
-    /// fork would render through the live plugin's state beside the live
-    /// graph. A fork needs a second instance loaded from this one's state.
-    ///
-    /// The subprocess `PluginClient` has that (`host::node::fork`); this node
-    /// does not yet. It would be a second `AEffect` from the same library *in
-    /// this process* — one more image-global the two instances could share —
-    /// and a plugin whose state is not a chunk (`programsAreChunks` clear)
-    /// saves only its current program's parameters, so what "the state" is
-    /// differs per plugin in a way the subprocess formats do not. Until that
-    /// is built and tested against the VST2 probe, a graph holding an
-    /// in-process VST2 plugin is refused (`ForkError::NotForkable`).
-    fn forkable(&self) -> bool {
-        false
-    }
-
-    fn inputs(&self) -> usize {
-        self.metadata.num_inputs.count() as usize
-    }
-
-    fn outputs(&self) -> usize {
-        self.metadata.num_outputs.count() as usize
-    }
-
-    fn reset(&mut self) {
-        // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
-        // opcode that clears DSP state on its own: the only two that touch it
-        // are `effMainsChanged`, where plugins allocate and free their
-        // rate-dependent buffers, and the `effStartProcess`/`effStopProcess`
-        // pair, which announces an interruption rather than a clear and is only
-        // legal while resumed. This call is on the audio thread, so neither is
-        // available. `Vst2Instance::reset_processing_state` is that cycle, on
-        // the main thread, for a host that wants it on a locate or a loop wrap.
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    /// Take `sample_rate` as the rate blocks run at: restamp the transport
+    /// source, and park the rate for the plugin (dispatched from the main
+    /// thread, see `pending_sample_rate`). What the node's `prepare` does
+    /// with its rate.
+    pub(super) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.restamp_transport_rate();
-        // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the same
-        // allocating `effMainsChanged` bracket, and this is the audio thread.
+        // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the
+        // allocating `effMainsChanged` bracket, which must not race a block
+        // the audio thread is rendering through the live plugin.
         queue_sample_rate(&self.pending_sample_rate, sample_rate);
-    }
-
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // Single-sample tick reuses process() with size=1.
-        for (ch, &sample) in input
-            .iter()
-            .enumerate()
-            .take(self.metadata.num_inputs.count() as usize)
-        {
-            self.process_scratch.f32_in[ch][0] = sample;
-        }
-        let transport = *self.transport.drain(self.features);
-        let processed = drive_f32(
-            &self.inner,
-            &self.contention_count,
-            &mut self.midi,
-            &mut |_| {},
-            &transport,
-            &mut self.scratch,
-            &mut self.process_scratch,
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            1,
-            self.sample_rate,
-        );
-        if !processed {
-            for slot in output.iter_mut() {
-                *slot = 0.0;
-            }
-            return;
-        }
-        for (ch, slot) in output
-            .iter_mut()
-            .enumerate()
-            .take(self.metadata.num_outputs.count() as usize)
-        {
-            *slot = self.process_scratch.f32_out[ch][0];
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.ensure_scratch_size(size);
-
-        // Stage caller samples into our pre-allocated f32 channel buffers.
-        for ch in 0..self.metadata.num_inputs.count() as usize {
-            let slot = &mut self.process_scratch.f32_in[ch][..size];
-            for (i, dst) in slot.iter_mut().enumerate() {
-                *dst = input.at_f32(ch, i);
-            }
-        }
-
-        let transport = *self.transport.drain(self.features);
-        let processed = drive_f32(
-            &self.inner,
-            &self.contention_count,
-            &mut self.midi,
-            &mut |_| {},
-            &transport,
-            &mut self.scratch,
-            &mut self.process_scratch,
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            size,
-            self.sample_rate,
-        );
-
-        if !processed {
-            for ch in 0..self.metadata.num_outputs.count() as usize {
-                for i in 0..size {
-                    output.set_f32(ch, i, 0.0);
-                }
-            }
-            return;
-        }
-
-        for ch in 0..self.metadata.num_outputs.count() as usize {
-            let slot = &self.process_scratch.f32_out[ch][..size];
-            for (i, &v) in slot.iter().enumerate() {
-                output.set_f32(ch, i, v);
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::util::node::node_id::PLUGIN_CLIENT_ID
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::util::node::route_with_latency(
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            self.metadata.latency_samples.get() as f64,
-            input,
-        )
-    }
-
-    /// The tail `tutti-vst2-host` decoded at load, from `effGetTailSize`.
-    ///
-    /// Read off the metadata rather than dispatched here: this runs on the
-    /// audio thread, and the figure cannot change without a reload. `Unknown`
-    /// stays the answer for a plugin that declines the opcode — VST2's raw `0`
-    /// means "no information", not "no tail".
-    fn tail(&mut self) -> tutti_plugin_types::PluginTail {
-        self.metadata.tail
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-impl AudioUnit<F64> for InProcessVst2Client {
-    /// As the `f32` impl: a clone shares the live plugin instance.
-    fn forkable(&self) -> bool {
-        false
-    }
-
-    fn inputs(&self) -> usize {
-        self.metadata.num_inputs.count() as usize
-    }
-
-    fn outputs(&self) -> usize {
-        self.metadata.num_outputs.count() as usize
-    }
-
-    fn reset(&mut self) {
-        // See the f32 impl: VST2 offers nothing here the audio thread may
-        // dispatch.
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate;
-        self.restamp_transport_rate();
-        queue_sample_rate(&self.pending_sample_rate, sample_rate);
-    }
-
-    fn tick(&mut self, input: &[f64], output: &mut [f64]) {
-        for (ch, &sample) in input
-            .iter()
-            .enumerate()
-            .take(self.metadata.num_inputs.count() as usize)
-        {
-            self.process_scratch.f64_in[ch][0] = sample;
-        }
-        let transport = *self.transport.drain(self.features);
-        let processed = drive_f64(
-            &self.inner,
-            &self.contention_count,
-            &mut self.midi,
-            &mut |_| {},
-            &transport,
-            &mut self.scratch,
-            &mut self.process_scratch,
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            1,
-            self.sample_rate,
-        );
-        if !processed {
-            for slot in output.iter_mut() {
-                *slot = 0.0;
-            }
-            return;
-        }
-        for (ch, slot) in output
-            .iter_mut()
-            .enumerate()
-            .take(self.metadata.num_outputs.count() as usize)
-        {
-            *slot = self.process_scratch.f64_out[ch][0];
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
-        self.ensure_scratch_size(size);
-
-        for ch in 0..self.metadata.num_inputs.count() as usize {
-            let slot = &mut self.process_scratch.f64_in[ch][..size];
-            for (i, dst) in slot.iter_mut().enumerate() {
-                *dst = input.at_scalar(ch, i);
-            }
-        }
-
-        let transport = *self.transport.drain(self.features);
-        let processed = drive_f64(
-            &self.inner,
-            &self.contention_count,
-            &mut self.midi,
-            &mut |_| {},
-            &transport,
-            &mut self.scratch,
-            &mut self.process_scratch,
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            size,
-            self.sample_rate,
-        );
-
-        if !processed {
-            for ch in 0..self.metadata.num_outputs.count() as usize {
-                for i in 0..size {
-                    output.set_scalar(ch, i, 0.0);
-                }
-            }
-            return;
-        }
-
-        for ch in 0..self.metadata.num_outputs.count() as usize {
-            let slot = &self.process_scratch.f64_out[ch][..size];
-            for (i, &v) in slot.iter().enumerate() {
-                output.set_scalar(ch, i, v);
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::util::node::node_id::PLUGIN_CLIENT_ID
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::util::node::route_with_latency(
-            self.metadata.num_inputs.count() as usize,
-            self.metadata.num_outputs.count() as usize,
-            self.metadata.latency_samples.get() as f64,
-            input,
-        )
-    }
-
-    /// The tail `tutti-vst2-host` decoded at load, from `effGetTailSize`.
-    ///
-    /// Read off the metadata rather than dispatched here: this runs on the
-    /// audio thread, and the figure cannot change without a reload. `Unknown`
-    /// stays the answer for a plugin that declines the opcode — VST2's raw `0`
-    /// means "no information", not "no tail".
-    fn tail(&mut self) -> tutti_plugin_types::PluginTail {
-        self.metadata.tail
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
     }
 }
 
@@ -689,59 +382,6 @@ pub(super) fn drive_f32(
     }
 }
 
-pub(super) fn drive_f64(
-    inner: &Arc<Mutex<Vst2Instance>>,
-    contention: &AtomicU64,
-    midi: &mut MidiEventVec,
-    midi_out: &mut dyn FnMut(&[MidiEvent]),
-    transport: &TransportInfo,
-    scratch: &mut RenderScratch,
-    process_scratch: &mut ProcessScratch,
-    num_inputs: usize,
-    num_outputs: usize,
-    size: usize,
-    sample_rate: f64,
-) -> bool {
-    // Taken whether or not the plugin runs: a contended block drops its
-    // MIDI rather than play it a block late. Sorted, stably: a queue may hold
-    // it out of order.
-    let mut midi_events = std::mem::take(midi);
-    sort_midi(&mut midi_events);
-    match inner.try_lock() {
-        Some(mut instance) => {
-            const MAX_CHANNELS: usize = 16;
-            debug_assert!(num_inputs <= MAX_CHANNELS, "VST2 input ch > 16");
-            debug_assert!(num_outputs <= MAX_CHANNELS, "VST2 output ch > 16");
-
-            let mut in_refs: [&[f64]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            #[allow(
-                clippy::needless_range_loop,
-                reason = "`ch` indexes two parallel arrays; a zip would hide the \
-                          MAX_CHANNELS bound the debug_asserts above pin"
-            )]
-            for ch in 0..num_inputs.min(MAX_CHANNELS) {
-                in_refs[ch] = &process_scratch.f64_in[ch][..size];
-            }
-            let in_slice = &in_refs[..num_inputs.min(MAX_CHANNELS)];
-
-            run_with_mut_channels_f64(
-                &mut process_scratch.f64_out[..num_outputs.min(MAX_CHANNELS)],
-                size,
-                |out_slice| {
-                    let ctx = block_context(sample_rate, &midi_events, transport);
-                    let out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
-                    midi_out(out);
-                },
-            );
-            true
-        }
-        None => {
-            contention.fetch_add(1, Ordering::Relaxed);
-            false
-        }
-    }
-}
-
 /// Recursively peel one `&mut [f32]` of length `size` off `channels`
 /// at a time, building a slice-of-slices on the stack and invoking
 /// `f` once it's complete. Allocation-free — every reborrow lives in
@@ -770,50 +410,6 @@ fn run_with_mut_channels_f32<F: FnOnce(&mut [&mut [f32]])>(
     }
     // Stack-allocated ref array, sized to actual channel count.
     let mut acc: [&mut [f32]; 16] = [
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-    ];
-    let n = channels.len().min(16);
-    recurse(channels, size, &mut acc[..n], 0, f);
-}
-
-fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(
-    channels: &mut [Vec<f64>],
-    size: usize,
-    f: F,
-) {
-    fn recurse<'a, F: FnOnce(&mut [&mut [f64]])>(
-        rest: &'a mut [Vec<f64>],
-        size: usize,
-        acc: &mut [&'a mut [f64]],
-        depth: usize,
-        f: F,
-    ) {
-        if depth == acc.len() {
-            f(acc);
-            return;
-        }
-        let (head, tail) = rest
-            .split_first_mut()
-            .expect("channel count mismatch (f64)");
-        acc[depth] = &mut head[..size];
-        recurse(tail, size, acc, depth + 1, f);
-    }
-    let mut acc: [&mut [f64]; 16] = [
         &mut [],
         &mut [],
         &mut [],

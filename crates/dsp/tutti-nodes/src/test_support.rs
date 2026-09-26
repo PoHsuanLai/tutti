@@ -1,6 +1,6 @@
 //! Rendering helpers shared by the width-generic nodes' unit tests.
 
-use tutti_core::{AudioUnit, BufferVec, SampleRate};
+use tutti_core::SampleRate;
 use tutti_graph::contract::drive;
 use tutti_graph::Node;
 
@@ -13,46 +13,6 @@ pub(crate) fn noise(seed: u32, len: usize) -> Vec<f32> {
             (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
         })
         .collect()
-}
-
-/// One `process` call over `inputs[c][..n]` (one slice per input port),
-/// returning one `Vec` per output.
-pub(crate) fn process_block(node: &mut dyn AudioUnit, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
-    assert_eq!(inputs.len(), node.inputs(), "one input slice per port");
-    let n = inputs[0].len();
-    assert!(
-        n <= tutti_core::MAX_BUFFER_SIZE,
-        "one block is at most 64 frames"
-    );
-    let mut ib = BufferVec::new(node.inputs());
-    let mut ob = BufferVec::new(node.outputs());
-    for (c, sig) in inputs.iter().enumerate() {
-        for (i, &x) in sig.iter().enumerate() {
-            ib.set_f32(c, i, x);
-        }
-    }
-    node.process(n, &ib.buffer_ref(), &mut ob.buffer_mut());
-    (0..node.outputs())
-        .map(|c| (0..n).map(|i| ob.at_f32(c, i)).collect())
-        .collect()
-}
-
-/// `tick` over `inputs[c][..n]`, frame by frame.
-pub(crate) fn tick_block(node: &mut dyn AudioUnit, inputs: &[&[f32]]) -> Vec<Vec<f32>> {
-    let n = inputs[0].len();
-    let mut out = vec![vec![0.0f32; n]; node.outputs()];
-    let mut fi = vec![0.0f32; node.inputs()];
-    let mut fo = vec![0.0f32; node.outputs()];
-    for i in 0..n {
-        for (c, sig) in inputs.iter().enumerate() {
-            fi[c] = sig[i];
-        }
-        node.tick(&fi, &mut fo);
-        for (c, o) in out.iter_mut().enumerate() {
-            o[i] = fo[c];
-        }
-    }
-    out
 }
 
 /// The "control changed between two blocks" experiment.
@@ -68,36 +28,6 @@ pub(crate) struct ChangeRun<N> {
     pub r: Vec<Vec<f32>>,
     pub j: Vec<Vec<f32>>,
     pub h: Vec<Vec<f32>>,
-}
-
-pub(crate) fn change_between_blocks<N: AudioUnit>(
-    make: impl Fn() -> N,
-    change: impl Fn(&N),
-    block1: &[&[f32]],
-    block2: &[&[f32]],
-) -> ChangeRun<N> {
-    let (mut ramped, mut jumped, mut held) = (make(), make(), make());
-    // The history is rendered in full blocks, so a node can be primed with
-    // more than one block's worth (a delay line reaching back further).
-    for start in (0..block1[0].len()).step_by(tutti_core::MAX_BUFFER_SIZE) {
-        let end = (start + tutti_core::MAX_BUFFER_SIZE).min(block1[0].len());
-        let chunk: Vec<&[f32]> = block1.iter().map(|s| &s[start..end]).collect();
-        for n in [&mut ramped, &mut jumped, &mut held] {
-            process_block(n, &chunk);
-        }
-    }
-    change(&ramped);
-    change(&jumped);
-    let r = process_block(&mut ramped, block2);
-    let j = tick_block(&mut jumped, block2);
-    let h = process_block(&mut held, block2);
-    ChangeRun {
-        ramped,
-        jumped,
-        r,
-        j,
-        h,
-    }
 }
 
 /// The rate the native helpers below prepare and drive nodes at.

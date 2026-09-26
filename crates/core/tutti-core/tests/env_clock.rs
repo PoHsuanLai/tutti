@@ -7,8 +7,8 @@
 //!   wrap (and a loop armed behind the playhead, which does not jump), stop
 //!   and start, tempo steps inside a block, untimed edits between blocks,
 //!   and ragged device blocks;
-//! - `ClickNode` fed by `EnvClock` clicks on the frames the beat model
-//!   reaches each beat on;
+//! - `ClickNode`, reading its block's `Env`, clicks on the frames the beat
+//!   model reaches each beat on;
 //! - an offline render driven by `OfflineTimeline::render_graph` hands the
 //!   graph the transport a live graph engine hands it for the same timeline:
 //!   the `Env` per block, and the timeline a `Legacy` clip reader polls per
@@ -272,15 +272,14 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
         .collect()
 }
 
-/// `ClickNode` behind an `EnvClock` (through `Legacy`) clicks on the frame
-/// the beat model reaches each new beat on: across a tempo step, a seek and
-/// loop wraps, landing inside blocks.
+/// `ClickNode`, native, clicks on the frame the beat model reaches each new
+/// beat on: across a tempo step, a seek and loop wraps, landing inside
+/// blocks. It reads the beat of each frame from its block's `Env` (as
+/// `EnvClock` emits it), so it needs no clock wired to it.
 ///
-/// The transport rolls throughout. `ClickNode` gates on the live play flag,
-/// read once per 64-frame chunk; the engine runs every chunk after the whole
-/// block's commands are applied, so a mid-block start or stop gates it from
-/// the block's first frame, not on its frame. That is `ClickNode`'s own gate
-/// (doc 013, gap 5; fixed by its native port), not the beat's.
+/// The transport rolls throughout. (A start or a stop inside a block gates
+/// the click on its frame, since the native port; `ClickNode`'s own tests
+/// pin that.)
 ///
 /// Until doc 013 PR 15 the oracle was the same click behind a `TransportClock`
 /// in a `Net` engine: the same onset frames and the same samples. The onsets
@@ -292,17 +291,24 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 /// The samples themselves are `ClickNode`'s (its own tests pin them, and
 /// they are `sin` of a phase, which is libm), so they are not pinned here.
 ///
-/// Mutation (run): hold the first segment's transport for the whole block in
-/// `EnvClock` (ignore the cuts) → the clicks after the seek at 30 000 land on
-/// other frames → fails.
+/// Mutation (run): hold each piece's first beat for the whole piece in
+/// `piece_beats` (ignore the frame walk) → the clicks land on piece starts
+/// → fails.
 #[test]
-fn click_behind_env_clock_clicks_on_the_model_beats() {
+fn click_clicks_on_the_model_beats() {
     let transport = Transport::new(SR);
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(1.0);
-    let click = ClickNode::with_transport(transport.clone(), settings, SR);
-    let (graph, _ed) = graph_engine(&transport, Legacy::new(click), 2);
+    let click = ClickNode::new(&transport, settings);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    const CLICK: NodeKey = NodeKey(1);
+    ed.insert(CLICK, "click", click);
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| Source::Node(OutPort { node: CLICK, port }))
+        .collect();
+    ed.commit().expect("commits");
+    let graph = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     let m = &transport.motion;
     m.try_send(MotionEvent::Play).expect("room");
     m.schedule(

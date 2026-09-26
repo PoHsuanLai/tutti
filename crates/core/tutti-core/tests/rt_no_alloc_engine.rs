@@ -157,10 +157,11 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
-/// The metronome on the native graph: an `EnvClock` feeding `ClickNode`
-/// (through `Legacy`), with timestamped seeks, tempo and loop changes
-/// landing inside blocks, so `EnvClock` walks several segments per block.
-/// Neither the clock's segment walk nor the click's meter read allocates.
+/// The metronome on the native graph: `ClickNode` and an `EnvClock` side by
+/// side (the click reads its block's `Env` itself; the clock's ports go to
+/// outputs 2 and 3), with timestamped seeks, tempo and loop changes landing
+/// inside blocks, so both walk several segments per block. Neither segment
+/// walk nor the click's meter read allocates.
 ///
 /// The meter read goes through an [`RtPublish`]: a slot CAS, a fence and a
 /// load, not an allocation — but that is a claim about another crate's
@@ -170,13 +171,13 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 ///
 /// [`RtPublish`]: tutti_types::RtPublish
 ///
-/// Mutation (run): collect `env.segments()` into a `Vec` in
-/// `EnvClock::process` → the gate panics → fails.
+/// Mutations (run): collect `env.segments()` into a `Vec` in
+/// `EnvClock::process`, or in `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     use tutti_core::{At, Beat, Bpm, EnvClock, Frame, MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
-    use tutti_types::graph::{Edge, InPort, OutPort, Source};
+    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_types::graph::{OutPort, Source};
     use tutti_types::NodeKey;
 
     let sample_rate = 48_000.0;
@@ -184,7 +185,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     let settings = Arc::new(ClickSettings::new());
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(1.0);
-    let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
+    let click = ClickNode::new(&transport, Arc::clone(&settings));
 
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
@@ -192,23 +193,19 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
     ed.insert(clock, "clock", Unforkable(EnvClock::new()));
-    ed.insert(sink, "click", Legacy::new(click));
+    let _ = ed.insert(sink, "click", click);
     let topology = &mut ed.spec_mut().topology;
-    for port in 0..2 {
-        topology.edges.insert(
-            InPort { node: sink, port },
-            Edge::Direct(Source::Node(OutPort { node: clock, port })),
-        );
-    }
-    topology.outputs = (0..2)
-        .map(|port| Source::Node(OutPort { node: sink, port }))
+    topology.outputs = [(sink, 0), (sink, 1), (clock, 0), (clock, 1)]
+        .into_iter()
+        .map(|(node, port)| Source::Node(OutPort { node, port }))
         .collect();
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
-    let mut output = vec![0.0f32; 1024 * 2];
+    let four = ChannelLayout::from_count(4);
+    let mut output = vec![0.0f32; 1024 * 4];
     // Applying the commit allocates; that is the control side's price.
-    engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut output, four));
     ed.collect();
     let _ = transport.motion.try_send(MotionEvent::Play);
 
@@ -232,8 +229,9 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
             m.schedule(At::Frame(Frame(base + 7000)), TransportCommand::Loop(None))
                 .expect("room");
             for _ in 0..8 {
-                engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-                clicked |= output.iter().any(|&s| s != 0.0);
+                engine.process(&mut InterleavedMut::new(&mut output, four));
+                // Channel 0 of each frame: the click's left.
+                clicked |= output.iter().step_by(4).any(|&s| s != 0.0);
             }
             m.cancel_scheduled();
         }

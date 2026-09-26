@@ -9,7 +9,7 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::Real;
 
-use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Q};
+use tutti_core::{ChannelLayout, Db, Hz, Param, SampleRate, Tail, Q};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
@@ -552,9 +552,15 @@ impl<F: Real> SvfFilterNode<F> {
 }
 
 impl<F: Real + 'static> Node for SvfFilterNode<F> {
+    /// Its tail is [`Tail::Unknown`], as it reported under `Legacy`: a
+    /// resonant filter rings on after its input stops, for as long as its Q
+    /// says, so the graph's tail fold (what an export renders past the end)
+    /// must not read it as `None`.
     fn shape(&self) -> Shape {
         let width = ChannelLayout::from_count(self.width() as u16);
-        Shape::audio(width, width).with_params(&SVF_PARAMS)
+        Shape::audio(width, width)
+            .with_params(&SVF_PARAMS)
+            .with_tail(Tail::Unknown)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -999,10 +1005,13 @@ mod tests {
         assert!(out[0][0].abs() < 1e-4 && out[1][0].abs() < 1e-4);
     }
 
-    /// The shape is as wide as the filter was built, in and out, and
-    /// declares cutoff then Q as its modulatable params.
+    /// The shape is as wide as the filter was built, in and out, declares
+    /// cutoff then Q as its modulatable params, and keeps the
+    /// `Tail::Unknown` the filter reported under `Legacy`.
     ///
     /// Mutation (run): swap `SVF_PARAMS`' order → the params assertion fails.
+    /// Mutation (run): drop `.with_tail(Tail::Unknown)` → the shape's default
+    /// `Tail::None` → the tail assertion fails.
     #[test]
     fn the_shape_is_the_width_and_declares_cutoff_then_q() {
         let f = SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 1000.0, 0.7);
@@ -1018,6 +1027,7 @@ mod tests {
             "cutoff's base is its control"
         );
         assert_eq!(f.param_base(1), Some(0.7), "Q's base is its control");
+        assert_eq!(shape.tail, Tail::Unknown, "a resonant filter rings on");
     }
 
     #[test]

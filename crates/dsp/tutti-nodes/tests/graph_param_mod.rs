@@ -32,10 +32,9 @@
 
 use std::sync::atomic::Ordering;
 
-use tutti_core::AudioUnit;
 use tutti_graph::{
-    GraphBuilder, IntoNode, Legacy, NodeParts, ParamFrom, ParamIn, ParamRange, ParamShaping,
-    Prepare, Renderer, PARAM_DECLICK,
+    GraphBuilder, IntoNode, NodeParts, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare,
+    Renderer, PARAM_DECLICK,
 };
 use tutti_nodes::testing::Const;
 use tutti_nodes::{
@@ -95,11 +94,6 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     let input: Vec<Vec<f32>> = (0..ins).map(|c| noise(c as u32 + 7)).collect();
     let refs: Vec<&[f32]> = input.iter().map(Vec::as_slice).collect();
     r.render_input(&refs)
-}
-
-/// `unit` as a graph runs an `AudioUnit`: through `Legacy`.
-fn unit(unit: impl AudioUnit + 'static) -> NodeParts<()> {
-    Legacy::new(unit).into_parts()
 }
 
 /// A native node's parts, its controls dropped.

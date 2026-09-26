@@ -15,7 +15,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, SampleRate, Samples};
+use tutti_core::{AtomicF32, BufferVec, ChannelLayout, SampleRate, Samples};
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
@@ -37,68 +37,8 @@ fn noise_block(channels: usize, seed: u32) -> BufferVec {
     buf
 }
 
-/// Render `blocks` blocks and return whether every output sample was finite.
-fn render_finite(node: &mut dyn AudioUnit, blocks: usize, seed: u32) -> bool {
-    let mut out = BufferVec::new(node.outputs());
-    let mut all = true;
-    for b in 0..blocks {
-        let input = noise_block(node.inputs(), seed + b as u32);
-        node.process(64, &input.buffer_ref(), &mut out.buffer_mut());
-        for c in 0..node.outputs() {
-            all &= (0..64).all(|i| out.at_f32(c, i).is_finite());
-        }
-    }
-    all
-}
-
 /// A control cell, and a finite value it can be moved to.
 type Cell = (&'static str, Arc<AtomicF32>, f32);
-
-/// For every cell and every non-finite value: write it while every other cell
-/// moves to its alternate value, render, change the sample rate and render, then restore a finite value and
-/// render again. Both renders must be finite. A fresh node per case, so one
-/// case's damage cannot hide another's.
-fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
-    for bad in BAD {
-        let count = cells(&make()).len();
-        for k in 0..count {
-            let mut node = make();
-            node.set_sample_rate(SampleRate(48_000.0));
-            assert!(render_finite(&mut node, 4, 1), "{name}: finite before");
-            let cs = cells(&node);
-            let (cell, atomic, alt) = &cs[k];
-            let before = atomic.load(Ordering::Acquire);
-            atomic.store(bad, Ordering::Release);
-            // Every *other* control moves in the same block, so whichever of
-            // them triggers a re-solve (a filter's cutoff, an envelope's
-            // other time constant) does.
-            for (j, (_, other, other_alt)) in cs.iter().enumerate() {
-                if j != k {
-                    other.store(*other_alt, Ordering::Release);
-                }
-            }
-            assert!(
-                render_finite(&mut node, 8, 10),
-                "{name}: {cell} = {bad} (with every other control moving) reached the output"
-            );
-            // A rate change re-derives every time constant from the cells in
-            // one go — the path that skips the per-control change guards.
-            node.set_sample_rate(SampleRate(44_100.0));
-            assert!(
-                render_finite(&mut node, 8, 30),
-                "{name}: {cell} = {bad} reached the output through a rate change"
-            );
-            atomic.store(
-                if before.is_finite() { *alt } else { before },
-                Ordering::Release,
-            );
-            assert!(
-                render_finite(&mut node, 8, 20),
-                "{name}: {cell} = {bad} left the state non-finite after a finite write"
-            );
-        }
-    }
-}
 
 /// [`render_finite`] for a native node: `blocks` 64-frame blocks through
 /// `tutti_graph::contract::drive` at `rate`.

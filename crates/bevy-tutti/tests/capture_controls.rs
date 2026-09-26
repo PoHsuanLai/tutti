@@ -207,12 +207,11 @@ mod crossfade_consumers {
     use bevy_app::prelude::*;
 
     use bevy_tutti::graph::{
-        crossfade_audio_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode,
+        crossfade_graph_node, AudioConfig, AudioGraphRes, GraphReconcilePlugin, SpawnGraphNode,
         TransportRes,
     };
     use bevy_tutti::modulation::{
-        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
-        TuttiModulationPlugin,
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, TuttiModulationPlugin,
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
@@ -245,10 +244,10 @@ mod crossfade_consumers {
             bevy_app::TaskPoolPlugin::default(),
             bevy_asset::AssetPlugin::default(),
         ));
+        // No `ModTargetRegistry` entry: the synth is a native `ParamNode`,
+        // whose params are control-rate targets through its `ParamSet`
+        // (`CapturedControls::for_params`).
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<PolySynth>();
 
         // One synth, modulated.
         let outgoing = synth();
@@ -256,7 +255,7 @@ mod crossfade_consumers {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(outgoing)
+            .spawn_graph_node(outgoing)
             .insert(ModParamRange::default().with(
                 ParamAddr::Unit(UnitParam::Volume),
                 BASE_VOLUME,
@@ -296,7 +295,7 @@ mod crossfade_consumers {
             "precondition: the incoming unit's own volume ({untouched}) is not already \
              the driven value ({driven}), or the assertion below proves nothing"
         );
-        crossfade_audio_node(&mut app.world_mut().commands(), target, Box::new(incoming));
+        crossfade_graph_node(&mut app.world_mut().commands(), target, incoming);
         app.update();
         app.update();
         // The accumulator mirrors into the incoming unit's atomic.

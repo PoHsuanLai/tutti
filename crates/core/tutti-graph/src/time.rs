@@ -377,18 +377,30 @@ impl Env {
     /// Allocation-free.
     pub fn for_each_beat(&self, mut f: impl FnMut(usize, tutti_types::Beat)) {
         for (start, piece) in self.segments() {
-            let t = piece.transport;
-            let from = start.index();
-            let to = from + piece.block_len.get();
-            let mut clock = t.clock(piece.sample_rate);
-            let region = t
-                .looping
-                .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
-            for i in from..to {
-                f(i, clock.beat());
-                if t.playing {
-                    clock.advance(Samples(1), region);
-                }
+            piece.for_each_piece_beat(start, &mut f);
+        }
+    }
+
+    /// [`for_each_beat`](Self::for_each_beat) for one piece of a block, as
+    /// [`segments`](Self::segments) yields them (`start`, `piece`): the
+    /// piece's transport's clock walked emit-then-roll over its frames, each
+    /// handed to `f` with its index in the **whole** block. For a node that
+    /// needs the piece itself as well as its beats (the metronome gates each
+    /// piece on its transport's play state); `for_each_beat` is this over
+    /// every piece. The piece's own changes are not read: a piece from
+    /// `segments` has none.
+    pub fn for_each_piece_beat(&self, start: Offset, mut f: impl FnMut(usize, tutti_types::Beat)) {
+        let t = self.transport;
+        let from = start.index();
+        let to = from + self.block_len.get();
+        let mut clock = t.clock(self.sample_rate);
+        let region = t
+            .looping
+            .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
+        for i in from..to {
+            f(i, clock.beat());
+            if t.playing {
+                clock.advance(Samples(1), region);
             }
         }
     }

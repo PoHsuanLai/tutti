@@ -108,8 +108,8 @@ fn a_clip_note_sounds_on_its_frame_in_the_same_block() {
 /// frame as live.
 ///
 /// Mutation: a clip fork with no events → the fork is silent → fails.
-/// Mutation: fork the synth through `Legacy` (`SynthFork::native` false) →
-/// it has no event input, the edge is refused at the fork's compile → fails.
+/// Mutation: the synth inserted with no fork source (`NodeParts { fork: None,
+/// .. }` in its `IntoNode`) → the fork is refused → fails.
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let (live, _exec) = graph(1_000);

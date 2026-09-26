@@ -57,9 +57,11 @@
 //!
 //! # What is not here
 //!
-//! A node fed out of band — through a MIDI mailbox (the polysynth, the
-//! SoundFont player, plugin instruments under `Legacy`) — has no row: the
-//! harness can only time what the graph delivers. Such a node's events are
+//! A node fed out of band — through a MIDI mailbox (an instrument still
+//! under `Legacy`) — has no row: the harness can only time what the graph
+//! delivers. The native instruments, which take MIDI on an event port, carry
+//! rows in their crates (`tutti-polysynth`, `tutti-soundfont`), each with the
+//! constant lead its note's DSP starts with ([`Row::with_lead`]). Such a node's events are
 //! neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
 //! calls the unit in 64-frame chunks, and a mailbox offset is relative to
 //! whichever chunk polls it), so it cannot honour this contract until events
@@ -84,7 +86,7 @@ use tutti_types::{
 use crate::builder::GraphBuilder;
 use crate::controls::{ParamFork, ParamNode};
 use crate::editor::Editor;
-use crate::event::{Event, EventKind};
+use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
 use crate::io::Io;
@@ -375,6 +377,7 @@ pub struct Row {
     detect: Detect,
     output: u16,
     latency: Option<Samples>,
+    lead: u64,
 }
 
 impl Row {
@@ -398,6 +401,7 @@ impl Row {
             detect,
             output: 0,
             latency: None,
+            lead: 0,
         }
     }
 
@@ -421,6 +425,21 @@ impl Row {
     #[must_use]
     pub fn output(mut self, channel: u16) -> Self {
         self.output = channel;
+        self
+    }
+
+    /// The node's response begins `lead` frames after the frame the contract
+    /// puts its excitation's effect on, by its own DSP rather than by its
+    /// timing: an instrument whose note starts from an exactly-zero sample
+    /// (an envelope or oscillator starting at zero), found by its first
+    /// non-zero one. Pinned as a constant, so a response that is late on
+    /// some paths and not others still fails. Zero by default.
+    ///
+    /// Not a latency: nothing downstream is compensated for it (declare one
+    /// in the node's `Shape` for that).
+    #[must_use]
+    pub fn with_lead(mut self, lead: Samples) -> Self {
+        self.lead = lead.get() as u64;
         self
     }
 
@@ -693,7 +712,9 @@ impl Row {
                 format!("{e} (within {tol})")
             }
         };
+        let lead = self.lead;
         let check_start = |got: u64, (e, tol): (u64, u64)| {
+            let e = e + lead;
             assert!(
                 got.abs_diff(e) <= tol,
                 "{ctx}: the response starts at frame {got}; the contract puts it at {}",
@@ -706,7 +727,7 @@ impl Row {
                 let Some(first) = first else {
                     panic!(
                         "{ctx}: no response at all; expected one at frame {}",
-                        place(expect[0].0, expect[0].1)
+                        place(expect[0].0 + lead, expect[0].1)
                     );
                 };
                 check_start(first as u64, expect[0]);
@@ -717,7 +738,7 @@ impl Row {
                     let Some(at) = out[cursor..].iter().position(|&x| x != 0.0) else {
                         panic!(
                             "{ctx}: a response is missing; expected one at frame {}",
-                            place(e, tol)
+                            place(e + lead, tol)
                         );
                     };
                     let at = cursor + at;
@@ -1441,7 +1462,8 @@ macro_rules! contract_tests {
 /// For a node's own unit tests, which inspect its state between blocks —
 /// what a [`Solo`](crate::Solo), whose node the executor owns, cannot show.
 /// `node` must already be [`prepare`](Node::prepare)d for a maximum block
-/// at least this long ([`prepared`]).
+/// at least this long ([`prepared`]). [`drive_in`] is the same call under a
+/// transport, with events.
 ///
 /// # Panics
 ///
@@ -1453,23 +1475,11 @@ pub fn drive(
     inputs: &[&[f32]],
     params: &[Option<&[f32]>],
 ) -> Vec<Vec<f32>> {
-    let shape = node.shape();
     let frames = inputs
         .first()
         .map(|c| c.len())
         .or_else(|| params.iter().flatten().next().map(|p| p.len()))
         .expect("a block needs a length: an input or a param");
-    assert_eq!(
-        inputs.len(),
-        usize::from(shape.audio_in.count()),
-        "one slice per audio input"
-    );
-    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
-    let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
-    let params: Vec<ParamInput<'_>> = params
-        .iter()
-        .map(|p| p.map_or(ParamInput::Base, ParamInput::Frames))
-        .collect();
     let env = Env {
         frame: Frame(0),
         sample_rate: rate,
@@ -1477,11 +1487,80 @@ pub fn drive(
         transport: Transport::default(),
         changes: TransportChanges::NONE,
     };
+    drive_in(node, &env, inputs, params, &[]).audio
+}
+
+/// What [`drive_in`] rendered: each audio output, and what the node wrote
+/// to each event output.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Driven {
+    /// One `Vec` per audio output, the block long.
+    pub audio: Vec<Vec<f32>>,
+    /// One `Vec` per event output port, in the order the node wrote them.
+    pub events: Vec<Vec<Event>>,
+}
+
+/// The most events [`drive_in`] and [`Direct`] accept on each event output
+/// port per block: more than any node in the tree writes in one.
+pub const HAND_EVENT_CAPACITY: usize = 1024;
+
+/// One block of `node` by hand, as a graph hands it one: under `env` (its
+/// frame, length, transport and transport changes), `inputs` and `params`
+/// as for [`drive`], and `events[p]` on event input `p` (a port past the
+/// end is empty). The block is `env.block_len` long.
+///
+/// For a node that reads its block's transport ([`Env::transport_at`], its
+/// changes) or plays events, in its own unit tests: what [`drive`], with the
+/// transport stopped and no events, cannot reach.
+///
+/// # Panics
+///
+/// If the block is empty, an input is not the block long or the input
+/// count is not the node's, or an event list is unsorted or reaches past
+/// the block ([`SortedEvents::new`](crate::SortedEvents::new)).
+pub fn drive_in(
+    node: &mut dyn Node,
+    env: &Env,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+    events: &[&[Event]],
+) -> Driven {
+    let shape = node.shape();
+    let frames = env.block_len.get();
+    assert_eq!(
+        inputs.len(),
+        usize::from(shape.audio_in.count()),
+        "one slice per audio input"
+    );
+    assert!(
+        inputs.iter().all(|c| c.len() == frames),
+        "every input is the block long"
+    );
+    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
+    let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+    let params: Vec<ParamInput<'_>> = params
+        .iter()
+        .map(|p| p.map_or(ParamInput::Base, ParamInput::Frames))
+        .collect();
+    let events_in: Vec<SortedEvents<'_>> = (0..usize::from(shape.event_in))
+        .map(|p| {
+            let list = events.get(p).copied().unwrap_or(&[]);
+            SortedEvents::new(list, frames).expect("sorted events inside the block")
+        })
+        .collect();
+    let mut out_events: Vec<Vec<Event>> = (0..usize::from(shape.event_out))
+        .map(|_| Vec::with_capacity(HAND_EVENT_CAPACITY))
+        .collect();
+    let dropped = std::cell::Cell::new(0);
+    let mut writers: Vec<EventWriter<'_>> = out_events
+        .iter_mut()
+        .map(|b| EventWriter::new(b, HAND_EVENT_CAPACITY, frames as u32, &dropped))
+        .collect();
     let cx = Cx {
-        env: &env,
+        env,
         arrival: Latency::ZERO,
     };
-    let max = Prepare::new(rate, Samples(frames)).max_block();
+    let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
     let io = Io::new(
         max,
         frames,
@@ -1490,12 +1569,15 @@ pub fn drive(
         crate::node::SilenceMask::NONE,
         crate::node::ConstantMask::NONE,
         crate::node::InPlaceMask::NONE,
-        &[],
-        &mut [],
+        &events_in,
+        &mut writers,
     )
     .with_params(&params);
     node.process(&cx, io);
-    out
+    Driven {
+        audio: out,
+        events: out_events,
+    }
 }
 
 /// `node`, prepared at `rate` for blocks of up to `max_block` frames: the
@@ -1666,27 +1748,35 @@ impl BlockRig {
 }
 
 /// One node called by hand, block after block, **without allocating** —
-/// [`drive`] with its buffers built once. For a node's bench, or an
-/// allocation gate that needs its param ports fed (which [`BlockRig`], with
-/// no param source, cannot). Inputs, params and outputs are fixed-length
-/// buffers of the block's frames; fill them between blocks.
+/// [`drive_in`] with its buffers built once. For a node's bench, or an
+/// allocation gate that needs its param ports fed or its events played
+/// (which [`BlockRig`], with no param or event source, cannot). Inputs,
+/// params and outputs are buffers of the prepared frames; fill them between
+/// blocks. Each block starts where the last ended (its [`Env::frame`]), under
+/// the transport last [set](Self::set_transport) (stopped, by default).
 pub struct Direct<N> {
     /// The node, prepared.
     pub node: N,
     rate: SampleRate,
     frames: usize,
+    len: usize,
+    frame: Frame,
+    transport: Transport,
     inputs: Vec<Vec<f32>>,
     params: Vec<Option<Vec<f32>>>,
     outputs: Vec<Vec<f32>>,
+    events_in: Vec<Vec<Event>>,
+    events_out: Vec<Vec<Event>>,
 }
 
 impl<N: Node> Direct<N> {
     /// `node`, prepared at `rate` for blocks of `frames`, silent inputs, no
-    /// param fed.
+    /// param fed, no events.
     ///
     /// # Panics
     ///
-    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way.
+    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or has more
+    /// than [`MAX_PORTS`](crate::MAX_PORTS) event ports a side.
     pub fn new(node: N, rate: SampleRate, frames: usize) -> Self {
         let node = prepared(node, rate, frames);
         let shape = node.shape();
@@ -1698,11 +1788,27 @@ impl<N: Node> Direct<N> {
             ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,
             "a direct driver drives at most {RIG_MAX_CHANNELS} channels a side"
         );
+        assert!(
+            usize::from(shape.event_in) <= crate::node::MAX_PORTS
+                && usize::from(shape.event_out) <= crate::node::MAX_PORTS,
+            "a direct driver drives at most {} event ports a side",
+            crate::node::MAX_PORTS
+        );
+        let events = |n: u16| {
+            (0..usize::from(n))
+                .map(|_| Vec::with_capacity(HAND_EVENT_CAPACITY))
+                .collect()
+        };
         Self {
             params: vec![None; shape.params.as_slice().len()],
+            events_in: events(shape.event_in),
+            events_out: events(shape.event_out),
             node,
             rate,
             frames,
+            len: frames,
+            frame: Frame(0),
+            transport: Transport::default(),
             inputs: vec![vec![0.0; frames]; ins],
             outputs: vec![vec![0.0; frames]; outs],
         }
@@ -1726,32 +1832,84 @@ impl<N: Node> Direct<N> {
         self.params[k] = values.map(<[f32]>::to_vec);
     }
 
-    /// Output channel `c` of the last block.
+    /// Play `events` on event input `port` in the **next** block only (each
+    /// block starts with every port empty). Up to [`HAND_EVENT_CAPACITY`]
+    /// per port without allocating. Sorted and inside the next block, or
+    /// that block panics.
+    pub fn events(&mut self, port: usize, events: &[Event]) {
+        let list = &mut self.events_in[port];
+        list.clear();
+        list.extend_from_slice(events);
+    }
+
+    /// What the node wrote to event output `port` in the last block.
+    pub fn events_out(&self, port: usize) -> &[Event] {
+        &self.events_out[port]
+    }
+
+    /// The transport of every block from the next one on: its position is
+    /// the next block's first frame's (a rolling transport is **not**
+    /// advanced from block to block; set it again to move it).
+    pub fn set_transport(&mut self, transport: Transport) {
+        self.transport = transport;
+    }
+
+    /// Run the blocks from the next one on `len` frames long, at most the
+    /// prepared frames (default: all of them). Inputs, param feeds and
+    /// outputs are read and written in their first `len` frames.
+    ///
+    /// # Panics
+    ///
+    /// If `len` is zero or past the prepared frames.
+    pub fn set_block_len(&mut self, len: usize) {
+        assert!(
+            len > 0 && len <= self.frames,
+            "a block of {len} frames against a prepared maximum of {}",
+            self.frames
+        );
+        self.len = len;
+    }
+
+    /// Output channel `c` of the last block (the block's length).
     pub fn output(&self, c: usize) -> &[f32] {
-        &self.outputs[c]
+        &self.outputs[c][..self.len]
     }
 
     /// One block. Allocation-free.
     pub fn block(&mut self) -> Status {
+        let len = self.len;
         let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
         for (slot, c) in ins.iter_mut().zip(&self.inputs) {
-            *slot = c;
+            *slot = &c[..len];
         }
         let (n_in, n_out, n_par) = (self.inputs.len(), self.outputs.len(), self.params.len());
         let mut outs = self.outputs.iter_mut();
         let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
-            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..]));
+            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..len]));
         let mut params = [ParamInput::Base; crate::param::MAX_PARAM_PORTS];
         for (slot, p) in params.iter_mut().zip(&self.params) {
             if let Some(v) = p {
-                *slot = ParamInput::Frames(v);
+                *slot = ParamInput::Frames(&v[..len]);
             }
         }
+        let mut sorted = [SortedEvents::EMPTY; crate::node::MAX_PORTS];
+        for (slot, list) in sorted.iter_mut().zip(&self.events_in) {
+            *slot = SortedEvents::new(list, len).expect("sorted events inside the block");
+        }
+        let dropped = std::cell::Cell::new(0);
+        let n_ev_out = self.events_out.len();
+        let mut bufs = self.events_out.iter_mut();
+        let mut writers: [EventWriter<'_>; crate::node::MAX_PORTS] = core::array::from_fn(|_| {
+            bufs.next().map_or(EventWriter::detached(), |b| {
+                b.clear();
+                EventWriter::new(b, HAND_EVENT_CAPACITY, len as u32, &dropped)
+            })
+        });
         let env = Env {
-            frame: Frame(0),
+            frame: self.frame,
             sample_rate: self.rate,
-            block_len: Samples(self.frames),
-            transport: Transport::default(),
+            block_len: Samples(len),
+            transport: self.transport,
             changes: TransportChanges::NONE,
         };
         let cx = Cx {
@@ -1761,16 +1919,21 @@ impl<N: Node> Direct<N> {
         let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
         let io = Io::new(
             max,
-            self.frames,
+            len,
             &ins[..n_in],
             &mut out_refs[..n_out],
             crate::node::SilenceMask::NONE,
             crate::node::ConstantMask::NONE,
             crate::node::InPlaceMask::NONE,
-            &[],
-            &mut [],
+            &sorted[..self.events_in.len()],
+            &mut writers[..n_ev_out],
         )
         .with_params(&params[..n_par]);
-        self.node.process(&cx, io)
+        let status = self.node.process(&cx, io);
+        for list in &mut self.events_in {
+            list.clear();
+        }
+        self.frame = Frame(self.frame.0 + len as u64);
+        status
     }
 }

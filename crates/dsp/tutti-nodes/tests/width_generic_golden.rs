@@ -23,9 +23,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{
-    AtomicF32, AudioUnit, BufferVec, ChannelLayout, PhaseIncrement, SampleRate, Samples,
-};
+use tutti_core::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
@@ -67,17 +65,11 @@ fn sweep(from: f32, to: f32) -> Vec<f32> {
 /// each `process`.
 type Automation = Box<dyn Fn(usize)>;
 
-/// A case's node: an `AudioUnit` driven by `process`, or a native node
-/// driven as a graph drives it (`tutti_graph::contract::drive`), its params
-/// on its param ports.
-enum Under {
-    Unit(Box<dyn AudioUnit>),
-    Native(Box<dyn Node>),
-}
-
 struct Case {
     name: &'static str,
-    node: Under,
+    /// The node, driven as a graph drives it (`tutti_graph::contract::drive`),
+    /// its params on its param ports.
+    node: Box<dyn Node>,
     inputs: Vec<Vec<f32>>,
     /// Per param of the node's feed, its values over the render when fed —
     /// what the graph's modulation hands a `Legacy` unit. Empty: nothing fed.
@@ -88,20 +80,10 @@ struct Case {
     automation: Option<Automation>,
 }
 
-fn case(name: &'static str, node: impl AudioUnit + 'static, inputs: Vec<Vec<f32>>) -> Case {
-    Case {
-        name,
-        node: Under::Unit(Box::new(node)),
-        inputs,
-        params: Vec::new(),
-        automation: None,
-    }
-}
-
 fn native_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case {
     Case {
         name,
-        node: Under::Native(Box::new(node)),
+        node: Box::new(node),
         inputs,
         params: Vec::new(),
         automation: None,
@@ -328,58 +310,12 @@ fn cases() -> Vec<Case> {
 }
 
 fn render(case: &mut Case) -> Vec<Vec<f32>> {
-    let node = match &mut case.node {
-        Under::Unit(node) => node.as_mut(),
-        Under::Native(node) => {
-            return render_native(
-                node.as_mut(),
-                &case.inputs,
-                &case.params,
-                case.automation.as_ref(),
-            )
-        }
-    };
-    node.set_sample_rate(SR);
-    let (nin, nout) = (node.inputs(), node.outputs());
-    assert_eq!(
-        case.inputs.len(),
-        nin,
-        "{}: one input signal per port",
-        case.name
-    );
-    let mut out = vec![vec![0.0f32; LEN]; nout];
-    let mut ib = BufferVec::new(nin);
-    let mut ob = BufferVec::new(nout);
-    let (mut pos, mut k) = (0, 0);
-    while pos < LEN {
-        let n = PATTERN[k % PATTERN.len()].min(LEN - pos);
-        if let Some(a) = &case.automation {
-            a(k);
-        }
-        k += 1;
-        for (c, sig) in case.inputs.iter().enumerate() {
-            for i in 0..n {
-                ib.set_f32(c, i, sig[pos + i]);
-            }
-        }
-        if !case.params.is_empty() {
-            let feed = node.param_feed().expect("a fed case has a feed");
-            for (k, p) in case.params.iter().enumerate() {
-                match p {
-                    Some(v) => feed.feed(k, &v[pos..pos + n]),
-                    None => feed.clear(k),
-                }
-            }
-        }
-        node.process(n, &ib.buffer_ref(), &mut ob.buffer_mut());
-        for (c, o) in out.iter_mut().enumerate() {
-            for i in 0..n {
-                o[pos + i] = ob.at_f32(c, i);
-            }
-        }
-        pos += n;
-    }
-    out
+    render_native(
+        case.node.as_mut(),
+        &case.inputs,
+        &case.params,
+        case.automation.as_ref(),
+    )
 }
 
 /// The pinned frames of the first and last channel, in that order.

@@ -37,6 +37,10 @@ tutti-core = { path = "../tutti-core", default-features = false }
 
 thiserror.workspace = true
 
+# The node contract `MicMonitorNode` is written against (doc 013). No cycle:
+# tutti-graph names only tutti-types and tutti-node.
+tutti-graph = { path = "../tutti-graph" }
+
 # The capture ring `MicMonitorNode` drains. The producer half lives in the
 # device layer (`tutti-cpal`), which sits *above* this crate.
 ringbuf = "0.4"
@@ -58,8 +62,10 @@ bevy_reflect = { workspace = true, optional = true }
 # instead *skip* `tests/decode_golden.rs` on a plain run and report green
 # having decoded nothing. Same device as `tutti-sampler`'s `test-support`.
 tutti-io = { path = ".", features = ["wav", "flac", "mp3", "ogg"] }
+# `contract::Direct`, the by-hand driver the monitor's allocation gate runs.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 tempfile = "3.8"
-# The RT gate: `MicMonitorNode::{tick, process}` must not allocate.
+# The RT gate: `MicMonitorNode::process` must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
 # The gate builds a ring by hand to feed the node under a disabled allocator.
 ringbuf = "0.4"

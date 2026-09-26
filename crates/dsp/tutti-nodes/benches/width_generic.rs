@@ -18,7 +18,7 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::{AudioUnit, BufferVec, ChannelLayout, SampleRate};
+use tutti_core::{BufferVec, ChannelLayout, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_graph::Node;
 use tutti_nodes::{
@@ -44,29 +44,6 @@ fn noise_block(channels: usize) -> BufferVec {
 /// A cutoff sweep that moves every sample.
 fn sweep(lo: f32, hi: f32) -> [f32; BLOCK] {
     std::array::from_fn(|i| lo + (hi - lo) * (i as f32 / BLOCK as f32))
-}
-
-fn run(
-    c: &mut Criterion,
-    group: &str,
-    width: usize,
-    mut unit: Box<dyn AudioUnit>,
-    input: BufferVec,
-) {
-    let mut g = c.benchmark_group(group);
-    g.throughput(Throughput::Elements((BLOCK * width) as u64));
-    unit.set_sample_rate(SR);
-    let mut out = BufferVec::new(unit.outputs());
-    for _ in 0..16 {
-        unit.process(BLOCK, &input.buffer_ref(), &mut out.buffer_mut());
-    }
-    g.bench_with_input(BenchmarkId::from_parameter(width), &width, |b, _| {
-        b.iter(|| {
-            unit.process(BLOCK, black_box(&input.buffer_ref()), &mut out.buffer_mut());
-            black_box(out.at_f32(0, BLOCK - 1));
-        })
-    });
-    g.finish();
 }
 
 /// [`run`] for a native node, called by hand through

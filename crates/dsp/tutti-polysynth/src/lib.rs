@@ -1,9 +1,10 @@
 //! Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
 //!
-//! One type does the work: [`PolySynth`], an `AudioUnit` built from a
-//! [`SynthConfig`] and driven by MIDI. It takes no audio input — in a graph
-//! notes arrive on its event input; driven by hand, through
-//! [`queue_midi`](PolySynth::queue_midi) — and renders stereo.
+//! One type does the work: [`PolySynth`], a native graph node
+//! (`tutti_graph::Node`) built from a [`SynthConfig`] and driven by MIDI. It
+//! takes no audio input — notes arrive on its event input, on their frames —
+//! and renders stereo. Its live params (master volume, unison detune and
+//! spread) are a `tutti_graph::ParamSet`, its controls.
 //!
 //! Around it sit the voice engine's parts, all configured through
 //! [`SynthConfig`]: allocation ([`AllocationStrategy`], [`VoiceMode`]), unison
@@ -12,7 +13,7 @@
 //! `.sf2` playback is [`tutti-soundfont`]'s, a peer crate rather than a feature
 //! of this one: a sample player shares no voice engine, envelope model or filter
 //! with a subtractive synth, so the two have nothing to hold in common beyond
-//! the `AudioUnit` trait.
+//! the node contract.
 //!
 //! The quick start, what is fixed at construction, the `max_voices` ceiling and
 //! the features are in the crate README, included below.
@@ -51,7 +52,7 @@ pub use synth::{
 };
 
 mod polysynth;
-// `PolySynth::fork_source` / `fork_instance`: the synth in a fork of the
+// `PolySynth::fork_instance`: the synth in a fork of the
 // native graph (an export), with its clip.
 mod fork;
 pub use polysynth::PolySynth;

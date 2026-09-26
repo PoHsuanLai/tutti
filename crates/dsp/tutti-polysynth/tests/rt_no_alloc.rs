@@ -1,14 +1,15 @@
-//! Regression gate: `PolySynth::process` must not allocate.
+//! Regression gate: the synth's `Node::process` must not allocate.
 //!
 //! PolySynth is the umbrella audio-callback unit for the in-tree
 //! polyphonic synth. It owns:
 //! - a `Vec<SynthVoice>` (allocated once on build),
-//! - a `SmallVec<[usize; 16]>` of finished-voice indices (inline),
-//! - a per-process `midi_buffer` for sorted events,
+//! - a `Vec` of finished-voice indices (sized once, to `max_voices`),
+//! - a `midi_buffer` its event input is gathered into,
 //! - and a `mix_buffer` scalar pair.
 //!
-//! `tick` and `process` both take the queued MIDI, iterate active
-//! voices, and mix into the output. A regression that grows `midi_buffer`
+//! A block takes its event input's MIDI, iterates active voices, and mixes
+//! into the output. Driven by hand through `support::Hand` (the graph's own
+//! by-hand driver, `tutti_graph::contract::Direct`, underneath). A regression that grows `midi_buffer`
 //! at runtime, or that frees the finished-indices buffer on the audio
 //! thread, would land here.
 //!
@@ -19,7 +20,10 @@
 //! refused by the constructor and covered separately.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
+mod support;
+
+use support::Hand;
+use tutti_core::{Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -45,48 +49,43 @@ fn note_off(channel: u8, note: u8) -> MidiEvent {
 fn polysynth_process_idle_is_allocation_free() {
     // No active voices — process should still tick through allocator
     // bookkeeping and the MIDI inbox poll.
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 8,
-        oscillator: OscillatorType::Saw,
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        synth.process(64, &input, &mut output);
+        synth.block(64);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            synth.process(64, &input, &mut output);
+            synth.block(64);
         }
     });
 }
 
 #[test]
 fn polysynth_process_with_active_voices_is_allocation_free() {
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 8,
-        oscillator: OscillatorType::Saw,
-        filter: FilterType::Svf {
-            cutoff: Hz(2_000.0),
-            q: Q(0.707),
-            mode: tutti_polysynth::SvfMode::Lowpass,
-        },
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Saw,
+            filter: FilterType::Svf {
+                cutoff: Hz(2_000.0),
+                q: Q(0.707),
+                mode: tutti_polysynth::SvfMode::Lowpass,
+            },
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     // Trigger 4 sustained voices before entering the gate.
     synth.queue_midi(&[
@@ -96,66 +95,57 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
         note_on(0, 72, 100),
     ]);
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
-
     for _ in 0..32 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        synth.process(64, &input, &mut output);
+        synth.block(64);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            synth.process(64, &input, &mut output);
+            synth.block(64);
         }
     });
 }
 
+/// One-frame blocks (the old per-sample `tick` path's shape): each is a
+/// whole block, cut from the control grid at its edge.
 #[test]
-fn polysynth_tick_with_active_voices_is_allocation_free() {
-    // `tick` is the per-sample path — drives `Voice::tick_stereo`
-    // directly without MIDI sub-buffer splitting.
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 8,
-        oscillator: OscillatorType::Triangle,
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
+fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Triangle,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     synth.queue_midi(&[note_on(0, 60, 90), note_on(0, 64, 90), note_on(0, 67, 90)]);
 
-    let mut output = [0.0f32; 2];
     for _ in 0..256 {
-        synth.tick(&[], &mut output);
+        synth.tick();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            synth.tick(&[], &mut output);
+            synth.tick();
         }
     });
 }
 
 #[test]
 fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
-    // Sub-buffer split path: queue events with non-zero frame offsets so
-    // `process` walks the event-driven block boundaries.
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 8,
-        oscillator: OscillatorType::Saw,
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    // Sub-buffer split path: events on the event input so the block walks
+    // the event-driven boundaries.
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     // Warm up the voice pool + finished-indices SmallVec at full size.
     synth.queue_midi(&[
@@ -164,15 +154,11 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
         note_on(0, 72, 100),
     ]);
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        synth.process(64, &input, &mut output);
+        synth.block(64);
     }
     synth.queue_midi(&[note_off(0, 48), note_off(0, 60), note_off(0, 72)]);
     for _ in 0..256 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        synth.process(64, &input, &mut output);
+        synth.block(64);
     }
 
     // Steady note-on/note-off churn inside the gate. Each iteration
@@ -187,9 +173,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
             } else {
                 synth.queue_midi(&[off]);
             }
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            synth.process(64, &input, &mut output);
+            synth.block(64);
         }
     });
 }
@@ -226,17 +210,15 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     // Four times the old inline ceiling, so the buffer under test is on the heap.
     const MAX_VOICES: usize = 64;
 
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: MAX_VOICES,
-        oscillator: OscillatorType::Saw,
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: MAX_VOICES,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     // Distinct pitches so the allocator assigns a separate voice to each
     // rather than retriggering one slot.
@@ -250,15 +232,11 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     for _ in 0..4 {
         synth.queue_midi(&all_on);
         for _ in 0..32 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            synth.process(64, &input, &mut output);
+            synth.block(64);
         }
         synth.queue_midi(&all_off);
         for _ in 0..256 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            synth.process(64, &input, &mut output);
+            synth.block(64);
         }
     }
 
@@ -266,18 +244,14 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
         for _ in 0..32 {
             synth.queue_midi(&all_on);
             for _ in 0..32 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                synth.process(64, &input, &mut output);
+                synth.block(64);
             }
             // All releases land together, so a single block collects the full
             // `MAX_VOICES` finished indices — the worst case the capacity is
             // sized for.
             synth.queue_midi(&all_off);
             for _ in 0..256 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                synth.process(64, &input, &mut output);
+                synth.block(64);
             }
         }
     });
@@ -293,9 +267,9 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 /// assumed.
 ///
 /// Warming the **thread** and gating a **fresh instance** separates the two
-/// costs. It matters beyond the mutation: `Net::commit` clones graph nodes,
-/// so a never-processed `PolySynth` goes straight into a callback that is
-/// already running, which is exactly this shape.
+/// costs. It matters beyond the mutation: a never-processed `PolySynth` (a
+/// fresh insert, a fork) goes straight into a callback that is already
+/// running, which is exactly this shape.
 ///
 /// *Mutations, both run:* `Vec::with_capacity(..)` -> `Vec::new()` in
 /// `PolySynth::new` aborts on the `new` half; the same substitution in the
@@ -307,15 +281,13 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
     const MAX_VOICES: usize = 64;
 
     let build = || {
-        let mut synth = PolySynth::new(SynthConfig {
+        PolySynth::new(SynthConfig {
             sample_rate: tutti_core::SampleRate::from(48_000.0),
             max_voices: MAX_VOICES,
             oscillator: OscillatorType::Saw,
             ..Default::default()
         })
-        .unwrap();
-        synth.set_sample_rate(SampleRate(48_000.0));
-        synth
+        .unwrap()
     };
 
     let notes: Vec<MidiEvent> = (0..MAX_VOICES)
@@ -323,34 +295,30 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
         .collect();
     let offs: Vec<MidiEvent> = (0..MAX_VOICES).map(|i| note_off(0, 36 + i as u8)).collect();
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
-
     // Warm the THREAD only, so this test measures the instance alone: a cold
     // thread is `a_first_block_on_a_cold_thread_is_allocation_free`'s subject.
     {
-        let mut throwaway = build();
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        throwaway.process(64, &input, &mut output);
+        let mut throwaway = Hand::new(build());
+        throwaway.block(64);
     }
 
     // Two never-processed synths: one straight from `new`, one from `Clone`.
-    // The clone is the case that actually reaches a running callback, since
-    // `Net::commit` clones nodes — and it has its own construction site for
-    // `finished_indices`, which the `new` half does not cover.
+    // The clone is the case that reaches a running graph as a fork (a fork
+    // is a clone of the template `param_parts` keeps) — and it has its own
+    // construction site for `finished_indices`, which the `new` half does
+    // not cover. Wrapped (and prepared) outside the gate, as a graph
+    // prepares a node on the control thread.
     let pristine = build();
     let cloned = pristine.clone();
 
-    for (which, mut synth) in [("new", pristine), ("clone", cloned)] {
+    for (which, synth) in [("new", pristine), ("clone", cloned)] {
+        let mut synth = Hand::new(synth);
         // Queued outside the gate: `queue` is a control-thread call.
         synth.queue_midi(&notes);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..32 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                synth.process(64, &input, &mut output);
+                synth.block(64);
             }
         });
 
@@ -359,9 +327,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
             // Long enough for every release to land, so the block that
             // collects all 64 finished indices is inside the gate.
             for _ in 0..256 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                synth.process(64, &input, &mut output);
+                synth.block(64);
             }
         });
         // Named so a failure says which construction site leaked.
@@ -376,31 +342,27 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 /// `ArcSwapOption::load` initialised arc-swap's per-thread slots lazily (128
 /// bytes), so the cost landed on the first callback of every new audio thread
 /// (`CpalDriver::restart` makes one on each device switch). The port is gone
-/// (MIDI arrives on the event input, or through `queue_midi`), and with it the
-/// allocation.
+/// (MIDI arrives on the event input), and with it the allocation.
 ///
 /// The rest of the suite is blind to this: every other test warms the
 /// instance, and so the thread, before opening the gate.
 ///
 /// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in
-/// `take_pending_sorted` → the gate aborts on the cold thread.
+/// `gather_events` → the gate aborts on the cold thread.
 #[test]
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
-    let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
-        max_voices: 8,
-        oscillator: OscillatorType::Saw,
-        ..Default::default()
-    })
-    .unwrap();
-    synth.set_sample_rate(SampleRate(48_000.0));
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     assert_no_alloc::assert_no_alloc(|| {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        synth.process(64, &input, &mut output);
+        synth.block(64);
     });
 }
 

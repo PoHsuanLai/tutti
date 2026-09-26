@@ -12,8 +12,14 @@ and tuning, all configured through `SynthConfig`.
 **Notes arrive on its MIDI event input.** It is a `tutti_graph::Node` with one
 MIDI event input: a clip node, a keyboard's `MidiQueueNode` or the hardware
 input node (all `tutti-midi-runtime`) wires to it, each event played on its
-frame. Driven by hand as an `AudioUnit`, the next block plays what
-`queue_midi` was given. There is no `note_on` scalar entry point on this type.
+frame. There is no `note_on` scalar entry point on this type, and no queue to
+drive it by hand: a test or bench hands it events the way a graph does
+(`tutti_graph::contract::{drive_in, Direct}`).
+
+**Its controls are its params.** Inserted into a graph, it hands back a
+`tutti_graph::ParamSet` over its live cells — the master volume and, with a
+unison engine, the unison detune and stereo spread, by `UnitParam` — and a
+fork of the graph (an export) starts from the values last set through it.
 
 ## What it does not own
 
@@ -43,16 +49,13 @@ cannot send a note to is not a smaller synth.
 use tutti_polysynth::{
     EnvelopeConfig, FilterType, OscillatorType, PolySynth, SynthConfig,
 };
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::{Amplitude, Hz, Resonance, Seconds};
-use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
-use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{Amplitude, Hz, NodeKey, Resonance, SampleRate, Samples, Seconds, UnitParam};
+use tutti_graph::{Editor, Prepare};
 
 // `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead. The two
 // filter families are deliberately not interchangeable.
-let mut synth = PolySynth::new(SynthConfig {
+let synth = PolySynth::new(SynthConfig {
     oscillator: OscillatorType::Saw,
     max_voices: 8,
     filter: FilterType::Moog {
@@ -68,23 +71,18 @@ let mut synth = PolySynth::new(SynthConfig {
     ..Default::default()
 })?;
 
-// Driven by hand: the next block plays what was queued. (In a graph, MIDI
-// arrives on the synth's event input instead.)
-synth.queue_midi(&[MidiEvent::note_on(
-    MidiGroup::FIRST,
-    MidiChannel::FIRST,
-    69, // A4
-    midi1_velocity_to_midi2(100),
-)]);
+// Into the graph: no audio input, stereo out, one MIDI event input (wire a
+// clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+let synth_key = NodeKey(1);
+let params = editor.insert(synth_key, "synth", synth);
+editor.spec_mut().topology.outputs = (0..2)
+    .map(|port| Source::Node(OutPort { node: synth_key, port }))
+    .collect();
+editor.commit().expect("a one-node graph commits");
 
-// Into the graph: no audio input, stereo out.
-let mut net = Net::new(0, 2);
-let voice = net.push(Box::new(synth));
-net.pipe_output(voice);
-net.check();
-
-let mut out = [0.0f32; 2];
-net.tick(&[], &mut out);
+// Its controls: the live params, by address.
+assert!(params.set(UnitParam::Volume, 0.8));
 # Ok::<(), tutti_polysynth::Error>(())
 ```
 

@@ -249,6 +249,31 @@ fn a_node_off_its_declared_latency_fails() {
     }
 }
 
+/// A row's lead is held exactly: a node whose response starts one frame
+/// after its excitation passes with a lead of one and fails with none or
+/// two, on the direct path, behind PDC and under the random schedule. (What
+/// lets an instrument whose note starts from a zero sample have a row.)
+///
+/// Mutation (run): `assert_responses` ignoring the lead (`let e = e;`) →
+/// the row with a lead of one fails ("puts it at 5", the response at 6) →
+/// fails.
+#[test]
+fn a_rows_lead_is_held_exactly() {
+    for path in [Path::Direct, Path::BehindPdc, Path::BlocksRandom] {
+        // Declares 5 frames and responds at 6: one frame of lead.
+        liar_row(5, 6, Resolution::Sample, Timing::Exact)
+            .with_lead(Samples(1))
+            .check(path);
+        for lead in [0, 2] {
+            fails(
+                &liar_row(5, 6, Resolution::Sample, Timing::Exact).with_lead(Samples(lead)),
+                path,
+                &format!("a one-frame lead checked as {lead}"),
+            );
+        }
+    }
+}
+
 /// A node that declares `Sample` but applies every event at its block's
 /// first frame fails the direct path at any non-zero offset.
 ///

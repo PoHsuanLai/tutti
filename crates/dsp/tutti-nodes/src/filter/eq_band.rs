@@ -143,8 +143,9 @@ impl<F: Real> EqBandNode<F> {
 impl<F: Real + 'static> Node for EqBandNode<F> {
     /// Mono in and out. Unlike the bare filter it declares no modulatable
     /// params: a band is set, not swept.
+    /// Its tail is the inner filter's: [`Tail::Unknown`].
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_tail(self.svf.shape().tail)
     }
 
     fn prepare(&mut self, p: &Prepare) {
@@ -222,6 +223,16 @@ mod tests {
     #[test]
     fn a_fork_severs_the_inner_filters_cells() {
         assert_param_fork(EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 1.0, 6.0));
+    }
+
+    /// The band declares the inner filter's tail, not the shape default.
+    ///
+    /// Mutation (run): drop the band's `.with_tail(..)` → `Tail::None` →
+    /// fails.
+    #[test]
+    fn the_band_rings_on_as_its_filter_does() {
+        let band = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 8.0, 12.0);
+        assert_eq!(band.shape().tail, tutti_core::Tail::Unknown);
     }
 
     #[test]

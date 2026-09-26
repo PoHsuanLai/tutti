@@ -1,14 +1,12 @@
 //! The unit as a graph node (doc 013, rewrite item 5): MIDI arrives on an
 //! event input, on its frame (to rustysynth's 8-frame chunk, see
-//! [`SoundFontUnit`]'s `process`). A graph block drops what
-//! [`queue_midi`](SoundFontUnit::queue_midi) was given by hand.
+//! [`SoundFontUnit`]'s "How an event's offset is honoured").
 //!
-//! As a node it **follows its graph's rate**: `prepare` rebuilds the
-//! synthesizer at the prepared rate (control thread, where that may
-//! allocate), keeping the preset. An `AudioUnit` cannot, since
-//! `set_sample_rate` may be called where rebuilding is not allowed.
+//! It **follows its graph's rate**: `prepare` rebuilds the synthesizer at the
+//! prepared rate (control thread, where that may allocate), keeping the
+//! preset.
 
-use tutti_core::{AudioUnit, ChannelLayout};
+use tutti_core::ChannelLayout;
 use tutti_graph::{
     Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
     Ump,
@@ -21,7 +19,6 @@ impl SoundFontUnit {
     /// The block's MIDI from `events` into the scratch, in their (sorted)
     /// order; returns how many it holds.
     fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
-        self.pending = 0;
         let mut n = 0;
         for e in events {
             if n == self.midi_buffer.len() {
@@ -67,10 +64,9 @@ impl Node for SoundFontUnit {
     /// Always [`Status::Modified`]: ringing after its last event, it must
     /// never be parked.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let size = io.frames().min(self.left_buffer.len());
-        if size == 0 {
-            return Status::Modified;
-        }
+        // No clamp: `prepare` sized the scratch to the prepared `MaxBlock`,
+        // and a block is never longer (doc 013 defect D4).
+        let size = io.frames();
         let events = if io.event_input_count() > 0 {
             io.events(0)
         } else {
@@ -90,17 +86,18 @@ impl Node for SoundFontUnit {
     }
 
     fn reset(&mut self) {
-        AudioUnit::reset(self);
+        self.release_all();
     }
 }
 
 /// The unit, inserted as a graph node: its fork is a graph node too, which
-/// follows its render's rate. No controls.
+/// follows its render's rate (see the `fork` module docs). No controls: the
+/// unit has no param a host sets while it plays (its preset is MIDI's).
 impl IntoNode for SoundFontUnit {
     type Controls = ();
 
     fn into_parts(self) -> NodeParts<()> {
-        let fork = self.native_fork();
+        let fork = self.fork_template();
         NodeParts {
             node: Box::new(self),
             controls: (),

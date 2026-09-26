@@ -345,7 +345,16 @@ impl<N: ParamNode + Clone> NativeIsolateRow<N> {
                 .map(|ch| (0..size).map(|i| stimulus(ch, done + i)).collect())
                 .collect();
             let refs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
-            let block = super::drive(&mut node, SAMPLE_RATE, &refs, &[]);
+            // `drive_in`, not `drive`: the block's length is the `Env`'s, so
+            // a generator with no inputs (an LFO) renders too.
+            let env = crate::node::Env {
+                frame: tutti_types::Frame(done as u64),
+                sample_rate: SAMPLE_RATE,
+                block_len: tutti_types::Samples(size),
+                transport: crate::node::Transport::default(),
+                changes: crate::node::TransportChanges::NONE,
+            };
+            let block = super::drive_in(&mut node, &env, &refs, &[], &[]).audio;
             for (out, b) in rendered.iter_mut().zip(block) {
                 out.extend(b);
             }

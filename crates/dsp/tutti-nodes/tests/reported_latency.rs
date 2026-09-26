@@ -10,9 +10,8 @@
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
 
-use tutti_core::dsp::{Net, Source};
 use tutti_core::ChannelLayout;
-use tutti_core::{AudioUnit, SampleRate, Samples};
+use tutti_core::{SampleRate, Samples};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{GraphBuilder, Node, Prepare};
 use tutti_nodes::testing::Through;

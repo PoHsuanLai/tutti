@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
 
-mod node_id;
-
 mod codec;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 mod decode;

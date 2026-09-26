@@ -274,9 +274,11 @@ impl Default for Declick {
 /// transport, and — when it came from [`Transport::clock_links`] — the
 /// transport's **one playhead writer**.
 ///
-/// The membership rule is exactly `AudioUnit::isolate`'s cut: every field here
-/// is `Arc`-shared, so an offline render ticking a clone must drop all of them
-/// or it stomps live playback. Fields the clock owns privately — its beat,
+/// The membership rule is exactly a derived stream's cut
+/// ([`TransportClock::starting_at`](super::TransportClock::starting_at), via
+/// [`severed`](Self::severed)): every field here is `Arc`-shared, so an
+/// offline render stepping a clone must drop all of them or it stomps live
+/// playback. Fields the clock owns privately — its beat,
 /// sample rate, cached increment — are deliberately *not* here; that is the
 /// whole distinction the type draws.
 ///

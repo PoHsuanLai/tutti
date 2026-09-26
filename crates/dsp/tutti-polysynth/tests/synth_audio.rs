@@ -2,8 +2,8 @@
 //!
 //! The crate's in-file tests are extensive — 3,134 lines, over half the source —
 //! but they test *plumbing*: MIDI events reach voices, allocation picks the
-//! right slot, `isolate` severs a shared inbox, atomics propagate across clones.
-//! Almost nothing asserts what comes out of `process`.
+//! right slot, a fork shares nothing, atomics propagate across clones.
+//! Almost nothing asserts what comes out of a block.
 //!
 //! `test_voice_stealing_in_polysynth`, for instance, plays three notes into a
 //! two-voice synth and checks that *a* voice is playing note 67 afterwards. It
@@ -15,8 +15,10 @@
 //! spectral cross-check against librosa lives in `examples/verify_synth.py`;
 //! everything here is self-contained.
 
-use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Seconds};
+mod support;
+
+use support::{Hand, BLOCK};
+use tutti_core::{Amplitude, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -25,7 +27,6 @@ use tutti_polysynth::{
 };
 
 const SR: f64 = 48_000.0;
-const BLOCK: usize = 64;
 
 fn note_on(note: u8, vel: u8) -> MidiEvent {
     MidiEvent::note_on(
@@ -62,30 +63,17 @@ fn config(osc: OscillatorType) -> SynthConfig {
 }
 
 /// Render `blocks` blocks of the left channel.
-fn render(synth: &mut PolySynth, blocks: usize) -> Vec<f32> {
-    let input = BufferVec::new(2);
-    let mut out_buf = BufferVec::new(2);
-    let mut out = Vec::with_capacity(blocks * BLOCK);
-    for _ in 0..blocks {
-        synth.process(BLOCK, &input.buffer_ref(), &mut out_buf.buffer_mut());
-        for i in 0..BLOCK {
-            out.push(out_buf.buffer_ref().at_f32(0, i));
-        }
-    }
-    out
+fn render(synth: &mut Hand, blocks: usize) -> Vec<f32> {
+    render_stereo(synth, blocks).0
 }
 
 /// Render both channels, interleaved-free: `(left, right)`.
-fn render_stereo(synth: &mut PolySynth, blocks: usize) -> (Vec<f32>, Vec<f32>) {
-    let input = BufferVec::new(2);
-    let mut out_buf = BufferVec::new(2);
+fn render_stereo(synth: &mut Hand, blocks: usize) -> (Vec<f32>, Vec<f32>) {
     let (mut l, mut r) = (Vec::new(), Vec::new());
     for _ in 0..blocks {
-        synth.process(BLOCK, &input.buffer_ref(), &mut out_buf.buffer_mut());
-        for i in 0..BLOCK {
-            l.push(out_buf.buffer_ref().at_f32(0, i));
-            r.push(out_buf.buffer_ref().at_f32(1, i));
-        }
+        let (bl, br) = synth.block(BLOCK);
+        l.extend_from_slice(bl);
+        r.extend_from_slice(br);
     }
     (l, r)
 }
@@ -167,7 +155,7 @@ fn every_oscillator_plays_the_requested_pitch() {
         OscillatorType::Triangle,
     ] {
         for note in [48u8, 60, 69, 81] {
-            let mut synth = PolySynth::new(config(osc)).expect("synth builds");
+            let mut synth = Hand::new(PolySynth::new(config(osc)).expect("synth builds"));
             synth.queue_midi(&[note_on(note, 100)]);
 
             // Skip the attack; measure the steady state.
@@ -193,7 +181,7 @@ fn every_oscillator_plays_the_requested_pitch() {
 /// nothing would pass a pitch test that skipped it.
 #[test]
 fn the_noise_oscillator_produces_broadband_sound() {
-    let mut synth = PolySynth::new(config(OscillatorType::Noise)).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Noise)).expect("synth builds"));
     synth.queue_midi(&[note_on(69, 100)]);
     let audio = render(&mut synth, 200);
     let tail = &audio[4096..];
@@ -214,7 +202,8 @@ fn the_noise_oscillator_produces_broadband_sound() {
 fn velocity_scales_the_output_level() {
     let mut levels = Vec::new();
     for vel in [30u8, 60, 100, 127] {
-        let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+        let mut synth =
+            Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
         synth.queue_midi(&[note_on(69, vel)]);
         let audio = render(&mut synth, 100);
         levels.push((vel, peak(&audio[2048..])));
@@ -255,7 +244,7 @@ fn a_note_off_silences_the_voice_after_release() {
         sustain: Amplitude(1.0),
         release: Seconds(0.05),
     };
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
 
     synth.queue_midi(&[note_on(69, 100)]);
     let held = render(&mut synth, 100);
@@ -280,7 +269,7 @@ fn a_note_off_silences_the_voice_after_release() {
 /// passes every allocation test in the crate.
 #[test]
 fn two_simultaneous_notes_both_sound() {
-    let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
 
     // An octave apart, so the two peaks are unambiguous.
     synth.queue_midi(&[note_on(60, 100), note_on(72, 100)]);
@@ -303,7 +292,7 @@ fn two_simultaneous_notes_both_sound() {
 
     // ...and the mix must be louder than either note alone, which is what
     // distinguishes summing from replacement.
-    let mut solo = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut solo = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     solo.queue_midi(&[note_on(60, 100)]);
     let solo_audio = render(&mut solo, 200);
 
@@ -326,7 +315,7 @@ fn nosteal_leaves_the_held_notes_alone() {
     let mut cfg = config(OscillatorType::Sine);
     cfg.max_voices = 2;
     cfg.allocation_strategy = AllocationStrategy::NoSteal;
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
 
     synth.queue_midi(&[note_on(60, 100), note_on(64, 100)]);
     let before = render(&mut synth, 100);
@@ -361,7 +350,7 @@ fn a_stolen_voice_plays_the_new_note() {
     let mut cfg = config(OscillatorType::Sine);
     cfg.max_voices = 1;
     cfg.allocation_strategy = AllocationStrategy::Oldest;
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
 
     synth.queue_midi(&[note_on(60, 100)]);
     let _ = render(&mut synth, 50);
@@ -389,7 +378,7 @@ fn a_stolen_voice_plays_the_new_note() {
 fn mono_mode_holds_one_voice() {
     let mut cfg = config(OscillatorType::Sine);
     cfg.voice_mode = VoiceMode::Mono;
-    let mut synth = PolySynth::new(cfg).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(cfg).expect("synth builds"));
 
     synth.queue_midi(&[note_on(60, 100), note_on(64, 100), note_on(67, 100)]);
     // 300 blocks = 19200 samples, enough to skip the retriggering at the start
@@ -419,11 +408,11 @@ fn mono_mode_holds_one_voice() {
 /// their effect on the signal.
 #[test]
 fn master_volume_scales_the_output() {
-    let mut full = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut full = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     full.queue_midi(&[note_on(69, 100)]);
     let loud = render(&mut full, 100);
 
-    let mut half = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut half = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     half.set_volume(0.5);
     half.queue_midi(&[note_on(69, 100)]);
     let quiet = render(&mut half, 100);
@@ -436,7 +425,7 @@ fn master_volume_scales_the_output() {
     );
 
     // Zero must be silence, not merely quiet.
-    let mut muted = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut muted = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     muted.set_volume(0.0);
     muted.queue_midi(&[note_on(69, 100)]);
     let silent = render(&mut muted, 100);
@@ -453,7 +442,7 @@ fn master_volume_scales_the_output() {
 /// something other than the note.
 #[test]
 fn an_idle_synth_is_silent() {
-    let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     let audio = render(&mut synth, 50);
     assert_eq!(
         peak(&audio),
@@ -470,7 +459,7 @@ fn an_idle_synth_is_silent() {
 /// measurement in this file.
 #[test]
 fn a_centred_voice_reaches_both_channels() {
-    let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut synth = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     synth.queue_midi(&[note_on(69, 100)]);
     let (l, r) = render_stereo(&mut synth, 100);
 
@@ -484,50 +473,52 @@ fn a_centred_voice_reaches_both_channels() {
     }
 }
 
-/// Render through `tick`, one sample at a time: `(left, right)`.
-fn render_tick(synth: &mut PolySynth, samples: usize) -> (Vec<f32>, Vec<f32>) {
+/// Render one-frame blocks, one sample at a time: `(left, right)`.
+fn render_tick(synth: &mut Hand, samples: usize) -> (Vec<f32>, Vec<f32>) {
     let (mut l, mut r) = (Vec::with_capacity(samples), Vec::with_capacity(samples));
-    let mut frame = [0.0f32; 2];
     for _ in 0..samples {
-        synth.tick(&[], &mut frame);
-        l.push(frame[0]);
-        r.push(frame[1]);
+        let [a, b] = synth.tick();
+        l.push(a);
+        r.push(b);
     }
     (l, r)
 }
 
-/// `tick` and `process` are two separate implementations of the same mix, and
-/// both must be right.
+/// One-frame blocks and 64-frame blocks render the same mix.
 ///
-/// This test exists because of a hole the sabotage pass found: zeroing the right
-/// channel inside `tick` broke nothing, since every other test in this file
-/// drives the synth through `process`. `AudioUnit` requires both — a host may
-/// call either — so a divergence between them is a real defect that was
-/// invisible.
+/// Until the native port this pinned `AudioUnit::tick` against
+/// `AudioUnit::process`, two paths a host could call (the sabotage pass found
+/// that zeroing the right channel inside `tick` broke nothing else). The node
+/// has one path now, and a graph may hand it a block of any length, down to
+/// one frame; so the same property is pinned across block lengths.
 ///
-/// The two are not asserted sample-identical. `process` renders in 64-sample
-/// blocks and applies MIDI at block boundaries, while `tick` advances the
-/// allocator once per sample, so their phase relationship to a note-on differs
-/// by up to a block. What must agree is the pitch, the level, and the fact that
-/// both channels are fed.
+/// Not asserted sample-identical: the voice's control steps are cut at the
+/// block edges, so the phase relationship to a note-on differs by up to a
+/// block. What must agree is the pitch, the level, and the fact that both
+/// channels are fed.
+///
+/// Mutation (run): the node writing only the left channel on a one-frame
+/// block (`None` for `right` when `frames == 1` in `Node::process`) → "the
+/// one-frame path's right channel is silent" → fails.
 #[test]
 fn the_tick_path_matches_the_block_path() {
-    let mut ticked = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut ticked = Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     ticked.queue_midi(&[note_on(69, 100)]);
     let (tl, tr) = render_tick(&mut ticked, 12_800);
 
-    let mut blocked = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
+    let mut blocked =
+        Hand::new(PolySynth::new(config(OscillatorType::Sine)).expect("synth builds"));
     blocked.queue_midi(&[note_on(69, 100)]);
     let (bl, _br) = render_stereo(&mut blocked, 200);
 
     assert!(
         peak(&tl[2048..]) > 0.01,
-        "the tick path's left channel is silent"
+        "the one-frame path's left channel is silent"
     );
     assert!(
         peak(&tr[2048..]) > 0.01,
-        "the tick path's right channel is silent — `process` feeds both \
-         channels, so `tick` must too"
+        "the one-frame path's right channel is silent — a 64-frame block \
+         feeds both channels, so a one-frame block must too"
     );
 
     // Same centring rule as the block path.

@@ -422,10 +422,11 @@ mod tests {
         assert_eq!(block.beat().get().to_bits(), frames.beat().get().to_bits());
     }
 
-    /// A region render drives BOTH clocks over the same net: the in-net
-    /// `TransportClock` feeds beat-input nodes (units reading its beat ports) while this
-    /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
-    /// beat, they must report the same beat for the same sample.
+    /// A render drives two clocks over one timeline: a `TransportClock` (the
+    /// engine's playhead, whose transport each graph block and its
+    /// `EnvClock` read) while this `OfflineTimeline` feeds clip readers and
+    /// samplers. Started at the same beat, they must report the same beat for
+    /// the same sample.
     ///
     /// The order is emit-then-advance. A driver that primes with `advance(1)`
     /// before the first block — "advance-then-tick semantics" — puts the two
@@ -434,7 +435,7 @@ mod tests {
     #[test]
     fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64, AudioUnit};
+        use crate::{AtomicBool, AtomicF64};
         use std::sync::Arc;
 
         let sample_rate = 44100.0;
@@ -458,24 +459,23 @@ mod tests {
         });
 
         // Sample 0: both must report the start beat, before either advances.
-        let mut out = [0.0f32; 2];
-        clock.tick(&[], &mut out);
-        let clock_beat = out[0] as f64 + out[1] as f64;
+        let clock_beat = clock.step(1).get();
         assert!(
             (clock_beat - timeline.beat().get()).abs() < 1e-9,
             "first sample disagrees: clock={clock_beat} timeline={}",
             timeline.beat().get()
         );
 
-        // And they must stay in step across a block boundary. The driver ticks
-        // the net per sample, then advances the timeline by the block size.
+        // And they must stay in step across a block boundary. The driver
+        // steps the clock frame by frame, then advances the timeline by the
+        // block size.
         let block = 512;
+        let mut clock_beat = clock_beat;
         for _ in 1..block {
-            clock.tick(&[], &mut out);
+            clock_beat = clock.step(1).get();
         }
         timeline.advance(block);
 
-        let clock_beat = out[0] as f64 + out[1] as f64;
         let expected_lag = timeline.beats_per_sample();
         // After the block the timeline sits one sample ahead of the last
         // EMITTED sample, because emit-then-advance means sample N-1 carried
@@ -515,8 +515,7 @@ mod tests {
 
     /// After N blocks of arbitrary lengths, at arbitrary tempos and rates,
     /// both clocks of a render — this timeline, advanced a block at a time,
-    /// and a `TransportClock`, processed 64 frames a call as a `Net` runs it
-    /// — stand on the closed form `start + frames × tempo / (60 × rate)`, to
+    /// and a `TransportClock`, stepped 64 frames a block — stand on the closed form `start + frames × tempo / (60 × rate)`, to
     /// the bit. Correctly rounded `*`, `/` and `+` only (no libm), so the
     /// comparison is portable.
     ///
@@ -525,8 +524,7 @@ mod tests {
     #[test]
     fn a_long_render_stands_on_the_closed_form() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64, AudioUnit, BufferRef};
-        use fundsp::prelude::{BufferArray, U2};
+        use crate::{AtomicBool, AtomicF64};
         use std::sync::Arc;
 
         let mut seed = 0x2545_f491_4f6c_dd1du64;
@@ -554,8 +552,6 @@ mod tests {
                 rate,
             )
             .starting_at(start);
-            let empty = BufferRef::new(&[]);
-            let mut scratch = BufferArray::<U2>::new();
             let mut frames = 0u64;
             for _ in 0..1_000 {
                 let n = 1 + (next() % 2_048) as usize;
@@ -563,9 +559,9 @@ mod tests {
                 frames += n as u64;
             }
             for _ in 0..frames / 64 {
-                clock.process(64, &empty, &mut scratch.buffer_mut());
+                clock.step(64);
             }
-            clock.process((frames % 64) as usize, &empty, &mut scratch.buffer_mut());
+            clock.step((frames % 64) as usize);
             let closed = start + (frames as f64 * tempo) / (60.0 * rate);
             assert_eq!(
                 timeline.beat().get().to_bits(),

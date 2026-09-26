@@ -1,5 +1,5 @@
-//! The synth itself: an [`AudioUnit`] (and a graph node, `polysynth/node.rs`)
-//! that owns an allocator and a fixed set of voices, and renders their sum.
+//! The synth itself: a graph node (`polysynth/node.rs`) that owns an
+//! allocator and a fixed set of voices, and renders their sum.
 //!
 //! This is where MIDI becomes sound. Everything else in the crate is a piece
 //! this module drives — allocation (`crate::voice`), per-note DSP
@@ -7,9 +7,8 @@
 //! that routes a per-note message to exactly one voice lives here because only
 //! this module holds both the note-id map and the voices.
 //!
-//! Both render paths are real-time and share one renderer: `process` splits
-//! its block at MIDI event boundaries so events land on the right frame, and
-//! `tick` is the same renderer run for a single frame. Neither allocates.
+//! The render path is real-time: `Node::process` splits its block at MIDI
+//! event boundaries so events land on the right frame. It never allocates.
 //!
 //! The renderer works in control steps of at most `CONTROL_BLOCK` frames:
 //! each step the voices (and any glide) write their lane targets into the
@@ -21,10 +20,7 @@ use crate::bank::{VoiceBank, CONTROL_BLOCK};
 use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
-use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, Tail,
-    MAX_BUFFER_SIZE,
-};
+use tutti_core::{Amplitude, Param, Tail};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, NoteId};
 use tutti_midi_types::{CCNumber, MidiChannel};
@@ -49,10 +45,10 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
 /// Polyphonic subtractive synthesizer: a MIDI-driven voice allocator over a
 /// SIMD voice bank.
 ///
-/// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. In a graph
-/// (it is a `tutti_graph::Node`) MIDI arrives on its event input, on its
-/// frame. Driven by hand as an `AudioUnit`, the next block plays what
-/// [`queue_midi`](PolySynth::queue_midi) was given.
+/// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. It is a
+/// `tutti_graph::Node`: MIDI arrives on its event input, on its frame, and
+/// its live params (master volume, and the unison detune and spread when it
+/// has a unison engine) are a `tutti_graph::ParamSet`, its controls.
 pub struct PolySynth {
     config: SynthConfig,
     allocator: VoiceAllocator,
@@ -63,20 +59,21 @@ pub struct PolySynth {
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
     master_volume: Param<Amplitude>,
-    /// The block's MIDI, sorted by offset: its event input's in a graph, or
-    /// what [`queue_midi`](Self::queue_midi) was given when driven by hand
-    /// (the first [`pending`](Self::pending) entries).
+    /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
-    /// How many events [`queue_midi`](Self::queue_midi) left for the next
-    /// hand-driven block.
-    pending: usize,
+    /// MIDI queued by this crate's unit tests for the next block they drive
+    /// by hand (`tests::Hand`). Test builds only: the synth itself plays
+    /// nothing but its event input.
+    #[cfg(test)]
+    queued: Vec<MidiEvent>,
     /// Voices that finished this block, collected during the render loop and
     /// drained after it.
     ///
     /// Sized to `max_voices` at construction and only ever `clear()`ed, so it
     /// never reallocates: the worst case is every voice releasing at once,
     /// which is exactly its capacity. Growing it would be a `malloc` on the
-    /// audio thread, which is what the `debug_assert` in `tick` watches for.
+    /// audio thread, which the allocation gates (`tests/rt_no_alloc.rs`)
+    /// watch for.
     finished_indices: Vec<usize>,
 }
 
@@ -145,7 +142,8 @@ impl PolySynth {
             pitch_bend: 0.0,
             master_volume,
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
-            pending: 0,
+            #[cfg(test)]
+            queued: Vec::new(),
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -161,38 +159,9 @@ impl PolySynth {
         )
     }
 
-    /// Give the next hand-driven block (`AudioUnit::process` / `tick`) these
-    /// events, each on its `frame_offset`; returns how many were taken (the
-    /// buffer holds 512 between blocks). In a graph the synth plays its event
-    /// input instead.
-    pub fn queue_midi(&mut self, events: &[MidiEvent]) -> usize {
-        let room = self.midi_buffer.len() - self.pending;
-        let n = events.len().min(room);
-        self.midi_buffer[self.pending..self.pending + n].copy_from_slice(&events[..n]);
-        self.pending += n;
-        n
-    }
-
     /// Apply one MIDI event now, as if it arrived on the current frame.
     pub fn apply_midi(&mut self, event: &MidiEvent) {
         self.process_midi_event(event);
-    }
-
-    /// Take the queued events for a hand-driven block, sorted by offset.
-    fn take_pending_sorted(&mut self) -> usize {
-        let count = std::mem::take(&mut self.pending);
-        if count > 1 {
-            self.midi_buffer[..count].sort_by_key(|e| e.frame_offset);
-        }
-        count
-    }
-
-    fn apply_pending(&mut self) {
-        let count = std::mem::take(&mut self.pending);
-        for i in 0..count {
-            let event = self.midi_buffer[i];
-            self.process_midi_event(&event);
-        }
     }
 
     /// Whether per-note (MPE) expression is applied at render time.
@@ -880,31 +849,12 @@ impl PolySynth {
             event_idx += 1;
         }
     }
-
-    /// Render `left.len()` frames into planar slices, MIDI included — the
-    /// block path without `BufferMut`'s 64-frame channel stride, so a test can
-    /// hand it a block of any length.
-    #[cfg(test)]
-    pub(crate) fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
-        assert_eq!(left.len(), right.len());
-        let size = left.len();
-        if size == 0 {
-            return;
-        }
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-        let midi_count = self.take_pending_sorted();
-        let volume = self.master_volume.load().get();
-        self.render_events(size, midi_count, volume, &mut |i, l, r| {
-            left[i] = l;
-            right[i] = r;
-        });
-    }
 }
 
-impl AudioUnit for PolySynth {
-    fn reset(&mut self) {
+impl PolySynth {
+    /// Silence every voice and forget the glide: a freshly prepared synth's
+    /// state. Its `Param` cells and MPE mode are untouched.
+    pub(crate) fn reset_voices(&mut self) {
         for voice in &mut self.voices {
             voice.reset();
         }
@@ -915,155 +865,22 @@ impl AudioUnit for PolySynth {
         }
     }
 
-    /// Sever every live handle this clone shares with the original synth, so a
-    /// worker thread can tick it concurrently with live playback safely.
-    ///
-    /// `clone()` shares two layers of live state by `Arc` (correct for the
-    /// commit-clone, where only the original is ticked, but unsafe for an offline
-    /// render ticked on a worker thread while the live synth keeps playing):
-    ///
-    /// 1. **Queued MIDI** — dropped: the fork plays only what reaches it.
-    ///
-    /// 2. **Sounding voices.** Voice state is plain data — the per-sub-voice
-    ///    `Shared` atomics a clone used to alias are gone with the fundsp chain
-    ///    that read them — but a clone still carries the live synth's sounding
-    ///    notes, which an offline render must not replay. The voices and the
-    ///    bank are reset to a clean, inactive set, which is exactly the correct
-    ///    event-free render state, and the allocator is reset to agree the
-    ///    slots are free.
-    ///
-    /// 3. **Control cells.** The master volume and the unison detune/spread are
-    ///    `Param` cells a host (or a mod target, see `mod_target`) writes while
-    ///    the synth plays. Detached at their current values, so a fork renders
-    ///    the controls it was taken with rather than following live moves.
-    ///
-    /// After `isolate()` the synth reads nothing from, and writes nothing into,
-    /// the live world.
-    fn isolate(&mut self) {
-        // Control cells (see #3 above).
+    /// Detach the control cells (master volume, unison detune and spread)
+    /// at their values now: this synth reads and writes cells of its own
+    /// from here on. A fork's half of `fork_instance`.
+    pub(crate) fn detach_controls(&mut self) {
         self.master_volume.detach();
         if let Some(unison) = &mut self.unison {
             unison.detach();
         }
-
-        self.pending = 0;
-
-        // A clean, inactive voice set (see #2 above).
-        for voice in &mut self.voices {
-            voice.reset();
-        }
-        self.bank.reset();
-        self.allocator.reset();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    /// Re-rate the voice bank and the glide.
+    pub(crate) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.bank.set_sample_rate(sample_rate);
         if let Some(ref mut porta) = self.portamento {
             porta.set_sample_rate(sample_rate);
         }
-    }
-
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        self.apply_pending();
-
-        // Fold any control-rate detune/spread modulation in (no-op when unchanged).
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-
-        // The block renderer, one frame long: `tick` and `process` share every
-        // line of DSP, so they cannot drift apart.
-        let volume = self.master_volume.load().get();
-        let mut frame = [0.0f32; 2];
-        self.render_span(0, 1, volume, &mut |_, l, r| frame = [l, r]);
-
-        output[0] = frame[0];
-        if output.len() > 1 {
-            output[1] = frame[1];
-        }
-    }
-
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        if size == 0 {
-            return;
-        }
-
-        // Fold any control-rate detune/spread modulation into the unison params
-        // once per block before rendering (a no-op when nothing moved).
-        if let Some(unison) = &mut self.unison {
-            unison.sync_from_atomics();
-        }
-
-        let midi_count = self.take_pending_sorted();
-        let stereo = ChannelLayout::from(output.channels()).is_multi();
-
-        // The renderer has no block ceiling; `BufferMut` does. Each of its
-        // channels holds exactly `MAX_BUFFER_SIZE` frames — frame 64 of channel
-        // 0 *is* frame 0 of channel 1 — so a larger `size` cannot have come
-        // from a well-formed buffer, and the debug assert catches that contract
-        // breach in tests. In release the synth still renders all `size`
-        // frames, so its clock and every MIDI offset stay where the host put
-        // them, and writes the frames the buffer can hold.
-        debug_assert!(
-            size <= MAX_BUFFER_SIZE,
-            "process size {size} exceeds the BufferMut channel stride ({MAX_BUFFER_SIZE})"
-        );
-
-        let volume = self.master_volume.load().get();
-        self.render_events(size, midi_count, volume, &mut |i, l, r| {
-            if i < MAX_BUFFER_SIZE {
-                output.set_f32(0, i, l);
-                if stereo {
-                    output.set_f32(1, i, r);
-                }
-            }
-        });
-    }
-
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        2
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(self.outputs())
-    }
-
-    /// The amplitude envelope's release stage.
-    ///
-    /// This node takes no audio input — it is driven by MIDI — so "after the
-    /// input stops" means after the last note-off, at which point every
-    /// still-sounding voice rings for its release time. That time is an authored
-    /// parameter rather than an estimate, which is what makes this exact.
-    ///
-    /// A bounce that ends at the last note-off without it chops the release off
-    /// every note in the project.
-    fn tail(&mut self) -> Tail {
-        self.release_tail()
-    }
-
-    fn set(&mut self, _setting: tutti_core::Setting) {}
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::POLY_SYNTH_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + self.voices.capacity() * core::mem::size_of::<SynthVoice>()
-            + self.bank.footprint()
-            + self.midi_buffer.capacity() * core::mem::size_of::<MidiEvent>()
     }
 }
 
@@ -1103,7 +920,8 @@ impl tutti_mod::ModParams for PolySynth {
 
 impl Clone for PolySynth {
     fn clone(&self) -> Self {
-        // Queued MIDI stays with the original.
+        // The clone's MIDI scratch is its own (a clone is a fork's template,
+        // and later a fork: it plays only its own event input).
         Self {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
@@ -1114,7 +932,8 @@ impl Clone for PolySynth {
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
-            pending: 0,
+            #[cfg(test)]
+            queued: Vec::new(),
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }
@@ -1138,18 +957,87 @@ mod tests {
         PolySynth::new(config).expect("synth builds")
     }
 
-    /// A full-ceiling block renders every frame it was asked for.
+    /// A synth driven by hand the way a graph drives it
+    /// (`tutti_graph::contract::drive_in`): what these tests queue with
+    /// [`queue_midi`] is the next block's event input.
     ///
-    /// `size == MAX_BUFFER_SIZE` is the largest block `BufferMut` can carry —
-    /// each channel is exactly that many frames — so this is the boundary where
-    /// an off-by-one in writing the output would show. Blocks longer than that
-    /// cannot be expressed through `process`; the renderer behind it handles
-    /// any length, which `a_long_block_renders_every_frame_like_short_blocks`
-    /// covers.
-    #[test]
-    fn a_full_ceiling_block_renders_every_frame() {
-        use tutti_core::BufferVec;
+    /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
+    ///   on its frame (as the `AudioUnit`-era `tick` applied them all before
+    ///   its frame).
+    /// - [`render_planar`](Hand::render_planar) is one block of `left.len()`
+    ///   frames: each queued event on its `frame_offset`, and one past the
+    ///   block applied after it (as the renderer applies an event at or past
+    ///   the block's end).
+    ///
+    /// The queue is the test-only `queued` field: the synth itself plays
+    /// only its event input.
+    trait Hand {
+        fn tick(&mut self, input: &[f32], output: &mut [f32]);
+        fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]);
+    }
 
+    impl Hand for PolySynth {
+        fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+            let mut queued = std::mem::take(&mut self.queued);
+            for e in &mut queued {
+                e.frame_offset = 0;
+            }
+            let [l, r] = self.drive(1, queued);
+            output[0] = l[0];
+            if output.len() > 1 {
+                output[1] = r[0];
+            }
+        }
+
+        fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]) {
+            assert_eq!(left.len(), right.len());
+            let queued = std::mem::take(&mut self.queued);
+            let [l, r] = self.drive(left.len(), queued);
+            left.copy_from_slice(&l);
+            right.copy_from_slice(&r);
+        }
+    }
+
+    impl PolySynth {
+        /// One block of `frames` under `queued` (stable-sorted by offset),
+        /// through `Node::process`.
+        fn drive(&mut self, frames: usize, mut queued: Vec<MidiEvent>) -> [Vec<f32>; 2] {
+            queued.sort_by_key(|e| e.frame_offset);
+            let block = tutti_core::Samples(frames);
+            let (inside, past): (Vec<MidiEvent>, Vec<MidiEvent>) = queued
+                .into_iter()
+                .partition(|e| (e.frame_offset as usize) < frames);
+            let events: Vec<tutti_graph::Event> = inside
+                .iter()
+                .map(|e| {
+                    let at = tutti_graph::Offset::new(e.frame_offset as usize, block)
+                        .expect("inside the block");
+                    tutti_graph::Event::midi(at, e.data)
+                })
+                .collect();
+            let env = tutti_graph::Env {
+                frame: tutti_core::Frame(0),
+                sample_rate: self.config.sample_rate,
+                block_len: block,
+                transport: tutti_graph::Transport::default(),
+                changes: tutti_graph::TransportChanges::NONE,
+            };
+            let out = tutti_graph::contract::drive_in(self, &env, &[], &[], &[&events]).audio;
+            for e in &past {
+                self.apply_midi(e);
+            }
+            out.try_into().expect("stereo")
+        }
+    }
+
+    /// A long block renders every frame it was asked for.
+    ///
+    /// The `AudioUnit` era's ceiling (`BufferMut`'s 64-frame channel stride)
+    /// is gone with it; a graph block is as long as the graph was prepared
+    /// for, so this renders four 512-frame blocks, each read in full.
+    /// `a_long_block_renders_every_frame_like_short_blocks` covers longer.
+    #[test]
+    fn a_full_block_renders_every_frame() {
         let mut synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1165,30 +1053,22 @@ mod tests {
         });
         queue_midi(&mut synth, &[ev_note_on(0, 69, 100)]);
 
-        let input = BufferVec::new(2);
-        let mut output = BufferVec::new(2);
-
-        // Several full-ceiling blocks, not one: the voice's own smoothing ramps
-        // mean the first blocks after a note-on are legitimately near-silent, so a
-        // single block proves nothing about the buffer sizing.
+        // Several blocks, not one: the voice's own smoothing ramps mean the
+        // first frames after a note-on are legitimately near-silent.
         let mut peak = 0.0f32;
+        let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
         for _ in 0..4 {
-            synth.process(
-                MAX_BUFFER_SIZE,
-                &input.buffer_ref(),
-                &mut output.buffer_mut(),
-            );
-            let left = output.buffer_ref().channel_f32(0);
-            // Read all MAX_BUFFER_SIZE frames — indexing the full width is itself
-            // the check that `process` wrote them.
-            peak = left[..MAX_BUFFER_SIZE]
-                .iter()
-                .fold(peak, |a, s| a.max(s.abs()));
+            synth.render_planar(&mut left, &mut right);
+            peak = left.iter().fold(peak, |a, s| a.max(s.abs()));
         }
+        assert!(
+            left[448..].iter().any(|&s| s != 0.0),
+            "the block's last frames were rendered"
+        );
 
         assert!(
             peak > 0.0,
-            "a held note must produce audio across full-ceiling blocks"
+            "a held note must produce audio across the blocks"
         );
         assert_eq!(
             synth.active_voice_count(),
@@ -1197,9 +1077,9 @@ mod tests {
         );
     }
 
-    /// Queue events for the synth's next hand-driven block.
+    /// Queue events for the synth's next hand-driven block ([`Hand`]).
     fn queue_midi(synth: &mut PolySynth, events: &[MidiEvent]) {
-        synth.queue_midi(events);
+        synth.queued.extend_from_slice(events);
     }
 
     // --- Test event builders (MIDI 1.0 7-bit values upconverted to UMP CV2) ---
@@ -1242,13 +1122,16 @@ mod tests {
         )
     }
 
-    /// **Queued MIDI stays with the synth it was queued on**: a clone plays
-    /// none of it, and the original all of it.
+    /// **A fork carries no sounding note**: a note playing on the live synth
+    /// is not in its fork, which plays only what its own event input brings
+    /// (the `AudioUnit` era's version of this pinned that MIDI queued by hand
+    /// stayed with the original; the queue is gone, and the voices are what
+    /// a copy could still carry).
     ///
-    /// Mutation (run): `Clone` copying `pending` (and the buffer) → the clone
-    /// plays the note → fails.
+    /// Mutation (run): `fork_instance` not resetting the voices → the fork
+    /// sounds the live note → fails.
     #[test]
-    fn queued_midi_stays_with_the_original() {
+    fn a_fork_carries_no_sounding_note() {
         let mut live = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1257,13 +1140,15 @@ mod tests {
             ..Default::default()
         });
         queue_midi(&mut live, &[ev_note_on(0, 60, 100)]);
-        let mut render = live.clone();
-
         let mut out = [0.0f32; 2];
-        render.tick(&[], &mut out);
-        assert_eq!(render.active_voice_count(), 0, "the clone played nothing");
         live.tick(&[], &mut out);
         assert_eq!(live.active_voice_count(), 1, "the original played its note");
+
+        let mut render = live.fork_instance();
+        assert_eq!(render.active_voice_count(), 0, "the fork holds no voice");
+        let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+        render.render_planar(&mut l, &mut r);
+        assert!(l.iter().all(|&s| s == 0.0), "and sounds nothing");
     }
 
     /// Regression: the deeper half of the same bug. `SynthVoice` used to hold
@@ -1275,7 +1160,7 @@ mod tests {
     /// keeps it pinned. Driving the clone's voice must leave the live voice's
     /// gate untouched.
     #[test]
-    fn isolate_unaliases_voice_shared_params() {
+    fn a_clone_unaliases_voice_state() {
         let mut live = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
@@ -1292,10 +1177,9 @@ mod tests {
         let live_gate_before = live.voices[0].gate_value();
         assert_eq!(live_gate_before, 1.0, "live voice gate should be open");
 
-        // Clone + isolate (the render path). Then drive a note-off through the
-        // clone's *own* (fresh) machinery: gate the clone's voice shut.
+        // A clone (a fork's template), then a note-off driven through the
+        // clone's *own* machinery: gate the clone's voice shut.
         let mut render = live.clone();
-        render.isolate();
         // A clone that still ALIASED the voice Shared would, by note_off on its
         // voice, also slam the live voice's gate to 0.0.
         if let Some(v) = render.voices.get_mut(0) {
@@ -2156,7 +2040,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 4);
 
         // Reset
-        synth.reset();
+        tutti_graph::Node::reset(&mut synth);
         assert_eq!(
             synth.active_voice_count(),
             0,
@@ -3512,16 +3396,19 @@ mod tests {
     }
 
     /// A fork of the synth renders the master volume and unison it was taken
-    /// with (`tutti_graph::contract::IsolateRow`). `isolate` empties the voices
-    /// and the queued MIDI, so `excite` queues a chord into each rendered
-    /// copy's own queue.
+    /// with, audibly: for each param, a move set through the synth's
+    /// `ParamSet` after a fork is not in that fork's render, and one before a
+    /// fork is (the `ParamNode` fork `param_parts` inserts; it replaced the
+    /// `AudioUnit` era's `IsolateRow`). Each rendered fork is handed its own
+    /// chord, as its clip would.
     ///
-    /// Mutations (run): drop `self.master_volume.detach()` → "volume" fails
-    /// with "a live move reached the fork"; drop `unison.detach()` → "detune"
-    /// and "spread" fail.
+    /// Mutations (run): `fork_instance` not detaching `master_volume` →
+    /// "Volume: a live move reached the fork" → fails; not detaching the
+    /// unison → "Detune" and "StereoSpread" fail the same way.
     #[test]
-    fn isolate_snapshots_volume_and_unison() {
-        tutti_graph::contract::IsolateRow::new("PolySynth (saw, 3-voice unison)", || {
+    fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
+        use tutti_graph::ParamFork;
+        let live = || {
             let synth = synth(SynthConfig {
                 sample_rate: tutti_core::SampleRate(48_000.0),
                 max_voices: 4,
@@ -3537,26 +3424,53 @@ mod tests {
             });
             synth.set_volume(0.5);
             synth
-        })
-        .excite(|s| queue_midi(s, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]))
-        .control("volume", |s| s.set_volume(0.9))
-        .control("detune", |s| {
-            s.detune_atomic()
-                .expect("unison")
-                .store(40.0, tutti_core::Ordering::Release)
-        })
-        .control("spread", |s| {
-            s.spread_atomic()
-                .expect("unison")
-                .store(1.0, tutti_core::Ordering::Release)
-        })
-        .check();
+        };
+        let render = |mut fork: PolySynth| {
+            queue_midi(&mut fork, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]);
+            let (mut l, mut r) = (vec![0.0f32; 2_048], vec![0.0f32; 2_048]);
+            fork.render_planar(&mut l, &mut r);
+            (l, r)
+        };
+        for (param, value) in [
+            (tutti_core::UnitParam::Volume, 0.9),
+            (tutti_core::UnitParam::Detune, 40.0),
+            (tutti_core::UnitParam::StereoSpread, 1.0),
+        ] {
+            let synth = live();
+            let source = ParamFork::new(&synth);
+            let baseline = render(source.fork_node());
+            assert!(baseline.0.iter().any(|&s| s != 0.0), "the chord sounds");
+            let taken = source.fork_node();
+            assert!(
+                source.params().set(param, value),
+                "{param:?} is addressable"
+            );
+            assert_eq!(
+                render(taken),
+                baseline,
+                "{param:?}: a live move reached the fork"
+            );
+            assert_ne!(
+                render(source.fork_node()),
+                baseline,
+                "{param:?}: a fork taken after the move does not hear it"
+            );
+        }
     }
 }
 
 impl PolySynth {
-    /// The amplitude envelope's release, as a tail (see `AudioUnit::tail`).
-    fn release_tail(&self) -> Tail {
+    /// The amplitude envelope's release stage, as the node's tail.
+    ///
+    /// This node takes no audio input — it is driven by MIDI — so "after the
+    /// input stops" means after the last note-off, at which point every
+    /// still-sounding voice rings for its release time. That time is an
+    /// authored parameter rather than an estimate, which is what makes this
+    /// exact.
+    ///
+    /// A bounce that ends at the last note-off without it chops the release
+    /// off every note in the project.
+    pub(crate) fn release_tail(&self) -> Tail {
         match self
             .config
             .envelope

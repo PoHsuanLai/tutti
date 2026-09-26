@@ -151,9 +151,9 @@
 //! one **if it says so**: `AudioUnit::forkable()`, default `true`, is the
 //! unit's promise that its `isolate` severs all its shared mutable state.
 //! The fork trusts that promise and nothing else. A unit that cannot keep it
-//! answers `false` — `MicMonitorNode` (its clone shares the ring consumer),
-//! `InProcessVst2Client` (clones share the plugin; an out-of-process
-//! `PluginClient` is a native node, not an `AudioUnit`) — and
+//! answers `false` — as the mic monitor and the in-process VST2 plugin did
+//! before they became native nodes inserted with no fork source (their
+//! clones share the ring consumer, the plugin) — and
 //! so does any unit holding one (`Net` asks its vertices); the node is then
 //! inserted without a fork source, and a fork that needs it is
 //! [`ForkError::NotForkable`](crate::ForkError::NotForkable).

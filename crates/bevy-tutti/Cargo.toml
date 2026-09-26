@@ -206,6 +206,9 @@ au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 export = ["dep:tutti-export"]
 
 [dev-dependencies]
+# `contract::Direct`: a node driven by hand as a graph drives it, for the
+# reference renders the export tests compare against.
+tutti-graph = { path = "../core/tutti-graph", features = ["contract"] }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }

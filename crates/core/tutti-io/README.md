@@ -7,8 +7,9 @@ out to a file.
 
 Four live pieces, and recording is just a pump between two of them:
 
-- `MicMonitorNode` — the read side, an `AudioUnit` over a device-filled ring, so
-  a live input can sit anywhere in the graph.
+- `MicMonitorNode` — the read side, a native graph node over a device-filled
+  ring, so a live input can sit anywhere in the graph. Inserted unforkable: an
+  export of a graph holding the live mic is refused, naming it.
 - `TapIn` — the *other* read side: the analysis tap's consumer end adapted to
   `AudioIn`, so what the graph is playing records through the same pump that
   records a microphone. `AudioTap` itself is `tutti-core`'s (the audio callback

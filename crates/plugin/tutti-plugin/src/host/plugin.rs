@@ -75,8 +75,8 @@ enum Backend {
 /// A loaded plugin: its audio node, its control surface, and the per-block
 /// inputs it can accept.
 ///
-/// See the module docs for why this replaces
-/// `(Box<dyn AudioUnit>, PluginHandle)`.
+/// See the module docs for why this replaces the old
+/// `(Box<dyn AudioUnit>, PluginHandle)` pair.
 pub struct Plugin {
     backend: Backend,
     handle: PluginHandle,
@@ -331,16 +331,15 @@ impl Plugin {
     /// which hands back its controls and the fork source that forks it by
     /// state transfer).
     ///
-    /// `Err` carries the node for a plugin that is not a `PluginClient` — an
-    /// in-process VST2 instance, which has no fork source yet; a fork of a
+    /// `Err` carries the graph node for a plugin that is not a
+    /// `PluginClient` — an in-process VST2 instance, which has no fork source
+    /// yet: insert it as `tutti_graph::Unforkable(node)`, and a fork of a
     /// graph holding it is refused as not forkable. Clone the
     /// [`handle`](Self::handle) first if the control surface is needed after
     /// this.
     ///
     /// Boxed, like the backend holding it: a `PluginClient` is several KiB.
-    pub fn into_client(
-        self,
-    ) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_core::AudioUnit>> {
+    pub fn into_client(self) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_graph::Node>> {
         match self.backend {
             Backend::Subprocess(c) => Ok(c),
             #[cfg(feature = "vst2")]

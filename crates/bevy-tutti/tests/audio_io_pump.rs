@@ -594,7 +594,7 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(monitor)
+            graph.insert_node(monitor).0
         };
         let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
@@ -622,7 +622,7 @@ mod io_graph_composition {
 
         let (mon_id, fx_id) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            (graph.insert(monitor), graph.insert(Through::mono()))
+            (graph.insert_node(monitor).0, graph.insert(Through::mono()))
         };
         let mon = app.world_mut().spawn(mon_id).id();
         let fx = app.world_mut().spawn(fx_id).id();
@@ -654,7 +654,7 @@ mod io_graph_composition {
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(monitor)
+            graph.insert_node(monitor).0
         };
         let entity = app.world_mut().spawn(id).id();
         app.insert_resource(MasterSources::from(entity));
@@ -694,7 +694,7 @@ mod io_graph_composition {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             // Added to the graph — but never declared to `MasterSources`, which is
             // the step a host forgets.
-            let _ = graph.insert(monitor);
+            let _ = graph.insert_node(monitor).0;
         }
         app.update();
 

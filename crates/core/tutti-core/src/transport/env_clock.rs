@@ -100,6 +100,21 @@ fn beats(env: &tutti_graph::Env, emit: impl FnMut(usize, Beat)) {
     env.for_each_beat(emit);
 }
 
+/// The beat of every frame of one piece of a block ([`Env::segments`]'s
+/// `(start, piece)`), handed to `emit` with its index in the whole block —
+/// [`Env::for_each_piece_beat`](tutti_graph::Env::for_each_piece_beat),
+/// the walk [`EnvClock`] and the metronome (`ClickNode`, which gates each
+/// piece on its transport) share.
+///
+/// [`Env::segments`]: tutti_graph::Env::segments
+pub(super) fn piece_beats(
+    start: tutti_graph::Offset,
+    piece: &tutti_graph::Env,
+    emit: impl FnMut(usize, Beat),
+) {
+    piece.for_each_piece_beat(start, emit);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

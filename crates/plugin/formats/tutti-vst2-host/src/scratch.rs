@@ -7,11 +7,11 @@
 //!
 //! Both widths are resident. VST 2.4 has two render entry points —
 //! `processReplacing` and `processReplacingF64` — and the caller picks per
-//! block, not per instance: `InProcessVst2Client` implements `AudioUnit`
-//! at both widths on one object, and the subprocess loader switches on the
-//! incoming `AudioBufferMut` variant. Neither knows at construction which
-//! it will be asked for, and growing a buffer on the first f64 block would
-//! allocate on the audio thread.
+//! block, not per instance: the subprocess loader switches on the incoming
+//! `AudioBufferMut` variant, and does not know at construction which it will
+//! be asked for; growing a buffer on the first f64 block would allocate on
+//! the audio thread. (The in-process node, `InProcessVst2Client`, renders
+//! `f32` only: the native graph is `f32`.)
 
 use tutti_plugin_types::ChannelLayout;
 
@@ -39,9 +39,9 @@ pub struct RenderScratch {
 // within the same struct. They are never read concurrently — callers
 // ensure exclusive access (subprocess server holds a single instance;
 // in-process backend serializes via Mutex). `Sync` is needed because
-// `tutti-plugin`'s in-process audio unit requires `Send + Sync`
-// (fundsp's `dyn AudioUnit` bound), even though every actual touch of
-// the pointers is serialized.
+// `tutti-plugin`'s in-process node once required `Send + Sync` (fundsp's
+// `dyn AudioUnit` bound; a graph node needs only `Send`), even though every
+// actual touch of the pointers is serialized.
 unsafe impl Send for RenderScratch {}
 unsafe impl Sync for RenderScratch {}
 

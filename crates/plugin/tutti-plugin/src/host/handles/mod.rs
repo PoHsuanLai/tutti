@@ -47,6 +47,6 @@ pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_nodes::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 graph node. Used when a host loads VST2 plugins directly in
-/// the host process (via `in_process_vst2`); it takes MIDI on its event input.
+/// the host process (via `in_process_vst2_client`); it takes MIDI on its event input.
 #[cfg(feature = "vst2")]
 pub use crate::format::vst2_in_process::InProcessVst2Client;

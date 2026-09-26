@@ -19,35 +19,43 @@
 //!
 //! Not waiting makes a stalled plugin cost zero, however many there are and
 //! whatever the graph's shape. The price is one chunk of latency per
-//! out-of-process plugin — 64 frames, 1.33 ms at 48 kHz — *declared to PDC*
-//! (the node's `Shape::latency`, through `PluginControls::declared_latency`)
-//! and so compensated rather than heard. This is what JACK, PipeWire and AUv3
-//! all do.
+//! out-of-process plugin — *declared to PDC* (the node's `Shape::latency`,
+//! through `PluginControls::declared_latency`) and so compensated rather than
+//! heard. This is what JACK, PipeWire, AUv3 and every DAW that hosts plugins
+//! out of process do.
 //!
 //! # A FIFO, so every chunk is whole
 //!
-//! The calls the node is handed need not line up with chunks: a 480-frame
-//! device quantum rendered in 64-frame passes ends each callback on a 32-frame
-//! pass, and an export may render 100-frame blocks. Shipping each call as it
-//! came (a 36-frame submission, then a 64-frame one collecting it) dropped or
-//! zero-padded frames wherever consecutive lengths differed. So a call's input
-//! only ever fills the FIFO, a submission is always one whole chunk, and the
-//! output is read from the ring at the same position the input is written:
-//! output frame `t` is the plugin's output for input frame `t - chunk`, for
-//! any cut of the calls. When calls are whole chunks (a 64-frame graph) this
-//! is exactly the old behaviour: submit at the end of one call, collect at the
-//! start of the next.
+//! The calls the node is handed need not line up with chunks: the engine
+//! renders a device callback in 64-frame passes while a `Legacy`-flagged node
+//! is in the graph, and an export may render 100-frame blocks. Shipping each
+//! call as it came (a 36-frame submission, then a 64-frame one collecting it)
+//! dropped or zero-padded frames wherever consecutive lengths differed. So a
+//! call's input only ever fills the FIFO, a submission is always one whole
+//! chunk, and the output is read from the ring at the same position the input
+//! is written: output frame `t` is the plugin's output for input frame
+//! `t - chunk`, for any cut of the calls.
 //!
-//! # A 64-frame pipeline, whatever the block
+//! # One device callback per chunk
 //!
-//! The chunk is fixed by [`prepare`](Batcher::prepare): [`BATCH_SIZE`] (or the
-//! host's smaller `max_buffer_size`), or the graph's `MaxBlock` when that is
-//! smaller still. It does **not** follow the block: a node handed a 512-frame
-//! device quantum still ships 64-frame chunks, so its pipeline latency stays
-//! 64 frames rather than growing to one device block per plugin. Doc 013
-//! records the decision (Verdicts, `Batcher`): the low latency and the
-//! robustness this pipeline is already tested for, over following the block;
-//! making it configurable later is cheap.
+//! The chunk is settled by [`prepare`](Batcher::prepare): the host's device
+//! quantum (`Prepare::quantum`) when it knows one, else the graph's
+//! `MaxBlock`, never past the slab's [`MAX_CHUNK`]. Live, that makes a chunk
+//! complete on a callback's last frame and its output first needed on the
+//! next callback's first — so the server has a whole device period to answer,
+//! and the plugin's latency is one device block, as a DAW hosting plugins out
+//! of process has it.
+//!
+//! Doc 013 had decided the opposite first (decision 8: a fixed 64-frame
+//! pipeline, for the lower latency), and reversed it on measurement: with a
+//! 64-frame chunk inside a 480-frame callback, every chunk but the first is
+//! collected microseconds after it was submitted, and 186 of 200 blocks
+//! rendered silent (441: 198; 1024: 187); with the callback as the chunk, 0
+//! of 200 (`tests/clap_live.rs`). A chunk that is not the callback — a host
+//! that does not know its quantum, a device calling back with more than
+//! `MAX_CHUNK` frames, or one whose callbacks vary — still delays exactly
+//! `chunk` frames, but may collect chunks the server had no time to answer.
+//! An offline fork waits for every chunk, so it is exact whatever its chunk.
 //!
 //! Whether N−1's output is really there is decided by the slab's per-slot
 //! sequence numbers, not by a reply arriving: a mismatch yields silence. See
@@ -68,16 +76,20 @@ use crate::protocol::{MidiEventVec, SampleFormat};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tutti_core::Samples;
-use tutti_graph::MaxBlock;
+use tutti_graph::Prepare;
 
-/// The largest chunk that crosses the process edge, and so the ceiling on the
-/// pipeline's declared latency.
+/// The largest chunk that crosses the process edge: the largest device
+/// callback a live plugin keeps in step with, and so the ceiling on the
+/// pipeline's declared latency (85 ms at 48 kHz).
 ///
 /// The shared-memory slab is sized to this at launch (`subprocess::launch`,
-/// the other consumer of this constant), before the node is prepared — so
-/// [`Batcher::prepare`] can only narrow the chunk, never widen it, and the
-/// slab and the batcher agree on the per-chunk ceiling by construction.
-pub(crate) const BATCH_SIZE: usize = 64;
+/// the other consumer of this constant; or to the host's smaller
+/// `max_buffer_size`), before the node is prepared — so [`Batcher::prepare`]
+/// can only narrow the chunk, never widen it, and the slab and the batcher
+/// agree on the per-chunk ceiling by construction. A device calling back
+/// with more frames than this gets a chunk of this many, which no longer
+/// lines up with its callbacks (module docs).
+pub(crate) const MAX_CHUNK: usize = 4096;
 
 /// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
 /// [`Batcher::new`] for the chunk ceiling, because the wire format is known
@@ -239,13 +251,15 @@ impl Batcher {
         }
     }
 
-    /// Settle the chunk for blocks of up to `max_block` frames: the slab's
-    /// ceiling, or `max_block` when that is smaller — a graph that never hands
-    /// the node more than 32 frames gets a 32-frame pipeline, and one handed
-    /// 1024 still ships 64-frame chunks (module docs). Starts the pipeline
-    /// over, as a re-prepare starts the node over.
-    pub(super) fn prepare(&mut self, max_block: MaxBlock) {
-        self.chunk = self.ceiling.min(max_block.get()).max(1);
+    /// Settle the chunk for `p`: the host's device quantum when it knows one
+    /// (live: one chunk per device callback, so the server has a whole
+    /// device period to answer), else the graph's `MaxBlock` (an offline
+    /// render, or a host that does not know its callback), never past the
+    /// slab's ceiling (module docs, "One device callback per chunk"). Starts
+    /// the pipeline over, as a re-prepare starts the node over.
+    pub(super) fn prepare(&mut self, p: &Prepare) {
+        let want = p.quantum().map_or(p.max_block().get(), Samples::get);
+        self.chunk = self.ceiling.min(want).max(1);
         self.reset();
     }
 
@@ -483,17 +497,12 @@ impl Batcher {
 mod tests {
     use super::*;
     use tutti_core::SampleRate;
-    use tutti_graph::Prepare;
-
-    fn max_block(frames: usize) -> MaxBlock {
-        Prepare::new(SampleRate(48_000.0), Samples(frames)).max_block()
-    }
 
     /// A fresh batcher has nothing in flight, so its first chunk must be silence
     /// rather than whatever the output slot happens to contain.
     #[test]
     fn a_fresh_batcher_expects_nothing() {
-        let b = Batcher::new(2, 2, SampleFormat::Float32, BATCH_SIZE);
+        let b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
         assert_eq!(b.expect_seq, None);
         assert_eq!(b.next_seq, 1, "0 means 'never published' in the slab");
     }
@@ -504,7 +513,7 @@ mod tests {
     /// fragment of pre-seek audio.
     #[test]
     fn reset_drops_the_in_flight_block_without_rewinding() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, BATCH_SIZE);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
         b.next_seq = 100;
         b.expect_seq = Some(99);
 
@@ -536,7 +545,7 @@ mod tests {
     /// would have been pinning the artifact.
     #[test]
     fn no_post_seek_sequence_can_collide_with_a_pre_seek_one() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, BATCH_SIZE);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
 
         let mut pre_seek = Vec::new();
         for _ in 0..5 {
@@ -570,28 +579,34 @@ mod tests {
     }
 
     /// The pipeline's chunk — and so the latency it declares — comes from
-    /// `prepare`: the slab's 64-frame ceiling for any `MaxBlock` at or past
-    /// it (the 64-frame pipeline doc 013 decided to keep at device-quantum
-    /// blocks), and the `MaxBlock` itself when a graph never hands the node
-    /// that many frames. A host's smaller slab caps it too.
+    /// `prepare`: the host's device quantum when it has one (one chunk per
+    /// callback: doc 013 reversed decision 8, a live plugin now keeps in step
+    /// with the device rather than a 64-frame grid), else the graph's
+    /// `MaxBlock`, capped by the slab's ceiling either way.
     ///
-    /// Mutation: `self.chunk = max_block.get()` in `prepare` → the 1024-frame
-    /// graph declares 1024 frames (21 ms per plugin at 48 kHz) → fails.
-    /// Mutation: `self.chunk = self.ceiling` → the 32-frame graph declares 64
-    /// for a pipeline that holds 32 → fails.
+    /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the
+    /// reversed 64-frame pipeline) → the 480-frame quantum ships 64 → fails.
+    /// Mutation: ignore `quantum()` → 1024 instead of 480 → fails. Mutation:
+    /// drop the `ceiling.min` → the small slab's chunk is 1024 → fails.
     #[test]
-    fn the_pipeline_chunk_comes_from_prepare_and_stays_at_most_64() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, BATCH_SIZE);
-        b.prepare(max_block(1024));
-        assert_eq!(b.chunk(), 64);
-        assert_eq!(b.pipeline_latency(), Samples(64));
-        b.prepare(max_block(64));
-        assert_eq!(b.pipeline_latency(), Samples(64));
-        b.prepare(max_block(32));
+    fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
+        let prepare = |max: usize| Prepare::new(SampleRate(48_000.0), Samples(max));
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        b.prepare(&prepare(1024).with_quantum(Samples(480)));
+        assert_eq!(b.pipeline_latency(), Samples(480));
+        b.prepare(&prepare(64).with_quantum(Samples(2048)));
+        assert_eq!(
+            b.pipeline_latency(),
+            Samples(2048),
+            "the quantum, not MaxBlock"
+        );
+        b.prepare(&prepare(1024));
+        assert_eq!(b.pipeline_latency(), Samples(1024), "no quantum: MaxBlock");
+        b.prepare(&prepare(32));
         assert_eq!(b.pipeline_latency(), Samples(32));
 
         let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16);
-        small_slab.prepare(max_block(1024));
+        small_slab.prepare(&prepare(1024));
         assert_eq!(small_slab.pipeline_latency(), Samples(16));
     }
 
@@ -603,10 +618,10 @@ mod tests {
     /// fails.
     #[test]
     fn prepare_drops_the_chunk_in_flight() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, BATCH_SIZE);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
         b.next_seq = 7;
         b.expect_seq = Some(6);
-        b.prepare(max_block(128));
+        b.prepare(&Prepare::new(SampleRate(48_000.0), Samples(128)));
         assert_eq!(b.expect_seq, None);
         assert_eq!(b.next_seq, 7);
     }

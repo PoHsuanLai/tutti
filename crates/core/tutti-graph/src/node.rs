@@ -328,6 +328,7 @@ impl MaxBlock {
 pub struct Prepare {
     sample_rate: SampleRate,
     max_block: MaxBlock,
+    quantum: Option<Samples>,
 }
 
 impl Prepare {
@@ -341,7 +342,38 @@ impl Prepare {
         Self {
             sample_rate,
             max_block: MaxBlock(max_block.get()),
+            quantum: None,
         }
+    }
+
+    /// This prepare, for a host whose device calls back with `quantum`
+    /// frames each time (the largest, if its callbacks vary).
+    ///
+    /// A hint about the host, not a bound on blocks: the executor may still
+    /// hand a node any block up to [`max_block`](Self::max_block), cut however
+    /// the host renders a callback. A node that must keep work in step with
+    /// the device reads it — a hosted out-of-process plugin ships one
+    /// callback's worth to its server per callback, so the server has a
+    /// whole device period to answer. `None` (the default) when the host does
+    /// not know, or renders offline.
+    ///
+    /// # Panics
+    ///
+    /// If `quantum` is zero.
+    #[must_use]
+    pub fn with_quantum(mut self, quantum: Samples) -> Self {
+        assert!(
+            !quantum.is_zero(),
+            "a device callback holds at least one frame"
+        );
+        self.quantum = Some(quantum);
+        self
+    }
+
+    /// The host's device callback size, when it knows one. See
+    /// [`with_quantum`](Self::with_quantum).
+    pub const fn quantum(&self) -> Option<Samples> {
+        self.quantum
     }
 
     /// The rate every block will run at.
@@ -984,6 +1016,22 @@ mod tests {
         assert!(SilenceMask::NONE.covers(0));
         assert!(!SilenceMask::NONE.with(70).get(70));
         assert!(SilenceMask::NONE.with(5).get(5));
+    }
+
+    /// A prepare carries the host's device quantum only when told, and a
+    /// different quantum is a different prepare (so a re-prepare to it is not
+    /// skipped as a no-op).
+    ///
+    /// Mutation: `with_quantum` returning `self` unchanged → `quantum()` is
+    /// `None` and the two compare equal → fails.
+    #[test]
+    fn a_prepare_carries_the_device_quantum_it_is_given() {
+        let p = Prepare::new(SampleRate(48_000.0), Samples(1024));
+        assert_eq!(p.quantum(), None);
+        let q = p.with_quantum(Samples(480));
+        assert_eq!(q.quantum(), Some(Samples(480)));
+        assert_eq!(q.max_block(), p.max_block());
+        assert_ne!(p, q);
     }
 
     /// Scratch built from a `MaxBlock` serves every block up to it, and

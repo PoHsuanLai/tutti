@@ -176,7 +176,9 @@ fn rerate(
         .map(|t| t.0.clone())
         .ok_or_else(not_built)?;
     let mut graph = world.resource_mut::<AudioGraphRes>();
-    graph.rerate(rate, max_block)?;
+    // The new device's callback size too: a hosted plugin's pipeline follows
+    // it, and its declared latency with it (the graph re-reads every shape).
+    graph.rerate(rate, max_block, spec.quantum)?;
     // The transport's rate first: it marks every frame-timed command sent
     // from here on as already in the new rate's frames, and the engine's
     // settle below rescales only the ones before the mark.
@@ -863,6 +865,85 @@ mod tests {
             (period(&out[4_800..]) - 24.0).abs() < 0.01,
             "2 kHz at 48 kHz, measured {}",
             period(&out[4_800..])
+        );
+    }
+
+    #[cfg(feature = "plugin")]
+    use crate::test_plugin_paths as plugin_paths;
+
+    /// **A restart onto a device with another callback size re-declares a
+    /// hosted plugin's latency, and PDC follows.** A live plugin ships one
+    /// device callback per chunk to its server (doc 013, decision 8
+    /// reversed), so its declared latency is its own 137 frames plus the
+    /// callback: 137 + 512 on the first device, 137 + 256 once the restart
+    /// re-prepares the graph for the second (`OutputSpec::quantum` →
+    /// `Prepare::quantum`). The graph's latency (`GraphLatency`, the plugin
+    /// alone on output 0) is the new figure before the first block.
+    ///
+    /// Mutation: `rerate` passing `None` for the quantum → the chunk falls
+    /// back to the graph's `MaxBlock` (1024) → 1161, not 393 → fails.
+    /// Mutation: `build_on` not passing the opened spec's quantum → 1161 on
+    /// the first device → fails.
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
+        // SAFETY: nextest runs this test in its own process, and nothing
+        // else in it reads the environment concurrently.
+        unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_paths::plugin_server()) };
+        let mut app = App::new();
+        let plugin = TuttiPlugin::default();
+        let (driver, stream) = ManualStreamDriver::new();
+        build_on(
+            &plugin,
+            &mut app,
+            AudioEngine::from_spec(spec_at(NEW).with_quantum(tutti_core::Samples(512))),
+            |engine, state| engine.start_with(state, driver),
+        )
+        .expect("builds with no device");
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
+
+        let client = tutti_plugin::handles::PluginClient::new(
+            tutti_plugin::BridgeConfig::default(),
+            plugin_paths::clap_probe(),
+            SampleRate(NEW),
+        )
+        .expect("the reference plugin loads");
+        let node = {
+            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+            let node = graph.insert_plugin(Box::new(client));
+            graph.set_output_source(0, crate::graph::GraphSource::Node(node, 0));
+            node
+        };
+        app.world_mut().resource_mut::<crate::graph::GraphDirty>().0 = true;
+        app.update();
+        let _ = stream.render_block(512).expect("the stream is open");
+        app.update();
+        let latency = |app: &App| app.world().resource::<AudioGraphRes>().node_latency(node);
+        assert_eq!(
+            latency(&app),
+            tutti_core::Samples(137 + 512),
+            "one 512-frame callback"
+        );
+        assert_eq!(app.world().resource::<GraphLatency>().0, latency(&app));
+
+        let (driver, _new) = ManualStreamDriver::new();
+        restart_device_on(
+            app.world_mut(),
+            spec_at(NEW).with_quantum(tutti_core::Samples(256)),
+            driver,
+            None,
+        )
+        .expect("restarts");
+        assert_eq!(
+            latency(&app),
+            tutti_core::Samples(137 + 256),
+            "one 256-frame callback"
+        );
+        assert_eq!(
+            app.world().resource::<GraphLatency>().0,
+            tutti_core::Samples(137 + 256),
+            "PDC follows before the first block"
         );
     }
 }

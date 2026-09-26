@@ -128,11 +128,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | bevy-tutti: `crossfade_audio_node(.., Box::new(plugin_client))` | `crossfade_plugin_node(commands, entity, client)`; `AudioGraphRes::{insert_plugin, replace_plugin}` are public, and `ReplaceRefused` is generic over what it hands back (`ReplaceRefused<U = Box<dyn AudioUnit>>`) |
   | bevy-tutti: `AudioGraphRes::inspect` on a plugin node read its `Legacy` shadow | `None`: a plugin node has no shadow; its controls are the entity's `PluginShadow` |
 
-  The IPC pipeline keeps a **64-frame internal chunk** whatever the block
-  (doc 013's open `Batcher` question, decided): a node handed a longer block
-  ships 64-frame chunks, so its pipeline latency stays 64 frames. Tick mode
-  and `TickStorage` are gone from the batcher; the chunk comes from
-  `prepare(max_block)`.
+  **A live plugin's latency is now one device block** (plus its own), which
+  is how DAWs host out-of-process plugins. The IPC pipeline ships one device
+  callback per chunk, so the plugin-server has a whole device period to
+  answer. Doc 013's decision 8 had kept a fixed 64-frame chunk; that left
+  the server microseconds for every chunk after a callback's first, and live
+  plugin audio was 93–99% silent blocks at 441-, 480- and 1024-frame
+  callbacks (0% now). The chunk is `Prepare::quantum` when the host knows
+  its callback size, else `MaxBlock`, at most 4096 frames; tick mode and
+  `TickStorage` are gone from the batcher.
+
+  | Was | Now |
+  |---|---|
+  | a plugin declared its latency + 64 | + one device callback (live), + the graph's `MaxBlock` (a render, or a host that does not know its callback) |
+  | tutti-graph: `Prepare` carried rate and `MaxBlock` | also an optional device quantum: `Prepare::with_quantum`, `Prepare::quantum` (additive) |
+  | tutti-cpal opened every stream with the backend's default buffer | a device reporting a buffer range is opened with a fixed 512-frame buffer (`PREFERRED_QUANTUM`, clamped into the range), reported as `OutputSpec::quantum` (new field, `OutputSpec::with_quantum`); a device reporting none keeps its default buffer and `quantum: None` |
+  | bevy-tutti prepared the graph for rate and `MaxBlock` | also the opened stream's quantum, at build and again on a device restart (`AudioGraphRes::prepared` reads it) |
+  | the plugin-server's shared slab held 64 frames per channel | `MAX_CHUNK` (4096) or the host's smaller `max_buffer_size` |
+  | parameter automation sampled a point every 8 frames | every 8 frames up to 10 points a block, wider for a longer block, so a device-callback block never spills a queue to the heap on the audio thread |
 
   **Fixed: ragged blocks corrupted plugin audio** (also on main before this).
   Each call was submitted as its own chunk and collected into the next

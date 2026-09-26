@@ -152,7 +152,25 @@ impl AudioGraphRes {
     /// A graph with every node run at `rate`: what the engine builder makes,
     /// at the device's rate.
     pub(crate) fn with_rate(inputs: usize, outputs: usize, rate: SampleRate) -> Self {
-        Self(Mutex::new(NativeGraph::new(inputs, outputs, rate)))
+        Self::for_device(inputs, outputs, rate, None)
+    }
+
+    /// A graph with every node run at `rate`, prepared for a device calling
+    /// back with `quantum` frames (when known): what the engine builder makes,
+    /// from the opened stream's spec.
+    pub(crate) fn for_device(
+        inputs: usize,
+        outputs: usize,
+        rate: SampleRate,
+        quantum: Option<Samples>,
+    ) -> Self {
+        Self(Mutex::new(NativeGraph::new(inputs, outputs, rate, quantum)))
+    }
+
+    /// What every node is prepared for: the rate, the largest block, and the
+    /// device's callback size when the engine knows it.
+    pub fn prepared(&self) -> tutti_graph::Prepare {
+        self.read().prepared()
     }
 
     /// The audio thread's half, for a test that renders what a device would
@@ -203,8 +221,9 @@ impl AudioGraphRes {
         &mut self,
         rate: SampleRate,
         max_block: Option<Samples>,
+        quantum: Option<Samples>,
     ) -> Result<(), tutti_graph::CommitError> {
-        self.write().reprepare(rate, max_block)
+        self.write().reprepare(rate, max_block, quantum)
     }
 
     /// Whether a re-prepare is between its two commits.

@@ -204,7 +204,10 @@ fn the_transport_an_offline_fork_sees_is_env_at_every_chunk() {
         .fork_instance(ForkMode::Offline(&offline))
         .expect("the probe forks");
     const BLOCK: usize = 2 * CHUNK;
-    let mut rig = Rig::new(fork, SAMPLE_RATE, BLOCK);
+    // A 64-frame device quantum in 128-frame blocks: two chunks a block.
+    let prepare = tutti_graph::Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK))
+        .with_quantum(Samples(CHUNK));
+    let mut rig = Rig::prepared(fork, prepare);
 
     const BLOCKS: usize = 24;
     let seen = render_scenes(&mut rig, BLOCKS, BLOCK, Duration::ZERO);

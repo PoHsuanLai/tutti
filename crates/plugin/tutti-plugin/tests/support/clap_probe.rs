@@ -53,14 +53,17 @@ pub struct Rig {
 impl Rig {
     /// `client` in a graph prepared for `rate` and blocks of `block` frames.
     pub fn new(client: PluginClient<Bound>, rate: f64, block: usize) -> Self {
+        Self::prepared(client, Prepare::new(SampleRate(rate), Samples(block)))
+    }
+
+    /// `client` in a graph prepared with `prepare` (a device quantum, say).
+    pub fn prepared(client: PluginClient<Bound>, prepare: Prepare) -> Self {
         let (inputs, outputs) = (client.inputs(), client.outputs());
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
         let (key, controls) = g.add_with_controls(client);
         g.pipe_input(key).pipe_output(key);
-        let renderer = g
-            .renderer(Prepare::new(SampleRate(rate), Samples(block)))
-            .expect("a one-plugin graph compiles");
+        let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
         Self {
             renderer,
             key,

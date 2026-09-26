@@ -68,7 +68,7 @@ impl Node for PluginNode {
     /// starts the node over.
     fn prepare(&mut self, p: &Prepare) {
         let c = &mut self.0;
-        c.state.io.prepare(p.max_block());
+        c.state.io.prepare(p);
         c.controls.set_pipeline(c.state.io.pipeline_latency());
         c.controls.restamp(p.sample_rate());
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate

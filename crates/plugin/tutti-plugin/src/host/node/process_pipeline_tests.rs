@@ -30,7 +30,11 @@
 
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::host::ipc_client::PluginBridge;
-use crate::host::node::batcher::{Batcher, BATCH_SIZE};
+use crate::host::node::batcher::Batcher;
+
+/// The chunk these tests ship: the slab ceiling they build each batcher and
+/// slab with, and the block they drive (so every call is one whole chunk).
+const BATCH_SIZE: usize = 64;
 use crate::host::node::BlockPayload;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, HostMessage, MidiEventVec, SampleFormat, SlabLayout,

@@ -105,7 +105,14 @@ pub(crate) fn build_on(
         engine,
         clock: clock_node,
         click: click_node,
-    } = assemble(sample_rate, inputs, outputs, &transport, &click_settings)?;
+    } = assemble(
+        sample_rate,
+        audio_engine.spec().quantum,
+        inputs,
+        outputs,
+        &transport,
+        &click_settings,
+    )?;
 
     // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
     // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
@@ -321,12 +328,13 @@ struct Assembled {
 /// metronome is wired to them by the `PortSources` [`build_into`] declares.
 fn assemble(
     rate: SampleRate,
+    quantum: Option<tutti_core::Samples>,
     inputs: usize,
     outputs: usize,
     transport: &Transport,
     click_settings: &Arc<ClickSettings>,
 ) -> Result<Assembled> {
-    let mut graph = AudioGraphRes::with_rate(inputs, outputs, rate);
+    let mut graph = AudioGraphRes::for_device(inputs, outputs, rate, quantum);
 
     // The beat clock — emits the beat on two ports. Beat-driven nodes take
     // those ports as inputs, so the clock needs a name a host can address; it
@@ -603,7 +611,7 @@ mod engine_tests {
             engine,
             clock,
             click,
-        } = assemble(SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
         for port in 0..2 {
             graph.set_source(click, port, GraphSource::Node(clock, port));
             graph.set_output_source(port, GraphSource::Node(click, port));
@@ -733,7 +741,7 @@ mod engine_tests {
         let settings = Arc::new(ClickSettings::new());
         let Assembled {
             mut graph, engine, ..
-        } = assemble(SampleRate(RATE), 0, 2, &transport, &settings).expect("builds");
+        } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
         let voice = graph.insert(voice(&transport, cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));

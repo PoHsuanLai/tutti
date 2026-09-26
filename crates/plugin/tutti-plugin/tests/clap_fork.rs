@@ -683,7 +683,8 @@ impl tutti_graph::Node for RampSource {
 /// render offline, as a plugin with a higher-quality offline mode does. The
 /// fork is told so asynchronously; its `prepare` waits for the change to land
 /// (`PluginBridge::settle`) before the fork's graph is compiled, so the
-/// export's plan carries 137 + 24 + 64 and trims exactly that: the render is
+/// export's plan carries 137 + 24 + the render's chunk (its `MaxBlock`,
+/// `GRAPH_MAX_BLOCK`: an export has no device) and trims exactly that: the render is
 /// the ramp from frame 0, sample for sample, and the fork reports no fault.
 ///
 /// Mutation: drop the `settle()` from `PluginNode::prepare` → the plan is
@@ -726,7 +727,7 @@ fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
     let latency = graph.reported_latency();
     assert_eq!(
         latency,
-        Samples(137 + 24 + 64),
+        Samples(137 + 24 + tutti_export::GRAPH_MAX_BLOCK.get()),
         "the plan carries the offline latency"
     );
     let config = tutti_export::ExportConfig {

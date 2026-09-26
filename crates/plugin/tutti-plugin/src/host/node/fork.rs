@@ -542,6 +542,7 @@ mod tests {
             budget: Duration::from_secs(1),
         };
         assert!(watch.fault().is_none(), "not planned yet");
+        controls.set_pipeline(Samples(64));
         watch.plan(controls.declared_latency());
         assert!(watch.fault().is_none(), "the plan holds");
         controls.set_latency(Samples(161));

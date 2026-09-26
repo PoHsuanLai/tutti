@@ -39,7 +39,7 @@ use tutti_core::{RtPublish, SampleRate, Samples};
 use tutti_plugin_types::PluginTail;
 use tutti_types::Latency;
 
-use super::batcher::BATCH_SIZE;
+use super::batcher::MAX_CHUNK;
 use super::input_slot::InputSlot;
 use super::{
     HarmonySource, NoteExpressionSource, ParamAutomationSource, PluginParamTarget, TimedChord,
@@ -125,7 +125,7 @@ impl PluginControls {
             inputs: PluginInputs::new(),
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(ArcSwap::from_pointee(tail)),
-            pipeline: Arc::new(AtomicUsize::new(BATCH_SIZE)),
+            pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
             meter: Arc::new(ArcSwapOption::empty()),
             sample_rate: Arc::new(AtomicF64::new(sample_rate.get())),
         }
@@ -473,7 +473,8 @@ mod tests {
     fn the_declared_latency_is_the_plugins_plus_the_pipelines() {
         let node = controls();
         let held = node.clone();
-        assert_eq!(held.declared_latency(), Latency::new(Samples(BATCH_SIZE)));
+        assert_eq!(held.declared_latency(), Latency::new(Samples(MAX_CHUNK)));
+        node.set_pipeline(Samples(64));
         node.set_latency(Samples(512));
         assert_eq!(held.declared_latency(), Latency::new(Samples(576)));
         node.set_pipeline(Samples(32));

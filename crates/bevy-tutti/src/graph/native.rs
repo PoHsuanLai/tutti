@@ -265,6 +265,30 @@ fn declared_latency(unit: &mut dyn AudioUnit) -> Latency {
     ))
 }
 
+/// The graph's `Prepare`: `rate`, `max_block`, and the device's callback
+/// `quantum` when the host knows it (`tutti_cpal::OutputSpec::quantum`). A
+/// hosted out-of-process plugin ships one quantum per callback to its server
+/// (doc 013, decision 8 reversed), so the quantum is what keeps its pipeline
+/// in step with the device.
+pub(crate) fn prepare_for(
+    rate: SampleRate,
+    max_block: Samples,
+    quantum: Option<Samples>,
+) -> Prepare {
+    let p = Prepare::new(rate, max_block);
+    match quantum {
+        Some(q) => p.with_quantum(q),
+        None => p,
+    }
+}
+
+/// The graph's current `Prepare`.
+impl NativeGraph {
+    pub(crate) fn prepared(&self) -> Prepare {
+        *self.editor.prepare()
+    }
+}
+
 /// `latency` clamped to what PDC compensates, as the editor clamps a latency
 /// it probes at insert.
 #[cfg(feature = "plugin")]
@@ -314,9 +338,15 @@ fn controlled(
 
 impl NativeGraph {
     /// An empty graph with `inputs` global inputs and `outputs` global
-    /// outputs, prepared for `rate`, its executor local.
-    pub(crate) fn new(inputs: usize, outputs: usize, rate: SampleRate) -> Self {
-        let (mut editor, exec) = Editor::new(Prepare::new(rate, NATIVE_MAX_BLOCK));
+    /// outputs, prepared for `rate` and the device's callback `quantum` (when
+    /// known: see [`prepare_for`]), its executor local.
+    pub(crate) fn new(
+        inputs: usize,
+        outputs: usize,
+        rate: SampleRate,
+        quantum: Option<Samples>,
+    ) -> Self {
+        let (mut editor, exec) = Editor::new(prepare_for(rate, NATIVE_MAX_BLOCK, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = ChannelLayout::from_count(inputs as u16);
         topology.outputs = vec![Source::Zero; outputs];
@@ -352,9 +382,11 @@ impl NativeGraph {
     /// of the re-prepare run here, now; with it taken, the second half lands
     /// on a later `collect` (and commits are `Retry` until it does).
     pub(crate) fn set_sample_rate(&mut self, rate: SampleRate) {
-        if let Err(e) = self.editor.reprepare(Prepare::new(
+        let current = *self.editor.prepare();
+        if let Err(e) = self.editor.reprepare(prepare_for(
             rate,
-            self.editor.prepare().max_block().samples(),
+            current.max_block().samples(),
+            current.quantum(),
         )) {
             bevy_log::error!("native graph: re-prepare at {} Hz refused: {e}", rate.get());
             return;
@@ -392,18 +424,24 @@ impl NativeGraph {
         }
     }
 
-    /// Re-prepare every node for `rate` and, if given, `max_block` (else the
-    /// block it has): the first half of `Editor::reprepare`, sent. The
-    /// executor checks its units out on its next block, and a later
-    /// `collect` sends them back re-prepared (every frame's `commit_graph`
-    /// does it). A no-op when neither moves.
+    /// Re-prepare every node for `rate`, the device's callback `quantum`
+    /// (the new device's: `None` when it does not say) and, if given,
+    /// `max_block` (else the block it has): the first half of
+    /// `Editor::reprepare`, sent. The executor checks its units out on its
+    /// next block, and a later `collect` sends them back re-prepared (every
+    /// frame's `commit_graph` does it). A no-op when nothing moves.
     pub(crate) fn reprepare(
         &mut self,
         rate: SampleRate,
         max_block: Option<Samples>,
+        quantum: Option<Samples>,
     ) -> Result<(), CommitError> {
         let current = *self.editor.prepare();
-        let prepare = Prepare::new(rate, max_block.unwrap_or(current.max_block().samples()));
+        let prepare = prepare_for(
+            rate,
+            max_block.unwrap_or(current.max_block().samples()),
+            quantum,
+        );
         if prepare == current {
             return Ok(());
         }

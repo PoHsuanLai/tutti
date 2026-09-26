@@ -3046,7 +3046,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
 | `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide" |
 | `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
-| `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The slab and `PIPELINE_LATENCY_FRAMES` come from `prepare(max_block)`. **Decided (2026-09-26): keep an internal 64-frame pipeline** (owner decision 8): at device-quantum blocks the node ships 64-frame chunks, so its latency stays 64 frames rather than growing to one device block per out-of-process plugin. It keeps latency low and the robustness characteristics already tested; making it configurable later is cheap |
+| `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
 | `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports |
 | `MidiPreBlock` | A hardware-input source node with an events out port. `MidiRoutingSnapshot` compiles into router ops. `BlockClock` (clock/MTC out) becomes a sink node that reads `Env` |
 | `Svf` + "Stereo" `Svf` | One width-generic node. (The "Stereo" types are already N-wide, so the name is left over from the extraction.) `Controls` makes the filter type switchable live. Coefficients recompute every k samples, or ramp `g`/`k` within a block, instead of a per-sample `tan`. SoA over channels |
@@ -3127,7 +3127,15 @@ vocoder retirement channel for voices the pool removes.
   carry it. The continuous-sample counter is `Env`'s frame.
 - **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
   `f64` conversion stays in the batcher. The chunk (and so the declared
-  pipeline latency) is `min(64, MaxBlock)`, settled in `prepare`.
+  pipeline latency) is the device's callback (`Prepare::quantum`, which
+  tutti-cpal reports and bevy-tutti prepares the graph with, again on a
+  device restart), else `MaxBlock`, capped by the slab's `MAX_CHUNK` (4096),
+  settled in `prepare`. See decision 8 for why it is not 64 frames.
+- **Whole chunks through a FIFO.** The batcher fills a FIFO and ships only
+  whole chunks, reading output from a ring, so the output is exactly one
+  chunk late however the blocks are cut (a review found ragged blocks
+  corrupting audio before: 2 303 of 3 399 samples wrong at 100-frame
+  blocks; pinned by `clap_ragged`).
 
 **Deferred, and why.**
 
@@ -3147,21 +3155,17 @@ vocoder retirement channel for voices the pool removes.
 - **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
   transport (`PolledTransport`, sharing the snapshot mapping); it ports with
   the "Port mechanically" group.
-- **The 64-frame chunk inside a longer block, live.** The batcher ships
-  whole chunks through a FIFO and plays output from a ring, so the output is
-  exactly one chunk late however the blocks are cut (a review of this PR
-  found ragged blocks corrupting audio before: fixed here, pinned by
-  `clap_ragged`). What the FIFO cannot give a live plugin is *time*: a chunk
-  whose output is needed in the same call it was completed in (any chunk
-  boundary falling mid-call: a device quantum that is not a multiple of 64,
-  or blocks longer than 64 once the `legacy` flag goes) is collected
-  microseconds after its submission, and reads as silence unless the server
-  is that fast. Chunk-major rendering has the same exposure today (the
-  whole graph runs its 64-frame passes back to back inside one device
-  callback, so only the first pass of a callback collects a chunk submitted
-  in the previous one). An offline fork waits and is unaffected. This is
-  owner decision 8's trade-off made concrete; revisit it before device-quantum
-  rendering of plugin graphs.
+- **A device whose callback is not known, or varies.** The chunk is the
+  device's callback only when the host knows it: tutti-cpal opens a device
+  that reports a buffer range with a fixed 512-frame buffer
+  (`PREFERRED_QUANTUM`, clamped into the range), and reports the size as
+  `OutputSpec::quantum`; a device reporting no range is opened with its
+  default buffer, its quantum unknown, and the chunk falls back to
+  `MaxBlock`, which need not line up with its callbacks — the output is
+  still exactly one chunk late, but a chunk completed mid-callback is
+  collected before the server can answer. The same holds past `MAX_CHUNK`
+  and for a backend whose callbacks vary in size. Measuring the first
+  callbacks and re-preparing is the fix if such a device shows up.
 - **A fork's latency.** A fork's `prepare` waits for the latency change a
   rate or render-mode switch causes (`PluginBridge::settle`: two round trips
   on the command queue, after which the latency cell holds what the server
@@ -3470,7 +3474,8 @@ fail on, by name.
 The owner delegated these on 2026-09-24. The migration uses the proposed
 option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
 ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
-now. Item 5 was decided when Phase 0 ran: `tutti-io`.
+now (**reversed** 2026-09-26, see 8). Item 5 was decided when Phase 0 ran:
+`tutti-io`.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
 2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`
@@ -3522,7 +3527,25 @@ now. Item 5 was decided when Phase 0 ran: `tutti-io`.
 7. **Automation encoding.** Linear ramp events (nih-plug, Web Audio) vs
    curve-segment events. Curve segments are needed for sample-accurate
    non-linear shapes without sub-chunking at breakpoints.
-8. **Out-of-process plugin pipeline.** **Decided (item 4): keep the
-   internal 64-frame pipeline for now.** Either keep an internal 64-frame
+8. **Out-of-process plugin pipeline.** Either keep an internal 64-frame
    pipeline (a fixed 64-frame latency), or follow the device block (the latency
    grows with the buffer size).
+   - **First decided (item 4): keep the internal 64-frame pipeline.**
+   - **Reversed (2026-09-26, the same PR): follow the device block.** The
+     64-frame pipeline was not a latency trade-off but silence. A chunk is
+     answered by the server while the host renders on, and inside one device
+     callback the host renders its 64-frame chunks back to back: every chunk
+     but the first in a callback is collected microseconds after it was
+     submitted, and the server has not answered it. Measured through the
+     real `plugin-server` at real-time pacing (`tests/clap_live.rs`, 200
+     blocks after warm-up): with 64-frame chunks, **186 of 200** blocks
+     silent at 480-frame callbacks, **198 of 200** at 441, **187 of 200** at
+     1024; with the callback as the chunk, **0 of 200** at each, and every
+     block is the input delayed by exactly the declared latency.
+   - **The rule now:** a live plugin's chunk is the engine's callback block
+     (`Prepare::quantum`, from tutti-cpal's opened stream; re-prepared on a
+     device restart), so the server has a whole device period to answer. Its
+     latency is its own plus one device block, which is how DAWs host
+     out-of-process plugins. Without a known quantum the chunk is the graph's
+     `MaxBlock`. An offline fork waits for every chunk, so its chunk is its
+     `MaxBlock` and its declared latency says so.

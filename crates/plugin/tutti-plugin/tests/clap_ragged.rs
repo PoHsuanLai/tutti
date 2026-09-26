@@ -10,8 +10,9 @@
 //! 3 399 samples wrong at 100-frame blocks.
 //!
 //! The probe runs in `Latency` mode: it delays its input by the 137 frames it
-//! reports. The node adds its pipeline chunk (64, or the graph's `MaxBlock`
-//! when that is smaller), and declares the sum. An offline fork waits for
+//! reports. The node adds its pipeline chunk (the device's callback when the
+//! graph knows it; here, an offline fork, the graph's `MaxBlock`), and
+//! declares the sum. An offline fork waits for
 //! every chunk, so each render here is deterministic, unpaced.
 //!
 //! Needs `cargo build -p tutti-plugin-server` first (see `CLAUDE.md`).
@@ -112,7 +113,8 @@ fn live_shaped(quantum: usize, n: usize) -> Vec<usize> {
 /// **Ragged blocks lose nothing.** 100-frame blocks, and 441- and 480-frame
 /// device quanta cut as the engine cuts them (64s plus a 57 or a 32), and
 /// whole 441-frame blocks: the output is the input delayed by the declared
-/// 137 + 64 = 201, sample for sample, and the graph declares exactly that.
+/// 137 + 512 (the fork's `MaxBlock`) = 649, sample for sample, and the graph
+/// declares exactly that.
 ///
 /// Mutation: ship a partial chunk at the end of every call (in
 /// `Batcher::process`, `if self.pos == chunk || i == frames`) → the chunks
@@ -123,7 +125,7 @@ fn live_shaped(quantum: usize, n: usize) -> Vec<usize> {
 fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::LATENCY);
-    const DECLARED: usize = PROBE_LATENCY + 64;
+    const DECLARED: usize = PROBE_LATENCY + 512;
 
     let cuts: [(&str, Vec<usize>); 4] = [
         ("100-frame blocks", vec![100; 34]),
@@ -139,15 +141,14 @@ fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
     }
 }
 
-/// **At a `MaxBlock` below 64 the pipeline is that long, and declared so.** A
-/// graph that never hands the node more than 32 frames gets a 32-frame chunk:
+/// **A graph that knows no device quantum ships `MaxBlock` chunks, and
+/// declares so.** A graph that never hands the node more than 32 frames gets
+/// a 32-frame chunk:
 /// the node declares 137 + 32 = 169 and delays by exactly that, in 32-frame
 /// blocks and in ragged 20- and 12-frame ones.
 ///
 /// Mutation: drop `controls.set_pipeline(..)` from `PluginNode::prepare` →
-/// the node declares 201 while delaying 169 → fails. Mutation: keep the
-/// chunk at the slab's 64 in `Batcher::prepare` → it declares and delays
-/// 201, not 169 → fails.
+/// the node declares the slab's 4096 + 137 while delaying 169 → fails.
 #[test]
 fn a_max_block_below_the_chunk_is_the_pipeline() {
     let _lock = exclusive();

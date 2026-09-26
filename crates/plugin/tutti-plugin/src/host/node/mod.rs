@@ -51,9 +51,10 @@
 //!
 //! # What the node reads
 //!
-//! - **Audio**, planar `f32`, walked in chunks of at most 64 frames through the
-//!   pipelined IPC [`Batcher`](batcher::Batcher) (the `f64` wire conversion
-//!   stays inside it).
+//! - **Audio**, planar `f32`, through the pipelined IPC
+//!   [`Batcher`](batcher::Batcher): whole chunks of one device callback (the
+//!   graph's `MaxBlock` when the host does not say), so the plugin's latency
+//!   is its own plus one callback. The `f64` wire conversion stays inside it.
 //! - **The transport**, from each chunk's frame of the block's `Env`
 //!   (`transport_source`), plus the meter installed on its controls.
 //! - **MIDI, parameter automation, harmony and note expression** through
@@ -116,7 +117,7 @@ pub(crate) use process::ProcessGuard;
 // The largest chunk that can cross the process edge. Re-exported because
 // `subprocess::launch` sizes the shared-memory slab from it — the slab and the
 // batcher must agree on the per-chunk ceiling or one of them is wrong.
-pub(crate) use batcher::BATCH_SIZE;
+pub(crate) use batcher::MAX_CHUNK;
 
 use crate::error::Result;
 use crate::host::ipc_client::audio::HarmonyInputs;
@@ -186,7 +187,7 @@ pub struct PluginClient<S = Unbound> {
     /// audio widths.
     inputs: usize,
     outputs: usize,
-    /// The chunk ceiling the slab was launched with: `BATCH_SIZE`, or the
+    /// The chunk ceiling the slab was launched with: `MAX_CHUNK`, or the
     /// host's smaller `max_buffer_size`.
     ceiling: usize,
     /// The input slots, meter, latency, tail and sample rate — every cell
@@ -277,10 +278,10 @@ impl PluginClient<Unbound> {
             sample_rate,
         );
         // The chunk ceiling, matching the slab — `slab_layout_for` clamps to
-        // `BATCH_SIZE` for the same reason. Passing the raw `max_buffer_size`
+        // `MAX_CHUNK` for the same reason. Passing the raw `max_buffer_size`
         // here meant staging 8192 samples per channel to ship 64, and left the
         // two sizes free to disagree.
-        let ceiling = config.max_buffer_size.min(BATCH_SIZE);
+        let ceiling = config.max_buffer_size.min(MAX_CHUNK);
         process_guard.attach(bridge_thread);
         let process_guard = Arc::new(process_guard);
         let param_sink = ParameterChangeSink::new();

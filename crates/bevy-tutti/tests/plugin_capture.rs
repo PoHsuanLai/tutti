@@ -58,6 +58,10 @@ use tutti_core::{AudioNode, SampleRate, Samples};
 use tutti_plugin::catalog::PluginId;
 
 const SAMPLE_RATE: f64 = 48_000.0;
+/// The plugin's pipeline chunk here: one device callback when the graph knows
+/// the device's (doc 013, decision 8 reversed); this headless graph knows none,
+/// so the chunk is its `MaxBlock` (bevy-tutti's `NATIVE_MAX_BLOCK`).
+const CHUNK: usize = 1024;
 
 fn app() -> App {
     // SAFETY: nextest runs this test in its own process, and nothing else in it
@@ -134,15 +138,15 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         },
     );
     // And the graph plans PDC against the node's whole latency: the plugin's
-    // figure plus the one chunk its out-of-process pipeline holds (64
-    // frames), as the node's `Shape` declares it. Read off the shape the
+    // figure plus the one chunk its out-of-process pipeline holds
+    // ([`CHUNK`]), as the node's `Shape` declares it. Read off the shape the
     // editor holds. (Handing the editor the plugin's own figure instead —
     // `PluginControls::latency` — drops the pipeline chunk, and fails here.)
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
-        Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + 64),
+        Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + CHUNK),
         "the graph plans PDC against the node's latency"
     );
 
@@ -187,7 +191,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         app.world()
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
-        Samples(300 + 64),
+        Samples(300 + CHUNK),
         "a changed plugin latency reaches the graph"
     );
 
@@ -323,7 +327,7 @@ fn a_crossfaded_plugin_is_bound_again() {
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
-        Samples(INCOMING_LATENCY + 64),
+        Samples(INCOMING_LATENCY + CHUNK),
         "the graph plans against the incoming plugin's declared latency"
     );
     // And a later change of the incoming plugin's latency is the one the
@@ -332,7 +336,7 @@ fn a_crossfaded_plugin_is_bound_again() {
     app.update();
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
-        Samples(INCOMING_LATENCY + 7 + 64),
+        Samples(INCOMING_LATENCY + 7 + CHUNK),
         "the latency poll must read the incoming plugin"
     );
 

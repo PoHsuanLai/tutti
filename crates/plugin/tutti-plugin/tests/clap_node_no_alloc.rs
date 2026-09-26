@@ -35,21 +35,22 @@ use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedPara
 use tutti_types::{Beat, Bpm, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
-/// The graph's `MaxBlock`.
-const BLOCK: usize = 128;
-/// The blocks rendered, in turn: neither is a whole chunk, so the FIFO
-/// carries each 64-frame chunk across two calls.
-const CUTS: [usize; 2] = [40, 24];
+/// The graph's `MaxBlock`: the engine's pass while a `Legacy`-flagged node
+/// (the plugin, still) is in the graph.
+const BLOCK: usize = 64;
+/// The device callback, and so the plugin's chunk: eight passes of 64.
+const QUANTUM: usize = 512;
+/// Passes per callback.
+const PASSES: usize = QUANTUM / BLOCK;
 
 /// Steady state: a rolling transport with a tempo change inside every block,
 /// a meter installed, MIDI notes queued on the live inbox and an LFO
 /// automating a parameter (so every payload carries MIDI and parameter
 /// points), the plugin echoing the transport it is sent, and real time
-/// between blocks so chunks are collected as well as submitted. Blocks
-/// alternate 40 and 24 frames, so the FIFO carries every chunk across two
-/// calls; a chunk still starts on a call, so live, the plugin has the pacing
-/// between calls to answer it (a chunk starting mid-call collects one
-/// submitted microseconds earlier: see the batcher's module docs).
+/// between callbacks so chunks are collected as well as submitted. Shaped as
+/// the engine renders a 512-frame device callback: eight 64-frame passes,
+/// the FIFO carrying the chunk across all eight, the automation's points
+/// spaced for a 512-frame block.
 ///
 /// Mutation: allocate in the node's chunk walk (a `Vec` of the chunk's
 /// input slices in place of the stack array in `graph_node.rs`) → the
@@ -57,6 +58,9 @@ const CUTS: [usize; 2] = [40, 24];
 /// `MeterMap::default()` per block in place of the prebuilt
 /// `Bound::default_meter` → it allocates → aborts. Mutation: collect each
 /// payload's MIDI into a `Vec` before cloning it into the payload → aborts.
+/// Mutation: space the automation's points at a fixed 8 samples
+/// (`stride_for` returning `SAMPLE_STRIDE`) → 65 points a chunk spill the
+/// queue to the heap → aborts.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let _lock = exclusive();
@@ -82,7 +86,9 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
         transport.clone(),
     );
     let sender = probe.client.midi_sender();
-    let mut rig = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
+    let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
+        .with_quantum(Samples(QUANTUM));
+    let mut rig = Rig::prepared(probe.client.bind(), prepare);
     let meter = Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
@@ -96,11 +102,11 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let mut changes = TransportChanges::NONE;
     changes
         .push(
-            Offset::new(20, Samples(24)).expect("inside"),
+            Offset::new(20, Samples(BLOCK)).expect("inside"),
             Transport::new(true, Bpm(90.0), Beat(9.0), None),
         )
         .expect("a change inside the block");
-    let pace = Duration::from_millis(2);
+    let pace = Duration::from_millis(15);
     let mut block = |b: usize, outs: &mut [&mut [f32]]| {
         if b.is_multiple_of(4) {
             let note = 60 + (b % 12) as u8;
@@ -113,7 +119,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), note, 0);
             sender.queue(&[on, off]);
         }
-        let n = CUTS[b % 2];
+        let n = BLOCK;
         let t = Transport::new(true, Bpm(120.0), Beat(b as f64), None).with_recording(true);
         let ins: [&[f32]; 2] = [&inputs[0][..n], &inputs[1 % inputs.len()][..n]];
         let (a, rest) = outs.split_at_mut(1);
@@ -125,24 +131,26 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             &ins[..inputs.len()],
             &mut o[..],
         );
-        std::thread::sleep(pace);
+        if (b + 1).is_multiple_of(PASSES) {
+            std::thread::sleep(pace);
+        }
     };
 
     // Warm up: the first blocks fault in the slab and fill the pipeline.
-    for b in 0..32 {
+    for b in 0..4 * PASSES {
         block(b, &mut outs);
     }
     assert_no_alloc::assert_no_alloc(|| {
-        for b in 32..161 {
+        for b in 4 * PASSES..=20 * PASSES {
             block(b, &mut outs);
         }
     });
     drop(outs);
     // The plugin rendered through it all (its transport echo opens every
-    // chunk, and the last block is a 40 that opened one), so the collect path ran
-    // inside the guard, not only the submit.
+    // chunk, and the last pass opened one), so the collect path ran inside
+    // the guard, not only the submit.
     assert!(
-        out[0][..40].iter().any(|&s| s != 0.0),
+        out[0].iter().any(|&s| s != 0.0),
         "the steady state rendered nothing; the guarded blocks never collected"
     );
     drop(probe.handle);

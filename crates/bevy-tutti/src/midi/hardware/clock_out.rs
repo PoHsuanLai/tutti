@@ -1,60 +1,51 @@
-//! MIDI clock-master output: drain the engine's [`ClockMaster`] ring to
-//! hardware MIDI-out.
+//! MIDI clock-master output, and everything else wired to the hardware out:
+//! drain the engine's hardware-out node to hardware MIDI-out.
 //!
-//! The [`ClockMaster`] runs on the audio
-//! thread (installed on the RT processor by bevy-tutti) and pushes outbound
-//! MIDI Beat Clock / MTC into a lock-free `MidiMailbox` mailbox. This module
-//! owns the *off-RT* half: [`ClockMasterRes`] holds the master handle (for
-//! enable/config from the UI) plus the mailbox's [`MidiReceiver`], and
-//! [`pump_clock_out_system`] drains it each frame to the OS MIDI output via
-//! `MidiIo::send`.
+//! The clock is a graph node (`ClockNode`) the engine build wires to a
+//! `MidiOutNode`, the hardware out ([`MidiEngineNodes`](crate::midi::MidiEngineNodes)).
+//! Anything else wired to that node's entity (`EventSources`: a clip, a
+//! plugin's MIDI out) reaches the wire the same way. This module owns the
+//! *off-RT* half: [`ClockMasterRes`] holds the master handle (for
+//! enable/config from the UI) plus the out node's controls, and
+//! [`pump_clock_out_system`] drains it each frame to the OS MIDI output.
 //!
-//! Modeled on the hardware-input drain: engine produces on the audio thread, a
-//! per-frame Bevy system forwards the results. The drain cadence doesn't affect
-//! inter-tick spacing — the tick timing is baked into each event on the audio
-//! thread; the OS output thread writes on receipt.
+//! The drain cadence doesn't affect inter-tick spacing — the tick timing is
+//! baked into each event on the audio thread; the OS output thread writes on
+//! receipt.
 //!
 //! Where those events *go* is [`hardware_out`](super::hardware_out)'s: this
-//! module owns the clock master's handle and its drain, nothing about the wire.
+//! module owns the clock master's handle and the drain, nothing about the wire.
 
 use std::sync::Arc;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::{ClockMaster, MidiReceiver};
+use tutti_midi_runtime::{ClockMaster, MidiOutControls};
 
 use super::hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter, UmpOutRes};
 
-/// The clock master + its output-mailbox receiver, claimed from the engine
-/// handoff.
+/// The clock master and the hardware-out node's controls, from the engine
+/// build.
 ///
-/// Present only when the engine was built with a clock master (i.e. the `midi`
-/// feature). The handle lets the UI toggle enable / MTC / frame-rate; the
-/// [`MidiReceiver`] is drained to hardware-out by [`pump_clock_out_system`].
-///
-/// No `Mutex`: [`MidiReceiver`] is `Sync` and its `poll_into` takes `&self`, so
-/// the receiver sits directly in the resource — the single per-frame pump is the
-/// only reader.
+/// Present only when the engine was built with the `midi` feature. The
+/// master lets the UI toggle enable / MTC / frame-rate; `out` is drained to
+/// hardware-out by [`pump_clock_out_system`].
 #[derive(Resource)]
 pub struct ClockMasterRes {
-    /// The generator itself, shared with the audio thread that ticks it. Use it
+    /// The generator itself, shared with the clock node that ticks it. Use it
     /// to toggle enable / MTC / frame rate; it starts disabled, so nothing
     /// reaches the wire until a host turns it on.
     pub master: Arc<ClockMaster>,
-    /// The off-RT drain half. Read only by [`pump_clock_out_system`] — a second
-    /// reader would take events that one would then never see.
-    pub receiver: MidiReceiver,
+    /// The hardware-out node's ring. Read only by [`pump_clock_out_system`] —
+    /// a second reader would take events that one would then never see.
+    pub out: MidiOutControls,
 }
 
 impl ClockMasterRes {
-    /// Pair a clock master with the receiver of the mailbox it pushes into.
-    ///
-    /// Both halves must come from the same `MidiMailbox`(tutti_midi_runtime::MidiMailbox)
-    /// pair, which is why [`build_into`](crate::engine::build_into) builds them
-    /// together.
-    pub fn new(master: Arc<ClockMaster>, receiver: MidiReceiver) -> Self {
-        Self { master, receiver }
+    /// Pair a clock master with the hardware-out node it is wired to.
+    pub fn new(master: Arc<ClockMaster>, out: MidiOutControls) -> Self {
+        Self { master, out }
     }
 }
 
@@ -81,7 +72,7 @@ pub fn pump_clock_out_system(
         drops: Some(&drops),
     };
 
-    drain_receiver_through(&clock_out.receiver, &mut router);
+    drain_receiver_through(clock_out.out.receiver(), &mut router);
 }
 
 /// Registers the clock-master output pump. The [`ClockMasterRes`] itself is

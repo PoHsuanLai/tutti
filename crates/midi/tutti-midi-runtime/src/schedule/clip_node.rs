@@ -29,7 +29,7 @@ use tutti_graph::{
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
-use super::snapshot::TimedMidiEvent;
+use super::timed::TimedMidiEvent;
 use super::walk::{Beated, Visit, Walk};
 
 /// The most events a [`MidiClipNode`] writes to its port in one block, its

@@ -113,9 +113,12 @@ Every component is a thin wrapper over a tutti capability that already exists.
 | `AudioPump<S>` | always | A running `AudioIn` → `AudioOut` transfer; `S` is the sample type, the width is runtime. Registered with `App::add_audio_pump`. |
 | `ModParamRange` | `modulation` | Depth/range for a modulated param. |
 | `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
-| `MidiRouteRule` | `midi` | Which inbound MIDI channel reaches which entities. |
+| `MidiRouteRule` | `midi` | Which hardware-input MIDI channel reaches which entities (wired to the input node's per-channel ports). |
+| `MidiSourceInstall` | `midi` | A clip for an entity: played by a clip node wired to its event input. |
+| `LiveMidiInput` → `LiveMidi` | `midi` | A keyboard for an entity: a queue node wired to it, and its sender. |
+| `EventSources` | always | What feeds this entity's event input (a clip node, a plugin's MIDI out). |
 | `PluginEmitter`, `PluginEditorOpen` | `plugin` | A hosted plugin instance and its editor window. |
-| `MidiTarget`, `ModParamsHandle`, `PluginShadow` | `midi`, `modulation`, `plugin` | Controls captured from a unit as its node is inserted (`CapturedControls`): its MIDI port, its modulatable params, a hosted plugin's input slots and latency. Read instead of the graph. |
+| `ModParamsHandle`, `PluginShadow` | `modulation`, `plugin` | Controls captured from a unit as its node is inserted (`CapturedControls`): its modulatable params, a hosted plugin's meter and latency. Read instead of the graph. |
 
 The DAW parameter components (`Volume`, `Pan`, `Mute`, …) are **not** here: they
 are app vocabulary and live app-side. `AudioParam<U, P>` is the generic the
@@ -145,7 +148,8 @@ to reach it.
 | `MasterSources` | always | What feeds each global output channel |
 | `AudioDeviceState` | always | Output devices, current device, running status |
 | `ChannelCompensation` | always | Per-channel PDC pre-roll for out-of-graph sources |
-| `MidiBusRes`, `MidiRoutingRes` | `midi` | The synth fan-out bus and the inbound routing table |
+| `MidiEngineNodes` | `midi` | The engine's MIDI nodes' entities: hardware input, clock, hardware out |
+| `MpeModeRes`, `ClockMasterRes` | `midi` | The input's MPE mode; the clock master and the hardware out it is drained from |
 | `DiskStreamerRes` | `sampler` | The disk-streaming engine; owns the butler thread |
 | `PluginsRes` | `plugin` | The scanned plugin catalog (inserted lazily) |
 
@@ -192,15 +196,20 @@ After processing: `PluginRequest` becomes a private `PendingPlugin`, and on comp
 
 Requires `midi` feature.
 
-```rust
-// Route MIDI to an entity's audio node
-commands.entity(synth).insert(MidiReceiver { channel: Channel::all() });
+MIDI reaches a node over event edges: insert synths with `spawn_graph_node`
+and declare what plays them.
 
-// Send MIDI events
-commands.spawn(SendMidi {
-    target_node: node_id,
-    events: vec![MidiEvent::note_on(60, 100)],
-});
+```rust
+// Hardware channel 1 plays the synth.
+commands.spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(synth));
+
+// A clip plays it too.
+commands.spawn(MidiSourceInstall::new(synth, events));
+
+// And a keyboard: once wired, the entity's `LiveMidi` sends notes.
+commands.entity(synth).insert(LiveMidiInput);
+// ...later, in a system:
+live.note_on(MidiChannel::FIRST, 60, 100);
 ```
 
 `MidiInputEvent` is emitted as a Bevy message for incoming hardware MIDI (requires `midi-hardware`).
@@ -295,8 +304,9 @@ thread.
 
 It renders a **fork** of the live graph: every node
 isolated, rebound onto the request's offline timeline and reset, a hosted
-plugin as a fresh instance loaded with the live one's state (its MIDI clip
-rebound too), a disk-streamed voice reading its file itself. The live graph
+plugin as a fresh instance loaded with the live one's state, a clip node
+playing its clip on the render's timeline, a disk-streamed voice reading its
+file itself. The live graph
 keeps playing untouched. A node that cannot be copied (a mic monitor)
 refuses the export by entity and `Name`, as does a plugin fork that crashes
 mid-render (`ExportError`).

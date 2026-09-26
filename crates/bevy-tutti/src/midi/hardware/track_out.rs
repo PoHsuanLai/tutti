@@ -1,8 +1,8 @@
 //! Arbitrary MIDI-out to external hardware — the track/UI outbound path.
 //!
-//! The [`MidiBus`](tutti_midi_runtime::MidiBus) fans MIDI *inward* to synths; it
-//! has no tap for sending to external gear. This module adds the outbound
-//! mailbox: a [`MidiMailbox`] whose
+//! What the control thread sends to external gear (a track system, the UI,
+//! MIDI-CI and Flex metadata replies) rides this outbound mailbox: a
+//! [`MidiMailbox`] whose
 //! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
 //! the audio thread — can push into lock-free, drained each frame and routed to
 //! hardware through the *same* [`MidiOutRouter`](super::clock_out) the
@@ -35,7 +35,6 @@ use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiUnitId;
 
 use super::hardware_out::{drain_receiver_through, MidiOutRouter};
 
@@ -50,7 +49,7 @@ pub struct MidiOutRes {
 
 impl Default for MidiOutRes {
     fn default() -> Self {
-        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair();
         Self { sender, receiver }
     }
 }
@@ -60,13 +59,6 @@ impl MidiOutRes {
     /// directly — the UI, or a clip source's `out_tap` (`Arc<dyn MidiOut>`).
     pub fn sender(&self) -> MidiSender {
         self.sender.clone()
-    }
-
-    /// The [`MidiUnitId`] this mailbox routes on — a caller pushing through the
-    /// `MidiOut` trait must address this id (a [`MidiSender`] clone already
-    /// carries it).
-    pub fn unit_id(&self) -> MidiUnitId {
-        self.sender.unit_id()
     }
 
     /// The drain half, for tests that assert a producer reached this mailbox

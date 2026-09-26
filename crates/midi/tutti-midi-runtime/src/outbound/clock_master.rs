@@ -5,21 +5,12 @@
 //! ([`MidiClockDecoder`](tutti_midi_types::sync::MidiClockDecoder) /
 //! [`MtcDecoder`](tutti_midi_types::sync::MtcDecoder)): where they read an
 //! incoming stream to derive transport state, this reads the transport to
-//! *produce* the stream. It is ticked once per audio block, on the audio
-//! thread, and stamps each emitted event with a sample-accurate `frame_offset`
-//! — the same discipline as [`MidiClipSource`](crate::MidiClipSource), so
-//! receiving gear locks tightly instead of chasing frame-quantised jitter.
-//!
-//! It is **not** a [`MidiUnitIn`](tutti_midi_types::MidiUnitIn): the processor
-//! input feeds internal synth routing keyed by
-//! [`MidiUnitId`](tutti_midi_types::MidiUnitId), and System Real-Time messages
-//! are not addressed to a unit — there is no id to route them by, so they would
-//! be dropped there. Instead the master pushes into a
-//! [`crate::MidiSender`] — the push half of a
-//! [`MidiMailbox`](crate::MidiMailbox) mailbox — whose paired
-//! [`MidiReceiver`](crate::MidiReceiver) an off-RT pump drains to hardware
-//! MIDI-out. The sender's `queue(&self)` is lock-free, so there is no mutex on
-//! the audio path.
+//! *produce* the stream. It is ticked once per transport segment of a block,
+//! on the audio thread, by a [`ClockNode`](crate::ClockNode), and stamps each
+//! event it emits with a sample-accurate `frame_offset`, so receiving gear
+//! locks tightly instead of chasing frame-quantised jitter. The node sends
+//! them out of an event port; wire it to a [`MidiOutNode`](crate::MidiOutNode)
+//! for a hardware pump to drain.
 //!
 //! Emitted (all MIDI 2.0 UMP System messages, M2-104 §7.6):
 //! - **Timing Clock** (0xF8) at every 1/24-beat while playing.
@@ -31,16 +22,13 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::Arc;
 use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::Timeline;
 use tutti_core::{first_frame_at_or_after, Beat, BeatDuration, SampleRate};
+use tutti_graph::Transport;
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
-
-use crate::block::registry::MidiSender;
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
 const PPQN: f64 = 24.0;
@@ -51,14 +39,13 @@ const START_EPSILON_BEATS: f64 = 1e-6;
 /// normal forward creep of one block — triggers a fresh Song Position.
 const SEEK_EPSILON_BEATS: f64 = 1e-3;
 
-/// Generates outbound MIDI clock / timecode from a [`Timeline`].
+/// Generates outbound MIDI clock / timecode from the transport.
 ///
-/// Ticked once per audio block via [`ClockMaster::tick`]. RT-safe: reads the
-/// transport, mutates only atomics, and pushes into a lock-free mailbox — no
-/// allocation, no locks on the audio path ([`MidiSender::queue`] takes `&self`
-/// and never blocks).
+/// Ticked via [`ClockMaster::tick`]. RT-safe: mutates only atomics and hands
+/// each event to its caller — no allocation, no locks. Shared (`Arc`) between
+/// the [`ClockNode`](crate::ClockNode) that ticks it and the control thread
+/// that configures it.
 pub struct ClockMaster {
-    transport: Arc<dyn Timeline>,
     /// The device rate, in Hz: what turns the transport's beats into frame
     /// offsets. An atomic because a device restart moves it
     /// ([`set_sample_rate`](Self::set_sample_rate)) on a master the audio
@@ -66,10 +53,6 @@ pub struct ClockMaster {
     sample_rate: AtomicF64,
     /// UMP group stamped on every emitted event.
     group: MidiGroup,
-    /// The output mailbox's push half — lock-free `&self` queueing. The paired
-    /// [`MidiReceiver`](crate::MidiReceiver) is drained off-RT by the hardware
-    /// pump.
-    out: MidiSender,
 
     /// Master enabled. A disabled master is a cheap early-return in `tick`.
     enabled: AtomicBool,
@@ -108,27 +91,14 @@ pub struct ClockMaster {
     mtc_lead: AtomicF64,
 }
 
-impl crate::block::pre_block::BlockClock for ClockMaster {
-    #[inline]
-    fn tick(&self, block_size: usize) {
-        ClockMaster::tick(self, block_size)
-    }
-}
-
 impl ClockMaster {
-    /// Build a clock master reading `transport`, emitting into `out`.
-    /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a
-    /// hardware output is connected.
-    pub fn new(
-        transport: Arc<dyn Timeline>,
-        sample_rate: impl Into<SampleRate>,
-        out: MidiSender,
-    ) -> Self {
+    /// A clock master placing events at `sample_rate`. Starts **disabled**;
+    /// call [`set_enabled`](Self::set_enabled) once a hardware output is
+    /// connected.
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         Self {
-            transport,
             sample_rate: AtomicF64::new(sample_rate.into().get()),
             group: MidiGroup::FIRST,
-            out,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
@@ -247,16 +217,14 @@ impl ClockMaster {
         self.mtc_fps.store(fps as u8, Ordering::Release);
     }
 
-    /// Push an event into the output mailbox (drops if full — a bounded, benign
-    /// backpressure, like a saturated hardware MIDI wire). Lock-free `&self`.
-    #[inline]
-    fn emit(&self, event: MidiEvent) {
-        let _ = self.out.queue(&[event]);
-    }
-
-    /// Generate this block's clock/timecode. Call once per audio block with the
-    /// block's frame count. Reads the transport internally.
-    pub fn tick(&self, block_size: usize) {
+    /// Generate the clock/timecode of `block_size` frames starting with the
+    /// transport at `transport`, handing each event (its `frame_offset` from
+    /// the first of those frames) to `emit`. Call once per stretch of
+    /// unchanging transport: a block, or each of its segments.
+    ///
+    /// Events come out in the order generated, not by offset: the MTC
+    /// quarter-frames follow the block's ticks.
+    pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(MidiEvent)) {
         // Once per block: a rate moved mid-block would split it in two.
         let sample_rate = self.sample_rate();
         if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
@@ -264,30 +232,30 @@ impl ClockMaster {
             // Start/Continue rather than silently assuming playback was already
             // under way.
             self.prev_playing
-                .store(self.transport.is_rolling(), Ordering::Release);
+                .store(transport.playing, Ordering::Release);
             return;
         }
 
-        let playing = self.transport.is_rolling();
+        let playing = transport.playing;
         let was_playing = self.prev_playing.swap(playing, Ordering::AcqRel);
-        let beat = self.transport.beat();
+        let beat = transport.beat();
         let prev_beat = Beat(self.prev_beat.swap(beat.get(), Ordering::AcqRel));
 
         // --- transport edges -------------------------------------------------
         if playing && !was_playing {
             if beat.get().abs() <= START_EPSILON_BEATS {
-                self.emit(MidiEvent::start(self.group));
+                emit(MidiEvent::start(self.group));
             } else {
-                self.emit(MidiEvent::song_position(
+                emit(MidiEvent::song_position(
                     self.group,
                     beats_to_midi_beats(beat),
                 ));
-                self.emit(MidiEvent::continue_msg(self.group));
+                emit(MidiEvent::continue_msg(self.group));
             }
             // Realign the MTC grid to the (possibly non-zero) start beat.
             self.restart_mtc();
         } else if !playing && was_playing {
-            self.emit(MidiEvent::stop(self.group));
+            emit(MidiEvent::stop(self.group));
             return;
         }
 
@@ -299,7 +267,7 @@ impl ClockMaster {
         // A block normally advances the beat by what it was due to (the
         // previous tick's `expected_advance`); anything else, either direction,
         // is a locate.
-        let tempo = self.transport.tempo();
+        let tempo = transport.tempo;
         if tempo.get() <= 0.0 {
             return;
         }
@@ -318,7 +286,7 @@ impl ClockMaster {
         let jumped = !is_edge
             && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS);
         if jumped {
-            self.emit(MidiEvent::song_position(
+            emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
             ));
@@ -361,7 +329,7 @@ impl ClockMaster {
             }
             match u32::try_from(k) {
                 Ok(k) if k <= max_offset => {
-                    self.emit(MidiEvent::timing_clock(self.group).with_frame_offset(k));
+                    emit(MidiEvent::timing_clock(self.group).with_frame_offset(k));
                 }
                 _ => break,
             }
@@ -369,7 +337,14 @@ impl ClockMaster {
 
         // --- MTC quarter-frames ---------------------------------------------
         if self.send_mtc.load(Ordering::Acquire) {
-            self.tick_mtc(block_size, sample_rate, beats_per_sample, beat, max_offset);
+            self.tick_mtc(
+                block_size,
+                sample_rate,
+                beats_per_sample,
+                beat,
+                max_offset,
+                emit,
+            );
         }
     }
 
@@ -386,6 +361,7 @@ impl ClockMaster {
         beats_per_sample: BeatDuration,
         beat: Beat,
         max_offset: u32,
+        emit: &mut impl FnMut(MidiEvent),
     ) {
         let fps = self.fps();
         let rate = sample_rate.get();
@@ -426,9 +402,7 @@ impl ClockMaster {
             let seconds = block_beat.get() * secs_per_beat;
             let tc = seconds_to_smpte(seconds, fps);
             let nibble = mtc_nibble(&tc, (next & 0x07) as u8, fps);
-            self.emit(
-                MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset),
-            );
+            emit(MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset));
             next += 1;
         }
 
@@ -491,11 +465,11 @@ fn mtc_nibble(tc: &(u8, u8, u8, u8), piece: u8, fps: SmpteFrameRate) -> u8 {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool as StdAtomicBool;
+    use std::sync::Arc;
     use tutti_core::Bpm;
     use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 
-    /// Minimal `Timeline` for tests: tempo + beat + playing under a
-    /// switch (mirrors the one in `clip_player.rs`).
+    /// Test transport: tempo + beat + playing under a switch.
     struct TestTransport {
         beat: AtomicF64,
         tempo: Bpm,
@@ -516,37 +490,52 @@ mod tests {
         fn set_playing(&self, p: bool) {
             self.playing.store(p, Ordering::Release);
         }
+        fn now(&self) -> Transport {
+            Transport::new(
+                self.playing.load(Ordering::Acquire),
+                self.tempo,
+                Beat(self.beat.load(Ordering::Acquire)),
+                None,
+            )
+        }
     }
 
-    impl Timeline for TestTransport {
-        fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat::new(self.beat.load(Ordering::Acquire))
+    /// A master ticked from a [`TestTransport`], emitting into a mailbox.
+    struct Rig {
+        cm: ClockMaster,
+        transport: Arc<TestTransport>,
+        out: crate::MidiSender,
+    }
+
+    impl std::ops::Deref for Rig {
+        type Target = ClockMaster;
+        fn deref(&self) -> &ClockMaster {
+            &self.cm
         }
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Acquire)
-        }
-        fn tempo(&self) -> Bpm {
-            self.tempo
-        }
-        fn segment_generation(&self) -> u64 {
-            0
+    }
+
+    impl Rig {
+        fn tick(&self, block_size: usize) {
+            self.cm.tick(&self.transport.now(), block_size, &mut |e| {
+                let _ = self.out.queue(&[e]);
+            });
         }
     }
 
     fn master(
         tempo: Bpm,
         sample_rate: impl Into<SampleRate>,
-    ) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
-        use tutti_midi_types::MidiUnitId;
+    ) -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
         let transport = Arc::new(TestTransport::new(tempo));
-        let (sender, receiver) = crate::MidiMailbox::pair(MidiUnitId::next());
-        let cm = ClockMaster::new(
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            sample_rate,
-            sender,
-        );
+        let (out, receiver) = crate::MidiMailbox::with_capacity(4096);
+        let cm = ClockMaster::new(sample_rate);
         cm.set_enabled(true);
-        (cm, transport, receiver)
+        let rig = Rig {
+            cm,
+            transport: Arc::clone(&transport),
+            out,
+        };
+        (rig, transport, receiver)
     }
 
     /// Drain a receiver fully into a `Vec` — the test-side stand-in for the old
@@ -807,7 +796,7 @@ mod tests {
     /// at 120 BPM from `*beat`, and return every event with its absolute
     /// frame (counted from `*frame`). Advances both.
     fn run_at(
-        cm: &ClockMaster,
+        cm: &Rig,
         transport: &TestTransport,
         cons: &crate::MidiReceiver,
         rate: f64,

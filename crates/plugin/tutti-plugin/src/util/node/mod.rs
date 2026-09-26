@@ -6,7 +6,6 @@
 //! fundsp `AudioUnit` needs to behave like a plugin.
 
 pub(crate) mod listeners;
-pub mod midi;
 pub(crate) mod node_id;
 pub mod signal;
 
@@ -16,5 +15,4 @@ pub mod signal;
 // loaders never construct one.
 pub use listeners::ParameterChangeSink;
 pub(crate) use listeners::{InvalidateSink, RefreshSink};
-pub use midi::Midi;
 pub use signal::route_with_latency;

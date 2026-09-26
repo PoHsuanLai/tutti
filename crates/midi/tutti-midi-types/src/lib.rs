@@ -11,9 +11,8 @@
 //! mapping), [`ci`] (Capability Inquiry) and [`translation`] (the MIDI 1↔2
 //! boundary, reachable at the root as [`convert`]).
 //!
-//! The DAW routing table ([`MidiRoutingTable`]) and the MIDI 2.0 Clip File codec
-//! ([`read_clip_file`] / [`write_clip_file`]) are re-exported at the root from
-//! private modules, so each has exactly one path.
+//! The MIDI 2.0 Clip File codec ([`read_clip_file`] / [`write_clip_file`]) is
+//! re-exported at the root from a private module, so it has exactly one path.
 //!
 //! SMF file parsing and the MIDI-1 wire codec come from the re-exported `midly`;
 //! typed UMP messages from the re-exported `midi2`.
@@ -44,7 +43,7 @@ pub use midly;
 // The tutti-types vocabulary this crate's own API is spelled in: every UMP
 // constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
 // `Beat`/`BeatDuration` and declares its tempo in `Bpm`, a CC message needs
-// `CCNumber`, and a routing table reaches the audio thread through `RtPublish`.
+// `CCNumber`, and state reaches the audio thread through `RtPublish`.
 pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
@@ -55,9 +54,7 @@ pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup,
 mod clip_file;
 mod message;
 mod note_id;
-mod routing;
 mod traits;
-mod unit_id;
 
 // Public, each for a stated reason:
 //
@@ -92,12 +89,7 @@ pub use mpe::{
     PitchBendSensitivity, ZoneInfo,
 };
 pub use note_id::{NoteId, PerNoteMap};
-// `MAX_TARGETS_PER_ROUTE` is the fan-out ceiling a `MidiRoute` is built against,
-// so a caller sizing its own target list names the same bound.
-pub use routing::{
-    MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator, MAX_TARGETS_PER_ROUTE,
-};
-pub use traits::{MidiIn, MidiOut, MidiRouter, MidiUnitIn};
+pub use traits::{MidiIn, MidiOut};
 pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
@@ -105,13 +97,12 @@ pub use ump::{
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent,
     Protocol, Tonic, UmpMessageType, UmpVersion, ALL_FUNCTION_BLOCKS,
 };
-pub use unit_id::MidiUnitId;
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
 ///
 /// Pulls in what building and decoding MIDI needs: the wire event
 /// ([`MidiEvent`]) and its decoded view ([`MidiMessage`] via
-/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the unit id, the
+/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the
 /// [`normalize`] seam, and the MIDI 2.0 Clip File codec (beat-domain
 /// [`write_clip_file_from_beats`] / [`read_clip_file`] / [`ParsedClipFile`]).
 ///
@@ -192,8 +183,8 @@ pub use unit_id::MidiUnitId;
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, MidiUnitId, MidiUnitIn,
-        NoteAttribute, NoteId, ParsedClipFile, PerNoteController, Protocol,
+        ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute, NoteId,
+        ParsedClipFile, PerNoteController, Protocol,
     };
     pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
 }

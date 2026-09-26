@@ -55,7 +55,7 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
             )
         })
         .collect();
-    synth.midi_sender().queue(&events);
+    synth.queue_midi(&events);
 
     let input = BufferVec::new(2);
     let mut buf = BufferVec::new(2);

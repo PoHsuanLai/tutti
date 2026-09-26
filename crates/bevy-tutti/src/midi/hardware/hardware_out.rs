@@ -265,17 +265,24 @@ impl MidiOutRouter<'_> {
 
 /// Drain a [`MidiReceiver`] mailbox fully and route every event.
 ///
-/// The single output-drain primitive: the clock master, track MIDI-out, and the
-/// clip tap all push into a mailbox via
-/// [`MidiOut`](tutti_midi_types::MidiOut), and this reads the paired receiver
-/// off-RT. Uses the inherent `poll_into` — the whole mailbox is one output
-/// stream, not addressed per-unit.
+/// The single output-drain primitive: the graph's hardware out (the clock and
+/// whatever else is wired to it) and track MIDI-out push into a mailbox, and
+/// this reads the paired receiver off-RT.
+///
+/// Each drained batch is rebased onto its first event (every `frame_offset`
+/// less the first's, wrapping), so what the stamper reads is the events'
+/// spacing: the hardware out stamps each with its frame on the graph's clock,
+/// which means nothing to a stream stamped batch by batch.
 pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRouter<'_>) {
     let mut buf = [MidiEvent::noop(); DRAIN_CHUNK];
     loop {
         let n = receiver.poll_into(&mut buf);
         if n == 0 {
             break;
+        }
+        let base = buf[0].frame_offset;
+        for e in &mut buf[..n] {
+            e.frame_offset = e.frame_offset.wrapping_sub(base);
         }
         router.route(&buf[..n]);
         if n < DRAIN_CHUNK {

@@ -81,17 +81,16 @@ fn main() -> Result<()> {
         )),
     }]);
 
-    // MIDI has two paths that coexist: a live sender for hardware and panel
-    // previews, and an installed source polled per block for clip playback.
-    // Both are gated on the same capability.
-    let midi_sender = plugin.midi_sender();
+    // MIDI travels on the node's event ports: a clip node, a keyboard's
+    // queue node, a hardware input node wire to its event input.
+    let takes_midi = plugin.takes_midi();
 
     report("transport", took_transport);
     report("harmony", took_harmony);
     report("automation", automation.is_some());
-    report("midi in", midi_sender.is_some());
+    report("midi in", takes_midi);
 
-    if plugin.role() == PluginRole::Instrument && midi_sender.is_none() {
+    if plugin.role() == PluginRole::Instrument && !takes_midi {
         // Worth saying out loud: a synth that takes no MIDI will never sound.
         // A *declined harmony* is unremarkable — most formats have no such
         // concept — which is why the answers are per-input rather than one

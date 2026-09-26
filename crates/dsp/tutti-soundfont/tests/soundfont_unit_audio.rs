@@ -78,7 +78,7 @@ fn render_process_blocks(
         size <= tutti_core::MAX_BUFFER_SIZE,
         "one BufferVec block only"
     );
-    unit.midi_sender().queue(events);
+    unit.queue_midi(events);
 
     let mut out = Vec::with_capacity(size * blocks);
     for _ in 0..blocks {

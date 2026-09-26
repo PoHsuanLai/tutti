@@ -1,8 +1,8 @@
 //! Capturing a unit's controls on the way into the graph.
 //!
 //! Some of what a host does to a node is not audio routing and not a scalar
-//! param: addressing MIDI to a synth, minting a modulation accumulator over a
-//! filter's cutoff, installing a transport reader in a hosted plugin. Each needs
+//! param: minting a modulation accumulator over a filter's cutoff, binding a
+//! hosted plugin's meter. (MIDI is neither: it travels on event edges.) Each needs
 //! the *concrete* node, and the graph only holds `Box<dyn AudioUnit>`.
 //!
 //! These used to be answered by downcasting the graph's copy of the node on
@@ -16,7 +16,6 @@
 //!
 //! | Component | Captured from | Read by |
 //! |---|---|---|
-//! | `MidiTarget` (`midi`) | `MidiTargetRegistry` | MIDI registration, routing, sequencing |
 //! | `ModParamsHandle` (`modulation`) | `ModTargetRegistry` | the modulation resolver |
 //! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`) | plugin meter bind and latency poll |
 //!
@@ -46,11 +45,8 @@
 //! [`crossfade_audio_node`](crate::graph::crossfade_audio_node) (which replaces
 //! the unit, so re-captures), the soundfont promotion and the plugin load. A
 //! host that pushes a unit into the graph itself and binds `AudioNode` by hand
-//! does the same with [`CapturedControls::capture`],
-//! [`AudioGraphRes::insert_with`](crate::graph::AudioGraphRes::insert_with) and
-//! [`bind`](CapturedControls::bind). `insert_with` is what lets a native
-//! export's fork of a MIDI unit play its clip; a unit with a captured port
-//! pushed with the plain `insert` refuses such an export by name.
+//! does the same with [`CapturedControls::capture`] and
+//! [`bind`](CapturedControls::bind).
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
@@ -65,15 +61,6 @@ use tutti_core::{AudioNode, AudioUnit};
 #[must_use = "captured controls do nothing until they are bound to the entity"]
 #[derive(Default)]
 pub struct CapturedControls {
-    #[cfg(feature = "midi")]
-    midi: Option<tutti_midi_runtime::MidiInPort>,
-    /// How a fork of the unit carries the clip on `midi`, for
-    /// [`AudioGraphRes::insert_with`](crate::graph::AudioGraphRes::insert_with)
-    /// to hand the native graph; taken there.
-    #[cfg(feature = "midi")]
-    // Behind a `Mutex` only to be `Sync`: controls wait in `PendingCrossfades`,
-    // a resource, and a fork source is `Send` alone. Never contended.
-    fork: Option<std::sync::Mutex<crate::midi::MidiFork>>,
     #[cfg(feature = "modulation")]
     params: Option<std::sync::Arc<dyn tutti_mod::ModParams + Send + Sync>>,
     #[cfg(feature = "plugin")]
@@ -89,8 +76,6 @@ impl CapturedControls {
         // `world` is unused only in the build with no registry-backed capture.
         let _ = world;
         Self::from_registries(
-            #[cfg(feature = "midi")]
-            world.get_resource::<crate::midi::MidiTargetRegistry>(),
             #[cfg(feature = "modulation")]
             world.get_resource::<crate::modulation::ModTargetRegistry>(),
             unit,
@@ -98,19 +83,12 @@ impl CapturedControls {
     }
 
     fn from_registries(
-        #[cfg(feature = "midi")] midi: Option<&crate::midi::MidiTargetRegistry>,
         #[cfg(feature = "modulation")] mods: Option<&crate::modulation::ModTargetRegistry>,
         unit: &dyn AudioUnit,
     ) -> Self {
         // `unit` is unused only in the build with no capturing feature at all.
         let _ = unit;
-        #[cfg(feature = "midi")]
-        let (midi, fork) = midi.and_then(|r| r.capture_forking(unit)).unzip();
         Self {
-            #[cfg(feature = "midi")]
-            midi,
-            #[cfg(feature = "midi")]
-            fork: fork.map(std::sync::Mutex::new),
             #[cfg(feature = "modulation")]
             params: mods.and_then(|r| r.capture(unit)),
             // A hosted out-of-process plugin is not an `AudioUnit` (it is a
@@ -127,10 +105,7 @@ impl CapturedControls {
     /// unbound client before it is bound and inserted
     /// ([`AudioGraphRes::insert_plugin`](crate::graph::AudioGraphRes::insert_plugin)):
     /// its [`PluginControls`](tutti_plugin::handles::PluginControls) as the
-    /// entity's `PluginShadow`, and its MIDI port as its `MidiTarget` — a
-    /// hosted plugin's inbox is an ordinary `MidiInPort`, so MIDI routing
-    /// finds it like any synth's. No fork hook: the plugin's own fork source
-    /// carries its clip (`PluginClient::fork_source`).
+    /// entity's `PluginShadow`.
     ///
     /// Typed, where [`capture`](Self::capture) asks registries of an
     /// `AudioUnit`: the plugin load holds the concrete client, so there is
@@ -138,42 +113,10 @@ impl CapturedControls {
     #[cfg(feature = "plugin")]
     pub fn for_plugin(client: &tutti_plugin::handles::PluginClient) -> Self {
         Self {
-            midi: Some(client.midi_port().clone()),
-            fork: None,
             #[cfg(feature = "modulation")]
             params: None,
             plugin: Some(client.controls()),
         }
-    }
-
-    /// A node's MIDI port, captured as its `MidiTarget` so keyboards, routing
-    /// and the sequencer's all-notes-off reach it: for a node inserted as a
-    /// graph node ([`spawn_graph_node`](crate::graph::SpawnGraphNode)), whose
-    /// fork source carries its own clip.
-    #[cfg(feature = "midi")]
-    pub fn for_midi_port(port: tutti_midi_runtime::MidiInPort) -> Self {
-        Self {
-            midi: Some(port),
-            ..Self::default()
-        }
-    }
-
-    /// How a fork of the unit carries its MIDI clip, taken out for the graph
-    /// the unit goes into. `None` for a unit with no captured port, and after
-    /// the first take.
-    #[cfg(feature = "midi")]
-    pub(crate) fn take_fork(&mut self) -> Option<crate::midi::MidiFork> {
-        self.fork.take().map(|m| {
-            m.into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        })
-    }
-
-    /// Put back a fork [`take_fork`](Self::take_fork) took, for a unit the
-    /// graph handed back (a refused replace).
-    #[cfg(feature = "midi")]
-    pub(crate) fn put_fork(&mut self, fork: crate::midi::MidiFork) {
-        self.fork = Some(std::sync::Mutex::new(fork));
     }
 
     /// Bind `entity` to `node`: insert [`AudioNode`] and every captured control.
@@ -189,7 +132,7 @@ impl CapturedControls {
     /// [`AudioNode`] — the crossfade case, where the unit changes under a
     /// surviving handle.
     ///
-    /// A control this unit does not have is **removed**: the old unit's port or
+    /// A control this unit does not have is **removed**: the old unit's
     /// params would otherwise stay reachable under the new unit's node id.
     ///
     /// The plugin binding latches are cleared too. `PluginMeterBound` and
@@ -204,15 +147,6 @@ impl CapturedControls {
             entity.remove::<crate::plugin_host::PluginMeterBound>();
             #[cfg(feature = "modulation")]
             entity.remove::<crate::plugin_host::PluginParamsBound>();
-        }
-        #[cfg(feature = "midi")]
-        match self.midi {
-            Some(port) => {
-                entity.insert(crate::midi::MidiTarget::new(node, port));
-            }
-            None => {
-                entity.remove::<crate::midi::MidiTarget>();
-            }
         }
         #[cfg(feature = "modulation")]
         match self.params {
@@ -247,8 +181,6 @@ pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
         return;
     };
     let _ = &mut e;
-    #[cfg(feature = "midi")]
-    e.try_remove::<crate::midi::MidiTarget>();
     #[cfg(feature = "modulation")]
     e.try_remove::<crate::modulation::ModParamsHandle>();
     #[cfg(feature = "plugin")]
@@ -258,12 +190,10 @@ pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
 /// The registries a system needs to capture controls, for insertion paths that
 /// run as systems rather than with the whole `World`.
 ///
-/// Both registries are optional: a build or an app without the subsystem simply
+/// The registry is optional: a build or an app without the subsystem simply
 /// captures nothing for it.
 #[derive(SystemParam)]
 pub struct ControlCapture<'w> {
-    #[cfg(feature = "midi")]
-    midi: Option<Res<'w, crate::midi::MidiTargetRegistry>>,
     #[cfg(feature = "modulation")]
     mods: Option<Res<'w, crate::modulation::ModTargetRegistry>>,
     _world: std::marker::PhantomData<&'w ()>,
@@ -273,8 +203,6 @@ impl ControlCapture<'_> {
     /// Run every capture against `unit`. See [`CapturedControls::capture`].
     pub fn capture(&self, unit: &dyn AudioUnit) -> CapturedControls {
         CapturedControls::from_registries(
-            #[cfg(feature = "midi")]
-            self.midi.as_deref(),
             #[cfg(feature = "modulation")]
             self.mods.as_deref(),
             unit,

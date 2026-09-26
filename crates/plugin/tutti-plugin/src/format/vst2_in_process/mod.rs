@@ -9,6 +9,7 @@
 mod audio_unit;
 mod control_backend;
 mod loader;
+mod node;
 
 pub use audio_unit::InProcessVst2Client;
 pub use loader::{load, load_client};

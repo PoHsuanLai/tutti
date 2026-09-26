@@ -203,12 +203,6 @@ struct Entry {
     /// `None` for a native node (the beat generator), which takes no
     /// settings and has no `AudioUnit` to inspect.
     controls: Option<LegacyControls<Boxed>>,
-    /// Whether a fork of the unit now at the key carries the MIDI clip on
-    /// its live port: it went in with the fork its captured port asks for
-    /// (`insert_with`), or is a plugin (whose fork source carries its own).
-    /// A node an export reaches that has a captured port and not this is
-    /// refused (`fork_for_export`) — its fork would drop the clip.
-    carries_midi: bool,
 }
 
 /// The executor, while this side still holds it, and what a local render
@@ -300,40 +294,15 @@ pub(crate) fn clamp_latency(latency: Latency) -> Latency {
     )
 }
 
-/// How a unit's fork carries the MIDI clip on its live port, as the MIDI
-/// registry captured it (`CapturedControls`). Without the `midi` feature no
-/// unit has a captured port, and every unit forks from its shadow.
-#[cfg(feature = "midi")]
-pub(crate) type UnitFork = crate::midi::MidiFork;
-/// See the `midi` build's `UnitFork`: here there is none.
-#[cfg(not(feature = "midi"))]
-pub(crate) enum UnitFork {}
-
 /// `unit` as every unit goes in — [`Legacy::controlled`]: its node, settings
-/// ring and shadow — forking as `fork` says: from the unit's own source, or
-/// from the shadow with a hook carrying its MIDI clip (see
-/// `MidiNode::fork_source`). With no `fork`, from the shadow alone, as
-/// `Legacy` forks every forkable unit.
+/// ring and shadow, forking from the shadow as `Legacy` forks every forkable
+/// unit.
 fn controlled(
     editor: &mut Editor,
     unit: Box<dyn AudioUnit>,
-    fork: Option<UnitFork>,
 ) -> (NodeParts<()>, LegacyControls<Boxed>) {
     let (legacy, controls) = Legacy::controlled(editor, Boxed(unit));
-    let parts = match fork {
-        None => tutti_graph::IntoNode::into_parts(legacy),
-        #[cfg(feature = "midi")]
-        Some(UnitFork::Carry(hook)) => {
-            tutti_graph::IntoNode::into_parts(legacy.with_fork_hook(hook))
-        }
-        #[cfg(feature = "midi")]
-        Some(UnitFork::Own(own)) => {
-            let mut parts = tutti_graph::IntoNode::into_parts(legacy);
-            parts.fork = Some(own);
-            parts
-        }
-    };
-    (parts, controls)
+    (tutti_graph::IntoNode::into_parts(legacy), controls)
 }
 
 impl NativeGraph {
@@ -468,19 +437,16 @@ impl NativeGraph {
 
     // --- Nodes ---
 
-    /// Insert `unit`, forking as `fork` says (see [`controlled`]): the fork
-    /// its captured MIDI port asks for, or `None` for a unit with no port.
-    pub(crate) fn insert(&mut self, unit: Box<dyn AudioUnit>, fork: Option<UnitFork>) -> AudioNode {
+    /// Insert `unit` (see [`controlled`]).
+    pub(crate) fn insert(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
         let node = AudioNode(NodeId::new());
-        let carries_midi = fork.is_some();
-        let (parts, controls) = controlled(&mut self.editor, unit, fork);
+        let (parts, controls) = controlled(&mut self.editor, unit);
         self.editor.insert(key(node), UNIT_KIND, parts);
         self.nodes.insert(
             key(node),
             Entry {
                 node,
                 controls: Some(controls),
-                carries_midi,
             },
         );
         self.edited = true;
@@ -510,9 +476,6 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: None,
-                // Its fork source carries the clip itself
-                // (`PluginClient::fork_source`).
-                carries_midi: true,
             },
         );
         self.edited = true;
@@ -578,7 +541,6 @@ impl NativeGraph {
         }
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.controls = None;
-            entry.carries_midi = true;
         }
         self.edited = true;
         Ok(())
@@ -588,38 +550,20 @@ impl NativeGraph {
     /// with this graph: `Editor::fork` with `ForkMode::Offline(ctx)`, through
     /// tutti-export (`RenderGraph::fork`, which prepares it at the render's
     /// rate and `GRAPH_MAX_BLOCK`). `ctx` is the render's timeline, the one
-    /// type `ForkMode::Offline` and every unit's `rebind_offline` take.
-    ///
-    /// `midi` is every node with a captured MIDI port (its entity's
-    /// `MidiTarget`). One the fork holds that went in **without** the fork
-    /// its port asks for — a host that captured the unit's controls, then
-    /// pushed it with the plain [`insert`](Self::insert) and bound them —
-    /// would fork from its shadow and drop its clip, silently. It refuses
-    /// the export instead (`NotForkable`, naming its entity).
+    /// type `ForkMode::Offline` takes.
     #[cfg(feature = "export")]
     pub(crate) fn fork_for_export(
         &self,
         target: tutti_graph::ForkTarget,
         ctx: &tutti_core::transport::OfflineTransport,
         rate: SampleRate,
-        midi: &std::collections::BTreeSet<NodeKey>,
     ) -> tutti_export::Result<tutti_export::RenderGraph> {
-        let graph = tutti_export::RenderGraph::fork(
+        tutti_export::RenderGraph::fork(
             &self.editor,
             target,
             tutti_graph::ForkMode::Offline(ctx),
             rate,
-        )?;
-        // The keys the fork holds are exactly what it forked.
-        let dropped = graph.editor().spec().topology.nodes.keys().find(|k| {
-            self.nodes
-                .get(k)
-                .is_some_and(|e| !e.carries_midi && midi.contains(k))
-        });
-        if let Some(&key) = dropped {
-            return Err(tutti_export::Error::NotForkable { key });
-        }
-        Ok(graph)
+        )
     }
 
     /// The beat generator a graph engine needs in place of a
@@ -643,7 +587,6 @@ impl NativeGraph {
             Entry {
                 node: id,
                 controls: None,
-                carries_midi: true,
             },
         );
         self.edited = true;
@@ -655,10 +598,15 @@ impl NativeGraph {
         self.shape(node).map_or(0, |s| usize::from(s.event_in))
     }
 
-    /// Feed `sink`'s event input `port` from exactly `sources`' event output
-    /// 0 (fan-in merges them by offset; the graph orders ties by source).
+    /// Feed `sink`'s event input `port` from exactly `sources` (fan-in merges
+    /// them by offset; the graph orders ties by source).
     /// Touches nothing when that is what it already holds.
-    pub(crate) fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[AudioNode]) {
+    pub(crate) fn set_event_sources(
+        &mut self,
+        sink: AudioNode,
+        port: u16,
+        sources: &[crate::graph::EventSource],
+    ) {
         let at = EventIn {
             node: key(sink),
             port,
@@ -666,8 +614,8 @@ impl NativeGraph {
         let mut want: Vec<EventOut> = sources
             .iter()
             .map(|s| EventOut {
-                node: key(*s),
-                port: 0,
+                node: key(s.node),
+                port: s.port,
             })
             .collect();
         want.sort();
@@ -688,8 +636,13 @@ impl NativeGraph {
         self.edited = true;
     }
 
-    /// The nodes feeding `sink`'s event input `port`, in the graph's order.
-    pub(crate) fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<AudioNode> {
+    /// The event outputs feeding `sink`'s event input `port`, in the graph's
+    /// order.
+    pub(crate) fn event_sources(
+        &self,
+        sink: AudioNode,
+        port: u16,
+    ) -> Vec<crate::graph::EventSource> {
         let at = EventIn {
             node: key(sink),
             port,
@@ -700,7 +653,12 @@ impl NativeGraph {
             .get(&at)
             .into_iter()
             .flatten()
-            .filter_map(|e| self.nodes.get(&e.from().node).map(|n| n.node))
+            .filter_map(|e| {
+                let from = e.from();
+                self.nodes
+                    .get(&from.node)
+                    .map(|n| crate::graph::EventSource::new(n.node, from.port))
+            })
             .collect()
     }
 
@@ -716,7 +674,6 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: None,
-                carries_midi: false,
             },
         );
         self.edited = true;
@@ -753,16 +710,12 @@ impl NativeGraph {
     /// commits (`Editor::replace` would consume it and refuse): the caller
     /// keeps it and retries once the re-prepare has resumed. Refused for good
     /// on a poisoned editor, where no unit can ever land again.
-    ///
-    /// `fork` is the incoming unit's (see [`insert`](Self::insert)), taken
-    /// only when the unit lands, so a refused unit keeps it for its retry.
     pub(crate) fn replace(
         &mut self,
         node: AudioNode,
         mut unit: Box<dyn AudioUnit>,
         fade: Seconds,
         curve: CrossfadeCurve,
-        fork: &mut Option<UnitFork>,
     ) -> Result<(), ReplaceRefused> {
         if let Some(cause) = self.editor.poisoned() {
             return Err(ReplaceRefused::Failed(format!(
@@ -797,9 +750,7 @@ impl NativeGraph {
                 && s.event_resolution == Resolution::Block
                 && s.latency == probe_latency(unit.as_mut(), rate)
         });
-        let fork = fork.take();
-        let carries_midi = fork.is_some();
-        let (legacy, controls) = controlled(&mut self.editor, unit, fork);
+        let (legacy, controls) = controlled(&mut self.editor, unit);
         if fits {
             let fade = Fade::seconds(fade, rate, curve);
             if let Err(e) = self.editor.replace(k, legacy, fade) {
@@ -815,7 +766,6 @@ impl NativeGraph {
         }
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.controls = Some(controls);
-            entry.carries_midi = carries_midi;
         }
         self.edited = true;
         Ok(())
@@ -1187,13 +1137,14 @@ impl NativeGraph {
         }
     }
 
-    /// Render one frame on a local executor, committing any edit first.
+    /// Render one frame on a local executor, committing any edit first,
+    /// with the transport at `transport`.
     ///
     /// # Panics
     ///
     /// If the executor was taken: there is no control-side copy of any node
     /// to render instead (see the module docs).
-    pub(crate) fn render_frame(&mut self, output: &mut [f32]) {
+    pub(crate) fn render_frame_at(&mut self, transport: &Transport, output: &mut [f32]) {
         assert!(
             self.local.is_some(),
             "render_frame needs the audio side, and it was taken; \
@@ -1203,13 +1154,7 @@ impl NativeGraph {
             let _ = self.commit();
         }
         let local = self.local.as_mut().expect("checked above");
-        render(
-            &mut local.exec,
-            &mut local.scratch,
-            &Transport::default(),
-            &[],
-            output,
-        );
+        render(&mut local.exec, &mut local.scratch, transport, &[], output);
     }
 }
 

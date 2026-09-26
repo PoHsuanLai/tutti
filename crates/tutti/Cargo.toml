@@ -98,7 +98,6 @@ midi = [
     "dep:tutti-midi-file",
     "dep:tutti-midi-runtime",
     "tutti-core/midi",
-    "tutti-cpal?/midi",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 

@@ -41,7 +41,7 @@ tutti-midi-types = { path = "../tutti-midi-types" }
 # over from the old `tutti-midi-io` name. Consumers depend on `tutti-midi-file`
 # directly; `bevy-tutti` and the known hosts already did.
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
-# MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
+# The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
@@ -67,5 +67,7 @@ tutti-midi-hardware = { path = ".", features = ["test-support"] }
 
 tracing-subscriber = "0.3"
 # The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
-# `HardwareMidiInputs` through `MidiPreBlock` under a disabled allocator.
+# `HardwareMidiInputs` through a `MidiInputNode` in a graph, under a disabled
+# allocator.
 assert_no_alloc = { version = "1", default-features = false }
+tutti-graph = { path = "../../core/tutti-graph" }

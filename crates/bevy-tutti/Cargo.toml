@@ -146,7 +146,7 @@ ogg = ["tutti-io?/ogg", "tutti-sampler?/ogg"]
 # `tutti-polysynth` is absent from this list on purpose: it has no `midi`
 # feature to enable. MIDI is unconditional there — a synth you cannot send a
 # note to is not a smaller synth — so pulling the crate in at all brings it.
-midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-cpal/midi"]
+midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi"]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
 # — deliberately, since the feature does nothing but pull the crate in.
 # `tutti-midi-hardware` ships one feature, `test-support`, and it adds no

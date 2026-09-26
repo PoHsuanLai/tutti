@@ -27,13 +27,11 @@ use crate::graph::{
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
-use crate::midi::{ClockMasterRes, MidiBusRes, MidiOutSinkRes, MidiRoutingRes};
+use crate::midi::{ClockMasterRes, MidiEngineNodes, MpeModeRes};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::MidiSession;
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::{MidiBus, MidiPostBlock, MidiPreBlock};
-#[cfg(feature = "midi")]
-use tutti_midi_types::MidiRoutingTable;
+use tutti_midi_runtime::{ClockNode, MidiInputNode, MidiOutNode};
 
 #[cfg(feature = "sampler")]
 use crate::sampler::DiskStreamerRes;
@@ -65,8 +63,8 @@ pub(crate) fn build_on(
     start: impl FnOnce(&mut AudioEngine, Arc<AudioCallbackState>) -> tutti_cpal::Result<()>,
 ) -> Result<()> {
     // OS MIDI ports are opened iff the `midi-hardware` feature is compiled.
-    // Built first so the port manager can be handed to the processor's MIDI
-    // input. (Software fan-out via `MidiBus` is always present under `midi`.)
+    // Built first so the port manager can be handed to the graph's MIDI input
+    // node.
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
         let port_manager = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(256));
@@ -101,7 +99,8 @@ pub(crate) fn build_on(
     let compensation = crate::graph::latency::ChannelCompensation::default();
 
     let Assembled {
-        graph,
+        #[cfg_attr(not(feature = "midi"), allow(unused_mut))]
+        mut graph,
         engine,
         clock: clock_node,
         click: click_node,
@@ -114,101 +113,32 @@ pub(crate) fn build_on(
         &click_settings,
     )?;
 
-    // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
-    // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
-    // it. Built here only because the RT `MidiPreBlock` needs its snapshot at
-    // assembly time; the writer half is handed to `TuttiMidiPlugin` below.
+    // The engine's MIDI, as graph nodes (doc 013, rewrite item 5): the
+    // hardware input (translating, and ingesting MPE in the app's
+    // `MpeModeConfig`, inserted before the engine builds; default `Disabled`),
+    // the clock (Beat Clock / MTC, disabled until a host enables it) and the
+    // hardware out the clock is wired to, which the frontend pump drains to
+    // the OS. Bound to entities below.
     #[cfg(feature = "midi")]
-    let midi_route = MidiRoutingTable::new();
-    #[cfg(feature = "midi")]
-    let midi_bus = MidiBus::new();
-
-    // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
-    // transport, pushes into its own output ring (independent of the routing
-    // path, so System Real-Time reaches hardware-out). Ticked once per block by
-    // the RT processor; its consumer is drained to the OS by the frontend pump.
-    // Starts disabled — no output until the UI connects a device + enables it.
-    #[cfg(feature = "midi")]
-    let (clock_master, clock_out_consumer) = {
-        let (sender, receiver) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
-        let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
-            Arc::new(transport.clone()),
-            sample_rate,
-            sender,
-        ));
-        (master, receiver)
-    };
-
-    // MIDI runs as a once-per-block producer before the graph render: it ticks
-    // the clock, polls hardware, and routes events into node inboxes (which time
-    // each event by its `frame_offset`). See `MidiPreBlock`.
-    #[cfg(feature = "midi")]
-    let pre_block = {
-        let mut pre_block = MidiPreBlock::new(midi_route.snapshot_arc());
-        pre_block.set_queue(Arc::new(midi_bus.clone()));
-        pre_block.set_clock(clock_master.clone());
-
-        // Input-edge translation: assemble (N)RPN runs, then rewrite classic-MPE
-        // channel-spread into native per-note messages, so downstream synths see
-        // only native MIDI-2. MPE mode comes from the app's `MpeModeConfig`
-        // (inserted before the engine builds); default `Disabled` = passthrough.
-        pre_block.set_translator(tutti_midi_types::Midi1ToMidi2Translator::new());
+    let midi_nodes = {
         let mpe_mode = app
             .world()
             .get_resource::<crate::midi::MpeModeConfig>()
             .map(|c| c.0)
             .unwrap_or(tutti_midi_types::MpeMode::Disabled);
-        pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
-        // The live handle, so MPE stays configurable after build rather than
-        // being fixed here. `MpeModeConfig` above is the *seed*; a host that
-        // stores zone setup in a document overwrites it through this.
-        app.insert_resource(crate::midi::MpeModeRes(pre_block.mpe_mode_handle()));
-
-        // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
-        if let Some(ref io) = midi_io {
-            pre_block.set_input(io.ports().clone());
-        }
-
-        pre_block
+        let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = midi_io
+            .as_ref()
+            .map(|io| Arc::clone(io.ports()) as Arc<dyn tutti_midi_types::MidiIn>);
+        #[cfg(not(feature = "midi-hardware"))]
+        let wire: Option<Arc<dyn tutti_midi_types::MidiIn>> = None;
+        let (input_node, input) = graph.insert_node(MidiInputNode::new(wire).with_mpe(mpe_mode));
+        let (clock_node, master) = graph.insert_node(ClockNode::new());
+        let (out_node, out) = graph.insert_node(MidiOutNode::new());
+        (input_node, input, clock_node, master, out_node, out)
     };
 
-    // The outbound half, run *after* the graph render: it fans out whatever the
-    // graph emitted (a hosted plugin's MIDI-out) into the same unit inboxes
-    // inbound events reach.
-    //
-    // `tutti-cpal` holds an `Option<MidiPostBlock>` and calls `run()` in the
-    // callback; assembling one needs the routing table and the bus, which are
-    // this adapter's to own, so it belongs here rather than in the device layer.
-    // The engine-side path itself needs no adapter — `tutti-midi-runtime`'s
-    // `outbound_block_path` test assembles the whole round trip with no Bevy in
-    // scope, and exists to keep that true.
-    //
-    // `midi_route.snapshot_arc()` is deliberately the *same* handle the pre-block
-    // took: a node's MIDI-out is routed by exactly the rules a hardware input is,
-    // and two tables would let the two directions disagree about where a channel
-    // goes.
-    #[cfg(feature = "midi")]
-    let post_block = {
-        let mut post_block = MidiPostBlock::new(midi_route.snapshot_arc());
-        post_block.set_queue(Arc::new(midi_bus.clone()));
-        post_block
-    };
-
-    // The collection point emitting nodes push into. Taken before the post-block
-    // moves into the callback state, and published as `MidiOutSinkRes` for a host
-    // to hand to whatever emits (`plugin.set_midi_out(sink.handle())`). Nothing
-    // is installed automatically — `midi::out_sink` states why.
-    #[cfg(feature = "midi")]
-    let midi_out_sink = post_block.sink();
-
-    let callback_state = {
-        let state = AudioCallbackState::new(engine, meter.clone(), tap.clone());
-        #[cfg(feature = "midi")]
-        let state = state.with_pre_block(pre_block).with_post_block(post_block);
-        Arc::new(state)
-    };
+    let callback_state = Arc::new(AudioCallbackState::new(engine, meter.clone(), tap.clone()));
     start(&mut audio_engine, callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
@@ -280,15 +210,28 @@ pub(crate) fn build_on(
 
     #[cfg(feature = "midi")]
     {
-        // Both must be the very values the pre-block above shares — a freshly
-        // built one publishes where the audio thread never reads.
-        app.insert_resource(MidiBusRes::new(midi_bus));
-        app.insert_resource(MidiRoutingRes::new(midi_route));
-        app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
-        // The outbound collection point, from the post-block now living in the
-        // callback state. A host hands `handle()` to whatever emits; nothing is
-        // installed automatically — see `midi::out_sink` for why.
-        app.insert_resource(MidiOutSinkRes::new(midi_out_sink));
+        // The MIDI nodes get entities like every node, so a host can wire to
+        // (and from) them by entity: the route rules feed from the input's
+        // ports, and anything declared on the hardware out reaches the wire
+        // beside the clock.
+        let (input_node, input, clock_node, master, out_node, out) = midi_nodes;
+        let input_entity = app.world_mut().spawn(input_node).id();
+        let clock_entity = app.world_mut().spawn(clock_node).id();
+        let out_entity = app.world_mut().spawn(out_node).id();
+        app.world_mut()
+            .get_resource_or_init::<crate::graph::EventFeeds>()
+            .set(out_entity, "clock", vec![clock_node.into()]);
+        app.world_mut()
+            .get_resource_or_init::<crate::graph::GraphDirty>()
+            .0 = true;
+        app.insert_resource(MidiEngineNodes {
+            input: input_entity,
+            input_node,
+            clock: clock_entity,
+            hardware_out: out_entity,
+        });
+        app.insert_resource(MpeModeRes(input));
+        app.insert_resource(ClockMasterRes::new(master, out));
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = midi_io {
             app.insert_resource(MidiIoRes(io));

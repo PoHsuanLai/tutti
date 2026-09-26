@@ -3,9 +3,9 @@
 //! `Net`'s typed node accessors (the `node` + `_as` / `_as_mut` pair) hand back
 //! the graph's own copy of a node, downcast to a concrete type. This crate used
 //! to lean on them for three things — a synth's MIDI port, a node's modulatable
-//! params, and a hosted plugin's input slots and latency — and all three now
-//! come from components captured off the unit as it is inserted
-//! (`bevy_tutti::graph::capture`).
+//! params, and a hosted plugin's input slots and latency. MIDI is event edges
+//! now; the other two come from components captured off the unit as it is
+//! inserted (`bevy_tutti::graph::capture`).
 //!
 //! The downcast has to stay gone, because it is what ties a call site to one
 //! graph implementation: a graph that owns its nodes outright, rather than
@@ -67,15 +67,6 @@ const PATTERNS: &[Pattern] = &[
 /// A count rather than a path: a new use in an allow-listed file still fails.
 const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
-        "src/midi/endpoint/target.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "MidiTargetRegistry's capture (`as_node`): a downcast of the *owned* unit \
-         before it is inserted, which is the whole point of capturing, and of a \
-         fork's own unit to find the port its clip goes on — never a read of the \
-         live graph.",
-    ),
-    (
         "src/modulation/target.rs",
         "downcast_ref / downcast_mut",
         1,
@@ -84,12 +75,10 @@ const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
         "tests/export_fork.rs",
         "downcast_ref / downcast_mut",
-        5,
-        "a_plugin_fork_that_cannot_be_built_is_a_named_failure, \
-         an_unrebindable_synth_source_is_a_named_failure and \
-         a_host_midi_unit_with_an_unrebindable_source_refuses_by_name downcast an export \
-         error's `ForkCause` to the node's own error (the cause's documented \
-         use), not a graph node. (The `Net`-era oracle's downcast of the synth \
+        1,
+        "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
+         export error's `ForkCause` to the plugin's own error (the cause's \
+         documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
          in its own `Net`, and its raw node access, went with it in doc 013 \
          PR 15.)",
     ),
@@ -172,7 +161,7 @@ fn no_graph_node_downcasts_outside_the_allow_list() {
     assert!(
         violations.is_empty(),
         "graph downcasts found:\n  {}\n\nRead the node's controls from the entity \
-         instead — `MidiTarget`, `ModParamsHandle`, `PluginShadow`, or a handle \
+         instead — `ModParamsHandle`, `PluginShadow`, or a handle \
          taken from the unit before it was inserted. See `bevy_tutti::graph::capture`.",
         violations.join("\n  ")
     );

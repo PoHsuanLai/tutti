@@ -7,8 +7,8 @@
 //! at external MIDI out via [`MidiOutRes`](super::track_out::MidiOutRes).
 //!
 //! Both protocols negotiate with *peer devices*, so their output goes to the
-//! hardware-out mailbox, never the `MidiBus` synth fan-out — a synth inbox is
-//! not a wire, and nothing would carry these to a peer.
+//! hardware-out mailbox, never into the graph — a synth's event input is not
+//! a wire, and nothing would carry these to a peer.
 //!
 //! Two duties, one module because they share the pattern:
 //!
@@ -340,9 +340,10 @@ mod tests {
 
     /// A Discovery probe must land in the mailbox the hardware pump drains.
     ///
-    /// Regression: sending these to `MidiBus`'s per-unit *system* ring instead
-    /// drops every CI probe, endpoint-discovery request and Flex-metadata
-    /// message silently, because nothing polls that ring. Loopback tests of the
+    /// Regression: sending these to a synth's per-unit *system* ring (the
+    /// fan-out this replaced) dropped every CI probe, endpoint-discovery
+    /// request and Flex-metadata message silently, because nothing polled
+    /// that ring. Loopback tests of the
     /// negotiators cannot catch it; only checking the destination can.
     #[test]
     fn discovery_probe_reaches_the_hardware_out_mailbox() {

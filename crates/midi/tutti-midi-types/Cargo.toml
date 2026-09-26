@@ -2,7 +2,7 @@
 name = "tutti-midi-types"
 version = "0.0.1"
 edition = "2021"
-description = "Pure MIDI types for Tutti - MidiEvent (UMP) + tutti-domain routing/MPE/sync"
+description = "Pure MIDI types for Tutti - MidiEvent (UMP) + tutti-domain MPE/sync"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["midi", "audio", "real-time"]
@@ -32,7 +32,7 @@ serde = ["dep:serde", "tutti-types/serde"]
 
 [dependencies]
 bitflags = "2"
-# `RtPublish` — atomic snapshot publishing for MidiRoutingTable.
+# The unit vocabulary (`Beat`, `MidiChannel`, …) and `RtPublish`, re-exported.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true

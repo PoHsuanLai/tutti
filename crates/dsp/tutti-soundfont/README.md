@@ -9,21 +9,18 @@ One type: `SoundFontUnit`, a stereo `AudioUnit` with zero inputs and two outputs
 Build it with `SoundFontUnit::new` from a decoded `SoundFont` and a
 `SynthesizerSettings`, then `program_change` to pick the preset and channel.
 
-**Notes arrive one way: the MIDI inbox.** `midi_sender()` hands back a producer a
-control thread pushes to; `midi_port()` is that endpoint as a whole borrow
-(routing address, mailbox, and the source-install slot), so a host resolves all
-three through one downcast rather than caching one of them — which is how an id
-goes stale across a `crossfade` that keeps the graph node but mints a new port.
-Events polled from the inbox are applied **at their own `frame_offset`** within
-a block, to a resolution of **8 frames** — see the timing-resolution section
-below for what that floor is and where it comes from.
+**Notes arrive on its MIDI event input.** It is a `tutti_graph::Node` with one
+MIDI event input (a clip node, a keyboard's queue, the hardware input wire to
+it); driven by hand as an `AudioUnit`, its next block plays what `queue_midi`
+was given. Events are applied **at their own `frame_offset`** within a block,
+to a resolution of **8 frames** — see the timing-resolution section below for
+what that floor is and where it comes from.
 
 The unit also exposes `note_on(channel, key, velocity)` / `note_off(channel, key)`
-as bare MIDI-1 integers, bypassing the inbox and calling RustySynth directly.
-They are **not** the intended path and have none of its properties: no
-`frame_offset`, so every note lands at the block start; no routing, so a
-`MidiBus` cannot reach them; `&mut self`, so they are unreachable once the unit
-is in a `Net`. Its peer `tutti-polysynth` exposes no such pair. Use the inbox.
+as bare MIDI-1 integers, calling RustySynth directly. They are **not** the
+intended path: no `frame_offset`, so every note lands at the block start, and
+`&mut self`, so they are unreachable once the unit is in a graph. Its peer
+`tutti-polysynth` exposes no such pair.
 
 ## What it does not own
 
@@ -31,8 +28,8 @@ is in a `Net`. Its peer `tutti-polysynth` exposes no such pair. Use the inbox.
   **peer** of [`tutti-polysynth`](../tutti-polysynth), not a flag on it: this
   unit reaches for none of that crate's voice allocation, tuning, portamento or
   unison — RustySynth owns all of it. What the two share is the *shape*, both
-  being `AudioUnit`s with a MIDI inbox, and that comes from `tutti-core` and
-  `tutti-midi-runtime`, not from each other. It was split out of the old
+  being graph nodes with a MIDI event input, and that comes from `tutti-graph`,
+  not from each other. It was split out of the old
   `tutti-synth` for exactly this reason: the `soundfont` feature there was a
   dependency edge wearing a feature's clothes.
 - **No asset loading.** This crate takes a *decoded* `SoundFont`. A host that
@@ -67,10 +64,9 @@ let settings = SynthesizerSettings::new(44_100);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;
 unit.program_change(0, 0); // channel 0 → preset 0
 
-// The one note path: queue through the inbox, before the unit moves into the
-// graph. A control thread may keep pushing through this sender afterwards.
-let sender = unit.midi_sender();
-sender.queue(&[MidiEvent::note_on(
+// Driven by hand: the next block plays what was queued. (In a graph, MIDI
+// arrives on the unit's event input instead.)
+unit.queue_midi(&[MidiEvent::note_on(
     MidiGroup::FIRST,
     MidiChannel::FIRST,
     60,
@@ -130,7 +126,7 @@ gain-ramp granularity rather than any algorithm change.
 
 ## Constraint: MIDI resolution stops at 7 bits
 
-The inbox speaks MIDI 2.0 (UMP), RustySynth speaks MIDI 1.0 wire format, so every
+The event input speaks MIDI 2.0 (UMP), RustySynth speaks MIDI 1.0 wire format, so every
 value downscales through the spec's Min-Center-Max converters. Anything MIDI 2.0
 expresses that MIDI 1.0 cannot — per-note pitch bend, per-note controllers,
 16-bit velocity, 32-bit CC precision — is **dropped, not approximated**. Channel
@@ -149,7 +145,7 @@ so a consumer needs no direct `rustysynth` dependency to decode a file.
 
 ## Features
 
-None. The crate **is** the SoundFont unit — RustySynth and the MIDI inbox are
+None. The crate **is** the SoundFont unit — RustySynth and its MIDI input are
 both load-bearing, and gating either leaves a `SoundFontUnit` that cannot be
 built or cannot receive notes.
 

@@ -10,9 +10,7 @@
 //! 2. **Graph scanning** — tutti's PDC code uses marker ids to find
 //!    auto-inserted delay nodes without carrying state between commits.
 //!
-//! Per-instance routing identity (for MIDI dispatch) lives on
-//! [`MidiUnitId`], exposed by each MIDI-receiving unit's inherent
-//! `midi_unit_id()`, *not* on `get_id()`.
+//! Nothing routes by it: MIDI reaches a node over the graph's event edges.
 //!
 //! ## Ownership — each crate owns its own ids
 //!
@@ -50,7 +48,6 @@
 //! ```
 //!
 //! [`AudioUnit::get_id`]: fundsp::audiounit::AudioUnit::get_id
-//! [`MidiUnitId`]: tutti_midi_types::MidiUnitId
 
 /// Pack an 8-byte ASCII mnemonic into a `get_id()` fingerprint (big-endian).
 ///

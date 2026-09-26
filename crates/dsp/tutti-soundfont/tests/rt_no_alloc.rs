@@ -88,8 +88,7 @@ fn soundfont_process_idle_is_allocation_free() {
 #[test]
 fn soundfont_process_with_active_voices_is_allocation_free() {
     let mut unit = unit();
-    unit.midi_sender()
-        .queue(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
+    unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
@@ -119,19 +118,18 @@ fn soundfont_process_with_active_voices_is_allocation_free() {
 #[test]
 fn soundfont_process_with_events_inside_block_is_allocation_free() {
     let mut unit = unit();
-    let sender = unit.midi_sender();
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
 
     // Warm up every lazily-sized buffer at full occupancy first.
-    sender.queue(&[note_on(48, 0), note_on(60, 16), note_on(72, 48)]);
+    unit.queue_midi(&[note_on(48, 0), note_on(60, 16), note_on(72, 48)]);
     for _ in 0..64 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
         unit.process(64, &input, &mut output);
     }
-    sender.queue(&[note_off(48, 0), note_off(60, 0), note_off(72, 0)]);
+    unit.queue_midi(&[note_off(48, 0), note_off(60, 0), note_off(72, 0)]);
     for _ in 0..256 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
@@ -143,9 +141,9 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..200 {
             if i % 2 == 0 {
-                sender.queue(&[note_on(60, 0), note_on(64, 24), note_on(67, 63)]);
+                unit.queue_midi(&[note_on(60, 0), note_on(64, 24), note_on(67, 63)]);
             } else {
-                sender.queue(&[note_off(60, 0), note_off(64, 24), note_off(67, 63)]);
+                unit.queue_midi(&[note_off(60, 0), note_off(64, 24), note_off(67, 63)]);
             }
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
@@ -162,7 +160,6 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
 #[test]
 fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
     let mut unit = unit();
-    let sender = unit.midi_sender();
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
@@ -177,13 +174,13 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
         .collect();
 
     for _ in 0..8 {
-        sender.queue(&on);
+        unit.queue_midi(&on);
         for _ in 0..16 {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
             unit.process(64, &input, &mut output);
         }
-        sender.queue(&off);
+        unit.queue_midi(&off);
         for _ in 0..64 {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
@@ -193,13 +190,13 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..64 {
-            sender.queue(&on);
+            unit.queue_midi(&on);
             for _ in 0..8 {
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
                 unit.process(64, &input, &mut output);
             }
-            sender.queue(&off);
+            unit.queue_midi(&off);
             for _ in 0..32 {
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
@@ -213,8 +210,7 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 #[test]
 fn soundfont_tick_is_allocation_free() {
     let mut unit = unit();
-    unit.midi_sender()
-        .queue(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
+    unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
     let mut output = [0.0f32; 2];
     for _ in 0..256 {

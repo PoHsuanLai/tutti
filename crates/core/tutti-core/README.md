@@ -38,7 +38,8 @@ directly.
 
 - **MIDI.** The vocabulary is `tutti-midi-types`', the state machines
   `tutti-midi-runtime`'s, and the OS edge `tutti-midi-hardware`'s. `Engine` is
-  MIDI-free; pre-block delivery is `MidiPreBlock`, one crate over.
+  MIDI-free; MIDI travels on the graph's event ports (tutti-graph), and the
+  MIDI nodes are `tutti-midi-runtime`'s.
 - **The device.** Opening a stream and driving the real-time callback is
   `tutti-cpal`'s job. This crate only knows how to render a block.
 - **The value vocabulary.** The unit newtypes, the RT primitives, the

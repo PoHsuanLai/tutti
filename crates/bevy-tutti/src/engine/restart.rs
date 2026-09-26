@@ -24,8 +24,9 @@
 //!   [`AudioConfig`], which takes the device's width and rate;
 //! - [`TransportRes`]'s rate, the hardware MIDI input's timestamp rate, the
 //!   sampler's disk streamer (every open stream's conversion ratio, so a
-//!   streamed clip keeps its pitch and speed) and the MIDI clock master (its
-//!   24-PPQN ticks and MTC quarter-frames land on the new rate's frames);
+//!   streamed clip keeps its pitch and speed) — and, through the graph's
+//!   re-prepare, the MIDI clock node (its 24-PPQN ticks and MTC
+//!   quarter-frames land on the new rate's frames);
 //! - the compensation figures in samples (`ChannelCompensation`,
 //!   `GraphLatency`), published before the first block, so a disk source
 //!   seeking in it pre-rolls by the new rate's.
@@ -42,9 +43,8 @@
 //!
 //! Not re-rated here, and recorded in design doc 013 (Phase 3 follow-ups):
 //! a `SoundFontUnit` (rustysynth fixes its rate at construction) and a
-//! host-built `UmpOutRes` (its JR clock). An installed MIDI clip needs
-//! nothing: it holds no rate, and its unit hands it the rate it runs at on
-//! every poll (`MidiInPort::poll`), so re-rating the unit re-rates the clip.
+//! host-built `UmpOutRes` (its JR clock). A MIDI clip node needs nothing: it
+//! places its events by its block's `Env`, rate included.
 
 use bevy_ecs::prelude::*;
 
@@ -228,12 +228,6 @@ fn rerate(
     #[cfg(feature = "sampler")]
     if let Some(streamer) = world.get_resource::<crate::sampler::DiskStreamerRes>() {
         streamer.set_sample_rate(rate);
-    }
-    // Ticked by the pre-block, which runs in the callback: nothing ticks it
-    // while the hook runs.
-    #[cfg(feature = "midi")]
-    if let Some(clock) = world.get_resource::<crate::midi::ClockMasterRes>() {
-        clock.master.set_sample_rate(rate);
     }
     // The device's width, as the build publishes it; the root is at least
     // as wide (widened above).
@@ -696,31 +690,32 @@ mod tests {
         );
     }
 
-    /// Render `blocks` blocks of `frames` on `stream` and drain the clock
-    /// master's mailbox after each, a frame of the app between: every
-    /// event's status byte and its absolute frame (counted from `*frame`).
+    /// Render `blocks` blocks of `frames` on `stream` and drain the hardware
+    /// out the clock is wired to after each, a frame of the app between: every
+    /// event's status byte and its frame on the graph's clock (which the out
+    /// node stamps it with).
     #[cfg(feature = "midi")]
     fn clock(
         app: &mut App,
         stream: &ManualStream,
         (frames, blocks): (usize, usize),
-        frame: &mut u64,
+        rendered: &mut u64,
     ) -> Vec<(u32, u64)> {
         let mut out = Vec::new();
         let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
         for _ in 0..blocks {
             stream.render_block(frames).expect("the stream is open");
-            let receiver = &app
+            let n = app
                 .world()
                 .resource::<crate::midi::ClockMasterRes>()
-                .receiver;
-            let n = receiver.poll_into(&mut buf);
+                .out
+                .poll_into(&mut buf);
             out.extend(
                 buf[..n]
                     .iter()
-                    .map(|e| ((e.data[0] >> 16) & 0xFF, *frame + u64::from(e.frame_offset))),
+                    .map(|e| ((e.data[0] >> 16) & 0xFF, u64::from(e.frame_offset))),
             );
-            *frame += frames as u64;
+            *rendered += frames as u64;
             app.update();
         }
         out
@@ -728,15 +723,15 @@ mod tests {
 
     /// **A restart re-rates the MIDI clock master.** At 120 BPM a 24-PPQN
     /// tick is 1/48 s: 918.75 frames at 44.1 kHz, 1 000 at 48 kHz. Through
-    /// the engine's own pre-block, the ticks are 918.75 frames apart before
+    /// the engine's own clock node, the ticks are 918.75 frames apart before
     /// the restart and 1 000 after it, and the restart sends no Song
     /// Position (it is not a locate: 512-frame blocks move the beat further
     /// at 44.1 kHz than at 48, past the seek epsilon of the old check).
     ///
     /// Mutations (run):
-    /// - `rerate` not calling `ClockMaster::set_sample_rate` → the ticks
-    ///   after the restart stay 918.75 frames apart (the receiving gear ~8.8%
-    ///   fast) → fails;
+    /// - `ClockNode::prepare` not calling `ClockMaster::set_sample_rate` →
+    ///   the ticks after the restart stay 918.75 frames apart (the receiving
+    ///   gear ~8.8% fast) → fails;
     /// - `ClockMaster::tick` comparing the beat's move with this block's
     ///   advance rather than the previous block's (as it did) → a Song
     ///   Position at the restart → fails.

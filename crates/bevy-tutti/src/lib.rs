@@ -185,7 +185,8 @@ pub mod prelude {
     pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
     #[cfg(feature = "midi")]
     pub use crate::midi::{
-        MidiBusRes, MidiRoutingRes, MidiSourceInstall, MpeModeRes, TuttiMidiPlugin,
+        LiveMidi, LiveMidiInput, MidiEngineNodes, MidiRouteRule, MidiSourceInstall, MpeModeRes,
+        TuttiMidiPlugin,
     };
     // `midi-hardware`, not `midi`: gating these with their siblings above breaks
     // a build that takes the software bus without the hardware one.

@@ -15,9 +15,9 @@
 //! keeps the node's [`PluginControls`], captured before it went in, and never
 //! needs the node again.
 //!
-//! **MIDI.** The plugin load captures the plugin's MIDI port as its
-//! `MidiTarget` (`CapturedControls::for_plugin`), so the shared MIDI resolver
-//! finds it like any other target.
+//! **MIDI.** A plugin takes MIDI on its node's event input and sends it on
+//! its event output: route rules, clips, keyboards and `EventSources` wire it
+//! like any other node.
 //!
 //! # Steady-state, not `Added`
 //!
@@ -325,7 +325,7 @@ pub fn plugin_bind_params(
             Some(automation) => automation.controls.set_params(timed),
             None if !timed.is_empty() => {
                 let (node, controls) = graph.insert_node(client.automation(timed));
-                feeds.set(entity, AUTOMATION, vec![node]);
+                feeds.set(entity, AUTOMATION, vec![node.into()]);
                 dirty.0 = true;
                 commands
                     .entity(entity)

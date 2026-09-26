@@ -23,7 +23,6 @@ use super::transport_source::{self, SteadyTime};
 use super::{automation_node, BlockPayload, Bound, PluginClient};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::protocol::{ChordValue, Features, MidiEvent, MidiEventVec, ScaleValue, TransportInfo};
-use crate::util::node::Midi;
 
 /// A bound plugin, owned by a graph's executor. See the module docs.
 impl Node for PluginClient<Bound> {
@@ -143,7 +142,6 @@ impl Node for PluginClient<Bound> {
             meter,
             features: c.loaded.features,
             steady: *steady,
-            midi: &mut c.midi,
             pending,
             out_events,
             indexed,
@@ -192,19 +190,10 @@ impl Node for PluginClient<Bound> {
     }
 }
 
-/// What the node hands the batcher for each chunk: its payload, gathered when
-/// the chunk begins and sent when it is submitted (possibly a block later;
-/// see the batcher's FIFO).
-///
-/// **Gathered at the chunk's start, not at its submission.** A clip on the
-/// MIDI port (the one input that polls a timeline) reads its window from the
-/// transport's position *now*. While the plan renders in `Legacy`
-/// passes, a chunk longer than a pass is submitted from its last pass, so a
-/// window read then would start `chunk - pass` frames late and every event
-/// would reach the plugin that much early. At `begin` the pass holds the
-/// chunk's first frame: the window is read for `at + chunk` frames from the
-/// pass's start and re-based to the chunk (`rebase`). Consecutive windows
-/// still tile, so a clip emits every event once.
+/// What the node hands the batcher for each chunk: its payload, begun when
+/// the chunk begins (its transport, read at the chunk's first frame), filled
+/// from the event input as the chunk's frames come in, and sent when it is
+/// submitted (possibly a block later; see the batcher's FIFO).
 struct PluginChunks<'a> {
     env: &'a Env,
     /// The block's MIDI event input, handed to the chunks its frames go
@@ -215,7 +204,6 @@ struct PluginChunks<'a> {
     features: Features,
     /// The steady-time counter at this block's first frame.
     steady: SteadyTime,
-    midi: &'a mut Midi,
     pending: &'a mut BlockPayload,
     /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
     out_events: &'a mut MidiEventVec,
@@ -225,28 +213,23 @@ struct PluginChunks<'a> {
 }
 
 impl Chunks for PluginChunks<'_> {
-    fn begin(&mut self, at: usize, chunk: usize) {
+    fn begin(&mut self, at: usize, _chunk: usize) {
         let transport = match Offset::new(at, Samples(self.frames)) {
             Some(offset) if self.features.contains(Features::TRANSPORT) => {
                 transport_source::from_env(self.env, offset, self.steady.at(at), self.meter)
             }
             _ => TransportInfo::default(),
         };
-        // The window from this pass's first frame through the chunk's last.
-        let span = at + chunk;
-        let rate = self.env.sample_rate;
-        // A clone of the drained buffer: an inline `SmallVec` below its spill
-        // size, so it copies and never allocates (`clap_node_no_alloc`).
-        // Parameters, chords and scales are filled from the event input as
-        // the chunk's frames come in (`take`); note expression has no source.
+        // MIDI, parameters, chords and scales are filled from the event input
+        // as the chunk's frames come in (`take`); note expression has no
+        // source.
         *self.pending = BlockPayload {
-            midi: self.midi.drain_for_process(span, rate).clone(),
+            midi: Default::default(),
             params: Default::default(),
             harmony: Default::default(),
             note_expression: Default::default(),
             transport,
         };
-        rebase(self.pending, at);
     }
 
     /// The event input's events on these frames join the chunk at the
@@ -292,19 +275,17 @@ impl Chunks for PluginChunks<'_> {
         }
     }
 
-    /// The chunk's MIDI, sorted by frame: the port's events were gathered
-    /// when it began, the event input's as its frames came in. A stable
-    /// insertion sort, in place: the list is short, and nearly sorted.
+    /// The chunk's MIDI, sorted by frame: the event input's, as its frames
+    /// came in. A stable insertion sort, in place: the list is short, and
+    /// already sorted unless a chunk's frames came in out of order.
     fn payload(&mut self, _frames: usize) -> BlockPayload {
         sort_by_offset(&mut self.pending.midi);
         std::mem::take(self.pending)
     }
 
-    fn midi_out(&mut self, events: &MidiEventVec) {
-        if self.features.contains(Features::MIDI_OUT) {
-            emit_midi_out(self.midi, events);
-        }
-    }
+    /// Nothing: each event goes out of the event output where it plays
+    /// ([`emit`](Chunks::emit)).
+    fn midi_out(&mut self, _events: &MidiEventVec) {}
 
     fn emit(&mut self, frame: usize, mut event: MidiEvent) {
         if !self.features.contains(Features::MIDI_OUT) {
@@ -317,50 +298,10 @@ impl Chunks for PluginChunks<'_> {
     }
 }
 
-/// Hand the plugin's MIDI-out to the post-block phase (the routed sink:
-/// `MidiOutSink`, fanned out a block later). Only called for a plugin that
-/// declared [`Features::MIDI_OUT`]: gating the *emit* on the self-reported
-/// capability mirrors how the per-block input feeds gate their sends on their
-/// `Features` bit.
-///
-/// Every event goes at offset 0: they are handed over as their chunk starts
-/// to play, and the phase delivers a block later
-/// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)),
-/// by which time each is due. (Where each falls against the plugin's audio
-/// is kept on the node's MIDI event output instead: [`Chunks::emit`].) The
-/// count is dropped: the sink records an overflow (`MidiOutSink::overflowed`),
-/// so the loss is observable off-RT.
-#[inline]
-fn emit_midi_out(midi: &Midi, events: &MidiEventVec) {
-    let mut batch = [MidiEvent::from_ump(0, &[0; 4]); 64];
-    for part in events.chunks(batch.len()) {
-        for (slot, e) in batch.iter_mut().zip(part) {
-            *slot = MidiEvent {
-                frame_offset: 0,
-                ..*e
-            };
-        }
-        let _ = midi.emit(&batch[..part.len()]);
-    }
-}
-
 /// `n` ports as a layout. A plugin wider than `u16` channels is not a thing;
 /// the compiler refuses anything past `MAX_PORTS` by name anyway.
 fn width(n: usize) -> ChannelLayout {
     ChannelLayout::from_count(u16::try_from(n).unwrap_or(u16::MAX))
-}
-
-/// Re-base the MIDI read from a pass's first frame to a chunk that begins
-/// `at` frames into it: every offset moves back by `at`. One before the chunk
-/// lands on its first frame rather than being dropped: a clip never emits one
-/// twice (its window tiles, so it emitted it with the chunk before), what
-/// remains is live input, and frame 0 is where it belongs. (Everything else
-/// in the payload arrives on the event input, at the chunk's frames.)
-fn rebase(p: &mut BlockPayload, at: usize) {
-    let at = u32::try_from(at).unwrap_or(u32::MAX);
-    for e in p.midi.iter_mut() {
-        e.frame_offset = e.frame_offset.saturating_sub(at);
-    }
 }
 
 /// A chord or scale into a chunk's harmony at chunk frame `frame`, for a

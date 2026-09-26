@@ -17,7 +17,6 @@ use crate::protocol::{
 use crate::util::window::EditorSize;
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
-use tutti_midi_runtime::MidiSender;
 
 /// The capabilities a backend may or may not honour, for
 /// [`PluginHandle::from_backend`].
@@ -28,7 +27,6 @@ use tutti_midi_runtime::MidiSender;
 ///
 /// ```no_run
 /// # use std::sync::Arc;
-/// # use tutti_midi_runtime::MidiSender;
 /// # use tutti_plugin::backend::{HostEditor, HostParams, HostState, ParameterChangeSink};
 /// # use tutti_plugin::handles::{OptionalCapabilities, PluginHandle};
 /// # use tutti_plugin::server::{LoadedPlugin, PluginDescriptor};
@@ -38,13 +36,12 @@ use tutti_midi_runtime::MidiSender;
 /// #     descriptor: PluginDescriptor,
 /// #     loaded: LoadedPlugin,
 /// #     param_sink: ParameterChangeSink,
-/// #     midi_sender: MidiSender,
 /// # ) -> PluginHandle {
 /// // Hosts an editor; carries neither render mode nor presets.
 /// PluginHandle::from_backend(
 ///     backend,
 ///     OptionalCapabilities { editor: Some(editor), ..Default::default() },
-///     descriptor, loaded, param_sink, midi_sender,
+///     descriptor, loaded, param_sink,
 /// )
 /// # }
 /// ```
@@ -164,7 +161,6 @@ pub struct PluginHandle {
     param_sink: ParameterChangeSink,
     refresh_sink: RefreshSink,
     invalidate_sink: InvalidateSink,
-    midi_sender: MidiSender,
     server_pid: Option<u32>,
 }
 
@@ -195,7 +191,6 @@ impl PluginHandle {
             param_sink: client.param_sink().clone(),
             refresh_sink: client.refresh_sink().clone(),
             invalidate_sink: client.invalidate_sink().clone(),
-            midi_sender: client.midi_sender(),
             server_pid: client.process_guard().pid(),
         }
     }
@@ -219,7 +214,6 @@ impl PluginHandle {
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
         param_sink: ParameterChangeSink,
-        midi_sender: MidiSender,
     ) -> Self {
         let OptionalCapabilities {
             editor,
@@ -243,7 +237,6 @@ impl PluginHandle {
             // invalidate signals — these sinks stay empty.
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
-            midi_sender,
             // In-process: there is no subprocess to name.
             server_pid: None,
         }
@@ -261,8 +254,6 @@ impl PluginHandle {
         let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
             bridge, guard,
         ));
-        let (sender, _receiver) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         Self {
             params: backend.clone(),
             state: backend.clone(),
@@ -275,7 +266,6 @@ impl PluginHandle {
             param_sink: ParameterChangeSink::default(),
             refresh_sink: RefreshSink::default(),
             invalidate_sink: InvalidateSink::default(),
-            midi_sender: sender,
             // `for_test` guards own no subprocess.
             server_pid: None,
         }
@@ -638,16 +628,6 @@ impl PluginHandle {
         }
     }
 
-    // ---- MIDI --------------------------------------------------------------
-
-    /// Producer handle for this plugin's MIDI inbox. Cheap to clone —
-    /// `MidiSender` is `Arc`-backed. Send `MidiEvent`s through the
-    /// returned sender; the audio thread polls them on the next
-    /// process call.
-    pub fn midi_sender(&self) -> MidiSender {
-        self.midi_sender.clone()
-    }
-
     // ---- Notify sinks (plugin → host reactions) ----------------------------
 
     /// Register a callback invoked when the plugin writes back a
@@ -768,8 +748,6 @@ mod tests {
             }
         }
 
-        let (sender, _rx) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         PluginHandle::from_backend(
             Arc::new(Inert),
             OptionalCapabilities {
@@ -779,7 +757,6 @@ mod tests {
             PluginDescriptor::default(),
             loaded,
             ParameterChangeSink::default(),
-            sender,
         )
     }
 

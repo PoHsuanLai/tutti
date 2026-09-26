@@ -23,10 +23,10 @@ pub use crate::host::node::{
     TimedParam, AUTOMATION_EVENT_CAPACITY,
 };
 pub use crate::host::node::{Bound, PluginClient, PluginControls, Unbound};
-// The per-block installers, each reachable only when the plugin can receive
-// that input. Named here because a caller matching on the `Option` a
+// The per-block installer, reachable only when the plugin can receive that
+// input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
-pub use crate::host::node::{MidiInView, MidiOutView, TransportView};
+pub use crate::host::node::TransportView;
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-nodes`), so the app can build an [`LfoCurve`] / route to a
 // [`PluginParamTarget`] without naming `tutti-nodes` directly.
@@ -46,9 +46,7 @@ pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_nodes::{LfoShape, ModParams, ModTarget};
 
-/// In-process VST2 audio-graph node. Used when a host loads VST2 plugins
-/// directly in the host process (via `in_process_vst2`). Hosts that dispatch
-/// MIDI to plugins through their own routing layer can downcast graph nodes to
-/// this type to read their `MidiUnitId`.
+/// In-process VST2 graph node. Used when a host loads VST2 plugins directly in
+/// the host process (via `in_process_vst2`); it takes MIDI on its event input.
 #[cfg(feature = "vst2")]
 pub use crate::format::vst2_in_process::InProcessVst2Client;

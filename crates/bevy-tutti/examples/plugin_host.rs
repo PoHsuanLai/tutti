@@ -19,9 +19,8 @@
 //! wants a private field or a second lookup, the design is wrong.
 //!
 //! Note what is *absent*: no `plugins.load(..)` on the frame thread, no manual
-//! `set_meter`, no `param_target` bookkeeping, no
-//! `MidiTargetRegistry::register`. Those are the adapter's job, and a host that
-//! had to do them would be doing the work this crate exists to do.
+//! `set_meter`, no `param_target` bookkeeping. Those are the adapter's job, and
+//! a host that had to do them would be doing the work this crate exists to do.
 //!
 //! # Audio
 //!
@@ -106,8 +105,8 @@ fn main() {
     app.add_plugins((bevy_app::TaskPoolPlugin::default(), GraphReconcilePlugin));
     #[cfg(feature = "modulation")]
     app.add_plugins(TuttiModulationPlugin);
-    // MIDI: a hosted plugin's inbox is an ordinary `MidiInPort`, so registration
-    // is the shared path — nothing plugin-shaped is added by enabling this.
+    // MIDI: a hosted plugin takes MIDI on its node's event input, wired like
+    // any node's — nothing plugin-shaped is added by enabling this.
     #[cfg(feature = "midi")]
     app.add_plugins(bevy_tutti::midi::TuttiMidiPlugin);
     // The graph compensates every plugin's latency (its own plus the IPC
@@ -139,13 +138,11 @@ fn main() {
     // bar and signature. Binding shares this cell rather than snapshotting it,
     // so a later tempo-map edit reaches plugins already running.
     app.insert_resource(MetronomeRes(std::sync::Arc::new(ClickState::new())));
-    // The MIDI bus, so registration has somewhere to put the plugin's sender.
-    // `test_support` because that is what this is: a harness standing in for the
-    // engine bootstrap, not a host. A real one gets its bus from `build_into`,
-    // wired to the audio thread's pre-block; this one is wired to nothing, which
-    // is enough to prove a plugin *reaches* the bus but not that MIDI plays.
+    // The clock's resource, which the MIDI systems gated on a running engine
+    // read. `test_support` because that is what this is: a harness standing in
+    // for the engine bootstrap, not a host.
     #[cfg(feature = "midi")]
-    app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test());
     app.insert_resource(AudioEngineState::Running);
 
     // A catalog with no scan dirs: this example never scans, it registers the
@@ -345,8 +342,8 @@ fn report(world: &mut World) {
                 );
                 if matches!(status, PluginLiveness::Dead { .. }) {
                     println!(
-                        "  (dead plugins are unwired by removing `AudioNode`; the same\n   \
-                         observers that unwire the graph take the MIDI sender off the bus)"
+                        "  (dead plugins are unwired by removing `AudioNode`, which takes\n   \
+                         everything wired to their node with it)"
                     );
                 }
             }
@@ -362,33 +359,15 @@ fn report(world: &mut World) {
         }
     }
 
-    // MIDI: did the plugin's sender actually reach the bus? Registration is the
-    // shared steady-state pass, keyed on `AudioNode` — nothing plugin-specific
-    // ran — so this is really asking whether `impl MidiNode for PluginClient`
-    // plus the type registration were enough. If the plugin were unregistered,
-    // the resolver would simply never see it and MIDI would go nowhere, silently.
+    // MIDI: the plugin's node takes MIDI on its event input — what a route
+    // rule, a clip or a keyboard is wired to.
     #[cfg(feature = "midi")]
+    if let Ok(&node) = world
+        .query_filtered::<&AudioNode, With<PluginHealth>>()
+        .single(world)
     {
-        let mut registered = world.query::<&bevy_tutti::midi::MidiRegistered>();
-        let ids: Vec<_> = registered.iter(world).map(|r| r.unit_id()).collect();
-        // Distinguish "the plugin was not registered" from "there was no bus to
-        // register into". Only `engine::build_into` inserts `MidiBusRes`, and
-        // this example stands in for the bootstrap rather than running it — so
-        // the absence is the harness's, not the plugin layer's, and reporting it
-        // as a MIDI failure would be blaming the wrong thing.
-        match world.get_resource::<bevy_tutti::midi::MidiBusRes>() {
-            None => println!(
-                "midi: no MidiBusRes — only `build_into` inserts one, and this\n  \
-                 example builds a graph by hand. Registration correctly skipped."
-            ),
-            Some(bus) => {
-                let on_bus = ids.iter().filter(|id| bus.contains(**id)).count();
-                println!(
-                    "midi: {on_bus}/{} registered sender(s) on the bus",
-                    ids.len()
-                );
-            }
-        }
+        let inputs = world.resource::<AudioGraphRes>().node_event_inputs(node);
+        println!("midi: the plugin's node has {inputs} event input(s)");
     }
 
     // PDC: what did the graph walk conclude? A plugin reports its own latency

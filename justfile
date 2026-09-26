@@ -58,15 +58,13 @@ test-all: test test-features test-editor test-doc
 # Lint the feature-gated code that no other recipe compiles.
 #
 # `cargo tree --workspace -e features -i tutti-cpal` reports only "default":
-# nothing in this workspace turns `capture`, `midi` or `audio-io` on, so
+# nothing in this workspace turns `capture` or `audio-io` on, so
 # `just test` and `just lint` typecheck none of them. That is the same hole
 # `check-windows` exists to close, and for the same reason — a cfg block
 # nothing compiles is a cfg block nothing lints, and it rots silently.
 #
 # What was dark until this recipe existed:
 #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-#   tutti-cpal/midi     — the pre_block/post_block arms of process_audio,
-#                         the ordering the module header calls "the design"
 #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had never run
 #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its 5 tests
 #                          looked for the .sf2 at the pre-extraction
@@ -83,8 +81,6 @@ test-all: test test-features test-editor test-doc
 # exists) JACK, which needs libjack on the box. Name the combinations.
 check-features:
     cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
-    cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
-    cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
     cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
@@ -96,7 +92,7 @@ check-features:
 # spawns it; CLAP only, as in CI, so no VST3 SDK is needed.
 test-features:
     cargo build -p tutti-plugin-server --no-default-features --features clap
-    cargo nextest run -p tutti-cpal --features capture,midi
+    cargo nextest run -p tutti-cpal --features capture
     cargo nextest run -p bevy-tutti --features audio-io
     cargo nextest run -p bevy-tutti --features soundfont
     cargo nextest run -p bevy-tutti --features sampler

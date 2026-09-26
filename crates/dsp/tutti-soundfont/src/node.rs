@@ -1,23 +1,43 @@
 //! The unit as a graph node (doc 013, rewrite item 5): MIDI arrives on an
 //! event input, on its frame (to rustysynth's 8-frame chunk, see
-//! [`SoundFontUnit`]'s `process`), merged with what reaches its own port
-//! ([`MidiInPort::gather`](tutti_midi_runtime::MidiInPort::gather)).
+//! [`SoundFontUnit`]'s `process`). A graph block drops what
+//! [`queue_midi`](SoundFontUnit::queue_midi) was given by hand.
 //!
 //! As a node it **follows its graph's rate**: `prepare` rebuilds the
 //! synthesizer at the prepared rate (control thread, where that may
-//! allocate), keeping the preset and the port. An `AudioUnit` cannot, since
+//! allocate), keeping the preset. An `AudioUnit` cannot, since
 //! `set_sample_rate` may be called where rebuilding is not allowed.
 
 use tutti_core::{AudioUnit, ChannelLayout};
 use tutti_graph::{
-    Cx, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
+    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Resolution, Shape, SortedEvents, Status,
+    Ump,
 };
+use tutti_midi_types::ump::MidiEvent;
 
 use crate::SoundFontUnit;
 
-/// The most events a block takes from the unit's own port; the rest of its
-/// MIDI scratch holds the event input's.
-const MAILBOX: usize = 128;
+impl SoundFontUnit {
+    /// The block's MIDI from `events` into the scratch, in their (sorted)
+    /// order; returns how many it holds.
+    fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
+        self.pending = 0;
+        let mut n = 0;
+        for e in events {
+            if n == self.midi_buffer.len() {
+                break;
+            }
+            if let EventKind::Midi(Ump(data)) = e.kind {
+                self.midi_buffer[n] = MidiEvent {
+                    frame_offset: e.offset.get(),
+                    data,
+                };
+                n += 1;
+            }
+        }
+        n
+    }
+}
 
 impl Node for SoundFontUnit {
     /// No audio in, stereo out, one MIDI event input, placed to the 8-frame
@@ -28,7 +48,7 @@ impl Node for SoundFontUnit {
             .with_event_resolution(Resolution::Frames(crate::SYNTH_BLOCK_FRAMES as u32))
     }
 
-    /// Re-rate to the prepared rate (keeping preset and port), and size the
+    /// Re-rate to the prepared rate (keeping the preset), and size the
     /// render scratch to the largest block. Control thread.
     fn prepare(&mut self, p: &Prepare) {
         let rate = p.sample_rate();
@@ -44,8 +64,8 @@ impl Node for SoundFontUnit {
         }
     }
 
-    /// Always [`Status::Modified`]: fed out of band (its port) and ringing
-    /// after its last event, it must never be parked.
+    /// Always [`Status::Modified`]: ringing after its last event, it must
+    /// never be parked.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames().min(self.left_buffer.len());
         if size == 0 {
@@ -56,13 +76,7 @@ impl Node for SoundFontUnit {
         } else {
             SortedEvents::EMPTY
         };
-        let count = self.midi.gather(
-            size,
-            self.sample_rate,
-            &mut self.midi_buffer,
-            MAILBOX,
-            events,
-        );
+        let count = self.gather_events(events);
         self.render_events(size, count);
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
@@ -81,8 +95,7 @@ impl Node for SoundFontUnit {
 }
 
 /// The unit, inserted as a graph node: its fork is a graph node too, which
-/// follows its render's rate. No controls: its port and sender are taken
-/// from it before it goes in.
+/// follows its render's rate. No controls.
 impl IntoNode for SoundFontUnit {
     type Controls = ();
 

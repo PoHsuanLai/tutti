@@ -168,7 +168,7 @@ fn every_oscillator_plays_the_requested_pitch() {
     ] {
         for note in [48u8, 60, 69, 81] {
             let mut synth = PolySynth::new(config(osc)).expect("synth builds");
-            synth.midi_sender().queue(&[note_on(note, 100)]);
+            synth.queue_midi(&[note_on(note, 100)]);
 
             // Skip the attack; measure the steady state.
             let audio = render(&mut synth, 200);
@@ -194,7 +194,7 @@ fn every_oscillator_plays_the_requested_pitch() {
 #[test]
 fn the_noise_oscillator_produces_broadband_sound() {
     let mut synth = PolySynth::new(config(OscillatorType::Noise)).expect("synth builds");
-    synth.midi_sender().queue(&[note_on(69, 100)]);
+    synth.queue_midi(&[note_on(69, 100)]);
     let audio = render(&mut synth, 200);
     let tail = &audio[4096..];
 
@@ -215,7 +215,7 @@ fn velocity_scales_the_output_level() {
     let mut levels = Vec::new();
     for vel in [30u8, 60, 100, 127] {
         let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-        synth.midi_sender().queue(&[note_on(69, vel)]);
+        synth.queue_midi(&[note_on(69, vel)]);
         let audio = render(&mut synth, 100);
         levels.push((vel, peak(&audio[2048..])));
     }
@@ -257,11 +257,11 @@ fn a_note_off_silences_the_voice_after_release() {
     };
     let mut synth = PolySynth::new(cfg).expect("synth builds");
 
-    synth.midi_sender().queue(&[note_on(69, 100)]);
+    synth.queue_midi(&[note_on(69, 100)]);
     let held = render(&mut synth, 100);
     assert!(peak(&held[2048..]) > 0.01, "the held note is inaudible");
 
-    synth.midi_sender().queue(&[note_off(69)]);
+    synth.queue_midi(&[note_off(69)]);
     // 0.05 s release at 48 kHz is 2400 samples; 100 blocks is 6400.
     let after = render(&mut synth, 100);
     let tail = &after[4096..];
@@ -283,9 +283,7 @@ fn two_simultaneous_notes_both_sound() {
     let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
 
     // An octave apart, so the two peaks are unambiguous.
-    synth
-        .midi_sender()
-        .queue(&[note_on(60, 100), note_on(72, 100)]);
+    synth.queue_midi(&[note_on(60, 100), note_on(72, 100)]);
     let audio = render(&mut synth, 200);
     let tail = &audio[4096..4096 + 8192];
 
@@ -306,7 +304,7 @@ fn two_simultaneous_notes_both_sound() {
     // ...and the mix must be louder than either note alone, which is what
     // distinguishes summing from replacement.
     let mut solo = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-    solo.midi_sender().queue(&[note_on(60, 100)]);
+    solo.queue_midi(&[note_on(60, 100)]);
     let solo_audio = render(&mut solo, 200);
 
     assert!(
@@ -330,14 +328,12 @@ fn nosteal_leaves_the_held_notes_alone() {
     cfg.allocation_strategy = AllocationStrategy::NoSteal;
     let mut synth = PolySynth::new(cfg).expect("synth builds");
 
-    synth
-        .midi_sender()
-        .queue(&[note_on(60, 100), note_on(64, 100)]);
+    synth.queue_midi(&[note_on(60, 100), note_on(64, 100)]);
     let before = render(&mut synth, 100);
     assert_eq!(synth.active_voice_count(), 2);
 
     // A third note into a full 2-voice synth under NoSteal.
-    synth.midi_sender().queue(&[note_on(67, 100)]);
+    synth.queue_midi(&[note_on(67, 100)]);
     let after = render(&mut synth, 100);
 
     assert_eq!(
@@ -367,11 +363,11 @@ fn a_stolen_voice_plays_the_new_note() {
     cfg.allocation_strategy = AllocationStrategy::Oldest;
     let mut synth = PolySynth::new(cfg).expect("synth builds");
 
-    synth.midi_sender().queue(&[note_on(60, 100)]);
+    synth.queue_midi(&[note_on(60, 100)]);
     let _ = render(&mut synth, 50);
 
     // One voice, so this must steal.
-    synth.midi_sender().queue(&[note_on(72, 100)]);
+    synth.queue_midi(&[note_on(72, 100)]);
     let audio = render(&mut synth, 300);
     // Well past the steal, so the old note's release has finished.
     let tail = &audio[8192..8192 + 8192];
@@ -395,9 +391,7 @@ fn mono_mode_holds_one_voice() {
     cfg.voice_mode = VoiceMode::Mono;
     let mut synth = PolySynth::new(cfg).expect("synth builds");
 
-    synth
-        .midi_sender()
-        .queue(&[note_on(60, 100), note_on(64, 100), note_on(67, 100)]);
+    synth.queue_midi(&[note_on(60, 100), note_on(64, 100), note_on(67, 100)]);
     // 300 blocks = 19200 samples, enough to skip the retriggering at the start
     // and still have a full 8192-sample measurement window.
     let audio = render(&mut synth, 300);
@@ -426,12 +420,12 @@ fn mono_mode_holds_one_voice() {
 #[test]
 fn master_volume_scales_the_output() {
     let mut full = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-    full.midi_sender().queue(&[note_on(69, 100)]);
+    full.queue_midi(&[note_on(69, 100)]);
     let loud = render(&mut full, 100);
 
     let mut half = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
     half.set_volume(0.5);
-    half.midi_sender().queue(&[note_on(69, 100)]);
+    half.queue_midi(&[note_on(69, 100)]);
     let quiet = render(&mut half, 100);
 
     let ratio = rms(&quiet[2048..]) / rms(&loud[2048..]);
@@ -444,7 +438,7 @@ fn master_volume_scales_the_output() {
     // Zero must be silence, not merely quiet.
     let mut muted = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
     muted.set_volume(0.0);
-    muted.midi_sender().queue(&[note_on(69, 100)]);
+    muted.queue_midi(&[note_on(69, 100)]);
     let silent = render(&mut muted, 100);
     assert!(
         peak(&silent) < 1e-6,
@@ -477,7 +471,7 @@ fn an_idle_synth_is_silent() {
 #[test]
 fn a_centred_voice_reaches_both_channels() {
     let mut synth = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-    synth.midi_sender().queue(&[note_on(69, 100)]);
+    synth.queue_midi(&[note_on(69, 100)]);
     let (l, r) = render_stereo(&mut synth, 100);
 
     assert!(peak(&r[2048..]) > 0.01, "the right channel is silent");
@@ -519,11 +513,11 @@ fn render_tick(synth: &mut PolySynth, samples: usize) -> (Vec<f32>, Vec<f32>) {
 #[test]
 fn the_tick_path_matches_the_block_path() {
     let mut ticked = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-    ticked.midi_sender().queue(&[note_on(69, 100)]);
+    ticked.queue_midi(&[note_on(69, 100)]);
     let (tl, tr) = render_tick(&mut ticked, 12_800);
 
     let mut blocked = PolySynth::new(config(OscillatorType::Sine)).expect("synth builds");
-    blocked.midi_sender().queue(&[note_on(69, 100)]);
+    blocked.queue_midi(&[note_on(69, 100)]);
     let (bl, _br) = render_stereo(&mut blocked, 200);
 
     assert!(

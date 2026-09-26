@@ -655,9 +655,9 @@ fn an_export_through_a_failing_fork_fails_by_name() {
 /// note's frame plus the pipeline's one chunk. The note is at frame 6000, on
 /// neither a 64- nor a 1024-frame boundary.
 ///
-/// Mutation: an empty clip rebind (the fork's port gets nothing) → the gate
-/// never opens → fails. (Here chunks and blocks coincide; where a chunk
-/// begins or ends inside a block is `a_clip_note_in_a_chunk_that_begins_…`.)
+/// Mutation (run): the clip node's fork an empty clip → the gate never
+/// opens → fails. (Here chunks and blocks coincide; where a chunk begins or
+/// ends inside a block is `a_clip_note_in_a_chunk_that_begins_…`.)
 #[test]
 fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     let _lock = exclusive();
@@ -665,8 +665,8 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     let probe = load_probe(SAMPLE_RATE);
     // 120 BPM at 48 kHz: a beat is 24 000 frames, so beat 0.25 is frame 6000.
     const NOTE_FRAME: usize = 6_000;
-    install_note(&probe.client, NOTE_FRAME);
-    let (live, _exec) = live_graph(probe.client);
+    let (mut live, _exec) = live_graph(probe.client);
+    feed_note(&mut live, NodeKey(9), NOTE_FRAME);
 
     // The export's own timeline, rolling from beat 0, and its clock.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -707,27 +707,34 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     );
 }
 
-/// Install on `client`'s MIDI port a clip holding one note-on at frame
-/// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (the live clip a fork
-/// rebinds onto its render's timeline).
-fn install_note(client: &PluginClient, frame: usize) {
-    use tutti_midi_runtime::{MidiClipSource, TimedClipEvent};
+/// Feed the plugin at `plugin` from a clip node holding one note-on at frame
+/// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (a beat is 24 000
+/// frames).
+fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
+    use tutti_graph::{EventEdge, EventIn, EventOut};
+    use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-    use tutti_types::{Beat, Timeline};
+    use tutti_types::Beat;
 
-    let live_timeline: Arc<dyn Timeline> = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: SampleRate(SAMPLE_RATE),
-        ..Default::default()
-    }));
-    client.midi_port().install(Arc::new(MidiClipSource::new(
-        client.midi_unit_id(),
-        vec![TimedClipEvent {
-            // 24 000 frames a beat.
-            beat: Beat(frame as f64 / 24_000.0),
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-        }],
-        live_timeline,
-    )));
+    let clip = NodeKey(1);
+    live.insert(
+        clip,
+        "clip",
+        MidiClipNode::new([TimedMidiEvent::new(
+            Beat(frame as f64 / 24_000.0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        )]),
+    );
+    live.spec_mut().connect_events(
+        EventIn {
+            node: plugin,
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: clip,
+            port: 0,
+        }),
+    );
 }
 
 /// **A chunk that begins inside a block, or inside a render pass, still
@@ -741,11 +748,10 @@ fn install_note(client: &PluginClient, frame: usize) {
 /// renders 64-frame passes with the timeline moved between them (the
 /// chunk from 6 240 then begins 48 frames into the pass from 6 192).
 ///
-/// Mutation: drop `rebase` → the window read from the call's first frame is
-/// sent as the chunk's → the note sounds late (240 frames whole-block, 48 in
-/// passes) → fails. Mutation: gather at submission → the window starts in
-/// the block (or pass) the chunk ends in → early → fails. Mutation: the
-/// plugin's shape `legacy` again → the whole-block plan has legacy → fails.
+/// Mutation (run): an event's chunk frame taken as its offset in the call
+/// (`o` for `at + o - from` in `Chunks::take`) → the note lands late →
+/// fails. Mutation: the plugin's shape `legacy` again → the whole-block plan
+/// has legacy → fails.
 #[test]
 fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
     for legacy in [false, true] {
@@ -755,12 +761,12 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
         const CHUNK: usize = 480;
         const BLOCK: usize = 400;
         const NOTE_FRAME: usize = 6_300;
-        install_note(&probe.client, NOTE_FRAME);
 
         let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
         let (mut live, _exec) = Editor::new(prepare);
         let key = NodeKey(9);
         let _controls = live.insert(key, "plugin", probe.client.bind());
+        feed_note(&mut live, key, NOTE_FRAME);
         live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
         if legacy {
             live.insert(NodeKey(2), "flag", tutti_graph::ForkByClone(LegacyFlag));

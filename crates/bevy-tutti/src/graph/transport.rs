@@ -68,9 +68,9 @@ impl TransportRes {
     /// use bevy_tutti::prelude::*;
     /// use std::sync::Arc;
     ///
-    /// /// Stands in for a beat-scheduled audio-thread source. The real ones
-    /// /// (`MidiClipSource`, an automation lane) hold the handle exactly like
-    /// /// this and read it per block.
+    /// /// Stands in for an audio-thread reader of the live transport (a
+    /// /// sampler's disk voice): it holds the handle exactly like this and
+    /// /// reads it per block.
     /// #[derive(Resource)]
     /// struct Sequencer(Arc<dyn Timeline>);
     ///

@@ -367,15 +367,12 @@ mod tests {
             state,
             saves,
         });
-        let (sender, _receiver) =
-            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         PluginHandle::from_backend(
             backend,
             OptionalCapabilities::default(),
             Default::default(),
             Default::default(),
             Default::default(),
-            sender,
         )
     }
 

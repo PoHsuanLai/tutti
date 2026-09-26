@@ -8,35 +8,31 @@ Pure MIDI types live in [`tutti-midi-types`](../tutti-midi-types); OS ports live
 in [`tutti-midi-hardware`](../tutti-midi-hardware). This crate owns the runtime
 state that connects them:
 
-- `MidiMailbox` / `MidiSender` / `MidiReceiver` — lock-free per-unit MIDI
-  inboxes. A node owns a receiver; callers push through senders.
-- `MidiInPort` — a unit's whole MIDI endpoint in one borrow: routing address,
-  push mailbox, and the source-install slot.
-- `MidiBus` — fan-out from `MidiUnitId` to the right inbox; the engine installs
-  one as its audio-thread dispatch target.
-- `MidiSnapshot` / `MidiSnapshotReader` / `MidiClipSource` — non-destructive
-  event storage and the readers that play it back, on a live or an offline
-  timeline.
+- MIDI as graph nodes (doc 013, rewrite item 5), sending on `tutti-graph`
+  event ports: `MidiInputNode` (a wire, one port per channel), `MidiQueueNode`
+  (what a control thread sends, a keyboard's notes), `MidiClipNode` and
+  `HarmonyNode` (a timeline), `ClockNode` (Beat Clock and MTC), and
+  `MidiOutNode`, the sink handing MIDI back to a control thread (a hardware
+  pump).
+- `MidiMailbox` / `MidiSender` / `MidiReceiver` — the lock-free ring MIDI
+  crosses a thread boundary on (into a `MidiQueueNode`, out of a `MidiOutNode`).
 - `ClockMaster` and the `outbound` machinery — engine-produced MIDI *out* (Beat
-  Clock, MTC, JR timestamps), riding the **same** mailbox as MIDI in: the
-  producer holds a `MidiSender` (lock-free `&self` push), and an off-RT pump
-  drains the paired `MidiReceiver` to a hardware-out port.
+  Clock, MTC, JR timestamps).
 - `MpeIngest` — the input-edge transform that rewrites classic-MPE channel
   spread into native MIDI-2 per-note messages.
 - `negotiate` / `sysex` — UMP-Stream endpoint discovery, MIDI-CI, and SysEx7/8
   packet reassembly.
 
-`MidiRoutingTable` and the MPE mode/zone types are re-exported from
-`tutti-midi-types`, so a consumer of the runtime needs one import rather than
-two.
+The MPE mode/zone types are re-exported from `tutti-midi-types`, so a consumer
+of the runtime needs one import rather than two.
 
 ## What it does not own
 
 It is the middle of a three-way split that keeps two costs off consumers who do
 not pay them. `tutti-midi-types` is pure values with no state; this crate is
 state with **no OS API**; `tutti-midi-hardware` is the OS edge. So a synth that
-needs a MIDI inbox, or an offline export that needs a snapshot reader, gets both
-without linking CoreMIDI or ALSA.
+plays a clip, or an offline export, gets its MIDI without linking CoreMIDI or
+ALSA.
 
 - **No ports, and no `cfg(target_os)`.** Enumerating, opening and sending on a
   real endpoint is `tutti-midi-hardware`'s.
@@ -51,68 +47,39 @@ One placement worth noting: MPE lives here as an *ingestion* transform, not as a
 per-synth state machine. Per M2-104, MPE is an input-edge concern — synth voices
 track per-note expression themselves.
 
-## An event reaching a unit's inbox
+## Routing is wiring
 
-A `MidiBus` routes by `MidiUnitId`; the unit owns the paired `MidiReceiver` and
-drains it at the top of its block. Nothing here allocates or locks, which is what
-lets the poll side sit on the audio thread.
+A `MidiInputNode` sends each event out of its channel's port, and everything
+with no channel (system, SysEx, Flex) out of `CHANNELLESS_PORT`. Which node
+hears which channel is which ports it takes event edges from: `input_ports`
+names them.
 
 ```rust
-use tutti_midi_runtime::{MidiBus, MidiMailbox};
-use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_midi_types::{MidiEvent, MidiUnitId};
+use tutti_midi_runtime::{input_ports, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
+use tutti_midi_types::MidiChannel;
 
-let synth = MidiUnitId::new(7);
-let (tx, rx) = MidiMailbox::pair(synth);
-
-let bus = MidiBus::new();
-bus.insert(tx);
-
-let note = MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
-assert_eq!(bus.queue(synth, &[note]), 1);
-
-// The unit's side of the block boundary.
-let mut block = [MidiEvent::noop(); 8];
-assert_eq!(rx.poll_into(&mut block), 1);
-assert_eq!(block[0].note(), Some(60));
+// A synth on channel 3 hears port 3 and the channelless port...
+let on_three: Vec<usize> = input_ports(Some(MidiChannel::new(3))).collect();
+assert_eq!(on_three, vec![3, CHANNELLESS_PORT]);
+// ...one on every channel hears all of them.
+assert_eq!(input_ports(None).count(), MIDI_INPUT_PORTS);
 ```
 
-## MIDI on the engine's timeline
+## MIDI across a thread boundary
 
-The seam with `tutti-core` is the transport. A `MidiSnapshot` stores events at
-absolute `Beat`s; a `MidiSnapshotReader` emits the ones the block just crossed,
-stamped with a sample-accurate `frame_offset`. A poll that advanced no beats
-yields nothing — the window is half-open, so no event is emitted twice.
+A `MidiQueueNode`'s controls are the push half of its ring: a control thread
+sends, and the node drains the ring at the top of its block. Nothing here
+allocates or locks, which is what lets either half sit on the audio thread.
 
 ```rust
-use std::sync::Arc;
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{Beat, Bpm, SampleRate};
-use tutti_midi_runtime::{MidiSnapshot, MidiSnapshotReader};
-use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_midi_types::{MidiEvent, MidiUnitId, MidiUnitIn};
+use tutti_midi_runtime::MidiMailbox;
+use tutti_midi_types::{MidiChannel, MidiEvent};
 
-let synth = MidiUnitId::new(7);
-let mut snapshot = MidiSnapshot::new();
-snapshot.add_event(
-    synth,
-    Beat(0.0),
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
-);
-
-let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-    start_beat: Beat(0.0),
-    tempo: Bpm(120.0),
-    sample_rate: SampleRate(48_000.0),
-    loop_range: None,
-}));
-let reader = MidiSnapshotReader::new(snapshot, Arc::clone(&timeline));
+let (tx, rx) = MidiMailbox::pair();
+assert!(tx.note_on(MidiChannel::FIRST, 60, 100));
 
 let mut block = [MidiEvent::noop(); 8];
-assert_eq!(reader.poll_unit(synth, 512, SampleRate(48_000.0), &mut block), 0); // no beats crossed yet
-
-timeline.advance(24_000); // half a beat at 120 BPM / 48 kHz
-assert_eq!(reader.poll_unit(synth, 512, SampleRate(48_000.0), &mut block), 1);
+assert_eq!(rx.poll_into(&mut block), 1);
 assert_eq!(block[0].note(), Some(60));
 ```
 
@@ -158,9 +125,9 @@ crate down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
 ## Where it sits
 
-Depends on `tutti-midi-types` and `tutti-core` (with `midi`). `tutti-polysynth`,
-`tutti-soundfont`, `tutti-plugin`, `tutti-midi-hardware`, `tutti-cpal` (behind
-its `midi` feature) and `bevy-tutti` all depend on it.
+Depends on `tutti-midi-types`, `tutti-core` (with `midi`) and `tutti-graph`.
+`tutti-polysynth`, `tutti-soundfont`, `tutti-plugin`, `tutti-midi-hardware` and
+`bevy-tutti` depend on it.
 
 ## Features
 

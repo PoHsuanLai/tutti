@@ -48,7 +48,6 @@ use bevy_tutti::graph::{
     AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
     MetronomeRes, TransportRes,
 };
-use bevy_tutti::midi::MidiTarget;
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
@@ -121,16 +120,18 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     // went quiet rather than stopping at the first.
     let world = app.world();
     let observed = Observed {
-        midi_target_node: world.get::<MidiTarget>(entity).map(MidiTarget::node),
+        event_inputs: app
+            .world()
+            .resource::<AudioGraphRes>()
+            .node_event_inputs(AudioNode(node)),
         shadow_node: world.get::<PluginShadow>(entity).map(PluginShadow::node),
         meter_bound: world.get::<PluginMeterBound>(entity).is_some(),
     };
     assert_eq!(
         observed,
         Observed {
-            // `PluginClient` is registered for MIDI by the hosting plugin, so its
-            // port is captured at load, for this node.
-            midi_target_node: Some(node),
+            // A plugin takes MIDI (and automation) on its node's event input.
+            event_inputs: 1,
             // The shadow is captured at load, for this node.
             shadow_node: Some(node),
             // Installed through the shadow; no shadow, no binding.
@@ -233,7 +234,7 @@ fn record_dirty(
 /// What the capture's consumers left on the entity.
 #[derive(Debug, PartialEq)]
 struct Observed {
-    midi_target_node: Option<tutti_core::dsp::NodeId>,
+    event_inputs: usize,
     shadow_node: Option<tutti_core::dsp::NodeId>,
     meter_bound: bool,
 }
@@ -334,7 +335,7 @@ fn a_crossfaded_plugin_is_bound_again() {
             app.world()
                 .resource::<AudioGraphRes>()
                 .event_sources(node, 0),
-            vec![automation],
+            vec![automation.into()],
             "and its param automation"
         );
     }

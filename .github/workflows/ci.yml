@@ -139,10 +139,9 @@ jobs:
         run: |
           cargo clippy -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
           cargo clippy -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
-      # WASAPI capture and the MIDI arms of the callback, which the `features`
-      # job lints only on Linux.
+      # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
-        run: cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
+        run: cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
 
   features:
     name: dark features
@@ -163,15 +162,14 @@ jobs:
       # Feature-gated code that no other job compiles.
       #
       # `cargo tree --workspace -e features -i tutti-cpal` reports only
-      # "default": nothing in this workspace turns `capture`, `midi` or
-      # `audio-io` on, so the clippy and test jobs above typecheck none of them.
+      # "default": nothing in this workspace turns `capture` or `audio-io`
+      # on, so the clippy and test jobs above typecheck none of them.
       # That is the same hole the Windows cross-check exists to close, and for
       # the same reason — a cfg block nothing compiles is a cfg block nothing
       # lints, and it rots in silence.
       #
       # What was dark until this job existed:
       #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-      #   tutti-cpal/midi     — the pre_block/post_block arms of process_audio
       #   bevy-tutti/audio-io — tests/audio_io_pump.rs, 12 tests that had
       #                         never once run in this repo
       #   bevy-tutti/soundfont — tests/midi_soundfont.rs (implies `midi`); its
@@ -193,8 +191,6 @@ jobs:
       - name: Lint
         run: |
           cargo clippy -p tutti-cpal --features capture --all-targets -- -D warnings
-          cargo clippy -p tutti-cpal --features midi --all-targets -- -D warnings
-          cargo clippy -p tutti-cpal --features capture,midi --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features audio-io --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features soundfont --all-targets -- -D warnings
           cargo clippy -p bevy-tutti --features sampler --all-targets -- -D warnings
@@ -212,7 +208,7 @@ jobs:
 
       - name: Test
         run: |
-          cargo nextest run -p tutti-cpal --features capture,midi
+          cargo nextest run -p tutti-cpal --features capture
           cargo nextest run -p bevy-tutti --features audio-io
           cargo nextest run -p bevy-tutti --features soundfont
           cargo nextest run -p bevy-tutti --features sampler

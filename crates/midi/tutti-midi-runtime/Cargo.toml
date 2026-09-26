@@ -2,7 +2,7 @@
 name = "tutti-midi-runtime"
 version = "0.0.1"
 edition = "2021"
-description = "MIDI runtime state machines for the Tutti audio engine: registry, snapshot, routing table, MPE processor, CC mapping, output collection"
+description = "MIDI runtime for the Tutti audio engine: MIDI graph nodes (input, queue, clip, clock, out), MPE ingest, MIDI-CI, SysEx"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "midi", "real-time", "daw"]

@@ -1,7 +1,7 @@
 # tutti-midi-types
 
 Pure MIDI types for the Tutti audio engine — MIDI 2.0 / UMP native, plus the
-tutti-domain routing, MPE and sync vocabulary.
+tutti-domain MPE and sync vocabulary.
 
 ## What this is
 
@@ -22,11 +22,10 @@ Around it, six public modules:
 - `translation` — the MIDI 1↔2 boundary and its bit-scaling, reachable at the
   root as `convert` because that is the path most consumers import.
 
-Routing (`MidiRoutingTable`, `MidiRoute`) and the MIDI 2.0 Clip File codec
-(`read_clip_file` / `write_clip_file`, M2-116) are **not** modules you import
-through — their modules are private and everything public in them is re-exported
-at the crate root, so there is one path per type rather than two. The same is
-true of `MidiMessage`, `NoteId` and `MidiUnitId`.
+The MIDI 2.0 Clip File codec (`read_clip_file` / `write_clip_file`, M2-116) is
+**not** a module you import through — its module is private and everything
+public in it is re-exported at the crate root, so there is one path per type
+rather than two. The same is true of `MidiMessage` and `NoteId`.
 
 ```rust
 use tutti_midi_types::prelude::*;
@@ -47,10 +46,10 @@ and none pulls the others in by doing so.
 
 - **No ports.** Enumerating and opening OS endpoints is
   [`tutti-midi-hardware`](../tutti-midi-hardware)'s.
-- **No mailboxes, buses or schedulers.** Per-unit inboxes, fan-out and snapshot
-  playback are [`tutti-midi-runtime`](../tutti-midi-runtime)'s. This crate
-  defines the `MidiIn` / `MidiOut` / `MidiRouter` *traits*; it implements none of
-  them over real state.
+- **No mailboxes, nodes or schedulers.** The graph's MIDI nodes, the rings
+  MIDI crosses threads on and clip playback are
+  [`tutti-midi-runtime`](../tutti-midi-runtime)'s. This crate defines the
+  `MidiIn` / `MidiOut` *traits*; it implements neither over real state.
 - **No `.mid` files.** SMF is [`tutti-midi-file`](../tutti-midi-file)'s. The
   Clip File codec here is the **byte-level** half; the path-level half is that
   crate's.

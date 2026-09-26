@@ -23,7 +23,7 @@ use clap_probe::{exclusive, load_probe, render, ProbeEnv};
 use std::time::{Duration, Instant};
 
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, Transport};
-use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status};
+use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{NodeKey, SampleRate, Samples, Tail};
 
@@ -72,7 +72,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize) -> Run {
     let prepare = Prepare::new(SampleRate(rate), Samples(quantum)).with_quantum(Samples(quantum));
     let (mut ed, exec) = Editor::new(prepare);
     let (src, key) = (NodeKey(1), NodeKey(2));
-    ed.insert(src, "ramp", RampSource);
+    ed.insert(src, "ramp", Unforkable(RampSource));
     let _controls = ed.insert(key, "plugin", probe.client.bind());
     for port in 0..inputs {
         ed.spec_mut().topology.edges.insert(

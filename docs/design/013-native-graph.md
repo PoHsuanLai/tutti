@@ -264,14 +264,13 @@ the race. Every type below exists because the audit found the bug it prevents.
 
 **Smart types 2: follow-ups.**
 
-- **#51 (`feat/plugin-typestate`) can drop `PluginNode`.** It wrapped the
-  plugin client only because the blanket `impl<N: Node> IntoNode for N`
-  held the impl slot a `Node` type needs to hand the editor its own fork
-  source. With the blanket gone, the plugin node can be a `Node` and
-  implement `IntoNode` itself (`into_parts` with `PluginFork`). #51 also
-  meets the typed `ForkMode::Offline` (its `Rebind::of` has no downcast and
-  no `Sever` case) and the required `Timeline::segment_generation` on its
-  timeline impls.
+- **#51 (`feat/plugin-typestate`) dropped `PluginNode`** (done, in #51). It
+  wrapped the plugin client only because the blanket `impl<N: Node>
+  IntoNode for N` held the impl slot a `Node` type needs to hand the editor
+  its own fork source. With the blanket gone, `PluginClient<Bound>` is the
+  `Node` and implements `IntoNode` itself (`into_parts` with `PluginFork`).
+  #51 also meets the typed `ForkMode::Offline` (its `Rebind::of` has no
+  downcast and no `Sever` case).
 - **#48 (`fix/live-disk-loop`)**: the seat is keyed here for the memory
   tier and the forked (offline) disk voice, which both seat through
   `Seat::next`; that reads the generation itself, and #48's `live_loop.rs`
@@ -3104,13 +3103,11 @@ vocoder retirement channel for voices the pool removes.
   `PluginControls` (the typed control surface §2 describes) and a fork source
   (the state-transfer fork, #14/#38). An unbound plugin can be neither
   inserted nor boxed as a node, pinned by `compile_fail` doctests in
-  `tutti-plugin`'s `host::node`. The executor holds a private newtype
-  (`PluginNode`) around the bound client rather than the client itself:
-  `tutti-graph`'s blanket `impl<N: Node> IntoNode for N` would otherwise be
-  the client's `IntoNode`, with `Controls = ()` and no fork source. Dropping
-  that blanket impl (and giving `Node` a `Controls`, as §2 sketches) would let
-  the bound client be the node; it touches every node type, so it is left for
-  the `Legacy` deletion.
+  `tutti-plugin`'s `host::node`. The bound client is itself the `Node` the
+  executor owns: it first sat in a private newtype (`PluginNode`), because
+  `tutti-graph`'s blanket `impl<N: Node> IntoNode for N` would have been its
+  `IntoNode`, with `Controls = ()` and no fork source. Smart types 2 (#53)
+  removed the blanket impl, and the wrapper went with it.
 - **Latency in `Shape`.** The node declares the plugin's figure plus the
   pipeline's chunk (`PluginControls::declared_latency`, one function for both
   readers). A runtime change reaches PDC at the next commit through

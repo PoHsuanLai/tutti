@@ -687,7 +687,7 @@ impl tutti_graph::Node for RampSource {
 /// `GRAPH_MAX_BLOCK`: an export has no device) and trims exactly that: the render is
 /// the ramp from frame 0, sample for sample, and the fork reports no fault.
 ///
-/// Mutation: drop the `settle()` from `PluginNode::prepare` → the plan is
+/// Mutation: drop the `settle()` from the node's `prepare` → the plan is
 /// compiled against the realtime 201 while the plugin delays 225 → the
 /// render is 24 frames late, and (the backstop) the fork's health reports
 /// `Failed` with `PluginRenderFault::LatencyChanged` → fails.

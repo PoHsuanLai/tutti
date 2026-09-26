@@ -470,7 +470,7 @@ impl Node for RecLog {
 fn the_recording_flag_reaches_a_nodes_env() {
     let transport = Transport::new(SR);
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (engine, _ed) = graph_engine(&transport, 256, RecLog(Arc::clone(&log)), 1);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(RecLog(Arc::clone(&log))), 1);
     transport.motion.try_send(MotionEvent::Play).expect("room");
     render(&engine, ChannelLayout::MONO, &[256; 2]);
     transport.settings.set_recording(true);

@@ -42,10 +42,10 @@ fn input(t: usize) -> f32 {
 /// prepared for blocks of up to `max_block` frames.
 fn fork_rig(max_block: usize) -> (Rig, tutti_plugin::handles::PluginHandle) {
     let probe = load_probe(SAMPLE_RATE);
-    let offline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+    let offline = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
-    }));
+    })));
     let fork = probe
         .client
         .fork_instance(ForkMode::Offline(&offline))
@@ -147,7 +147,7 @@ fn ragged_blocks_are_delayed_by_exactly_the_declared_latency() {
 /// the node declares 137 + 32 = 169 and delays by exactly that, in 32-frame
 /// blocks and in ragged 20- and 12-frame ones.
 ///
-/// Mutation: drop `controls.set_pipeline(..)` from `PluginNode::prepare` →
+/// Mutation: drop `controls.set_pipeline(..)` from the node's `prepare` →
 /// the node declares the slab's 4096 + 137 while delaying 169 → fails.
 #[test]
 fn a_max_block_below_the_chunk_is_the_pipeline() {

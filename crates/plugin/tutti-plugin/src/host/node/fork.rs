@@ -122,7 +122,6 @@ use tutti_graph::{
 };
 use tutti_types::Latency;
 
-use super::graph_node::PluginNode;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
 use crate::error::{PluginForkError, PluginRenderFault};
 use crate::host::ipc_client::PluginBridge;
@@ -430,7 +429,7 @@ impl ForkSource for PluginFork {
         let health = fork.fork_health();
         // The fork runs as the live node does, natively; boxed bare, so it
         // carries no fork source of its own.
-        let forked = Forked::new(Box::new(PluginNode(fork)));
+        let forked = Forked::new(Box::new(fork));
         Ok(match health {
             Some(health) => forked.with_health(health),
             None => forked,
@@ -501,7 +500,7 @@ impl IntoNode for PluginClient<Bound> {
 
     fn into_node(self) -> (Box<dyn Node>, PluginControls) {
         let controls = self.controls();
-        (Box::new(PluginNode(self)), controls)
+        (Box::new(self), controls)
     }
 
     fn into_parts(self) -> NodeParts<PluginControls> {

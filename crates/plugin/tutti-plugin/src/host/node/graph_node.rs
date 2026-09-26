@@ -6,17 +6,10 @@
 //! plugin that processes in double is converted inside the batcher's wire
 //! scratch.
 //!
-//! # Why the executor holds [`PluginNode`], not the client itself
-//!
-//! `tutti-graph` implements `IntoNode` for every `Node` (`impl<N: Node>
-//! IntoNode for N`), with no controls and **no fork source**. Were
-//! `PluginClient<Bound>` a `Node`, that blanket impl would be its `IntoNode`
-//! too: inserting it would hand back `()` instead of its [`PluginControls`],
-//! and would insert it unforkable, so an export of any graph holding it would
-//! be refused. So the bound client is the [`IntoNode`](tutti_graph::IntoNode)
-//! (in `fork.rs`), and what it boxes for the executor is this newtype, which
-//! nothing outside the module can name or build. Every line of the node is
-//! still the bound client's: `PluginNode` only owns it.
+//! The bound client is both the [`Node`] the executor owns and the
+//! [`IntoNode`](tutti_graph::IntoNode) a host inserts (in `fork.rs`), which
+//! hands back its [`PluginControls`](super::PluginControls) and a fork source.
+//! Only [`Bound`] is either: an unbound client is not a node.
 
 use tutti_core::meter::MeterMap;
 use tutti_graph::{Cx, Env, Io, Node, Offset, Prepare, Shape, Status, MAX_PORTS};
@@ -30,9 +23,7 @@ use crate::protocol::{Features, MidiEventVec, TransportInfo};
 use crate::util::node::Midi;
 
 /// A bound plugin, owned by a graph's executor. See the module docs.
-pub(super) struct PluginNode(pub(super) PluginClient<Bound>);
-
-impl Node for PluginNode {
+impl Node for PluginClient<Bound> {
     /// The plugin's buses as audio ports, and its latency: the plugin's own
     /// figure **plus** the chunk the pipeline holds
     /// ([`PluginControls::declared_latency`](super::PluginControls::declared_latency)).
@@ -56,7 +47,7 @@ impl Node for PluginNode {
     /// `LEGACY_CHUNK` mode). The transport is not one of them: it is read from
     /// `Env`. The flag goes when those inputs become event ports (doc 013).
     fn shape(&self) -> Shape {
-        let c = &self.0;
+        let c = self;
         Shape::audio(width(c.inputs), width(c.outputs))
             .with_latency(c.controls.declared_latency())
             .with_tail(c.controls.tail())
@@ -67,7 +58,7 @@ impl Node for PluginNode {
     /// the rate. Control thread. Drops the chunk in flight, as a re-prepare
     /// starts the node over.
     fn prepare(&mut self, p: &Prepare) {
-        let c = &mut self.0;
+        let c = &mut *self;
         c.state.io.prepare(p);
         c.controls.set_pipeline(c.state.io.pipeline_latency());
         c.controls.restamp(p.sample_rate());
@@ -93,13 +84,13 @@ impl Node for PluginNode {
     /// plugin's output for input frame `t - chunk`, however the blocks are
     /// cut. Each chunk is submitted with its own payload — MIDI, automation,
     /// harmony, note expression, and the transport at the chunk's first frame
-    /// ([`PluginChunks`]).
+    /// (`PluginChunks`).
     ///
     /// Always [`Status::Modified`]: the node is fed out of band (a MIDI
     /// mailbox, a clip), so the executor must never park it on silent
     /// inputs.
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let c = &mut self.0;
+        let c = &mut *self;
         let frames = io.frames();
         let n_in = c.inputs.min(io.input_count()).min(MAX_PORTS);
         let n_out = c.outputs.min(io.output_count()).min(MAX_PORTS);
@@ -155,8 +146,8 @@ impl Node for PluginNode {
 
     /// Drop the chunk in flight and tell the plugin to reset.
     fn reset(&mut self) {
-        self.0.state.io.reset();
-        let _ = self.0.bridge.reset_rt();
+        self.state.io.reset();
+        let _ = self.bridge.reset_rt();
     }
 }
 

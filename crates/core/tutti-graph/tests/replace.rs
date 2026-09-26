@@ -281,13 +281,15 @@ fn a_remove_beside_a_fade_retires_at_once() {
 }
 
 /// A replace whose unit differs in shape is refused, naming the key, and
-/// changes nothing: other ports, another latency, or another in-place
-/// acceptance. A node with nothing running is refused too. And the verifier
+/// changes nothing: other ports, another latency, another in-place
+/// acceptance, or another declared event capacity. A node with nothing running is refused too. And the verifier
 /// refuses the same fade handed over in a delta built by hand.
 ///
 /// Mutation: drop the latency comparison from `Editor::replace` → the
 /// latency case is accepted → fails. Mutation: drop it from `verify_fades`
-/// → `package` sends the hand-built delta → fails.
+/// → `package` sends the hand-built delta → fails. Mutation: drop the
+/// event-capacity comparison from `Editor::replace` → the capacity case is
+/// accepted → fails.
 #[test]
 fn a_shape_mismatch_is_refused() {
     let fade = Fade::new(Samples(64), CrossfadeCurve::EqualAmplitude);
@@ -331,6 +333,27 @@ fn a_shape_mismatch_is_refused() {
     );
     ed.replace(lagged, TestNode::new(Kind::Lag { latency: 3 }), fade)
         .expect("the same latency fades");
+
+    // Declared event capacity: the plan sizes the port's buffers from it.
+    let burst = |cap| {
+        TestNode::new(Kind::Burst {
+            period: 200,
+            phase: 0,
+            burst: 1,
+            cap,
+        })
+    };
+    let bursting = NodeKey(3);
+    ed.insert(bursting, "burst", burst(2));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert_eq!(
+        ed.replace(bursting, burst(3), fade),
+        Err(CommitError::FadeShape { node: bursting })
+    );
+    ed.replace(bursting, burst(2), fade)
+        .expect("the same capacity fades");
 
     // The verifier, on a delta built by hand: a fade across a latency change.
     let (mut ed, mut exec) = Editor::new(prepare(128));

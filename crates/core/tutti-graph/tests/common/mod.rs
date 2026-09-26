@@ -60,6 +60,20 @@ pub enum Kind {
     /// Emits a MIDI event every `period` frames of absolute time, offset by
     /// `phase`; also outputs how many it has emitted, as audio.
     Emitter { period: u64, phase: u64 },
+    /// Emits `burst` MIDI events on every frame where `(frame + phase) %
+    /// period == 0`, on a port declaring `cap` events per block
+    /// (`Shape::event_capacity`); also outputs how many its writer
+    /// accepted, as audio. With `cap < burst` the writer refuses the newest
+    /// of each burst — the same ones in both interpreters. `period` is at
+    /// least `MAX_BLOCK` in the generator, so the port keeps its declared
+    /// *rate* (at most `cap` per `MaxBlock` frames) and nothing downstream
+    /// may drop.
+    Burst {
+        period: u64,
+        phase: u64,
+        burst: u32,
+        cap: u32,
+    },
     /// Folds incoming events into a running value: `s = 0.5 s + (w0 % 97)`.
     /// Order-sensitive, so a merge that reorders ties is caught.
     Consumer { inputs: u16 },
@@ -154,6 +168,9 @@ impl Node for TestNode {
                     Tail::Finite(Samples(latency))
                 }),
             Kind::Emitter { .. } => Shape::audio(ch(0), ch(1)).with_events(0, 1),
+            Kind::Burst { cap, .. } => Shape::audio(ch(0), ch(1))
+                .with_events(0, 1)
+                .with_event_capacity(cap),
             Kind::Consumer { inputs } => Shape::audio(ch(0), ch(1))
                 .with_events(inputs, 0)
                 .with_tail(Tail::Unbounded),
@@ -254,6 +271,26 @@ impl Node for TestNode {
                     if (f + phase).is_multiple_of(period) {
                         let _ = io.event_out(0).push(Event::midi(at, [f as u32, 0, 0, 0]));
                         self.count += 1.0;
+                    }
+                }
+                io.output(0).fill(self.count);
+                Status::Modified
+            }
+            Kind::Burst {
+                period,
+                phase,
+                burst,
+                ..
+            } => {
+                for at in cx.env.offsets() {
+                    let f = cx.env.frame_at(at).get();
+                    if (f + phase).is_multiple_of(period) {
+                        for i in 0..burst {
+                            let e = Event::midi(at, [f as u32 + i, 0, 0, 0]);
+                            if io.event_out(0).push(e).is_ok() {
+                                self.count += 1.0;
+                            }
+                        }
                     }
                 }
                 io.output(0).fill(self.count);
@@ -581,10 +618,17 @@ impl Pair {
             self.reference
                 .process_with_changes(frames, &transport, changes, &ins, &mut outs);
         }
-        // The reference never drops an event; the executor drops past its
-        // preallocated capacity. A drop would surface as a divergence far
-        // from its cause, so it is asserted here, where it happens.
-        assert_eq!(self.exec.dropped_events(), 0, "the executor dropped events");
+        // The one place either interpreter may refuse an event is a writer
+        // past its node's declared capacity (`Kind::Burst`), which both do
+        // alike. Anything else the executor drops — a merge or a delay FIFO
+        // short of what the declarations promise, or a slot past its
+        // preallocated capacity — would surface as a divergence far from its
+        // cause, so the two counts are asserted equal here, where it happens.
+        assert_eq!(
+            self.exec.dropped_events(),
+            self.reference.dropped_events(),
+            "the executor dropped events the reference did not"
+        );
         (a, b)
     }
 }

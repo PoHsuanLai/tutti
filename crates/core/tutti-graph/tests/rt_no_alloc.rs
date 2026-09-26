@@ -2,8 +2,9 @@
 //! applied — through PDC rings, event delays, event fan-in merges, feedback of
 //! both kinds, in-place aliasing, the silence skip, the `Legacy` adapter
 //! (draining a full settings ring),
-//! scheduled commands landing (on time, late, and still waiting), and block
-//! lengths that change every call.
+//! scheduled commands landing (on time, late, and still waiting), writers
+//! refusing past a declared event capacity, and block lengths that change
+//! every call.
 //!
 //! What this cannot cover, stated rather than implied: `apply` allocates by
 //! design in phase 1 (see `exec.rs`), so it runs outside the gate; and a node
@@ -12,16 +13,19 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{
-    CrossfadeCurve, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Legacy,
-    ParamRamp, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
+    CrossfadeCurve, Cx, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io,
+    Legacy, Node, ParamRamp, Prepare, Shape, Status, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::Setting;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{At, Beat, ChannelLayout, Frame, NodeKey, Samples};
+use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -336,4 +340,145 @@ fn crossfades_are_allocation_free() {
     back.sort();
     assert_eq!(back, vec![NodeKey(1), NodeKey(1), NodeKey(3)]);
     assert_eq!(ed.fades_in_flight(), 0);
+}
+
+/// Pushes `burst` events on the first frame of every 256-frame bar into a
+/// port declaring `cap` per block, counting what its writer refuses.
+struct Spray {
+    cap: u32,
+    burst: u32,
+    refused: Arc<AtomicU64>,
+}
+
+impl Node for Spray {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(self.cap)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for at in cx.env.offsets() {
+            if cx.env.frame_at(at).get().is_multiple_of(256) {
+                for i in 0..self.burst {
+                    let e = tutti_graph::Event::midi(at, [0x2090_3c64 | i, 0, 0, 0]);
+                    if io.event_out(0).push(e).is_err() {
+                        self.refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Declares 141 frames of latency and an event output it never writes: it
+/// puts PDC delays on its sink's other event edges.
+struct LateEvents;
+
+impl Node for LateEvents {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_latency(Latency::new(Samples(141)))
+            .with_tail(Tail::Finite(Samples(141)))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Counts the events on each of its two event inputs.
+struct Tally([Arc<AtomicU64>; 2]);
+
+impl Node for Tally {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(2, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
+        for (p, n) in self.0.iter().enumerate() {
+            n.fetch_add(io.events(p).len() as u64, Ordering::Relaxed);
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Declared event capacities (`Shape::event_capacity`) never allocate on
+/// the audio thread: two ports declaring 4 events per block, each handed a
+/// burst of 6 every bar (the writer refusing 2 inside the gate), fan into
+/// one input through a 141-frame PDC delay, and one also feeds back, with
+/// the executor's default capacity at **1** — so every buffer on the way
+/// must have been sized from the declarations. Nothing but the writers
+/// refuses: the executor's drop count is exactly what the nodes were told.
+///
+/// Mutation: size event slots from the default alone
+/// (`Vec::with_capacity(cap)` in `Executor::rebuild`) → the writers grow
+/// their slots on the first bar (in the warm-up, outside the gate) and the
+/// merges, sized for one per source, drop what the writers accepted →
+/// fails. Mutation: size the PDC FIFOs from the default (`rate(from)` →
+/// `cap`) → they overflow and drop more than the writers refused → fails.
+#[test]
+fn declared_event_capacities_are_allocation_free() {
+    let (mut ed, mut exec) = Editor::with_event_capacity(prepare(256), 1);
+    let refused = Arc::new(AtomicU64::new(0));
+    let seen = [Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0))];
+    for k in [1, 2] {
+        ed.insert(
+            NodeKey(k),
+            "spray",
+            Spray {
+                cap: 4,
+                burst: 6,
+                refused: Arc::clone(&refused),
+            },
+        );
+    }
+    ed.insert(NodeKey(3), "late", LateEvents);
+    ed.insert(NodeKey(4), "tally", Tally(seen.clone()));
+    let ev = |node| EventOut {
+        node: NodeKey(node),
+        port: 0,
+    };
+    let tally = |port| EventIn {
+        node: NodeKey(4),
+        port,
+    };
+    let spec = ed.spec_mut();
+    for from in [1, 2, 3] {
+        spec.connect_events(tally(0), EventEdge::Direct(ev(from)));
+    }
+    spec.connect_events(tally(1), EventEdge::feedback(ev(1), Samples(300)));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let plan = exec.plan().expect("applied");
+    assert!(
+        plan.delays().len() >= 2,
+        "both sprays reach the tally through a PDC delay"
+    );
+
+    let transport = Transport::default();
+    let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    for &n in &sizes {
+        exec.process(n, &transport, &[], &mut []);
+    }
+    let before = refused.load(Ordering::Relaxed);
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..2_000 {
+            exec.process(sizes[i % sizes.len()], &transport, &[], &mut []);
+        }
+    });
+    let refused = refused.load(Ordering::Relaxed);
+    assert!(refused > before, "writers refused inside the gate");
+    assert_eq!(
+        exec.dropped_events(),
+        refused,
+        "only the writers refused anything"
+    );
+    assert!(seen[0].load(Ordering::Relaxed) > 0 && seen[1].load(Ordering::Relaxed) > 0);
 }

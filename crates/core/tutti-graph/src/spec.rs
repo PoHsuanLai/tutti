@@ -44,6 +44,28 @@ pub struct EventOut {
 }
 
 /// One source of an event input port.
+///
+/// Port kinds match by type: an event edge runs from an [`EventOut`] to an
+/// [`EventIn`], and an audio port is a different type, so an audio↔event
+/// edge is not a graph error for `compile` to catch — it does not
+/// type-check:
+///
+/// ```compile_fail
+/// use tutti_graph::{EventEdge, EventIn, GraphSpec};
+/// use tutti_types::graph::OutPort;
+/// use tutti_types::NodeKey;
+/// let mut g = GraphSpec::default();
+/// let audio = OutPort { node: NodeKey(1), port: 0 };
+/// g.connect_events(EventIn { node: NodeKey(2), port: 0 }, EventEdge::Direct(audio));
+/// ```
+///
+/// ```
+/// use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec};
+/// use tutti_types::NodeKey;
+/// let mut g = GraphSpec::default();
+/// let events = EventOut { node: NodeKey(1), port: 0 };
+/// g.connect_events(EventIn { node: NodeKey(2), port: 0 }, EventEdge::Direct(events));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EventEdge {
     /// This block's events from the named port.
@@ -82,9 +104,16 @@ impl EventEdge {
 pub struct GraphSpec {
     /// Nodes, audio edges, global outputs and global input width — unchanged.
     pub topology: Topology,
-    /// Event edges, keyed on the sink port. The `Vec` is the **merge order**:
-    /// events at equal offsets are delivered in this order (owner decision 6).
-    /// An empty `Vec` is the same as an absent key.
+    /// Event edges, keyed on the sink port: every source of the port (an
+    /// event input may have several — owner decision 6). An empty `Vec` is
+    /// the same as an absent key.
+    ///
+    /// The `Vec`'s order does **not** matter: fan-in merges by offset, and
+    /// events at equal offsets go in **source order**, the source's
+    /// `(NodeKey, port)` ([`EventOut`]'s `Ord`), whatever order they are
+    /// listed in. [`connect_events`](Self::connect_events) keeps the list in
+    /// that order, so two specs with the same wiring built in different
+    /// orders compare equal.
     pub events: BTreeMap<EventIn, Vec<EventEdge>>,
     /// Unit generation per node. Bumping it is how a value says "same key, new
     /// unit" — a rebind or a replacement (doc 013 §1, `NodeSpec.gen`). Absent
@@ -111,9 +140,13 @@ impl GraphSpec {
         self.generations.get(&node).copied().unwrap_or(0)
     }
 
-    /// Append one event source to `at`'s merge list.
+    /// Add one event source to `at`, in source order (see
+    /// [`events`](Self::events)). A source already listed at `at` is added
+    /// again, and [`validate`](Self::validate) refuses the duplicate.
     pub fn connect_events(&mut self, at: EventIn, edge: EventEdge) {
-        self.events.entry(at).or_default().push(edge);
+        let sources = self.events.entry(at).or_default();
+        let i = sources.partition_point(|e| e.from() <= edge.from());
+        sources.insert(i, edge);
     }
 
     /// Mark the event edge `from → at` as requiring its sink to honour event

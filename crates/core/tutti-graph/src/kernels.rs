@@ -196,13 +196,21 @@ impl EventFifo {
     }
 
     /// Re-derive the limit for the current length at this rate and maximum
-    /// block — after a retune, or a re-prepare that shrank `MaxBlock` (more
-    /// blocks fit in the same delay, so more events may be in flight). Keeps
-    /// every queued event; grows the queue when the new bounds need it, never
-    /// shrinks it. Control side: may allocate.
+    /// block — after a retune, a re-prepare that shrank `MaxBlock` (more
+    /// blocks fit in the same delay, so more events may be in flight), or a
+    /// source that now declares a different rate (`Shape::event_capacity`,
+    /// a unit replaced by one with another declaration). Keeps every queued
+    /// event; grows the queue when the new bounds need it, never shrinks it.
+    /// Control side: may allocate.
+    ///
+    /// The limit is the new bound **plus what is already queued**: those
+    /// events were admitted under the old bound and still drain within the
+    /// delay, so a shorter delay or a lower rate must not count them against
+    /// what the source may send from now on (they would crowd out events a
+    /// source keeping to its new declaration is owed).
     pub(crate) fn resize(&mut self, cap: usize, max_block: usize) {
         let (limit, reserve) = Self::bounds(self.len as usize, cap, max_block);
-        self.limit = limit;
+        self.limit = limit + self.q.len();
         let want = limit + reserve;
         if self.q.capacity() < want {
             self.q.reserve_exact(want - self.q.len());
@@ -404,6 +412,29 @@ mod tests {
         let kept_offs = f.pending().filter(Event::is_note_off).count();
         assert_eq!(kept_offs, offs.len(), "every note-off is kept");
         assert!(f.q.len() <= cap, "and the FIFO never grew");
+    }
+
+    /// A FIFO resized to a lower rate while it holds more than the new
+    /// bound still admits a full bound of new events: what it already holds
+    /// was admitted under the old rate and does not count against the new
+    /// one.
+    ///
+    /// Mutation: set `limit` to the new bound alone in `resize` → the queued
+    /// events fill it and every new one is refused → fails.
+    #[test]
+    fn a_resize_to_a_lower_rate_keeps_room_for_the_new_rate() {
+        let mut f = EventFifo::sized(Samples(8), 16, 8);
+        let old: Vec<Event> = (0..40)
+            .map(|i| Event::midi(Offset::ZERO, [i, 0, 0, 0]))
+            .collect();
+        assert_eq!(f.push(&old), 0, "40 fit under the old rate");
+        f.resize(2, 8);
+        let (bound, _) = EventFifo::bounds(8, 2, 8);
+        let new: Vec<Event> = (0..bound as u32)
+            .map(|i| Event::midi(Offset::ZERO, [100 + i, 0, 0, 0]))
+            .collect();
+        assert_eq!(f.push(&new), 0, "a full bound at the new rate still fits");
+        assert_eq!(f.pending().count(), 40 + bound);
     }
 
     /// Delivery never drops: when the output slot is full, due events stay

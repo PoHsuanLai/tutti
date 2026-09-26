@@ -161,9 +161,11 @@ use crate::node::{
     TransportChanges, MAX_PORTS,
 };
 use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
-use crate::spec::EventIn;
+use crate::spec::{EventIn, EventOut};
 
-/// Events one event slot holds per block, unless configured otherwise.
+/// Events per block an event output port holds when its node declares no
+/// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
+/// configured otherwise ([`Editor::with_event_capacity`](crate::Editor::with_event_capacity)).
 pub const DEFAULT_EVENT_CAPACITY: usize = 512;
 
 /// Commits that may be out at once: sent and not yet drained back. The
@@ -865,6 +867,13 @@ impl Executor {
                     .collect()
             })
             .unwrap_or_default();
+        // An event FIFO is sized from its source port's declared rate
+        // (`Shape::event_capacity`), or the default for one that declared
+        // none: the same figure the source's writer enforces.
+        let rate = |from: EventOut| {
+            plan.event_port_capacity(from)
+                .map_or(cap, |n| n.get() as usize)
+        };
         let rings = plan
             .delays
             .iter()
@@ -875,13 +884,13 @@ impl Executor {
                     .and_then(|&i| old.rings.get_mut(i))
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
-                    (DelayKey::Event { .. }, Some(Ring::Event(mut f))) => {
+                    (DelayKey::Event { from, .. }, Some(Ring::Event(mut f))) => {
                         f.retune(d.len);
-                        f.resize(cap, max_block);
+                        f.resize(rate(from), max_block);
                         Ring::Event(f)
                     }
-                    (DelayKey::Event { .. }, _) => {
-                        Ring::Event(EventFifo::sized(d.len, cap, max_block))
+                    (DelayKey::Event { from, .. }, _) => {
+                        Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
                     }
                     (_, Some(Ring::Audio(mut r))) => {
                         r.retune(d.len);
@@ -918,16 +927,22 @@ impl Executor {
             .event_feedback
             .iter()
             .map(|f| {
+                let FeedbackKey::Event { from, .. } = f.key else {
+                    unreachable!("event feedback keys are events")
+                };
                 let carried = old_efb
                     .get(&f.key)
                     .filter(|_| carry)
                     .and_then(|&i| old.event_fb.get_mut(i))
                     .and_then(Option::take)
                     .map(|mut fifo| {
-                        fifo.resize(cap, max_block);
+                        fifo.resize(rate(from), max_block);
                         fifo
                     });
-                Some(carried.unwrap_or_else(|| EventFifo::sized(f.key.delay(), cap, max_block)))
+                Some(
+                    carried
+                        .unwrap_or_else(|| EventFifo::sized(f.key.delay(), rate(from), max_block)),
+                )
             })
             .collect();
 
@@ -973,7 +988,12 @@ impl Executor {
         }
         let mut has_inject = vec![false; plan.units.len()];
         let flushed_total: usize = flushed.values().map(Vec::len).sum();
-        let widest = plan.event_slot_weight.iter().copied().max().unwrap_or(1) as usize;
+        let widest = plan
+            .event_slot_capacity
+            .iter()
+            .map(|c| c.events(cap))
+            .max()
+            .unwrap_or(0);
         let inject = flushed
             .into_iter()
             .map(|((unit, port), mut events)| {
@@ -981,7 +1001,7 @@ impl Executor {
                 // Several flushes into one sink: one sorted list, ties in
                 // flush order (stable).
                 events.sort_by_key(|e| e.offset);
-                let merged = Vec::with_capacity(events.len() + cap * widest);
+                let merged = Vec::with_capacity(events.len() + widest);
                 Inject {
                     unit,
                     port,
@@ -1000,9 +1020,9 @@ impl Executor {
                 v
             },
             events: plan
-                .event_slot_weight
+                .event_slot_capacity
                 .iter()
-                .map(|&w| Vec::with_capacity(cap * w.max(1) as usize))
+                .map(|c| Vec::with_capacity(c.events(cap)))
                 .collect(),
             rings,
             audio_fb,
@@ -1211,7 +1231,7 @@ impl Executor {
                     );
                     let output = output.expect("dst borrowed");
                     output.clear();
-                    // The slot holds all its inputs (`event_slot_weight`), so
+                    // The slot holds all its inputs (`event_slot_capacity`), so
                     // this never drops; counted anyway, in case it ever does.
                     let room = output.capacity();
                     *dropped += merge_into(&ins[..list.len()], output, room) as u64;
@@ -1651,7 +1671,7 @@ fn node_op(
         rec,
         silent: in_silent,
         constant: in_constant,
-        cap: h.cap,
+        cap: rec.event_capacity.map_or(h.cap, |n| n.get() as usize),
         injected,
         scheduled: &views[..n_views],
     };
@@ -1716,6 +1736,8 @@ struct Call<'p, 'e> {
     rec: &'p NodeRec,
     silent: SilenceMask,
     constant: ConstantMask,
+    /// Events each of the node's event output writers accepts: its declared
+    /// `Shape::event_capacity`, or the executor's default.
     cap: usize,
     /// Whether flushed events wait for this call (see the module docs).
     injected: bool,

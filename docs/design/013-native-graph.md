@@ -286,7 +286,7 @@ means:
 
 | What | How | Where it can fall short |
 |---|---|---|
-| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
+| Events (notes, MIDI) | Each event carries an in-block `offset`. Nodes receive `SortedEvents` (ordered, and inside the block). Fan-in merges by `(offset, source order)`, source order being the source port's `(NodeKey, port)` | A node that ignores offsets. rustysynth-backed SoundFont resolves to 8 frames |
 | PDC | Compensation in whole samples (`Latency(Samples)`). Event edges are delayed by the same amount as audio, and live inputs are aligned at merge points | none by construction |
 | Automation | `ParamRamp` events at an offset, starting on their exact frame | Linear segments only for now (decision 7). Non-linear curves need curve-segment events or sub-chunking at breakpoints |
 | Transport and clips | `Env.frame: Frame` (`u64`), beat as f64 derived from an integer frame count (item 6 below), the loop-wrap position, and transport changes inside the block (`Env::changes`, read with `Env::transport_at`). The click (D8) and sampler placement use the offset inside the block; every clip and MIDI reader places a beat by the one frame rule (`first_frame_at_or_after`) | none by construction for a native node (a declick moves the transport on its frame; the fade is audio only). A `Legacy` clip reader (the sampler today) polls a timeline instead, once per 64-frame call; a graph holding one is rendered chunk-major, 64 frames across every node (the `Legacy` compatibility mode, see "A `Legacy` clip reader reads its timeline per 64-frame chunk" under Phase 3): 64-frame resolution, as through `Net`, until Phase 4 ports it to `Env::transport_at` |
@@ -588,7 +588,8 @@ that the running plan holds the edit.
 - **Paths**, each mutation-tested (the mutation is recorded on its `Path`
   variant): direct; behind PDC (a latent sibling merges upstream, so the
   node's arrival is 141 frames, past `MaxBlock`); through an event fan-in
-  (the exciting source second, a later event first); across a recompile (an
+  (the exciting source second, a later event first; direct, and behind PDC
+  with the latent sibling a third source on the port); across a recompile (an
   unrelated insert, and a new generation of the node feeding this one, each
   committed while the excitation is in flight); ragged blocks (1, 63, 64,
   65, `MaxBlock`, and a seeded random schedule, direct and behind PDC); an
@@ -2892,7 +2893,7 @@ vocoder retirement channel for voices the pool removes.
 | 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
-| 5 | **Events as ports + MIDI shell deletion** | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. **Decide events fan-in first** | Yes |
+| 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); porting the MIDI nodes and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Compiler-owned param modulation** | Deletes the 3 param-mod node types and most of `audio_rate.rs` | Yes |
 | 7 | **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
@@ -2960,6 +2961,77 @@ vocoder retirement channel for voices the pool removes.
 when `tick` goes. Replace it with the reference interpreter run at block size
 1, compared against the real block size.
 
+#### Item 5's infrastructure landed
+
+The graph side of events as ports is in `tutti-graph`; no MIDI node is
+ported yet, and the `Legacy` mailbox path (`MidiInPort`) is unchanged.
+Most of it arrived with Phases 1–3 and is listed here so item 5 has one
+place that says what a ported node can rely on:
+
+- **Ports.** `Shape` declares event inputs and outputs (`with_events`).
+  Event edges connect an `EventOut` to an `EventIn` (`GraphSpec::events`),
+  distinct types from the audio `OutPort`/`InPort`, so an audio↔event edge
+  does not compile; `compile` refuses a port past a node's declared count
+  (`EventPortOutOfRange`).
+- **One order.** Direct event edges are dependencies of the one Kahn sort,
+  so an event a node emits reaches its downstream node **in the same
+  block**, on its own offset (arp → synth, zero latency). Only a `Feedback`
+  edge delays, by exactly its declared delay (at least one `MaxBlock`).
+- **Fan-in** (decision 6, below): several sources per event input, merged
+  by offset; ties go to the source with the lower `(NodeKey, port)`,
+  whatever order the spec lists the edges in. `GraphSpec::connect_events`
+  keeps the list in that order, so two specs with one wiring compare equal.
+  A fan-in wider than `MAX_PORTS` is a tree of merges that keeps the rule.
+- **PDC.** An event edge into a node whose arrival a latent sibling raised
+  gets an `EventDelay` op of the same gap the audio would get, through a
+  FIFO keyed `(sink, source)` and sized on the control side: events cross
+  block boundaries and land on their frame. A delay that vanishes in a
+  recompile flushes its pending events to the sink (a note-off is never
+  lost). This is what fixes D9 once the event source nodes are ported.
+- **Declared capacity (new).** `Shape::event_capacity` is the most events
+  a node writes to each event output per block (`with_event_capacity(n)`;
+  `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every
+  buffer downstream is sized from the declarations at compile and prepare
+  time (`Plan::event_slot_capacity`, `EventSlotCapacity`: a node's output
+  slot what it declares, a delay's output its source's, a merge the sum of
+  its inputs; PDC and feedback FIFOs from the source's rate), so nothing
+  allocates on the audio thread and the verifier checks every slot holds
+  what is written into it. A crossfade needs equal capacities on both
+  units, like equal latencies.
+- **Overflow: drop the newest, and count it.** A writer past its declared
+  capacity refuses the event (`EventRejected::Full`, returned to the node
+  at the push) and the executor counts it (`Executor::dropped_events`;
+  `Reference::dropped_events` for the oracle). Refusing at compile time is
+  not possible: how many events a node emits is data. What the compiler
+  guarantees instead is that the writer is the **only** place an event is
+  refused: merges hold the sum of their inputs, and delay FIFOs hold the
+  declared rate over their length plus a note-off reserve, so a node that
+  keeps to its declaration loses nothing downstream. The rate is per
+  `MaxBlock` frames; a node that emits its full capacity in every one of
+  many short blocks can exceed it, and then a delay FIFO drops non-note-off
+  events first (counted). A FIFO resized to a lower rate or a shorter
+  delay keeps room for what it already holds.
+- **The payload.** `Event { offset: Offset, kind: EventKind }` with
+  `EventKind::{Midi(Ump), Ramp(ParamRamp)}`: `Copy`, at most 32 bytes
+  (asserted at compile time). Four UMP words carry every MIDI 2.0 message
+  (`tutti_midi_types::MidiEvent` converts at a node's edge by copying 16
+  bytes); `ParamRamp` carries typed or foreign automation.
+- **Tests.** `tests/event_ports.rs` (same-block delivery, fan-in ties by
+  source key, PDC across blocks under ragged blocks, feedback latency,
+  overflow, declarations sizing merges and delays with a default of 1),
+  each on the executor and the reference; the differential suite adds an
+  emitter declaring a capacity below its burst, and compares the two
+  interpreters' drop counts instead of assuming none; the contract suite's
+  `EventFanIn` path runs behind PDC too; `rt_no_alloc.rs` gates writers
+  refusing past a declaration inside `assert_no_alloc`.
+
+**Changed in passing.** A replacement queued behind a running crossfade ran
+its old unit under the new plan's shape; that is safe for every field the
+fade check compares, and `event_capacity` is now one of them. The
+reference's fading-out unit gets detached event writers, as the
+executor's does, so a node that reacts to a refused push behaves the same
+under both.
+
 ## Decisions for the owner
 
 The owner delegated these on 2026-09-24. The migration uses the proposed
@@ -3002,6 +3074,18 @@ now. Item 5 was decided when Phase 0 ran: `tutti-io`.
    - require an explicit `Merge` node.
 
    Audio stays one source per port. This has to be decided before Phase 1.
+
+   **Decided (2026-09-26, for item 5): fan-in on event ports only.** An
+   event input may have several sources. The executor merges them into one
+   `SortedEvents` by sample offset, and breaks ties deterministically by
+   **source order: the source's `NodeKey`, then its port** — a property of
+   the wiring, not of the order a spec lists its edges in (the list order
+   was the tie-break before; a host rebuilding its spec from an unordered
+   store could otherwise reorder a chord). Scheduled commands into the port
+   come after every edge's events, as before. This differs from audio on
+   purpose: audio fan-in needs a `Sum` node (a mix is a choice of gains),
+   while events merge losslessly, and every merge is sized to hold all its
+   inputs, so it never drops.
 7. **Automation encoding.** Linear ramp events (nih-plug, Web Audio) vs
    curve-segment events. Curve segments are needed for sample-accurate
    non-linear shapes without sub-chunking at breakpoints.

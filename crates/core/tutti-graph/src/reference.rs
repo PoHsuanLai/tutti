@@ -7,7 +7,8 @@
 //! it does not call `compile`, read a `Plan`, or share the executor's kernels.
 //! It re-derives the evaluation order (by repeated scanning), the latency solve
 //! (by memoised recursion), the delays (with `VecDeque`s), the event fan-in
-//! (concatenate, then a *stable* sort by offset) and feedback (a map of last
+//! (concatenate in source-port order, then a *stable* sort by offset) and
+//! feedback (a map of last
 //! block's port values) from the spec alone. Where the two agree, it is
 //! because two different programs computed the same thing.
 //!
@@ -43,7 +44,8 @@
 //!   agree about denormals too.
 //! - **Crossfades** ([`set_graph_with_fades`](Reference::set_graph_with_fades))
 //!   are kept per key, beside the unit map, never in it: the outgoing unit
-//!   runs first on a copy of the node's inputs with no events, the incoming
+//!   runs first on a copy of the node's inputs with no events and detached
+//!   event writers (every push refused, as the executor's), the incoming
 //!   one runs as any node does, and each output sample `i` of the block is
 //!   `incoming * g_in + outgoing * g_out` with the gains of frame
 //!   `done + i` of the fade while that is inside it. A replace while a fade
@@ -110,6 +112,8 @@ pub struct Reference {
     landing: BTreeMap<EventIn, Vec<(f64, Event)>>,
     late: u64,
     unrouted: u64,
+    /// Events a node's writer refused past its declared capacity.
+    dropped: u64,
     /// Set by a rate change; the next `set_graph` carries no time-based
     /// state.
     reset_time: bool,
@@ -139,6 +143,7 @@ impl Reference {
             landing: BTreeMap::new(),
             late: 0,
             unrouted: 0,
+            dropped: 0,
             reset_time: false,
             frame: Frame::ZERO,
         }
@@ -275,6 +280,15 @@ impl Reference {
     /// Scheduled commands with nowhere to land.
     pub fn unrouted_commands(&self) -> u64 {
         self.unrouted
+    }
+
+    /// Events refused by a node's writer past the node's declared
+    /// [`Shape::event_capacity`](crate::Shape::event_capacity) — the only
+    /// place the reference refuses one: its merges, delays and feedback
+    /// FIFOs are unbounded. An undeclared port is unbounded here too (the
+    /// executor's default is its own configuration, not the node's).
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped
     }
 
     /// The PDC delay the interpreter derived for `key`, or zero — so a test
@@ -840,7 +854,15 @@ impl Reference {
             for e in &mut all {
                 e.offset = e.offset.clamp_to(frames);
             }
-            for e in graph.events().get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+            // Source order is `(NodeKey, port)` of the source, whatever order
+            // the spec lists them in: re-keyed by source here, where the
+            // compiler sorts its list.
+            let by_source: BTreeMap<EventOut, EventEdge> = graph
+                .events()
+                .get(&at)
+                .map(|v| v.iter().map(|&e| (e.from(), e)).collect())
+                .unwrap_or_default();
+            for e in by_source.values() {
                 match *e {
                     EventEdge::Direct(from) => {
                         let src = events[&from].clone();
@@ -884,11 +906,11 @@ impl Reference {
                 let mut out_refs: Vec<&mut [f32]> = o.iter_mut().map(Vec::as_mut_slice).collect();
                 let none: Vec<SortedEvents<'_>> =
                     vec![SortedEvents::EMPTY; shape.event_in as usize];
-                let mut sink: Vec<Vec<Event>> = vec![Vec::new(); shape.event_out as usize];
-                let drops = Cell::new(0);
-                let mut writers: Vec<EventWriter<'_>> = sink
-                    .iter_mut()
-                    .map(|b| EventWriter::new(b, usize::MAX, frames as u32, &drops))
+                // Detached writers, as the executor's: every push refused and
+                // nothing counted, so a node that reacts to a refusal does
+                // the same under both.
+                let mut writers: Vec<EventWriter<'_>> = (0..shape.event_out)
+                    .map(|_| EventWriter::detached())
                     .collect();
                 let io = Io::new(
                     self.prepare.max_block(),
@@ -908,7 +930,7 @@ impl Reference {
         });
         let mut outs: Vec<Vec<f32>> = vec![vec![0.0; frames]; n_out];
         let mut ev_bufs: Vec<Vec<Event>> = vec![Vec::new(); shape.event_out as usize];
-        let status = {
+        let (status, refused) = {
             let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
             let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
             let ev_refs: Vec<SortedEvents<'_>> = ev_ins
@@ -916,9 +938,14 @@ impl Reference {
                 .map(|v| SortedEvents::new(v, frames).expect("the reference sorted them"))
                 .collect();
             let drops = Cell::new(0);
+            // The node's declared capacity bounds its writers here as in the
+            // executor; undeclared, nothing does.
+            let cap = shape
+                .event_capacity
+                .map_or(usize::MAX, |n| n.get() as usize);
             let mut writers: Vec<EventWriter<'_>> = ev_bufs
                 .iter_mut()
-                .map(|b| EventWriter::new(b, usize::MAX, frames as u32, &drops))
+                .map(|b| EventWriter::new(b, cap, frames as u32, &drops))
                 .collect();
             let io = Io::new(
                 self.prepare.max_block(),
@@ -931,12 +958,15 @@ impl Reference {
                 &ev_refs,
                 &mut writers,
             );
-            self.units
+            let status = self
+                .units
                 .get_mut(&key)
                 .expect("unit present")
                 .1
-                .process(&cx, io)
+                .process(&cx, io);
+            (status, drops.get())
         };
+        self.dropped += u64::from(refused);
         settle(status, &ins, &mut outs);
         if let Some(old) = outgoing {
             let f = self.fading.get_mut(&key).expect("fading");

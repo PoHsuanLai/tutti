@@ -3094,7 +3094,7 @@ vocoder retirement channel for voices the pool removes.
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
-| 9 | Remaining mechanical ports, then delete `Legacy` | | Yes |
+| 9 | Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
 #### Item 4's plugin half landed
 

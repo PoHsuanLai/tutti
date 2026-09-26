@@ -672,3 +672,65 @@ impl Node for CappedRelay {
     }
     fn reset(&mut self) {}
 }
+
+/// A delay can deliver more in one block than its source wrote in one: a
+/// port declaring **one** event per block writes on the last frame of one
+/// block and the first frame of the next, and a 13-frame PDC delay (and a
+/// 70-frame feedback edge) brings both due inside a single later block.
+/// Both land there, on their frames, in both interpreters — the delay's
+/// output slot is priced at everything its FIFO can hold, not at the
+/// source's one block. (Found by the crossfade proptest in CI: a
+/// replacement emitting soon after its predecessor, behind a retuned delay.)
+///
+/// Mutation (run): make `EventSlotCapacity::fifo` return the source's port
+/// capacity (`Self::port(cap)`: the pricing before this fix, in `compile`
+/// and the verifier alike) → the second event on each path waits a block →
+/// fails; the CI regression in `differential.proptest-regressions` fails
+/// too.
+#[test]
+fn a_delay_delivers_what_came_due_across_its_sources_blocks() {
+    const LATE: usize = 13;
+    const FEEDBACK: usize = 70;
+    let seen: Seen = Arc::default();
+    let refused = Arc::new(AtomicUsize::new(0));
+    let plan = [(63u64, 0u16, 1u32), (64, 0, 2)];
+    let mut events = BTreeMap::new();
+    events.insert(
+        at(1, 0),
+        vec![EventEdge::Direct(out(2, 0)), EventEdge::Direct(out(3, 0))],
+    );
+    events.insert(
+        at(1, 1),
+        vec![EventEdge::feedback(out(2, 0), Samples(FEEDBACK))],
+    );
+    let rig = Rig {
+        nodes: vec![
+            (NodeKey(1), sink(2, &seen)),
+            (NodeKey(2), burst(1, Some(1), &plan, &refused)),
+            (
+                NodeKey(3),
+                Box::new(|| Box::new(Late { latency: LATE }) as Box<dyn Node>),
+            ),
+        ],
+        events,
+    };
+    let blocks = [64usize; 4];
+    let mut want: Vec<(u64, u32, u16, u32)> = Vec::new();
+    for &(f, _, tag) in &plan {
+        let (b, o) = place(&blocks, f + LATE as u64);
+        want.push((b, o, 0, tag));
+        let (b, o) = place(&blocks, f + FEEDBACK as u64);
+        want.push((b, o, 1, tag));
+    }
+    want.sort();
+    // Both due in one block, on each path.
+    assert_eq!(want[0].0, want[1].0);
+    assert_eq!(want[2].0, want[3].0);
+    for executor in [true, false] {
+        let (mut got, dropped) = rig.run(executor, 64, 64, &blocks, &seen);
+        got.sort();
+        assert_eq!(got, want, "executor: {executor}");
+        assert_eq!(dropped, 0);
+        assert_eq!(refused.load(Ordering::Relaxed), 0);
+    }
+}

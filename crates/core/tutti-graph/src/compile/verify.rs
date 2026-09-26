@@ -22,9 +22,9 @@
 //! 6. **Tables**: every delay index is used by exactly one op, every unit by
 //!    exactly one `Node` op, and no two units share a store index. Every
 //!    event slot holds what is written into it: a node output what the
-//!    node's shape declares, a delay output its source's, a merge the sum
-//!    of its inputs', a feedback slot its source port's (so nothing past a
-//!    writer can refuse an event).
+//!    node's shape declares, a delay output and a feedback slot all their
+//!    FIFO can hold at the source's declared rate, a merge the sum of its
+//!    inputs' (so nothing past a writer can refuse or hold back an event).
 //! 7. **The lowered node tables** the executor actually reads say what the
 //!    ops say, record by record — checked against each op directly, not by
 //!    re-running the lowering — so rules 1–6 are about what runs.
@@ -636,11 +636,13 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
         )));
     }
     // Every event slot holds what is written into it, or an event could be
-    // refused past the writer (a note-off least of all). The need is derived
-    // from the *values* (a slot can be shared with a larger value, so slot
-    // capacities would overstate it): a node output what its shape declares,
-    // a delay output what its source holds, a merge the sum of its inputs,
-    // a feedback slot what its source port declares.
+    // refused past the writer (a note-off least of all), or delivered a
+    // block late. The need is derived from the *values* (a slot can be
+    // shared with a larger value, so slot capacities would overstate it): a
+    // node output what its shape declares, a delay output and a feedback
+    // slot all their FIFO can hold at the source's declared rate, a merge
+    // the sum of its inputs.
+    let block = plan.prepare.max_block().get();
     let fixed = 1 + plan.event_feedback.len() as u32;
     let slot_cap = |s: u32| {
         plan.event_slot_capacity
@@ -649,15 +651,15 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
             .unwrap_or_default()
     };
     for (f, spec) in plan.event_feedback.iter().enumerate() {
-        let crate::plan::FeedbackKey::Event { from, .. } = spec.key else {
+        let crate::plan::FeedbackKey::Event { from, delay, .. } = spec.key else {
             return Err(VerifyError(format!(
                 "event feedback {f} is not keyed as events"
             )));
         };
-        let need = EventSlotCapacity::port(plan.event_port_capacity(from));
+        let need = EventSlotCapacity::fifo(plan.event_port_capacity(from), delay, block);
         if !slot_cap(spec.slot).holds(need) {
             return Err(VerifyError(format!(
-                "event feedback slot {} holds {:?}, its source declares {need:?}",
+                "event feedback slot {} holds {:?}, its FIFO {need:?}",
                 spec.slot,
                 slot_cap(spec.slot)
             )));
@@ -673,9 +675,9 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
             if s < fixed {
                 let spec = &plan.event_feedback[(s - 1) as usize];
                 return match spec.key {
-                    crate::plan::FeedbackKey::Event { from, .. } => {
-                        Ok(EventSlotCapacity::port(plan.event_port_capacity(from)))
-                    }
+                    crate::plan::FeedbackKey::Event { from, delay, .. } => Ok(
+                        EventSlotCapacity::fifo(plan.event_port_capacity(from), delay, block),
+                    ),
                     _ => Err(VerifyError(format!("event slot {s} is not event feedback"))),
                 };
             }
@@ -694,7 +696,18 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                 .map_or(EventSlotCapacity::NONE, |u| {
                     EventSlotCapacity::port(u.shape.event_capacity)
                 }),
-            Op::EventDelay { src, .. } => read_need(src, &op_need)?,
+            Op::EventDelay { delay, .. } => {
+                let d = plan
+                    .delays
+                    .get(delay as usize)
+                    .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
+                let crate::plan::DelayKey::Event { from, .. } = d.key else {
+                    return Err(VerifyError(format!(
+                        "event delay {delay} is not keyed as events"
+                    )));
+                };
+                EventSlotCapacity::fifo(plan.event_port_capacity(from), d.len, block)
+            }
             Op::EventMerge { srcs, .. } => {
                 let mut need = EventSlotCapacity::NONE;
                 for &s in &plan.event_list[srcs.range()] {

@@ -20,8 +20,8 @@
 //! the first op of each block, from the feedback's delay state, and is never
 //! written by an op. Event slots hold [`Plan::event_slot_capacity`] events:
 //! a node's output port what its shape declares
-//! ([`Shape::event_capacity`]), a delay's output what its source declares,
-//! and a merge's output as many as all its inputs together, so a merge can
+//! ([`Shape::event_capacity`]), a delay's output (and a feedback slot) all
+//! its FIFO can hold at its source's declared rate, and a merge's output as many as all its inputs together, so a merge can
 //! never drop one. Coloured slots are shared between values whose lifetimes
 //! cannot overlap under *any* schedule that respects the op DAG — see
 //! `compile`'s colouring pass.
@@ -181,7 +181,9 @@ pub struct FeedbackSpec {
 /// [`events`](Self::events) prices it once the default is known.
 ///
 /// A slot holding a node's output port holds that port's capacity; a PDC
-/// delay's output, its source's; a merge's output, the **sum** of its
+/// delay's output or a feedback slot, everything its FIFO can hold
+/// (priced from the FIFO bound: what can fall due in one block); a merge's
+/// output, the **sum** of its
 /// inputs' — so a merge never drops. A slot shared by several values (the
 /// colouring pass) holds the largest of each currency.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -210,6 +212,32 @@ impl EventSlotCapacity {
                 declared: 0,
                 defaults: 1,
             },
+        }
+    }
+
+    /// What the output of an event delay (a PDC delay, or a feedback edge)
+    /// of `len` frames fed by a port declaring `cap` can hold: everything its
+    /// FIFO can (`EventFifo::bound`, `src/kernels.rs`), since that is what
+    /// can fall due in one block — events the source wrote across several
+    /// of its blocks, or a backlog a retune made overdue. Pricing it at the
+    /// source's one block would deliver the rest a block late.
+    pub(crate) fn fifo(cap: Option<NonZeroU32>, len: Samples, max_block: usize) -> Self {
+        let fifo_bound = |n: usize| crate::kernels::EventFifo::bound(len.get(), n, max_block);
+        match cap {
+            Some(n) => Self {
+                declared: u32::try_from(fifo_bound(n.get() as usize)).unwrap_or(u32::MAX),
+                defaults: 0,
+            },
+            // `limit + limit / 4 + 8` with `limit = default × blocks`: at
+            // most `default × (blocks + ⌈blocks / 4⌉) + 8`, whatever the
+            // default turns out to be.
+            None => {
+                let blocks = crate::kernels::EventFifo::blocks(len.get(), max_block);
+                Self {
+                    declared: 8,
+                    defaults: u32::try_from(blocks + blocks.div_ceil(4)).unwrap_or(u32::MAX),
+                }
+            }
         }
     }
 

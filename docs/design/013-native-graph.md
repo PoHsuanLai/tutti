@@ -2993,8 +2993,11 @@ place that says what a ported node can rely on:
   `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every
   buffer downstream is sized from the declarations at compile and prepare
   time (`Plan::event_slot_capacity`, `EventSlotCapacity`: a node's output
-  slot what it declares, a delay's output its source's, a merge the sum of
-  its inputs; PDC and feedback FIFOs from the source's rate), so nothing
+  slot what it declares; a delay's output and a feedback slot everything
+  their FIFO can hold, since that is what can fall due in one block (events
+  the source wrote across several of its blocks, a backlog a retune made
+  overdue); a merge the sum of its inputs; PDC and feedback FIFOs from the
+  source's rate), so nothing
   allocates on the audio thread and the verifier checks every slot holds
   what is written into it. A crossfade needs equal capacities on both
   units, like equal latencies.
@@ -3009,8 +3012,16 @@ place that says what a ported node can rely on:
   keeps to its declaration loses nothing downstream. The rate is per
   `MaxBlock` frames; a node that emits its full capacity in every one of
   many short blocks can exceed it, and then a delay FIFO drops non-note-off
-  events first (counted). A FIFO resized to a lower rate or a shorter
-  delay keeps room for what it already holds.
+  events first (counted). A FIFO carried across a recompile that shrank
+  its bound (a shorter delay across a `MaxBlock` multiple, a source
+  hard-replaced with a lower rate) keeps what it holds; should that exceed
+  the new bound and fall due at once, the excess goes out a block late,
+  never lost.
+- **Found in CI (#50):** pricing a delay's output at its source's one
+  block delivered an event a block late whenever two of the source's
+  blocks came due in one (a write on a block's last frame and the next
+  block's first, behind a 13-frame delay). The crossfade proptest caught
+  it; `event_ports.rs` pins it deterministically.
 - **The payload.** `Event { offset: Offset, kind: EventKind }` with
   `EventKind::{Midi(Ump), Ramp(ParamRamp)}`: `Copy`, at most 32 bytes
   (asserted at compile time). Four UMP words carry every MIDI 2.0 message

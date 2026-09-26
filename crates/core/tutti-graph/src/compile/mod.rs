@@ -854,13 +854,15 @@ pub fn compile(
     let eslot = |v: u32| event_fixed + event_colour.slot[v as usize];
 
     // Event slot capacities (`EventSlotCapacity`): a node output holds what
-    // its shape declares, a delay output what its source does, a merge all
-    // its inputs together — so a merge can never drop an event (a note-off
-    // least of all) — and a feedback slot what its source port declares.
+    // its shape declares, a delay output (and a feedback slot) all its FIFO
+    // can hold at its source's declared rate — what can fall due in one
+    // block — and a merge all its inputs together, so a merge can never drop
+    // an event (a note-off least of all).
     // Emitted in topological order, so a merge's inputs are priced first.
+    let block = prepare.max_block().get();
     let fb_cap = |key: &FeedbackKey| match *key {
-        FeedbackKey::Event { from, .. } => {
-            EventSlotCapacity::port(node_shapes[dense[&from.node]].event_capacity)
+        FeedbackKey::Event { from, delay, .. } => {
+            EventSlotCapacity::fifo(node_shapes[dense[&from.node]].event_capacity, delay, block)
         }
         _ => unreachable!("event feedback keys are events"),
     };
@@ -873,7 +875,17 @@ pub fn compile(
                     value_cap[v as usize] = port;
                 }
             }
-            Pre::EventDelay { src, dst, .. } => value_cap[*dst as usize] = value_cap[*src as usize],
+            Pre::EventDelay { delay, dst, .. } => {
+                let d = &em.delays[*delay as usize];
+                let DelayKey::Event { from, .. } = d.key else {
+                    unreachable!("an event delay is keyed as events")
+                };
+                value_cap[*dst as usize] = EventSlotCapacity::fifo(
+                    node_shapes[dense[&from.node]].event_capacity,
+                    d.len,
+                    block,
+                );
+            }
             Pre::EventMerge { srcs, dst } => {
                 value_cap[*dst as usize] = srcs.iter().fold(EventSlotCapacity::NONE, |acc, r| {
                     acc.plus(match *r {

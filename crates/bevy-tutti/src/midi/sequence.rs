@@ -88,6 +88,9 @@ impl MidiSourceInstall {
     }
 }
 
+/// The sequencer's name among a target's [`EventFeeds`].
+const SEQUENCER: &str = "sequencer";
+
 /// The targets [`rebuild`] currently has a source installed on.
 ///
 /// Kept because the removal of a `MidiSourceInstall` says nothing about *which*
@@ -195,7 +198,7 @@ pub fn rebuild(
             graph.remove(node);
             graph_dirty.0 = true;
         }
-        feeds.0.remove(&target);
+        feeds.remove(target, SEQUENCER);
         if let Some(port) = resolver.port(target) {
             all_notes_off(port);
         }
@@ -210,7 +213,7 @@ pub fn rebuild(
             None => {
                 let (clip, controls) = graph.insert_node(MidiClipNode::new(events.iter().copied()));
                 clips.0.insert(target, (clip, controls));
-                feeds.0.insert(target, vec![clip]);
+                feeds.set(target, SEQUENCER, vec![clip]);
                 graph_dirty.0 = true;
             }
         }

@@ -40,8 +40,8 @@ use crate::util::window::{EditorCapabilities, EditorSize};
 /// Method names say *what kind of thing* each deals in: `_descriptors` is the
 /// static metadata catalog; `_value` / `set_..._value` is the live number. This
 /// is deliberately NOT the automation/modulation path — sample-accurate parameter
-/// automation is a per-block `BlockInput` producer installed on the audio node
-/// (`set_param_automation_source`), never a method here.
+/// automation is an event source node wired to the plugin node
+/// (`PluginControls::automation`), never a method here.
 pub trait HostParams: Send + Sync {
     /// The static parameter catalog (id, name, range, flags). `None` if the
     /// backend cannot enumerate parameters.

@@ -18,11 +18,12 @@ pub(crate) mod control_handle;
 // `PluginRefresh` (cosmetic), `on_invalidate` delivers `PluginInvalidation`
 // (structural). `ResyncKind` stays exported as the underlying wire signal.
 pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
-pub use crate::host::node::{Bound, PluginClient, PluginControls, Unbound};
 pub use crate::host::node::{
-    HarmonySource, LfoCurve, LfoOffset, NoteExpressionSource, OffsetCurve, ParamAutomationSource,
-    PluginParamTarget, TimedChord, TimedParam, TimedScale,
+    AutomationControls, HarmonySource, LfoCurve, LfoOffset, NoteExpressionSource, OffsetCurve,
+    PluginAutomation, PluginParamTarget, TimedChord, TimedParam, TimedScale,
+    AUTOMATION_EVENT_CAPACITY,
 };
+pub use crate::host::node::{Bound, PluginClient, PluginControls, Unbound};
 // The per-block installers, each reachable only when the plugin can receive
 // that input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.

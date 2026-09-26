@@ -108,6 +108,12 @@ impl HarmonySource {
         self.beats.timeline()
     }
 
+    /// The rate the source places its changes at.
+    #[cfg(test)]
+    pub(super) fn rate(&self) -> SampleRate {
+        self.beats.sample_rate()
+    }
+
     /// Update the stamped sample rate live (device / rate switch). Reaches the
     /// running box because the cursor's rate is a shared atomic.
     pub fn set_sample_rate(&self, sample_rate: impl Into<tutti_core::SampleRate>) {

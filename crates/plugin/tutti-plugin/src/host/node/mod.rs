@@ -125,8 +125,8 @@ use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClas
 use crate::host::ipc_client::PluginBridge;
 use crate::host::subprocess;
 use crate::protocol::{
-    LoadedPlugin, Normalized, ParamAddress, ParameterChanges, PluginDescriptor, SampleFormat,
-    TransportInfo,
+    LoadedPlugin, MidiEventVec, Normalized, ParamAddress, ParameterChanges, PluginDescriptor,
+    SampleFormat, TransportInfo,
 };
 use crate::util::config::BridgeConfig;
 use batcher::Batcher;
@@ -156,6 +156,10 @@ pub struct Bound {
     /// when the chunk begins, sent when it is submitted (possibly a block
     /// later; see the batcher's FIFO).
     pending: BlockPayload,
+    /// The plugin's MIDI-out for this call, at this call's frames, staged
+    /// while the batcher holds the audio outputs and written to the event
+    /// output after it. Inline: past its capacity the rest is dropped.
+    out_events: MidiEventVec,
     /// The free-running sample counter the plugin's transport carries:
     /// frames this node has rendered, monotonic across a re-prepare.
     steady: transport_source::SteadyTime,
@@ -399,6 +403,7 @@ impl PluginClient<Unbound> {
             state: Bound {
                 io,
                 pending: BlockPayload::default(),
+                out_events: MidiEventVec::new(),
                 steady: transport_source::SteadyTime::default(),
                 default_meter: MeterMap::default(),
             },

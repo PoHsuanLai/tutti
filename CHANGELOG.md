@@ -931,6 +931,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - tutti-midi-runtime: `MidiInPort::gather`, the port's events merged with a
     node's event input by offset (the port's first on a tie), for a node that
     reads both; the synth and the SoundFont node use it.
+  - A hosted plugin that declares `Features::MIDI_OUT` has a MIDI event
+    output carrying its MIDI-out where its audio output plays the frame it
+    was emitted at. The reply is taken with its chunk's audio
+    (`PluginBridge::take_replies`; `submit` no longer takes a MIDI-out
+    buffer), and an export waits for it. The reference CLAP plugin's `Notes`
+    mode echoes the notes it receives.
   - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
     graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
     own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a

@@ -86,7 +86,6 @@ impl PluginBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
-        midi_out: &mut MidiEventVec,
     ) -> bool {
         self.audio.submit(
             seq,
@@ -96,8 +95,13 @@ impl PluginBridge {
             note_expression,
             harmony,
             transport,
-            midi_out,
         )
+    }
+
+    /// Block `seq`'s MIDI-out, and any earlier block's still queued. See
+    /// [`AudioBridge::take_replies`].
+    pub fn take_replies(&self, seq: u64, midi_out: &mut MidiEventVec) -> bool {
+        self.audio.take_replies(seq, midi_out)
     }
 
     /// Install a listener for plugin-originated unsolicited events

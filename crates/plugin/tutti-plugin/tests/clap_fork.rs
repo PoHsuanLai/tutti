@@ -897,6 +897,141 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
     );
 }
 
+/// Records the MIDI reaching its event input as `(frame, first word)`, and
+/// renders a silent mono output so a `Master` fork takes it. Forked by clone:
+/// the fork records into the same list.
+#[derive(Clone)]
+struct MidiSink(Arc<std::sync::Mutex<Vec<(u64, u32)>>>);
+
+impl tutti_graph::Node for MidiSink {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
+        )
+        .with_events(1, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let mut seen = self.0.lock().unwrap();
+        for e in io.events(0) {
+            if let tutti_graph::EventKind::Midi(ump) = e.kind {
+                seen.push((cx.env.frame.get() + u64::from(e.offset.get()), ump.0[0]));
+            }
+        }
+        io.output(0).fill(0.0);
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **A plugin's MIDI-out keeps its place against its audio**, on the node's
+/// MIDI event output, in an export. The probe in `Notes` mode is a MIDI thru
+/// whose gate opens on the note-on's frame, so its audio and its MIDI-out
+/// mark the same frame: the note-on (a clip node's, at 6 300) comes out one
+/// chunk (480) late on both, in 400-frame blocks, where the chunk the reply
+/// belongs to starts playing mid-block. Rendered three times: the export
+/// waits for each chunk's reply, so the frame never depends on how the
+/// reply raced the audio.
+///
+/// Mutation: emit at the chunk's frame, ignoring where the ring plays it
+/// (`host.emit(o, …)`) → the note-on comes out 240 frames early → fails.
+/// Mutation: no event output declared → the edge is refused at compile →
+/// fails. Mutation: skip the reply wait in `await_output` → a reply that
+/// loses the race to its chunk's audio is taken with the next chunk, at its
+/// frame 0 → fails (in 2 of 3 runs here: it is a race, which is why the
+/// test renders three times and why the wait exists).
+#[test]
+fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
+    use tutti_graph::{EventEdge, EventIn, EventOut};
+    use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_types::Beat;
+
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    const CHUNK: usize = 480;
+    const BLOCK: usize = 400;
+    const NOTE_FRAME: usize = 6_300;
+    for _ in 0..3 {
+        let probe = load_probe(SAMPLE_RATE);
+        let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+        let (mut live, _exec) = Editor::new(prepare);
+        let (clip, key, sink) = (NodeKey(1), NodeKey(9), NodeKey(3));
+        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        live.insert(
+            clip,
+            "clip",
+            MidiClipNode::new([TimedMidiEvent::new(Beat(NOTE_FRAME as f64 / 24_000.0), on)]),
+        );
+        let _controls = live.insert(key, "plugin", probe.client.bind());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        live.insert(
+            sink,
+            "sink",
+            tutti_graph::ForkByClone(MidiSink(Arc::clone(&seen))),
+        );
+        live.spec_mut().connect_events(
+            EventIn { node: key, port: 0 },
+            EventEdge::Direct(EventOut {
+                node: clip,
+                port: 0,
+            }),
+        );
+        live.spec_mut().connect_events(
+            EventIn {
+                node: sink,
+                port: 0,
+            },
+            EventEdge::Direct(EventOut { node: key, port: 0 }),
+        );
+        live.spec_mut().topology.outputs = vec![
+            Source::Node(OutPort { node: key, port: 0 }),
+            Source::Node(OutPort {
+                node: sink,
+                port: 0,
+            }),
+        ];
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            ..Default::default()
+        }));
+        let offline = OfflineTransport::new(timeline.clone());
+        let (_fork_ed, mut fork_exec) = live
+            .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+            .expect("a clip, a plugin and a sink fork");
+
+        let mut out = Vec::new();
+        let (mut block, mut silent) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        while out.len() < NOTE_FRAME + 2 * CHUNK {
+            timeline.render_graph(
+                &mut fork_exec,
+                BLOCK,
+                &[],
+                &mut [&mut block[..], &mut silent[..]],
+            );
+            out.extend_from_slice(&block);
+        }
+        let heard = out.iter().position(|&s| s != 0.0);
+        assert_eq!(
+            heard,
+            Some(NOTE_FRAME + CHUNK),
+            "the gate opens a chunk late"
+        );
+        let seen = seen.lock().unwrap();
+        let note_on = seen.iter().find(|(_, w)| (w >> 20) & 0xf == 0x9);
+        assert_eq!(
+            note_on.map(|&(f, _)| f),
+            Some((NOTE_FRAME + CHUNK) as u64),
+            "the MIDI-out's note-on on the frame its audio sounds: {seen:?}"
+        );
+    }
+}
+
 /// A ramp source reading its block's `Env`: frame `t` is [`ramp`]`(t)`. Forks
 /// by clone (it holds nothing), so an export of a graph it feeds forks it.
 #[derive(Clone)]

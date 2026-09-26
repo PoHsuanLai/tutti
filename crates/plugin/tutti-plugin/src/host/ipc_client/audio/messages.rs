@@ -143,9 +143,9 @@ pub(super) enum Command {
 #[derive(Debug, Clone)]
 pub(super) enum AudioResponse {
     AudioProcessed {
-        /// The block this answers, as echoed by the server. Kept for diagnostics
-        /// and ordering; the slab is what establishes validity.
-        #[allow(dead_code)]
+        /// The block this answers, as echoed by the server: its MIDI-out
+        /// belongs with that block's audio (`take_replies`). The slab is what
+        /// establishes the audio's validity.
         seq: u64,
         midi_out: MidiEventVec,
     },
@@ -154,10 +154,7 @@ pub(super) enum AudioResponse {
     /// connection-level failure that ends every in-flight block. Either way the
     /// host needs no action: the server never published, so the sequence check
     /// fails and silence follows.
-    Error {
-        #[allow(dead_code)]
-        seq: Option<u64>,
-    },
+    Error { seq: Option<u64> },
 }
 
 /// Plugin-originated, unsolicited events observed on the control stream.

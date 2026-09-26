@@ -3442,11 +3442,20 @@ under both.
   no longer need the plugin to be `legacy` (above); they go when their
   sources become event source nodes (the automation lane as a ramp source,
   harmony through a published table or a node that reads `Env`).
-- **Plugin MIDI out onto an event output.** The server publishes a chunk's
-  audio before its reply is queued, so a reply drained when the chunk's
-  audio is collected can miss it; the offline wait must wait for the reply
-  too, or an export's MIDI out is nondeterministic. With the hardware-out
-  sink, below.
+- **Plugin MIDI out on an event output: landed** (stacked on item 5's first
+  PR). A plugin that declares `Features::MIDI_OUT` has one MIDI event
+  output. Its reply is now taken when its chunk's audio is collected
+  (`AudioBridge::take_replies`, keyed by `seq`; an earlier chunk's late reply
+  lands at frame 0), and each event is emitted where the ring plays the
+  chunk frame it was emitted at, so MIDI-out keeps its place against the
+  plugin's audio (a chunk late, as the audio is). An export waits for the
+  reply as well as the audio, within the same budget, and a reply that never
+  comes costs its MIDI, never the audio: without the wait, the reference
+  plugin's echoed note came out a chunk late in 2 of 3 runs. Live, a reply
+  that loses that race is a chunk late. The routed sink path
+  (`MidiOutSink`, the post-block phase) is unchanged. Pinned by `clap_fork`'s
+  `a_plugins_midi_out_keeps_its_place_against_its_audio`, against the
+  reference plugin's `Notes` mode, which now echoes the notes it receives.
 - **SoundFont, the hardware input (`MidiPreBlock`) and MIDI out** become
   native nodes; the mailbox, `MidiInPort`, `MidiPostBlock` and
   `MidiTargetRegistry` are deleted.

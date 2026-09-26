@@ -48,7 +48,7 @@ const CHANNELS: usize = 2;
 const GAIN: f32 = 2.0;
 
 /// The tests' side of each chunk: an empty payload, and the plugin's MIDI-out
-/// kept as drained (unshifted), so a test reads what the bridge returned.
+/// kept as collected, so a test reads what the bridge returned.
 impl super::batcher::Chunks for MidiEventVec {
     fn begin(&mut self, _at: usize, _chunk: usize) {}
     fn take(&mut self, _from: usize, _n: usize, _at: usize) {}
@@ -57,10 +57,12 @@ impl super::batcher::Chunks for MidiEventVec {
         BlockPayload::default()
     }
 
-    fn midi_out(&mut self, events: &mut MidiEventVec, _chunk: usize) {
+    fn midi_out(&mut self, events: &MidiEventVec) {
         self.clear();
         self.extend_from_slice(events);
     }
+
+    fn emit(&mut self, _frame: usize, _event: crate::protocol::MidiEvent) {}
 }
 
 /// `CHANNELS` planar channels of `BATCH_SIZE` frames: the buffers the
@@ -1131,10 +1133,10 @@ fn a_late_reply_does_not_permanently_crash_the_bridge() {
 /// frame* the bridge thread happened to read is irrelevant to it.
 ///
 /// The reply carries exactly one thing the host consumes — the plugin's
-/// MIDI-out — and `submit` drains it into the caller's buffer. So MIDI is the
+/// MIDI-out — and collecting a chunk drains it (`take_replies`). So MIDI is the
 /// only observable that can tell a paired reply from a mispaired one, which
 /// makes it the only honest thing to assert. Each block's reply is stamped with
-/// a distinct `frame_offset`, so an off-by-one pairing names itself.
+/// a distinct first data word, so an off-by-one pairing names itself.
 #[test]
 fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
     let _lock = exclusive();
@@ -1164,7 +1166,7 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
             &mut output.outs(),
             &mut midi_out,
         );
-        stamps.push(midi_out.iter().map(|e| e.frame_offset).collect());
+        stamps.push(midi_out.iter().map(|e| e.data[0]).collect());
         wait_for_reply(&bridge, block as u64 + 1, WAIT_BUDGET);
     }
 
@@ -1197,7 +1199,8 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
         bridge.settled_replies()
     );
 
-    // The server stamps block `seq`'s reply with `frame_offset == seq`. Every
+    // The server stamps block `seq`'s reply with `data[0] == seq` (not its
+    // frame offset, which a late reply's collection moves to 0). Every
     // stamp the host ever drains must therefore be a sequence it actually
     // submitted, and no sequence may arrive twice — a reply left undrained
     // shows up as the same stamp reappearing behind a later block.
@@ -1331,8 +1334,8 @@ fn stamped_server(
                         }
                         let mut midi_out = crate::protocol::IpcMidiEventVec::new();
                         midi_out.push(crate::protocol::IpcMidiEvent {
-                            frame_offset: seq as u32,
-                            data: [0; 4],
+                            frame_offset: 0,
+                            data: [seq as u32, 0, 0, 0],
                         });
                         BridgeMessage::AudioProcessed {
                             latency_us: 0,

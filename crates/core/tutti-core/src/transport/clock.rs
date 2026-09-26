@@ -40,6 +40,10 @@ pub(crate) struct Control {
     pub(crate) tempo: Bpm,
     pub(crate) paused: bool,
     pub(crate) looping: Option<super::LoopRange>,
+    /// Whether the session is recording, for the graph's
+    /// [`Transport::recording`](tutti_graph::Transport::recording). Read once
+    /// per block, like the rest; no command moves it mid-block.
+    pub(crate) recording: bool,
 }
 
 impl Control {
@@ -49,6 +53,7 @@ impl Control {
             tempo: settings.tempo(),
             paused: settings.is_paused(),
             looping: settings.loop_span.range(),
+            recording: settings.is_recording(),
         }
     }
 
@@ -241,6 +246,7 @@ impl TransportClock {
                 end: r.end(),
             }),
         )
+        .with_recording(control.recording)
     }
 
     /// Advance `frames` under `from`, the transport the last

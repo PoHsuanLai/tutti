@@ -572,7 +572,7 @@ mod tests {
             .iter()
             .map(|e| match e.kind {
                 crate::event::EventKind::Midi(crate::event::Ump(w)) => w[0],
-                crate::event::EventKind::Ramp(_) => unreachable!(),
+                _ => unreachable!(),
             })
             .collect();
         assert_eq!(tags, vec![0, 1, 2, 3, 4], "all five, in order");

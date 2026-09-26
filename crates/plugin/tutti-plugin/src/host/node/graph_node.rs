@@ -13,15 +13,16 @@
 
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
-    Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, SortedEvents, Status, MAX_PORTS,
+    Cx, Env, Event, EventKind, Harmony, HarmonyKind, Io, Node, Offset, Prepare, Shape,
+    SortedEvents, Status, MAX_PORTS,
 };
 use tutti_types::{ChannelLayout, ParamAddr, Samples};
 
 use super::batcher::{sort_by_offset, Chunks};
 use super::transport_source::{self, SteadyTime};
 use super::{automation_node, BlockPayload, Bound, PluginClient};
-use crate::host::node::input_slot::BlockCtx;
-use crate::protocol::{Features, MidiEvent, MidiEventVec, TransportInfo};
+use crate::host::ipc_client::audio::HarmonyInputs;
+use crate::protocol::{ChordValue, Features, MidiEvent, MidiEventVec, ScaleValue, TransportInfo};
 use crate::util::node::Midi;
 
 /// A bound plugin, owned by a graph's executor. See the module docs.
@@ -49,15 +50,18 @@ impl Node for PluginClient<Bound> {
     /// at (so a chunk late, as the audio is; the declared latency covers
     /// both).
     ///
-    /// **Not `legacy`**, though four inputs are still read out of band — its
-    /// MIDI port's installed clip source, parameter automation, harmony and
-    /// note expression each poll a timeline of their own. They are read when
-    /// a chunk begins, for the frames from the call's first to the chunk's
-    /// last, and re-based to the chunk (`PluginChunks`): right wherever the
-    /// timeline stands at the call's first frame, which a host that moves it
-    /// once per block (tutti-core's engine, `RenderClock::render_graph`)
-    /// keeps, in whole blocks as in `LEGACY_CHUNK` passes. So a plan holding
-    /// a plugin renders whole blocks. The transport itself is read from `Env`.
+    /// Its event input carries parameter ramps too (a
+    /// [`PluginAutomation`](super::PluginAutomation) node's) and chords and
+    /// scales (a `HarmonyNode`'s, for a plugin that takes sequencer context).
+    ///
+    /// **Not `legacy`**, though one input is still read out of band: a clip
+    /// installed on its MIDI port polls a timeline of its own. It is read
+    /// when a chunk begins, for the frames from the call's first to the
+    /// chunk's last, and re-based to the chunk (`PluginChunks`): right
+    /// wherever the timeline stands at the call's first frame, which a host
+    /// that moves it once per block (tutti-core's engine,
+    /// `RenderClock::render_graph`) keeps, in whole blocks as in
+    /// `LEGACY_CHUNK` passes. The transport itself is read from `Env`.
     /// The cost: a transport command scheduled inside a block reaches those
     /// polled inputs from the block's first frame (up to a block early, where
     /// passes bounded it to 64 frames); doc 013, "The plugin is no longer
@@ -100,7 +104,7 @@ impl Node for PluginClient<Bound> {
     /// batcher's FIFO) and plays the chunk before: output frame `t` is the
     /// plugin's output for input frame `t - chunk`, however the blocks are
     /// cut. Each chunk is submitted with its own payload — MIDI, automation,
-    /// harmony, note expression, and the transport at the chunk's first frame
+    /// chords and scales, and the transport at the chunk's first frame
     /// (`PluginChunks`).
     ///
     /// Always [`Status::Modified`]: the node is fed out of band (a MIDI
@@ -140,7 +144,6 @@ impl Node for PluginClient<Bound> {
             features: c.loaded.features,
             steady: *steady,
             midi: &mut c.midi,
-            inputs: &mut c.controls.inputs,
             pending,
             out_events,
             indexed,
@@ -193,9 +196,9 @@ impl Node for PluginClient<Bound> {
 /// the chunk begins and sent when it is submitted (possibly a block later;
 /// see the batcher's FIFO).
 ///
-/// **Gathered at the chunk's start, not at its submission.** The inputs that
-/// poll a timeline (a MIDI clip, automation, harmony) read their window from
-/// the transport's position *now*. While the plan renders in `Legacy`
+/// **Gathered at the chunk's start, not at its submission.** A clip on the
+/// MIDI port (the one input that polls a timeline) reads its window from the
+/// transport's position *now*. While the plan renders in `Legacy`
 /// passes, a chunk longer than a pass is submitted from its last pass, so a
 /// window read then would start `chunk - pass` frames late and every event
 /// would reach the plugin that much early. At `begin` the pass holds the
@@ -213,7 +216,6 @@ struct PluginChunks<'a> {
     /// The steady-time counter at this block's first frame.
     steady: SteadyTime,
     midi: &'a mut Midi,
-    inputs: &'a mut super::controls::PluginInputs,
     pending: &'a mut BlockPayload,
     /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
     out_events: &'a mut MidiEventVec,
@@ -232,22 +234,16 @@ impl Chunks for PluginChunks<'_> {
         };
         // The window from this pass's first frame through the chunk's last.
         let span = at + chunk;
-        let ctx = BlockCtx { block_size: span };
         let rate = self.env.sample_rate;
-        // Clones of the drained buffers: every one is an inline `SmallVec`
-        // below its spill size, so a clone copies and never allocates
-        // (`clap_node_no_alloc` drives MIDI and automation through here).
+        // A clone of the drained buffer: an inline `SmallVec` below its spill
+        // size, so it copies and never allocates (`clap_node_no_alloc`).
+        // Parameters, chords and scales are filled from the event input as
+        // the chunk's frames come in (`take`); note expression has no source.
         *self.pending = BlockPayload {
             midi: self.midi.drain_for_process(span, rate).clone(),
-            // Filled from the event input as the chunk's frames come in
-            // (`take`): automation is a node's ramps, not a slot's drain.
             params: Default::default(),
-            harmony: self.inputs.harmony.drain(ctx, self.features).clone(),
-            note_expression: self
-                .inputs
-                .note_expression
-                .drain(ctx, self.features)
-                .clone(),
+            harmony: Default::default(),
+            note_expression: Default::default(),
             transport,
         };
         rebase(self.pending, at);
@@ -256,7 +252,9 @@ impl Chunks for PluginChunks<'_> {
     /// The event input's events on these frames join the chunk at the
     /// chunk's frames: MIDI to its MIDI, a parameter ramp (from a
     /// [`PluginAutomation`](super::PluginAutomation) node) to its parameter
-    /// points, in this plugin's address model. Past the inline capacities they
+    /// points, in this plugin's address model, and a chord or scale to its
+    /// harmony, for a plugin that takes sequencer context (no display text:
+    /// the degrees are what a plugin acts on). Past the inline capacities they
     /// are dropped rather than spill (allocate) on the audio thread.
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let events = self.events.as_slice();
@@ -286,6 +284,9 @@ impl Chunks for PluginChunks<'_> {
                     };
                     let offset = i32::try_from(frame).unwrap_or(i32::MAX);
                     automation_node::add_point(&mut self.pending.params, address, offset, value);
+                }
+                EventKind::Harmony(h) => {
+                    push_harmony(&mut self.pending.harmony, self.features, h, frame);
                 }
             }
         }
@@ -349,41 +350,99 @@ fn width(n: usize) -> ChannelLayout {
     ChannelLayout::from_count(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
-/// Re-base a payload read from a pass's first frame to a chunk that begins
+/// Re-base the MIDI read from a pass's first frame to a chunk that begins
 /// `at` frames into it: every offset moves back by `at`. One before the chunk
 /// lands on its first frame rather than being dropped: a clip never emits one
 /// twice (its window tiles, so it emitted it with the chunk before), what
-/// remains is live input or a value to hold (the latest automation point, the
-/// current chord), and frame 0 is where each belongs.
+/// remains is live input, and frame 0 is where it belongs. (Everything else
+/// in the payload arrives on the event input, at the chunk's frames.)
 fn rebase(p: &mut BlockPayload, at: usize) {
-    if at == 0 {
+    let at = u32::try_from(at).unwrap_or(u32::MAX);
+    for e in p.midi.iter_mut() {
+        e.frame_offset = e.frame_offset.saturating_sub(at);
+    }
+}
+
+/// A chord or scale into a chunk's harmony at chunk frame `frame`, for a
+/// plugin that takes sequencer context (`features`); nothing for one that
+/// does not. Past the inline capacity it is dropped rather than allocate.
+fn push_harmony(harmony: &mut HarmonyInputs, features: Features, h: Harmony, frame: usize) {
+    if !features.contains(Features::SEQUENCER_CONTEXT) {
         return;
     }
-    let at_u32 = u32::try_from(at).unwrap_or(u32::MAX);
-    let at_i32 = i32::try_from(at).unwrap_or(i32::MAX);
-    let back = |o: i32| o.saturating_sub(at_i32).max(0);
-    for e in p.midi.iter_mut() {
-        e.frame_offset = e.frame_offset.saturating_sub(at_u32);
-    }
-    for q in p.params.queues.iter_mut() {
-        for pt in q.points.iter_mut() {
-            pt.sample_offset = back(pt.sample_offset);
+    let sample_offset = i32::try_from(frame).unwrap_or(i32::MAX);
+    let (root, bass, mask) = (
+        i16::from(h.root()),
+        i16::from(h.bass()),
+        i16::try_from(h.degrees()).unwrap_or(0),
+    );
+    match h.kind() {
+        HarmonyKind::Chord => {
+            let chords = &mut harmony.chords.changes;
+            if chords.len() < chords.inline_size() {
+                chords.push(ChordValue {
+                    sample_offset,
+                    root,
+                    bass_note: bass,
+                    mask,
+                    text: String::new(),
+                });
+            }
+        }
+        HarmonyKind::Scale => {
+            let scales = &mut harmony.scales.changes;
+            if scales.len() < scales.inline_size() {
+                scales.push(ScaleValue {
+                    sample_offset,
+                    root,
+                    mask,
+                    text: String::new(),
+                });
+            }
         }
     }
-    for c in p.note_expression.changes.iter_mut() {
-        c.sample_offset = back(c.sample_offset);
-    }
-    let h = &mut p.harmony;
-    for c in h.chords.changes.iter_mut() {
-        c.sample_offset = back(c.sample_offset);
-    }
-    for c in h.scales.changes.iter_mut() {
-        c.sample_offset = back(c.sample_offset);
-    }
-    for c in h.expr_texts.changes.iter_mut() {
-        c.sample_offset = back(c.sample_offset);
-    }
-    for c in h.expr_ints.changes.iter_mut() {
-        c.sample_offset = back(c.sample_offset);
+}
+
+#[cfg(test)]
+mod harmony_tests {
+    use super::*;
+
+    /// **A chord and a scale become the plugin's chord and scale changes**,
+    /// at their chunk frames, for a plugin that takes sequencer context; a
+    /// plugin that does not gets none. Past the inline capacity the rest are
+    /// dropped (no allocation).
+    ///
+    /// Mutation: drop the `SEQUENCER_CONTEXT` gate → the second plugin gets
+    /// the chord → fails. Mutation: bass from the root (`i16::from(h.root())`)
+    /// → the slash chord's bass is wrong → fails. Mutation: push past the
+    /// inline capacity → the list spills → fails. (That `take` routes a
+    /// harmony event here is not pinned end to end: the reference plugin is
+    /// CLAP, which has no chord events; the VST3 conversion downstream is
+    /// pinned by `tutti-vst3-host`'s event-list tests.)
+    #[test]
+    fn harmony_becomes_chord_and_scale_changes_for_a_plugin_that_takes_it() {
+        let mut h = HarmonyInputs::default();
+        let takes = Features::SEQUENCER_CONTEXT;
+        push_harmony(&mut h, takes, Harmony::chord(65, 69, 0b1001_0001), 12);
+        push_harmony(&mut h, takes, Harmony::scale(69, 0b0101_1010_1101), 30);
+        let c = &h.chords.changes[0];
+        assert_eq!(
+            (c.sample_offset, c.root, c.bass_note, c.mask),
+            (12, 65, 69, 0b1001_0001)
+        );
+        let s = &h.scales.changes[0];
+        assert_eq!(
+            (s.sample_offset, s.root, s.mask),
+            (30, 69, 0b0101_1010_1101)
+        );
+
+        let mut none = HarmonyInputs::default();
+        push_harmony(&mut none, Features::empty(), Harmony::chord(60, 60, 1), 0);
+        assert!(none.chords.changes.is_empty());
+
+        for i in 0..100 {
+            push_harmony(&mut h, takes, Harmony::chord(60, 60, 1), i);
+        }
+        assert!(!h.chords.changes.spilled());
     }
 }

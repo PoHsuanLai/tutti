@@ -352,43 +352,13 @@ impl Plugin {
         true
     }
 
-    /// Install per-block chord/scale context. `false` if the plugin declared no
-    /// sequencer context.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_harmony_source(
-        &mut self,
-        chords: impl IntoIterator<Item = crate::host::node::TimedChord>,
-        scales: impl IntoIterator<Item = crate::host::node::TimedScale>,
-        transport: impl tutti_core::transport::Timeline + 'static,
-    ) -> bool {
-        if !self.accepts(Features::SEQUENCER_CONTEXT) {
-            return false;
-        }
-        match &mut self.backend {
-            Backend::Subprocess(c) => {
-                c.set_harmony_source(chords, scales, transport);
-                true
-            }
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => false,
-        }
-    }
-
-    /// Install a per-block note-expression stream. `false` if the plugin
-    /// declared no note-expression support.
-    #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_note_expression_source(
-        &mut self,
-        source: Arc<crate::host::node::NoteExpressionSource>,
-    ) -> bool {
-        if !self.accepts(Features::NOTE_EXPRESSION) {
-            return false;
-        }
-        match &mut self.backend {
-            Backend::Subprocess(c) => {
-                c.set_note_expression_source(source);
-                true
-            }
+    /// Whether the plugin takes chord and scale context (it declared
+    /// sequencer context): wire a `HarmonyNode` (tutti-midi-runtime) to its
+    /// event input. `false` for a plugin that declined, and for the in-process
+    /// VST2 node, which has no event input.
+    pub fn takes_harmony(&self) -> bool {
+        match &self.backend {
+            Backend::Subprocess(c) => c.takes_harmony(),
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(_) => false,
         }

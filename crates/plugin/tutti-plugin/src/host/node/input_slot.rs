@@ -1,10 +1,12 @@
 //! Generic per-block input producer for a plugin node.
 //!
-//! Several host-produced inputs — chord/scale harmony, sample-accurate
-//! parameter automation, transport info — share one shape: *given this block's
-//! size, produce a payload the plugin consumes this block, reading the live
-//! transport as needed.* [`BlockInput`] names that shape; [`InputSlot`] holds
-//! one installed producer and drains it per block.
+//! A host-produced input a node polls once per block: *produce a payload the
+//! plugin consumes this block, reading the live transport as needed.*
+//! [`BlockInput`] names that shape; [`InputSlot`] holds one installed producer
+//! and drains it per block. Only the in-process VST2 node's polled transport
+//! still uses it: the out-of-process plugin node takes its per-block inputs
+//! (parameter automation, chords and scales) on its event input, from nodes of
+//! their own (doc 013 item 5).
 //!
 //! **Why the slot is a shared cell.** fundsp's frontend/backend split means the
 //! box the audio thread runs is a *different clone* than the one a host-side
@@ -16,10 +18,9 @@
 //! forgets to share silently never fires. See
 //! [[plugin-source-install-shared-cell]].
 //!
-//! **Feature gating is data, not logic.** Some inputs are only sent to plugins
-//! that advertised wanting them (`Features::SEQUENCER_CONTEXT` for harmony,
-//! `Features::TRANSPORT` for transport); parameter automation is universal
-//! (empty gate ⇒ always send). The gate rides on the slot as a `Features`
+//! **Feature gating is data, not logic.** An input is only sent to plugins
+//! that advertised wanting it (`Features::TRANSPORT` for transport); an empty
+//! gate means always send. The gate rides on the slot as a `Features`
 //! value, so the send decision is one uniform check, never a per-producer
 //! special case.
 
@@ -28,16 +29,6 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 
 use crate::protocol::Features;
-
-/// Per-block context handed to a [`BlockInput`]. Currently just the block size —
-/// the producers read the live transport directly, so none needs a host-supplied
-/// sample position (only [`super::PluginClient`]'s MIDI path tracks one, and it
-/// stays outside this abstraction). Widen the struct if a future producer needs
-/// more; it's a struct, not a positional arg, so that's a non-breaking change.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct BlockCtx {
-    pub block_size: usize,
-}
 
 /// Reset an input's output buffer to "nothing this block" **without
 /// reallocating**. This is the RT-critical half of [`InputSlot::drain`]: the
@@ -50,14 +41,14 @@ pub(crate) trait BlockReset {
 
 /// Something the host produces once per audio block and feeds to the plugin.
 /// The producer reads the live transport itself (it holds its own
-/// `Arc<dyn Timeline>`), so `refill` needs only the block size via `ctx`.
+/// `Arc<dyn Timeline>`), so `refill` needs nothing from the block.
 pub(crate) trait BlockInput: Send + Sync {
     /// The per-block payload this input fills. Reused across blocks as scratch.
     type Out: Default + BlockReset;
 
     /// Fill `out` for this block. Implementations must first `out.reset()` (or
     /// otherwise fully overwrite it) so no stale data from a prior block leaks.
-    fn refill(&self, ctx: BlockCtx, out: &mut Self::Out);
+    fn refill(&self, out: &mut Self::Out);
 }
 
 /// One installed [`BlockInput`], shared across fundsp graph-commit clones.
@@ -105,14 +96,14 @@ impl<B: BlockInput> InputSlot<B> {
     /// Returns the reset (empty) payload when the plugin lacks the gated feature
     /// or no source is installed — the RT-common path, allocation-free via
     /// [`BlockReset::reset`]. Otherwise delegates to the source's `refill`.
-    pub(crate) fn drain(&mut self, ctx: BlockCtx, plugin_features: Features) -> &B::Out {
+    pub(crate) fn drain(&mut self, plugin_features: Features) -> &B::Out {
         if !self.gate.is_empty() && !plugin_features.contains(self.gate) {
             self.drain.reset();
             return &self.drain;
         }
         // `load()` is lock-free; the guard holds the current source for the refill.
         match self.source.load().as_ref() {
-            Some(src) => src.refill(ctx, &mut self.drain),
+            Some(src) => src.refill(&mut self.drain),
             None => self.drain.reset(),
         }
         &self.drain
@@ -154,13 +145,11 @@ mod tests {
     }
     impl BlockInput for Dummy {
         type Out = Count;
-        fn refill(&self, _ctx: BlockCtx, out: &mut Count) {
+        fn refill(&self, out: &mut Count) {
             self.refills.fetch_add(1, Ordering::Relaxed);
             out.0 = self.value;
         }
     }
-
-    const CTX: BlockCtx = BlockCtx { block_size: 64 };
 
     /// Regression guard for [[plugin-source-install-shared-cell]], generalized:
     /// installing on ONE clone is visible to ANOTHER clone (shared slot).
@@ -176,22 +165,18 @@ mod tests {
         }));
 
         assert_eq!(
-            clone_b.drain(CTX, Features::empty()).0,
+            clone_b.drain(Features::empty()).0,
             7,
             "clone_b sees install"
         );
         assert_eq!(
-            original.drain(CTX, Features::empty()).0,
+            original.drain(Features::empty()).0,
             7,
             "original sees install"
         );
 
         clone_b.clear();
-        assert_eq!(
-            original.drain(CTX, Features::empty()).0,
-            0,
-            "clear propagates"
-        );
+        assert_eq!(original.drain(Features::empty()).0, 0, "clear propagates");
     }
 
     /// An empty gate always sends; a non-empty gate suppresses the refill entirely
@@ -206,7 +191,7 @@ mod tests {
         slot.install(Arc::clone(&src));
 
         // Plugin lacks TRANSPORT → gated off, refill never runs, output stays reset.
-        assert_eq!(slot.drain(CTX, Features::empty()).0, 0);
+        assert_eq!(slot.drain(Features::empty()).0, 0);
         assert_eq!(
             src.refills.load(Ordering::Relaxed),
             0,
@@ -214,7 +199,7 @@ mod tests {
         );
 
         // Plugin has TRANSPORT → refills.
-        assert_eq!(slot.drain(CTX, Features::TRANSPORT).0, 5);
+        assert_eq!(slot.drain(Features::TRANSPORT).0, 5);
         assert_eq!(src.refills.load(Ordering::Relaxed), 1);
     }
 
@@ -226,7 +211,7 @@ mod tests {
             value: 9,
             refills: AtomicUsize::new(0),
         }));
-        assert_eq!(slot.drain(CTX, Features::empty()).0, 9);
-        assert_eq!(slot.drain(CTX, Features::TRANSPORT).0, 9);
+        assert_eq!(slot.drain(Features::empty()).0, 9);
+        assert_eq!(slot.drain(Features::TRANSPORT).0, 9);
     }
 }

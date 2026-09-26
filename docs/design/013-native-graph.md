@@ -3460,10 +3460,30 @@ under both.
   well as sink), following a crossfade, removed with the entity. Pinned by
   `automation_node`'s unit tests, `clap_automation` (the reference plugin's
   gain, in an export) and `plugin_capture`.
-- **Harmony and note expression** still poll a timeline each, through their
-  `InputSlot`s (the next stacked PR): harmony as a node sending harmony
-  events, note expression as MIDI 2 per-note messages (its source holds no
-  data yet).
+- **Harmony as an event source: landed** (stacked on the automation PR;
+  breaking). tutti-graph gains `EventKind::Harmony(Harmony)`: a `Copy` chord
+  or scale (root, bass, 12-bit degree mask) — not MIDI, because Flex Data
+  names a chord by type and a key by signature, which cannot carry an
+  arbitrary degree set. `HarmonyNode` (tutti-midi-runtime) sends a lane's
+  changes on their frames, walking each block as the clip node does (the
+  walk is now shared, `schedule/walk.rs`), and **re-states the chord and
+  scale in force wherever playback jumps** (a start, a seek, a loop wrap) or
+  its lanes are replaced: the priming-on-join the old source left out. The
+  plugin node turns them into its chunk's chord and scale changes, for a
+  plugin that takes sequencer context (no display text; the degrees are what
+  a plugin acts on, and the old path's `String` clone on the audio thread
+  goes). `HarmonySource`, `TimedChord`, `TimedScale`,
+  `set_harmony_source`, `clear_harmony_source`, `HarmonyView` and
+  `Plugin::set_harmony_source` are gone; `takes_harmony` answers whether to
+  wire one.
+- **Note expression's empty rail is gone.** `NoteExpressionSource` produced
+  nothing (no lane storage exists), so it, its slot, its setters and
+  `NoteExpressionView` are removed; the payload's note expression is empty
+  as before. Note expression belongs in the MIDI stream as MIDI 2 per-note
+  messages; turning those into VST3 note-expression events on the plugin
+  side is a follow-up. With these three inputs gone, the plugin node's
+  `InputSlot`s are gone; the in-process VST2 node's polled transport is the
+  last user of the slot type.
 - **Plugin MIDI out on an event output: landed** (stacked on item 5's first
   PR). A plugin that declares `Features::MIDI_OUT` has one MIDI event
   output. Its reply is now taken when its chunk's audio is collected

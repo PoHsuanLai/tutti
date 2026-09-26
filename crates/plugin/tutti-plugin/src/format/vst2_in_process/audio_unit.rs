@@ -20,7 +20,7 @@ use tutti_midi_runtime::MidiSender;
 use tutti_midi_types::MidiUnitId;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
-use crate::host::node::input_slot::{BlockCtx, InputSlot};
+use crate::host::node::input_slot::InputSlot;
 use crate::host::node::transport_source::PolledTransport;
 use crate::host::node::Midi;
 use crate::protocol::{Features, TransportInfo};
@@ -373,9 +373,7 @@ impl AudioUnit for InProcessVst2Client {
         {
             self.process_scratch.f32_in[ch][0] = sample;
         }
-        let transport = *self
-            .transport
-            .drain(BlockCtx { block_size: 1 }, self.features);
+        let transport = *self.transport.drain(self.features);
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
@@ -414,9 +412,7 @@ impl AudioUnit for InProcessVst2Client {
             }
         }
 
-        let transport = *self
-            .transport
-            .drain(BlockCtx { block_size: size }, self.features);
+        let transport = *self.transport.drain(self.features);
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
@@ -517,9 +513,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
         {
             self.process_scratch.f64_in[ch][0] = sample;
         }
-        let transport = *self
-            .transport
-            .drain(BlockCtx { block_size: 1 }, self.features);
+        let transport = *self.transport.drain(self.features);
         let processed = drive_f64(
             &self.inner,
             &self.contention_count,
@@ -557,9 +551,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
             }
         }
 
-        let transport = *self
-            .transport
-            .drain(BlockCtx { block_size: size }, self.features);
+        let transport = *self.transport.drain(self.features);
         let processed = drive_f64(
             &self.inner,
             &self.contention_count,
@@ -935,7 +927,7 @@ mod transport_tests {
             .expect("the only playhead writer")
             .set_playhead(4.0);
         slot.install(source);
-        let snapshot = *slot.drain(BlockCtx { block_size: 64 }, loader_features());
+        let snapshot = *slot.drain(loader_features());
 
         let ctx = block_context(48_000.0, &[], &snapshot);
 
@@ -971,7 +963,7 @@ mod transport_tests {
             .set_playhead(4.0);
         slot.install(source);
 
-        let snapshot = slot.drain(BlockCtx { block_size: 64 }, loader_features());
+        let snapshot = slot.drain(loader_features());
 
         assert!(
             (snapshot.timing.tempo - 132.0).abs() < 1e-9,
@@ -999,7 +991,7 @@ mod transport_tests {
             .set_playhead(4.0);
         slot.install(source);
 
-        let snapshot = slot.drain(BlockCtx { block_size: 64 }, Features::empty());
+        let snapshot = slot.drain(Features::empty());
 
         assert!(
             !is_live(snapshot),
@@ -1013,7 +1005,7 @@ mod transport_tests {
     #[test]
     fn an_uninstalled_slot_drains_the_default_snapshot() {
         let mut slot = slot();
-        let snapshot = slot.drain(BlockCtx { block_size: 64 }, loader_features());
+        let snapshot = slot.drain(loader_features());
         assert!(!is_live(snapshot));
     }
 
@@ -1035,7 +1027,7 @@ mod transport_tests {
 
         original.install(source);
 
-        let snapshot = running.drain(BlockCtx { block_size: 64 }, loader_features());
+        let snapshot = running.drain(loader_features());
         assert!(
             (snapshot.timing.tempo - 90.0).abs() < 1e-9,
             "an install on a sibling clone must reach the running node"
@@ -1062,7 +1054,7 @@ mod transport_tests {
             .expect("the only playhead writer")
             .set_playhead(2.0);
         slot.install(source);
-        let snapshot = *slot.drain(BlockCtx { block_size: 64 }, declared);
+        let snapshot = *slot.drain(declared);
 
         // Through `block_context`, so this reads the value the plugin is
         // actually handed rather than only the slot's output.

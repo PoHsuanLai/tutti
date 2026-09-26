@@ -140,6 +140,7 @@ pub(crate) fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
 
 // `BlockReset for TransportInfo` lives next to its definition's consumers; a
 // reset is a full default snapshot (the "no transport installed" state).
+#[cfg(feature = "vst2")]
 impl crate::host::node::input_slot::BlockReset for TransportInfo {
     fn reset(&mut self) {
         *self = TransportInfo::default();
@@ -166,7 +167,7 @@ mod polled {
     use tutti_core::SampleRate;
 
     use super::{transport_info, Snapshot};
-    use crate::host::node::input_slot::{BlockCtx, BlockInput};
+    use crate::host::node::input_slot::BlockInput;
     use crate::protocol::TransportInfo;
 
     /// A live [`TransportState`] and the project meter, snapshotted each
@@ -205,7 +206,7 @@ mod polled {
 
     impl BlockInput for PolledTransport {
         type Out = TransportInfo;
-        fn refill(&self, _ctx: BlockCtx, out: &mut TransportInfo) {
+        fn refill(&self, out: &mut TransportInfo) {
             let r = &self.reader;
             let snapshot = Snapshot {
                 playing: r.is_rolling(),
@@ -224,7 +225,6 @@ mod polled {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::host::node::input_slot::BlockCtx;
         use tutti_core::transport::Transport;
 
         /// The polled source reads the live transport through the shared
@@ -244,14 +244,13 @@ mod polled {
                 .set_playhead(2.0);
             let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
             let src = PolledTransport::new(Arc::new(t.clone()), meter, 44_100.0);
-            let ctx = BlockCtx { block_size: 64 };
             let mut out = TransportInfo::default();
-            src.refill(ctx, &mut out);
+            src.refill(&mut out);
             assert!(out.state.playing);
             // seconds = beats * 60 / tempo = 2 * 60 / 120 = 1.0
             assert!((out.position.seconds - 1.0).abs() < 1e-6);
             src.set_sample_rate(48_000.0);
-            src.refill(ctx, &mut out);
+            src.refill(&mut out);
             assert_eq!(out.sample_rate, 48_000.0);
         }
     }

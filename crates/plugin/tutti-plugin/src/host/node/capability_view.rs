@@ -95,44 +95,6 @@ impl MidiInView<'_> {
     }
 }
 
-/// Installs the per-block chord/scale context. Reached via
-/// [`PluginClient::harmony`].
-pub struct HarmonyView<'a>(&'a mut PluginClient);
-
-impl HarmonyView<'_> {
-    /// Install a beat-scheduled chord and scale stream, replacing any already
-    /// set. Neither list need be pre-sorted.
-    pub fn set_source(
-        &mut self,
-        chords: impl IntoIterator<Item = super::TimedChord>,
-        scales: impl IntoIterator<Item = super::TimedScale>,
-        transport: impl tutti_core::transport::Timeline + 'static,
-    ) {
-        self.0.set_harmony_source(chords, scales, transport);
-    }
-
-    /// Drop the source; subsequent blocks feed empty chord/scale context.
-    pub fn clear(&mut self) {
-        self.0.clear_harmony_source();
-    }
-}
-
-/// Installs the per-block note-expression stream. Reached via
-/// [`PluginClient::note_expression`].
-pub struct NoteExpressionView<'a>(&'a mut PluginClient);
-
-impl NoteExpressionView<'_> {
-    /// Install the per-note expression stream, replacing any already set.
-    pub fn set_source(&mut self, source: Arc<super::NoteExpressionSource>) {
-        self.0.set_note_expression_source(source);
-    }
-
-    /// Drop the source; subsequent blocks feed empty note-expression.
-    pub fn clear(&mut self) {
-        self.0.clear_note_expression_source();
-    }
-}
-
 /// Configures the per-block transport snapshot. Reached via
 /// [`PluginClient::transport`].
 ///
@@ -167,16 +129,12 @@ impl PluginClient {
         (!declined(self, Features::MIDI_IN)).then_some(MidiInView(self))
     }
 
-    /// The chord/scale installer, or `None` if the plugin declared no sequencer
-    /// context.
-    pub fn harmony(&mut self) -> Option<HarmonyView<'_>> {
-        (!declined(self, Features::SEQUENCER_CONTEXT)).then_some(HarmonyView(self))
-    }
-
-    /// The note-expression installer, or `None` if the plugin declared no
-    /// note-expression support.
-    pub fn note_expression(&mut self) -> Option<NoteExpressionView<'_>> {
-        (!declined(self, Features::NOTE_EXPRESSION)).then_some(NoteExpressionView(self))
+    /// Whether the plugin takes chord and scale context: `false` only if it
+    /// declared no sequencer context. Wire a `HarmonyNode`
+    /// (tutti-midi-runtime) to its event input; the node reads what arrives
+    /// only when this holds.
+    pub fn takes_harmony(&self) -> bool {
+        !declined(self, Features::SEQUENCER_CONTEXT)
     }
 
     /// The transport's meter installer, or `None` if the plugin declared it

@@ -22,14 +22,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{At, ChannelLayout, RtPublish};
+use tutti_core::{ChannelLayout, RtPublish};
 use tutti_graph::{
-    Cx, Due, Env, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
-    NodeParts, Offset, Prepare, Shape, Status,
+    Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
+    Offset, Prepare, Shape, Status,
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
 use super::snapshot::TimedMidiEvent;
+use super::walk::{Beated, Visit, Walk};
 
 /// The most events a [`MidiClipNode`] writes to its port in one block, its
 /// declared [`event_capacity`](Shape::event_capacity). A block that reaches
@@ -147,9 +148,7 @@ pub struct MidiClipNode {
 
 /// Where playback was, and what it left sounding.
 struct Play {
-    /// The beat the next segment starts on if playback is continuous; `None`
-    /// when stopped (or before the first block).
-    expected: Option<f64>,
+    walk: Walk,
     held: HeldNotes,
 }
 
@@ -165,124 +164,46 @@ impl MidiClipNode {
             shared,
             generation,
             play: Play {
-                expected: None,
+                walk: Walk::default(),
                 held: HeldNotes::new(),
             },
         }
     }
 }
 
-impl Play {
-    /// Play the part of `seg` (the block's piece from `start`) that its
-    /// transport reaches, ending held notes where playback jumps.
-    fn segment(
-        &mut self,
-        events: &[TimedMidiEvent],
-        block: &Env,
-        start: Offset,
-        seg: &Env,
-        out: &mut EventWriter<'_>,
-    ) {
-        let t = seg.transport;
-        let len = seg.block_len.get();
-        let at = |k: usize| Offset::new(start.index() + k, block.block_len);
-        let Some(fpb) = frames_per_beat(seg).filter(|_| t.playing) else {
-            // Stopped (or no usable tempo): nothing plays, and nothing may
-            // keep sounding.
-            if let Some(o) = at(0) {
-                self.held.release(out, o);
-            }
-            self.expected = None;
-            return;
-        };
-        let now = t.beat().get();
-        let frame = 1.0 / fpb;
-        // A jump is a start more than half a frame away from where the last
-        // segment left off (a seek, a wrap at a block edge, a restart).
-        let continuous = self.expected.is_some_and(|e| ((now - e) * fpb).abs() < 0.5);
-        if !continuous {
-            if let Some(o) = at(0) {
-                self.held.release(out, o);
-            }
-        }
-
-        // Where the loop, if the playhead is inside it, wraps in this
-        // segment: `len` when it does not.
-        let looping = t
-            .looping
-            .filter(|l| l.start.get() < l.end.get() && now < l.end.get());
-        let reach = looping.map(|l| {
-            let k = tutti_core::first_frame_at_or_after((l.end.get() - now) * fpb).max(0);
-            usize::try_from(k).unwrap_or(usize::MAX)
-        });
-        let wrap = reach.map_or(len, |k| k.min(len));
-        // The loop wraps exactly at this segment's end: the next segment
-        // starts on the loop's start, which reads as continuous, so the
-        // release a wrap owes is made there (`expected` forgotten below).
-        let wraps_at_end = reach == Some(len);
-
-        // Up to the wrap: a beat less than a frame behind the playhead falls
-        // on the first frame (`Env::due`), so the range starts a frame back.
-        let hi = now + (wrap as f64 + 1.0) * frame;
-        self.emit(events, now - frame, hi, seg, out, &at, |k| k < wrap);
-        if let (Some(l), true) = (looping, wrap < len) {
-            if let Some(o) = at(wrap) {
-                self.held.release(out, o);
-            }
-            let from = l.start.get();
-            let hi = from + ((len - wrap) as f64 + 1.0) * frame;
-            self.emit(events, from, hi, seg, out, &at, |k| k >= wrap);
-        }
-
-        // Where the next segment starts if nothing jumps.
-        let mut next = now + len as f64 * frame;
-        if let Some(l) = looping {
-            if next >= l.end.get() {
-                next = l.start.get() + (next - l.end.get());
-            }
-        }
-        self.expected = (!wraps_at_end).then_some(next);
-    }
-
-    /// Write every event with a beat in `[lo, hi)` that playback reaches in
-    /// `seg` at an offset `keep` accepts.
-    #[allow(clippy::too_many_arguments)]
-    fn emit(
-        &mut self,
-        events: &[TimedMidiEvent],
-        lo: f64,
-        hi: f64,
-        seg: &Env,
-        out: &mut EventWriter<'_>,
-        at: &impl Fn(usize) -> Option<Offset>,
-        keep: impl Fn(usize) -> bool,
-    ) {
-        let first = events.partition_point(|e| e.beat.get() < lo);
-        for e in &events[first..] {
-            if e.beat.get() >= hi || e.beat.get().is_nan() {
-                break;
-            }
-            let Due::In(k) = seg.due(At::Beat(e.beat)) else {
-                continue;
-            };
-            if !keep(k.index()) {
-                continue;
-            }
-            let Some(offset) = at(k.index()) else {
-                continue;
-            };
-            if out.push(Event::midi(offset, e.event.data)).is_ok() {
-                self.held.track(&e.event);
-            }
-        }
+impl Beated for TimedMidiEvent {
+    fn beat(&self) -> f64 {
+        self.beat.get()
     }
 }
 
-/// Frames per beat in `seg`, when its rate and tempo are usable.
-fn frames_per_beat(seg: &Env) -> Option<f64> {
-    let (rate, tempo) = (seg.sample_rate.get(), seg.transport.tempo.get());
-    let fpb = rate * 60.0 / tempo;
-    (rate > 0.0 && tempo > 0.0 && fpb.is_finite()).then_some(fpb)
+/// The clip's side of the walk: write each event, and end what is held
+/// wherever playback stops or jumps (a seek, a loop wrap).
+struct Playing<'a, 'w> {
+    held: &'a mut HeldNotes,
+    out: &'a mut EventWriter<'w>,
+}
+
+impl Visit<TimedMidiEvent> for Playing<'_, '_> {
+    fn stop(&mut self, at: Option<Offset>) {
+        // Stopped (or no usable tempo): nothing plays, and nothing may keep
+        // sounding.
+        if let Some(o) = at {
+            self.held.release(self.out, o);
+        }
+    }
+
+    fn jump(&mut self, at: Option<Offset>, _beat: f64, _events: &[TimedMidiEvent]) {
+        if let Some(o) = at {
+            self.held.release(self.out, o);
+        }
+    }
+
+    fn event(&mut self, at: Offset, e: &TimedMidiEvent) {
+        if self.out.push(Event::midi(at, e.event.data)).is_ok() {
+            self.held.track(&e.event);
+        }
+    }
 }
 
 impl Node for MidiClipNode {
@@ -309,8 +230,10 @@ impl Node for MidiClipNode {
                 self.play.held.release(out, o);
             }
         }
+        let Play { walk, held } = &mut self.play;
+        let mut playing = Playing { held, out };
         for (start, seg) in cx.env.segments() {
-            self.play.segment(&clip.events, cx.env, start, &seg, out);
+            walk.segment(&clip.events, cx.env, start, &seg, &mut playing);
         }
         Status::Modified
     }
@@ -319,7 +242,7 @@ impl Node for MidiClipNode {
     /// node over, and whatever it fed is reset with it.
     fn reset(&mut self) {
         self.play.held.clear();
-        self.play.expected = None;
+        self.play.walk.forget();
     }
 }
 

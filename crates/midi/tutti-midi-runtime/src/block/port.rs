@@ -174,7 +174,8 @@ impl MidiInPort {
     ///
     /// Past `mailbox` the port's events stay queued for the next block; past
     /// the rest of `buffer` the event input's are dropped. Nothing
-    /// allocates. The event input's ramps are not MIDI and are skipped.
+    /// allocates. The event input's ramps and harmony are not MIDI and are
+    /// skipped.
     pub fn gather(
         &self,
         frames: usize,
@@ -192,7 +193,7 @@ impl MidiInPort {
         }
         let midi = |e: &tutti_graph::Event| match e.kind {
             tutti_graph::EventKind::Midi(ump) => Some((e.offset.index() as u32, ump.0)),
-            tutti_graph::EventKind::Ramp(_) => None,
+            tutti_graph::EventKind::Ramp(_) | tutti_graph::EventKind::Harmony(_) => None,
         };
         let slice = events.as_slice();
         let total = slice.iter().filter_map(midi).count();

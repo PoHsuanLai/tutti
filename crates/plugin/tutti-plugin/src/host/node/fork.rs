@@ -55,16 +55,11 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Rebind its per-block sources** (harmony, note expression; parameter
-//!    automation is a node of its own, `PluginAutomation`, which forks
-//!    itself): each installed live source is copied onto the fork reading
-//!    the offline timeline ([`ForkMode::Offline`] with an `OfflineTransport`),
-//!    or the live transport ([`ForkMode::Live`]). An offline context of any
-//!    other type binds nothing: the fork's slots stay empty rather than read
-//!    the live playhead. **The transport is not one of them**: the fork reads
-//!    it from its own graph's `Env`, which for an offline fork is the
-//!    render's, so there is nothing to rebind; it gets the live node's meter. **Offline only, the MIDI clip
-//!    too:** the source installed on the live node's MIDI port (a
+//! 4. **Give it the live node's meter.** Nothing else it reads needs
+//!    rebinding: the transport comes from its own graph's `Env` (for an
+//!    offline fork, the render's), and parameter automation, chords and
+//!    scales and MIDI from the graph's event edges, whose nodes fork
+//!    themselves. **Offline only, a clip installed on its MIDI port:** the source installed on the live node's MIDI port (a
 //!    `MidiClipSource`) is copied onto the fork's own port with a fresh
 //!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
 //!    exported instrument plays its notes (doc 013, PR 12). It is polled at
@@ -116,7 +111,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use tutti_core::transport::{OfflineTransport, Timeline};
 use tutti_core::Samples;
 use tutti_graph::{
     ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
@@ -133,34 +127,6 @@ use crate::util::config::{unique_socket_path, BridgeConfig};
 pub(super) struct Origin {
     pub(super) config: BridgeConfig,
     pub(super) plugin_path: PathBuf,
-}
-
-/// Which transport a fork's per-block sources read.
-pub(super) enum Rebind {
-    /// The live transport each source already reads ([`ForkMode::Live`]).
-    Live,
-    /// The render's timeline ([`ForkMode::Offline`]).
-    Offline(OfflineTransport),
-}
-
-impl Rebind {
-    fn of(mode: ForkMode<'_>) -> Self {
-        match mode {
-            ForkMode::Live => Self::Live,
-            // Typed: no downcast, so no context that rebinds nothing (the
-            // `Sever` case this had while `ForkMode::Offline` carried a
-            // `&dyn Any`).
-            ForkMode::Offline(timeline) => Self::Offline(timeline.clone()),
-        }
-    }
-
-    /// The timeline a copy of a source reading `live` reads.
-    pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Arc<dyn Timeline> {
-        match self {
-            Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => timeline.timeline(),
-        }
-    }
 }
 
 /// Whether a forked instance has failed while rendering: its
@@ -346,8 +312,7 @@ impl PluginFork {
             .load_state(&state)
             .map_err(PluginForkError::LoadState)?;
 
-        let bind = Rebind::of(mode);
-        self.controls.rebind_sources_into(&fork.controls, &bind);
+        self.controls.rebind_sources_into(&fork.controls);
         // The clip the live instance plays, onto the fork's own port and the
         // render's timeline (step 4). Offline only: a live duplicate reading
         // the live clip would need its own cursor on the live transport, which

@@ -120,6 +120,11 @@ pub enum GraphEngineError {
     /// than [`MAX_ROOT_CHANNELS`] global outputs, or a `MaxBlock` above the
     /// block capacity.
     Limits(CommitError),
+    /// Another clock already writes `transport`'s playhead: an engine built
+    /// over it (or over a clone of it) is still alive. Two engines on one
+    /// transport would both consume every seek and both write the playhead
+    /// ([`Transport::clock_links`](crate::Transport::clock_links)).
+    PlayheadClaimed(crate::transport::PlayheadClaimed),
 }
 
 impl core::fmt::Display for GraphEngineError {
@@ -127,6 +132,7 @@ impl core::fmt::Display for GraphEngineError {
         match self {
             Self::NotAPair => f.write_str("the executor is not the editor's"),
             Self::Limits(e) => write!(f, "the graph is past the engine's limits: {e}"),
+            Self::PlayheadClaimed(e) => write!(f, "{e}"),
         }
     }
 }
@@ -223,10 +229,15 @@ impl Engine {
     /// past them. The editor is borrowed mutably for the check, so no commit
     /// can slip in beside it.
     ///
-    /// The graph must not also hold a `TransportClock` of its own: two clocks
-    /// would both consume the seek and both write the playhead. Nothing
-    /// refuses one (the graph never sees a unit's id), so this is the
-    /// caller's rule to keep. A node that
+    /// **One engine per transport.** The engine's clock is `transport`'s one
+    /// playhead writer ([`Transport::clock_links`](crate::Transport::clock_links)):
+    /// while this engine is alive, another built over the same transport, or
+    /// a clone of it, is refused with [`GraphEngineError::PlayheadClaimed`] —
+    /// two would both consume every seek and both write the playhead. The
+    /// claim is given back when this engine is dropped.
+    ///
+    /// Nor can the graph hold a second writer: a `TransportClock` can only
+    /// write a playhead through links from that one call. A node that
     /// takes the beat as a signal (`ClickNode`, a beat-driven LFO or
     /// automation lane) is fed by an [`EnvClock`](crate::EnvClock) instead,
     /// which emits the same samples from the block's `Env` and shares
@@ -243,6 +254,11 @@ impl Engine {
         if !editor.is_paired_with(&executor) {
             return Err(GraphEngineError::NotAPair);
         }
+        // Before the limits, which change the editor: a refused engine
+        // leaves it as it was.
+        let links = transport
+            .clock_links()
+            .map_err(GraphEngineError::PlayheadClaimed)?;
         // Mid re-prepare, the editor's `Prepare` is the one the executor will
         // adopt, and may be the larger.
         let stride = capacity
@@ -261,7 +277,7 @@ impl Engine {
             motion,
             graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
-                clock: TransportClock::new(transport.clock_links(), rate),
+                clock: TransportClock::new(links, rate),
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
                 stride,
                 playhead: Playhead::new(),
@@ -858,7 +874,7 @@ impl GraphRender {
         // block the live playhead still reads its first frame (the last
         // block's end), which is what a `Legacy` unit polling it takes for
         // its call's first frame. And it only moves forward.
-        self.clock.publish_position(self.clock.current_beat());
+        self.clock.publish_position();
         if width == 0 {
             block.fill(0.0);
             return;
@@ -921,7 +937,15 @@ mod tests {
             .motion
             .schedule(At::Frame(Frame(100)), MotionEvent::Play)
             .expect("room");
-        let mut clock = TransportClock::new(transport.clock_links(), 48_000.0);
+        // The engine holds the transport's one playhead writer; the walk
+        // under test needs a clock over the same inputs, not a second writer.
+        let mut clock = TransportClock::new(
+            crate::transport::ClockLinks::bare(
+                std::sync::Arc::clone(&transport.settings.tempo),
+                std::sync::Arc::clone(&transport.settings.paused),
+            ),
+            48_000.0,
+        );
         let settings = engine.motion.settings();
         let mut pieces = Racing {
             inner: GraphPieces {
@@ -965,7 +989,15 @@ mod tests {
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
-        let mut clock = TransportClock::new(transport.clock_links(), 48_000.0);
+        // The engine holds the transport's one playhead writer; the walk
+        // under test needs a clock over the same inputs, not a second writer.
+        let mut clock = TransportClock::new(
+            crate::transport::ClockLinks::bare(
+                std::sync::Arc::clone(&transport.settings.tempo),
+                std::sync::Arc::clone(&transport.settings.paused),
+            ),
+            48_000.0,
+        );
         let settings = engine.motion.settings();
         let mut pieces = GraphPieces {
             clock: &mut clock,

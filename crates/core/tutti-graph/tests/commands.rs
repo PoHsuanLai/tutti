@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use common::prepare;
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, Io, Node, ParamRamp, Prepare, Reference,
-    ScheduleError, Shape, Status, Transport, Ump, COMMAND_CAPACITY,
+    ScheduleError, Shape, Status, Transport, Ump, Unforkable, COMMAND_CAPACITY,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, Samples, Tail};
@@ -87,10 +87,10 @@ fn rig() -> Rig {
     ed.insert(
         PROBE,
         "probe",
-        Probe {
+        Unforkable(Probe {
             log: Arc::clone(&exec_log),
             level: 0.0,
-        },
+        }),
     );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
         node: PROBE,
@@ -331,10 +331,10 @@ fn a_command_needs_a_port_and_an_orphan_is_counted() {
     rig.ed.insert(
         PROBE,
         "const",
-        common::TestNode::new(common::Kind::Const {
+        Unforkable(common::TestNode::new(common::Kind::Const {
             value: 1.0,
             width: 1,
-        }),
+        })),
     );
     rig.ed.commit().expect("commits");
     let t = Transport::default();
@@ -425,7 +425,7 @@ fn a_scheduled_command_is_compensated_like_an_upstream_event() {
     let (exec_log, ref_log) = (Arc::default(), Arc::default());
     let (mut ed, mut exec) = Editor::new(prepare(MAX));
     for (k, u) in units(&exec_log) {
-        ed.insert(k, "n", u);
+        ed.insert(k, "n", Unforkable(u));
     }
     let t = &mut ed.spec_mut().topology;
     t.inputs = ChannelLayout::MONO;
@@ -530,10 +530,10 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
     ed.insert(
         NodeKey(0),
         "probe",
-        Probe {
+        Unforkable(Probe {
             log: Arc::clone(&log),
             level: 0.0,
-        },
+        }),
     );
     ed.commit().expect("commits");
     exec.apply_pending();
@@ -552,10 +552,10 @@ fn a_command_waits_for_the_commit_it_was_checked_against() {
         ed.insert(
             key,
             "probe",
-            Probe {
+            Unforkable(Probe {
                 log: Arc::clone(&log),
                 level: 0.0,
-            },
+            }),
         );
         ed.remove(NodeKey(u64::from(round - 1)));
         loop {
@@ -662,7 +662,7 @@ fn a_ramp_into_a_coarse_node_is_refused() {
         fn reset(&mut self) {}
     }
     let (mut ed, mut exec) = Editor::new(prepare(MAX));
-    ed.insert(PROBE, "coarse", Coarse);
+    ed.insert(PROBE, "coarse", Unforkable(Coarse));
     ed.commit().expect("commits");
     exec.apply_pending();
     let ramp = EventKind::Ramp(ParamRamp::foreign(0, 1.0, Samples(0)));
@@ -969,11 +969,11 @@ fn beat_resolution_matches_a_hand_computed_table() {
             ed.insert(
                 lat,
                 "lag",
-                common::TestNode::new(common::Kind::Lag {
+                Unforkable(common::TestNode::new(common::Kind::Lag {
                     latency: case.arrival,
-                }),
+                })),
             );
-            ed.insert(sink, "impulse", Impulse(Arc::clone(log)));
+            ed.insert(sink, "impulse", Unforkable(Impulse(Arc::clone(log))));
         };
         build(&mut ed, &log);
         let t = &mut ed.spec_mut().topology;
@@ -1040,9 +1040,9 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
     ed.insert(
         lat,
         "lag",
-        common::TestNode::new(common::Kind::Lag { latency: 20 }),
+        Unforkable(common::TestNode::new(common::Kind::Lag { latency: 20 })),
     );
-    ed.insert(sink, "impulse", Impulse(Arc::clone(&log)));
+    ed.insert(sink, "impulse", Unforkable(Impulse(Arc::clone(&log))));
     let t = &mut ed.spec_mut().topology;
     t.inputs = ChannelLayout::MONO;
     t.edges.insert(
@@ -1082,7 +1082,7 @@ fn an_unroutable_command_is_timed_by_its_nodes_arrival() {
             width: 1,
         })
     };
-    ed.insert(sink, "gain", gain());
+    ed.insert(sink, "gain", Unforkable(gain()));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();

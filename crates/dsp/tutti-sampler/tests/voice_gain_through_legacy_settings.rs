@@ -40,6 +40,9 @@ impl Timeline for RollingTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// One playing voice over a flat 1.0 wave, so a rendered sample *is* the

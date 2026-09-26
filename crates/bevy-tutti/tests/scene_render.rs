@@ -48,7 +48,7 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::{ChannelLayout, Db, Drive, Hz, SampleRate, Samples, UnitParam, Q};
-use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status};
+use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
 
@@ -395,9 +395,9 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from_count(3));
     let osc = g.add_unit(Box::new(saw()));
     let old_filter = g.add_unit(Box::new(low_pass(1_200.0)));
-    let gate = g.add(From {
+    let gate = g.add(Unforkable(From {
         from: FADE_AT as u64,
-    });
+    }));
     let filter = g.add_unit(Box::new(low_pass(300.0)));
     let drive = g.add_unit(Box::new(shaper(DRIVE)));
     g.connect(osc, 0, old_filter, 0)

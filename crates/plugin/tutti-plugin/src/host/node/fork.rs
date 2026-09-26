@@ -136,38 +136,34 @@ pub(super) struct Origin {
 pub(super) enum Rebind {
     /// The live transport each source already reads ([`ForkMode::Live`]).
     Live,
-    /// The render's timeline ([`ForkMode::Offline`] with an `OfflineTransport`).
+    /// The render's timeline ([`ForkMode::Offline`]).
     Offline(OfflineTransport),
-    /// None: an offline fork whose context is not an `OfflineTransport`.
-    Sever,
 }
 
 impl Rebind {
     fn of(mode: ForkMode<'_>) -> Self {
         match mode {
             ForkMode::Live => Self::Live,
-            ForkMode::Offline(ctx) => match ctx.downcast_ref::<OfflineTransport>() {
-                Some(timeline) => Self::Offline(Arc::clone(timeline)),
-                None => Self::Sever,
-            },
+            // Typed: no downcast, so no context that rebinds nothing (the
+            // `Sever` case this had while `ForkMode::Offline` carried a
+            // `&dyn Any`).
+            ForkMode::Offline(timeline) => Self::Offline(Arc::clone(timeline)),
         }
     }
 
     /// The transport state a copy of a source reading `live` reads.
-    pub(super) fn state(&self, live: &Arc<dyn TransportState>) -> Option<Arc<dyn TransportState>> {
+    pub(super) fn state(&self, live: &Arc<dyn TransportState>) -> Arc<dyn TransportState> {
         match self {
-            Self::Live => Some(Arc::clone(live)),
-            Self::Offline(timeline) => Some(Arc::new(OfflineState(Arc::clone(timeline)))),
-            Self::Sever => None,
+            Self::Live => Arc::clone(live),
+            Self::Offline(timeline) => Arc::new(OfflineState(Arc::clone(timeline))),
         }
     }
 
     /// The timeline a copy of a source reading `live` reads.
-    pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Option<Arc<dyn Timeline>> {
+    pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Arc<dyn Timeline> {
         match self {
-            Self::Live => Some(Arc::clone(live)),
-            Self::Offline(timeline) => Some(Arc::clone(timeline)),
-            Self::Sever => None,
+            Self::Live => Arc::clone(live),
+            Self::Offline(timeline) => Arc::clone(timeline),
         }
     }
 }
@@ -192,6 +188,10 @@ impl Timeline for OfflineState {
 
     fn is_rolling(&self) -> bool {
         self.0.is_rolling()
+    }
+
+    fn segment_generation(&self) -> u64 {
+        self.0.segment_generation()
     }
 }
 

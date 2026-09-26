@@ -182,7 +182,7 @@ impl MidiInPort {
     }
 
     /// Install on `fork` — a forked unit's own port — an offline copy of the
-    /// source installed here, reading the render's timeline out of `ctx`
+    /// source installed here, reading the render's timeline, `transport`
     /// ([`MidiUnitIn::rebind_offline`]). Control thread; reads this port's
     /// source cell, never its mailbox, so the live unit keeps every event.
     ///
@@ -190,13 +190,26 @@ impl MidiInPort {
     /// [`OfflineRebind::NotRebindable`] means this unit **plays** a source
     /// the render will not have, so an export would render its notes as
     /// silence.
+    ///
+    /// The timeline is typed: a context of another type, which a downcast
+    /// once answered `NotRebindable` for (or, where a caller ignored the
+    /// answer, rendered as silence), does not compile.
+    ///
+    /// ```compile_fail,E0308
+    /// let (live, fork) = (tutti_midi_runtime::MidiInPort::new(), tutti_midi_runtime::MidiInPort::new());
+    /// let _ = live.rebind_offline_into(&fork, &"not a transport");
+    /// ```
     #[must_use = "a source that could not be rebound renders as silence; report it"]
-    pub fn rebind_offline_into(&self, fork: &MidiInPort, ctx: &dyn std::any::Any) -> OfflineRebind {
+    pub fn rebind_offline_into(
+        &self,
+        fork: &MidiInPort,
+        transport: &tutti_core::transport::OfflineTransport,
+    ) -> OfflineRebind {
         let guard = self.source.load();
         let Some(source) = guard.as_deref() else {
             return OfflineRebind::NoSource;
         };
-        match source.rebind_offline(fork.unit_id, ctx) {
+        match source.rebind_offline(fork.unit_id, transport) {
             Some(rebound) => {
                 fork.install(rebound);
                 OfflineRebind::Rebound
@@ -255,7 +268,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }
@@ -283,7 +296,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }

@@ -1183,10 +1183,7 @@ impl AudioUnit for DiskVoice {
     ///
     /// Takes the stream record's lock, so control thread only, as every
     /// rebind is.
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
-            return;
-        };
+    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
         if self.offline.is_none() {
             self.isolate();
         }

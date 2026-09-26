@@ -42,7 +42,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use fundsp::net::{Net, NodeId};
 use fundsp::prelude32::{lowpass_hz, sine_hz};
 use tutti_graph::{
-    Cx, Editor, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status, Transport,
+    Cx, Editor, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status, Transport, Unforkable,
 };
 use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 use tutti_node::signal::{Signal, SignalFrame};
@@ -394,11 +394,11 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
     let last = match *shape {
         Topo::Chain(depth) => {
             let src = NodeKey(0);
-            ed.insert(src, "sine", sine());
+            ed.insert(src, "sine", Unforkable(sine()));
             let mut last = src;
             for i in 0..depth {
                 let k = NodeKey(1 + i as u64);
-                ed.insert(k, "lowpass", lowpass(i));
+                ed.insert(k, "lowpass", Unforkable(lowpass(i)));
                 wire(&mut ed, k, 0, node(last));
                 last = k;
             }
@@ -406,17 +406,17 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
         }
         Topo::Fan(width) => {
             let src = NodeKey(0);
-            ed.insert(src, "sine", sine());
+            ed.insert(src, "sine", Unforkable(sine()));
             let sum = NodeKey(u64::MAX);
             let s: Box<dyn Node> = if native {
                 Box::new(NativeSum(width))
             } else {
                 Legacy::pure(SumUnit(width)).into_node().0
             };
-            ed.insert(sum, "sum", s);
+            ed.insert(sum, "sum", Unforkable(s));
             for i in 0..width {
                 let k = NodeKey(1 + i as u64);
-                ed.insert(k, "lowpass", lowpass(i));
+                ed.insert(k, "lowpass", Unforkable(lowpass(i)));
                 wire(&mut ed, k, 0, node(src));
                 wire(&mut ed, sum, i as u16, node(k));
             }
@@ -433,7 +433,7 @@ fn executor_for(shape: &Topo, kind: Kind) -> Executor {
                 } else {
                     Legacy::pure(NopUnit { copy: true }).into_node().0
                 };
-                ed.insert(k, "nop", nop);
+                ed.insert(k, "nop", Unforkable(nop));
                 wire(&mut ed, k, 0, from);
                 from = node(k);
                 last = k;
@@ -579,7 +579,7 @@ fn form_executor(n: usize, nop: impl Fn() -> FormNop) -> Executor {
     ed.spec_mut().topology.inputs = ChannelLayout::from_count(width);
     for i in 0..n {
         let k = NodeKey(i as u64);
-        ed.insert(k, "nop", Box::new(nop()) as Box<dyn Node>);
+        ed.insert(k, "nop", Unforkable(Box::new(nop()) as Box<dyn Node>));
         for c in 0..width {
             let from = if i == 0 {
                 Source::Global(c)

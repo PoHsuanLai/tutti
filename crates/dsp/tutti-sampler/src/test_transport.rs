@@ -82,6 +82,9 @@ impl Timeline for MockTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 #[cfg(test)]

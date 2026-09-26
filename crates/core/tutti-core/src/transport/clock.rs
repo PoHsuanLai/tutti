@@ -99,6 +99,10 @@ pub struct TransportClock {
     /// it rolls at. Advanced once per sample in `tick`/`process`, or a block
     /// at a time by [`advance`](Self::advance): the same beats either way.
     clock: FrameClock,
+    /// Whether the last block (or frame) this clock ran was rolling, so a
+    /// play start moves the segment generation on
+    /// ([`FrameClock::mark_play_start`]).
+    rolling: bool,
 }
 
 impl TransportClock {
@@ -114,6 +118,7 @@ impl TransportClock {
         let clock = Self {
             links,
             clock: FrameClock::new(Beat(0.0), initial_tempo, sample_rate),
+            rolling: false,
         };
         clock.publish_tempo();
         clock
@@ -223,6 +228,7 @@ impl TransportClock {
             self.apply_pending_seek();
         }
         self.take_tempo(control.tempo);
+        self.note_rolling(!control.paused);
         // Counted: the frame count the beat is derived from, so the graph's
         // `EnvClock` and `Env::transport_at` continue this clock with its
         // own code.
@@ -260,16 +266,37 @@ impl TransportClock {
         self.advance_steady_time(frames);
     }
 
-    /// Publish `beat` as the live playhead, the figure a [`Timeline`]
-    /// (`Transport::beat`) reads, without moving this clock: the graph
-    /// engine's writeback, after each block it renders (see
-    /// [`advance`](Self::advance)). A no-op for a clock with no writeback.
+    /// Publish this clock's position as the live playhead — its segment's
+    /// generation, then its beat: the figures a [`Timeline`]
+    /// (`Transport::segment_generation`, `Transport::beat`) reads — without
+    /// moving it: the graph engine's writeback, after each block it renders
+    /// (see [`advance`](Self::advance)), and `process`'s. A no-op for a
+    /// clock with no writeback.
+    ///
+    /// The generation first, so a reader that reads the beat and then the
+    /// generation never pairs this beat with an older generation
+    /// ([`Timeline::segment_generation`]).
     ///
     /// [`Timeline`]: super::Timeline
-    pub(crate) fn publish_position(&self, beat: Beat) {
-        if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(beat.get(), Ordering::Release);
+    /// [`Timeline::segment_generation`]: super::Timeline::segment_generation
+    pub(crate) fn publish_position(&self) {
+        if let Some(ref generation) = self.links.segment_generation {
+            generation.store(self.clock.generation(), Ordering::Release);
         }
+        if let Some(ref writeback) = self.links.position_writeback {
+            writeback.store(self.clock.beat().get(), Ordering::Release);
+        }
+    }
+
+    /// Whether this block (or frame) rolls: a play start after a stop moves
+    /// the segment generation on, so a reader that cached a position before
+    /// the stop re-seats even when the playhead did not move.
+    #[inline]
+    fn note_rolling(&mut self, rolling: bool) {
+        if rolling && !self.rolling {
+            self.clock.mark_play_start();
+        }
+        self.rolling = rolling;
     }
 
     /// Advance the free-running sample counter.
@@ -330,10 +357,7 @@ impl AudioUnit for TransportClock {
     /// `isolate()` severs the live links but leaves the clock at whatever beat
     /// the *live* playhead held when it was cloned, which would make the render
     /// depend on when it was started. See [`OfflineTransport`](super::OfflineTransport).
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(transport) = ctx.downcast_ref::<super::OfflineTransport>() else {
-            return;
-        };
+    fn rebind_offline(&mut self, transport: &super::OfflineTransport) {
         // Read at rebind time — before the renderer has advanced anything — so
         // these are the seeded start values, not a moving position.
         *self = self
@@ -356,20 +380,20 @@ impl AudioUnit for TransportClock {
         self.apply_pending_seek();
         self.update_tempo_if_changed();
 
+        let rolling = !self.links.paused.load(Ordering::Acquire);
+        self.note_rolling(rolling);
         let (whole, frac) = split_beat(self.clock.beat());
         output[0] = whole;
         output[1] = frac;
 
-        if !self.links.paused.load(Ordering::Acquire) {
+        if rolling {
             // `LoopRange` is non-empty by construction; only a playhead that
             // crosses the end wraps (`FrameClock::advance`).
             let region = self.links.loop_span.as_ref().and_then(LoopSpan::range);
             self.clock.advance(Samples(1), region);
         }
 
-        if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(self.clock.beat().get(), Ordering::Release);
-        }
+        self.publish_position();
         self.advance_steady_time(1);
     }
 
@@ -378,6 +402,7 @@ impl AudioUnit for TransportClock {
         self.update_tempo_if_changed();
 
         let is_paused = self.links.paused.load(Ordering::Acquire);
+        self.note_rolling(!is_paused);
         // Hoisted once per buffer: the loop region cannot change mid-block.
         let active_loop = self.links.loop_span.as_ref().and_then(LoopSpan::range);
 
@@ -399,9 +424,7 @@ impl AudioUnit for TransportClock {
             }
         }
 
-        if let Some(ref writeback) = self.links.position_writeback {
-            writeback.store(self.clock.beat().get(), Ordering::Release);
-        }
+        self.publish_position();
         self.advance_steady_time(size);
     }
 
@@ -457,8 +480,10 @@ mod tests {
                 seek: SeekSlot::new(),
                 loop_span: Some(loop_span),
                 position_writeback: None,
+                segment_generation: None,
                 steady_time: None,
                 tempo_in_force: None,
+                claim: None,
             },
             44100.0,
         )
@@ -477,8 +502,10 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(LoopSpan::default()),
                 position_writeback: None,
+                segment_generation: None,
                 steady_time: None,
                 tempo_in_force: None,
+                claim: None,
             },
             44100.0,
         );
@@ -707,8 +734,10 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(loop_span),
                 position_writeback: None,
+                segment_generation: None,
                 steady_time: None,
                 tempo_in_force: None,
+                claim: None,
             },
             44100.0,
         );
@@ -826,8 +855,10 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(loop_span.clone()),
                 position_writeback: None,
+                segment_generation: None,
                 steady_time: None,
                 tempo_in_force: None,
+                claim: None,
             },
             44100.0,
         );

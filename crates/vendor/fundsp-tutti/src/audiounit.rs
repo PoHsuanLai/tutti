@@ -456,7 +456,7 @@ impl AudioUnit for BigBlockAdapter {
     fn isolate(&mut self) {
         self.source.isolate();
     }
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_types::OfflineTransport) {
         self.source.rebind_offline(ctx);
     }
     fn forkable(&self) -> bool {
@@ -541,7 +541,7 @@ impl AudioUnit for BlockRateAdapter {
     fn isolate(&mut self) {
         self.unit.isolate();
     }
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_types::OfflineTransport) {
         self.unit.rebind_offline(ctx);
     }
     fn forkable(&self) -> bool {

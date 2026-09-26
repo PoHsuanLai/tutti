@@ -47,6 +47,9 @@ impl Timeline for MockTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 fn ramp_wave() -> Arc<Wave> {
@@ -236,20 +239,18 @@ fn a_bare_memory_source_node_is_rebound_too() {
     );
 }
 
-/// A node that reads no transport must be left alone, and an unrecognised
-/// context must be ignored rather than panicking: `rebind_offline` takes
-/// `&dyn Any`, so a wrong-typed context is a runtime possibility the default
-/// and every impl must tolerate.
+/// A node that reads no transport must be left alone. (A foreign context
+/// was the other half of this test while `rebind_offline` took `&dyn Any`:
+/// it is typed now, so a wrong-typed context no longer compiles —
+/// `AudioUnit::rebind_offline`'s `compile_fail` doctest.)
 #[test]
-fn pure_dsp_and_foreign_contexts_are_no_ops() {
+fn pure_dsp_is_a_no_op() {
     let mut net = tutti_core::dsp::Net::new(0, 1);
     let id = net.push(Box::new(Const::mono(0.5)));
     net.pipe_output(id);
 
     let offline = MockTransport::new(false) as Arc<dyn Timeline>;
     net.node_mut(id).rebind_offline(&offline);
-    // A foreign context must not panic anywhere.
-    net.node_mut(id).rebind_offline(&42u32);
 
     net.set_sample_rate(SampleRate(44_100.0));
     net.allocate();

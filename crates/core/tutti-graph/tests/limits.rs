@@ -4,7 +4,7 @@
 //! outputs, its block capacity); a graph past them must be refused on the
 //! control thread rather than reach an audio callback that cannot run it.
 
-use tutti_graph::{CommitError, Cx, Editor, Io, Limits, Node, Prepare, Shape, Status};
+use tutti_graph::{CommitError, Cx, Editor, Io, Limits, Node, Prepare, Shape, Status, Unforkable};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
@@ -51,7 +51,7 @@ const LIMITS: Limits = Limits {
 fn commits_and_re_prepares_past_the_limits_are_refused() {
     let (mut ed, mut exec) = Editor::new(prep(512));
     ed.set_limits(LIMITS).expect("nothing sent yet");
-    ed.insert(NodeKey(1), "wide", Wide(10));
+    ed.insert(NodeKey(1), "wide", Unforkable(Wide(10)));
     wire(&mut ed, 10);
     assert_eq!(
         ed.commit(),
@@ -94,7 +94,7 @@ fn commits_and_re_prepares_past_the_limits_are_refused() {
 #[test]
 fn limits_below_what_was_sent_are_refused() {
     let (mut ed, _exec) = Editor::new(prep(1024));
-    ed.insert(NodeKey(1), "wide", Wide(10));
+    ed.insert(NodeKey(1), "wide", Unforkable(Wide(10)));
     wire(&mut ed, 10);
     ed.commit().expect("no limits yet");
     assert!(matches!(
@@ -148,7 +148,7 @@ fn limits_only_tighten() {
             max_block: 1024
         }
     );
-    ed.insert(NodeKey(1), "wide", Wide(10));
+    ed.insert(NodeKey(1), "wide", Unforkable(Wide(10)));
     wire(&mut ed, 10);
     assert!(matches!(
         ed.commit(),

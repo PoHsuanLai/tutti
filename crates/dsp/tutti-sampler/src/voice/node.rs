@@ -513,7 +513,7 @@ impl AudioUnit for VoiceNode {
     /// independent — so this is purely the re-point. Without it the voice reads
     /// the live playhead, which the offline driver never advances, and renders
     /// silence.
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_core::transport::OfflineTransport) {
         // Delegated rather than unwrapped-then-`replace_transport`: a disk voice
         // needs the whole context, not just a clock, and `Voice::rebind_offline`
         // is what knows which arm it is.

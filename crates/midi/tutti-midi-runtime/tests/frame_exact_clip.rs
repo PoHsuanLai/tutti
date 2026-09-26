@@ -77,6 +77,9 @@ impl Timeline for Logged {
     fn is_rolling(&self) -> bool {
         self.inner.is_rolling()
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// Polls a clip source on every call, and logs the absolute frame of each

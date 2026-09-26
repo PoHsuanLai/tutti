@@ -78,6 +78,9 @@ impl Timeline for Clock {
     fn is_rolling(&self) -> bool {
         true
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// A constant-valued source, long enough not to run dry.

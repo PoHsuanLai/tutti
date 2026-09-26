@@ -375,6 +375,9 @@ mod tests {
         fn tempo(&self) -> Bpm {
             Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
+        fn segment_generation(&self) -> u64 {
+            0
+        }
     }
 
     const SR: f64 = 44_100.0;

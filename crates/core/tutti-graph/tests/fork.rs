@@ -14,13 +14,15 @@ use fundsp::prelude32::{lowpass_hz, mul, pass, sine_hz};
 use tutti_graph::{
     CrossfadeCurve, Editor, EventEdge, EventIn, EventOut, Fade, ForkCause, ForkError, ForkFault,
     ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget, Forked, GraphBuilder, IntoNode,
-    Legacy, Node, NodeParts, Renderer,
+    Legacy, Node, NodeParts, Renderer, Unforkable,
 };
 use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 use tutti_node::signal::{Signal, SignalFrame};
 use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{
+    Beat, Bpm, ChannelLayout, NodeKey, OfflineTransport, SampleRate, Samples, Timeline,
+};
 
 /// The `AudioUnit` methods every probe below has alike: `outs` outputs, no
 /// inputs, no latency.
@@ -85,8 +87,9 @@ impl AudioUnit for Consts {
 
 /// Makes the fork's three steps observable, and their order. Outputs
 /// `level`. `isolate` drops the binding, `rebind_offline` binds to the
-/// context (an `f32`), and `reset` re-reads `level` from the binding — so
-/// only isolate → rebind → reset leaves `level` at the context's value.
+/// context (its timeline's beat), and `reset` re-reads `level` from the
+/// binding — so only isolate → rebind → reset leaves `level` at the
+/// context's value.
 #[derive(Clone)]
 struct Bindable {
     outs: usize,
@@ -104,15 +107,35 @@ impl AudioUnit for Bindable {
     fn isolate(&mut self) {
         self.bound = None;
     }
-    fn rebind_offline(&mut self, ctx: &dyn std::any::Any) {
-        if let Some(v) = ctx.downcast_ref::<f32>() {
-            self.bound = Some(*v);
-        }
+    fn rebind_offline(&mut self, ctx: &OfflineTransport) {
+        self.bound = Some(ctx.beat().get() as f32);
     }
     fn reset(&mut self) {
         self.level = self.bound.unwrap_or(0.0);
     }
     probe_boilerplate!();
+}
+
+/// An offline context standing still at `beat`: what `Bindable` binds to.
+struct At(f64);
+
+impl Timeline for At {
+    fn beat(&self) -> Beat {
+        Beat(self.0)
+    }
+    fn tempo(&self) -> Bpm {
+        Bpm(120.0)
+    }
+    fn is_rolling(&self) -> bool {
+        true
+    }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
+}
+
+fn at(beat: f64) -> OfflineTransport {
+    Arc::new(At(beat))
 }
 
 /// A ramp whose position lives in an `Arc` cell a clone **shares** — the
@@ -253,7 +276,7 @@ fn a_fork_isolates_then_rebinds_then_resets() {
     let mut live = g.renderer(prepare(64)).expect("builds");
     assert!(live.render(64)[0].iter().all(|&x| x == 0.25));
 
-    let ctx: f32 = 0.75;
+    let ctx = at(0.75);
     let (ed, exec) = live
         .editor()
         .fork(ForkTarget::Master, ForkMode::Offline(&ctx), prepare(64))
@@ -310,7 +333,7 @@ fn a_legacy_fork_hook_runs_between_rebind_and_reset() {
         .with_fork_hook(doubling),
     );
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
-    let ctx: f32 = 0.75;
+    let ctx = at(0.75);
     let (fork, exec) = ed
         .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
         .expect("forks");
@@ -381,8 +404,8 @@ fn a_setting_sent_after_insert_reaches_the_fork() {
 }
 
 /// **A node without a fork source makes the fork refuse, naming it** —
-/// before anything is forked. A native node inserted as itself, a `Legacy`
-/// inserted as a bare `Box<dyn Node>`, and a forkable key replaced by an
+/// before anything is forked. A native node inserted `Unforkable`, a `Legacy`
+/// inserted as an `Unforkable` `Box<dyn Node>`, and a forkable key replaced by an
 /// unforkable unit are all unforkable; a target that does not exist or has
 /// no outputs is refused too.
 ///
@@ -396,10 +419,10 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     ed.insert(
         NodeKey(2),
         "native",
-        TestNode::new(Kind::Gain {
+        Unforkable(TestNode::new(Kind::Gain {
             gain: 1.0,
             width: 1,
-        }),
+        })),
     );
     let t = &mut ed.spec_mut().topology;
     t.edges.insert(
@@ -425,7 +448,11 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     // Routed to an output: a master fork forks only what the outputs reach
     // (`a_master_fork_holds_only_what_the_outputs_reach`).
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(NodeKey(1), "boxed", Legacy::new(mul(2.0)).into_node().0);
+    ed.insert(
+        NodeKey(1),
+        "boxed",
+        Unforkable(Legacy::new(mul(2.0)).into_node().0),
+    );
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
@@ -436,7 +463,11 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     ed.insert(NodeKey(3), "legacy", Legacy::new(mul(2.0)));
     ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0)];
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
-    ed.insert(NodeKey(3), "boxed", Legacy::new(mul(2.0)).into_node().0);
+    ed.insert(
+        NodeKey(3),
+        "boxed",
+        Unforkable(Legacy::new(mul(2.0)).into_node().0),
+    );
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
         Some(ForkError::NotForkable { key: NodeKey(3) })
@@ -800,10 +831,10 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
     ed.insert(
         side,
         "side",
-        TestNode::new(Kind::Const {
+        Unforkable(TestNode::new(Kind::Const {
             value: 1.0,
             width: 1,
-        }),
+        })),
     );
     let spec = ed.spec_mut();
     let t = &mut spec.topology;
@@ -945,7 +976,7 @@ fn a_replace_moves_forking_to_the_new_unit() {
     let forked = render(fe, fx, 64);
     assert!(forked[0].iter().all(|&x| x == 0.9), "{:?}", &forked[0][..4]);
 
-    ed.replace(key, consts(1, 0.7).into_node().0, fade)
+    ed.replace(key, Unforkable(consts(1, 0.7).into_node().0), fade)
         .expect("same shape");
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, prepare(64))
@@ -1299,7 +1330,7 @@ fn a_fork_by_clone_node_forks_from_reset() {
     assert_eq!(forked[0], vec![0.0, 1.0, 2.0, 3.0]);
 
     let (mut plain, _exec) = Editor::new(prepare(256));
-    plain.insert(NodeKey(1), "ramp", Ramp { n: 0.0 });
+    plain.insert(NodeKey(1), "ramp", Unforkable(Ramp { n: 0.0 }));
     plain.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
     assert_eq!(
         plain

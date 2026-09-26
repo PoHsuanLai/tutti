@@ -31,7 +31,9 @@ use tutti_core::{
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
     Timeline, Transport, TransportCommand,
 };
-use tutti_graph::{Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status};
+use tutti_graph::{
+    Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status, Unforkable,
+};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
 
@@ -92,7 +94,7 @@ impl Node for GraphBeats {
 fn wire_clock(ed: &mut Editor, sink: impl IntoNode<Controls = ()>, width: u16) {
     const CLOCK: NodeKey = NodeKey(1);
     const SINK: NodeKey = NodeKey(2);
-    ed.insert(CLOCK, "clock", EnvClock::new());
+    ed.insert(CLOCK, "clock", Unforkable(EnvClock::new()));
     ed.insert(SINK, "sink", sink);
     let topology = &mut ed.spec_mut().topology;
     for port in 0..2 {
@@ -157,7 +159,7 @@ fn env_clock_emits_the_env_beat() {
     let log = Log::default();
     let sink = GraphBeats::new(&log);
     let env_beats = Arc::clone(&sink.1);
-    let (graph, _ed) = graph_engine(&transport, sink, 1);
+    let (graph, _ed) = graph_engine(&transport, Unforkable(sink), 1);
 
     let locate = |beat: f64| MotionEvent::Locate {
         beat: Beat(beat),
@@ -423,7 +425,7 @@ fn env_graph(
     polls: &Arc<Mutex<Vec<f64>>>,
 ) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(max_block)));
-    ed.insert(NodeKey(1), "env", EnvLog(Arc::clone(log)));
+    ed.insert(NodeKey(1), "env", Unforkable(EnvLog(Arc::clone(log))));
     ed.insert(
         NodeKey(2),
         "clip",
@@ -593,7 +595,7 @@ fn env_clock_offline_starts_each_block_on_the_timeline() {
     });
     let log = Log::default();
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
-    wire_clock(&mut ed, GraphBeats::new(&log), 1);
+    wire_clock(&mut ed, Unforkable(GraphBeats::new(&log)), 1);
     let mut out = vec![0.0f32; 512];
     let mut at = 0;
     for n in [512usize, 300, 77, 512, 1, 200] {

@@ -58,7 +58,7 @@ use tutti_export::{
     BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
     RenderConfig, RenderGraph, Rendered, Resample, GRAPH_MAX_BLOCK,
 };
-use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare};
+use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare, Unforkable};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Db, Samples};
 
@@ -716,7 +716,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     let bps = timeline.beats_per_sample().get();
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let clock = g.add(tutti_core::EnvClock::new());
+    let clock = g.add(Unforkable(tutti_core::EnvClock::new()));
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let out = render_to_buffers(
         built(g),

@@ -973,7 +973,7 @@ mod plugin {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }
@@ -1535,7 +1535,7 @@ mod synths {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }
@@ -1851,7 +1851,7 @@ mod host_midi {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }

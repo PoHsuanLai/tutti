@@ -195,7 +195,8 @@
 //! host short on memory can build such a node [`unforkable`](Legacy::unforkable).
 //!
 //! A node built with [`IntoNode::into_node`] (a bare `Box<dyn Node>`) has no
-//! fork source and is not forkable. A fork's own nodes have none either: a
+//! fork source, and is inserted as [`Unforkable`](crate::Unforkable): not
+//! forkable. A fork's own nodes have none either: a
 //! fork is not forked again.
 
 use std::collections::VecDeque;

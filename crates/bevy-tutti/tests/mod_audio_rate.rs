@@ -894,7 +894,7 @@ mod mod_tier_parity {
         };
         let render = |min: f32, max: f32| -> f32 {
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-            let n = g.add(Echo);
+            let n = g.add(tutti_graph::Unforkable(Echo));
             let a = g.add_unit(Box::new(Const::mono(1.0)));
             let b = g.add_unit(Box::new(Const::mono(1.0)));
             let at = ParamIn {

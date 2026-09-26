@@ -34,6 +34,7 @@ use tutti_core::{
 };
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
+    Unforkable,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
@@ -235,11 +236,11 @@ fn graph_engine(
 fn graph_engine_render_is_bit_identical_to_the_executor() {
     let blocks = [64usize, 256, 100, 1024, 1, 512];
     let transport = Transport::new(SR);
-    let (engine, _ed) = graph_engine(&transport, 512, Clocked, 3);
+    let (engine, _ed) = graph_engine(&transport, 512, Unforkable(Clocked), 3);
     let got = render(&engine, ChannelLayout::from_count(3), &blocks);
 
     let (mut ed, mut exec): (Editor, Executor) = Editor::new(prepare(512));
-    ed.insert(NodeKey(1), "node", Clocked);
+    ed.insert(NodeKey(1), "node", Unforkable(Clocked));
     outputs(&mut ed, NodeKey(1), 3);
     ed.commit().expect("commits");
     let mut want = Vec::new();
@@ -342,7 +343,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
 #[test]
 fn a_timed_start_sounds_from_its_exact_frame() {
     let transport = Transport::new(SR);
-    let (engine, _ed) = graph_engine(&transport, 256, Gate { log: None }, 1);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     transport
         .motion
         .schedule(At::Frame(Frame(1_000)), MotionEvent::Play)
@@ -378,9 +379,9 @@ fn beat_timed_seek_and_stop_land_on_their_frames() {
     let (engine, _ed) = graph_engine(
         &transport,
         700,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     let m = &transport.motion;
@@ -463,7 +464,7 @@ fn dc_run(
 ) -> (Vec<f32>, Vec<(f64, bool)>) {
     let transport = Transport::new(SR);
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (engine, _ed) = graph_engine(&transport, 256, DcLog(Arc::clone(&log)), 1);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(DcLog(Arc::clone(&log))), 1);
     let mut out = Vec::new();
     transport.motion.try_send(MotionEvent::Play).expect("room");
     for i in 0..blocks {
@@ -602,7 +603,7 @@ fn a_next_block_declicked_seek_fades_in_after_the_jump() {
 #[test]
 fn a_past_frame_lands_at_once_and_is_counted() {
     let transport = Transport::new(SR);
-    let (engine, _ed) = graph_engine(&transport, 256, Gate { log: None }, 1);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Gate { log: None }), 1);
     render(&engine, ChannelLayout::MONO, &[256; 2]);
     transport
         .motion
@@ -625,9 +626,9 @@ fn tempo_and_loop_change_on_their_frames() {
     let (engine, _ed) = graph_engine(
         &transport,
         512,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     let m = &transport.motion;
@@ -666,7 +667,8 @@ fn tempo_and_loop_change_on_their_frames() {
 fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
     let transport = Transport::new(SR);
     let notes = Arc::new(Mutex::new(Vec::new()));
-    let (engine, mut ed) = graph_engine(&transport, 256, NoteLog(Arc::clone(&notes)), 1);
+    let (engine, mut ed) =
+        graph_engine(&transport, 256, Unforkable(NoteLog(Arc::clone(&notes))), 1);
     // Install the plan so the editor can schedule against it.
     render(&engine, ChannelLayout::MONO, &[256]);
     ed.collect();
@@ -708,9 +710,9 @@ fn env_beats_are_the_closed_form_of_each_segment() {
     let (engine, _ed) = graph_engine(
         &transport,
         512,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     let blocks = [512usize, 300, 512, 77, 512, 512, 400, 512, 512];
@@ -816,9 +818,9 @@ fn a_loop_armed_behind_the_playhead_does_not_jump() {
     let (engine, _ed) = graph_engine(
         &transport,
         512,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     let m = &transport.motion;
@@ -883,9 +885,9 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
     let (engine, _ed) = graph_engine(
         &transport,
         256,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     render(&engine, ChannelLayout::MONO, &[256]);
@@ -904,7 +906,7 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
     // 400/24 000 would be frame 656 had the transport rolled on.
     let t2 = Transport::new(SR);
     let notes = Arc::new(Mutex::new(Vec::new()));
-    let (e, mut ed2) = graph_engine(&t2, 256, NoteLog(Arc::clone(&notes)), 1);
+    let (e, mut ed2) = graph_engine(&t2, 256, Unforkable(NoteLog(Arc::clone(&notes))), 1);
     render(&e, ChannelLayout::MONO, &[256]);
     ed2.collect();
     ed2.schedule(
@@ -943,7 +945,7 @@ fn a_graph_engine_refuses_more_outputs_than_it_folds() {
 
     let transport = Transport::new(SR);
     let (mut ed, exec) = Editor::new(prepare(256));
-    ed.insert(NodeKey(1), "node", Clocked);
+    ed.insert(NodeKey(1), "node", Unforkable(Clocked));
     // Ten outputs off a three-channel node's ports, repeated: a legal graph,
     // wider than the scratch.
     ed.spec_mut().topology.outputs = (0..10)
@@ -963,7 +965,7 @@ fn a_graph_engine_refuses_more_outputs_than_it_folds() {
         }))
     ));
 
-    let (engine, mut ed) = graph_engine(&transport, 256, Clocked, 3);
+    let (engine, mut ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
     render(&engine, ChannelLayout::STEREO, &[256]);
     ed.spec_mut().topology.outputs = (0..MAX_ROOT_CHANNELS as u16 + 1)
         .map(|c| {
@@ -1005,7 +1007,7 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
     for segment in [false, true] {
         let transport = Transport::new(SR);
         let (mut ed, exec) = Editor::new(prepare(512));
-        ed.insert(NodeKey(1), "node", Clocked);
+        ed.insert(NodeKey(1), "node", Unforkable(Clocked));
         outputs(&mut ed, NodeKey(1), 3);
         ed.commit().expect("commits");
         let engine = Engine::with_capacity(&transport, &mut ed, exec, Samples(2048)).expect("fits");
@@ -1067,9 +1069,9 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
     let (engine, _ed) = graph_engine(
         &transport,
         512,
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
         1,
     );
     transport.settings.set_tempo(Bpm(120.0005));
@@ -1138,7 +1140,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
 
     let transport = Transport::new(SR);
     let first = Arc::new(Mutex::new(0.0));
-    let (engine, _ed) = graph_engine(&transport, 64, FirstBeat(Arc::clone(&first)), 1);
+    let (engine, _ed) = graph_engine(&transport, 64, Unforkable(FirstBeat(Arc::clone(&first))), 1);
     transport.settings.set_tempo(Bpm(123.0));
     transport.motion.try_send(MotionEvent::Play).expect("room");
     transport
@@ -1302,9 +1304,9 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
     ed.insert(
         NodeKey(1),
         "node",
-        Gate {
+        Unforkable(Gate {
             log: Some(Arc::clone(&log)),
-        },
+        }),
     );
     outputs(&mut ed, NodeKey(1), 1);
     ed.commit().expect("commits");
@@ -1350,4 +1352,87 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
         .expect("the stop landed");
     assert_eq!(stop, 48_000, "one second, at the new rate");
     assert_eq!(transport.motion.late_commands(), 0);
+}
+
+// ---- one playhead writer, and its segment generation ----------------------
+
+/// **One engine per transport.** While an engine drives a transport's
+/// clock, a second engine over it — or over a clone of it, which shares the
+/// playhead — is refused with `PlayheadClaimed`, as is a bare second clock
+/// (`Transport::clock_links`); once the engine is dropped the transport
+/// hands the claim out again. Two engines would both consume every seek
+/// and both write the playhead.
+///
+/// Mutation (run): `PlayheadClaim::take` always succeeding → the second
+/// engine builds → fails. Mutation (run): `PlayheadClaim`'s `Drop` not
+/// giving the claim back → the engine after the drop is refused → fails.
+/// Mutation (run): `Engine::with_capacity` building its clock from severed
+/// links (no claim) → the second engine builds → fails.
+#[test]
+fn a_transport_has_one_playhead_writer() {
+    use tutti_core::transport::PlayheadClaimed;
+    use tutti_core::GraphEngineError;
+
+    let transport = Transport::new(SR);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
+
+    let (mut ed, exec) = Editor::new(prepare(256));
+    let twin = transport.clone();
+    assert_eq!(
+        Engine::new(&twin, &mut ed, exec).err(),
+        Some(GraphEngineError::PlayheadClaimed(PlayheadClaimed)),
+        "a clone shares the playhead, so it shares the claim"
+    );
+    assert_eq!(transport.clock_links().err(), Some(PlayheadClaimed));
+
+    drop(engine);
+    let (mut ed, exec) = Editor::new(prepare(256));
+    let again = Engine::new(&twin, &mut ed, exec).expect("the first engine is gone");
+    render(&again, ChannelLayout::STEREO, &[64]);
+}
+
+/// **A seek to the beat the playhead already stands on moves the live
+/// segment generation on**, and so does a play start; a block that only
+/// rolls does not. What the sampler's seat keys on, so it re-seats through
+/// a jump its beat cannot show.
+///
+/// Mutation (run): `TransportClock::publish_position` not storing the
+/// generation → it stays 0 → fails. Mutation (run): `note_rolling` not
+/// marking the start → the play start leaves it → fails.
+#[test]
+fn a_seek_to_the_same_beat_moves_the_live_generation() {
+    use tutti_core::Timeline;
+
+    let transport = Transport::new(SR);
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
+    render(&engine, ChannelLayout::STEREO, &[256]);
+    let (beat, generation) = (transport.beat(), transport.segment_generation());
+
+    // Stopped, so the beat holds: a seek to it jumps nowhere a beat shows.
+    transport
+        .motion
+        .try_send(MotionEvent::Locate {
+            beat,
+            fade: FadeOut::Immediate,
+            then: Then::Keep,
+        })
+        .expect("room");
+    render(&engine, ChannelLayout::STEREO, &[256]);
+    assert_eq!(transport.beat(), beat, "the same beat");
+    let sought = transport.segment_generation();
+    assert!(
+        sought > generation,
+        "a new segment: {generation} → {sought}"
+    );
+
+    render(&engine, ChannelLayout::STEREO, &[256]);
+    assert_eq!(transport.segment_generation(), sought, "holding is no jump");
+
+    transport.motion.try_send(MotionEvent::Play).expect("room");
+    render(&engine, ChannelLayout::STEREO, &[256]);
+    let started = transport.segment_generation();
+    assert!(started > sought, "a play start is a discontinuity");
+    render(&engine, ChannelLayout::STEREO, &[256, 256]);
+    assert!(transport.beat() > beat, "rolling");
+    assert_eq!(transport.segment_generation(), started, "rolling is not");
 }

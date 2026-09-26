@@ -280,6 +280,10 @@ impl tutti_core::Timeline for Stopped {
     fn is_rolling(&self) -> bool {
         false
     }
+    fn segment_generation(&self) -> u64 {
+        // Never moves, so never jumps.
+        0
+    }
 }
 
 impl std::fmt::Debug for ExportRequest {

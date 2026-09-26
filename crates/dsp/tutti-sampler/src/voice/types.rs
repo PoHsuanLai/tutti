@@ -298,7 +298,7 @@ impl Voice {
     /// renders against a playhead nothing advances. A slot is not a graph
     /// vertex, so the net-wide walk never reaches it either — this is the only
     /// path that does.
-    pub fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    pub fn rebind_offline(&mut self, ctx: &tutti_core::transport::OfflineTransport) {
         use tutti_core::AudioUnit;
         match &mut self.source {
             VoiceSource::Memory(sampler) => sampler.rebind_offline(ctx),

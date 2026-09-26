@@ -144,18 +144,21 @@ pub fn window_position(
 /// re-seats at the gate, which measures elapsed time at the new speed — that
 /// relocation is what a varispeed change on a placed voice means.
 ///
-/// # What re-seats: a new beat
+/// # What re-seats: a new beat, or a new segment
 ///
-/// The seat is keyed on the clock's beat, compared exactly. [`Timeline`] has no
-/// seek or segment generation to key on, so a clock that reads the *same* beat
-/// after a seek (a seek to where it already stands, or a transport loop exactly
-/// one block long that lands on the beat it left) runs the seat on instead of
-/// re-seating: the read keeps stepping rather than replay the block. A clock
-/// that exposed a generation would close that; none does today.
+/// The seat is keyed on the clock's beat, compared exactly, **and** its
+/// [`segment_generation`](Timeline::segment_generation). The beat alone
+/// cannot see a jump that lands where the playhead already stood — a seek to
+/// the beat it is on, or a transport loop exactly one block long that lands
+/// on the beat it left — and a seat keyed on it ran on through one, stepping
+/// on instead of replaying from the gate. The generation moves on at every
+/// discontinuity, so either change re-seats.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seat {
     /// The beat the clock read when the read seated.
     beat: Beat,
+    /// The clock's segment generation when the read seated.
+    generation: u64,
     /// The file position of frame 0 of this seat.
     origin: SamplePosition,
     /// Frames read since.
@@ -166,8 +169,8 @@ pub(crate) struct Seat {
 
 impl Seat {
     /// This frame's seat, stepping by `rate`: the last one a frame on while
-    /// `timeline` still reads the beat it seated on (re-anchored where it
-    /// stands if `rate` changed), else a fresh one at the position `gate`
+    /// `timeline` still reads the beat and segment it seated on (re-anchored
+    /// where it stands if `rate` changed), else a fresh one at the position `gate`
     /// gives — `None` when the gate gives none (outside the window), or the
     /// clock is stopped.
     #[inline]
@@ -182,8 +185,11 @@ impl Seat {
         if !timeline.is_rolling() {
             return None;
         }
+        // The beat, then the generation: the order `segment_generation`
+        // documents, which never pairs this beat with an older segment.
         let beat = timeline.beat();
-        match last.filter(|seat| seat.beat == beat) {
+        let generation = timeline.segment_generation();
+        match last.filter(|seat| seat.beat == beat && seat.generation == generation) {
             Some(seat) if seat.rate.get() == rate.get() => Some(Self {
                 frames: seat.frames + 1,
                 ..seat
@@ -197,6 +203,7 @@ impl Seat {
             }),
             None => gate().map(|origin| Self {
                 beat,
+                generation,
                 origin,
                 frames: 0,
                 rate,
@@ -781,5 +788,54 @@ mod tests {
         for pos in [len - 0.5, len, len + 1.0, len * 4.0, 1e9] {
             read_frame(&w, pos, &mut out); // must not panic
         }
+    }
+
+    /// **A seek to the beat the playhead already stands on re-seats**, on
+    /// the engine's own offline timeline: the beat reads the same, the
+    /// segment generation does not, and the read starts again from the gate
+    /// rather than stepping on. Both tiers seat through `Seat::next`
+    /// (`MemorySource`, a forked `DiskVoice`), so this covers both.
+    ///
+    /// Mutation (run): key the seat on the beat alone (drop
+    /// `seat.generation == generation` from the filter) → the seat runs on
+    /// at frame 4 of the old origin → fails. Mutation (run):
+    /// `OfflineTimeline::publish` not storing the generation → it reads 0
+    /// after the seek → fails.
+    #[test]
+    fn a_seek_to_the_same_beat_reseats() {
+        use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+        let clock = OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: Beat(4.0),
+            tempo: Bpm(120.0),
+            sample_rate: SampleRate(48_000.0),
+            loop_range: None,
+        });
+        let rate = ReadRate::UNITY;
+        let mut gate_at = 100.0;
+        let mut seat = None;
+        for _ in 0..4 {
+            seat = Seat::next(seat, &clock, rate, || Some(SamplePosition(gate_at)));
+        }
+        let ran = seat.expect("seated");
+        assert_eq!(ran.position(), SamplePosition(103.0), "ran on from 100");
+
+        // Seek to where it stands: the same beat, a new segment. The gate
+        // now puts the playhead elsewhere in the file (a loop's start, say).
+        let before = clock.beat();
+        clock.seek_to(before);
+        assert_eq!(clock.beat(), before, "the beat reads the same");
+        gate_at = 500.0;
+        let reseated = Seat::next(seat, &clock, rate, || Some(SamplePosition(gate_at)))
+            .expect("still inside the window");
+        assert_eq!(
+            reseated.position(),
+            SamplePosition(500.0),
+            "re-seated at the gate, not stepped on to 104"
+        );
+
+        // And a clock that did not jump runs the new seat on.
+        let on =
+            Seat::next(Some(reseated), &clock, rate, || Some(SamplePosition(0.0))).expect("seated");
+        assert_eq!(on.position(), SamplePosition(501.0));
     }
 }

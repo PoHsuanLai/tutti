@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::state::LoopSpan;
-use crate::{AtomicBool, AtomicF64, AtomicI64};
+use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU64};
 use crate::{Beat, Bpm};
 
 /// Transport values shared between threads.
@@ -26,6 +26,12 @@ pub struct TransportSettings {
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback; read by the UI and by pull-based sources.
     pub beat: Arc<AtomicF64>,
+    /// The segment the playhead is on
+    /// ([`Timeline::segment_generation`](super::Timeline::segment_generation)):
+    /// moves on at every seek, tempo or rate change, loop wrap and play
+    /// start. Written by `TransportClock` beside [`beat`](Self::beat), and
+    /// before it.
+    pub segment_generation: Arc<AtomicU64>,
     /// Loop region and whether looping is armed.
     pub loop_span: LoopSpan,
     /// Whether the transport is armed and capturing. Read by the metronome's
@@ -62,6 +68,7 @@ impl TransportSettings {
         Self {
             tempo: Arc::new(AtomicF64::new(120.0)),
             beat: Arc::new(AtomicF64::new(0.0)),
+            segment_generation: Arc::new(AtomicU64::new(0)),
             loop_span: LoopSpan::default(),
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
@@ -91,6 +98,11 @@ impl TransportSettings {
     /// The playhead as last published by the clock.
     pub fn beat(&self) -> Beat {
         Beat(self.beat.load(Ordering::Acquire))
+    }
+
+    /// The playhead's segment generation as last published by the clock.
+    pub fn segment_generation(&self) -> u64 {
+        self.segment_generation.load(Ordering::Acquire)
     }
 
     /// Overwrite the published playhead.

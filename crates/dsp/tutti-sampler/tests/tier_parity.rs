@@ -169,6 +169,9 @@ impl Timeline for Clock {
     fn is_rolling(&self) -> bool {
         true
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// Distinguishable test material: a tone whose two channels differ.

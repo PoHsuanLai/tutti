@@ -213,8 +213,7 @@ mod tests {
         )));
 
         let timeline = offline();
-        // The context is the `OfflineTransport` itself, the type a clip
-        // downcasts (`ForkMode::Offline`'s docs).
+        // The render's timeline, the type `ForkMode::Offline` carries.
         let ctx: OfflineTransport = timeline.clone();
         let mut fork = source
             .synth(ForkMode::Offline(&ctx))
@@ -260,7 +259,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }

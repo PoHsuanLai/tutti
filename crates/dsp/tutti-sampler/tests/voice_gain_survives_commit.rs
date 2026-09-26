@@ -92,6 +92,9 @@ impl Timeline for RollingTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// A wave whose every frame is 1.0, so a rendered sample *is* the gain.

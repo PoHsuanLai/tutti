@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use super::motion::MotionFsm;
 use super::settings::TransportSettings;
-use super::state::ClockLinks;
 use super::state::LoopRange;
-use crate::{AtomicF64, Ordering};
+use super::state::{ClockLinks, PlayheadClaim, PlayheadClaimed};
+use crate::{AtomicBool, AtomicF64, Ordering};
 use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
@@ -42,6 +42,10 @@ pub struct Transport {
     /// a clip reader's `Arc<dyn Timeline>`, the MIDI clock master — rather
     /// than only the handle it was called on.
     sample_rate: Arc<AtomicF64>,
+    /// Whether a clock holds this transport's playhead-writer claim
+    /// ([`clock_links`](Self::clock_links)). Shared by every clone, so the
+    /// one writer is one per transport, not per handle.
+    playhead_claimed: Arc<AtomicBool>,
 }
 
 impl Transport {
@@ -52,26 +56,40 @@ impl Transport {
             motion: MotionFsm::new(settings.clone()),
             settings,
             sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
+            playhead_claimed: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Everything a [`TransportClock`](super::TransportClock) shares with this
-    /// transport — the inputs it reads *and* the playhead it writes.
+    /// transport — the inputs it reads *and* the playhead it writes — for
+    /// the **one** clock that writes it.
     ///
     /// Both halves come from this one call on purpose. `settings.beat` is only
     /// ever filled by the clock's position writeback, so a construction path
     /// that supplies the inputs without the writeback yields a transport whose
     /// playhead never moves.
-    pub fn clock_links(&self) -> ClockLinks {
-        ClockLinks {
+    ///
+    /// # One writer
+    ///
+    /// Refused with [`PlayheadClaimed`] while links from an earlier call are
+    /// alive (in a clock, or a clone of one), on this handle or any clone of
+    /// it: two clocks would both consume every seek and both write the
+    /// playhead. The claim is given back when the last holder of those links
+    /// is dropped (the engine that drove them), or never taken by links
+    /// [`severed`](ClockLinks::severed) from them.
+    pub fn clock_links(&self) -> Result<ClockLinks, PlayheadClaimed> {
+        let claim = PlayheadClaim::take(&self.playhead_claimed)?;
+        Ok(ClockLinks {
             tempo: Arc::clone(&self.settings.tempo),
             paused: Arc::clone(&self.settings.paused),
             seek: self.motion.seek.clone(),
             loop_span: Some(self.settings.loop_span.clone()),
             position_writeback: Some(Arc::clone(&self.settings.beat)),
+            segment_generation: Some(Arc::clone(&self.settings.segment_generation)),
             steady_time: Some(Arc::clone(&self.settings.steady_time)),
             tempo_in_force: Some(Arc::clone(&self.settings.tempo_in_force)),
-        }
+            claim: Some(Arc::new(claim)),
+        })
     }
 
     /// The device rate this transport converts musical time against: the
@@ -132,6 +150,10 @@ impl super::Timeline for Transport {
 
     fn is_rolling(&self) -> bool {
         self.motion.is_playing()
+    }
+
+    fn segment_generation(&self) -> u64 {
+        self.settings.segment_generation()
     }
 }
 
@@ -202,7 +224,7 @@ mod tests {
     #[test]
     fn clock_inputs_track_live_edits() {
         let t = Transport::new(48000.0);
-        let inputs = t.clock_links();
+        let inputs = t.clock_links().expect("the first clock");
 
         t.settings.set_tempo(160.0);
         assert_eq!(

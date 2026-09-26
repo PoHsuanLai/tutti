@@ -150,15 +150,16 @@ pub trait MidiUnitIn: Send + Sync {
 
     /// A copy of this source for an **offline render**: addressed to `unit`
     /// (the forked unit's port, which is not the live one's), reading the
-    /// render's timeline out of `ctx` instead of the live transport, and
-    /// sharing no cursor with this one. Control thread, not the audio path.
+    /// render's timeline, `transport`, instead of the live one, and sharing
+    /// no cursor with this one. Control thread, not the audio path.
     ///
-    /// `ctx` is what `AudioUnit::rebind_offline` is handed — today a
-    /// `&OfflineTransport` (tutti-core); a source downcasts it.
+    /// `transport` is what `AudioUnit::rebind_offline` is handed, typed
+    /// ([`OfflineTransport`](tutti_types::OfflineTransport)): no downcast, so
+    /// no context of the wrong type to rebind nothing silently.
     ///
     /// `None` when this source cannot be carried into an offline render — it
     /// is not a function of a timeline (a live inbox, an already-offline
-    /// snapshot), or `ctx` is not a context it reads. **Required, with no
+    /// snapshot). **Required, with no
     /// default**, because the answer decides what an export renders: a
     /// source that silently answered `None` would export its notes as
     /// silence, so a caller treats `None` for an installed source as a
@@ -169,6 +170,6 @@ pub trait MidiUnitIn: Send + Sync {
     fn rebind_offline(
         &self,
         unit: MidiUnitId,
-        ctx: &dyn core::any::Any,
+        transport: &tutti_types::OfflineTransport,
     ) -> Option<Arc<dyn MidiUnitIn>>;
 }

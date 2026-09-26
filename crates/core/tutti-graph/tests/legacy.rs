@@ -789,3 +789,193 @@ fn a_legacy_unit_marks_its_plan() {
         "a native node does not mark its plan"
     );
 }
+
+/// A gain whose `Volume` the graph may modulate through a `ParamFeed`: its
+/// own control is `base`, read once per call; a live feed replaces it per
+/// frame. Outputs `input * volume`.
+#[derive(Clone)]
+struct FedGain {
+    base: Arc<AtomicU32>,
+    feed: tutti_node::ParamFeed,
+    /// Calls that read the feed, and calls that read the base.
+    fed: Arc<AtomicUsize>,
+    based: Arc<AtomicUsize>,
+}
+
+static FED_PARAMS: [tutti_types::UnitParam; 1] = [tutti_types::UnitParam::Volume];
+
+impl FedGain {
+    fn new(base: f32) -> Self {
+        Self {
+            base: Arc::new(AtomicU32::new(base.to_bits())),
+            feed: tutti_node::ParamFeed::new(&FED_PARAMS),
+            fed: Arc::default(),
+            based: Arc::default(),
+        }
+    }
+}
+
+impl AudioUnit for FedGain {
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        output[0] = input[0] * f32::from_bits(self.base.load(Ordering::Relaxed));
+    }
+    fn process(
+        &mut self,
+        size: usize,
+        input: &tutti_node::buffer::BufferRef,
+        output: &mut tutti_node::buffer::BufferMut,
+    ) {
+        let src = input.channel_f32(0);
+        match self.feed.get(0, size) {
+            Some(v) => {
+                self.fed.fetch_add(1, Ordering::Relaxed);
+                let out = &mut output.channel_f32_mut(0)[..size];
+                for ((o, &x), &g) in out.iter_mut().zip(&src[..size]).zip(v) {
+                    *o = x * g;
+                }
+            }
+            None => {
+                self.based.fetch_add(1, Ordering::Relaxed);
+                let g = f32::from_bits(self.base.load(Ordering::Relaxed));
+                let out = &mut output.channel_f32_mut(0)[..size];
+                for (o, &x) in out.iter_mut().zip(&src[..size]) {
+                    *o = x * g;
+                }
+            }
+        }
+    }
+    fn inputs(&self) -> usize {
+        1
+    }
+    fn outputs(&self) -> usize {
+        1
+    }
+    fn route(
+        &mut self,
+        _input: &tutti_node::signal::SignalFrame,
+        _frequency: f64,
+    ) -> tutti_node::signal::SignalFrame {
+        let mut out = tutti_node::signal::SignalFrame::new(1);
+        out.set(0, tutti_node::signal::Signal::Latency(0.0));
+        out
+    }
+    fn get_id(&self) -> u64 {
+        0x4645_4447
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn param_feed(&mut self) -> Option<&mut tutti_node::ParamFeed> {
+        Some(&mut self.feed)
+    }
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| f32::from_bits(self.base.load(Ordering::Relaxed)))
+    }
+}
+
+/// `Legacy` bridges compiler-owned modulation to an `AudioUnit`'s
+/// `ParamFeed`: the feed's params are the node's param ports, an
+/// unmodulated param leaves the feed clear (the unit reads its own control,
+/// every chunk), and a modulated one is fed chunk by chunk — `base +
+/// offset` at every frame, across the adapter's 64-frame chunks of a
+/// 200-frame block.
+///
+/// Mutation (run): in `Legacy::process`, feed every chunk from frame 0 of
+/// the block (`&v[..len]`) → the second chunk repeats the first's values →
+/// fails. Never clear the feed (drop the `Base` arm's `clear`) → after the
+/// disconnect the unit keeps reading the stale feed → fails. Declare no
+/// params in `Legacy::probe` → the connect is refused at compile → fails.
+#[test]
+fn a_legacy_units_param_feed_carries_the_modulation() {
+    use tutti_graph::{ParamFrom, ParamIn, ParamShaping, PARAM_DECLICK};
+    let unit = FedGain::new(0.5);
+    let (fed, based) = (Arc::clone(&unit.fed), Arc::clone(&unit.based));
+    let node = Legacy::new(unit);
+    assert_eq!(
+        node.shape().params.as_slice(),
+        &[tutti_types::UnitParam::Volume],
+        "the feed's params are the node's param ports"
+    );
+    let (mut ed, mut exec) = Editor::new(prepare(200));
+    ed.spec_mut().topology.inputs = ChannelLayout::from_count(2);
+    ed.insert(NodeKey(1), "fed", node);
+    let t = &mut ed.spec_mut().topology;
+    t.edges.insert(
+        InPort {
+            node: NodeKey(1),
+            port: 0,
+        },
+        Edge::Direct(Source::Global(0)),
+    );
+    t.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
+    // A pass-through for global input 1, the modulator.
+    ed.insert(NodeKey(2), "pass", Legacy::new(FedGain::new(1.0)));
+    ed.spec_mut().topology.edges.insert(
+        InPort {
+            node: NodeKey(2),
+            port: 0,
+        },
+        Edge::Direct(Source::Global(1)),
+    );
+    ed.commit().expect("commits");
+
+    let ones = vec![1.0f32; 200];
+    let ramp: Vec<f32> = (0..200).map(|i| i as f32 / 1000.0).collect();
+    let block = |exec: &mut tutti_graph::Executor| {
+        let mut out = vec![0.0f32; 200];
+        exec.process(
+            200,
+            &Transport::default(),
+            &[&ones, &ramp],
+            &mut [&mut out[..]],
+        );
+        out
+    };
+    let out = block(&mut exec);
+    assert!(
+        out.iter().all(|&x| x == 0.5),
+        "unmodulated: the unit's own base"
+    );
+    assert_eq!(fed.load(Ordering::Relaxed), 0);
+    assert!(based.load(Ordering::Relaxed) > 0);
+
+    let at = ParamIn {
+        node: NodeKey(1),
+        param: tutti_types::UnitParam::Volume,
+    };
+    let from = ParamFrom::Audio(OutPort {
+        node: NodeKey(2),
+        port: 0,
+    });
+    ed.spec_mut()
+        .connect_param(at, from, ParamShaping::Identity);
+    ed.commit().expect("connects");
+    // Past the connection's declick.
+    for _ in 0..=PARAM_DECLICK.get() / 200 {
+        block(&mut exec);
+    }
+    let out = block(&mut exec);
+    for (i, &x) in out.iter().enumerate() {
+        assert_eq!(x, 0.5 + ramp[i], "frame {i}: base + offset, per frame");
+    }
+    assert!(fed.load(Ordering::Relaxed) > 0, "the feed was read");
+
+    ed.spec_mut().disconnect_param(at, from);
+    ed.commit().expect("disconnects");
+    for _ in 0..=PARAM_DECLICK.get() / 200 + 1 {
+        block(&mut exec);
+    }
+    let before = based.load(Ordering::Relaxed);
+    let out = block(&mut exec);
+    assert!(out.iter().all(|&x| x == 0.5), "back on its own base");
+    assert!(
+        based.load(Ordering::Relaxed) > before,
+        "and reading its own control again"
+    );
+}

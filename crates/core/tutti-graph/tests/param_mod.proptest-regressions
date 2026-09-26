@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ab6851c82c726d943a947f395cdf0984e8cf7581778e4f8d450cdb30c32bb968 # shrinks to g = Gen { signals: [1], ramps: [[(81, Cutoff, -2.0158012, 0)]], probes: [0, 0], edges: [GenEdge { probe: 0, param: 0, source: Err(0), shaping: 0, range: None, when: 0, until: 0 }], moves: [], regens: [], blocks: [1, 17, 15, 7, 42, 1] }
+cc 8ef03acec2e82eeb496d9615a762f04f9b1a462bf1d28f03b1e836c8db9a77c6 # shrinks to g = Gen { signals: [1], ramps: [], probes: [0], edges: [GenEdge { probe: 0, param: 0, source: Ok(0), shaping: 0, range: None, when: 0, until: 0 }, GenEdge { probe: 0, param: 1, source: Ok(0), shaping: 4, range: None, when: 0, until: 0 }, GenEdge { probe: 0, param: 1, source: Ok(0), shaping: 4, range: None, when: 1, until: 0 }], moves: [], regens: [], blocks: [1, 1] }
+cc c8965f2988b21c8221cba85d5b4ce930f2ba02e3b7bce8c3b2911678101302a3 # shrinks to g = Gen { signals: [1], ramps: [], probes: [0], edges: [GenEdge { probe: 0, param: 0, source: Ok(0), shaping: 0, range: None, when: 0, until: 0 }], moves: [], regens: [(1, 0)], blocks: [1, 1] }

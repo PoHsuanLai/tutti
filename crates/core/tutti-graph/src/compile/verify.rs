@@ -29,6 +29,11 @@
 //!    ops say, record by record — checked against each op directly, not by
 //!    re-running the lowering — so rules 1–6 are about what runs.
 //!
+//! 9. **Params**: each node op's modulated params are in strict port order,
+//!    each a param its unit declares, and their sources are reads of the
+//!    op (rules 2–4 cover them like inputs; an input aliased in place is
+//!    never also a param source).
+//!
 //! 8. **Fades** ([`verify_fades`], on a plan *and the delta that installs
 //!    it*): a crossfade's outgoing unit runs on the node op's own input slots
 //!    and the blend writes its own output slots, so rules 1–4 already cover
@@ -46,7 +51,7 @@
 
 use crate::io::PortKind;
 use crate::node::InPlaceMask;
-use crate::plan::{Delta, EventSlotCapacity, Op, Plan, EMPTY_SLOT, ZERO_SLOT};
+use crate::plan::{Delta, EventSlotCapacity, Op, ParamSlot, Plan, EMPTY_SLOT, ZERO_SLOT};
 
 use super::colour::Reach;
 
@@ -94,6 +99,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
             audio_out,
             event_in,
             event_out,
+            params,
             ..
         } => plan.audio_list[audio_in.range()]
             .iter()
@@ -113,12 +119,74 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
                     .iter()
                     .map(|&s| e(s, true)),
             )
+            .chain(param_reads(plan, params).map(|slot| match slot {
+                ParamSlot::Audio(s) => a(s, false),
+                ParamSlot::Event(s) => e(s, false),
+            }))
             .collect(),
         Op::Output { src, .. } => vec![a(src, false)],
         // A capture feeds a delay's state, not a slot.
         Op::Capture { src, .. } => vec![a(src, false)],
         Op::EventCapture { src, .. } => vec![e(src, false)],
     }
+}
+
+/// Every slot a node op's modulated params read. Out-of-range spans read
+/// nothing here; [`verify_params`] reports them.
+fn param_reads(plan: &Plan, params: crate::plan::Span) -> impl Iterator<Item = ParamSlot> + '_ {
+    plan.param_ports
+        .get(params.range())
+        .unwrap_or(&[])
+        .iter()
+        .flat_map(|p| {
+            plan.param_sources
+                .get(p.sources.range())
+                .unwrap_or(&[])
+                .iter()
+                .map(|s| s.slot)
+        })
+}
+
+/// Rule 9: each node op's modulated params.
+fn verify_params(plan: &Plan) -> Result<(), VerifyError> {
+    let mut covered = 0usize;
+    for op in &plan.ops {
+        let Op::Node { unit, params, .. } = *op else {
+            continue;
+        };
+        let bad = |what: String| VerifyError(format!("unit {unit}'s params {what}"));
+        let ports = plan
+            .param_ports
+            .get(params.range())
+            .ok_or_else(|| bad("name ports past the table".into()))?;
+        if params.start as usize != covered {
+            return Err(bad("are not the next run of the table".into()));
+        }
+        covered += ports.len();
+        let declared = plan
+            .units
+            .get(unit as usize)
+            .map(|u| u.shape.params)
+            .unwrap_or_default();
+        for (i, p) in ports.iter().enumerate() {
+            if i > 0 && ports[i - 1].port >= p.port {
+                return Err(bad("are not in strict port order".into()));
+            }
+            if declared.as_slice().get(p.port as usize) != Some(&p.param) {
+                return Err(bad(format!(
+                    "modulate {:?} at port {}, which the unit does not declare there",
+                    p.param, p.port
+                )));
+            }
+            if p.sources.len == 0 || plan.param_sources.get(p.sources.range()).is_none() {
+                return Err(bad(format!("give port {} no sources", p.port)));
+            }
+        }
+    }
+    if covered != plan.param_ports.len() {
+        return Err(VerifyError("param ports no node op names".into()));
+    }
+    Ok(())
 }
 
 /// Check `plan` (see the [module docs](self) for the rules).
@@ -181,6 +249,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                     audio_in,
                     audio_out,
                     in_place,
+                    params,
                     ..
                 } if x.kind == PortKind::Audio => {
                     let ins = &plan.audio_list[audio_in.range()];
@@ -190,6 +259,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
                             && in_place.get(c)
                             && ins.get(c) == Some(&s)
                             && ins.iter().filter(|&&t| t == s).count() == 1
+                            && !param_reads(plan, params).any(|p| p == ParamSlot::Audio(s))
                     })
                 }
                 _ => false,
@@ -308,6 +378,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
         }
     }
 
+    verify_params(plan)?;
     verify_in_place(plan)?;
     verify_tasks(plan, &reach)?;
     verify_tables(plan)?;
@@ -351,6 +422,7 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             event_in,
             event_out,
             in_place,
+            params,
         } = *op
         else {
             continue;
@@ -367,6 +439,8 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             || rec.tail != pu.shape.tail
             || rec.event_capacity != pu.shape.event_capacity
             || rec.in_place != in_place
+            || rec.params != params
+            || rec.declared != pu.shape.params
         {
             return Err(bad("disagrees with its unit or its in-place mask"));
         }
@@ -701,7 +775,9 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
                     .delays
                     .get(delay as usize)
                     .ok_or_else(|| VerifyError(format!("op {m} names delay {delay}")))?;
-                let crate::plan::DelayKey::Event { from, .. } = d.key else {
+                let (crate::plan::DelayKey::Event { from, .. }
+                | crate::plan::DelayKey::ParamEvent { from, .. }) = d.key
+                else {
                     return Err(VerifyError(format!(
                         "event delay {delay} is not keyed as events"
                     )));

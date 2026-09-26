@@ -24,6 +24,8 @@ use tutti_types::graph::{Invalid, Valid};
 use tutti_types::{NodeKey, Samples, Topology};
 
 use crate::node::Resolution;
+use crate::param::MAX_PARAM_SOURCES;
+use crate::param::{ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping, ParamSource};
 
 /// An event **input** port of a node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,6 +125,11 @@ pub struct GraphSpec {
     /// finely, keyed `(sink, source)` — see
     /// [`require_resolution`](Self::require_resolution).
     pub required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
+    /// Modulated params, keyed on the param port (design doc 013 item 6;
+    /// see the `param` module docs, `src/param.rs`): each one's range and
+    /// sources, in source order. A port with no entry, or an entry with no
+    /// sources, reads its base.
+    pub params: BTreeMap<ParamIn, ParamMod>,
 }
 
 impl GraphSpec {
@@ -190,6 +197,44 @@ impl GraphSpec {
         removed
     }
 
+    /// Drive param port `at` from `from` as well, shaped by `shaping`: one
+    /// more offset in its sum, in source order ([`ParamFrom`]'s `Ord`), so
+    /// two specs with the same wiring compare equal whatever order it was
+    /// made in. A source already listed at `at` has its shaping replaced.
+    ///
+    /// The port must be one its node declares
+    /// ([`Shape::params`](crate::Shape::params)), or `compile` refuses it
+    /// ([`CompileError::UnknownParam`](crate::CompileError::UnknownParam)).
+    /// Until a range is set ([`set_param_range`](Self::set_param_range)) the
+    /// sum is not clamped.
+    pub fn connect_param(&mut self, at: ParamIn, from: ParamFrom, shaping: ParamShaping) {
+        let m = self.params.entry(at).or_default();
+        match m.sources.binary_search_by(|s| s.from.cmp(&from)) {
+            Ok(i) => m.sources[i].shaping = shaping,
+            Err(i) => m.sources.insert(i, ParamSource { from, shaping }),
+        }
+    }
+
+    /// Stop driving param port `at` from `from`. Returns whether it was a
+    /// source. The port keeps its range; with no source left it reads its
+    /// base.
+    pub fn disconnect_param(&mut self, at: ParamIn, from: ParamFrom) -> bool {
+        let Some(m) = self.params.get_mut(&at) else {
+            return false;
+        };
+        let before = m.sources.len();
+        m.sources.retain(|s| s.from != from);
+        before != m.sources.len()
+    }
+
+    /// Clamp param port `at`'s modulated value to `range` — the param's own
+    /// range, so no stack of modulators drives it past what the node
+    /// accepts. A range change recompiles; it does not restart the port's
+    /// sources.
+    pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
+        self.params.entry(at).or_default().range = range;
+    }
+
     /// Check everything that does not need the nodes' [`Shape`](crate::Shape)s.
     ///
     /// The `Topology` half runs `Topology::validate` unchanged (so an audio
@@ -238,6 +283,22 @@ impl GraphSpec {
                 errs.push(GraphInvalid::UnknownGeneration { node: key });
             }
         }
+        for (&at, m) in &self.params {
+            for node in std::iter::once(at.node).chain(m.sources.iter().map(|s| s.from.node())) {
+                if !nodes.contains_key(&node) {
+                    errs.push(GraphInvalid::UnknownParamNode { at, missing: node });
+                }
+            }
+            if m.sources.windows(2).any(|w| w[0].from >= w[1].from) {
+                errs.push(GraphInvalid::UnsortedParamSources { at });
+            }
+            if m.sources.len() > MAX_PARAM_SOURCES {
+                errs.push(GraphInvalid::TooManyParamSources {
+                    at,
+                    count: m.sources.len(),
+                });
+            }
+        }
         for &(at, from) in self.required_resolution.keys() {
             let wired = self
                 .events
@@ -254,6 +315,12 @@ impl GraphSpec {
                 events: self.events.clone(),
                 generations: self.generations.clone(),
                 required_resolution: self.required_resolution.clone(),
+                params: self
+                    .params
+                    .iter()
+                    .filter(|(_, m)| !m.sources.is_empty())
+                    .map(|(&at, m)| (at, m.clone()))
+                    .collect(),
             }),
             _ => Err(errs),
         }
@@ -295,6 +362,28 @@ pub enum GraphInvalid {
         /// The source port.
         from: EventOut,
     },
+    /// A param edge names a node that is not in the topology.
+    UnknownParamNode {
+        /// The param port whose entry names it.
+        at: ParamIn,
+        /// The key that is not there.
+        missing: NodeKey,
+    },
+    /// A param port's sources are not in strict source order: one is listed
+    /// twice, or the list was edited by hand out of order.
+    /// [`GraphSpec::connect_param`] keeps it right.
+    UnsortedParamSources {
+        /// The param port.
+        at: ParamIn,
+    },
+    /// A param port has more than [`MAX_PARAM_SOURCES`](crate::MAX_PARAM_SOURCES)
+    /// sources.
+    TooManyParamSources {
+        /// The param port.
+        at: ParamIn,
+        /// How many it has.
+        count: usize,
+    },
 }
 
 /// A [`GraphSpec`] that passed [`validate`](GraphSpec::validate).
@@ -304,6 +393,7 @@ pub struct ValidGraph {
     events: BTreeMap<EventIn, Vec<EventEdge>>,
     generations: BTreeMap<NodeKey, u32>,
     required_resolution: BTreeMap<(EventIn, EventOut), Resolution>,
+    params: BTreeMap<ParamIn, ParamMod>,
 }
 
 impl ValidGraph {
@@ -325,5 +415,10 @@ impl ValidGraph {
     /// The checked resolution requirements, keyed `(sink, source)`.
     pub fn required_resolution(&self) -> &BTreeMap<(EventIn, EventOut), Resolution> {
         &self.required_resolution
+    }
+
+    /// The checked modulated params: only ports with at least one source.
+    pub fn params(&self) -> &BTreeMap<ParamIn, ParamMod> {
+        &self.params
     }
 }

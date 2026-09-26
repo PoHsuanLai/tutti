@@ -47,12 +47,13 @@
 use std::num::NonZeroU32;
 
 use tutti_types::graph::{InPort, OutPort, Source};
-use tutti_types::{Latency, NodeKey, Samples, Tail};
+use tutti_types::{Latency, NodeKey, Samples, Tail, UnitParam};
 
 use crate::arena::Role;
 use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
+use crate::param::{ParamIn, ParamRange, ParamShaping};
 use crate::spec::{EventIn, EventOut};
 
 /// The audio slot every unconnected or `Source::Zero` input reads.
@@ -103,6 +104,23 @@ pub enum DelayKey {
         /// The sink.
         at: EventIn,
         /// The source.
+        from: EventOut,
+    },
+    /// An audio source of a modulated param, delayed to the param's node's
+    /// arrival (see the `param` module docs, `src/param.rs`).
+    ParamAudio {
+        /// The param port.
+        at: ParamIn,
+        /// The audio output that drives it.
+        from: OutPort,
+    },
+    /// An event source of a modulated param, delayed likewise. Its pending
+    /// events are not flushed when the key disappears: the source was
+    /// disconnected, and the port crossfades away from it.
+    ParamEvent {
+        /// The param port.
+        at: ParamIn,
+        /// The event output that drives it.
         from: EventOut,
     },
     /// A global output channel, delayed to align with the slowest channel.
@@ -340,6 +358,10 @@ pub enum Op {
         event_out: Span,
         /// Channels whose output slot *is* their input slot.
         in_place: InPlaceMask,
+        /// The node's modulated params, in port order (into
+        /// [`Plan::param_ports`]); a declared param not listed reads its
+        /// base. Their sources are read by this op, before the node runs.
+        params: Span,
     },
     /// Write a global output channel, through its alignment ring if it has one.
     Output {
@@ -364,6 +386,43 @@ pub enum Op {
         /// Event slot read.
         src: u32,
     },
+}
+
+/// One modulated param port of a node op: the fused `ParamMod` step the op
+/// runs before its node (see the `param` module docs, `src/param.rs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParamPortOp {
+    /// Its index in the node's declared params
+    /// ([`Shape::params`](crate::Shape::params)).
+    pub port: u16,
+    /// The param.
+    pub param: UnitParam,
+    /// What the sum is clamped to.
+    pub range: ParamRange,
+    /// Its sources' signature: equal across plans exactly when the sources
+    /// (outputs and shapings) are, so the executor crossfades a port whose
+    /// sources changed and leaves one that only moved slots alone.
+    pub sig: u64,
+    /// Its sources, in source order (into [`Plan::param_sources`]).
+    pub sources: Span,
+}
+
+/// Where one param source is read from this block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParamSlot {
+    /// An audio slot: one value per frame.
+    Audio(u32),
+    /// An event slot: its `ParamRamp`s.
+    Event(u32),
+}
+
+/// One source of a [`ParamPortOp`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamSourceOp {
+    /// Where it is read from.
+    pub slot: ParamSlot,
+    /// How its value becomes an offset.
+    pub shaping: ParamShaping,
 }
 
 /// How the executor borrows one node op's buffers — decided at compile time,
@@ -525,6 +584,10 @@ pub(crate) struct NodeRec {
     pub(crate) event_borrows: Span,
     /// How the call borrows its buffers.
     pub(crate) form: Form,
+    /// The node's modulated params (into [`Plan::param_ports`]).
+    pub(crate) params: Span,
+    /// Its declared params, which the step walks in port order.
+    pub(crate) declared: crate::param::ParamPorts,
 }
 
 /// The executor's lowered view of the node ops: one [`NodeRec`] per unit, in
@@ -581,6 +644,7 @@ impl NodeTables {
                 event_in,
                 event_out,
                 in_place,
+                params,
             } = *op
             else {
                 continue;
@@ -653,6 +717,8 @@ impl NodeTables {
                 borrows: audio,
                 event_borrows: event,
                 form,
+                params,
+                declared: pu.shape.params,
             };
             // A unit run twice keeps its first record; `verify` rejects the
             // plan through its unit-use count either way.
@@ -678,6 +744,8 @@ impl NodeTables {
                     borrows: Span::default(),
                     event_borrows: Span::default(),
                     form: Form::Audio,
+                    params: Span::default(),
+                    declared: units[u].shape.params,
                 })
             })
             .collect();
@@ -764,6 +832,8 @@ pub struct Plan {
     pub(crate) audio_values: Vec<Value>,
     pub(crate) event_values: Vec<Value>,
     pub(crate) value_readers: Vec<u32>,
+    pub(crate) param_ports: Vec<ParamPortOp>,
+    pub(crate) param_sources: Vec<ParamSourceOp>,
     /// The node ops, lowered for the executor. Derived from the fields
     /// above; `verify` checks each record against its op.
     pub(crate) nodes: NodeTables,
@@ -913,6 +983,17 @@ impl Plan {
     /// The flattened reader lists [`Value::readers`] spans index.
     pub fn value_readers(&self) -> &[u32] {
         &self.value_readers
+    }
+
+    /// Every modulated param port, grouped by node op (the `params` span of
+    /// [`Op::Node`] indexes this).
+    pub fn param_ports(&self) -> &[ParamPortOp] {
+        &self.param_ports
+    }
+
+    /// Every param source ([`ParamPortOp::sources`] indexes this).
+    pub fn param_sources(&self) -> &[ParamSourceOp] {
+        &self.param_sources
     }
 
     /// Whether any unit this plan runs is a [`Legacy`](crate::Legacy)

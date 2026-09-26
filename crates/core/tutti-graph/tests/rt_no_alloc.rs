@@ -482,3 +482,145 @@ fn declared_event_capacities_are_allocation_free() {
     );
     assert!(seen[0].load(Ordering::Relaxed) > 0 && seen[1].load(Ordering::Relaxed) > 0);
 }
+
+/// Declares `Cutoff` and `Q` (bases 1.0 and 2.0); writes the sum of what it
+/// reads for them.
+struct ParamSink;
+
+impl Node for ParamSink {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_params(&[tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q])
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for i in 0..io.frames() {
+            let a = io.param(0).frames().map_or(1.0, |v| v[i]);
+            let b = io.param(1).frames().map_or(2.0, |v| v[i]);
+            io.output(0)[i] = a + b;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, port: usize) -> Option<f32> {
+        [1.0, 2.0].get(port).copied()
+    }
+}
+
+/// A ramp on `Cutoff` every 37 frames.
+struct RampEvery;
+
+impl Node for RampEvery {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(16)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let start = cx.env.frame.get();
+        for i in 0..io.frames() {
+            if (start + i as u64).is_multiple_of(37) {
+                let r = ParamRamp::new(
+                    tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
+                    tutti_types::Hz(((start + i as u64) % 5) as f32),
+                    Samples(20),
+                );
+                let o = io.offset(i).expect("inside");
+                let _ = io.event_out(0).push(tutti_graph::Event::ramp(o, r));
+            }
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Compiler-owned param modulation never allocates on the audio thread:
+/// the fused step over audio sources (one delayed by PDC behind a latent
+/// sibling), a ramp source and LUT shapings, the declick of a connection
+/// made and one broken, blocks of every length. The commits are applied
+/// before the gate (applying allocates by design); the declicks they start
+/// run inside it.
+///
+/// Mutation (run): in `ParamState::port`, copy an audio source into a
+/// `Vec` per block → aborts. Rebuild the ramp buffer per block
+/// (`self.ramp_buf = vec![0.0; frames]`) → aborts.
+#[test]
+fn modulated_params_are_allocation_free() {
+    use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
+    let (mut ed, mut exec) = Editor::new(prepare(256));
+    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    ed.insert(NodeKey(1), "sink", ParamSink);
+    ed.insert(NodeKey(2), "lag", TestNode::new(Kind::Lag { latency: 31 }));
+    ed.insert(
+        NodeKey(3),
+        "gain",
+        TestNode::new(Kind::Gain {
+            gain: 0.5,
+            width: 1,
+        }),
+    );
+    ed.insert(NodeKey(4), "ramps", RampEvery);
+    {
+        let t = &mut ed.spec_mut().topology;
+        t.edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
+        t.edges.insert(at(1, 0), from(2, 0));
+        t.edges.insert(at(3, 0), Edge::Direct(Source::Global(0)));
+        t.outputs = vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })];
+    }
+    let cut = ParamIn {
+        node: NodeKey(1),
+        param: tutti_types::UnitParam::Cutoff,
+    };
+    let q = ParamIn {
+        node: NodeKey(1),
+        param: tutti_types::UnitParam::Q,
+    };
+    let gain = ParamFrom::Audio(OutPort {
+        node: NodeKey(3),
+        port: 0,
+    });
+    ed.spec_mut()
+        .connect_param(cut, gain, ParamShaping::Lut(ShapeLut::from_fn(|x| x * x)));
+    ed.spec_mut().connect_param(
+        cut,
+        ParamFrom::Events(EventOut {
+            node: NodeKey(4),
+            port: 0,
+        }),
+        ParamShaping::Identity,
+    );
+    ed.commit().expect("commits");
+
+    let input: Vec<f32> = (0..256).map(|i| (i % 13) as f32 / 13.0).collect();
+    let mut out = vec![0.0f32; 256];
+    let transport = Transport::default();
+    let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    let mut run = |exec: &mut tutti_graph::Executor| {
+        for i in 0..200 {
+            let n = sizes[i % sizes.len()];
+            exec.process(n, &transport, &[&input[..n]], &mut [&mut out[..n]]);
+        }
+    };
+    exec.apply_pending();
+    assert_no_alloc::assert_no_alloc(|| run(&mut exec));
+
+    // A connection made (Q, behind the lag's PDC: the gain is the early
+    // path) and one broken: both declick inside the gate.
+    ed.collect();
+    ed.spec_mut().connect_param(q, gain, ParamShaping::Identity);
+    ed.spec_mut().disconnect_param(cut, gain);
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    assert_no_alloc::assert_no_alloc(|| run(&mut exec));
+    let plan = exec.plan().expect("a plan");
+    assert!(
+        plan.delays()
+            .iter()
+            .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamAudio { .. })),
+        "a param source was delayed by PDC inside the gate"
+    );
+}

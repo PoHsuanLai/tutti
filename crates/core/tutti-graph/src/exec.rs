@@ -160,7 +160,11 @@ use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MaxBlock, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges, MAX_PORTS,
 };
-use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
+use crate::param::MAX_PARAM_SOURCES;
+use crate::param::{ParamInput, ParamShaping, ParamState, SourceIn};
+use crate::plan::{
+    DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
+};
 use crate::spec::{EventIn, EventOut};
 
 /// Events per block an event output port holds when its node declares no
@@ -289,8 +293,12 @@ pub(crate) struct Commit {
     suspend: Option<Prepare>,
     plan: Option<Arc<Plan>>,
     delta: Delta,
-    incoming: Vec<(UnitIdx, u32, NodeBox, Option<Box<Crossfade>>)>,
+    incoming: Vec<(UnitIdx, u32, NodeBox, Option<Box<Crossfade>>, ParamState)>,
     retired: Vec<(NodeKey, NodeBox)>,
+    /// Param state built for an incoming unit that crossfades in over one
+    /// already at its key, which keeps its own (the port's modulation runs
+    /// on across a replace): carried back to be freed on the control side.
+    spare_params: Vec<ParamState>,
     old_state: Option<State>,
 }
 
@@ -336,9 +344,15 @@ impl Commit {
                             curve: f.curve,
                         })
                     });
-                (p.idx, p.gen, NodeBox::new(unit), fade)
+                // The unit's param state, sized here so the audio thread
+                // never allocates it (see the `param` module).
+                let params = ParamState::new(
+                    plan.unit(p.key).map_or(0, |u| u.shape.params.len()),
+                    max_block,
+                );
+                (p.idx, p.gen, NodeBox::new(unit), fade, params)
             })
-            .collect();
+            .collect::<Vec<_>>();
         assert!(
             units.is_empty(),
             "units supplied for nodes the delta does not place: {:?}",
@@ -346,6 +360,7 @@ impl Commit {
         );
         // Reserved here so applying moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
+        let spare_params = Vec::with_capacity(incoming.len());
         Box::new(Self {
             seq,
             suspend: None,
@@ -353,6 +368,7 @@ impl Commit {
             delta,
             incoming,
             retired,
+            spare_params,
             old_state: None,
         })
     }
@@ -369,6 +385,7 @@ impl Commit {
             delta: Delta::default(),
             incoming: Vec::new(),
             retired: Vec::with_capacity(units),
+            spare_params: Vec::new(),
             old_state: None,
         })
     }
@@ -377,7 +394,7 @@ impl Commit {
     fn fades_in(&self, key: NodeKey) -> bool {
         self.incoming
             .iter()
-            .any(|(_, _, _, x)| x.as_ref().is_some_and(|x| x.key == key))
+            .any(|(_, _, _, x, _)| x.as_ref().is_some_and(|x| x.key == key))
     }
 
     /// Whether this box is a re-prepare's first half.
@@ -487,10 +504,12 @@ struct Unit {
     fade: Option<Box<Crossfade>>,
     /// A crossfade waiting for `fade` to end.
     queued: Option<Box<Crossfade>>,
+    /// Its declared params' modulation state and per-frame buffers.
+    params: ParamState,
 }
 
 impl Unit {
-    fn new(gen: u32, node: NodeBox) -> Self {
+    fn new(gen: u32, node: NodeBox, params: ParamState) -> Self {
         Self {
             gen,
             node,
@@ -499,6 +518,7 @@ impl Unit {
             last_idle: false,
             fade: None,
             queued: None,
+            params,
         }
     }
 }
@@ -801,10 +821,13 @@ impl Executor {
         }
         // Taken out and put back, so the list's buffer is not freed here.
         let mut incoming = std::mem::take(&mut c.incoming);
-        for (idx, gen, node, fade) in incoming.drain(..) {
+        for (idx, gen, node, fade, params) in incoming.drain(..) {
             let slot = &mut self.store[idx.0 as usize];
             match (fade, slot.as_mut()) {
                 (Some(mut x), Some(u)) => {
+                    // The key's param state runs on across the replace; the
+                    // one built for the incoming unit goes back unused.
+                    c.spare_params.push(params);
                     // A crossfade: the unit at this key fades out — or, with
                     // a fade already running here, this one waits for it,
                     // superseding one that was waiting.
@@ -824,7 +847,7 @@ impl Executor {
                 }
                 (fade, _) => {
                     debug_assert!(slot.is_none(), "store index {} is occupied", idx.0);
-                    *slot = Some(Unit::new(gen, node));
+                    *slot = Some(Unit::new(gen, node, params));
                     // Nothing to fade from (reachable only through
                     // `package`): the crossfade goes back unused.
                     if let Some(x) = fade {
@@ -884,12 +907,15 @@ impl Executor {
                     .and_then(|&i| old.rings.get_mut(i))
                     .and_then(Option::take);
                 Some(match (d.key, carried) {
-                    (DelayKey::Event { from, .. }, Some(Ring::Event(mut f))) => {
+                    (
+                        DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. },
+                        Some(Ring::Event(mut f)),
+                    ) => {
                         f.retune(d.len);
                         f.resize(rate(from), max_block);
                         Ring::Event(f)
                     }
-                    (DelayKey::Event { from, .. }, _) => {
+                    (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }, _) => {
                         Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
                     }
                     (_, Some(Ring::Audio(mut r))) => {
@@ -1247,6 +1273,7 @@ impl Executor {
                     debug_assert_eq!(u.gen, rec.gen, "unit generation matches the plan");
                     let head = Head {
                         rec,
+                        plan,
                         frames,
                         max,
                         cap,
@@ -1447,6 +1474,14 @@ fn fading_node_op(
     borrows: &[(u32, Role)],
 ) -> bool {
     let frames = h.frames;
+    // The key's params, once for both units: the outgoing one hears the
+    // modulation the incoming one does.
+    let modulated = h.rec.params.len != 0 || u.params.busy();
+    if modulated {
+        run_params(u, h, st);
+    }
+    let params = u.params.inputs(frames);
+    let params = &params[..u.params.port_count()];
     let x = u.fade.as_mut().expect("a fading unit");
     let status = {
         let (silent, constant) = in_masks(ain, st.flags);
@@ -1472,7 +1507,8 @@ fn fading_node_op(
             InPlaceMask::NONE,
             &evin[..ein.len()],
             &mut evout[..eout.len()],
-        );
+        )
+        .with_params(params);
         let cx = Cx {
             env: h.env,
             arrival: h.rec.arrival,
@@ -1500,12 +1536,19 @@ fn fading_node_op(
         }
     }
 
-    node_op(u, h, st, [ain, aout, ein, eout], |call, node, st| {
-        let (inject, overlay) = (&*st.inject, &st.overlay[..]);
-        let extra = Extra { inject, overlay };
-        let (arena, events) = (&mut *st.arena, &mut *st.events);
-        call.run::<MAX_PORTS, MAX_PORTS>(node, arena, events, borrows, extra)
-    });
+    node_op_with(
+        u,
+        h,
+        st,
+        [ain, aout, ein, eout],
+        !modulated,
+        |call, node, st| {
+            let (inject, overlay) = (&*st.inject, &st.overlay[..]);
+            let extra = Extra { inject, overlay };
+            let (arena, events) = (&mut *st.arena, &mut *st.events);
+            call.run::<MAX_PORTS, MAX_PORTS>(node, arena, events, borrows, extra)
+        },
+    );
 
     // The blend: `incoming * g_in + outgoing * g_out` while the fade lasts,
     // the incoming unit alone after it (`CrossfadeCurve::gains`).
@@ -1554,6 +1597,8 @@ fn in_masks(ain: &[u32], flags: &[u8]) -> (SilenceMask, ConstantMask) {
 /// A node op's constants: its record and the block's.
 struct Head<'p, 'e> {
     rec: &'p NodeRec,
+    /// The plan, for the param tables.
+    plan: &'p Plan,
     frames: usize,
     max: MaxBlock,
     cap: usize,
@@ -1588,7 +1633,63 @@ fn node_op(
     u: &mut Unit,
     h: &Head<'_, '_>,
     st: &mut OpState<'_>,
+    ports: [&[u32]; 4],
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_>) -> (Status, u32),
+) {
+    node_op_with(u, h, st, ports, false, call_node);
+}
+
+/// Run a unit's fused param step (see the `param` module docs,
+/// `src/param.rs`): each declared param, from its sources this plan, into
+/// the unit's param buffers. Off the hot path: only a unit with a modulated
+/// param, or one mid-declick, gets here.
+#[inline(never)]
+fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
+    static IDENTITY: ParamShaping = ParamShaping::Identity;
+    let (rec, frames, plan) = (h.rec, h.frames, h.plan);
+    let Unit { node, params, .. } = u;
+    params.begin();
+    let ports = &plan.param_ports[rec.params.range()];
+    let mut next = ports.iter().peekable();
+    let declared = rec.declared;
+    for (k, &param) in declared.as_slice().iter().enumerate() {
+        let base = node.param_base(k);
+        match next.next_if(|p| p.port as usize == k) {
+            Some(p) => {
+                let mut srcs: [(SourceIn<'_>, &ParamShaping); MAX_PARAM_SOURCES] =
+                    [(SourceIn::Audio(&[]), &IDENTITY); MAX_PARAM_SOURCES];
+                let list = &plan.param_sources[p.sources.range()];
+                for (d, s) in srcs.iter_mut().zip(list) {
+                    *d = (
+                        match s.slot {
+                            ParamSlot::Audio(slot) => SourceIn::Audio(st.arena.slot(slot, frames)),
+                            ParamSlot::Event(slot) => SourceIn::Events(&st.events[slot as usize]),
+                        },
+                        &s.shaping,
+                    );
+                }
+                params.port(
+                    k,
+                    param,
+                    frames,
+                    Some((p.sig, p.range, &srcs[..list.len()])),
+                    base,
+                );
+            }
+            None => params.port(k, param, frames, None, base),
+        }
+    }
+}
+
+/// [`node_op`], with the unit's params already run this block when
+/// `params_done` (a crossfade runs them once for both units).
+#[inline(always)]
+fn node_op_with(
+    u: &mut Unit,
+    h: &Head<'_, '_>,
+    st: &mut OpState<'_>,
     [ain, aout, ein, eout]: [&[u32]; 4],
+    params_done: bool,
     call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_>) -> (Status, u32),
 ) {
     let (rec, frames) = (h.rec, h.frames);
@@ -1617,6 +1718,13 @@ fn node_op(
     } else {
         0
     };
+    // The fused param step: only for a unit with a modulated param, or one
+    // still declicking off one; every other unit pays this one branch. Run
+    // whether or not the node is then skipped, so its ramps and declick
+    // advance with the timeline as the reference's do.
+    if !params_done && (rec.params.len != 0 || u.params.busy()) {
+        run_params(u, h, st);
+    }
     if skip {
         for &s in aout {
             st.arena.slot_mut(s, frames).fill(0.0);
@@ -1664,6 +1772,7 @@ fn node_op(
         *st.dropped += u64::from(lost);
     }
 
+    let table = u.params.inputs(frames);
     let call = Call {
         env: h.env,
         max: h.max,
@@ -1674,6 +1783,7 @@ fn node_op(
         cap: rec.event_capacity.map_or(h.cap, |n| n.get() as usize),
         injected,
         scheduled: &views[..n_views],
+        params: &table[..u.params.port_count()],
     };
     let (status, drops) = call_node(&call, &mut *u.node, st);
     *st.dropped += drops as u64;
@@ -1744,9 +1854,11 @@ struct Call<'p, 'e> {
     /// `(port, start, end)` into the overlay buffer: ports whose events this
     /// block include scheduled commands.
     scheduled: &'p [(u16, u32, u32)],
+    /// What each declared param reads this block.
+    params: &'p [ParamInput<'p>],
 }
 
-impl Call<'_, '_> {
+impl<'p> Call<'p, '_> {
     /// Run an event-free node on buffers already borrowed.
     #[inline]
     fn process<'a>(
@@ -1754,7 +1866,10 @@ impl Call<'_, '_> {
         node: &mut dyn Node,
         ins: &'a [&'a [f32]],
         outs: &'a mut [&'a mut [f32]],
-    ) -> Status {
+    ) -> Status
+    where
+        'p: 'a,
+    {
         let io = Io::new(
             self.max,
             self.frames,
@@ -1765,7 +1880,8 @@ impl Call<'_, '_> {
             self.rec.in_place,
             &[],
             &mut [],
-        );
+        )
+        .with_params(self.params);
         node.process(&self.cx(), io)
     }
 
@@ -1857,7 +1973,8 @@ impl Call<'_, '_> {
             rec.in_place,
             &evin[..e_in],
             &mut evout[..e_out],
-        );
+        )
+        .with_params(self.params);
         let status = node.process(&self.cx(), io);
         (status, drops.get())
     }

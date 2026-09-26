@@ -191,6 +191,7 @@ mod io;
 mod kernels;
 mod legacy;
 mod node;
+mod param;
 mod plan;
 mod reference;
 mod spec;
@@ -219,9 +220,14 @@ pub use node::{
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
+pub use param::{
+    ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamRange, ParamShaping, ParamSource,
+    ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK, SHAPE_LUT_LEN,
+};
 pub use plan::{
-    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, Placement,
-    Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,
+    ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
+    ZERO_SLOT,
 };
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};

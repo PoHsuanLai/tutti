@@ -708,6 +708,10 @@ impl Editor {
         self.spec
             .required_resolution
             .retain(|(at, from), _| at.node != key && from.node != key);
+        self.spec.params.retain(|at, _| at.node != key);
+        for m in self.spec.params.values_mut() {
+            m.sources.retain(|s| s.from.node() != key);
+        }
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);

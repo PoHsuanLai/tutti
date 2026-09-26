@@ -253,7 +253,7 @@ pub mod dsp {
 pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 pub use tutti_node::setting::Setting;
 pub use tutti_node::signal::{Signal, SignalFrame};
-pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
+pub use tutti_node::{AudioUnit, FaultLatch, ParamFeed, RenderFault, MAX_BUFFER_SIZE};
 // The numeric tower the contract is generic over — the part of it consumers
 // actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
 // two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);

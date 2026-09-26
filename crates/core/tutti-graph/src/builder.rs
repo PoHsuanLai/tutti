@@ -534,6 +534,7 @@ impl GraphBuilder {
             events,
             generations: _,
             required_resolution,
+            params,
         } = self.spec;
         let live = editor.spec_mut();
         live.topology.edges = topology.edges;
@@ -541,6 +542,7 @@ impl GraphBuilder {
         live.topology.inputs = topology.inputs;
         live.events = events;
         live.required_resolution = required_resolution;
+        live.params = params;
         // Parameter values set through `spec_mut` ride along too. `insert`
         // keeps params already recorded for a key, but these were recorded
         // on the builder's copy, not the editor's.

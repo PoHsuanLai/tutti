@@ -143,7 +143,7 @@ impl<F: Real> EqBandNode<F> {
 impl<F: Real + 'static> Node for EqBandNode<F> {
     /// Mono in and out. Unlike the bare filter it declares no modulatable
     /// params: a band is set, not swept.
-    /// Its tail is the inner filter's: [`Tail::Unknown`].
+    /// Its tail is the inner filter's: [`Tail::Unknown`](tutti_core::Tail::Unknown).
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_tail(self.svf.shape().tail)
     }

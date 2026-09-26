@@ -8,10 +8,9 @@
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
-//! use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnGraphNode, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::AudioUnit as _;
 //! use tutti_core::transport::Transport;
 //! use tutti_core::SampleRate;
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
@@ -25,39 +24,29 @@
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-//! // The host names the node types it modulates — see the last section. Before
-//! // the node goes in: the registry is read once, when the node's controls are
-//! // captured.
-//! app.world_mut()
-//!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<DistortionNode>();
-//!
-//! // A unit pushed by hand is bound the way `spawn_audio_node` binds one: its
-//! // controls captured first, then the entity bound to the node.
-//! let unit = DistortionNode::new(ShapeKind::Tanh, 5.0);
-//! let controls = CapturedControls::capture(app.world(), &unit);
-//! let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(unit);
 //!
 //! let lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
 //!     ModSourceRate::beat_synced(BeatDuration(1.0)),
 //! )).id();
 //!
-//! // The target declares what is modulatable and over what range; the engine
-//! // does not invent a param's sensible bounds.
-//! let mut drive = app.world_mut().spawn(
-//!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-//! );
-//! controls.bind(&mut drive, node);
-//! let drive = drive.id();
+//! // The target: a native node, whose params its `ParamSet` addresses (no
+//! // registration: see the last section), declaring what is modulatable and
+//! // over what range — the engine does not invent a param's sensible bounds.
+//! let drive = app
+//!     .world_mut()
+//!     .commands()
+//!     .spawn_graph_node(DistortionNode::new(ShapeKind::Tanh, 5.0))
+//!     .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0))
+//!     .id();
+//! app.world_mut().flush();
 //!
 //! app.world_mut().spawn(
 //!     ModRoute::new(lfo, drive, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
 //! );
 //! app.update();
 //!
-//! // The route bound to a live accumulator. Had `register::<DistortionNode>`
-//! // been forgotten, the route would still be well-formed and bind to nothing.
+//! // The route bound to a live accumulator over the node's drive cell.
 //! let matrix = app.world().resource::<ModulationMatrix>();
 //! assert!(matrix.is_modulated(drive, ParamAddr::Unit(UnitParam::Drive)));
 //! ```
@@ -199,20 +188,15 @@
 //!
 //! # What the host must supply
 //!
-//! Resolving a param to an accumulator needs the concrete node type (see
-//! [`target`]), so an app registers the node types it modulates — before it
-//! spawns them, since the registry is read once per node, as it is inserted:
+//! For a native node whose controls are a `tutti_graph::ParamSet` — every
+//! node in `tutti-nodes`, the synth — nothing: `spawn_graph_node` captures
+//! its params by address, and a route on any of them resolves.
 //!
-//! ```rust
-//! use bevy_app::prelude::*;
-//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
-//!
-//! let mut app = App::new();
-//! app.add_plugins(TuttiModulationPlugin);
-//! app.world_mut()
-//!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::CompressorNode>();
-//! ```
+//! An `AudioUnit` of the host's own, inserted through `spawn_audio_node`,
+//! has no address book: resolving its params needs its concrete type (see
+//! [`target`]), so the app registers it with [`ModTargetRegistry::register`]
+//! before it spawns one, since the registry is read once per node, as it is
+//! inserted.
 
 pub mod audio_rate;
 pub mod components;

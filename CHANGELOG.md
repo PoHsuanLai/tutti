@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Smart types 2: four footguns found in Phase 3/4 review, made
+  unwritable** (design doc 013 §5). Each was a rule a doc stated and nothing
+  enforced; each is now a type, or a named error where the mistake is made.
+
+  | Was | Now |
+  |---|---|
+  | `ForkMode::Offline(&dyn Any)`, downcast by every unit; a context of any other type rebound nothing, silently | `ForkMode::Offline(&OfflineTransport)`. A wrong type does not compile (`E0308`) |
+  | `AudioUnit::rebind_offline(&mut self, ctx: &dyn Any)`; `MidiUnitIn::rebind_offline(unit, ctx: &dyn Any)`; `MidiInPort::rebind_offline_into(fork, ctx: &dyn Any)`; fundsp-tutti's `PendingClone::isolate_for_offline(ctx: &dyn Any)` | each takes `&OfflineTransport`; drop the `downcast_ref::<OfflineTransport>()` |
+  | `tutti_core::transport::{Timeline, OfflineTransport}` defined in tutti-core | defined in tutti-types (`tutti_types::{Timeline, OfflineTransport}`), so tutti-graph can name them; tutti-core re-exports both at the old paths |
+  | `Timeline` had `beat`, `tempo`, `is_rolling` | adds a **required** `segment_generation() -> u64`: moves on at every seek (even to the same beat), tempo or rate change, loop wrap and play start. A timeline that never jumps returns a constant. `FrameClock::generation` / `mark_play_start`, `TransportSettings::segment_generation` (the live cell, written by the engine's clock before the beat) |
+  | the sampler's `Seat` re-seated on a new beat only, so a seek to the same beat (or a one-block transport loop) kept stepping | it re-seats on a new beat **or** a new segment generation, in both tiers (`MemorySource`, a forked `DiskVoice`) |
+  | `Transport::clock_links() -> ClockLinks`, callable any number of times; `ClockLinks`'s writer fields (`seek`, `position_writeback`, `steady_time`, `tempo_in_force`) public | `clock_links() -> Result<ClockLinks, PlayheadClaimed>`: the playhead writer is handed out **once** per transport (shared by its clones), given back when the last holder drops. The writer fields are private (a hand-built writer is `E0451`); `ClockLinks::writes_playhead()` |
+  | a second `Engine::new` over one transport built, and two clocks both consumed every seek and wrote the playhead | refused: `GraphEngineError::PlayheadClaimed` |
+  | `impl<N: Node> IntoNode for N` and `impl IntoNode for Box<dyn Node>`: any node inserted with no controls and no fork source, silently (#38's B1) | removed. Insert a bare node as `ForkByClone(node)` (forkable by a clone taken at insert) or `Unforkable(node)` (new: refuses every fork, by name; also takes a `Box<dyn Node>`), or give it its own `IntoNode`. Inserting a bare `Node` is `E0277` |
+  | `IntoNode::into_node` required, `into_parts` defaulted to no fork source (a wrapper that forgot to forward it dropped its inner node's source) | `into_parts` required, `into_node` provided; `IntoNode::kind()` names a fork wrapper's inner node, so `GraphBuilder::add(ForkByClone(x))` records `x`'s type name as before |
+
+  `rebind_offline` tests that passed a wrong-typed context (`&42u32`,
+  `&"not a transport"`) and checked it was ignored are now `compile_fail`
+  doctests: the case cannot be written. tutti-plugin's `Rebind::Sever` (an
+  offline context that was not an `OfflineTransport`) is gone with it.
+  Every insert site in the workspace (tests, benches, examples) was
+  converted mechanically to `Unforkable(..)`, which is exactly what the
+  blanket impl did.
+
 - **Compiler-owned param modulation** (design doc 013, "Rewrite order"
   item 6). A node declares the params the graph may modulate
   (`Shape::with_params(&[UnitParam])`), a spec drives any of them from

@@ -13,6 +13,7 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 use tutti_core::{PlaybackRate, SampleRate};
 
+use super::prefetch::TakeVoiceError;
 use super::{ButlerCommand, ChannelPlan, RtState};
 use crate::voice::disk_voice::DiskSource;
 use crate::voice::types::Direction;
@@ -81,22 +82,27 @@ pub(crate) fn set_varispeed(
 
 /// Build a bare `DiskSource` over a channel whose butler link is
 /// ready, alongside the channel's shared [`RtState`], the file's own rate and
-/// the stream's [`StreamOrigin`].
-/// `None` while the butler hasn't installed the [`ChannelPlan`] link yet. This
-/// is the un-gated consumer handoff the timeline path wraps in a
-/// placement-gated reader (which converts beats to file frames at the file's
-/// rate) and the preview path uses free-running.
+/// the stream's [`StreamOrigin`]: the stream's one live reader, `placed` when
+/// the caller wraps it in a voice that follows a clock.
+///
+/// [`TakeVoiceError::NotStreaming`] while the butler hasn't installed the
+/// [`ChannelPlan`] link yet; [`TakeVoiceError::ReaderTaken`] once the stream
+/// has its reader.
 pub(crate) fn take_streaming_unit(
     plans: &Arc<DashMap<usize, ChannelPlan>>,
     channel_index: usize,
-) -> Option<(DiskSource, Arc<RtState>, SampleRate, StreamOrigin)> {
-    let plan = plans.get(&channel_index)?;
-    let link = plan.link.as_ref()?;
+    placed: bool,
+) -> Result<(DiskSource, Arc<RtState>, SampleRate, StreamOrigin), TakeVoiceError> {
+    let plan = plans
+        .get(&channel_index)
+        .ok_or(TakeVoiceError::NotStreaming)?;
+    let link = plan.link.as_ref().ok_or(TakeVoiceError::NotStreaming)?;
+    link.consumer.take_reader(placed)?;
     let (consumer, file_rate) = (link.consumer.clone(), link.file_rate);
     let origin = StreamOrigin(Arc::clone(&link.record));
     let rt_state = plan.rt_state();
     let unit = DiskSource::new(consumer, Arc::clone(&rt_state));
-    Some((unit, rt_state, file_rate, origin))
+    Ok((unit, rt_state, file_rate, origin))
 }
 
 /// A butler stream's own record of what it plays: the file, the file's rate,

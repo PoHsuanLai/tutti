@@ -354,10 +354,36 @@ impl Mapping {
         Key::Frame(if self.reverse { self.len - 1 - s } else { s }, None)
     }
 
+    /// How many positions from `s` on hold consecutive file frames outside
+    /// any fade, and which way they run: `(run, step)`, `step` +1 forward, -1
+    /// reversed, 0 past the end (nothing read). A key equal at `s` stays equal
+    /// for the shorter of two runs that step alike.
+    fn run(&self, s: u64) -> (u64, i8) {
+        if let Some(ring_loop) = self.forward_loop() {
+            let f = ring_loop.span.place_frame(s as usize);
+            let fade_start = ring_loop.span.end() - ring_loop.span.fade();
+            return ((fade_start.saturating_sub(f) as u64).max(1), 1);
+        }
+        if s >= self.len as u64 {
+            return (u64::MAX, 0);
+        }
+        (self.len as u64 - s, if self.reverse { -1 } else { 1 })
+    }
+
     /// The first straight position in `[from, to)` whose slot this mapping
-    /// and `other` fill differently.
+    /// and `other` fill differently: compared a run at a time, so an edit's
+    /// search over a 30 s ring costs a few comparisons per wrap and fade frame,
+    /// not one per position.
     fn parts_from(&self, other: &Mapping, from: u64, to: u64) -> Option<u64> {
-        (from..to).find(|&s| self.key(s) != other.key(s))
+        let mut s = from;
+        while s < to {
+            if self.key(s) != other.key(s) {
+                return Some(s);
+            }
+            let ((a, sa), (b, sb)) = (self.run(s), other.run(s));
+            s = s.saturating_add(if sa == sb { a.min(b) } else { 1 });
+        }
+        None
     }
 
     /// Fill `out` (flat interleaved, `ch` wide) with what straight positions
@@ -477,12 +503,14 @@ pub(crate) fn apply_mapping(
     let ring = std::sync::Arc::clone(writer.ring());
     let play = ring.play();
     let (from, to) = ring.window();
-    // One past the last position the block in flight may read. A reader
-    // that has not read yet has none: a loop set before it plays is written
-    // where it parts, with no guard.
-    let busy = ring.in_flight_end();
     let lo = from.max(play.saturating_sub(4));
     let epoch = content.epoch + 1;
+    // Behind the reader, the ring keeps the old mapping; a jump back there
+    // (a transport cycle) must not play it. Drop what differs, so such a jump
+    // finds the window without it and moves the window instead.
+    if from < lo && content.parts_from(&new, from, lo).is_some() {
+        ring.raise_from(lo);
+    }
     let parts = if lo < to {
         content.parts_from(&new, lo, to)
     } else {
@@ -495,30 +523,50 @@ pub(crate) fn apply_mapping(
         writer.set_content(next);
         return Edit::Free;
     };
-    let mut at = parts.max(busy + GUARD_FRAMES);
-    if content.switch_at > busy {
-        at = at.min(content.switch_at);
-    }
-    let at = at.min(to).max(busy.min(to)).max(lo);
-    let fade = at > parts;
-    let old = content.at(at.saturating_sub(1)).clone();
-    let record = fade.then(|| {
-        let ch = writer.channels().count() as usize;
-        let start = at.saturating_sub(3);
-        let frames = (fade_frames as f64 * rate.max(1.0)).ceil() as usize + GAP_COVER_FRAMES + 8;
-        let mut data = vec![0.0f32; frames * ch];
-        // The old content piecewise, as the reader would have heard it.
-        let split = (content.switch_at.clamp(start, start + frames as u64) - start) as usize;
-        let (a, b) = data.split_at_mut(split * ch);
-        writer.fill_with(&content.before, start, a);
-        writer.fill_with(&content.current, start + split as u64, b);
-        FadeRecord {
-            start,
-            frames,
-            data: data.into(),
-            fade_frames,
+    // The switch: where they part, or past the block in flight. The record's
+    // disk read takes time, during which the reader moves on: take where it
+    // is again afterwards, and choose again if it has reached the switch.
+    // Not covered by a test: the live tests step the reader and the butler by
+    // hand, so the reader never moves during the butler's read; a reader that
+    // did would still be caught by the record's fade (it crosses the switch
+    // with the old side in hand), only at a later `at`.
+    let mut busy = ring.in_flight_end();
+    let mut tries = 0;
+    let (at, fade, record) = loop {
+        tries += 1;
+        let mut at = parts.max(busy + GUARD_FRAMES);
+        if content.switch_at > busy {
+            at = at.min(content.switch_at);
         }
-    });
+        let at = at.min(to).max(busy.min(to)).max(lo);
+        let fade = at > parts;
+        let record = fade.then(|| {
+            let ch = writer.channels().count() as usize;
+            let start = at.saturating_sub(3);
+            let frames =
+                (fade_frames as f64 * rate.max(1.0)).ceil() as usize + GAP_COVER_FRAMES + 8;
+            let mut data = vec![0.0f32; frames * ch];
+            // The old content piecewise, as the reader would have heard it.
+            let split = (content.switch_at.clamp(start, start + frames as u64) - start) as usize;
+            let (a, b) = data.split_at_mut(split * ch);
+            writer.fill_with(&content.before, start, a);
+            writer.fill_with(&content.current, start + split as u64, b);
+            FadeRecord {
+                start,
+                frames,
+                data: data.into(),
+                fade_frames,
+            }
+        });
+        let now = ring.in_flight_end();
+        // Bounded: a reader that keeps pace with the reads is past the ring's
+        // end soon anyway, and the fade covers the rest.
+        if now + 2 < at || now >= to || tries == 4 {
+            break (at, fade, record);
+        }
+        busy = now;
+    };
+    let old = content.at(at.saturating_sub(1)).clone();
     ring.publish_map(RingMap {
         before: old.arrangement(),
         after: new.arrangement(),

@@ -176,7 +176,13 @@ fn refill_one(
     // A reader past what the mapping writes (an unlooped stream's end) plays
     // silence: nothing to follow there.
     let end = writer.content().current.end();
-    if play < from || (play > to && play < end) {
+    // A reader a little past the window's end (the refill fell behind) is
+    // caught up by appending; only one far ahead, or behind the window, moves
+    // it. Moving it is a shrink, which holds back writes the reader's block
+    // may cover until it claims again, so moving it every cycle would never
+    // let the refill land.
+    let far = (ring.frames() / 4) as u64;
+    if play < from || (play > to.saturating_add(far) && play < end) {
         ring.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at != 0 {
             let mut content = Content::new(writer.content().current.clone());

@@ -437,8 +437,13 @@ fn handle_set_stream_loop(
 
 /// Seek a stream's free-running reader to absolute file frame
 /// `file_position`, and move the butler's window there (less the channel's
-/// PDC preroll) so it is filled before the reader asks. A placed voice
-/// follows its clock instead: seek the clock.
+/// PDC preroll) so it is filled before the reader asks.
+///
+/// Free-running readers only. A placed voice follows its clock (seek the
+/// clock), and it is the one that says where it plays: moving the window for
+/// it here would be a second writer of that position, dragging the window away
+/// from the voice until its next block said otherwise. So on a stream whose
+/// live reader is placed, the request is relayed and the window left alone.
 ///
 /// No-op when the channel isn't streaming.
 pub(super) fn handle_seek_stream(channel_index: usize, file_position: u64, shared: &Handles) {
@@ -449,8 +454,10 @@ pub(super) fn handle_seek_stream(channel_index: usize, file_position: u64, share
         return;
     };
     link.consumer.request_seek(file_position);
-    link.consumer
-        .set_play(file_position.saturating_sub(plan.pdc_preroll));
+    if !link.consumer.placed() {
+        link.consumer
+            .set_play(file_position.saturating_sub(plan.pdc_preroll));
+    }
 }
 
 #[cfg(test)]

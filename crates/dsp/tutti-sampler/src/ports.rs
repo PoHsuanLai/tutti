@@ -17,7 +17,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate};
+use crate::butler::{ButlerCommand, ButlerGone, ChannelPlan, SessionRate, TakeVoiceError};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline};
 use tutti_io::Wave;
@@ -90,7 +90,9 @@ pub enum Command {
         /// Start position, in frames from the head of the file.
         offset: SamplePosition,
     },
-    /// Reposition a live stream — a timeline seek. Maps to `SeekStream`.
+    /// Reposition a stream's free-running reader (a bare `DiskSource`). Maps to
+    /// `SeekStream`. A placed voice (`take_disk_voice`) follows its clock and
+    /// ignores this: seek the clock.
     Seek {
         /// Butler channel carrying the stream to move.
         channel_index: usize,
@@ -286,33 +288,33 @@ impl Status {
     /// the same file on its own rather than through the live ring; see
     /// `DiskVoice::rebind_offline`.
     ///
-    /// Returns `None` while the butler has not installed the link yet; a caller
-    /// polls again next frame rather than treating it as a failure.
+    /// [`TakeVoiceError::NotStreaming`] while the butler has not installed the
+    /// link yet: a caller polls again next frame rather than treating it as a
+    /// failure. [`TakeVoiceError::ReaderTaken`] once a voice has been taken
+    /// from the stream: a stream serves one live voice.
     pub fn take_disk_voice(
         &self,
         channel_index: usize,
         transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
-    ) -> Option<DiskVoice> {
+    ) -> Result<DiskVoice, TakeVoiceError> {
         let (inner, rt_state, file_sample_rate, origin) =
-            crate::butler::control::take_streaming_unit(&self.plans, channel_index)?;
+            crate::butler::control::take_streaming_unit(&self.plans, channel_index, true)?;
 
-        Some(
-            DiskVoice::new(
-                inner,
-                rt_state,
-                DiskVoiceConfig {
-                    timeline: transport,
-                    window: VoiceWindow {
-                        start: start_beat,
-                        duration,
-                    },
-                    file_sample_rate,
+        Ok(DiskVoice::new(
+            inner,
+            rt_state,
+            DiskVoiceConfig {
+                timeline: transport,
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration,
                 },
-            )
-            .with_origin(origin),
+                file_sample_rate,
+            },
         )
+        .with_origin(origin))
     }
 }
 

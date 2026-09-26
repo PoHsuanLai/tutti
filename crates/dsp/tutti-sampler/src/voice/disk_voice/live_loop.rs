@@ -566,8 +566,8 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
 /// bit-identical — the last 200 blocks included, so nothing drifts — and the
 /// live voice never underruns: every reposition costs 0 frames.
 ///
-/// Mutation (run): the reader not taking the old continuation at a jump (no
-/// scratch fade) → the refill gap underruns → fails. Mutation (run): the
+/// Mutation (run): the reader rendering no continuation at a jump → the
+/// refill gap underruns → fails. Mutation (run): the
 /// refill not following a reader that jumped outside the window → the new
 /// position is never filled → fails.
 #[test]
@@ -788,5 +788,221 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
         &forked,
         &got,
         &[(0, settled)],
+    );
+}
+
+/// The largest step between consecutive frames, and where.
+fn max_step(v: &[f32]) -> (f32, usize) {
+    v.windows(2)
+        .enumerate()
+        .map(|(i, w)| ((w[1] - w[0]).abs(), i))
+        .fold((0.0f32, 0), |a, b| if b.0 > a.0 { b } else { a })
+}
+
+/// **A jump back behind a loop edit's switch plays the new loop, not the old**
+/// (the second review of #48, B1 — a DAW's cycle mode): after `[1000, 3000)`
+/// is edited to `[200, 1400)`, the clock set back to beat 0 lands inside the
+/// window, below the switch, where the ring still held the old loop. The
+/// butler drops what differs below the reader when it edits, so the jump
+/// moves the window and the new loop is read; outside the edit's and the
+/// jump's spans the live voice is the memory tier's, frame for frame.
+///
+/// Mutation (run): the raise below the reader removed from `apply_mapping` →
+/// the jump reads the old loop from the window, cut hard at the switch →
+/// thousands of frames part → fails.
+#[test]
+fn a_jump_back_behind_a_loop_edit_plays_the_new_loop() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let (a, b) = (loop_on(1_000.0, 3_000.0, 0), loop_on(200.0, 1_400.0, 0));
+    let mut live = Live::new(&path, a, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), a, 1.0, 0.0);
+    let span = BLOCK * 3 + crate::butler::GUARD_FRAMES as usize * 2 + FADE * 2;
+    let mut got = live.render(81);
+    let mut want = memory.render(81);
+    let mut allowed = vec![(got.len(), got.len() + span)];
+    live.loop_(b);
+    memory.source.set_loop_setting(b);
+    got.extend(live.render(20));
+    want.extend(memory.render(20));
+    allowed.push((got.len(), got.len() + span));
+    live.clock.set_beat(Beat::new(0.0));
+    memory.clock.set_beat(Beat::new(0.0));
+    got.extend(live.render(150));
+    want.extend(memory.render(150));
+    assert_eq!(live.underruns(), 0, "frames went unread");
+    assert_same_outside("a jump back behind the switch", &got, &want, &allowed);
+}
+
+/// A sine loop's own largest step, and the most a fade between two unit
+/// sines may add to it per frame (`2 / (fade + 1)`).
+fn sine_bound() -> f32 {
+    (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 2.0 / (FADE + 1) as f32 + 1e-4
+}
+
+/// **Fades chain without a step** (the second review of #48, B2): a loop
+/// edit during another edit's fade, a transport jump during an edit's fade,
+/// and an edit during a jump's fade. Each discontinuity fades from the
+/// continuation of what was playing — the fade in progress included — so on
+/// a sine, under crossfaded loops of lengths that are not whole periods (so
+/// each loop is continuous at its own wrap, but moving between two jumps the
+/// phase, as the memory tier's cut does), no step exceeds the sine's own plus
+/// what a fade between two sines adds per frame. (Before: the record fade read the *current* map's record, so a
+/// second edit swapped its old side mid-fade — a step of 1.06 against the
+/// sine's 0.063 — and a jump dropped the fade.) Nothing goes unread.
+///
+/// Mutation (run): `continue_from` not blending the fade in progress (the
+/// new continuation alone) → a step at the second discontinuity → fails.
+/// Mutation (run): `cross_switch` starting no fade → a hard cut at the
+/// switch → fails.
+#[test]
+fn fades_chain_without_a_step() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("sine.wav");
+    write_sine(&path, 8_000);
+    let (a, b, c) = (
+        loop_on(1_000.0, 3_025.0, 256),
+        loop_on(1_500.0, 2_537.0, 256),
+        loop_on(1_300.0, 2_291.0, 256),
+    );
+    #[derive(Debug, Clone, Copy)]
+    enum Event {
+        Loop(LoopSetting),
+        Jump(f64),
+    }
+    let cases = [
+        ("an edit during an edit", [Event::Loop(b), Event::Loop(c)]),
+        (
+            "a jump during an edit",
+            [Event::Loop(b), Event::Jump(beats(537.0))],
+        ),
+        (
+            "an edit during a jump",
+            [Event::Jump(beats(537.0)), Event::Loop(b)],
+        ),
+    ];
+    for (what, events) in cases {
+        let mut live = Live::new(&path, a, 1.0);
+        let mut got = live.render(40);
+        for (k, event) in events.iter().enumerate() {
+            match *event {
+                Event::Loop(setting) => live.loop_(setting),
+                Event::Jump(beat) => live.clock.set_beat(Beat::new(beat)),
+            }
+            // The second lands inside the first's fade.
+            got.extend(live.render(if k == 0 { 7 } else { 60 }));
+        }
+        assert_eq!(live.underruns(), 0, "{what}: frames went unread");
+        let (step, at) = max_step(&got);
+        let bound = sine_bound();
+        assert!(
+            step <= bound,
+            "{what}: a step of {step} at frame {at}, above the fade's bound {bound}"
+        );
+    }
+}
+
+/// **A starved reader ramps out and back in** (the second review of #48,
+/// S1): a jump outside the window with the butler stalled plays the old
+/// continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
+/// its last frames instead of cutting, and when the butler resumes the ring
+/// ramps back in. On a sine, no step exceeds the sine's own plus a ramp's
+/// `1 / 64` per frame — where cut hard it steps by up to the sine's full
+/// swing.
+///
+/// Mutation (run): the old side's ramp-out removed (`out_ramp` = 1) → a step
+/// near 1 where it runs out → fails. Mutation (run): the ramp-in after an
+/// underrun removed → a step near 1 where the ring returns → fails.
+#[test]
+fn a_starved_reader_ramps_out_and_back_in() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("sine.wav");
+    // Longer than the ring's 30 s cap, so a jump near its end is outside
+    // the window.
+    write_sine(&path, 31 * SR as usize);
+    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let mut got = live.render(20);
+    // Far outside the window, and the butler stalls for 50 blocks.
+    live.clock.set_beat(Beat::new(beats(1_450_000.0)));
+    let input = BufferVec::new(0);
+    for _ in 0..50 {
+        live.voice
+            .process(BLOCK, &input.buffer_ref(), &mut live.output.buffer_mut());
+        let out = live.output.buffer_ref();
+        got.extend((0..BLOCK).map(|i| out.at_f32(0, i)));
+        live.clock.advance(BLOCK as i64, SR);
+    }
+    assert!(
+        live.underruns() > 0,
+        "the stall starved nothing: it proves nothing"
+    );
+    got.extend(live.render(40));
+    assert!(
+        got[got.len() - 64..].iter().any(|&s| s.abs() > 0.5),
+        "it came back"
+    );
+    let (step, at) = max_step(&got);
+    let own = (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32;
+    let bound = own + 1.0 / crate::voice::live_read::RAMP_FRAMES as f32 + 1e-4;
+    assert!(
+        step <= bound,
+        "a step of {step} at frame {at}, above {bound}"
+    );
+}
+
+/// **A `Command::Seek` on a stream a placed voice reads moves nothing**
+/// (the second review of #48, S3): the voice follows its clock and is the one
+/// that says where the butler fills; the seek, meant for a free-running
+/// reader, must not drag the window away. The voice plays on, bit for bit
+/// the memory tier, nothing unread.
+///
+/// Mutation (run): `handle_seek_stream` moving the play position regardless
+/// → the window is dragged to the target and the voice underruns → fails.
+#[test]
+fn a_seek_does_not_move_a_placed_voices_window() {
+    // Longer than the ring's 30 s cap, and a target outside the window, so a
+    // dragged window leaves the voice unread.
+    const LONG: usize = 31 * SR as usize;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LONG);
+    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LONG), LoopSetting::Off, 1.0, 0.0);
+    let mut got = live.render(10);
+    let mut want = memory.render(10);
+    live.streamer
+        .commands()
+        .send(Command::Seek {
+            channel_index: 0,
+            file_position: SamplePosition(30.5 * SR),
+        })
+        .expect("the butler is alive");
+    got.extend(live.render(100));
+    want.extend(memory.render(100));
+    assert_eq!(live.underruns(), 0, "the window was dragged away");
+    assert_same_outside("across a relayed seek", &got, &want, &[]);
+}
+
+/// **A stream serves one live voice** (the second review of #48, S2): a
+/// second `take_disk_voice` on the same channel is refused, naming why.
+///
+/// Mutation (run): `take_streaming_unit` not taking the ring's reader → a
+/// second voice is handed out → fails.
+#[test]
+fn a_stream_serves_one_live_voice() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, 10_000);
+    let live = Live::new(&path, LoopSetting::Off, 1.0);
+    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let second = live
+        .streamer
+        .status()
+        .take_disk_voice(0, clock, Beat(0.0), None);
+    assert_eq!(
+        second.err(),
+        Some(crate::TakeVoiceError::ReaderTaken),
+        "a second live voice was handed out"
     );
 }

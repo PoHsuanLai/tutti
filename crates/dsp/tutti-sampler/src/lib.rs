@@ -126,7 +126,7 @@ pub use voice::{VoicePoolNode, VoicePoolRef};
 // `ButlerThread` API.
 pub(crate) mod butler;
 
-pub use butler::{DiskStreamer, DiskStreamerConfig};
+pub use butler::{DiskStreamer, DiskStreamerConfig, TakeVoiceError};
 
 // The hand-driven butler cycle's verdict, alongside `DiskStreamer::manual`.
 #[cfg(any(test, feature = "test-support"))]

@@ -879,7 +879,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(unit.read.read_to, (BLOCK * BLOCKS - 1) as f64);
+        assert_eq!(unit.read.read_to(), (BLOCK * BLOCKS - 1) as f64);
     }
 
     // --- DiskVoice: placement gate ---

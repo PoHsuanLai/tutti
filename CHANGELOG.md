@@ -414,10 +414,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     for bit, at any rate (a 44.1 kHz file at 48 kHz included). The 2-frame
     lag the old reader's history added at unity is gone.
   - A seek, a transport loop, a varispeed change or a PDC change costs no
-    frame and never drifts: the reader plays on from a copy of the old
-    continuation while the butler moves the window, then crossfades to the new
-    position (the seek crossfade, `BufferConfig::seek_crossfade_frames`) at the
-    read rate. A PDC change now moves from where the reader plays.
+    frame and never drifts: the reader plays on from a rendered continuation
+    of what it was playing while the butler moves the window, then crossfades
+    to the new position (the seek crossfade,
+    `BufferConfig::seek_crossfade_frames`). Fades chain without a step, a
+    continuation that runs out ramps out, and the ring ramps back in after an
+    underrun. A PDC change now moves from where the reader plays.
   - A loop or direction edit switches the ring where the old and new
     mappings part — exactly there when that is ahead of the reader (heard as
     on the memory tier), otherwise just past the block the reader is in,
@@ -431,6 +433,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     plays the loop hard, is logged, and is what a fork of the stream plays too.
   - The wave cache refuses a single wave larger than its whole byte budget;
     a stream of a format that cannot seek holds its file itself.
+  - **`Status::take_disk_voice` returns `Result<DiskVoice, TakeVoiceError>`**
+    (was `Option`): `NotStreaming` where it returned `None`, and
+    `ReaderTaken` for a second voice on one stream — a stream serves one live
+    voice. `Command::Seek` moves a free-running reader only; a placed voice
+    follows its clock.
+  - **tutti-types / tutti-core: `PosRing`**, the position-indexed ring the
+    stream's reader and the butler share (one writer, one reader, a window of
+    positions, reads by position that no write ever lands under), with a loom
+    model of its protocol (`tests/pos_ring_loom.rs`, in CI's loom job).
   - Removed (all crate-private but one): `DiskVoice::seek` — a placed voice
     follows its clock, so seek the clock; `Command::Seek` still moves a
     free-running reader. Also `LoopStatus`, the ring flush and seek-request

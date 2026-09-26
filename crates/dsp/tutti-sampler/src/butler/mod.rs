@@ -36,6 +36,7 @@ pub(crate) use thread::ButlerThread;
 // The butler's public face: the handle a host holds to drive disk streaming,
 // and the one failure every stream-control command can report.
 pub use control::ButlerGone;
+pub use prefetch::TakeVoiceError;
 pub use streamer::{DiskStreamer, DiskStreamerConfig};
 
 // The hand-driven cycle's verdict. Public only alongside the driver that

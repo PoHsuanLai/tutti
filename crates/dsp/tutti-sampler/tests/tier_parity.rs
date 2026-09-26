@@ -403,10 +403,10 @@ fn stream_at(
             Beat::new(0.0),
             None,
         )
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|e| {
             panic!(
-                "the butler applied its commands and reported its rings full, but installed no \
-                 link for channel {channel} streaming from {at_sec}s"
+                "the butler applied its commands and reported its rings full, but gave no \
+                 voice for channel {channel} streaming from {at_sec}s: {e}"
             )
         });
     voice.set_sample_rate(SampleRate(SR));

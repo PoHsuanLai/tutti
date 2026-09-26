@@ -14,25 +14,26 @@ tutti = { git = "…", features = ["export", "analysis", "wav"] }
 ```
 
 ```rust
-use tutti::dsp::Net;
+use tutti::core::{Engine, Transport};
+use tutti::graph::{GraphBuilder, Prepare};
 use tutti::nodes::testing::Osc;
 use tutti::prelude::*;
 
-// A graph, rendered offline, with no device and no Bevy.
-let mut net = Net::new(0, 2);
-let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
-net.pipe_output(tone);
+// A graph, rendered with no device and no Bevy.
+let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+let tone = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+g.pipe_output(tone);
+// The editor stays on the control thread; the executor goes to the engine.
+let (mut editor, executor) = g
+    .build(Prepare::new(SampleRate(48_000.0), Samples(256)))
+    .expect("builds");
 
-let engine = tutti::core::Engine::new(
-    tutti::core::MotionFsm::new(tutti::core::TransportSettings::new()),
-    net.backend(),
-);
+let transport = Transport::new(48_000.0);
+let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 let mut out = vec![0.0f32; 256 * 2];
 engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
 
 assert!(out.iter().any(|&s| s != 0.0));
-# // Keep the net alive: the backend borrows through it.
-# std::mem::forget(net);
 ```
 
 ## What the modules are

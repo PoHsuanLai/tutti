@@ -213,7 +213,7 @@ impl AudioGraphRes {
     }
 
     /// Build the engine over this graph's audio side, which it takes:
-    /// `Engine::with_graph` over the editor and its executor, which bounds the
+    /// `Engine::new` over the editor and its executor, which bounds the
     /// editor to what the engine can render (a commit past it is refused, and
     /// logged).
     pub(crate) fn engine(
@@ -222,7 +222,7 @@ impl AudioGraphRes {
     ) -> Result<tutti_core::Engine, tutti_core::GraphEngineError> {
         let graph = self.write();
         let exec = graph.take_executor();
-        tutti_core::Engine::with_graph(transport, graph.editor_mut(), exec)
+        tutti_core::Engine::new(transport, graph.editor_mut(), exec)
     }
 
     /// Add the node the engine's beat ports come from — an
@@ -231,8 +231,8 @@ impl AudioGraphRes {
     /// [`EngineNodes::clock`](crate::graph::EngineNodes::clock) — unwired.
     ///
     /// For a headless graph that wants the beat clock an engine-built one
-    /// has. A graph engine drives its own `TransportClock` and forbids a
-    /// second in the graph; an `EnvClock` emits the same samples from each
+    /// has. A graph engine drives its own `TransportClock`, and the graph
+    /// must not hold a second; an `EnvClock` emits the same samples from each
     /// block's `Env` (doc 013, Phase 3 gap 5).
     pub fn insert_beat_clock(&mut self) -> AudioNode {
         self.write().insert_env_clock()
@@ -404,6 +404,50 @@ impl AudioGraphRes {
     /// If `source` is `node` itself: a node cannot feed its own input.
     pub fn set_source(&mut self, node: AudioNode, port: usize, source: GraphSource) {
         self.write().set_source(node, port, source);
+    }
+
+    // --- Param modulation ---
+
+    /// Whether `node` declares `param` modulatable by the graph (design doc
+    /// 013 item 6): a unit with a `ParamFeed` that lists it. False for a node
+    /// not in the graph.
+    pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
+        self.read().declares_param(node, param)
+    }
+
+    /// Drive `node`'s declared `param` from exactly `sources` — each a node's
+    /// output 0, through its shaping — summed onto the param's own control
+    /// (its base) and clamped to `range`, per frame, by the graph's fused
+    /// param step. Replaces whatever modulated it; the change crossfades
+    /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
+    /// commit, like any edge.
+    ///
+    /// Refused, changing nothing, with the error the commit would otherwise
+    /// fail on (every commit after it, too): a NaN bound
+    /// (`GraphInvalid::BadParamRange`), more than
+    /// [`MAX_PARAM_SOURCES`](tutti_graph::MAX_PARAM_SOURCES) sources
+    /// (`TooManyParamSources`), or one node listed twice
+    /// (`UnsortedParamSources`: sum its shapings into one first).
+    pub fn set_param_mod(
+        &mut self,
+        node: AudioNode,
+        param: UnitParam,
+        sources: &[(AudioNode, tutti_graph::ParamShaping)],
+        range: tutti_graph::ParamRange,
+    ) -> Result<(), tutti_graph::GraphInvalid> {
+        self.write().set_param_mod(node, param, sources, range)
+    }
+
+    /// Stop modulating `node`'s `param`: it reads its own control again,
+    /// declicked.
+    pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
+        self.write().clear_param_mod(node, param);
+    }
+
+    /// How `node`'s `param` is modulated, as the graph value holds it:
+    /// `None` when nothing modulates it.
+    pub fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<tutti_graph::ParamMod> {
+        self.read().param_mod(node, param)
     }
 
     /// What feeds global output `channel`.

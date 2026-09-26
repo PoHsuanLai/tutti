@@ -171,62 +171,70 @@ mod plugins_without_engine {
 
 /// What reaches the speakers, and who decides.
 ///
-/// `Net::pipe_output` is not a mix. It walks *every* global output channel and
-/// overwrites that channel's edge, so two callers do not layer — the second
-/// silently disconnects the first. Two places in this crate call it as though it
-/// layered: `engine::build` for the metronome (its comment says "mixed into
-/// master output") and `synth::soundfont` for every soundfont that finishes
+/// "This node is the master" is not a mix. `AudioGraphRes::set_outputs_from`
+/// (the native graph's form of `Net::pipe_output`, which these tests drove
+/// until design doc 013's PR 15 retired the last `Net` fixtures) walks
+/// *every* global output channel and overwrites that channel's source, so
+/// two callers do not layer — the second silently disconnects the first.
+/// Two places in this crate once called `pipe_output` as though it layered:
+/// `engine::build` for the metronome (its comment said "mixed into master
+/// output") and `synth::soundfont` for every soundfont that finished
 /// loading.
 ///
-/// These pinned that behaviour before the fix. `pipe_output` still behaves this
-/// way — it is the engine's, and clobbering is a correct thing for a
-/// "this node IS the master" primitive to do. What changed is that **this crate
-/// no longer calls it**: what reaches the bus is declared once, in
-/// `MasterSources`, where two claims cannot coexist.
+/// These pinned that behaviour before the fix. The primitive still behaves
+/// this way — clobbering is a correct thing for a "this node IS the master"
+/// primitive to do, and a headless tool wiring by hand wants it. What
+/// changed is that **this crate's systems no longer call it**: what reaches
+/// the bus is declared once, in `MasterSources`, where two claims cannot
+/// coexist.
 ///
 /// They stay as the record of why that shape was chosen, and as a guard: if
-/// anything here starts calling `pipe_output` again, the mechanism these tests
-/// describe is what it will silently reintroduce. The declarative side is
-/// covered in `graph_wire.rs`.
+/// anything here starts calling `set_outputs_from` from a system again, the
+/// mechanism these tests describe is what it will silently reintroduce. The
+/// declarative side is covered in `graph_wire.rs`.
 /// (Was `tests/master_bus.rs`.)
 mod master_bus {
-    // No feature gate: this drives `Net` directly and names no synth type. It
-    // carried `#![cfg(feature = "synth")]` for one commit, which meant the file
-    // documenting a silent bug was itself silently running zero tests in the
-    // default configuration.
+    // No feature gate: this drives the graph resource directly and names no
+    // synth type. It carried `#![cfg(feature = "synth")]` for one commit,
+    // which meant the file documenting a silent bug was itself silently
+    // running zero tests in the default configuration.
 
-    use tutti_core::dsp::{Net, Source};
+    use bevy_tutti::graph::{AudioGraphRes, GraphSource};
     use tutti_core::{ChannelLayout, Hz};
     use tutti_nodes::testing::Osc;
 
-    /// Two `pipe_output` calls do not sum. The second wins outright.
+    /// Two "this is the master" calls do not sum. The second wins outright.
     ///
     /// This is the whole defect in four lines: nothing warns, nothing logs, and the
     /// first node is simply gone from the output.
+    ///
+    /// Mutation (run): `NativeGraph::set_outputs_from` writing only the
+    /// channels that read nothing yet (a layering "mix") → the second claim
+    /// does not land and this fails.
     #[test]
-    fn a_second_pipe_output_silently_replaces_the_first() {
-        let mut net = Net::new(0, 2);
-        let first = net.push(Box::new(Osc::sine(Hz(440.0))));
-        let second = net.push(Box::new(Osc::sine(Hz(880.0))));
+    fn a_second_claim_on_the_master_silently_replaces_the_first() {
+        let mut graph = AudioGraphRes::headless(0, 2);
+        let first = graph.insert(Osc::sine(Hz(440.0)));
+        let second = graph.insert(Osc::sine(Hz(880.0)));
 
-        net.pipe_output(first);
+        graph.set_outputs_from(first);
         assert_eq!(
-            net.output_source(0),
-            Source::Local(first, 0),
+            graph.output_source(0),
+            GraphSource::Node(first, 0),
             "the first claim lands"
         );
 
-        net.pipe_output(second);
+        graph.set_outputs_from(second);
         assert_eq!(
-            net.output_source(0),
-            Source::Local(second, 0),
+            graph.output_source(0),
+            GraphSource::Node(second, 0),
             "and the second overwrites it — this is the bug, not a mix"
         );
         assert_eq!(
-            net.output_source(1),
+            graph.output_source(1),
             // a mono `Osc` has one output, so `channel % node_outputs` wraps both
             // global channels onto port 0.
-            Source::Local(second, 0),
+            GraphSource::Node(second, 0),
             "on every channel, not just channel 0"
         );
     }
@@ -235,20 +243,19 @@ mod master_bus {
     /// which is why a mono node claiming the bus silences a stereo one on both
     /// sides rather than just the left.
     #[test]
-    fn pipe_output_claims_every_channel_even_from_a_mono_source() {
-        let mut net = Net::new(0, 2);
-        let stereo = net.push(Box::new(
-            Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO),
-        ));
-        let mono = net.push(Box::new(Osc::sine(Hz(880.0))));
+    fn a_master_claim_takes_every_channel_even_from_a_mono_source() {
+        let mut graph = AudioGraphRes::headless(0, 2);
+        let stereo = graph.insert(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
+        let mono = graph.insert(Osc::sine(Hz(880.0)));
 
-        net.pipe_output(stereo);
-        net.pipe_output(mono);
+        graph.set_outputs_from(stereo);
+        assert_eq!(graph.output_source(1), GraphSource::Node(stereo, 1));
+        graph.set_outputs_from(mono);
 
-        // `pipe_output` wraps with `channel % node_outputs`, so a 1-output node
-        // feeds both channels from its single port.
-        assert_eq!(net.output_source(0), Source::Local(mono, 0));
-        assert_eq!(net.output_source(1), Source::Local(mono, 0));
+        // `set_outputs_from` wraps with `channel % node_outputs`, so a 1-output
+        // node feeds both channels from its single port.
+        assert_eq!(graph.output_source(0), GraphSource::Node(mono, 0));
+        assert_eq!(graph.output_source(1), GraphSource::Node(mono, 0));
     }
 
     /// The sequence this crate used to produce: the build piped the metronome to
@@ -261,21 +268,21 @@ mod master_bus {
     /// `MasterSources` and wonders why a resource rather than a helper.
     #[test]
     fn the_sequence_this_crate_used_to_produce_lost_the_metronome() {
-        let mut net = Net::new(0, 2);
+        let mut graph = AudioGraphRes::headless(0, 2);
 
-        // Stand-in for the click node `build_into` pipes to output.
-        let click = net.push(Box::new(Osc::sine(Hz(1000.0))));
-        net.pipe_output(click);
+        // Stand-in for the click node `build_into` piped to output.
+        let click = graph.insert(Osc::sine(Hz(1000.0)));
+        graph.set_outputs_from(click);
 
         // A soundfont finishes loading a few frames later.
-        let soundfont = net.push(Box::new(Osc::sine(Hz(261.0))));
-        net.pipe_output(soundfont);
+        let soundfont = graph.insert(Osc::sine(Hz(261.0)));
+        graph.set_outputs_from(soundfont);
 
         assert_ne!(
-            net.output_source(0),
-            Source::Local(click, 0),
+            graph.output_source(0),
+            GraphSource::Node(click, 0),
             "the metronome is disconnected — silently, with nothing in the log"
         );
-        assert_eq!(net.output_source(0), Source::Local(soundfont, 0));
+        assert_eq!(graph.output_source(0), GraphSource::Node(soundfont, 0));
     }
 }

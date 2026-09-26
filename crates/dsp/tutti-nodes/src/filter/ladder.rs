@@ -12,7 +12,8 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
-use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate};
+use tutti_core::{ChannelLayout, Drive, Hz, Param, ParamFeed, Resonance, SampleRate};
+use tutti_types::UnitParam;
 
 use crate::ramp::{self, finite_or, LastGood, Ramp};
 
@@ -193,17 +194,17 @@ fn ladder_step<F: Real>(
 /// `F` is the internal state precision, defaulting to `f64` for accuracy at low
 /// cutoffs.
 ///
-/// # Port layout
+/// # Modulated params
 ///
-/// `N` audio inputs, then optional param-input ports (see
-/// [`Self::with_param_inputs`]) in the order cutoff, Q, drive. A present cutoff
-/// or Q port is sampled at the solve points (every 16 samples and the block's
-/// last sample) with the coefficients interpolated between them; a present
-/// drive port is read every sample, since drive needs no solve. Absent, the
-/// node is a plain `N`-in/`N`-out filter with zero added cost.
+/// `N` audio inputs, `N` outputs. Cutoff, Q and drive are modulatable by the
+/// graph (design doc 013 item 6), in that port order ([`LADDER_PARAMS`]). A
+/// fed cutoff or Q is sampled at the solve points (every 16 samples and the
+/// block's last sample) with the coefficients interpolated between them; a
+/// fed drive is read every sample, since drive needs no solve. Unfed, the
+/// filter reads its atomics once per block, at the cost of one branch.
 ///
-/// The port is named `q` for consistency with the other filters, but it
-/// carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_core::Q).
+/// The param is `UnitParam::Q` for consistency with the other filters, but
+/// it carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_core::Q).
 pub struct LadderFilterNode<F: Real = f64> {
     ladder_type: LadderType,
     frequency: Param<Hz>,
@@ -223,10 +224,13 @@ pub struct LadderFilterNode<F: Real = f64> {
     /// non-finite write reads as unchanged, so it never reaches the solve or
     /// the saturator (see [`LastGood`]).
     good: [LastGood; 3],
-    mod_cutoff: bool,
-    mod_q: bool,
-    mod_drive: bool,
+    /// Per-frame cutoff, resonance and drive from the graph, when it
+    /// modulates them ([`LADDER_PARAMS`]).
+    feed: ParamFeed,
 }
+
+/// The params a [`LadderFilterNode`] lets the graph modulate, in port order.
+pub const LADDER_PARAMS: [UnitParam; 3] = [UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive];
 
 impl<F: Real> LadderFilterNode<F> {
     /// A mono ladder filter (1 in, 1 out) of `ladder_type` at `frequency`
@@ -282,40 +286,8 @@ impl<F: Real> LadderFilterNode<F> {
                 LastGood::new(resonance.get()),
                 LastGood::new(Drive::UNITY.get()),
             ],
-            mod_cutoff: false,
-            mod_q: false,
-            mod_drive: false,
+            feed: ParamFeed::new(&LADDER_PARAMS),
         }
-    }
-
-    /// A filter with optional audio-rate cutoff / Q / drive param-input ports,
-    /// appended after the audio inputs in that order. Each present port
-    /// overrides its atomic; the atomics still hold the base.
-    ///
-    /// Width and modulation are **independent axes**: `channels` says how wide
-    /// the filter is, the `mod_*` flags say which params it reads at audio rate.
-    /// Collapsing them — building the modulated form at a fixed width 2 — turns
-    /// a request for a modulated 5.1 filter into a *stereo* one, and the only
-    /// symptom is a `set_source` on a param port that resolves and carries the
-    /// wrong signal.
-    ///
-    /// The param ports follow the audio inputs, so their indices **move with the
-    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
-    /// never assume an index.
-    pub fn with_param_inputs(
-        channels: impl Into<ChannelLayout>,
-        ladder_type: LadderType,
-        frequency: impl Into<Hz>,
-        resonance: impl Into<Resonance>,
-        mod_cutoff: bool,
-        mod_q: bool,
-        mod_drive: bool,
-    ) -> Self {
-        let mut node = Self::with_channels(channels, ladder_type, frequency, resonance);
-        node.mod_cutoff = mod_cutoff;
-        node.mod_q = mod_q;
-        node.mod_drive = mod_drive;
-        node
     }
 
     /// Audio channel width (`inputs()` audio ports == `outputs()`).
@@ -324,32 +296,11 @@ impl<F: Real> LadderFilterNode<F> {
         self.stages.len()
     }
 
-    /// Input-port index of the cutoff param input, if present (right after the
-    /// audio inputs).
-    #[inline]
-    pub fn cutoff_port(&self) -> Option<usize> {
-        self.mod_cutoff.then_some(self.width())
-    }
-
-    /// Input-port index of the Q param input, if present.
-    #[inline]
-    pub fn q_port(&self) -> Option<usize> {
-        self.mod_q
-            .then_some(self.width() + self.mod_cutoff as usize)
-    }
-
-    /// Input-port index of the drive param input, if present.
-    #[inline]
-    pub fn drive_port(&self) -> Option<usize> {
-        self.mod_drive
-            .then_some(self.width() + self.mod_cutoff as usize + self.mod_q as usize)
-    }
-
     /// The shared cutoff cell in [`Hz`], governing every channel.
     ///
     /// Read once per block; the coefficient computation clamps to
-    /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. **A present
-    /// cutoff param-input port overrides it.** Shared across clones.
+    /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. **A cutoff
+    /// the graph feeds overrides it.** Shared across clones.
     ///
     /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
     /// filter keeps the last finite value, so it never reaches the coefficient
@@ -362,8 +313,8 @@ impl<F: Real> LadderFilterNode<F> {
     ///
     /// Scales the ladder feedback: `0.0` no emphasis, near `1.0` approaching
     /// self-oscillation. The computation clamps to that range regardless of
-    /// what is written here. Read once per block. **A present Q param-input
-    /// port overrides it.**
+    /// what is written here. Read once per block. **A resonance the graph
+    /// feeds overrides it.**
     ///
     /// A non-finite value written here (NaN, ±∞) reads as *unchanged*: the
     /// filter keeps the last finite value, so it never reaches the coefficient
@@ -377,8 +328,8 @@ impl<F: Real> LadderFilterNode<F> {
     ///
     /// Read once per block and ramped across it when it moves, so it needs no
     /// coefficient solve and never steps. `1.0` is clean; higher adds
-    /// harmonics and compresses. **A present drive param-input port overrides
-    /// it per sample.**
+    /// harmonics and compresses. **A drive the graph feeds overrides it per
+    /// sample.**
     pub fn drive(&self) -> Arc<AtomicF32> {
         self.drive.as_atomic()
     }
@@ -386,8 +337,8 @@ impl<F: Real> LadderFilterNode<F> {
     /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
     ///
     /// The upper bound is applied when coefficients are computed, at `0.998` of
-    /// Nyquist. With a cutoff param-input port present this sets the *base*
-    /// the port overrides.
+    /// Nyquist. While the graph modulates the cutoff this sets the *base* its
+    /// modulation rides on.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
@@ -531,7 +482,12 @@ impl<F: Real> LadderFilterNode<F> {
 
     /// The block's cutoff/resonance handling, with the drive source already
     /// chosen: held coefficients take the grouped fast path; a moved control
-    /// or a cutoff/Q port takes the swept path.
+    /// or a fed cutoff/Q (`cutoff`, `res`) takes the swept path.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the block, its buffers, the two bases and the three sources \
+                  the render chooses between; a struct would only move the list"
+    )]
     fn render(
         &mut self,
         size: usize,
@@ -539,9 +495,11 @@ impl<F: Real> LadderFilterNode<F> {
         output: &mut BufferMut,
         base_freq: Hz,
         base_res: Resonance,
+        cutoff: Option<&[f32]>,
+        res: Option<&[f32]>,
         drive_at: impl Fn(usize) -> F + Copy,
     ) {
-        match (self.cutoff_port(), self.q_port()) {
+        match (cutoff, res) {
             (None, None) => {
                 if self.coeffs.is_invalid() {
                     self.coeffs = LadderCoefficients::solve(base_freq, base_res, self.sample_rate);
@@ -560,9 +518,7 @@ impl<F: Real> LadderFilterNode<F> {
                     drive_at,
                 );
             }
-            (cp, qp) => {
-                let cutoff = cp.map(|p| input.channel_f32(p));
-                let res = qp.map(|p| input.channel_f32(p));
+            (cutoff, res) => {
                 self.run_swept(
                     size,
                     input,
@@ -584,7 +540,7 @@ impl<F: Real> LadderFilterNode<F> {
 
 impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     fn inputs(&self) -> usize {
-        self.width() + self.mod_cutoff as usize + self.mod_q as usize + self.mod_drive as usize
+        self.width()
     }
 
     fn outputs(&self) -> usize {
@@ -614,17 +570,15 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // A block of one: every control read once, solved at if it moved.
-        // Port samples fall back to the cell's value when non-finite: `clamp`
+        // Fed samples fall back to the cell's value when non-finite: `clamp`
         // passes NaN, and an infinite drive times a zero input is NaN.
         let (base_freq, base_res, base_drive) = self.read_controls();
-        let freq = self
-            .cutoff_port()
-            .map_or(base_freq, |p| Hz(input[p].max(1.0)));
-        let res = self.q_port().map_or(base_res, |p| {
-            Resonance(finite_or(input[p], base_res.get()).clamp(0.0, 1.0))
+        let freq = self.feed.get(0, 1).map_or(base_freq, |v| Hz(v[0].max(1.0)));
+        let res = self.feed.get(1, 1).map_or(base_res, |v| {
+            Resonance(finite_or(v[0], base_res.get()).clamp(0.0, 1.0))
         });
-        let drive = self.drive_port().map_or(base_drive, |p| {
-            Drive(finite_or(input[p], base_drive.get()).max(0.1))
+        let drive = self.feed.get(2, 1).map_or(base_drive, |v| {
+            Drive(finite_or(v[0], base_drive.get()).max(0.1))
         });
         self.coeffs = self.solve_toward(&self.coeffs, freq, res);
         self.last_drive = Some(drive);
@@ -642,26 +596,45 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
         let (base_freq, base_res, base_drive) = self.read_controls();
         let bd = base_drive.get();
 
-        // Drive: a port is an audio signal read per sample; the atomic ramps
-        // from where the last block ended. Each source gets its own
-        // monomorphised render, so a held drive is a constant in the loop.
-        let drive_port = self.drive_port().map(|p| input.channel_f32(p));
+        // Drive: a fed drive is read per sample; the atomic ramps from where
+        // the last block ended. Each source gets its own monomorphised
+        // render, so a held drive is a constant in the loop. The feed is
+        // moved out for the render, which takes `&mut self`; moving it
+        // allocates nothing.
+        let feed = ParamFeed::take(&mut self.feed);
+        let (cutoff, res, fed_drive) = (feed.get(0, size), feed.get(1, size), feed.get(2, size));
         let drive_from = self.last_drive.unwrap_or(base_drive);
         let drive_ramp = Ramp::new(drive_from.get(), base_drive.get(), size);
-        self.last_drive = Some(match drive_port {
+        self.last_drive = Some(match fed_drive {
             Some(s) => Drive(finite_or(s[size - 1], bd).max(0.1)),
             None => base_drive,
         });
         let (f, r) = (base_freq, base_res);
-        match drive_port {
-            Some(s) => self.render(size, input, output, f, r, |i| {
+        match fed_drive {
+            Some(s) => self.render(size, input, output, f, r, cutoff, res, |i| {
                 F::from_f32(finite_or(s[i], bd).max(0.1))
             }),
             None if drive_ramp.is_flat() => {
                 let d = F::from_f32(base_drive.get());
-                self.render(size, input, output, f, r, move |_| d);
+                self.render(size, input, output, f, r, cutoff, res, move |_| d);
             }
-            None => self.render(size, input, output, f, r, |i| F::from_f32(drive_ramp.at(i))),
+            None => self.render(size, input, output, f, r, cutoff, res, |i| {
+                F::from_f32(drive_ramp.at(i))
+            }),
+        }
+        self.feed = feed;
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.frequency.load().get()),
+            1 => Some(self.resonance.load().get()),
+            2 => Some(self.drive.load().get()),
+            _ => None,
         }
     }
 
@@ -677,9 +650,8 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        // Keyed on the audio width, not `inputs()` (param ports are not a
-        // channel): width 1 keeps the mono id, every other width the wide
-        // twin's.
+        // Keyed on the audio width: width 1 keeps the mono id, every other
+        // width the wide twin's.
         if self.width() == 1 {
             crate::node_id::LADDER_FILTER_ID
         } else {
@@ -720,9 +692,7 @@ impl<F: Real> Clone for LadderFilterNode<F> {
             last_drive: self.last_drive,
             stages: self.stages.clone(),
             good: self.good,
-            mod_cutoff: self.mod_cutoff,
-            mod_q: self.mod_q,
-            mod_drive: self.mod_drive,
+            feed: self.feed.clone(),
         }
     }
 }
@@ -879,25 +849,21 @@ mod tests {
         );
     }
 
-    // ── Audio-rate param-input ports ─────────────────────────────────────────
+    // ── Modulated params (the graph's param feed) ───────────────────────────
 
+    /// Tick a stereo ladder with `params` (cutoff, Q, drive: `Some` held at
+    /// a value, `None` unfed) in its feed each sample.
     fn process_stereo_ladder(
         node: &mut dyn AudioUnit,
         l: &[f32],
         r: &[f32],
-        params: &[f32],
+        params: [Option<f32>; 3],
     ) -> (Vec<f32>, Vec<f32>) {
-        let mut out_l = vec![0.0f32; l.len()];
-        let mut out_r = vec![0.0f32; r.len()];
-        for i in 0..l.len() {
-            let mut input = vec![l[i], r[i]];
-            input.extend_from_slice(params);
-            let mut output = [0.0f32; 2];
-            node.tick(&input, &mut output);
-            out_l[i] = output[0];
-            out_r[i] = output[1];
-        }
-        (out_l, out_r)
+        let held: Vec<Option<Vec<f32>>> =
+            params.iter().map(|p| p.map(|v| vec![v; l.len()])).collect();
+        let refs: Vec<Option<&[f32]>> = held.iter().map(|p| p.as_deref()).collect();
+        let out = crate::testing::tick_fed(node, &[l, r], &refs);
+        (out[0].clone(), out[1].clone())
     }
 
     #[test]
@@ -931,81 +897,52 @@ mod tests {
         }
     }
 
+    /// The feed declares cutoff, Q then drive, and never changes the arity.
+    ///
+    /// Mutation (run): swap `LADDER_PARAMS`' Q and drive → the first
+    /// assertion fails.
     #[test]
-    fn stereo_ladder_param_port_arity_and_indices() {
-        // Plain constructor: no ports, audio arity untouched.
-        let d = LadderFilterNode::<f64>::with_channels(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1000.0,
-            0.3,
+    fn the_feed_declares_cutoff_q_then_drive() {
+        let mut f = LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1000.0, 0.3);
+        assert_eq!(
+            f.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Cutoff, UnitParam::Q, UnitParam::Drive][..])
         );
-        assert_eq!(d.inputs(), 2);
-        assert_eq!(d.outputs(), 2);
-        assert_eq!(d.cutoff_port(), None);
-        assert_eq!(d.q_port(), None);
-        assert_eq!(d.drive_port(), None);
-        // cutoff + drive (no Q) → cutoff at 2, drive at 3 (Q absent).
-        let u = LadderFilterNode::<f64>::with_param_inputs(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1000.0,
-            0.3,
-            true,
-            false,
-            true,
-        );
-        assert_eq!(u.inputs(), 4);
-        assert_eq!(u.cutoff_port(), Some(2));
-        assert_eq!(u.q_port(), None);
-        assert_eq!(u.drive_port(), Some(3));
-        // all three → cutoff 2, Q 3, drive 4.
-        let a = LadderFilterNode::<f64>::with_param_inputs(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1000.0,
-            0.3,
-            true,
-            true,
-            true,
-        );
-        assert_eq!(a.inputs(), 5);
-        assert_eq!(a.cutoff_port(), Some(2));
-        assert_eq!(a.q_port(), Some(3));
-        assert_eq!(a.drive_port(), Some(4));
+        assert_eq!((f.inputs(), f.outputs()), (6, 6));
+        assert_eq!(f.param_base(0), Some(1000.0));
+        assert_eq!(f.param_base(1), Some(0.3));
+        assert_eq!(f.param_base(2), Some(1.0), "drive starts clean");
     }
 
     #[test]
-    fn stereo_ladder_cutoff_port_modulates_response() {
+    fn stereo_ladder_fed_cutoff_modulates_response() {
         let noise: Vec<f32> = (0..2048)
             .map(|i| ((i * 7 + 3) % 100) as f32 / 50.0 - 1.0)
             .collect();
         let run = |cutoff: f32| -> f32 {
-            let mut f = LadderFilterNode::<f64>::with_param_inputs(
+            let mut f = LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
                 LadderType::LP24,
                 200.0,
                 0.3,
-                true,
-                false,
-                false,
             );
             f.set_sample_rate(tutti_core::SampleRate(44100.0));
-            let (out_l, _) = process_stereo_ladder(&mut f, &noise, &noise, &[cutoff]);
+            let (out_l, _) =
+                process_stereo_ladder(&mut f, &noise, &noise, [Some(cutoff), None, None]);
             rms(&out_l[256..])
         };
         let low = run(200.0);
         let high = run(8000.0);
         assert!(
             high > low * 1.5,
-            "higher cutoff via param port should pass more: low={low}, high={high}"
+            "higher fed cutoff should pass more: low={low}, high={high}"
         );
     }
 
     #[test]
     fn stereo_ladder_unmodulated_matches_modulated_held_constant() {
-        // A modulated node whose cutoff port is held at the atomic value must
-        // produce the same output as a plain node.
+        // A node whose fed cutoff is held at the atomic value must produce the
+        // same output as a plain node.
         let signal = generate_sine(440.0, 44100.0, 1024);
 
         let mut plain = LadderFilterNode::<f64>::with_channels(
@@ -1015,19 +952,17 @@ mod tests {
             0.3,
         );
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let (plain_l, _) = process_stereo_ladder(&mut plain, &signal, &signal, &[]);
+        let (plain_l, _) = process_stereo_ladder(&mut plain, &signal, &signal, [None; 3]);
 
-        let mut modn = LadderFilterNode::<f64>::with_param_inputs(
+        let mut modn = LadderFilterNode::<f64>::with_channels(
             ChannelLayout::STEREO,
             LadderType::LP24,
             1000.0,
             0.3,
-            true,
-            false,
-            false,
         );
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let (mod_l, _) = process_stereo_ladder(&mut modn, &signal, &signal, &[1000.0]);
+        let (mod_l, _) =
+            process_stereo_ladder(&mut modn, &signal, &signal, [Some(1000.0), None, None]);
 
         for i in 0..signal.len() {
             assert!(
@@ -1037,32 +972,6 @@ mod tests {
                 mod_l[i]
             );
         }
-    }
-
-    /// Width and modulation are independent axes.
-    ///
-    /// Building the modulated form at a fixed width 2 makes a 6-channel request
-    /// come back *stereo*; the arity assertion is what catches it.
-    #[test]
-    fn a_modulated_ladder_is_as_wide_as_it_was_asked_for() {
-        let f = LadderFilterNode::<f64>::with_param_inputs(
-            6usize,
-            LadderType::LP24,
-            1000.0,
-            0.5,
-            true,
-            true,
-            true,
-        );
-        assert_eq!(f.outputs(), 6, "the width is what was asked for");
-        assert_eq!(f.inputs(), 9, "six audio inputs, then cutoff, Q, drive");
-        assert_eq!(
-            f.cutoff_port(),
-            Some(6),
-            "param ports follow the audio inputs"
-        );
-        assert_eq!(f.q_port(), Some(7), "and keep their documented order");
-        assert_eq!(f.drive_port(), Some(8));
     }
 
     // ── Per-block reads ──────────────────────────────────────────────────────

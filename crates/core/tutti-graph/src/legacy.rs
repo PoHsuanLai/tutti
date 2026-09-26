@@ -30,6 +30,14 @@
 //!   hazard: it opts in, and reads aliased channels through [`Io::input`].
 //! - **Silence: no claim unless the caller makes it.** See below.
 //! - **Time read out of band: the renderer renders chunk-major.** See below.
+//! - **Modulated params.** A unit with a `tutti_node::ParamFeed`
+//!   (`AudioUnit::param_feed`) declares the feed's params as the node's
+//!   param ports ([`Shape::params`]), answers [`Node::param_base`] from
+//!   `AudioUnit::param_base`, and before each 64-frame call the adapter
+//!   feeds it the chunk of every param the graph modulates this block and
+//!   clears the rest, which the unit then reads from its own controls. The
+//!   bridge that replaced the `with_param_inputs` ports and their base /
+//!   shaper / sum chain (design doc 013 item 6).
 //!
 //! # A timeline polled per call: [`Shape::legacy`]
 //!
@@ -61,7 +69,7 @@
 //! right for a node whose output depends only on its audio inputs, and wrong
 //! for one fed **out of band** — a SoundFont or a PolySynth steered through a
 //! channel, a plugin instrument driven through its own MIDI queue, a mic
-//! monitor, an `AtomicSourceNode` whose base is 0 until someone writes it.
+//! monitor, a constant source whose value is 0 until someone writes its cell.
 //! Skipped once, such a unit is never called again to notice that it has
 //! something to say: parked for good.
 //!
@@ -206,6 +214,7 @@ use crate::io::Io;
 use crate::node::{
     ConstantMask, Cx, IntoNode, Node, NodeParts, Prepare, Resolution, Shape, SilenceMask, Status,
 };
+use crate::param::ParamInput;
 
 /// An `AudioUnit`, ready to run as a [`Node`]: insert it
 /// ([`Editor::insert`], through [`IntoNode`]).
@@ -242,6 +251,9 @@ struct Adapter {
     pure: bool,
     /// The audio-thread end of [`Legacy::controlled`]'s settings ring.
     settings: Option<HeapCons<Setting>>,
+    /// Whether the last block fed the unit's feed any param, so a block that
+    /// feeds none clears it once and then leaves it alone.
+    fed: bool,
 }
 
 /// Settings one [`Legacy::controlled`] node's ring holds between two of its
@@ -666,6 +678,7 @@ impl Adapter {
             output: BufferVec::new(outs),
             pure: false,
             settings: None,
+            fed: false,
         }
     }
 
@@ -681,6 +694,7 @@ impl Adapter {
         let latency = Latency::new(Samples(
             unit.latency().unwrap_or(0.0).round().max(0.0) as usize
         ));
+        let params = unit.param_feed().map_or(&[][..], |f| f.params());
         Shape::audio(
             ChannelLayout::from_count(unit.inputs() as u16),
             ChannelLayout::from_count(unit.outputs() as u16),
@@ -694,6 +708,8 @@ impl Adapter {
         // It may poll a timeline out of band: rendered chunk-major (see "A
         // timeline polled per call").
         .with_legacy()
+        // Its feed's params, the graph may modulate (see the module docs).
+        .with_params(params)
     }
 }
 
@@ -727,12 +743,35 @@ impl Node for Adapter {
                 }
             }
         }
+        // Whether the graph modulates any param this block: when it does
+        // not, the feed is cleared once (if the last block fed it) and each
+        // chunk skips it.
+        let n_params = self.shape.params.len();
+        let modulated = n_params != 0 && (0..n_params).any(|k| io.param(k) != ParamInput::Base);
+        if !modulated && self.fed {
+            if let Some(feed) = self.unit.param_feed() {
+                feed.clear_all();
+            }
+        }
+        self.fed = modulated;
         let mut start = 0;
         while start < frames {
             let len = (frames - start).min(LEGACY_CHUNK);
             for c in 0..ins {
                 self.input.channel_f32_mut(c)[..len]
                     .copy_from_slice(&io.input(c)[start..start + len]);
+            }
+            if modulated {
+                // The chunk of each modulated param; the rest read their
+                // own controls (see the module docs).
+                if let Some(feed) = self.unit.param_feed() {
+                    for k in 0..n_params {
+                        match io.param(k) {
+                            ParamInput::Base => feed.clear(k),
+                            ParamInput::Frames(v) => feed.feed(k, &v[start..start + len]),
+                        }
+                    }
+                }
             }
             self.unit
                 .process(len, &self.input.buffer_ref(), &mut self.output.buffer_mut());
@@ -770,5 +809,9 @@ impl Node for Adapter {
 
     fn reset(&mut self) {
         self.unit.reset();
+    }
+
+    fn param_base(&self, port: usize) -> Option<f32> {
+        self.unit.param_base(port)
     }
 }

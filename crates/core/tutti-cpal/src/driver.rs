@@ -332,8 +332,10 @@ fn refuse_rate_change(
 mod tests {
     use super::*;
     use crate::{AudioEngine, ManualStreamDriver, OutputSpec};
-    use tutti_core::dsp::Net;
-    use tutti_core::{AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate, Transport};
+    use tutti_core::{
+        AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate, Samples, Transport,
+    };
+    use tutti_graph::{Editor, Prepare};
 
     fn spec_at(rate: f64) -> OutputSpec {
         OutputSpec::new(
@@ -358,8 +360,8 @@ mod tests {
     #[test]
     fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
         let transport = Transport::new(44_100.0);
-        let mut net = Net::new(0, 2);
-        let engine = Engine::new(transport.motion.clone(), net.backend());
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(44_100.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
         let state = Arc::new(AudioCallbackState::new(
             engine,
             MasterMeter::new(),
@@ -402,6 +404,6 @@ mod tests {
             .restart_on(spec_at(44_100.0), d, refuse_rate_change(graph))
             .expect("the same rate restarts");
         assert!(driver.is_running() && stream.is_open());
-        drop(net);
+        drop(ed);
     }
 }

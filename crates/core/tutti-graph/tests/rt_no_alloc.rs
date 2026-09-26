@@ -2,8 +2,9 @@
 //! applied — through PDC rings, event delays, event fan-in merges, feedback of
 //! both kinds, in-place aliasing, the silence skip, the `Legacy` adapter
 //! (draining a full settings ring),
-//! scheduled commands landing (on time, late, and still waiting), and block
-//! lengths that change every call.
+//! scheduled commands landing (on time, late, and still waiting), writers
+//! refusing past a declared event capacity, and block lengths that change
+//! every call.
 //!
 //! What this cannot cover, stated rather than implied: `apply` allocates by
 //! design in phase 1 (see `exec.rs`), so it runs outside the gate; and a node
@@ -12,16 +13,19 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{
-    CrossfadeCurve, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Legacy,
-    ParamRamp, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
+    CrossfadeCurve, Cx, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io,
+    Legacy, Node, ParamRamp, Prepare, Shape, Status, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::Setting;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::{At, Beat, ChannelLayout, Frame, NodeKey, Samples};
+use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -336,4 +340,287 @@ fn crossfades_are_allocation_free() {
     back.sort();
     assert_eq!(back, vec![NodeKey(1), NodeKey(1), NodeKey(3)]);
     assert_eq!(ed.fades_in_flight(), 0);
+}
+
+/// Pushes `burst` events on the first frame of every 256-frame bar into a
+/// port declaring `cap` per block, counting what its writer refuses.
+struct Spray {
+    cap: u32,
+    burst: u32,
+    refused: Arc<AtomicU64>,
+}
+
+impl Node for Spray {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(self.cap)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for at in cx.env.offsets() {
+            if cx.env.frame_at(at).get().is_multiple_of(256) {
+                for i in 0..self.burst {
+                    let e = tutti_graph::Event::midi(at, [0x2090_3c64 | i, 0, 0, 0]);
+                    if io.event_out(0).push(e).is_err() {
+                        self.refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Declares 141 frames of latency and an event output it never writes: it
+/// puts PDC delays on its sink's other event edges.
+struct LateEvents;
+
+impl Node for LateEvents {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_latency(Latency::new(Samples(141)))
+            .with_tail(Tail::Finite(Samples(141)))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Counts the events on each of its two event inputs.
+struct Tally([Arc<AtomicU64>; 2]);
+
+impl Node for Tally {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(2, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, io: Io<'_>) -> Status {
+        for (p, n) in self.0.iter().enumerate() {
+            n.fetch_add(io.events(p).len() as u64, Ordering::Relaxed);
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Declared event capacities (`Shape::event_capacity`) never allocate on
+/// the audio thread: two ports declaring 4 events per block, each handed a
+/// burst of 6 every bar (the writer refusing 2 inside the gate), fan into
+/// one input through a 141-frame PDC delay, and one also feeds back, with
+/// the executor's default capacity at **1** — so every buffer on the way
+/// must have been sized from the declarations. Nothing but the writers
+/// refuses: the executor's drop count is exactly what the nodes were told.
+///
+/// Mutation: size event slots from the default alone
+/// (`Vec::with_capacity(cap)` in `Executor::rebuild`) → the writers grow
+/// their slots on the first bar (in the warm-up, outside the gate) and the
+/// merges, sized for one per source, drop what the writers accepted →
+/// fails. Mutation: size the PDC FIFOs from the default (`rate(from)` →
+/// `cap`) → they overflow and drop more than the writers refused → fails.
+#[test]
+fn declared_event_capacities_are_allocation_free() {
+    let (mut ed, mut exec) = Editor::with_event_capacity(prepare(256), 1);
+    let refused = Arc::new(AtomicU64::new(0));
+    let seen = [Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0))];
+    for k in [1, 2] {
+        ed.insert(
+            NodeKey(k),
+            "spray",
+            Spray {
+                cap: 4,
+                burst: 6,
+                refused: Arc::clone(&refused),
+            },
+        );
+    }
+    ed.insert(NodeKey(3), "late", LateEvents);
+    ed.insert(NodeKey(4), "tally", Tally(seen.clone()));
+    let ev = |node| EventOut {
+        node: NodeKey(node),
+        port: 0,
+    };
+    let tally = |port| EventIn {
+        node: NodeKey(4),
+        port,
+    };
+    let spec = ed.spec_mut();
+    for from in [1, 2, 3] {
+        spec.connect_events(tally(0), EventEdge::Direct(ev(from)));
+    }
+    spec.connect_events(tally(1), EventEdge::feedback(ev(1), Samples(300)));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let plan = exec.plan().expect("applied");
+    assert!(
+        plan.delays().len() >= 2,
+        "both sprays reach the tally through a PDC delay"
+    );
+
+    let transport = Transport::default();
+    let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    for &n in &sizes {
+        exec.process(n, &transport, &[], &mut []);
+    }
+    let before = refused.load(Ordering::Relaxed);
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..2_000 {
+            exec.process(sizes[i % sizes.len()], &transport, &[], &mut []);
+        }
+    });
+    let refused = refused.load(Ordering::Relaxed);
+    assert!(refused > before, "writers refused inside the gate");
+    assert_eq!(
+        exec.dropped_events(),
+        refused,
+        "only the writers refused anything"
+    );
+    assert!(seen[0].load(Ordering::Relaxed) > 0 && seen[1].load(Ordering::Relaxed) > 0);
+}
+
+/// Declares `Cutoff` and `Q` (bases 1.0 and 2.0); writes the sum of what it
+/// reads for them.
+struct ParamSink;
+
+impl Node for ParamSink {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_params(&[tutti_types::UnitParam::Cutoff, tutti_types::UnitParam::Q])
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for i in 0..io.frames() {
+            let a = io.param(0).frames().map_or(1.0, |v| v[i]);
+            let b = io.param(1).frames().map_or(2.0, |v| v[i]);
+            io.output(0)[i] = a + b;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+    fn param_base(&self, port: usize) -> Option<f32> {
+        [1.0, 2.0].get(port).copied()
+    }
+}
+
+/// A ramp on `Cutoff` every 37 frames.
+struct RampEvery;
+
+impl Node for RampEvery {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(16)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let start = cx.env.frame.get();
+        for i in 0..io.frames() {
+            if (start + i as u64).is_multiple_of(37) {
+                let r = ParamRamp::new(
+                    tutti_types::ParamKey::<tutti_types::Hz>::CUTOFF,
+                    tutti_types::Hz(((start + i as u64) % 5) as f32),
+                    Samples(20),
+                );
+                let o = io.offset(i).expect("inside");
+                let _ = io.event_out(0).push(tutti_graph::Event::ramp(o, r));
+            }
+        }
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// Compiler-owned param modulation never allocates on the audio thread:
+/// the fused step over audio sources (one delayed by PDC behind a latent
+/// sibling), a ramp source and LUT shapings, the declick of a connection
+/// made and one broken, blocks of every length. The commits are applied
+/// before the gate (applying allocates by design); the declicks they start
+/// run inside it.
+///
+/// Mutation (run): in `ParamState::port`, copy an audio source into a
+/// `Vec` per block → aborts. Rebuild the ramp buffer per block
+/// (`self.ramp_buf = vec![0.0; frames]`) → aborts.
+#[test]
+fn modulated_params_are_allocation_free() {
+    use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
+    let (mut ed, mut exec) = Editor::new(prepare(256));
+    ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    ed.insert(NodeKey(1), "sink", ParamSink);
+    ed.insert(NodeKey(2), "lag", TestNode::new(Kind::Lag { latency: 31 }));
+    ed.insert(
+        NodeKey(3),
+        "gain",
+        TestNode::new(Kind::Gain {
+            gain: 0.5,
+            width: 1,
+        }),
+    );
+    ed.insert(NodeKey(4), "ramps", RampEvery);
+    {
+        let t = &mut ed.spec_mut().topology;
+        t.edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));
+        t.edges.insert(at(1, 0), from(2, 0));
+        t.edges.insert(at(3, 0), Edge::Direct(Source::Global(0)));
+        t.outputs = vec![Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })];
+    }
+    let cut = ParamIn {
+        node: NodeKey(1),
+        param: tutti_types::UnitParam::Cutoff,
+    };
+    let q = ParamIn {
+        node: NodeKey(1),
+        param: tutti_types::UnitParam::Q,
+    };
+    let gain = ParamFrom::Audio(OutPort {
+        node: NodeKey(3),
+        port: 0,
+    });
+    ed.spec_mut()
+        .connect_param(cut, gain, ParamShaping::Lut(ShapeLut::from_fn(|x| x * x)));
+    ed.spec_mut().connect_param(
+        cut,
+        ParamFrom::Events(EventOut {
+            node: NodeKey(4),
+            port: 0,
+        }),
+        ParamShaping::Identity,
+    );
+    ed.commit().expect("commits");
+
+    let input: Vec<f32> = (0..256).map(|i| (i % 13) as f32 / 13.0).collect();
+    let mut out = vec![0.0f32; 256];
+    let transport = Transport::default();
+    let sizes = [256usize, 1, 7, 64, 100, 255, 33];
+    let mut run = |exec: &mut tutti_graph::Executor| {
+        for i in 0..200 {
+            let n = sizes[i % sizes.len()];
+            exec.process(n, &transport, &[&input[..n]], &mut [&mut out[..n]]);
+        }
+    };
+    exec.apply_pending();
+    assert_no_alloc::assert_no_alloc(|| run(&mut exec));
+
+    // A connection made (Q, behind the lag's PDC: the gain is the early
+    // path) and one broken: both declick inside the gate.
+    ed.collect();
+    ed.spec_mut().connect_param(q, gain, ParamShaping::Identity);
+    ed.spec_mut().disconnect_param(cut, gain);
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    assert_no_alloc::assert_no_alloc(|| run(&mut exec));
+    let plan = exec.plan().expect("a plan");
+    assert!(
+        plan.delays()
+            .iter()
+            .any(|d| matches!(d.key, tutti_graph::DelayKey::ParamAudio { .. })),
+        "a param source was delayed by PDC inside the gate"
+    );
 }

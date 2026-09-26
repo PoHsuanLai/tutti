@@ -518,6 +518,80 @@ impl AudioUnit for Sink {
     }
 }
 
+/// Render one `process` call of `node` over `inputs` (one slice per input,
+/// at most `MAX_BUFFER_SIZE` frames), with each of its
+/// [`ParamFeed`](tutti_core::ParamFeed)'s params fed `params[k]` when `Some`
+/// and cleared when `None` — what the graph's `Legacy` adapter hands a unit
+/// whose params it modulates (design doc 013 item 6). Returns one `Vec` per
+/// output.
+///
+/// # Panics
+///
+/// If `node` has no feed, `params` is not one entry per feed param, or a
+/// slice is longer than the block.
+pub fn process_fed(
+    node: &mut dyn AudioUnit,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+) -> Vec<Vec<f32>> {
+    let n = inputs.first().map_or_else(
+        || params.iter().flatten().next().map_or(0, |p| p.len()),
+        |i| i.len(),
+    );
+    feed(node, params, 0, n);
+    let mut ib = tutti_core::BufferVec::new(node.inputs());
+    let mut ob = tutti_core::BufferVec::new(node.outputs());
+    for (c, sig) in inputs.iter().enumerate() {
+        for (i, &x) in sig.iter().enumerate() {
+            ib.set_f32(c, i, x);
+        }
+    }
+    node.process(n, &ib.buffer_ref(), &mut ob.buffer_mut());
+    (0..node.outputs())
+        .map(|c| (0..n).map(|i| ob.at_f32(c, i)).collect())
+        .collect()
+}
+
+/// [`process_fed`] one frame at a time through `tick`: before each frame the
+/// feed holds frame `i` of every `Some` param. A unit reads a live feed's
+/// first value in `tick`.
+pub fn tick_fed(
+    node: &mut dyn AudioUnit,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+) -> Vec<Vec<f32>> {
+    let n = inputs.first().map_or_else(
+        || params.iter().flatten().next().map_or(0, |p| p.len()),
+        |i| i.len(),
+    );
+    let mut out = vec![vec![0.0f32; n]; node.outputs()];
+    let mut fi = vec![0.0f32; node.inputs()];
+    let mut fo = vec![0.0f32; node.outputs()];
+    for i in 0..n {
+        feed(node, params, i, 1);
+        for (c, sig) in inputs.iter().enumerate() {
+            fi[c] = sig[i];
+        }
+        node.tick(&fi, &mut fo);
+        for (c, o) in out.iter_mut().enumerate() {
+            o[i] = fo[c];
+        }
+    }
+    out
+}
+
+/// Feed `params[k][start..start + len]` (or clear it) into `node`'s feed.
+fn feed(node: &mut dyn AudioUnit, params: &[Option<&[f32]>], start: usize, len: usize) {
+    let f = node.param_feed().expect("the unit has a param feed");
+    assert_eq!(params.len(), f.params().len(), "one entry per feed param");
+    for (k, p) in params.iter().enumerate() {
+        match p {
+            Some(v) => f.feed(k, &v[start..start + len]),
+            None => f.clear(k),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

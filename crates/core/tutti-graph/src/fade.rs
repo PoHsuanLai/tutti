@@ -17,7 +17,8 @@
 //!   already sounding, the way a DAW swaps an instrument. A note it holds is
 //!   faded out with it, not released.
 //! - **The shapes must agree** in everything the plan was compiled from:
-//!   ports, latency, in-place acceptance and event resolution. Only the tail
+//!   ports, latency, in-place acceptance, event resolution and event
+//!   capacity (the plan sizes the port's buffers from it). Only the tail
 //!   may differ (a fading node is never skipped). A latency change is
 //!   refused rather than re-aligned: the running plan's PDC is compiled for
 //!   one latency, and both units must be aligned to it. Swap a unit whose
@@ -169,6 +170,54 @@ mod tests {
         let (_, b) = CrossfadeCurve::EqualAmplitude.gains(8, 9);
         assert!((a - b).abs() < 1e-6);
         assert_eq!(CrossfadeCurve::default(), CrossfadeCurve::EqualAmplitude);
+    }
+
+    /// Each curve **is** its closed form, not merely a curve with the
+    /// properties above (a linear `g_in = x` has all of them). At a fade
+    /// position that is a dyadic fraction every step of the polynomial is
+    /// exact in `f32`, so `EqualAmplitude` is pinned to the bit there, on
+    /// every target (it is libm-free): `gains(0, 3)` is `x = 1/4`,
+    /// `x³(6x² − 15x + 10) = 0.103515625`. At every other position both
+    /// curves are compared with the closed form computed in `f64` —
+    /// `EqualPower` only this way, since `sin`/`cos` are libm's.
+    ///
+    /// Mutation (run): `g = x` for `EqualAmplitude` → fails the exact table.
+    /// Mutation (run): `(a.cos(), a.sin())` for `EqualPower` → fails its
+    /// closed form.
+    #[test]
+    fn each_curve_is_its_closed_form() {
+        // (k, len, g_in): x = (k + 1) / (len + 1), dyadic.
+        for (k, len, want) in [
+            (0usize, 3usize, 0.103_515_625f64),
+            (1, 3, 0.5),
+            (2, 3, 0.896_484_375),
+            (0, 7, 0.016_052_246_093_75),
+            (5, 7, 0.896_484_375),
+        ] {
+            let (g_in, g_out) = CrossfadeCurve::EqualAmplitude.gains(k, len);
+            // Exact: every value here is representable in `f32`, and the
+            // widening to `f64` is exact.
+            assert_eq!(f64::from(g_in), want, "{k}/{len}: {g_in}");
+            assert_eq!(f64::from(g_out), 1.0 - want, "{k}/{len}: the complement");
+        }
+        for len in [1usize, 2, 9, 240, 4800] {
+            for k in 0..len {
+                let x = (k + 1) as f64 / (len + 1) as f64;
+                let smooth5 = x * x * x * (6.0 * x * x - 15.0 * x + 10.0);
+                let (a, _) = CrossfadeCurve::EqualAmplitude.gains(k, len);
+                assert!(
+                    (f64::from(a) - smooth5).abs() < 1e-6,
+                    "equal amplitude {k}/{len}: {a}, closed form {smooth5}"
+                );
+                let angle = x * std::f64::consts::FRAC_PI_2;
+                let (p, q) = CrossfadeCurve::EqualPower.gains(k, len);
+                assert!(
+                    (f64::from(p) - angle.sin()).abs() < 1e-6
+                        && (f64::from(q) - angle.cos()).abs() < 1e-6,
+                    "equal power {k}/{len}: ({p}, {q})"
+                );
+            }
+        }
     }
 
     /// Mutation: `to_samples_floor` → 1.5 frames becomes 1 → fails.

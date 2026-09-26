@@ -21,12 +21,16 @@
 //!   offsets is the node's job (doc 013 §4: an out-of-process plugin's declared
 //!   pipeline latency is only constant if it sees whole blocks).
 
+use std::num::NonZeroU32;
+
 use tutti_types::{
     Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, SampleRate, Samples, SegmentOrigin, Tail,
+    UnitParam,
 };
 
 use crate::fork::ForkSource;
 use crate::io::Io;
+use crate::param::ParamPorts;
 use crate::time::Offset;
 
 /// Most audio channels, or event ports, on one side of one node.
@@ -53,6 +57,39 @@ pub struct Shape {
     pub event_in: u16,
     /// Event output ports.
     pub event_out: u16,
+    /// The most events this node writes to **each** of its event output
+    /// ports in one block (doc 013 §4, "Events as ports"): the declared
+    /// capacity every buffer downstream of the port is sized from, at
+    /// compile and prepare time, so nothing on the audio thread allocates.
+    /// `None` takes the executor's default
+    /// ([`DEFAULT_EVENT_CAPACITY`](crate::DEFAULT_EVENT_CAPACITY), or what
+    /// [`Editor::with_event_capacity`](crate::Editor::with_event_capacity)
+    /// set). Set it with [`with_event_capacity`](Self::with_event_capacity).
+    ///
+    /// It is also the port's declared **rate** — at most this many events
+    /// per [`MaxBlock`] frames — which is what a PDC delay or a feedback
+    /// FIFO on an edge from the port is sized from (`EventFifo`,
+    /// `src/kernels.rs`): events in flight in a delay of `len` frames are
+    /// at most `capacity × (⌈len / MaxBlock⌉ + 2)`.
+    ///
+    /// # Overflow: drop the newest, and count it
+    ///
+    /// The port's [`EventWriter`](crate::EventWriter) refuses the event
+    /// that would exceed the capacity ([`EventRejected::Full`](crate::EventRejected::Full),
+    /// returned to the node at once), and the executor counts it
+    /// ([`Executor::dropped_events`](crate::Executor::dropped_events)). The
+    /// events already written stand. Refusing at compile time is not an
+    /// option: how many events a node emits is data (a chord, a burst of
+    /// controller moves), not a property of the graph. What the compiler
+    /// *does* guarantee is that the writer is the **only** place an event
+    /// can be refused: every merge holds the sum of its sources' capacities
+    /// and every delay FIFO the declared rate over its length (plus a
+    /// note-off reserve), so a node that keeps to its declaration loses
+    /// nothing anywhere downstream. Dropping the newest rather than the
+    /// oldest keeps what the node already committed to — and the node,
+    /// told `Full` at the push, can still choose what matters (a note-off
+    /// before a controller move) for the room it has left.
+    pub event_capacity: Option<NonZeroU32>,
     /// **Processing latency only** — frames the node buffers as a side effect
     /// (lookahead, FFT block, plugin pipeline). Never a musical delay: a
     /// 500 ms echo has latency zero, or PDC drags every parallel path 500 ms
@@ -83,6 +120,14 @@ pub struct Shape {
     /// `legacy` module docs, `src/legacy.rs`). Set only by `Legacy`; a
     /// native node reads [`Env`] and leaves it `false`.
     pub legacy: bool,
+    /// The params this node lets the graph modulate, in **port order** —
+    /// the index [`Io::param`](crate::Io::param) and
+    /// [`Node::param_base`] take (design doc 013 item 6; see
+    /// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)). A
+    /// param declared here reads [`ParamInput::Base`](crate::ParamInput::Base)
+    /// until something is connected to it, and the node must then answer
+    /// [`Node::param_base`] for it.
+    pub params: ParamPorts,
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -135,11 +180,13 @@ impl Shape {
             audio_out,
             event_in: 0,
             event_out: 0,
+            event_capacity: None,
             latency: Latency::ZERO,
             tail: Tail::None,
             in_place: false,
             event_resolution: Resolution::Sample,
             legacy: false,
+            params: ParamPorts::NONE,
         }
     }
 
@@ -148,6 +195,32 @@ impl Shape {
     pub const fn with_events(mut self, event_in: u16, event_out: u16) -> Self {
         self.event_in = event_in;
         self.event_out = event_out;
+        self
+    }
+
+    /// This shape, writing at most `per_block` events to each event output
+    /// port per block (see [`event_capacity`](Self::event_capacity) for
+    /// what that sizes, and what happens past it).
+    ///
+    /// ```
+    /// use tutti_graph::Shape;
+    /// use tutti_types::ChannelLayout;
+    /// let arp = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+    ///     .with_events(1, 1)
+    ///     .with_event_capacity(16);
+    /// assert_eq!(arp.event_capacity.map(|n| n.get()), Some(16));
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If `per_block` is zero: a port that can hold no event is not an
+    /// event port. (In a `const` context, at compile time.)
+    #[must_use]
+    pub const fn with_event_capacity(mut self, per_block: u32) -> Self {
+        match NonZeroU32::new(per_block) {
+            Some(n) => self.event_capacity = Some(n),
+            None => panic!("an event capacity of zero: the port could hold no event"),
+        }
         self
     }
 
@@ -203,6 +276,19 @@ impl Shape {
     #[must_use]
     pub const fn with_event_resolution(mut self, resolution: Resolution) -> Self {
         self.event_resolution = resolution;
+        self
+    }
+
+    /// This shape, letting the graph modulate `params`, in this port order
+    /// (see [`params`](Self::params)).
+    ///
+    /// # Panics
+    ///
+    /// If `params` holds more than [`MAX_PARAM_PORTS`](crate::MAX_PARAM_PORTS),
+    /// or one param twice (in a `const` context, at compile time).
+    #[must_use]
+    pub const fn with_params(mut self, params: &[UnitParam]) -> Self {
+        self.params = ParamPorts::new(params);
         self
     }
 
@@ -728,6 +814,23 @@ pub trait Node: Send + 'static {
 
     /// Return to the state of a freshly prepared node.
     fn reset(&mut self);
+
+    /// The **base** of declared param `port` ([`Shape::params`]): the current
+    /// value of the node's own control for it — the `Param<U>` its
+    /// `Controls` hand out. The executor reads it once per block for a
+    /// modulated param and ramps it across the block under the modulation;
+    /// an unmodulated param is not asked (the node reads its control
+    /// itself, [`ParamInput::Base`](crate::ParamInput::Base)).
+    ///
+    /// `None`, the default, is a node that cannot say: its param is then
+    /// never modulated — it keeps reading [`ParamInput::Base`](crate::ParamInput::Base)
+    /// whatever the graph connects — rather than riding on a base of 0,
+    /// which is what an unconnected port read under `Net`. Audio thread:
+    /// must not allocate, lock or block.
+    fn param_base(&self, port: usize) -> Option<f32> {
+        let _ = port;
+        None
+    }
 }
 
 /// How a value becomes a node, and what the caller gets back to control it.

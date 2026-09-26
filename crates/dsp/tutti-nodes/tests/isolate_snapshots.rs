@@ -7,8 +7,7 @@
 //! can fail).
 //!
 //! Units with no live cell are not rows — there is nothing to move:
-//! `ChannelSumNode`, `DownmixNode`, `ParamShaperNode` (its LUT is baked at
-//! construction and immutable), `AutomationLaneNode` (its `Arc<dyn Curve>`
+//! `ChannelSumNode`, `DownmixNode`, `AutomationLaneNode` (its `Arc<dyn Curve>`
 //! is read-only; `set_curve` takes `&mut self` and so cannot reach a live
 //! node) and the `testing` stimulus nodes.
 //!
@@ -25,9 +24,9 @@ use tutti_core::{
 };
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
-    AtomicSourceNode, BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode,
-    DistortionNode, EqBandNode, GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape,
-    LimiterNode, ModDelayNode, ParamSumNode, PhaserNode, ShapeKind, SvfFilterNode, SvfType,
+    BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
+    GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
+    PhaserNode, ShapeKind, SvfFilterNode, SvfType,
 };
 
 #[test]
@@ -201,24 +200,6 @@ fn bus_strip() {
         .control("volume", |s| s.set_volume(Amplitude(0.5)))
         .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
         .control("mute", |s| s.set_muted(true))
-        .check();
-}
-
-#[test]
-fn param_sum() {
-    IsolateRow::new("ParamSumNode (one mod, -0.5..0.5)", || {
-        ParamSumNode::new(1, -0.5, 0.5)
-    })
-    .control("bounds", |s| s.bounds().set(-0.2, 0.3))
-    .check();
-}
-
-#[test]
-fn atomic_source() {
-    IsolateRow::new("AtomicSourceNode", || AtomicSourceNode::new(0.3))
-        .control("value", |s| {
-            s.shared().store(0.7, tutti_core::Ordering::Release)
-        })
         .check();
 }
 

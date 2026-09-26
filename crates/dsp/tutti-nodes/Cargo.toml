@@ -48,6 +48,12 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # this deliberately bevy-free crate; `routing` is std-only, no bevy.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 
+# The native graph's param-modulation vocabulary (`ParamShaping`, `ShapeLut`):
+# `ParamModShaping::shaping` bakes `tutti_mod::shape` into the table the
+# compiler's fused step reads (design doc 013 item 6). tutti-graph depends only
+# on tutti-types and tutti-node, so the edge adds no cycle.
+tutti-graph = { path = "../../core/tutti-graph" }
+
 # Partitioned FFT convolver (optional, gated by `convolution` feature)
 fft-convolver = { version = "0.3", optional = true }
 

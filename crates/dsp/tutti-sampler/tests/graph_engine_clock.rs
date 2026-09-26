@@ -4,40 +4,43 @@
 //! `VoicePool`) derives its read position from the playhead, which it polls
 //! as an `Arc<dyn Timeline>` on every `AudioUnit::process` call. Through the
 //! native graph that call is `Legacy`'s, one per 64-frame chunk. So while the
-//! plan holds a `Legacy` unit the engine (`Engine::with_graph`) renders
+//! plan holds a `Legacy` unit the engine (`Engine::new`) renders
 //! chunk-major: graph blocks of at most 64 frames across every node, the
 //! playhead published after each (doc 013, "chunk-major `Legacy`
 //! compatibility mode"). Rendered in whole device blocks instead, every chunk
 //! of a 256-frame block reads one beat, and the voice replays a 64-frame
 //! stretch four times a block.
 //!
-//! The oracle is the `Net` engine (`Engine::new`), whose `TransportClock`
-//! node publishes the playhead after each of its 64-frame chunks. The clock
-//! is pushed before the voices, as bevy-tutti's engine build pushes it before
-//! any clip; in that order the net runs the voices first in each chunk, and
-//! they read the beat on the chunk's first frame. (Measured: pushed the other
-//! way round, the net runs the clock first and its voice reads one chunk
-//! ahead, frame 64's sample on frame 0. The net picks that order, not the
-//! host.) The two engines render the same device blocks and must agree to
-//! the bit wherever `Net`'s chunk grid and the graph's coincide; a dry voice
-//! must also be the tone it plays, frame for frame, so an agreement on a
-//! wrong answer cannot pass.
+//! The oracle is the tone the voice plays: a dry voice must be the tone,
+//! frame for frame, at the source frame the playhead puts it on. Until doc
+//! 013 Phase 3 PR 15 the graph was also compared, bit for bit, with the
+//! `Net` engine (a `TransportClock` node publishing after each 64-frame
+//! chunk); that backend is gone, and every comparison with it had an
+//! analytic half, which is what is left. The pitched voice, whose samples
+//! have no closed form (a phase vocoder), is pinned instead to itself at
+//! 64-frame device blocks: chunk-major, a device block that is a multiple of
+//! 64 frames is the same chunks, so it must render the same bits.
 //!
-//! Mutations (run), each failing every test here:
+//! Mutations (run):
 //! - `GraphRender::settle` ignoring `has_legacy`, so the engine renders
-//!   whole device blocks with `Legacy` units present → the graph parts from
-//!   the `Net` (and from the tone) at frame 64;
+//!   whole device blocks with `Legacy` units present → every
+//!   `a_voice_plays_in_time_*` and the locate test fail (the voice goes
+//!   silent, or parts from the 64-frame render). The shared-cursor, loop and
+//!   crossfade tests do not see it: with these fixtures a whole-block render
+//!   still plays the tone, to the bit (the first two compared with `Net`
+//!   until PR 15; the crossfade test never did). tutti-core's
+//!   `legacy_chunk_major.rs` pins that mode directly, with a cursor probe;
 //! - the engine publishing its playhead in the walk, before the render
 //!   (`TransportClock::advance` writing back) → every chunk reads its own
-//!   end: the graph runs a chunk ahead of the `Net` from frame 0.
+//!   end: the voice runs a chunk ahead of the tone from frame 0 → every test
+//!   here fails.
 
 use std::sync::Arc;
 
-use tutti_core::dsp::Net;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
-    At, AudioUnit, Beat, Cents, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, MotionEvent,
-    NodeKey, SampleRate, Samples, Then, Timeline, Transport, TransportClock,
+    At, Beat, Cents, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, MotionEvent, NodeKey,
+    SampleRate, Samples, Then, Timeline, Transport,
 };
 use tutti_graph::{CrossfadeCurve, Editor, Fade, Legacy, Prepare};
 use tutti_io::Wave;
@@ -88,22 +91,6 @@ fn routes(units: usize) -> Vec<(usize, usize)> {
     }
 }
 
-/// A `Net` engine over `transport`: the clock that moves it, then `units`
-/// (see the module docs for why that order), routed by [`routes`].
-fn net_engine(transport: &Transport, units: Vec<VoicePool>) -> Engine {
-    let mut net = Net::new(0, 2);
-    net.push(Box::new(TransportClock::new(transport.clock_links(), SR)));
-    let ids: Vec<_> = units.into_iter().map(|u| net.push(Box::new(u))).collect();
-    for (out, (unit, port)) in routes(ids.len()).into_iter().enumerate() {
-        net.connect_output(ids[unit], port, out);
-    }
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    // The backend is fed through the net; keep the frontend alive.
-    Box::leak(Box::new(net));
-    Engine::new(transport.motion.clone(), backend)
-}
-
 /// A graph engine over `transport`, prepared for blocks of up to 1024 frames
 /// (the export's `GRAPH_MAX_BLOCK`), with `units` as `Legacy` nodes at keys
 /// 1, 2, … routed by [`routes`].
@@ -123,7 +110,7 @@ fn graph_engine(transport: &Transport, units: Vec<VoicePool>) -> (Engine, Editor
         })
         .collect();
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
     (engine, ed)
 }
 
@@ -148,26 +135,21 @@ fn play(
     all
 }
 
-/// The first interleaved index in `range` (frames) where `a` and `b` are
-/// not bit-equal.
-fn parts(a: &[f32], b: &[f32], frames: std::ops::Range<usize>) -> Option<usize> {
-    (frames.start * 2..frames.end * 2).find(|&i| a[i].to_bits() != b[i].to_bits())
+/// Left channel of `out`, frame `f`, is the tone's source frame `src`, to
+/// the bit: a dry voice read at a whole source frame copies the sample the
+/// wave holds, which is `tone_at(src)` computed the same way.
+fn assert_tone_exact(what: &str, out: &[f32], f: usize, src: usize) {
+    let (got, want) = (out[2 * f], tone_at(src));
+    assert_eq!(
+        got.to_bits(),
+        want.to_bits(),
+        "{what}: frame {f} read {got}, the tone at {src} is {want}"
+    );
 }
 
-/// Panic with where two renders part, if they do in `frames`.
-fn assert_same(what: &str, net: &[f32], graph: &[f32], frames: std::ops::Range<usize>) {
-    if let Some(i) = parts(net, graph, frames) {
-        panic!(
-            "{what}: the graph parts from the Net at frame {} (channel {}): net {} graph {}",
-            i / 2,
-            i % 2,
-            net[i],
-            graph[i]
-        );
-    }
-}
-
-/// Left channel of `out`, frame `f`, against the tone at source frame `src`.
+/// Left channel of `out`, frame `f`, against the tone at source frame `src`,
+/// within 1e-3 (a crossfade's two gains sum to one only to rounding; a loop
+/// wrap reseats the read position through the beat).
 fn assert_tone(what: &str, out: &[f32], f: usize, src: usize) {
     let (got, want) = (out[2 * f], tone_at(src));
     assert!(
@@ -181,32 +163,46 @@ fn assert_sounds(what: &str, out: &[f32]) {
     assert!(peak > 0.5, "{what}: near-silent ({peak})");
 }
 
-/// At device blocks of `n` frames, dry and a fifth up, the graph engine
-/// renders the `Net` engine's output bit for bit, the dry voice is the tone,
-/// and both playheads end on the same bit.
+/// At device blocks of `n` frames, dry and a fifth up: the dry voice is the
+/// tone, the pitched one renders what it renders at 64-frame device blocks
+/// (when `n` is a multiple of 64, so the chunks are the same), and the
+/// playhead ends on the beat the frames rendered put it on, to the bit.
 fn plays_in_time(n: usize) {
     // Half a second, whatever the block.
     let blocks = 24_000 / n;
+    let frames = blocks * n;
     for cents in [0.0f32, 700.0] {
         let what = format!("{n}-frame blocks, {cents} cents");
-        let net_t = Transport::new(SR);
-        let net = net_engine(&net_t, vec![pool(&net_t, cents)]);
-        let a = play(&net, &net_t, n, blocks, |_| {});
+        let t = Transport::new(SR);
+        let (graph, _ed) = graph_engine(&t, vec![pool(&t, cents)]);
+        let b = play(&graph, &t, n, blocks, |_| {});
 
-        let graph_t = Transport::new(SR);
-        let (graph, _ed) = graph_engine(&graph_t, vec![pool(&graph_t, cents)]);
-        let b = play(&graph, &graph_t, n, blocks, |_| {});
-
-        assert_same(&what, &a, &b, 0..a.len() / 2);
+        // The engine's clock is closed form (`TimelineSegment::beat_at`),
+        // no libm: frames × tempo / (60 × rate), from beat 0 at 120 BPM.
+        let want = (frames as f64 * 120.0) / (60.0 * SR);
         assert_eq!(
-            net_t.beat().get().to_bits(),
-            graph_t.beat().get().to_bits(),
-            "{what}: the playheads end apart"
+            t.beat().get().to_bits(),
+            want.to_bits(),
+            "{what}: the playhead ends at {}, not {want}",
+            t.beat().get()
         );
         assert_sounds(&what, &b);
         if cents == 0.0 {
-            for f in 0..b.len() / 2 {
-                assert_tone(&what, &b, f, f);
+            for f in 0..frames {
+                assert_tone_exact(&what, &b, f, f);
+            }
+        } else if n.is_multiple_of(64) {
+            let t64 = Transport::new(SR);
+            let (by64, _ed) = graph_engine(&t64, vec![pool(&t64, cents)]);
+            let r = play(&by64, &t64, 64, frames / 64, |_| {});
+            if let Some(i) = (0..2 * frames).find(|&i| r[i].to_bits() != b[i].to_bits()) {
+                panic!(
+                    "{what}: parts from 64-frame blocks at frame {} (channel {}): {} vs {}",
+                    i / 2,
+                    i % 2,
+                    b[i],
+                    r[i]
+                );
             }
         }
     }
@@ -217,8 +213,9 @@ fn a_voice_plays_in_time_at_256_frame_blocks() {
     plays_in_time(256);
 }
 
-/// Not a multiple of 64: both engines chunk each device block from its own
-/// start, 7 × 64 + 32, so their grids still coincide.
+/// Not a multiple of 64: the engine chunks each device block from its own
+/// start, 7 × 64 + 32. The dry voice is still the tone (the pitched one's
+/// chunks differ from the 64-frame grid's, so it is only heard).
 #[test]
 fn a_voice_plays_in_time_at_480_frame_blocks() {
     plays_in_time(480);
@@ -243,7 +240,7 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 }
 
 /// **Two `Legacy` nodes sharing one `BeatCursor`** (two clones of one pool)
-/// render the `Net`'s output bit for bit, and the tone. Each clone polls the
+/// both render the tone. Each clone polls the
 /// cursor in every chunk; chunk-major, both read the chunk's beat, and
 /// neither sees the other's poll as a jump. Had each node walked its own
 /// block while the cursor stood where the other left it (a node-major
@@ -256,24 +253,18 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 /// discontinuity itself is pinned directly, with a cursor probe, in
 /// tutti-core's `legacy_chunk_major.rs`.
 #[test]
-fn two_voices_sharing_a_cursor_play_as_through_the_net() {
-    let make = |t: &Transport| {
-        let p = pool(t, 0.0);
-        vec![p.clone(), p]
-    };
-    let net_t = Transport::new(SR);
-    let net = net_engine(&net_t, make(&net_t));
-    let a = play(&net, &net_t, 512, 60, |_| {});
-    let graph_t = Transport::new(SR);
-    let (graph, _ed) = graph_engine(&graph_t, make(&graph_t));
-    let b = play(&graph, &graph_t, 512, 60, |_| {});
+fn two_voices_sharing_a_cursor_both_play_the_tone() {
+    let t = Transport::new(SR);
+    let p = pool(&t, 0.0);
+    let (graph, _ed) = graph_engine(&t, vec![p.clone(), p]);
+    let b = play(&graph, &t, 512, 60, |_| {});
     assert_sounds("shared cursor", &b);
-    assert_same("shared cursor", &a, &b, 0..a.len() / 2);
     for f in 0..b.len() / 2 {
-        assert_tone("shared cursor", &b, f, f);
+        assert_tone_exact("shared cursor", &b, f, f);
         let right = b[2 * f + 1];
-        assert!(
-            (right - tone_at(f)).abs() < 1e-3,
+        assert_eq!(
+            right.to_bits(),
+            tone_at(f).to_bits(),
             "shared cursor, the second clone: frame {f} read {right}"
         );
     }
@@ -319,33 +310,25 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
     }
 }
 
-/// **A loop wrap** (beats 1–1.5, reached mid-chunk at frame 36 000) renders
-/// the `Net`'s output bit for bit: the wrap is the clock's, not a cut, and
-/// both engines read the wrapped beat from the next chunk on. The chunk the
-/// wrap falls in plays on past the loop end on both, from its first frame's
-/// beat, as a `Legacy` clip reader always has; after it, the dry voice is
-/// the tone a loop length back.
+/// **A loop wrap** (beats 1–1.5, reached mid-chunk at frame 36 000): the
+/// wrap is the clock's, not a cut, and the voice reads the wrapped beat from
+/// the next chunk on. The chunk the wrap falls in plays on past the loop end,
+/// from its first frame's beat, as a `Legacy` clip reader always has (and
+/// as it did through `Net`, which this was compared with bit for bit until
+/// doc 013 PR 15); after it, the dry voice is the tone a loop length back.
 #[test]
-fn a_loop_wrap_plays_as_through_the_net() {
-    let start = |t: &Transport| {
-        t.settings.loop_span.set_range(1.0, 1.5);
-        t.settings.loop_span.set_enabled(true);
-    };
+fn a_loop_wrap_plays_the_tone_a_loop_back() {
     let blocks = 60_000 / 512;
-    let net_t = Transport::new(SR);
-    start(&net_t);
-    let net = net_engine(&net_t, vec![pool(&net_t, 0.0)]);
-    let a = play(&net, &net_t, 512, blocks, |_| {});
-    let graph_t = Transport::new(SR);
-    start(&graph_t);
-    let (graph, _ed) = graph_engine(&graph_t, vec![pool(&graph_t, 0.0)]);
-    let b = play(&graph, &graph_t, 512, blocks, |_| {});
+    let t = Transport::new(SR);
+    t.settings.loop_span.set_range(1.0, 1.5);
+    t.settings.loop_span.set_enabled(true);
+    let (graph, _ed) = graph_engine(&t, vec![pool(&t, 0.0)]);
+    let b = play(&graph, &t, 512, blocks, |_| {});
 
-    assert_same("loop", &a, &b, 0..a.len() / 2);
     let end = 3 * FPB / 2;
     let wrap_chunk = end / 64 * 64;
     for f in 0..wrap_chunk + 64 {
-        assert_tone("loop, before the wrap", &b, f, f);
+        assert_tone_exact("loop, before the wrap", &b, f, f);
     }
     for f in wrap_chunk + 64..b.len() / 2 {
         assert_tone("loop, after the wrap", &b, f, f - FPB / 2);
@@ -353,18 +336,17 @@ fn a_loop_wrap_plays_as_through_the_net() {
 }
 
 /// **A locate scheduled inside a block** (`At::Frame(10 037)`, to beat ¼,
-/// immediate) against the `Net`: bit for bit up to the chunk the locate
-/// falls in, and within a hair after it; the difference is that chunk.
+/// immediate): the tone up to the chunk the locate falls in, the target
+/// from that chunk's first frame, and the target at its frame after it.
 ///
-/// A `Legacy` clip reader reads the playhead once per 64-frame call. `Net`
-/// renders pieces split at the locate's frame, so its voice starts the
-/// target on that frame. The graph engine cuts the transport there (in
-/// `Env`, for native nodes), but a `Legacy` unit's call is the chunk: it
-/// reads the target at the chunk's first frame, 53 frames early. From the
-/// next chunk both play the target at its frame. After the locate the two
-/// grids differ (`Net` chunks from the locate's frame), so they read the
-/// beat at different frames and differ in the low bits, not in what they
-/// play.
+/// A `Legacy` clip reader reads the playhead once per 64-frame call. The
+/// engine cuts the transport on the locate's frame (in `Env`, for native
+/// nodes), but a `Legacy` unit's call is the chunk: it reads the target at
+/// the chunk's first frame, 53 frames early. From the next chunk it plays
+/// the target at its frame. (A `Net` engine rendered pieces split at the
+/// locate's frame, so its voice started the target on that frame; this was
+/// compared with it until doc 013 PR 15, bit for bit before the chunk and
+/// within a hair after it.)
 #[test]
 fn a_scheduled_locate_lands_on_its_chunk() {
     let at = 10_037;
@@ -382,33 +364,19 @@ fn a_scheduled_locate_lands_on_its_chunk() {
             .expect("room");
     };
     let blocks = 24_000 / 512;
-    let net_t = Transport::new(SR);
-    let net = net_engine(&net_t, vec![pool(&net_t, 0.0)]);
-    locate(&net_t);
-    let a = play(&net, &net_t, 512, blocks, |_| {});
-    let graph_t = Transport::new(SR);
-    let (graph, _ed) = graph_engine(&graph_t, vec![pool(&graph_t, 0.0)]);
-    locate(&graph_t);
-    let b = play(&graph, &graph_t, 512, blocks, |_| {});
+    let t = Transport::new(SR);
+    let (graph, _ed) = graph_engine(&t, vec![pool(&t, 0.0)]);
+    locate(&t);
+    let b = play(&graph, &t, 512, blocks, |_| {});
 
     let chunk = at / 64 * 64;
-    assert_same("locate, before its chunk", &a, &b, 0..chunk);
+    for f in 0..chunk {
+        assert_tone_exact("locate, before its chunk", &b, f, f);
+    }
     for f in chunk..chunk + 64 {
-        assert_tone("locate, the graph's chunk", &b, f, target + (f - chunk));
-    }
-    for f in chunk..at {
-        assert_tone("locate, the Net before it", &a, f, f);
-    }
-    for f in at..b.len() / 2 {
-        assert_tone("locate, the Net after it", &a, f, target + (f - at));
+        assert_tone_exact("locate, its chunk", &b, f, target + (f - chunk));
     }
     for f in chunk + 64..b.len() / 2 {
-        assert_tone("locate, the graph after it", &b, f, target + (f - at));
-        assert!(
-            (a[2 * f] - b[2 * f]).abs() < 1e-4,
-            "frame {f}: net {} graph {}",
-            a[2 * f],
-            b[2 * f]
-        );
+        assert_tone_exact("locate, after it", &b, f, target + (f - at));
     }
 }

@@ -25,8 +25,8 @@ mod timed;
 
 pub use beat_window::{BeatCursor, BeatPlacement, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
+pub(crate) use clock::Control;
 pub use clock::TransportClock;
-pub(crate) use clock::{tempo_in_effect, Control};
 pub use env_clock::EnvClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};

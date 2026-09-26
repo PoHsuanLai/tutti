@@ -316,8 +316,8 @@ struct Assembled {
 /// what this builder did on `Net` before the rate was passed here.)
 ///
 /// The clock is an `EnvClock` ([`AudioGraphRes::insert_beat_clock`]): a
-/// graph engine drives its own `TransportClock` and forbids a second in the
-/// graph. It emits the beat on a `TransportClock`'s two ports, and the
+/// graph engine drives its own `TransportClock`, and the graph must not hold a
+/// second. It emits the beat on a `TransportClock`'s two ports, and the
 /// metronome is wired to them by the `PortSources` [`build_into`] declares.
 fn assemble(
     rate: SampleRate,
@@ -377,7 +377,7 @@ fn assemble(
 /// the device" is the obvious wrong instinct.
 ///
 /// The [`MAX_ROOT_CHANNELS`] clamp is applied **here, at construction**, rather
-/// than left to the engine: `Engine::with_graph` bounds the editor to
+/// than left to the engine: `Engine::new` bounds the editor to
 /// [`MAX_ROOT_CHANNELS`] global outputs (the render scratch is bounded), so a
 /// wider root would be refused at its first commit, and the graph would never
 /// play. Offline export is unaffected: a fork is prepared on its own, with no
@@ -498,52 +498,51 @@ mod tests {
 }
 
 /// The engine [`assemble`] builds, rendered from the builder's own wiring (the
-/// beat clock it picks, the click it builds against it), against the engine
-/// this builder made before design doc 013's PR 13: fundsp's `Net` with a
-/// `TransportClock` in it, over `Engine::new`.
+/// beat clock it picks, the click it builds against it).
 ///
-/// **The `Net`-era engine is a test oracle here, and nothing else.** The
-/// adapter lost its `Net` arm in PR 13; these tests keep the assertions it
-/// used to run on both arms ("the native engine renders the `Net` engine's
-/// samples"), with the `Net` side rebuilt by hand from tutti-core
-/// ([`net_era`]) exactly as `assemble` built it on `Net`. It goes when
-/// `Engine::new(NetBackend)` does (doc 013, PR 15), and these become checks
-/// against the analytic figures each test also asserts.
+/// From design doc 013's PR 13 to PR 15 these compared the engine with the
+/// one this builder made before PR 13 (fundsp's `Net` with a
+/// `TransportClock` in it, over the engine's `Net` backend, rebuilt by hand
+/// as `net_era`), bit for bit. PR 15 removed that backend. Each test now
+/// stands on the analytic figures it also asserted (onset frames, the tone a
+/// dry voice reads), on what does not depend on the oracle (a voice's
+/// render at two block sizes whose 64-frame chunks coincide), and, for the
+/// samples themselves, on a golden digest recorded from this engine on the
+/// commit that retired the oracle, which rendered the `Net` era's samples
+/// bit for bit (asserted there). The click and the pitched voice call `sin`
+/// (and the vocoder's FFT), libm quality-of-implementation that differs in
+/// the last ulp between C runtimes, so the digests are asserted on
+/// Linux/glibc only, where they were recorded ([`GOLDEN_HERE`]).
 #[cfg(test)]
 mod engine_tests {
     use super::*;
     use crate::graph::GraphSource;
-    use tutti_core::{AudioUnit, ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent};
+    use tutti_core::{ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent};
 
     const RATE: f64 = 48_000.0;
 
-    /// The engine `assemble` built on `GraphBackend::Net` before PR 13, and
-    /// the graph it renders: a `Net` at `RATE`, the `TransportClock` pushed
-    /// first, then the click (`AudioGraphRes::insert_beat_clock` and
-    /// `insert` on the `Net` arm), and `Engine::new` over its backend. `wire`
-    /// edits the net as a test edits the adapter's graph, and its edits are
-    /// committed as the adapter's `commit` committed them.
-    fn net_era(
-        transport: &Transport,
-        settings: &Arc<ClickSettings>,
-        wire: impl FnOnce(&mut tutti_core::dsp::Net, tutti_core::dsp::NodeId, tutti_core::dsp::NodeId),
-    ) -> (Engine, tutti_core::dsp::Net) {
-        let rate = SampleRate(RATE);
-        let mut net = tutti_core::dsp::Net::new(0, 2);
-        net.set_sample_rate(rate);
-        let clock = net.add(tutti_core::TransportClock::new(
-            transport.clock_links(),
-            rate,
-        ));
-        let click = net.push(Box::new(ClickNode::with_transport(
-            transport.clone(),
-            settings.clone(),
-            rate,
-        )));
-        let engine = Engine::new(transport.motion.clone(), net.backend());
-        wire(&mut net, clock, click);
-        net.commit_output_arity_change();
-        (engine, net)
+    /// Whether this target is the one the golden digests were recorded on:
+    /// Linux with glibc's libm (see the module docs).
+    const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
+
+    /// FNV-1a over the samples' little-endian `f32` bits.
+    fn digest(samples: &[f32]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in samples.iter().flat_map(|s| s.to_le_bytes()) {
+            h ^= u64::from(byte);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    /// Assert `got` is the digest recorded as `want`, where the goldens hold.
+    fn assert_golden(what: &str, got: u64, want: u64) {
+        if GOLDEN_HERE {
+            assert_eq!(
+                got, want,
+                "{what}: digest {got:#018x}, recorded {want:#018x}"
+            );
+        }
     }
 
     /// `frames` stereo frames of `engine` in `block`-frame device blocks,
@@ -613,23 +612,6 @@ mod engine_tests {
         run(&engine, &transport, frames, 512, true)
     }
 
-    /// [`render_click`] on the `Net`-era engine ([`net_era`]).
-    fn render_click_net_era(frames: usize) -> Vec<f32> {
-        let transport = Transport::new(SampleRate(RATE));
-        let settings = loud_click();
-        let (engine, net) = net_era(&transport, &settings, |net, clock, click| {
-            for port in 0..2 {
-                net.set_source(click, port, tutti_core::dsp::Source::Local(clock, port));
-                net.set_output_source(port, tutti_core::dsp::Source::Local(click, port));
-            }
-        });
-        let out = run(&engine, &transport, frames, 512, true);
-        // The net outlives the render: `Engine::new` renders the backend its
-        // frontend feeds.
-        drop(net);
-        out
-    }
-
     /// Frames on which the left channel starts sounding.
     fn onsets(stereo: &[f32]) -> Vec<usize> {
         let left: Vec<f32> = stereo.iter().step_by(2).copied().collect();
@@ -639,49 +621,45 @@ mod engine_tests {
             .collect()
     }
 
-    /// **The builder's engine clicks the samples the `Net`-era engine
-    /// clicked.** The click reads an `EnvClock` (the graph engine drives its
-    /// own `TransportClock` and forbids a second); on `Net` it read a
-    /// `TransportClock` in the graph, wired to the click the same way. The
-    /// transport starts before the first block, so `ClickNode`'s play gate —
-    /// read once per 64-frame chunk, from the live flag, which on the graph
-    /// engine is already the whole block's (doc 013, gap 5) — opens on the
-    /// same frame on both. A start *inside* a block would open it a block
-    /// early; that is `ClickNode`'s gate, not the beat, and is pinned in
-    /// `tutti-core`'s `env_clock` suite.
+    /// **The builder's engine clicks on every beat, across a seek**, and
+    /// (Linux/glibc) clicks the samples the `Net`-era engine clicked. The
+    /// click reads an `EnvClock` (the engine drives its own `TransportClock`,
+    /// and the graph must not hold a second); on `Net` it read a `TransportClock` in the
+    /// graph, wired to the click the same way. The transport starts before
+    /// the first block, so `ClickNode`'s play gate — read once per 64-frame
+    /// chunk, from the live flag, which on the engine is already the whole
+    /// block's (doc 013, gap 5) — opens on the first frame. A start *inside*
+    /// a block would open it a block early; that is `ClickNode`'s gate, not
+    /// the beat, and is pinned in `tutti-core`'s `env_clock` suite.
     ///
     /// A seek between two blocks is in the render, because that is where a
     /// wrong clock shows: a steady transport is counted alike by any clock.
-    /// The onsets are also pinned on their own, so the test does not rest on
-    /// the oracle alone: at 120 BPM a beat is 24 000 frames, the seek lands on
-    /// the 118th 512-frame block (frame 60 416) at beat 0.75, and the next
-    /// beat is a quarter beat (6 000 frames) later; a click is heard from the
-    /// frame after its beat. The locate itself clicks too (60 417): it moves
-    /// the whole beat from 2 to 0, which the click takes for a new beat — as
-    /// it did on `Net`, and as the oracle below agrees.
+    /// The onsets, analytically: at 120 BPM a beat is 24 000 frames, the seek
+    /// lands on the 118th 512-frame block (frame 60 416) at beat 0.75, and
+    /// the next beat is a quarter beat (6 000 frames) later; a click is heard
+    /// from the frame after its beat (its first sample is `sin(0)`). The
+    /// locate itself clicks too (60 417): it moves the whole beat from 2 to
+    /// 0, which the click takes for a new beat — as it did on `Net`.
+    ///
+    /// Until doc 013 PR 15 the samples were compared, bit for bit, with the
+    /// `Net`-era engine (`net_era`); the digest is what that render was.
     ///
     /// Mutations (run):
     /// - `AudioGraphRes::insert_beat_clock` inserting a `TransportClock`
     ///   beside the engine's → two clocks consume the one transport's seek,
-    ///   the click's misses it, and the renders part after it;
-    /// - inserting a silent two-port node in its place → no clicks at all.
+    ///   the click's misses it, and the onsets after it move;
+    /// - inserting a silent two-port node in its place → no clicks at all;
+    /// - the click's volume at 0.99 → the digest moves.
     #[test]
-    fn the_click_is_bit_identical_to_the_net_era_engine() {
+    fn the_click_sounds_on_every_beat_across_the_seek() {
         let frames = 3 * RATE as usize;
-        let net = render_click_net_era(frames);
         let native = render_click(frames);
-        let on = onsets(&native);
         assert_eq!(
-            on,
+            onsets(&native),
             vec![1, 24_001, 48_001, 60_417, 66_417, 90_417, 114_417, 138_417],
             "a click on every beat, across the seek"
         );
-        assert_eq!(onsets(&net), on, "onset frames");
-        let parted = net
-            .iter()
-            .zip(&native)
-            .position(|(a, b)| a.to_bits() != b.to_bits());
-        assert_eq!(parted, None, "the same samples (first difference at)");
+        assert_golden("the click", digest(&native), 0x9ac0_787e_520a_8085);
     }
 
     /// **The graph runs at the device's rate.** At 120 BPM and 48 kHz the
@@ -764,73 +742,109 @@ mod engine_tests {
         run(&engine, &transport, frames, block, false)
     }
 
-    /// [`render_voice`] on the `Net`-era engine ([`net_era`]). The builder
-    /// pushed its `TransportClock` before any voice; the net then runs the
-    /// voice first in each 64-frame chunk, and it reads the beat the clock
-    /// published at the end of the previous chunk: this chunk's first frame,
-    /// what the graph engine's chunk-major render gives it.
     #[cfg(feature = "sampler")]
-    fn render_voice_net_era(cents: f32, frames: usize, block: usize) -> Vec<f32> {
-        let transport = Transport::new(SampleRate(RATE));
-        let settings = Arc::new(ClickSettings::new());
-        let (engine, net) = net_era(&transport, &settings, |net, _, _| {
-            let v = net.push(Box::new(voice(&transport, cents)));
-            for port in 0..2 {
-                net.set_output_source(port, tutti_core::dsp::Source::Local(v, port));
+    /// The dominant frequency of `x[from..]` between 500 and 900 Hz: the peak of
+    /// its Hann-windowed spectrum, scanned in quarter-hertz steps. A tolerance
+    /// check on it is portable (a last-ulp libm difference moves no peak).
+    ///
+    /// Not zero crossings: the vocoder's output carries low-level phase
+    /// artefacts that add crossings, and a crossing count read the fifth-up
+    /// voice 2% sharp (672.7 Hz) where its spectrum peaks at 658.75 Hz.
+    fn dominant_frequency(x: &[f32], from: usize, rate: f64) -> f64 {
+        use std::f64::consts::TAU;
+        let w = &x[from..];
+        let n = w.len() as f64;
+        let mut best = (0.0, 0.0);
+        let mut f = 500.0;
+        while f < 900.0 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, &s) in w.iter().enumerate() {
+                let hann = 0.5 - 0.5 * (TAU * i as f64 / n).cos();
+                let p = TAU * f * i as f64 / rate;
+                re += f64::from(s) * hann * p.cos();
+                im -= f64::from(s) * hann * p.sin();
             }
-        });
-        let out = run(&engine, &transport, frames, block, false);
-        drop(net);
-        out
+            let m = re * re + im * im;
+            if m > best.1 {
+                best = (f, m);
+            }
+            f += 0.25;
+        }
+        best.0
     }
 
     /// **A sampler voice plays in time through the builder's engine**, at
     /// `block`-frame device blocks with a rolling transport: the dry voice is
-    /// the tone it plays, frame for frame, and dry and a fifth up it renders
-    /// the `Net`-era engine's samples bit for bit (which also checks the
-    /// oracle against the tone, so the two cannot agree on a wrong answer).
+    /// the tone it plays, to the bit, on both channels; the voice a fifth up
+    /// renders the same bits as at 64-frame blocks (chunk-major, a device
+    /// block that is a multiple of 64 frames is the same 64-frame chunks),
+    /// and (Linux/glibc) the `Net`-era engine's.
     ///
-    /// `net_parity.rs` renders under a stopped transport, where a clip reader
-    /// sounds nothing; this is the adapter's path with the clock moving (doc
-    /// 013, the #32 follow-up).
+    /// `scene_render.rs` renders under a stopped transport, where a clip
+    /// reader sounds nothing; this is the adapter's path with the clock
+    /// moving (doc 013, the #32 follow-up). Until doc 013 PR 15 both voices
+    /// were compared, bit for bit, with the `Net`-era engine (`net_era`).
     ///
-    /// Mutation (run): the engine rendering whole device blocks with a
-    /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`)
-    /// → the native render parts from the tone and from `Net`'s at frame 64,
-    /// at both block sizes.
+    /// Mutations (run): the engine publishing its playhead in the walk,
+    /// before the render (`TransportClock::advance` writing back) → the voice
+    /// reads a chunk ahead and the dry render leaves the tone, at both block
+    /// sizes; `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave
+    /// → the pitched voice is not a fifth up, on every target.
+    ///
+    /// Not caught here: the engine rendering whole device blocks with a
+    /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`).
+    /// A voice placed at beat 0 enters on frame 0 and then reads its own
+    /// cursor, so it renders the same bits (measured, both voices). The note
+    /// here used to say otherwise; tutti-sampler's `graph_engine_clock.rs`
+    /// and `frame_exact_entry.rs`, and tutti-core's `legacy_chunk_major.rs`,
+    /// catch that mode.
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;
-        for cents in [0.0f32, 700.0] {
-            let net = render_voice_net_era(cents, frames, block);
+        // The dry voice is pinned to the tone itself; only the pitched one,
+        // which has no closed form, carries a digest.
+        for (cents, want) in [(0.0f32, None), (700.0, Some(0x5681_b9dc_0fbe_0695u64))] {
             let native = render_voice(cents, frames, block);
-            if cents == 0.0 {
-                for (what, out) in [("native", &native), ("Net era", &net)] {
-                    for (i, s) in out.as_chunks::<2>().0.iter().enumerate() {
-                        let want = tone_at(i);
-                        assert!(
-                            (s[0] - want).abs() < 1e-3,
-                            "{block}-frame blocks, {what}: frame {i} read {}, the tone is {want}",
-                            s[0]
-                        );
-                    }
-                }
-            }
             let peak = native.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");
-            if let Some(i) = net
-                .iter()
-                .zip(&native)
-                .position(|(a, b)| a.to_bits() != b.to_bits())
-            {
-                panic!(
-                    "{block}-frame blocks, {cents} cents: the render parts from the Net era's \
-                     at frame {} (channel {}): net {} native {}",
-                    i / 2,
-                    i % 2,
-                    net[i],
-                    native[i]
+            if cents == 0.0 {
+                for (i, s) in native.as_chunks::<2>().0.iter().enumerate() {
+                    let want = tone_at(i).to_bits();
+                    assert!(
+                        s[0].to_bits() == want && s[1].to_bits() == want,
+                        "{block}-frame blocks: frame {i} read {s:?}, the tone is {}",
+                        tone_at(i)
+                    );
+                }
+            } else {
+                // Portable, where the digest is not: a fifth up from 440 Hz
+                // is 440 · 2^(7/12) ≈ 659.26 Hz. Past the vocoder's first few
+                // thousand frames, within 1% (a semitone is 6%).
+                let left: Vec<f32> = native.iter().step_by(2).copied().collect();
+                let want = 440.0 * 2f64.powf(7.0 / 12.0);
+                let got = dominant_frequency(&left, 4_096, RATE);
+                assert!(
+                    (got - want).abs() < want * 1e-2,
+                    "{block}-frame blocks: {got} Hz, a fifth up is {want} Hz"
                 );
+                let by64 = render_voice(cents, frames, 64);
+                if let Some(i) = by64
+                    .iter()
+                    .zip(&native)
+                    .position(|(a, b)| a.to_bits() != b.to_bits())
+                {
+                    panic!(
+                        "{block}-frame blocks, {cents} cents: parts from 64-frame blocks at \
+                         frame {} (channel {}): {} vs {}",
+                        i / 2,
+                        i % 2,
+                        native[i],
+                        by64[i]
+                    );
+                }
+            }
+            if let Some(want) = want {
+                assert_golden(&format!("voice, {cents} cents"), digest(&native), want);
             }
         }
     }

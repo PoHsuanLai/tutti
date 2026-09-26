@@ -19,28 +19,33 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use parking_lot::Mutex;
-use tutti_core::dsp::Net;
-use tutti_core::{AudioTap, AudioUnit, ChannelLayout, Engine, Hz, InterleavedMut};
-use tutti_core::{MasterMeter, MotionFsm, SampleRate, TransportSettings};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{AudioTap, ChannelLayout, Engine, Hz, InterleavedMut, NodeKey, Samples};
+use tutti_core::{MasterMeter, SampleRate, Transport};
 use tutti_cpal::{process_audio, AudioCallbackState, OutputBlock};
+use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_nodes::testing::Osc;
 
 const SR: f64 = 48_000.0;
 
 fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<tutti_core::TapCons>) {
-    let mut net = Net::new(0, outputs);
-    let src = net.push(Box::new(Osc::sine(Hz(440.0))));
-    net.pipe_output(src);
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    // The backend borrows through the net; built once per case in setup, so
-    // the leak is bounded by case count rather than iteration count.
-    let _: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    ed.insert(NodeKey(1), "sine", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        });
+        outputs
+    ];
+    ed.commit().expect("commits");
+    let engine = Engine::new(&Transport::new(SR), &mut ed, exec).expect("within the limits");
+    // Built once per case in setup, so the leak is bounded by case count
+    // rather than iteration count.
+    Box::leak(Box::new(ed));
 
     let tap = AudioTap::new();
     let cons = tap_open.then(|| tap.open().expect("a fresh tap opens"));
-    let engine = Engine::new(MotionFsm::new(TransportSettings::new()), backend);
     (
         Arc::new(AudioCallbackState::new(engine, MasterMeter::new(), tap)),
         cons,

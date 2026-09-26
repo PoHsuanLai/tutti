@@ -475,10 +475,11 @@ impl GraphBuilder {
         self.pipe_output(key);
     }
 
-    /// Append `from`'s event output `from_port` to the merge list of `to`'s
-    /// event input `to_port` ([`GraphSpec::connect_events`]). Event ports
-    /// take fan-in: events at equal offsets arrive in the order the edges
-    /// were connected.
+    /// Add `from`'s event output `from_port` to the sources of `to`'s event
+    /// input `to_port` ([`GraphSpec::connect_events`]). Event ports take
+    /// fan-in: events at equal offsets arrive in source order, the source
+    /// port's `(NodeKey, port)` — for nodes this builder added, the order
+    /// they were added in (keys are handed out increasing).
     ///
     /// # Panics
     ///
@@ -533,6 +534,7 @@ impl GraphBuilder {
             events,
             generations: _,
             required_resolution,
+            params,
         } = self.spec;
         let live = editor.spec_mut();
         live.topology.edges = topology.edges;
@@ -540,6 +542,7 @@ impl GraphBuilder {
         live.topology.inputs = topology.inputs;
         live.events = events;
         live.required_resolution = required_resolution;
+        live.params = params;
         // Parameter values set through `spec_mut` ride along too. `insert`
         // keeps params already recorded for a key, but these were recorded
         // on the builder's copy, not the editor's.

@@ -48,20 +48,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ParamFeed, Setting, SignalFrame};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
-
-use crate::ParamPorts;
 
 /// A mixer strip: volume, stereo balance and mute over `channels` audio ports.
 ///
-/// Ports are `channels` audio inputs → `channels` outputs, plus the optional
-/// param-input ports described in
-/// [`with_param_inputs`](Self::with_param_inputs).
+/// Ports are `channels` audio inputs → `channels` outputs. Volume and pan
+/// are modulatable by the graph (design doc 013 item 6), in that port order
+/// ([`STRIP_PARAMS`]): a per-frame value fed to the strip's
+/// [`ParamFeed`](tutti_core::ParamFeed) overrides its atomic per sample.
+/// There is deliberately no modulatable mute: a per-sample boolean is a
+/// gate, not a mute, and gating is [`crate::GateNode`]'s job.
 ///
 /// Params: [`UnitParam::Volume`] (linear amplitude), [`UnitParam::Pan`] (`-1..1`)
 /// and [`UnitParam::Mute`] (`>= 0.5` is muted). Settings for anything else are
 /// ignored, which is what lets a host push params without knowing the node type.
+/// The params a [`BusStripNode`] lets the graph modulate, in port order.
+pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
+
 pub struct BusStripNode {
     volume: Param<Amplitude>,
     pan: Param<Pan>,
@@ -83,10 +87,14 @@ pub struct BusStripNode {
     /// the prologue rather than the inner loop. A second field would only be a
     /// way for the two to disagree.
     layout: ChannelLayout,
-    /// When true, a volume param-input port follows the audio inputs.
-    mod_volume: bool,
-    /// When true, a pan param-input port follows the volume one.
-    mod_pan: bool,
+    /// Per-frame volume and pan from the graph, when it modulates them
+    /// ([`STRIP_PARAMS`]).
+    feed: ParamFeed,
+    /// Which params the previous block was fed (bit `k`). A change is not
+    /// ramped by the strip: the graph declicks the fed value itself, and
+    /// ramping the control gain across the same block would apply the gain
+    /// twice for its length.
+    last_fed: u8,
     /// The control-driven gains the previous block ended on — where this
     /// block's ramp starts. `None` before the first block and after
     /// [`reset`](AudioUnit::reset): with no previous output there is nothing to
@@ -169,8 +177,8 @@ impl BusStripNode {
             pan: Param::new(Pan::CENTER),
             muted: Arc::new(AtomicBool::new(false)),
             layout: ChannelLayout::from(layout.count().max(1)),
-            mod_volume: false,
-            mod_pan: false,
+            feed: ParamFeed::new(&STRIP_PARAMS),
+            last_fed: 0,
             ramp_from: None,
         }
     }
@@ -184,52 +192,6 @@ impl BusStripNode {
     #[inline]
     pub fn channels(&self) -> usize {
         self.layout.count() as usize
-    }
-
-    /// A strip with optional audio-rate param-input ports.
-    ///
-    /// Present ports follow the audio inputs **in the order volume, then pan**,
-    /// and each overrides its atomic per sample. The atomics still hold the base
-    /// (they feed the upstream param-sum's base port), so the UI handle path is
-    /// unchanged. The order is positional and unrecoverable from the value, which
-    /// is why it is stated here and answered by
-    /// [`param_port`](ParamPorts::param_port) rather than assumed at call sites.
-    /// The ports follow the audio inputs, so their indices **move with the
-    /// width** — ask `param_port`, never assume an index.
-    ///
-    /// Width and modulation are **independent axes**: `channels` says how wide
-    /// the strip is, the `mod_*` flags say which params it reads at audio rate.
-    /// They were not independent — this constructor hardcoded
-    /// [`ChannelLayout::STEREO`] — so asking for a modulated 5.1 strip silently
-    /// returned a *stereo* one, and the only symptom was a `set_source` on a
-    /// param port that resolved and carried the wrong signal.
-    ///
-    /// There is deliberately no audio-rate mute port: a per-sample boolean is a
-    /// gate, not a mute, and gating is [`crate::GateNode`]'s job.
-    pub fn with_param_inputs(
-        channels: impl Into<ChannelLayout>,
-        mod_volume: bool,
-        mod_pan: bool,
-    ) -> Self {
-        Self {
-            mod_volume,
-            mod_pan,
-            ..Self::with_channels(channels)
-        }
-    }
-
-    /// Input-port index of the audio-rate volume input, if present.
-    #[inline]
-    pub fn volume_port(&self) -> Option<usize> {
-        self.mod_volume.then_some(self.channels())
-    }
-
-    /// Input-port index of the audio-rate pan input, if present. Sits after the
-    /// volume port when that one is also present.
-    #[inline]
-    pub fn pan_port(&self) -> Option<usize> {
-        self.mod_pan
-            .then_some(self.channels() + self.mod_volume as usize)
     }
 
     /// Atomic handle for the UI / automation to share the volume cell.
@@ -344,44 +306,40 @@ impl BusStripNode {
 
     /// The gains the **control cells** ask for — the ramp's target.
     ///
-    /// A control a param port overrides contributes unity here, and its value
-    /// comes from [`port_gains`](Self::port_gains) per sample instead. Mute has
-    /// no port, so it is always here.
+    /// A control the graph feeds (`fed`: volume, pan) contributes unity here,
+    /// and its value comes from [`fed_gains`](Self::fed_gains) per sample
+    /// instead. Mute is never fed, so it is always here.
     ///
     /// Reads three atomics; called once per block, never per sample.
     #[inline]
-    fn control_gains(&self) -> StripGains {
-        let volume = match self.mod_volume {
+    fn control_gains(&self, fed: (bool, bool)) -> StripGains {
+        let volume = match fed.0 {
             true => Amplitude::UNITY,
             false => self.volume.load(),
         };
-        let pan = match self.mod_pan {
+        let pan = match fed.1 {
             true => Pan::CENTER,
             false => self.pan.load(),
         };
         Self::gains_for(volume, pan, self.live_factor())
     }
 
-    /// The gains the present param ports ask for at one sample — unity for a
-    /// port that is absent.
+    /// The gains the fed params ask for at one sample — unity for one that
+    /// is not fed.
     ///
-    /// The port carries a raw sample, so this is the boundary where an untyped
+    /// The feed carries raw values, so this is the boundary where an untyped
     /// float becomes a typed quantity again — named rather than inlined so there
     /// is one place that decision happens.
     ///
-    /// Not ramped: a port is already a signal, one value per sample, and
-    /// whatever feeds it owns its continuity.
+    /// Not ramped: a fed value is already a signal, one value per sample, and
+    /// the graph that feeds it owns its continuity.
     #[inline]
-    fn port_gains(&self, at: impl Fn(usize) -> f32) -> StripGains {
-        let volume = match self.volume_port() {
-            Some(p) => Amplitude(at(p)),
-            None => Amplitude::UNITY,
-        };
-        let pan = match self.pan_port() {
-            Some(p) => Pan(at(p)),
-            None => Pan::CENTER,
-        };
-        Self::gains_for(volume, pan, 1.0)
+    fn fed_gains(volume: Option<f32>, pan: Option<f32>) -> StripGains {
+        Self::gains_for(
+            volume.map_or(Amplitude::UNITY, Amplitude),
+            pan.map_or(Pan::CENTER, Pan),
+            1.0,
+        )
     }
 
     /// Render `size` frames: the one gain path, shared by `tick` and `process`.
@@ -403,16 +361,28 @@ impl BusStripNode {
         &mut self,
         size: usize,
         get: impl Fn(usize, usize) -> f32,
-        port: impl Fn(usize, usize) -> f32,
+        volume: Option<&[f32]>,
+        pan: Option<&[f32]>,
         mut put: impl FnMut(usize, usize, f32),
     ) {
-        let target = self.control_gains();
+        let fed = (volume.is_some(), pan.is_some());
+        let fed_bits = u8::from(fed.0) | u8::from(fed.1) << 1;
+        let target = self.control_gains(fed);
         let from = self.ramp_from.replace(target).unwrap_or(target);
-        // Hoisted: whether to ramp and whether to read ports are both
+        // A param that started or stopped being fed is not ramped here: the
+        // graph declicks the fed value, and ramping the control gain from its
+        // old share too would apply the gain twice across the block.
+        let from = if fed_bits == self.last_fed {
+            from
+        } else {
+            target
+        };
+        self.last_fed = fed_bits;
+        // Hoisted: whether to ramp and whether to read the feed are both
         // per-block facts. The steady case skips the interpolation outright,
         // which also keeps its output bit-identical to the unramped arithmetic.
         let ramping = from != target;
-        let has_ports = self.mod_volume || self.mod_pan;
+        let has_fed = fed_bits != 0;
         let channels = self.channels();
 
         for i in 0..size {
@@ -423,8 +393,8 @@ impl BusStripNode {
                 true => StripGains::lerp(from, target, (i + 1) as f32 / size as f32),
                 false => target,
             };
-            if has_ports {
-                gains = gains.cascade(self.port_gains(|p| port(p, i)));
+            if has_fed {
+                gains = gains.cascade(Self::fed_gains(volume.map(|v| v[i]), pan.map(|v| v[i])));
             }
             for c in 0..channels {
                 // The one place a gain meets a sample. `get(c, i)` is a raw
@@ -452,8 +422,8 @@ impl Clone for BusStripNode {
             pan: self.pan.handle(),
             muted: Arc::clone(&self.muted),
             layout: self.layout,
-            mod_volume: self.mod_volume,
-            mod_pan: self.mod_pan,
+            feed: self.feed.clone(),
+            last_fed: self.last_fed,
             ramp_from: self.ramp_from,
         }
     }
@@ -461,7 +431,7 @@ impl Clone for BusStripNode {
 
 impl AudioUnit for BusStripNode {
     fn inputs(&self) -> usize {
-        self.channels() + self.mod_volume as usize + self.mod_pan as usize
+        self.channels()
     }
 
     fn outputs(&self) -> usize {
@@ -486,16 +456,41 @@ impl AudioUnit for BusStripNode {
     /// A one-frame block — see `BusStripNode::render`.
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.render(1, |c, _| input[c], |p, _| input[p], |c, _, v| output[c] = v);
+        let feed = ParamFeed::take(&mut self.feed);
+        self.render(
+            1,
+            |c, _| input[c],
+            feed.get(0, 1),
+            feed.get(1, 1),
+            |c, _, v| output[c] = v,
+        );
+        self.feed = feed;
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        // Moved out for the render, which takes `&mut self`; moving it
+        // allocates nothing.
+        let feed = ParamFeed::take(&mut self.feed);
         self.render(
             size,
             |c, i| input.at_f32(c, i),
-            |p, i| input.at_f32(p, i),
+            feed.get(0, size),
+            feed.get(1, size),
             |c, i, v| output.set_f32(c, i, v),
         );
+        self.feed = feed;
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.volume.load().get()),
+            1 => Some(self.pan.load().get()),
+            _ => None,
+        }
     }
 
     fn set(&mut self, setting: Setting) {
@@ -550,16 +545,6 @@ impl AudioUnit for BusStripNode {
 
     fn footprint(&self) -> usize {
         core::mem::size_of::<Self>()
-    }
-}
-
-impl ParamPorts for BusStripNode {
-    fn param_port(&self, param: UnitParam) -> Option<usize> {
-        match param {
-            UnitParam::Volume => self.volume_port(),
-            UnitParam::Pan => self.pan_port(),
-            _ => None,
-        }
     }
 }
 
@@ -678,36 +663,56 @@ mod tests {
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 1.0));
     }
 
+    /// The feed declares volume then pan, and never changes the arity.
+    ///
+    /// Mutation (run): swap `STRIP_PARAMS`' order → the first assertion
+    /// fails, and `a_fed_volume_overrides_the_atomic` reads the pan.
     #[test]
-    fn param_ports_are_absent_unless_built_with_them() {
-        let plain = BusStripNode::new();
-        assert_eq!(plain.inputs(), 2);
-        assert_eq!(plain.param_port(UnitParam::Volume), None);
-        assert_eq!(plain.param_port(UnitParam::Pan), None);
-
-        // Volume then pan, after the two audio inputs.
-        let both = BusStripNode::with_param_inputs(ChannelLayout::STEREO, true, true);
-        assert_eq!(both.inputs(), 4);
-        assert_eq!(both.param_port(UnitParam::Volume), Some(2));
-        assert_eq!(both.param_port(UnitParam::Pan), Some(3));
-
-        // Pan alone still lands directly after the audio inputs — the index is
-        // derived, not a fixed slot.
-        let pan_only = BusStripNode::with_param_inputs(ChannelLayout::STEREO, false, true);
-        assert_eq!(pan_only.inputs(), 3);
-        assert_eq!(pan_only.param_port(UnitParam::Volume), None);
-        assert_eq!(pan_only.param_port(UnitParam::Pan), Some(2));
+    fn the_feed_declares_volume_then_pan() {
+        let mut s = BusStripNode::with_channels(ChannelLayout::from(6u16));
+        assert_eq!(
+            s.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Volume, UnitParam::Pan][..])
+        );
+        assert_eq!((s.inputs(), s.outputs()), (6, 6));
+        s.set_volume(Amplitude(0.5));
+        assert_eq!(s.param_base(0), Some(0.5), "volume's base is its control");
+        assert_eq!(s.param_base(1), Some(0.0), "pan's base is centre");
     }
 
-    /// A present port overrides the atomic per sample.
+    /// A fed volume overrides the atomic per sample.
     #[test]
-    fn param_port_overrides_the_atomic() {
-        let mut s = BusStripNode::with_param_inputs(ChannelLayout::STEREO, true, false);
+    fn a_fed_volume_overrides_the_atomic() {
+        let mut s = BusStripNode::new();
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
-        // Ports: [L, R, volume]
-        s.tick(&[1.0, 1.0, 0.5], &mut out);
+        s.param_feed().expect("fed").feed(0, &[0.5]);
+        s.tick(&[1.0, 1.0], &mut out);
         assert_eq!(out, [0.5, 0.5]);
+    }
+
+    /// Starting or stopping a feed is not ramped by the strip, so the gain
+    /// is never applied twice across the block: the fed value takes over
+    /// from its first frame, where the graph's declick puts it at the base.
+    ///
+    /// Mutation (run): drop the `last_fed` guard (ramp from the old control
+    /// share) → the first fed block starts at volume² (0.25) → fails.
+    #[test]
+    fn starting_a_feed_does_not_apply_the_gain_twice() {
+        let mut s = BusStripNode::new();
+        s.set_volume(Amplitude(0.5));
+        let x = [1.0f32; 16];
+        let steady = crate::testing::process_fed(&mut s, &[&x, &x], &[None, None]);
+        assert!(steady[0].iter().all(|&y| y == 0.5));
+        let held = [0.5f32; 16];
+        let fed = crate::testing::process_fed(&mut s, &[&x, &x], &[Some(&held), None]);
+        assert!(
+            fed[0].iter().all(|&y| y == 0.5),
+            "the fed volume alone, from its first frame: {:?}",
+            fed[0]
+        );
+        let back = crate::testing::process_fed(&mut s, &[&x, &x], &[None, None]);
+        assert!(back[0].iter().all(|&y| y == 0.5), "and the control again");
     }
 
     #[test]
@@ -951,23 +956,5 @@ mod tests {
         assert!(process_dc(&mut s, 16, 1.0, 1.0)
             .iter()
             .all(|f| *f == [0.25, 0.25]));
-    }
-
-    /// Width and modulation are independent axes.
-    ///
-    /// The regression for the bug this constructor had: it hardcoded
-    /// `ChannelLayout::STEREO`, so a modulated 6-channel strip came back
-    /// *stereo*. The arity assertion fails against that version.
-    #[test]
-    fn a_modulated_strip_is_as_wide_as_it_was_asked_for() {
-        let s = BusStripNode::with_param_inputs(ChannelLayout::from(6u16), true, true);
-        assert_eq!(s.outputs(), 6, "the width is what was asked for");
-        assert_eq!(s.inputs(), 8, "six audio inputs, then volume and pan");
-        assert_eq!(
-            s.volume_port(),
-            Some(6),
-            "param ports follow the audio inputs, so their indices move with the width"
-        );
-        assert_eq!(s.pan_port(), Some(7), "and keep their documented order");
     }
 }

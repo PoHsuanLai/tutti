@@ -24,28 +24,29 @@ A driver is built from an opened device plus the state its callback reads
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_core::dsp::Net;
-use tutti_core::{AudioTap, Engine, Hz, MasterMeter, Transport, TransportClock};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{AudioTap, Engine, Hz, MasterMeter, NodeKey, Samples, Transport};
+use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
-# fn main() -> tutti_cpal::Result<()> {
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Open a device first: it reports the rate the graph must be built at.
 let mut audio_engine = AudioEngine::new(None)?;
 let sample_rate = audio_engine.sample_rate();
 
+// The graph: an editor on the control thread, its executor for the audio
+// thread. Edits are `commit`ted across.
 let transport = Transport::new(sample_rate);
-let mut net = Net::new(0, 2);
-net.push(Box::new(TransportClock::new(
-    transport.clock_links(),
-    sample_rate,
-)));
-let tone = net.push(Box::new(Osc::sine(Hz(440.0))));
-net.pipe_output(tone);
+let (mut editor, executor) = Editor::new(Prepare::new(sample_rate, Samples(512)));
+let tone = NodeKey(1);
+editor.insert(tone, "tone", Legacy::new(Osc::sine(Hz(440.0))));
+editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: tone, port: 0 }); 2];
+editor.commit()?;
 
-// `backend()` is the audio thread's half of the graph; the control thread
-// keeps `net` and `commit`s edits across to it.
-let engine = Engine::new(transport.motion.clone(), net.backend());
+// The engine owns the executor and the transport's clock; the editor stays
+// with the host.
+let engine = Engine::new(&transport, &mut editor, executor)?;
 let state = Arc::new(AudioCallbackState::new(
     engine,
     MasterMeter::new(),

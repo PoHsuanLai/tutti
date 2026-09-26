@@ -5,8 +5,10 @@ pub mod ladder;
 pub mod svf;
 
 pub use eq_band::{BandState, EqBandNode};
-pub use ladder::{compute_ladder_coeffs, LadderCoeffs, LadderFilterNode, LadderType};
-pub use svf::{compute_svf_coeffs, SvfCoeffs, SvfFilterNode, SvfType};
+pub use ladder::{
+    compute_ladder_coeffs, LadderCoeffs, LadderFilterNode, LadderType, LADDER_PARAMS,
+};
+pub use svf::{compute_svf_coeffs, SvfCoeffs, SvfFilterNode, SvfType, SVF_PARAMS};
 
 #[cfg(test)]
 pub(super) mod test_utils {

@@ -53,16 +53,18 @@ fn render_process(node: &mut dyn AudioUnit, case: &Case) -> Vec<Vec<f32>> {
     let mut out = vec![vec![0.0f32; FRAMES]; ch];
     let mut inb = BufferVec::new(node.inputs());
     let mut outb = BufferVec::new(ch);
+    let mut threshold = [0.0f32; BLOCK];
     for b in 0..BLOCKS {
-        for i in 0..BLOCK {
+        for (i, t) in threshold.iter_mut().enumerate() {
             let n = b * BLOCK + i;
             for c in 0..ch {
                 inb.set_f32(c, i, audio(c, n));
                 inb.set_f32(ch + c, i, sidechain(c, n));
             }
-            if case.port {
-                inb.set_f32(2 * ch, i, threshold_signal(n));
-            }
+            *t = threshold_signal(n);
+        }
+        if case.port {
+            node.param_feed().expect("fed").feed(0, &threshold);
         }
         node.process(BLOCK, &inb.buffer_ref(), &mut outb.buffer_mut());
         for (c, o) in out.iter_mut().enumerate() {
@@ -86,7 +88,9 @@ fn render_tick(node: &mut dyn AudioUnit, case: &Case) -> Vec<Vec<f32>> {
             frame[ch + c] = sidechain(c, n);
         }
         if case.port {
-            frame[2 * ch] = threshold_signal(n);
+            node.param_feed()
+                .expect("fed")
+                .feed(0, &[threshold_signal(n)]);
         }
         node.tick(&frame, &mut o);
         for (lane, &s) in out.iter_mut().zip(&o) {
@@ -117,17 +121,19 @@ fn assert_pinned(name: &str, got: &[f32], want: &[f32]) {
     }
 }
 
-fn compressor(ch: usize, port: bool) -> CompressorNode {
-    let mut n = CompressorNode::with_param_inputs(-24.0, 4.0, 0.002, 0.05, ch as u8, port)
+// `_port`: whether the case feeds the threshold — a node's feed is always
+// there, so building it no longer depends on it (it was `with_param_inputs`'
+// port flag when the pins were captured; the fed values are unchanged).
+fn compressor(ch: usize, _port: bool) -> CompressorNode {
+    let mut n = CompressorNode::with_channels(-24.0, 4.0, 0.002, 0.05, ch as u8)
         .with_soft_knee(6.0)
         .with_makeup(3.0);
     n.set_sample_rate(SampleRate(48_000.0));
     n
 }
 
-fn gate(ch: usize, port: bool) -> GateNode {
-    let mut n =
-        GateNode::with_param_inputs(-22.0, 0.001, 0.004, 0.02, ch as u8, port).with_range(-18.0);
+fn gate(ch: usize, _port: bool) -> GateNode {
+    let mut n = GateNode::with_channels(-22.0, 0.001, 0.004, 0.02, ch as u8).with_range(-18.0);
     n.set_sample_rate(SampleRate(48_000.0));
     n
 }

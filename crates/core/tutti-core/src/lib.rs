@@ -21,17 +21,16 @@ pub use tutti_types::value::{
 
 mod engine;
 
-// The shape of a node swap. The curve is the native graph's (its
-// `Editor::replace` follows it), re-exported here for the `Net` path;
-// `net_fade` converts it to the fork's `sequencer::Fade` for
-// `Net::crossfade`, so no crate outside this one names the fork's type.
-mod crossfade;
-pub use crossfade::net_fade;
+// The shape of a node swap: the native graph's (`Editor::replace` follows
+// it), at the engine root. (`net_fade`, its conversion to fundsp's
+// `sequencer::Fade` for `Net::crossfade`, went with the last `Net` fixture
+// that crossfaded, doc 013 Phase 3 PR 15; the law is pinned in tutti-graph's
+// `fade.rs`.)
 pub use tutti_graph::CrossfadeCurve;
 // `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
 // root's own output width, so a host sizing a scratch buffer for `process` has
 // to name it — seven callsites did, all through the module path.
-pub use engine::{Engine, GraphEngineError, DEFAULT_GRAPH_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
+pub use engine::{Engine, GraphEngineError, DEFAULT_BLOCK_CAPACITY, MAX_ROOT_CHANNELS};
 
 // The value → runtime seam: `Topology` in, `Net` out. A module rather than root
 // re-exports, because `compile` and `Catalog` are words that only read right
@@ -173,8 +172,9 @@ pub mod dsp {
     //! tower, [`Signal`](crate::Signal) and [`Setting`](crate::Setting) are
     //! **`tutti-node`'s**, a leaf crate *below* the fork, and `tutti_core`
     //! re-exports them from there. So what this module governs is narrower than
-    //! it once was: the graph **runtime** (`Net`, `NetBackend`) and the DSP node
-    //! library, not the contract a node implements.
+    //! it once was: fundsp's graph container (`Net`) and the DSP node library,
+    //! not the contract a node implements. `Engine` no longer renders a `Net`
+    //! (doc 013 Phase 3 PR 15); what is left here goes in Phase 5.
     //!
     //! Three shapes for owning the contract were tried and rejected before that
     //! landed, and the reasons are worth keeping so they are not rediscovered:
@@ -191,11 +191,12 @@ pub mod dsp {
     //! Putting the contract *below* the fork is the one direction that is none
     //! of those, which is what `tutti-node` does.
     //!
-    //! # Per-block param delivery (`Env`) — designed, not implemented
+    //! # Per-block param delivery (`Env`) — the native graph's
     //!
-    //! The open question this module inherits: a node currently learns a param
-    //! change through [`Setting`](crate::Setting), a queued message drained by
-    //! `NetBackend::handle_messages` at the top of each `process`. Measurement
+    //! The open question this module inherited: a `Net` node learns a param
+    //! change through [`Setting`](crate::Setting), a queued message its
+    //! backend drains at the top of each `process` (on the native graph a
+    //! `Legacy` node's settings ring does the same). Measurement
     //! (graph plan PR 3) settled two things about it — the 256-slot queue does
     //! *not* overflow under a pumped backend (~750 drains/s against ~60
     //! writes/s), and the "~4 s overflow" is a stalled backend rather than an
@@ -211,21 +212,22 @@ pub mod dsp {
     //! the buffers — the audio thread takes a single `RtRef` per block and every
     //! node reads from it, rather than each node draining its own mailbox. The
     //! trait is now `tutti-node`'s, so *adding the method* is finally available.
-    //! What still blocks it is the other half, and it is a fork change either
-    //! way: `NetBackend` keeps its `Net` private and exposes no `set`, so there
-    //! is no seam through which a host hands an `Env` in. That is the same stop
-    //! condition graph plan PR 3 hit, and it is why this stays a comment.
+    //! That is what the native graph did: its nodes take an `Env` per block
+    //! (`tutti_graph::Cx`), and `Engine` renders only the native graph. A
+    //! `Net` never gets one: its backend keeps its `Net` private and exposes no
+    //! `set`, which is the stop condition graph plan PR 3 hit.
     // ── The graph runtime ───────────────────────────────────────────────────
     //
-    // What the fork is actually for. `Net` is the runtime graph the value layer
-    // compiles into (`tutti_core::topology::compile`) and the adapter drives
-    // (`bevy_tutti::graph`); `NodeId` and `Source` are how a wiring declaration
-    // names an endpoint. Nothing here has a Tutti equivalent — this *is* the
-    // backend.
+    // What is left of the fork's runtime. `Net` is the graph the value layer
+    // compiles into (`tutti_core::topology::compile`) and the container the
+    // nodes' own tests wire units in; `NodeId` is `AudioNode`'s key and
+    // `Source` how a `Net` wiring call names an endpoint. None of it is
+    // rendered by `Engine`, which takes a `tutti_graph::Executor` only (doc
+    // 013 Phase 3 PR 15), and all of it goes in Phase 5.
     //
-    // `NetBackend`, the audio-thread half of the RT commit split, is NOT here:
-    // it is at the crate root as [`NetBackend`](crate::NetBackend), because a
-    // host reaches it to *drive* the engine rather than to build a graph.
+    // `NetBackend`, `Net`'s audio-thread half, is not re-exported anywhere:
+    // it existed here so a host could hand one to `Engine::new`, and that
+    // constructor now takes the native graph.
     pub use fundsp::net::{Net, NodeId, Source};
 
     // Deliberately absent, because the engine owns better: the operator-DSL
@@ -249,12 +251,12 @@ pub mod dsp {
 //
 // This is the half of `tutti_core`'s wall that is no longer a fundsp wall: a
 // consumer reaching `tutti_core::AudioUnit` is reaching a Tutti-owned trait.
-// What is still fundsp's is the *runtime* below — `Net`, `NetBackend` and the
-// DSP node library — and that is what the named `dsp` list above governs.
+// What is still fundsp's is the `Net` container and the DSP node library, and
+// that is what the named `dsp` list above governs.
 pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 pub use tutti_node::setting::Setting;
 pub use tutti_node::signal::{Signal, SignalFrame};
-pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
+pub use tutti_node::{AudioUnit, FaultLatch, ParamFeed, RenderFault, MAX_BUFFER_SIZE};
 // The numeric tower the contract is generic over — the part of it consumers
 // actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
 // two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);
@@ -265,8 +267,6 @@ pub use tutti_node::{AudioUnit, FaultLatch, RenderFault, MAX_BUFFER_SIZE};
 // outside the fork writes those bounds, and every symbol on this list is one
 // that had a caller. They are `tutti_node`'s to add back if one appears.
 pub use tutti_node::{Real, Sample, F32, F64};
-
-pub use fundsp::realnet::NetBackend;
 
 // `Wave`, `FileIn`, `WaveMetadata`, `WaveError`, `WaveAsset` and the
 // `can_decode`/`decodable_extensions` pair used to be re-exported here from the
@@ -289,7 +289,7 @@ pub use node_id::{assert_unique, mnemonic, PDC_DELAY_ID, TRANSPORT_CLOCK_ID};
 mod node;
 pub use node::AudioNode;
 
-// This crate is the engine: fundsp's `Net`, transport, metering, PDC. Wiring it
+// This crate is the engine: the render, transport, metering, PDC. Wiring it
 // into an ECS — the reconcile pipeline, graph resources, per-subsystem
 // wrappers — is the host adapter's business, and lives in `bevy_tutti::graph`.
 // `AudioNode` above carries a gated `Component` derive because it is the one

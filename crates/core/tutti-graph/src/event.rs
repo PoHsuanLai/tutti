@@ -3,8 +3,9 @@
 //! Doc 013 §1 ("Port kinds") and owner decision 4: events are **graph ports**,
 //! not a side channel, so the one compiler pass that aligns audio (PDC) aligns
 //! notes and automation too. Decision 6: an event input port may have several
-//! sources, merged deterministically by `(offset, source order)` — layering a
-//! keyboard and a clip is the normal case, not an edge case. Decision 7:
+//! sources, merged deterministically by `(offset, source order)`, where source
+//! order is the source port's `(NodeKey, port)` — layering a keyboard and a
+//! clip is the normal case, not an edge case. Decision 7:
 //! automation is carried as **linear ramp** events first.
 //!
 //! # Why a raw UMP payload and not `tutti-midi-types`
@@ -99,6 +100,13 @@ impl ParamRamp {
         (self.addr == ParamAddr::Id(id)).then_some(self.target)
     }
 
+    /// The target as the wire carries it, whatever the unit: for the
+    /// graph's own param modulation, which is erased over the unit as the
+    /// port it drives is.
+    pub(crate) fn raw_target(&self) -> f32 {
+        self.target
+    }
+
     /// How long the ramp takes.
     pub fn duration(&self) -> Samples {
         self.duration
@@ -128,6 +136,18 @@ pub struct Event {
     /// The payload.
     pub kind: EventKind,
 }
+
+// An event is what every event buffer, merge and delay FIFO holds by value,
+// preallocated on the control side and copied on the audio thread: it must
+// stay `Copy` and small, whatever payload is added (a curve segment, say).
+// Four UMP words cover every MIDI 2.0 message, 128-bit ones included, so a
+// MIDI payload never needs to grow it. Asserted here rather than discovered
+// as a slower merge.
+const _: () = {
+    const fn copy<T: Copy>() {}
+    copy::<Event>();
+    assert!(std::mem::size_of::<Event>() <= 32);
+};
 
 impl Event {
     /// A MIDI event at `offset`.

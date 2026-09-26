@@ -14,7 +14,8 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame};
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
-use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
+use tutti_core::{Db, Param, ParamFeed, SampleRate, Samples, Seconds, Tail};
+use tutti_types::UnitParam;
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
@@ -108,18 +109,14 @@ impl LookaheadRing {
 /// lookahead length. Nothing in the RT path allocates: the rings and scratch
 /// frames are sized at construction.
 ///
-/// # Port layout & audio-rate modulation
+/// # Modulated params
 ///
-/// The default node is 2-in / 2-out (audio L/R on ports 0/1). For audio-rate
-/// modulation it can grow optional param-input ports after the audio inputs
-/// (see [`LimiterNode::with_param_inputs`]) in the order **ceiling, then
-/// threshold** (both dB): ceiling at index 2 if present, threshold next. Each
-/// present port overrides its atomic per sample; the atomics still hold the
-/// base. Absent, the node is a plain 2-in/2-out node, which is the common case.
-///
-/// Ask [`ceiling_port`](Self::ceiling_port) /
-/// [`threshold_port`](Self::threshold_port) rather than computing an index:
-/// they move with the width.
+/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
+/// and the threshold (both dB) are modulatable by the graph (design doc 013
+/// item 6), in that port order ([`LIMITER_PARAMS`]): a per-frame value fed
+/// to the node's [`ParamFeed`](tutti_core::ParamFeed) overrides its atomic
+/// per sample. Unfed, the node reads its atomics, which is the common case;
+/// the arity never changes.
 pub struct LimiterNode {
     threshold_db: Param<Db>,
     ceiling_db: Param<Db>,
@@ -164,14 +161,16 @@ pub struct LimiterNode {
     gain_reduction_db: Db,
     sample_rate: SampleRate,
     follower: EnvelopeFollower,
-    /// When true, a ceiling param-input port (dB) follows the audio inputs and
-    /// overrides the ceiling atomic per sample.
-    mod_ceiling: bool,
-    /// When true, a threshold param-input port (dB) follows the audio inputs
-    /// (and the ceiling port if present) and overrides the threshold atomic
-    /// per sample.
-    mod_threshold: bool,
+    /// Per-frame ceiling and threshold from the graph, when it modulates them
+    /// ([`LIMITER_PARAMS`]).
+    feed: ParamFeed,
 }
+
+/// The params a [`LimiterNode`] lets the graph modulate, in port order.
+pub const LIMITER_PARAMS: [UnitParam; 2] = [UnitParam::Ceiling, UnitParam::Threshold];
+
+/// The params a [`BrickwallLimiterNode`] lets the graph modulate.
+pub const BRICKWALL_PARAMS: [UnitParam; 1] = [UnitParam::Ceiling];
 
 impl LimiterNode {
     /// Builds a stereo lookahead limiter with a 5 ms lookahead and 100 ms
@@ -250,37 +249,8 @@ impl LimiterNode {
             gain_reduction_db: Db::UNITY,
             sample_rate: SampleRate::DEFAULT,
             follower: EnvelopeFollower::new(0.0, 0.1, SampleRate::DEFAULT),
-            mod_ceiling: false,
-            mod_threshold: false,
+            feed: ParamFeed::new(&LIMITER_PARAMS),
         }
-    }
-
-    /// A limiter with optional audio-rate ceiling / threshold param-input ports,
-    /// appended after the audio inputs in that order (ceiling first). Each
-    /// present port overrides its atomic per sample; the atomics still hold the
-    /// base.
-    ///
-    /// Width and modulation are **independent axes**: `channels` says how wide
-    /// the limiter is, the `mod_*` flags say which params it reads at audio
-    /// rate. Collapsing them — building the modulated form at a fixed width 2 —
-    /// turns a request for a modulated 5.1 limiter into a *stereo* one, and the
-    /// only symptom is a `set_source` on a param port that resolves and carries
-    /// the wrong signal.
-    ///
-    /// The param ports follow the audio inputs, so their indices **move with the
-    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
-    /// never assume an index.
-    pub fn with_param_inputs(
-        channels: impl Into<ChannelLayout>,
-        threshold_db: impl Into<Db>,
-        ceiling_db: impl Into<Db>,
-        mod_ceiling: bool,
-        mod_threshold: bool,
-    ) -> Self {
-        let mut node = Self::with_channels(channels, threshold_db, ceiling_db);
-        node.mod_ceiling = mod_ceiling;
-        node.mod_threshold = mod_threshold;
-        node
     }
 
     /// The audio width this limiter was built for.
@@ -288,32 +258,19 @@ impl LimiterNode {
         self.layout
     }
 
-    /// Input-port index of the ceiling param input, if present (right after the
-    /// audio inputs).
+    /// Effective (threshold_db, ceiling_db) for a block of one: a value the
+    /// graph feeds overrides the corresponding atomic. No extra clamp — the
+    /// dB setters store unclamped.
     #[inline]
-    pub fn ceiling_port(&self) -> Option<usize> {
-        self.mod_ceiling.then_some(self.channels)
-    }
-
-    /// Input-port index of the threshold param input, if present (after the
-    /// audio inputs and the ceiling port).
-    #[inline]
-    pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold
-            .then_some(self.channels + self.mod_ceiling as usize)
-    }
-
-    /// Effective per-sample (threshold_db, ceiling_db): a present param port
-    /// overrides the corresponding atomic. `read` reads input port `p`.
-    /// No extra clamp — the dB setters store unclamped.
-    #[inline]
-    fn effective_params(&self, read: impl Fn(usize) -> f32) -> (tutti_core::Db, tutti_core::Db) {
+    fn effective_params(&self) -> (tutti_core::Db, tutti_core::Db) {
         let threshold = self
-            .threshold_port()
-            .map_or_else(|| self.threshold_db.load(), |p| Db(read(p)));
+            .feed
+            .get(1, 1)
+            .map_or_else(|| self.threshold_db.load(), |v| Db(v[0]));
         let ceiling = self
-            .ceiling_port()
-            .map_or_else(|| self.ceiling_db.load(), |p| Db(read(p)));
+            .feed
+            .get(0, 1)
+            .map_or_else(|| self.ceiling_db.load(), |v| Db(v[0]));
         (threshold, ceiling)
     }
 
@@ -350,8 +307,8 @@ impl LimiterNode {
 
     /// The shared threshold cell in [`Db`] — where reduction begins.
     ///
-    /// **A present threshold param-input port overrides this per sample.**
-    /// Shared across clones.
+    /// **A threshold the graph feeds overrides this per sample.** Shared
+    /// across clones.
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.threshold_db.as_atomic()
     }
@@ -359,7 +316,7 @@ impl LimiterNode {
     /// The shared ceiling cell in [`Db`] — the hard bound the output is not
     /// allowed to exceed.
     ///
-    /// **A present ceiling param-input port overrides this per sample.**
+    /// **A ceiling the graph feeds overrides this per sample.**
     pub fn ceiling(&self) -> Arc<AtomicF32> {
         self.ceiling_db.as_atomic()
     }
@@ -374,8 +331,8 @@ impl LimiterNode {
 
     /// Sets the threshold in [`Db`], unclamped.
     ///
-    /// With a threshold param-input port present this sets the *base* the port
-    /// overrides.
+    /// While the graph modulates the threshold this sets the *base* its
+    /// modulation rides on.
     pub fn set_threshold(&self, db: impl Into<Db>) {
         self.threshold_db.store(db.into());
     }
@@ -468,7 +425,7 @@ impl LimiterNode {
 
 impl AudioUnit for LimiterNode {
     fn inputs(&self) -> usize {
-        self.channels + self.mod_ceiling as usize + self.mod_threshold as usize
+        self.channels
     }
 
     fn outputs(&self) -> usize {
@@ -505,8 +462,8 @@ impl AudioUnit for LimiterNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.update_coefficients();
-        // A present ceiling/threshold port overrides its atomic.
-        let (threshold, ceiling) = self.effective_params(|p| input[p]);
+        // A fed ceiling/threshold overrides its atomic.
+        let (threshold, ceiling) = self.effective_params();
         // Build a full-width audio frame from `input`, tolerating a caller that
         // supplies fewer audio channels than the unit width: the last available
         // channel is duplicated (mirrors the pre-widen mono→stereo fallback), so
@@ -534,8 +491,10 @@ impl AudioUnit for LimiterNode {
         self.update_coefficients();
         let in_ch = input.channels();
         let out_ch = output.channels();
-        let ceiling_port = self.ceiling_port();
-        let threshold_port = self.threshold_port();
+        // Moved out for the loop, which borrows `self` mutably; moving it
+        // allocates nothing.
+        let feed = ParamFeed::take(&mut self.feed);
+        let (ceiling_fed, threshold_fed) = (feed.get(0, size), feed.get(1, size));
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
 
@@ -547,8 +506,8 @@ impl AudioUnit for LimiterNode {
             for (c, slot) in in_frame.iter_mut().enumerate() {
                 *slot = if c < in_ch { input.at_f32(c, i) } else { 0.0 };
             }
-            let threshold = threshold_port.map_or(base_threshold, |p| Db(input.at_f32(p, i)));
-            let ceiling = ceiling_port.map_or(base_ceiling, |p| Db(input.at_f32(p, i)));
+            let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[i]));
+            let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[i]));
             self.process_frame_with(&in_frame, threshold, ceiling, &mut out_frame);
             for (c, &y) in out_frame.iter().enumerate().take(self.channels.min(out_ch)) {
                 output.set_f32(c, i, y);
@@ -556,6 +515,19 @@ impl AudioUnit for LimiterNode {
         }
         self.in_frame = in_frame;
         self.out_frame = out_frame;
+        self.feed = feed;
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        match k {
+            0 => Some(self.ceiling_db.load().get()),
+            1 => Some(self.threshold_db.load().get()),
+            _ => None,
+        }
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {
@@ -627,8 +599,7 @@ impl Clone for LimiterNode {
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
             follower: self.follower.clone(),
-            mod_ceiling: self.mod_ceiling,
-            mod_threshold: self.mod_threshold,
+            feed: self.feed.clone(),
         }
     }
 }
@@ -636,14 +607,12 @@ impl Clone for LimiterNode {
 /// Hard clipper at ceiling. No lookahead, zero latency.
 /// 2 inputs (L/R), 2 outputs (L/R).
 ///
-/// # Port layout & audio-rate modulation
+/// # Modulated ceiling
 ///
-/// The default node is 2-in / 2-out (audio L/R on ports 0/1). For audio-rate
-/// ceiling modulation it can grow **one optional ceiling param-input port (dB)
-/// after the audio inputs** at index 2 (see
-/// [`BrickwallLimiterNode::with_param_inputs`]); present → overrides the ceiling
-/// atomic per sample, absent → a plain 2-in/2-out node, bit-identical to the
-/// unmodulated path.
+/// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
+/// (dB) is modulatable by the graph (design doc 013 item 6;
+/// [`BRICKWALL_PARAMS`]): fed → overrides the ceiling atomic per sample,
+/// unfed → bit-identical to a node nothing modulates.
 pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
     ceiling_linear: f32,
@@ -653,9 +622,8 @@ pub struct BrickwallLimiterNode {
     /// [`layout`](Self::layout)'s count, cached as the iteration stride — see
     /// the note on [`LimiterNode::channels`]. Set once at construction.
     channels: usize,
-    /// When true, a ceiling param-input port (dB) follows the audio inputs and
-    /// overrides the ceiling atomic per sample.
-    mod_ceiling: bool,
+    /// A per-frame ceiling from the graph, when it modulates it.
+    feed: ParamFeed,
 }
 
 impl BrickwallLimiterNode {
@@ -683,17 +651,8 @@ impl BrickwallLimiterNode {
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
             layout: ChannelLayout::from(n),
             channels: n,
-            mod_ceiling: false,
+            feed: ParamFeed::new(&BRICKWALL_PARAMS),
         }
-    }
-
-    /// A brickwall limiter with an optional audio-rate ceiling param-input port.
-    /// When present it overrides the ceiling atomic per sample; the atomic still
-    /// holds the base.
-    pub fn with_param_inputs(ceiling_db: impl Into<Db>, mod_ceiling: bool) -> Self {
-        let mut node = Self::new(ceiling_db);
-        node.mod_ceiling = mod_ceiling;
-        node
     }
 
     /// The audio width this limiter was built for.
@@ -701,17 +660,10 @@ impl BrickwallLimiterNode {
         self.layout
     }
 
-    /// Input-port index of the ceiling param input, if present (right after the
-    /// audio inputs).
-    #[inline]
-    pub fn ceiling_port(&self) -> Option<usize> {
-        self.mod_ceiling.then_some(self.channels)
-    }
-
     /// The shared ceiling cell in [`Db`] — the level samples are clamped to.
     ///
-    /// **A present ceiling param-input port overrides this per sample.**
-    /// Writing the raw cell does *not* refresh the cached linear ceiling the
+    /// **A ceiling the graph feeds overrides this per sample.** Writing the
+    /// raw cell does *not* refresh the cached linear ceiling the
     /// unmodulated path clamps against; use
     /// [`set_ceiling`](Self::set_ceiling) for that.
     pub fn ceiling(&self) -> Arc<AtomicF32> {
@@ -722,7 +674,8 @@ impl BrickwallLimiterNode {
     /// amplitude.
     ///
     /// `&mut self` because of that cache, so this cannot reach a node already
-    /// live in the graph — a live ceiling change needs the param-input port.
+    /// live in the graph — a live ceiling change goes through the graph's
+    /// modulation of it.
     pub fn set_ceiling(&mut self, db: impl Into<Db>) {
         let db = db.into();
         self.ceiling_db.store(db);
@@ -743,7 +696,7 @@ impl BrickwallLimiterNode {
 
 impl AudioUnit for BrickwallLimiterNode {
     fn inputs(&self) -> usize {
-        self.channels + self.mod_ceiling as usize
+        self.channels
     }
 
     fn outputs(&self) -> usize {
@@ -772,10 +725,10 @@ impl AudioUnit for BrickwallLimiterNode {
         // Guard against a graph handing fewer physical channels than the unit's
         // width (mirrors the old `input.len() > 1` checks, now general).
         let n = self.channels.min(input.len()).min(output.len());
-        // Modulated path: a present ceiling port overrides the atomic; clip
-        // against the per-sample linear ceiling without touching the cache.
-        if let Some(p) = self.ceiling_port() {
-            let ceiling_linear = db_to_amplitude(Db(input[p])).get();
+        // Modulated path: a fed ceiling overrides the atomic; clip against the
+        // per-sample linear ceiling without touching the cache.
+        if let Some(v) = self.feed.get(0, 1) {
+            let ceiling_linear = db_to_amplitude(Db(v[0])).get();
             for c in 0..n {
                 output[c] = Self::clip_at(input[c], ceiling_linear);
             }
@@ -794,10 +747,10 @@ impl AudioUnit for BrickwallLimiterNode {
         // Clip every channel the graph actually provides, up to the unit width.
         let n = self.channels.min(input.channels()).min(output.channels());
 
-        // Modulated path: read the ceiling port per sample.
-        if let Some(p) = self.ceiling_port() {
-            for i in 0..size {
-                let ceiling_linear = db_to_amplitude(Db(input.at_f32(p, i))).get();
+        // Modulated path: read the fed ceiling per sample.
+        if let Some(v) = self.feed.get(0, size) {
+            for (i, &db) in v.iter().enumerate() {
+                let ceiling_linear = db_to_amplitude(Db(db)).get();
                 for c in 0..n {
                     output.set_f32(c, i, Self::clip_at(input.at_f32(c, i), ceiling_linear));
                 }
@@ -823,6 +776,14 @@ impl AudioUnit for BrickwallLimiterNode {
         {
             self.set_ceiling(value);
         }
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.ceiling_db.load().get())
     }
 
     fn get_id(&self) -> u64 {
@@ -862,7 +823,7 @@ impl Clone for BrickwallLimiterNode {
             ceiling_linear: self.ceiling_linear,
             layout: self.layout,
             channels: self.channels,
-            mod_ceiling: self.mod_ceiling,
+            feed: self.feed.clone(),
         }
     }
 }
@@ -1076,43 +1037,41 @@ mod tests {
         assert!((out[1] - (-0.2)).abs() < 0.001);
     }
 
-    // ── Audio-rate param-input ports ─────────────────────────────────────────
+    // ── Modulated params (the graph's param feed) ───────────────────────────
 
+    /// The feeds declare ceiling then threshold (and the brickwall its
+    /// ceiling), and never change the arity: a modulatable limiter is as
+    /// wide as it was built.
+    ///
+    /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
+    /// fails.
     #[test]
-    fn limiter_param_port_arity_and_indices() {
-        // The plain constructor declares NO param ports: the audio arity is
-        // untouched and both accessors are absent.
-        let d = LimiterNode::new(-6.0, -0.3);
-        assert_eq!(d.inputs(), 2);
-        assert_eq!(d.outputs(), 2);
-        assert_eq!(d.ceiling_port(), None);
-        assert_eq!(d.threshold_port(), None);
-        // ceiling only → ceiling at 2 (right after the two audio inputs).
-        let c = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, false);
-        assert_eq!(c.inputs(), 3);
-        assert_eq!(c.ceiling_port(), Some(2));
-        assert_eq!(c.threshold_port(), None);
-        // threshold only → threshold at 2 (no ceiling port before it).
-        let t = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, false, true);
-        assert_eq!(t.inputs(), 3);
-        assert_eq!(t.ceiling_port(), None);
-        assert_eq!(t.threshold_port(), Some(2));
-        // both → ceiling at 2, threshold at 3 (ceiling first, documented order).
-        let b = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, true);
-        assert_eq!(b.inputs(), 4);
-        assert_eq!(b.ceiling_port(), Some(2));
-        assert_eq!(b.threshold_port(), Some(3));
+    fn the_feeds_declare_ceiling_then_threshold() {
+        let mut l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
+        assert_eq!(
+            l.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Ceiling, UnitParam::Threshold][..])
+        );
+        assert_eq!((l.inputs(), l.outputs()), (6, 6));
+        assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
+        assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
+        let mut b = BrickwallLimiterNode::new(-1.0);
+        assert_eq!(
+            b.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Ceiling][..])
+        );
+        assert_eq!((b.inputs(), b.outputs()), (2, 2));
+        assert_eq!(b.param_base(0), Some(-1.0));
     }
 
     #[test]
     fn limiter_unmodulated_matches_held_constant() {
-        // A modulated node whose ceiling+threshold ports are held at the same
-        // values as a plain node's atomics must produce identical output.
+        // A node whose fed ceiling and threshold are held at the same values
+        // as a plain node's atomics must produce identical output.
         let mut plain = LimiterNode::new(-6.0, -0.3);
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut modn =
-            LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, true);
+        let mut modn = LimiterNode::new(-6.0, -0.3);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32; 2];
@@ -1121,8 +1080,11 @@ mod tests {
             // Mix of loud and quiet to exercise gain reduction + release.
             let s = if n % 400 < 200 { 0.9 } else { 0.05 };
             plain.tick(&[s, s], &mut plain_out);
-            // Held: ceiling at 2 = -0.3, threshold at 3 = -6.0.
-            modn.tick(&[s, s, -0.3, -6.0], &mut mod_out);
+            // Held: ceiling = -0.3, threshold = -6.0.
+            let feed = modn.param_feed().expect("fed");
+            feed.feed(0, &[-0.3]);
+            feed.feed(1, &[-6.0]);
+            modn.tick(&[s, s], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6
                     && (plain_out[1] - mod_out[1]).abs() < 1e-6,
@@ -1134,33 +1096,19 @@ mod tests {
     }
 
     #[test]
-    fn brickwall_param_port_arity_and_index() {
-        // Plain constructor: no port, arity untouched.
-        let d = BrickwallLimiterNode::new(0.0);
-        assert_eq!(d.inputs(), 2);
-        assert_eq!(d.outputs(), 2);
-        assert_eq!(d.ceiling_port(), None);
-        let c = BrickwallLimiterNode::with_param_inputs(0.0, true);
-        assert_eq!(c.inputs(), 3);
-        assert_eq!(c.ceiling_port(), Some(2));
-        let off = BrickwallLimiterNode::with_param_inputs(0.0, false);
-        assert_eq!(off.inputs(), 2);
-        assert_eq!(off.ceiling_port(), None);
-    }
-
-    #[test]
     fn brickwall_unmodulated_matches_held_constant() {
-        // A modulated brickwall whose ceiling port is held at the atomic value
-        // must clip identically to a plain brickwall.
+        // A brickwall whose fed ceiling is held at the atomic value must clip
+        // identically to a plain brickwall.
         let mut plain = BrickwallLimiterNode::new(-6.0);
-        let mut modn = BrickwallLimiterNode::with_param_inputs(-6.0, true);
+        let mut modn = BrickwallLimiterNode::new(-6.0);
 
         let mut plain_out = [0.0f32; 2];
         let mut mod_out = [0.0f32; 2];
         let samples = [2.0, -3.0, 0.1, -0.05, 1.5, -1.5];
         for &s in &samples {
             plain.tick(&[s, -s], &mut plain_out);
-            modn.tick(&[s, -s, -6.0], &mut mod_out);
+            modn.param_feed().expect("fed").feed(0, &[-6.0]);
+            modn.tick(&[s, -s], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6
                     && (plain_out[1] - mod_out[1]).abs() < 1e-6,
@@ -1172,19 +1120,21 @@ mod tests {
     }
 
     #[test]
-    fn brickwall_ceiling_port_modulates_clip() {
-        // Holding the ceiling port low clips harder than holding it high.
-        let mut bw = BrickwallLimiterNode::with_param_inputs(0.0, true);
+    fn brickwall_fed_ceiling_modulates_clip() {
+        // A fed ceiling held low clips harder than one held high.
+        let mut bw = BrickwallLimiterNode::new(0.0);
         let mut out = [0.0f32; 2];
         // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
-        bw.tick(&[1.0, 1.0, -12.0], &mut out);
+        bw.param_feed().expect("fed").feed(0, &[-12.0]);
+        bw.tick(&[1.0, 1.0], &mut out);
         let low_ceiling = out[0];
         // Ceiling 0 dB = 1.0 linear: 1.0 passes through.
-        bw.tick(&[1.0, 1.0, 0.0], &mut out);
+        bw.param_feed().expect("fed").feed(0, &[0.0]);
+        bw.tick(&[1.0, 1.0], &mut out);
         let high_ceiling = out[0];
         assert!(
             high_ceiling > low_ceiling + 0.1,
-            "higher ceiling via port should clip less: low={low_ceiling}, high={high_ceiling}"
+            "higher fed ceiling should clip less: low={low_ceiling}, high={high_ceiling}"
         );
     }
 
@@ -1296,32 +1246,6 @@ mod tests {
             lim.gain_reduction_db() < Db(0.5),
             "After long quiet, gain reduction should release: {}",
             lim.gain_reduction_db()
-        );
-    }
-
-    /// Width and modulation are independent axes.
-    ///
-    /// The regression for the bug this constructor had: it delegated to
-    /// `Self::new`, which is stereo, so a modulated 6-channel limiter came back
-    /// *stereo*. The arity assertion fails against that version.
-    #[test]
-    fn a_modulated_limiter_is_as_wide_as_it_was_asked_for() {
-        let l = LimiterNode::with_param_inputs(ChannelLayout::from(6u16), -6.0, -0.3, true, true);
-        assert_eq!(l.outputs(), 6, "the width is what was asked for");
-        assert_eq!(
-            l.inputs(),
-            8,
-            "six audio inputs, then ceiling and threshold"
-        );
-        assert_eq!(
-            l.ceiling_port(),
-            Some(6),
-            "param ports follow the audio inputs, so their indices move with the width"
-        );
-        assert_eq!(
-            l.threshold_port(),
-            Some(7),
-            "and keep their documented order"
         );
     }
 }

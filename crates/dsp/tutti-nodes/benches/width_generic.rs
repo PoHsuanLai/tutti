@@ -10,9 +10,10 @@
 //! delay line are warm, and the input is broadband noise rather than silence —
 //! a filter fed zeros can take denormal-free shortcuts a real signal never does.
 //!
-//! The `*_mod` cases feed an audio-rate param port with a sweep that moves
-//! every sample, which is the path where a per-sample coefficient solve (a
-//! `tan` per sample for the SVF) used to be the dominant cost.
+//! The `*_mod` cases feed the cutoff per frame, as the graph's param
+//! modulation does, with a sweep that moves every sample: the path where a
+//! per-sample coefficient solve (a `tan` per sample for the SVF) used to be
+//! the dominant cost.
 
 use std::hint::black_box;
 
@@ -38,12 +39,9 @@ fn noise_block(channels: usize) -> BufferVec {
     buf
 }
 
-/// Fill `port` with a cutoff sweep that moves every sample.
-fn sweep_port(buf: &mut BufferVec, port: usize, lo: f32, hi: f32) {
-    for i in 0..BLOCK {
-        let t = i as f32 / BLOCK as f32;
-        buf.set_f32(port, i, lo + (hi - lo) * t);
-    }
+/// A cutoff sweep that moves every sample.
+fn sweep(lo: f32, hi: f32) -> [f32; BLOCK] {
+    std::array::from_fn(|i| lo + (hi - lo) * (i as f32 / BLOCK as f32))
 }
 
 fn run(
@@ -79,17 +77,17 @@ fn svf(c: &mut Criterion) {
         );
         run(c, "svf", w, Box::new(node), noise_block(w));
 
-        let node = SvfFilterNode::<f64>::with_param_inputs(
+        let mut node = SvfFilterNode::<f64>::with_channels(
             ChannelLayout::from(w),
             SvfType::LowPass,
             1_000.0,
             0.707,
-            true,
-            false,
         );
-        let mut input = noise_block(w + 1);
-        sweep_port(&mut input, w, 300.0, 6_000.0);
-        run(c, "svf_mod", w, Box::new(node), input);
+        // Live until cleared: every block of the bench reads it.
+        node.param_feed()
+            .expect("the SVF has a feed")
+            .feed(0, &sweep(300.0, 6_000.0));
+        run(c, "svf_mod", w, Box::new(node), noise_block(w));
     }
 }
 

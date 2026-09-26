@@ -3,7 +3,7 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, MAX_BUFFER_SIZE};
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, UnitParam};
 
 use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
@@ -11,7 +11,7 @@ use super::utils::{
     amplitude_to_db, apply_gain_lane, compute_gate_gain, ramp_db, sidechain_level_buffer,
     sidechain_level_slice,
 };
-use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
+use tutti_core::{Db, Param, ParamFeed, SampleRate, Seconds, Tail};
 
 use crate::ramp::LastGood;
 
@@ -175,26 +175,24 @@ impl GateCore {
 /// - `GateNode::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gate.
 /// - `GateNode::with_channels(.., n)` — arbitrary N.
 ///
-/// # Port layout & audio-rate modulation
+/// # Modulated threshold
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
-/// (`ch..2*ch`). For audio-rate threshold modulation the node can grow **one
-/// optional param-input port after all audio+sidechain inputs** (see
-/// [`GateNode::with_param_inputs`]): the threshold port sits at index `2*ch` —
-/// index 4 for a stereo gate — and overrides the threshold atomic per sample,
-/// in [`Db`]. Absent, the node is a plain `2*ch`-in node, which is the common
-/// case.
-///
-/// Ask [`threshold_port`](Self::threshold_port) rather than computing the
-/// index: it moves with the width.
+/// (`ch..2*ch`). The threshold is modulatable by the graph (design doc 013
+/// item 6; [`GATE_PARAMS`]): a per-frame threshold in [`Db`] fed to the node's
+/// [`ParamFeed`](tutti_core::ParamFeed) overrides the threshold atomic per
+/// sample. Unfed, the node reads its atomic, which is the common case; the
+/// arity never changes.
 pub struct GateNode {
     core: GateCore,
     channels: ChannelLayout,
-    /// When true, a threshold param-input port (dB) follows all audio +
-    /// sidechain inputs at index `2*channels` and overrides the threshold
-    /// atomic per sample.
-    mod_threshold: bool,
+    /// A per-frame threshold from the graph, when it modulates it: overrides
+    /// the threshold atomic per sample.
+    feed: ParamFeed,
 }
+
+/// The params a [`GateNode`] lets the graph modulate, in port order.
+pub const GATE_PARAMS: [UnitParam; 1] = [UnitParam::Threshold];
 
 impl GateNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
@@ -263,32 +261,8 @@ impl GateNode {
         Self {
             core: GateCore::new(threshold_db, attack, hold, release),
             channels: ChannelLayout::from(channels.max(1) as u16),
-            mod_threshold: false,
+            feed: ParamFeed::new(&GATE_PARAMS),
         }
-    }
-
-    /// A gate with an optional audio-rate threshold param-input port, appended
-    /// after all audio + sidechain inputs. When present it overrides the
-    /// threshold atomic per sample; the atomic still holds the base.
-    pub fn with_param_inputs(
-        threshold_db: impl Into<Db>,
-        attack: impl Into<Seconds>,
-        hold: impl Into<Seconds>,
-        release: impl Into<Seconds>,
-        channels: u8,
-        mod_threshold: bool,
-    ) -> Self {
-        let mut node = Self::with_channels(threshold_db, attack, hold, release, channels);
-        node.mod_threshold = mod_threshold;
-        node
-    }
-
-    /// Input-port index of the threshold param input, if present (right after
-    /// all audio + sidechain inputs, i.e. at `2 * channels`).
-    #[inline]
-    pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold
-            .then_some(2 * self.channels.count() as usize)
     }
 
     /// Sets how far the gate attenuates when closed, in [`Db`], clamped to at
@@ -321,7 +295,7 @@ impl GateNode {
     /// The shared threshold cell in [`Db`] — the sidechain level at or above
     /// which the gate opens.
     ///
-    /// **A present threshold param-input port overrides this per sample.**
+    /// **A threshold the graph feeds overrides this per sample.**
     /// Shared across clones.
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.core.threshold_db.as_atomic()
@@ -380,8 +354,8 @@ impl GateNode {
 
     /// Sets the threshold in [`Db`], unclamped.
     ///
-    /// With a threshold param-input port present this sets the *base* the port
-    /// overrides.
+    /// While the graph modulates the threshold this sets the *base* its
+    /// modulation rides on.
     pub fn set_threshold(&self, db: impl Into<Db>) {
         self.core.threshold_db.store(db.into());
     }
@@ -407,7 +381,7 @@ impl GateNode {
 
 impl AudioUnit for GateNode {
     fn inputs(&self) -> usize {
-        2 * self.channels.count() as usize + self.mod_threshold as usize
+        2 * self.channels.count() as usize
     }
 
     fn outputs(&self) -> usize {
@@ -438,8 +412,9 @@ impl AudioUnit for GateNode {
         // A tick is a block of one: the controls are read once here too.
         let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
-        // A present threshold port (at 2*ch) overrides the atomic.
-        let threshold = self.threshold_port().map(|p| Db(input[p]));
+        // A fed threshold overrides the atomic, which is the base the graph's
+        // modulation rides on.
+        let threshold = self.feed.get(0, 1).map(|v| Db(v[0]));
         let sc = sidechain_level_slice(input, ch);
         let gain = self.core.compute_gain(&block, 0, 1, sc, threshold);
         for c in 0..ch {
@@ -451,17 +426,29 @@ impl AudioUnit for GateNode {
         self.core.update_coefficients();
         let block = self.core.begin_block();
         let ch = self.channels.count() as usize;
-        let threshold_port = self.threshold_port();
+        // Moved out for the loop, which borrows the core mutably; moving it
+        // allocates nothing.
+        let feed = ParamFeed::take(&mut self.feed);
+        let threshold_fed = feed.get(0, size);
 
         // Detector sample-outer (a recursive envelope with a hold counter),
         // apply channel-outer over planar slices — see `CompressorNode::process`.
         let mut gains = [0.0f32; MAX_BUFFER_SIZE];
         for (i, g) in gains[..size].iter_mut().enumerate() {
             let sc = sidechain_level_buffer(input, ch, i);
-            let threshold = threshold_port.map(|p| Db(input.at_f32(p, i)));
+            let threshold = threshold_fed.map(|v| Db(v[i]));
             *g = self.core.compute_gain(&block, i, size, sc, threshold);
         }
         apply_gain_lane(&gains[..size], ch, input, output);
+        self.feed = feed;
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.core.threshold_db.load().get())
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {
@@ -521,7 +508,7 @@ impl Clone for GateNode {
         Self {
             core: self.core.clone(),
             channels: self.channels,
-            mod_threshold: self.mod_threshold,
+            feed: self.feed.clone(),
         }
     }
 }
@@ -671,40 +658,37 @@ mod tests {
         assert_eq!(stereo.get_id(), crate::node_id::STEREO_GATE_ID);
     }
 
-    // ── Audio-rate threshold param-input port ────────────────────────────────
+    // ── Modulated threshold (the graph's param feed) ────────────────────────
 
+    /// The feed declares the threshold, and never changes the arity: audio
+    /// plus sidechain, at every width.
+    ///
+    /// Mutation (run): declare the feed empty → the first assertion fails.
     #[test]
-    fn gate_param_port_arity_and_indices() {
-        // Plain constructors declare no port at either width.
-        let dm = GateNode::mono(-20.0, 0.001, 0.01, 0.1);
-        assert_eq!(dm.inputs(), 2);
-        assert_eq!(dm.threshold_port(), None);
-        let ds = GateNode::stereo(-20.0, 0.001, 0.01, 0.1);
-        assert_eq!(ds.inputs(), 4);
-        assert_eq!(ds.threshold_port(), None);
-        // Mono: audio(1) + sidechain(1) = 2, threshold port at index 2.
-        let mono = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 1, true);
-        assert_eq!(mono.inputs(), 3);
-        assert_eq!(mono.threshold_port(), Some(2));
-        // Stereo: audio(2) + sidechain(2) = 4, threshold port at index 4
-        // (strictly AFTER the audio+sidechain inputs).
-        let stereo = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, true);
-        assert_eq!(stereo.inputs(), 5);
-        assert_eq!(stereo.threshold_port(), Some(4));
-        // Flag false → no port, arity unchanged.
-        let off = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, false);
-        assert_eq!(off.inputs(), 4);
-        assert_eq!(off.threshold_port(), None);
+    fn gate_declares_its_threshold_feed() {
+        let mut m = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
+        assert_eq!(
+            m.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Threshold][..])
+        );
+        assert_eq!(m.inputs(), 2);
+        assert_eq!(
+            m.param_base(0),
+            Some(-20.0),
+            "the base is the threshold control"
+        );
+        let s = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
+        assert_eq!(s.inputs(), 4);
     }
 
     #[test]
     fn gate_unmodulated_matches_held_constant() {
-        // A modulated mono gate whose threshold port is held at the same value
+        // A modulated mono gate whose fed threshold is held at the same value
         // as a plain gate's atomic must produce identical output.
         let mut plain = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut modn = GateNode::with_param_inputs(-20.0, 0.0001, 0.01, 0.1, 1, true);
+        let mut modn = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32];
@@ -714,7 +698,8 @@ mod tests {
             // Alternate loud/quiet sidechain to exercise open + close.
             let sc = if n % 200 < 100 { 0.9 } else { 0.01 };
             plain.tick(&[audio, sc], &mut plain_out);
-            modn.tick(&[audio, sc, -20.0], &mut mod_out);
+            modn.param_feed().expect("fed").feed(0, &[-20.0]);
+            modn.tick(&[audio, sc], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6,
                 "modulated-held output diverges from plain at sample {n}: {} vs {}",

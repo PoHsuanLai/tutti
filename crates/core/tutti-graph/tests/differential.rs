@@ -25,6 +25,17 @@
 //!   `Consumer` stops being called during silence and freezes → diverges.
 //! - `exec::Executor::apply`: always build fresh rings (no carry) → the
 //!   recompile property diverges on the first case with a surviving PDC ring.
+//! - `compile`: drop the sort of an event input's sources by `(NodeKey,
+//!   port)` → the listed order (random here) decides ties → every property
+//!   diverges. The same in the reference (merge in listed order) → diverges
+//!   from the other side.
+//! - `exec::node_op`: give every writer the executor's default capacity,
+//!   ignoring `Shape::event_capacity` → a wired `Kind::Burst` past its
+//!   declaration keeps events the reference refuses → every property fails
+//!   (outputs, and the drop counts `Pair` compares).
+//! - `Reference`: hand a fading-out unit accepting event writers instead of
+//!   detached ones → a `Burst`'s fade counts pushes the executor refused →
+//!   `crossfades_are_bit_identical` diverges.
 
 mod common;
 
@@ -87,7 +98,7 @@ struct Desc {
 fn random_kind(rng: &mut Rng) -> Kind {
     // Latency-bearing nodes and multi-input sinks are weighted up: PDC only
     // happens where paths of different latency meet.
-    match rng.below(16) {
+    match rng.below(17) {
         0 => Kind::Const {
             value: (rng.below(9) as f32 - 4.0) * 0.25 + 0.125,
             width: 1 + rng.below(2) as usize,
@@ -107,6 +118,7 @@ fn random_kind(rng: &mut Rng) -> Kind {
             period: 3 + rng.below(40),
             phase: rng.below(10),
         },
+        16 => burst_kind(rng),
         6 => Kind::Consumer {
             inputs: 1 + rng.below(2) as u16,
         },
@@ -120,6 +132,18 @@ fn random_kind(rng: &mut Rng) -> Kind {
         _ => Kind::Thru {
             width: 1 + rng.below(2) as usize,
         },
+    }
+}
+
+/// An emitter declaring its event capacity, often below its burst, so the
+/// writer refuses events every burst. Its period is at least `MAX_BLOCK`, so
+/// it keeps its declared rate (see `Kind::Burst`).
+fn burst_kind(rng: &mut Rng) -> Kind {
+    Kind::Burst {
+        period: MAX_BLOCK as u64 + rng.below(200),
+        phase: rng.below(MAX_BLOCK as u64),
+        burst: 1 + rng.below(6) as u32,
+        cap: 1 + rng.below(4) as u32,
     }
 }
 
@@ -260,7 +284,8 @@ fn random_graph(seed: u64) -> Desc {
     for _ in 0..n {
         let key = fresh_key(&mut desc, &mut rng);
         let kind = if event_heavy && rng.chance(80) {
-            match rng.below(4) {
+            match rng.below(5) {
+                4 => burst_kind(&mut rng),
                 0 | 1 => Kind::Emitter {
                     period: 3 + rng.below(40),
                     phase: rng.below(10),
@@ -554,7 +579,8 @@ proptest! {
             let input = input_signal(frame, n);
             let (a, b) = pair.block_at(n, &input, &t);
             prop_assert_eq!(bits(&a), bits(&b), "diverged at frame {}", frame);
-            prop_assert_eq!(pair.exec.dropped_events(), 0);
+            // Only writers past a declared capacity refuse, alike in both.
+            prop_assert_eq!(pair.exec.dropped_events(), pair.reference.dropped_events());
             prop_assert_eq!(pair.exec.late_commands(), pair.reference.late_commands(), "late, frame {}", frame);
             frame += n as u64;
         }
@@ -653,19 +679,37 @@ proptest! {
     /// survive by key carry their state, in both interpreters, identically.
     #[test]
     fn recompiles_preserve_state_identically(seed in any::<u64>(), which in 0usize..5) {
-        let first = random_graph(seed);
-        let mut rng = Rng::new(seed ^ 0x5EED);
-        let second = mutate(&first, &mut rng);
-        let third = mutate(&second, &mut rng);
-
-        let mut pair = Pair::new(MAX_BLOCK);
-        let mut frame = 0;
-        for (i, desc) in [&first, &second, &third].into_iter().enumerate() {
-            let valid = desc.spec.validate().expect("mutations stay valid");
-            pair.switch(&valid, &desc.kinds);
-            run(&mut pair, &schedule(which, seed.wrapping_add(i as u64), 300), &mut frame);
-        }
+        recompile_case(seed, which);
     }
+}
+
+/// [`recompiles_preserve_state_identically`]'s body, for one `(seed, which)`.
+fn recompile_case(seed: u64, which: usize) {
+    let first = random_graph(seed);
+    let mut rng = Rng::new(seed ^ 0x5EED);
+    let second = mutate(&first, &mut rng);
+    let third = mutate(&second, &mut rng);
+
+    let mut pair = Pair::new(MAX_BLOCK);
+    let mut frame = 0;
+    for (i, desc) in [&first, &second, &third].into_iter().enumerate() {
+        let valid = desc.spec.validate().expect("mutations stay valid");
+        pair.switch(&valid, &desc.kinds);
+        run(
+            &mut pair,
+            &schedule(which, seed.wrapping_add(i as u64), 300),
+            &mut frame,
+        );
+    }
+}
+
+/// A case `recompiles_preserve_state_identically` found on main (seed
+/// 3280887136571273968, which = 3), kept as a plain test: the regressions
+/// file persists proptest's RNG seeds, not generated values, so a case found
+/// by another run of the generator cannot be written into it by hand.
+#[test]
+fn recompile_regression_3280887136571273968() {
+    recompile_case(3_280_887_136_571_273_968, 3);
 }
 
 /// The generator is not vacuous: over a fixed range of seeds it produces the
@@ -678,6 +722,7 @@ fn the_generator_covers_what_the_suite_claims() {
     let (mut delays, mut event_delays, mut feedback, mut event_fb, mut merges, mut in_place) =
         (0, 0, 0, 0, 0, 0);
     let (mut wide, mut global_delays, mut bypass_in_place, mut multi_io) = (0, 0, 0, 0);
+    let mut overflowing_wired = 0;
     for seed in 0..512u64 {
         let desc = random_graph(seed);
         let valid = desc.spec.validate().expect("valid");
@@ -705,6 +750,19 @@ fn the_generator_covers_what_the_suite_claims() {
         for (k, kind) in &desc.kinds {
             if matches!(kind, Kind::ThruInPlace { .. }) && plan.in_place(*k).0 != 0 {
                 bypass_in_place += 1;
+            }
+            // A port past its declared capacity every burst, whose events
+            // someone reads: the writer's refusals are then visible in both
+            // interpreters' outputs and drop counts.
+            if matches!(kind, Kind::Burst { burst, cap, .. } if burst > cap)
+                && desc
+                    .spec
+                    .events
+                    .values()
+                    .flatten()
+                    .any(|e| e.from().node == *k)
+            {
+                overflowing_wired += 1;
             }
         }
         for op in plan.ops() {
@@ -734,6 +792,10 @@ fn the_generator_covers_what_the_suite_claims() {
         ("delayed global inputs", global_delays),
         ("in-place nodes returning Bypass", bypass_in_place),
         ("graphs with >1 input and >2 outputs", multi_io),
+        (
+            "wired ports past their declared capacity",
+            overflowing_wired,
+        ),
     ];
     for (what, n) in all {
         eprintln!("{what}: {n}");
@@ -1506,7 +1568,13 @@ impl EditorPair {
                 let mut outs: Vec<&mut [f32]> = b.iter_mut().map(Vec::as_mut_slice).collect();
                 self.reference.process(n, &transport, &ins, &mut outs);
             }
-            assert_eq!(self.exec.dropped_events(), 0, "the executor dropped events");
+            // Only writers past a declared capacity (`Kind::Burst`) refuse,
+            // alike in both; see `Pair::block_with_changes`.
+            assert_eq!(
+                self.exec.dropped_events(),
+                self.reference.dropped_events(),
+                "the executor dropped events the reference did not"
+            );
             assert_eq!(
                 bits(&a),
                 bits(&b),
@@ -1602,6 +1670,7 @@ fn fits(a: &Kind, b: &Kind) -> bool {
         b.latency,
         b.in_place,
     ) && a.event_resolution == b.event_resolution
+        && a.event_capacity == b.event_capacity
 }
 
 fn random_fade(rng: &mut Rng) -> tutti_graph::Fade {

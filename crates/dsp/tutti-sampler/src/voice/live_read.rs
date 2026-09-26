@@ -43,11 +43,13 @@
 //!
 //! The ring has one `PosReader`, and a voice holds it. A clone of the voice
 //! shares it, by a lock no block ever waits on: a block takes it with
-//! `try_lock` or renders silence. That is for `Net`, whose `commit` hands
-//! the audio thread a clone of every node (the original, in the frontend,
-//! never renders), so the clone must read the ring; two copies rendering at
-//! once — which no host does — would each read only the blocks the other
-//! was not reading. A fork severs itself (`isolate` → [`LiveRead::sever`]) and
+//! `try_lock` or renders silence. That is for a host that renders a clone:
+//! `Net::commit` hands its backend a clone of every node (the original, in
+//! the frontend, never renders), and `a_gain_change_reaches_a_cloned_voice`
+//! pins that such a clone plays. Since doc 013's PR 15 no engine runtime is a
+//! `Net`, and Phase 5 deletes it; the sharing can go with it. Two copies
+//! rendering at once — which no host does — would each read only the blocks
+//! the other was not reading. A fork severs itself (`isolate` → [`LiveRead::sever`]) and
 //! reads the file instead (`DiskVoice::isolate`), so it never touches the
 //! live reader. A block that reads nothing tells the ring so
 //! (`PosReader::idle`), so a paused voice holds no refill back.

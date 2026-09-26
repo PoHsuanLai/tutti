@@ -19,6 +19,7 @@ use tutti_types::Samples;
 
 use crate::event::{EventWriter, SortedEvents, SubBlocks};
 use crate::node::{ConstantMask, InPlaceMask, MaxBlock, SilenceMask};
+use crate::param::ParamInput;
 use crate::time::Offset;
 
 /// What a port carries.
@@ -47,6 +48,9 @@ pub struct Io<'a> {
     in_place: InPlaceMask,
     events_in: &'a [SortedEvents<'a>],
     events_out: &'a mut [EventWriter<'a>],
+    /// Per declared param port, what it reads this block; a port past the
+    /// end reads its base.
+    params: &'a [ParamInput<'a>],
 }
 
 /// The audio inputs, while the outputs are borrowed too.
@@ -140,7 +144,16 @@ impl<'a> Io<'a> {
             in_place,
             events_in,
             events_out,
+            params: &[],
         }
+    }
+
+    /// These buffers, with `params` as the declared params' inputs (every
+    /// port past `params`' end reads its base).
+    #[inline]
+    pub(crate) fn with_params(mut self, params: &'a [ParamInput<'a>]) -> Self {
+        self.params = params;
+        self
     }
 
     /// The block length in frames — at most the prepared
@@ -261,6 +274,17 @@ impl<'a> Io<'a> {
     /// ```
     pub fn sub_blocks(&self, p: usize) -> SubBlocks<'a> {
         self.events_in[p].sub_blocks(self.frames)
+    }
+
+    /// What declared param `k` ([`Shape::params`](crate::Shape::params))
+    /// reads this block: [`ParamInput::Base`] when nothing modulates it — the
+    /// node reads its own control, the fast path — or its value at every
+    /// frame, base and modulation fused and clamped by the graph (design doc
+    /// 013 item 6). A param nothing is connected to is always `Base`, never
+    /// 0.
+    #[inline]
+    pub fn param(&self, k: usize) -> ParamInput<'a> {
+        self.params.get(k).copied().unwrap_or(ParamInput::Base)
     }
 
     /// Frame `index` of this block as an [`Offset`], when it is inside it.

@@ -10,7 +10,8 @@
 //! # A row
 //!
 //! A [`Row`] is a node constructor, an [`Excite`] (an event on an event
-//! port, or an audio impulse on an audio port), a [`Detect`] (the first
+//! port, an audio impulse on an audio port, or an impulse on a modulated
+//! param), a [`Detect`] (the first
 //! sample above a threshold, or an exact expected response) and the output
 //! channel to watch. [`Row::check`] runs one [`Path`]; the
 //! [`contract_tests!`](crate::contract_tests) macro writes one `#[test]` per
@@ -72,7 +73,10 @@
 //! controls as they were at fork time. See `src/contract/snapshot.rs`.
 
 use tutti_node::AudioUnit;
-use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples};
+use tutti_types::graph::OutPort;
+use tutti_types::{
+    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
+};
 
 use crate::builder::GraphBuilder;
 use crate::editor::Editor;
@@ -83,6 +87,7 @@ use crate::legacy::Legacy;
 use crate::node::{
     Cx, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
+use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
 
 mod snapshot;
@@ -147,6 +152,21 @@ pub enum Excite {
         /// The impulse's height.
         amplitude: f32,
     },
+    /// Put one sample of `amplitude` on the audio source of the node's
+    /// modulated param `param` (unshaped, unclamped): the compiler-owned
+    /// modulation's sample-accuracy case (design doc 013 item 6). A
+    /// modulation step at frame `F` must reach the node's param at `F +
+    /// arrival`, exactly. The source is connected from the start, so its
+    /// declick is over long before the excitation. Behind PDC the latent
+    /// sibling feeds the node's audio input 0 and the param source is the
+    /// early path, delayed to the node's arrival by the compiler. Runs the
+    /// audio paths.
+    Param {
+        /// The node's declared param.
+        param: UnitParam,
+        /// The impulse's height.
+        amplitude: f32,
+    },
 }
 
 /// How a row finds its node's response in the watched output.
@@ -193,16 +213,26 @@ pub enum Path {
     /// Mutation (run): in `compile`, treat every audio and event gap as zero
     /// (no `Delay`/`EventDelay` op) → the excitation arrives
     /// `SIBLING_LATENCY` early → this path, both recompile paths and every
-    /// `Blocks*` path fail, while `Direct`, `EventFanIn` and the scheduled
-    /// paths (whose commands are compensated separately) pass.
+    /// `Blocks*` path fail — and `EventFanIn`, on its PDC half — while
+    /// `Direct` and the scheduled paths (whose commands are compensated
+    /// separately) pass.
     BehindPdc,
     /// Through an event fan-in merge: two sources on the node's port, the
-    /// exciting one second in source order, the first sending the same
-    /// event a few frames **later**: usually in the same block, so a merge
-    /// that is not by offset hands the node the two out of order.
+    /// exciting one second in source order (the higher key), the first
+    /// sending the same event a few frames **later**: usually in the same
+    /// block, so a merge that is not by offset hands the node the two out of
+    /// order. Direct, and behind PDC: there the latent sibling is a third
+    /// source on the same port, so both emitters' events are delayed
+    /// [`SIBLING_LATENCY`] frames on their way into the merge — across one
+    /// or two block boundaries — and still arrive in offset order.
     ///
     /// Both responses are expected, the second at `f + gap`, and nothing
     /// else.
+    ///
+    /// Mutation (run): in `compile`, delay only an event input's first two
+    /// sources (`d if !d.is_zero() && refs.len() < 2`) → behind PDC the
+    /// exciting emitter, third on the port, arrives `SIBLING_LATENCY` early
+    /// → only this path fails, on its PDC half.
     ///
     /// Mutation (run): in `merge_into`, take the first source with an event
     /// left rather than the earliest offset → only this path fails (not for
@@ -418,7 +448,7 @@ impl Row {
         let (topos, feed, edit, blocks): (&[Topo], Feed, Edit, Option<Schedule>) = match path {
             Path::Direct => (&[Topo::Direct], Feed::Source, Edit::None, None),
             Path::BehindPdc => (&[Topo::Pdc], Feed::Source, Edit::None, None),
-            Path::EventFanIn => (&[Topo::Direct], Feed::FanIn, Edit::None, None),
+            Path::EventFanIn => (BOTH, Feed::FanIn, Edit::None, None),
             Path::RecompileUnrelated => (&[Topo::Pdc], Feed::Source, Edit::Unrelated, None),
             Path::RecompileUpstreamGeneration => {
                 (&[Topo::Pdc], Feed::Source, Edit::Regenerate, None)
@@ -570,7 +600,8 @@ impl Row {
             .iter()
             .map(|&d| {
                 let tolerance = match (self.excite, rig.resolution) {
-                    (Excite::Impulse { .. }, _) | (_, Resolution::Sample) => 0,
+                    (Excite::Impulse { .. } | Excite::Param { .. }, _)
+                    | (_, Resolution::Sample) => 0,
                     (_, Resolution::Frames(n)) => u64::from(n.max(1)) - 1,
                     (_, Resolution::Block) => {
                         let (bs, be) = block_of(&blocks, d);
@@ -582,7 +613,7 @@ impl Row {
             .collect();
 
         let impulse_port = match self.excite {
-            Excite::Impulse { amplitude, .. } => Some(amplitude),
+            Excite::Impulse { amplitude, .. } | Excite::Param { amplitude, .. } => Some(amplitude),
             Excite::Event { .. } => None,
         };
         let mut out = Vec::with_capacity(total as usize);
@@ -709,13 +740,14 @@ impl Row {
     fn event_port(&self) -> u16 {
         match self.excite {
             Excite::Event { port, .. } | Excite::Impulse { port, .. } => port,
+            Excite::Param { .. } => 0,
         }
     }
 
     fn event_kind(&self) -> EventKind {
         match self.excite {
             Excite::Event { kind, .. } => kind,
-            Excite::Impulse { .. } => unreachable!("checked in `check`"),
+            Excite::Impulse { .. } | Excite::Param { .. } => unreachable!("checked in `check`"),
         }
     }
 
@@ -738,6 +770,9 @@ impl Row {
     }
 
     fn build(&self, topo: Topo, feed: Feed, f: u64, gap: u64) -> Rig {
+        if let Excite::Param { param, .. } = self.excite {
+            return self.build_param(topo, param);
+        }
         let node = (self.make)();
         let shape = node.shape();
         let audio = matches!(self.excite, Excite::Impulse { .. });
@@ -815,6 +850,58 @@ impl Row {
             latency: prepared.latency.samples(),
             resolution: prepared.event_resolution,
             has_input: audio,
+        }
+    }
+}
+
+impl Row {
+    /// The [`Excite::Param`] graph: the global input through a [`Sum`] (its
+    /// other input silent) into `param`, and behind PDC a [`Latent`] sibling
+    /// on the node's audio input 0.
+    fn build_param(&self, topo: Topo, param: UnitParam) -> Rig {
+        let node = (self.make)();
+        let shape = node.shape();
+        assert!(
+            shape.params.index_of(param).is_some(),
+            "{}: the node does not declare {param:?}",
+            self.name
+        );
+        let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+        let n = g.add(node);
+        let sum = g.add(Sum);
+        g.connect_input(0, sum, 1);
+        if topo == Topo::Pdc {
+            assert!(
+                shape.audio_in.count() > 0,
+                "{}: behind PDC the latent sibling feeds audio input 0",
+                self.name
+            );
+            let lat = g.add(Latent::new(Latency::new(Samples(SIBLING_LATENCY))));
+            g.connect(lat, 0, n, 0);
+        }
+        g.spec_mut().connect_param(
+            ParamIn { node: n, param },
+            ParamFrom::Audio(OutPort { node: sum, port: 0 }),
+            ParamShaping::Identity,
+        );
+        g.connect_output(n, self.output as usize, 0);
+        let (ed, exec) = g
+            .build(Prepare::new(SAMPLE_RATE, Samples(MAX_BLOCK)))
+            .unwrap_or_else(|e| panic!("{}: the contract graph does not build: {e}", self.name));
+        let unit = exec
+            .plan()
+            .and_then(|p| p.unit(n))
+            .expect("the node is in the plan");
+        let (arrival, prepared) = (unit.arrival.samples(), unit.shape);
+        Rig {
+            ed,
+            exec,
+            node: n,
+            feeder: Some((sum, FeederKind::Sum)),
+            arrival,
+            latency: prepared.latency.samples(),
+            resolution: prepared.event_resolution,
+            has_input: true,
         }
     }
 }
@@ -975,6 +1062,44 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
 }
 
 // ---- the harness's own nodes -------------------------------------------------
+
+/// The param row's node: it declares one modulatable param, whose base is
+/// 0, and writes that param's value at every frame to its one output — 0
+/// while it reads its base. Its one audio input (for the PDC path's latent
+/// sibling) is ignored.
+#[derive(Clone, Debug)]
+pub struct ParamEcho {
+    param: UnitParam,
+}
+
+impl ParamEcho {
+    /// An echo of `param`.
+    pub fn new(param: UnitParam) -> Self {
+        Self { param }
+    }
+}
+
+impl Node for ParamEcho {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO).with_params(&[self.param])
+    }
+
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        match io.param(0) {
+            ParamInput::Base => io.output(0).fill(0.0),
+            ParamInput::Frames(v) => io.output(0).copy_from_slice(v),
+        }
+        Status::Modified
+    }
+
+    fn reset(&mut self) {}
+
+    fn param_base(&self, port: usize) -> Option<f32> {
+        (port == 0).then_some(0.0)
+    }
+}
 
 /// An event-driven impulse: every event on its one event input adds one
 /// sample of `1.0` to its one audio output, [`latency`](Self::new) frames

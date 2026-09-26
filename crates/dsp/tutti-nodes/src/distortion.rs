@@ -23,20 +23,20 @@
 //! 2 inputs / 2 outputs. The shaper is memoryless, so the two channels are
 //! fully independent and stereo is just the same curve applied per channel.
 //!
-//! # Port layout
+//! # Modulated drive
 //!
-//! The default node is 2-in / 2-out (stereo audio on ports 0/1). For audio-rate
-//! drive modulation it can grow an *optional drive param-input port* after the
-//! audio inputs (see [`DistortionNode::with_param_inputs`]): when
-//! [`DistortionNode::mod_drive`] is set, port 2 carries the drive and
-//! **overrides** the `drive` atomic per sample (rebuilding the stateless shaper
-//! when it moves). When the flag is unset the node is a plain 2-in/2-out node —
-//! bit-identical output to the unmodulated path and zero added cost.
+//! Drive is modulatable by the graph (design doc 013 item 6): when the graph
+//! feeds the node's [`ParamFeed`](tutti_core::ParamFeed) a per-frame drive,
+//! it **overrides** the `drive` atomic per sample (rebuilding the stateless
+//! shaper when it moves). Unfed, the node reads its atomic once per block —
+//! bit-identical output to a node nothing can modulate, at the cost of one
+//! branch.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
-use tutti_core::{Drive, Param, Tail};
+use tutti_core::{Drive, Param, ParamFeed, Tail};
+use tutti_types::UnitParam;
 
 /// Selects which waveshaping curve a [`DistortionNode`] applies.
 ///
@@ -145,10 +145,13 @@ pub struct DistortionNode {
     /// Audio channel width (`inputs()` audio ports == `outputs()`). The shaper
     /// is stateless and channel-shared, so widening is purely the port count.
     channels: usize,
-    /// When true, a drive param-input port follows the audio inputs and
-    /// overrides [`Self::drive`] per sample.
-    mod_drive: bool,
+    /// A per-frame drive from the graph, when it modulates it: overrides
+    /// [`Self::drive`] per sample.
+    feed: ParamFeed,
 }
+
+/// The params a [`DistortionNode`] lets the graph modulate, in port order.
+pub const DISTORTION_PARAMS: [UnitParam; 1] = [UnitParam::Drive];
 
 impl DistortionNode {
     /// Builds a stereo waveshaper of `kind` at `drive`.
@@ -173,41 +176,8 @@ impl DistortionNode {
             shaper: Shaper::build(kind, d),
             last_drive: d,
             channels: channels.max(1),
-            mod_drive: false,
+            feed: ParamFeed::new(&DISTORTION_PARAMS),
         }
-    }
-
-    /// A node with an optional audio-rate drive param-input port. `mod_drive`
-    /// adds a drive param-input port after the audio inputs, overriding the
-    /// atomic per sample when present. The atomic still holds the base (it feeds
-    /// the upstream param-sum's base port), so the UI handle path is unchanged.
-    ///
-    /// Width and modulation are **independent axes**: `channels` says how wide
-    /// the shaper is, `mod_drive` says whether it reads drive at audio rate.
-    /// Collapsing them — hardcoding width 2 in the modulated form — turns a
-    /// request for a modulated 5.1 shaper into a *stereo* one, and the only
-    /// symptom is a `set_source` on a param port that resolves and carries the
-    /// wrong signal.
-    ///
-    /// The drive port follows the audio inputs, so its index **moves with the
-    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
-    /// never assume an index.
-    pub fn with_param_inputs(
-        channels: usize,
-        kind: ShapeKind,
-        drive: impl Into<Drive>,
-        mod_drive: bool,
-    ) -> Self {
-        let mut node = Self::with_channels(channels, kind, drive);
-        node.mod_drive = mod_drive;
-        node
-    }
-
-    /// Input-port index of the drive param input, if present (right after the
-    /// audio inputs).
-    #[inline]
-    pub fn drive_port(&self) -> Option<usize> {
-        self.mod_drive.then_some(self.channels)
     }
 
     /// Atomic handle for the UI / automation to share the drive cell.
@@ -254,14 +224,14 @@ impl Clone for DistortionNode {
             shaper: self.shaper,
             last_drive: self.last_drive,
             channels: self.channels,
-            mod_drive: self.mod_drive,
+            feed: self.feed.clone(),
         }
     }
 }
 
 impl AudioUnit for DistortionNode {
     fn inputs(&self) -> usize {
-        self.channels + self.mod_drive as usize
+        self.channels
     }
 
     fn outputs(&self) -> usize {
@@ -279,11 +249,11 @@ impl AudioUnit for DistortionNode {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // Effective drive: a present param-input port overrides the atomic (the
-        // atomic carries the base, fed upstream into the param sum).
-        match self.drive_port() {
+        // Effective drive: a fed drive overrides the atomic (the atomic is
+        // the base the graph's modulation rides on).
+        match self.feed.get(0, 1) {
             None => self.maybe_update(),
-            Some(p) => self.maybe_update_modulated(input[p].max(0.0)),
+            Some(d) => self.maybe_update_modulated(d[0].max(0.0)),
         }
         for c in 0..self.channels {
             output[c] = self.shaper.shape(input[c]);
@@ -291,9 +261,9 @@ impl AudioUnit for DistortionNode {
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Fast path: no drive port — block-rate shaper update, bit-identical to
-        // before.
-        let Some(drive_port) = self.drive_port() else {
+        // Fast path: drive not fed — block-rate shaper update, bit-identical
+        // to a node nothing modulates.
+        if !self.feed.any_live() {
             self.maybe_update();
             for i in 0..size {
                 for c in 0..self.channels {
@@ -301,15 +271,26 @@ impl AudioUnit for DistortionNode {
                 }
             }
             return;
-        };
-        // Modulated path: read the drive port per sample and rebuild the shaper
+        }
+        // Modulated path: read the fed drive per sample and rebuild the shaper
         // when it moves before shaping every channel.
-        for i in 0..size {
-            self.maybe_update_modulated(input.at_f32(drive_port, i).max(0.0));
+        let feed = ParamFeed::take(&mut self.feed);
+        let drive = feed.get(0, size).expect("the one param is live");
+        for (i, &d) in drive.iter().enumerate() {
+            self.maybe_update_modulated(d.max(0.0));
             for c in 0..self.channels {
                 output.set_f32(c, i, self.shaper.shape(input.at_f32(c, i)));
             }
         }
+        self.feed = feed;
+    }
+
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        (k == 0).then(|| self.drive.load().get())
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {
@@ -484,24 +465,26 @@ mod tests {
         assert!((o[1] - 0.5).abs() < 1e-6, "R should pass 0.5, got {}", o[1]);
     }
 
-    // ── Audio-rate drive param-input port ────────────────────────────────────
+    // ── Modulated drive (the graph's param feed) ────────────────────────────
 
+    /// The feed declares drive, and never changes the arity.
+    ///
+    /// Mutation (run): declare the feed empty (`ParamFeed::new(&[])`) → the
+    /// first assertion fails, and every fed test panics on `feed`.
     #[test]
-    fn distortion_drive_port_arity() {
-        // Plain constructor: no port, audio arity untouched.
-        let d = DistortionNode::new(ShapeKind::Tanh, 1.0);
-        assert_eq!(d.inputs(), 2);
-        assert_eq!(d.outputs(), 2);
-        assert_eq!(d.drive_port(), None);
-        let n = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
-        assert_eq!(n.inputs(), 3);
-        assert_eq!(n.outputs(), 2);
-        assert_eq!(n.drive_port(), Some(2));
+    fn distortion_declares_its_drive_feed() {
+        let mut d = DistortionNode::new(ShapeKind::Tanh, 1.0);
+        assert_eq!(
+            d.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Drive][..])
+        );
+        assert_eq!((d.inputs(), d.outputs()), (2, 2));
+        assert_eq!(d.param_base(0), Some(1.0), "the base is the drive control");
     }
 
     #[test]
     fn distortion_unmodulated_matches_held_constant() {
-        // A node whose drive port is held at the same value as a plain node's
+        // A node whose fed drive is held at the same value as a plain node's
         // atomic must produce bit-identical output — the modulated path is a
         // faithful superset. Tanh at drive 5.0 saturates hard enough that any
         // divergence would show.
@@ -510,62 +493,45 @@ mod tests {
         let mut plain = DistortionNode::new(ShapeKind::Tanh, 5.0);
         let plain_out = process_mono_through(&mut plain, &signal);
 
-        let mut modn = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
-        let mut mod_out = vec![0.0f32; signal.len()];
-        for (i, &x) in signal.iter().enumerate() {
-            let mut o = [0.0f32; 2];
-            // 3-in/2-out: drive held at the atomic value on port 2.
-            modn.tick(&[x, x, 5.0], &mut o);
-            mod_out[i] = o[0];
-        }
+        let mut modn = DistortionNode::new(ShapeKind::Tanh, 5.0);
+        let held = vec![5.0f32; signal.len()];
+        let mod_out = crate::testing::tick_fed(&mut modn, &[&signal, &signal], &[Some(&held)]);
         for i in 0..signal.len() {
             assert!(
-                (plain_out[i] - mod_out[i]).abs() < 1e-6,
+                (plain_out[i] - mod_out[0][i]).abs() < 1e-6,
                 "modulated-held output diverges from plain at sample {i}: {} vs {}",
                 plain_out[i],
-                mod_out[i]
+                mod_out[0][i]
             );
         }
     }
 
-    /// Width and modulation are independent axes.
+    /// A fed drive shapes every channel of a wide node, per frame: with the
+    /// drive fed a step, each of six channels saturates harder from the
+    /// step's frame on, and a node whose feed is then cleared reads its
+    /// control again.
     ///
-    /// This is the regression for the bug the constructor had: it hardcoded
-    /// `channels: 2`, so asking for a modulated 6-channel shaper returned a
-    /// *stereo* one. The arity assertion below fails against that version.
+    /// Mutation (run): shape only channel 0 on the modulated path → the
+    /// other channels do not move at the step → fails. Keep reading the
+    /// feed after `clear` (ignore `any_live`) → the last block is still
+    /// driven hard → fails.
     #[test]
-    fn a_modulated_node_is_as_wide_as_it_was_asked_for() {
-        let n = DistortionNode::with_param_inputs(6, ShapeKind::Tanh, 5.0, true);
-        assert_eq!(n.outputs(), 6, "the width is what was asked for");
-        assert_eq!(n.inputs(), 7, "six audio inputs, then the drive port");
-        assert_eq!(
-            n.drive_port(),
-            Some(6),
-            "the param port follows the audio inputs, so its index moves with the width"
-        );
-    }
-
-    /// The modulated constructor must be the unmodulated one plus a flag.
-    ///
-    /// It was a *duplicated struct literal* — a second initialisation path that
-    /// could drift from `with_channels` field by field. Ticking both and
-    /// comparing is what catches a drift that arity alone would not: a wrong
-    /// `last_drive` or a shaper built from a different drive still reports 6
-    /// outputs.
-    #[test]
-    fn a_modulated_node_ticks_identically_to_its_unmodulated_twin() {
-        let mut plain = DistortionNode::with_channels(6, ShapeKind::Tanh, 5.0);
-        // `mod_drive: false` — same node, built through the other path.
-        let mut ported = DistortionNode::with_param_inputs(6, ShapeKind::Tanh, 5.0, false);
-
-        for i in 0..256 {
-            let x = 0.6 * (i as f32 * 0.05).sin();
-            let frame = [x; 6];
-            let (mut a, mut b) = ([0.0f32; 6], [0.0f32; 6]);
-            plain.tick(&frame, &mut a);
-            ported.tick(&frame, &mut b);
-            assert_eq!(a, b, "the two construction paths diverged at sample {i}");
+    fn a_fed_drive_shapes_every_channel_of_a_wide_node() {
+        let mut n = DistortionNode::with_channels(6, ShapeKind::HardClip, 1.0);
+        assert_eq!((n.inputs(), n.outputs()), (6, 6));
+        let x = vec![0.25f32; 64];
+        let ins: Vec<&[f32]> = (0..6).map(|_| &x[..]).collect();
+        let drive: Vec<f32> = (0..64).map(|i| if i < 32 { 1.0 } else { 3.0 }).collect();
+        let out = crate::testing::process_fed(&mut n, &ins, &[Some(&drive)]);
+        for (c, o) in out.iter().enumerate() {
+            assert_eq!(o[31], 0.25, "channel {c} before the step");
+            assert_eq!(o[32], 0.75, "channel {c} on the step's frame");
         }
+        let out = crate::testing::process_fed(&mut n, &ins, &[None]);
+        assert!(
+            out.iter().all(|o| o.iter().all(|&y| y == 0.25)),
+            "the control again"
+        );
     }
 
     /// The curves, pinned.

@@ -62,7 +62,7 @@ pub struct DeviceRestart {
     pub device: Option<usize>,
     /// The largest block the graph is prepared for from the restart on
     /// (`Prepare`'s `MaxBlock`); `None` keeps the one it has. At most the
-    /// engine's block capacity (`Engine::graph_block_capacity`): past it the
+    /// engine's block capacity (`Engine::block_capacity`): past it the
     /// restart is refused before the stream stops.
     ///
     /// A host's choice, not the device's: the device hands over whatever
@@ -484,7 +484,7 @@ mod tests {
     /// **A block past the engine's capacity is refused before the stream
     /// stops** — the old device plays on, at the old configuration, and the
     /// host gets the graph's reason. The capacity is the engine's
-    /// (`DEFAULT_GRAPH_BLOCK_CAPACITY`, 8 192 frames).
+    /// (`DEFAULT_BLOCK_CAPACITY`, 8 192 frames).
     ///
     /// Mutation (run): `NativeGraph::check_reprepare` not checking the
     /// block → the stream stops first and the refusal comes from the

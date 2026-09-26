@@ -70,6 +70,7 @@ use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::legacy::Outbox;
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
+use crate::param::{ParamFrom, ParamIn, ParamState, ParamTap, Ramp};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
 
@@ -124,7 +125,7 @@ pub enum CommitError {
     },
     /// [`Editor::replace`] was handed a unit whose shape differs from the
     /// running one's in more than its tail — ports, latency, in-place
-    /// acceptance or event resolution. Nothing changed; swap it with
+    /// acceptance, event resolution or event capacity. Nothing changed; swap it with
     /// [`Editor::insert`] instead.
     FadeShape {
         /// The node.
@@ -163,7 +164,7 @@ pub enum CommitError {
 /// cannot run is refused on the control thread and never reaches it.
 ///
 /// The executor itself takes any graph; a host has buffers of its own. The
-/// engine (`tutti_core::Engine::with_graph`) sets these to its fold
+/// engine (`tutti_core::Engine::new`) sets these to its fold
 /// scratch's width and length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -292,6 +293,14 @@ pub struct Editor {
     /// On a **fork** only: the health probe each forked unit's source handed
     /// over, by key (see `src/fork.rs`, "When a forked unit fails").
     fork_health: Vec<(NodeKey, Arc<dyn ForkHealth>)>,
+    /// Per key with declared params: where its unit's param state publishes
+    /// its event sources' ramps, for a fork to carry (`src/param.rs`,
+    /// `ParamTap`). Shared with the running unit's state, and handed to the
+    /// next unit placed at the key.
+    param_taps: BTreeMap<NodeKey, Arc<ParamTap>>,
+    /// On a **fork**, until its first commit: the ramps each param port's
+    /// event sources start from, read from the live graph's taps.
+    param_seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>,
 }
 
 /// A panic payload as text.
@@ -328,8 +337,11 @@ impl Editor {
         Self::with_event_capacity(prepare, DEFAULT_EVENT_CAPACITY)
     }
 
-    /// As [`new`](Self::new), with `cap` events per event slot per block
-    /// (the declared event rate the delay FIFOs are sized from).
+    /// As [`new`](Self::new), with `cap` events per block as the default
+    /// capacity of an event output port whose node declares none
+    /// ([`Shape::event_capacity`](crate::Shape::event_capacity)) — its
+    /// writer's limit, and the rate the delay FIFOs fed by it are sized
+    /// from. A declared capacity overrides it for that node's ports.
     pub fn with_event_capacity(prepare: Prepare, cap: usize) -> (Self, Executor) {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
@@ -354,6 +366,8 @@ impl Editor {
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
+            param_taps: BTreeMap::new(),
+            param_seeds: BTreeMap::new(),
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
     }
@@ -549,9 +563,16 @@ impl Editor {
         ) && shape.latency == running.latency
             && shape.in_place == running.in_place
             && shape.event_resolution == running.event_resolution
+            // The plan sizes the node's event ports from its declaration, and
+            // a replace waiting behind a running fade runs the old unit under
+            // the new plan: both must fit the same buffers.
+            && shape.event_capacity == running.event_capacity
             // A renderer chunks while the plan holds a `Legacy`: both halves
             // of a fade must agree, or the outgoing one would run unchunked.
-            && shape.legacy == running.legacy;
+            && shape.legacy == running.legacy
+            // The key's param state (per declared param) runs on across a
+            // fade, so both units must declare the same params.
+            && shape.params == running.params;
         if !fits {
             return Err(CommitError::FadeShape { node: key });
         }
@@ -701,6 +722,10 @@ impl Editor {
         self.spec
             .required_resolution
             .retain(|(at, from), _| at.node != key && from.node != key);
+        self.spec.params.retain(|at, _| at.node != key);
+        for m in self.spec.params.values_mut() {
+            m.sources.retain(|s| s.from.node() != key);
+        }
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
         self.pending.remove(&key);
@@ -1200,13 +1225,78 @@ impl Editor {
         self.fades_out += starting(&delta);
         debug_assert!(self.fades_out <= FADE_CAPACITY);
         let plan = Arc::new(plan);
-        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units);
+        let (taps, seeds) = (&mut self.param_taps, &mut self.param_seeds);
+        let params = |key: NodeKey, ports: usize, max: usize| {
+            if ports == 0 {
+                taps.remove(&key);
+                return ParamState::default();
+            }
+            // The key's tap, kept across a replace (a crossfade keeps the
+            // running state, which publishes to it).
+            let tap = taps
+                .entry(key)
+                .and_modify(|t| {
+                    if t.port_count() != ports {
+                        *t = ParamTap::new(ports);
+                    }
+                })
+                .or_insert_with(|| ParamTap::new(ports));
+            let declared = plan.unit(key).map(|u| u.shape.params);
+            let port_seeds: Vec<Vec<(ParamFrom, Ramp)>> = declared
+                .iter()
+                .flat_map(|d| d.as_slice().iter())
+                .map(|&param| {
+                    seeds
+                        .remove(&ParamIn { node: key, param })
+                        .unwrap_or_default()
+                })
+                .collect();
+            ParamState::new(ports, max, Some(Arc::clone(tap)), &port_seeds)
+        };
+        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
+        self.param_taps.retain(|k, _| plan.unit(*k).is_some());
+        self.param_seeds.clear();
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");
         }
         self.sent += 1;
         self.out += 1;
         self.plan = Some(plan);
+    }
+}
+
+impl Editor {
+    /// Each declared param of `key`, with its event sources' ramps as the
+    /// running unit last published them (for [`fork`](Self::fork)).
+    pub(crate) fn param_ramps(&self, key: NodeKey) -> Vec<(ParamIn, Vec<(ParamFrom, Ramp)>)> {
+        let (Some(tap), Some(shape)) = (self.param_taps.get(&key), self.shapes.get(&key)) else {
+            return Vec::new();
+        };
+        if tap.port_count() != shape.params.len() {
+            // The key holds a pending unit of another shape: nothing of the
+            // running one's applies to it.
+            return Vec::new();
+        }
+        shape
+            .params
+            .as_slice()
+            .iter()
+            .enumerate()
+            .map(|(k, &param)| {
+                let ramps = tap
+                    .read(k)
+                    .into_iter()
+                    .map(|(from, r)| (ParamFrom::Events(from), r))
+                    .collect();
+                (ParamIn { node: key, param }, ramps)
+            })
+            .collect()
+    }
+
+    /// Start the next commit's units' param ports from `seeds` (a fork's
+    /// first commit).
+    pub(crate) fn seed_params(&mut self, seeds: BTreeMap<ParamIn, Vec<(ParamFrom, Ramp)>>) {
+        self.param_seeds = seeds;
     }
 }
 

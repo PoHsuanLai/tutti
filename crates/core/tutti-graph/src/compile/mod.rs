@@ -30,9 +30,11 @@
 //!
 //!    Emits a `Delay` op per mismatched audio port and per mismatched event
 //!    *source*, plus per-output alignment rings, with state keyed by
-//!    [`DelayKey`]. An event fan-in wider than [`MAX_PORTS`] becomes a tree
-//!    of merges over contiguous source ranges, which keeps the
-//!    `(offset, source order)` rule exactly.
+//!    [`DelayKey`]. An event fan-in merges its sources by `(offset, source
+//!    port)` — ties go to the lower `(NodeKey, port)` source, whatever order
+//!    the spec lists them in. One wider than [`MAX_PORTS`] becomes a tree
+//!    of merges over contiguous source ranges, which keeps that rule
+//!    exactly.
 //! 5. **Emit ops** in the serial order, recording every value's writer and
 //!    readers, and the op DAG.
 //! 6. **Colour** ([`colour`]) — slot sharing that is correct under any
@@ -58,9 +60,11 @@ use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail};
 
 use crate::node::{InPlaceMask, Prepare, Resolution, Shape, MAX_PORTS};
+use crate::param::{signature, ParamFrom, ParamIn, ParamRange, ParamShaping};
 use crate::plan::{
-    Csr, DelayKey, DelaySpec, Delta, FeedbackKey, FeedbackSpec, NodeTables, Op, Placement, Plan,
-    PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, NodeTables, Op,
+    ParamPortOp, ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value,
+    EMPTY_SLOT, ZERO_SLOT,
 };
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 
@@ -81,6 +85,14 @@ pub enum CycleEdge {
         at: EventIn,
         /// The source port.
         from: EventOut,
+    },
+    /// A param edge from `from` into `at`. Param edges are always direct: a
+    /// node cannot modulate itself, or anything upstream of it.
+    Param {
+        /// The param port.
+        at: ParamIn,
+        /// The source.
+        from: ParamFrom,
     },
 }
 
@@ -160,6 +172,19 @@ pub enum CompileError {
         /// What the sink declares.
         sink: Resolution,
     },
+    /// A modulated param its node does not declare
+    /// ([`Shape::params`](crate::Shape::params)).
+    UnknownParam {
+        /// The param port.
+        at: ParamIn,
+    },
+    /// A param source names an output its node does not have.
+    ParamSourceOutOfRange {
+        /// The param port.
+        at: ParamIn,
+        /// The source.
+        from: ParamFrom,
+    },
     /// A cycle that no feedback edge breaks. Every direct edge inside the
     /// cycle's strongly connected component is listed, in key order.
     Cycle {
@@ -235,6 +260,16 @@ impl std::fmt::Display for CompileError {
                  timing, but the sink honours only {sink:?}",
                 from.node.0, from.port, at.node.0, at.port
             ),
+            Self::UnknownParam { at } => write!(
+                f,
+                "node {} does not declare {:?} modulatable",
+                at.node.0, at.param
+            ),
+            Self::ParamSourceOutOfRange { at, from } => write!(
+                f,
+                "param {:?} of node {}: source {from:?} is not an output of its node",
+                at.param, at.node.0
+            ),
             Self::Cycle { edges } => write!(f, "unbroken cycle through {} edges", edges.len()),
         }
     }
@@ -285,6 +320,7 @@ enum Pre {
         aout: Vec<u32>,
         ein: Vec<ERef>,
         eout: Vec<u32>,
+        params: Vec<PPort>,
     },
     Output {
         channel: u16,
@@ -299,6 +335,22 @@ enum Pre {
         feedback: u32,
         src: u32,
     },
+}
+
+/// A modulated param port before colouring.
+struct PPort {
+    port: u16,
+    param: tutti_types::UnitParam,
+    range: ParamRange,
+    sig: u64,
+    sources: Vec<(PRef, ParamShaping, ParamFrom)>,
+}
+
+/// Where a param source reads from, before colouring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PRef {
+    Audio(u32),
+    Event(u32),
 }
 
 /// A value under construction.
@@ -435,6 +487,28 @@ pub fn compile(
         }
     }
 
+    // Params: each is declared by its node, and each source is an output of
+    // its own.
+    for (&at, m) in graph.params() {
+        if node_shapes[dense[&at.node]]
+            .params
+            .index_of(at.param)
+            .is_none()
+        {
+            return Err(CompileError::UnknownParam { at });
+        }
+        for s in &m.sources {
+            let shape = node_shapes[dense[&s.from.node()]];
+            let ok = match s.from {
+                ParamFrom::Audio(p) => p.port < shape.audio_out.count(),
+                ParamFrom::Events(e) => e.port < shape.event_out,
+            };
+            if !ok {
+                return Err(CompileError::ParamSourceOutOfRange { at, from: s.from });
+            }
+        }
+    }
+
     // Resolution: a marked edge's sink must honour what it requires (see
     // `GraphSpec::require_resolution` for the rule, and why only marked edges).
     for (&(at, from), &required) in graph.required_resolution() {
@@ -495,6 +569,13 @@ pub fn compile(
                 preds[d].push(s);
                 labelled.push((s, d, CycleEdge::Event { at, from }));
             }
+        }
+    }
+    for (&at, m) in graph.params() {
+        for s in &m.sources {
+            let (src, d) = (dense[&s.from.node()], dense[&at.node]);
+            preds[d].push(src);
+            labelled.push((src, d, CycleEdge::Param { at, from: s.from }));
         }
     }
     let mut succ: Vec<Vec<usize>> = vec![Vec::new(); keys.len()];
@@ -669,13 +750,21 @@ pub fn compile(
             ain.push(r);
         }
 
-        // Event inputs: delay each source that needs it, then merge fan-in.
+        // Event inputs: delay each source that needs it, then merge fan-in
+        // in **source order**, `(source NodeKey, source port)` — not the
+        // order the edges were listed in (owner decision 6, doc 013). The
+        // tie-break at equal offsets is then a property of the wiring alone:
+        // two specs that list the same sources differently merge alike, so
+        // a host that rebuilds its spec from an unordered store (the ECS)
+        // cannot reorder a chord by accident. Sources are distinct
+        // (`GraphSpec::validate`), so the order is total.
         let mut ein = Vec::with_capacity(shape.event_in as usize);
         for port in 0..shape.event_in {
             let at = EventIn { node: key, port };
-            let sources = graph.events().get(&at).map(Vec::as_slice).unwrap_or(&[]);
+            let mut sources: Vec<EventEdge> = graph.events().get(&at).cloned().unwrap_or_default();
+            sources.sort_by_key(|e| e.from());
             let mut refs: Vec<ERef> = Vec::with_capacity(sources.len());
-            for e in sources {
+            for e in &sources {
                 refs.push(match *e {
                     EventEdge::Feedback { from, delay } => {
                         ERef::Fb(fb_index(event_fb_key(at, from, delay), &event_fb))
@@ -710,18 +799,100 @@ pub fn compile(
             ein.push(merge_tree(&mut em, refs));
         }
 
+        // Modulated params, in port order: each source through its PDC
+        // delay when it needs one, exactly as an input is (see the `param`
+        // module docs).
+        let mut params: Vec<PPort> = Vec::new();
+        for (k, &param) in shape.params.as_slice().iter().enumerate() {
+            let at = ParamIn { node: key, param };
+            let Some(m) = graph.params().get(&at) else {
+                continue;
+            };
+            let mut sources = Vec::with_capacity(m.sources.len());
+            for s in &m.sources {
+                let d = departure(dense[&s.from.node()]).gap_to(arrival[n]);
+                let r = match s.from {
+                    ParamFrom::Audio(p) => {
+                        let v = audio_out_val[&p];
+                        if d.is_zero() {
+                            PRef::Audio(v)
+                        } else {
+                            let delay = em.delays.len() as u32;
+                            em.delays.push(DelaySpec {
+                                key: DelayKey::ParamAudio { at, from: p },
+                                len: d,
+                            });
+                            let op = em.push(Pre::Delay {
+                                delay,
+                                src: v,
+                                dst: 0,
+                            });
+                            em.read_audio(v, op);
+                            let dv = em.audio_value(op);
+                            if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+                                *dst = dv;
+                            }
+                            PRef::Audio(dv)
+                        }
+                    }
+                    ParamFrom::Events(e) => {
+                        let v = event_out_val[&e];
+                        if d.is_zero() {
+                            PRef::Event(v)
+                        } else {
+                            let delay = em.delays.len() as u32;
+                            em.delays.push(DelaySpec {
+                                key: DelayKey::ParamEvent { at, from: e },
+                                len: d,
+                            });
+                            let op = em.push(Pre::EventDelay {
+                                delay,
+                                src: v,
+                                dst: 0,
+                            });
+                            em.read_event(v, op);
+                            let dv = em.event_value(op);
+                            if let Pre::EventDelay { dst, .. } = &mut em.pre[op as usize] {
+                                *dst = dv;
+                            }
+                            PRef::Event(dv)
+                        }
+                    }
+                };
+                sources.push((r, s.shaping.clone(), s.from));
+            }
+            params.push(PPort {
+                port: k as u16,
+                param,
+                range: m.range,
+                sig: signature(&m.sources),
+                sources,
+            });
+        }
+        let reads: Vec<PRef> = params
+            .iter()
+            .flat_map(|p| p.sources.iter().map(|&(r, _, _)| r))
+            .collect();
+
         let op = em.push(Pre::Node {
             unit: n as u32,
             ain: ain.clone(),
             aout: Vec::new(),
             ein: ein.clone(),
             eout: Vec::new(),
+            params,
         });
         for &r in &ain {
             em.read_aref(r, op);
         }
         for &r in &ein {
             em.read_eref(r, op);
+        }
+        for r in reads {
+            match r {
+                PRef::Audio(v) => em.read_audio(v, op),
+                PRef::Event(v) => em.read_event(v, op),
+            }
         }
         let aout: Vec<u32> = (0..shape.audio_out.count())
             .map(|port| {
@@ -820,13 +991,24 @@ pub fn compile(
                 in_place.insert(*dst, *src);
             }
             Pre::Node {
-                unit, ain, aout, ..
+                unit,
+                ain,
+                aout,
+                params,
+                ..
             } if node_shapes[*unit as usize].in_place => {
                 for (&r, &out) in ain.iter().zip(aout) {
                     let ARef::Val(u) = r else { continue };
                     // Read by this node on exactly one port, or the other
                     // port would see the output instead of the input.
                     if ain.iter().filter(|&&x| x == r).count() != 1 {
+                        continue;
+                    }
+                    // Nor as a param source: the op reads it there too.
+                    if params
+                        .iter()
+                        .any(|p| p.sources.iter().any(|&(s, _, _)| s == PRef::Audio(u)))
+                    {
                         continue;
                     }
                     in_place.insert(out, u);
@@ -843,28 +1025,60 @@ pub fn compile(
     let aslot = |v: u32| audio_fixed + audio_colour.slot[v as usize];
     let eslot = |v: u32| event_fixed + event_colour.slot[v as usize];
 
-    // Event slot capacities, in units of the executor's per-slot capacity: a
-    // node output or a delay output holds one; a merge holds all its inputs
-    // together, so it can never drop an event (a note-off least of all).
-    let mut value_weight = vec![1u32; em.event.len()];
+    // Event slot capacities (`EventSlotCapacity`): a node output holds what
+    // its shape declares, a delay output (and a feedback slot) all its FIFO
+    // can hold at its source's declared rate — what can fall due in one
+    // block — and a merge all its inputs together, so a merge can never drop
+    // an event (a note-off least of all).
+    // Emitted in topological order, so a merge's inputs are priced first.
+    let block = prepare.max_block().get();
+    let fb_cap = |key: &FeedbackKey| match *key {
+        FeedbackKey::Event { from, delay, .. } => {
+            EventSlotCapacity::fifo(node_shapes[dense[&from.node]].event_capacity, delay, block)
+        }
+        _ => unreachable!("event feedback keys are events"),
+    };
+    let mut value_cap = vec![EventSlotCapacity::NONE; em.event.len()];
     for pre in &em.pre {
-        if let Pre::EventMerge { srcs, dst } = pre {
-            value_weight[*dst as usize] = srcs
-                .iter()
-                .map(|r| match *r {
-                    ERef::Val(v) => value_weight[v as usize],
-                    ERef::Fb(_) => 1,
-                    ERef::Empty => 0,
-                })
-                .sum::<u32>()
-                .max(1);
+        match pre {
+            Pre::Node { unit, eout, .. } => {
+                let port = EventSlotCapacity::port(node_shapes[*unit as usize].event_capacity);
+                for &v in eout {
+                    value_cap[v as usize] = port;
+                }
+            }
+            Pre::EventDelay { delay, dst, .. } => {
+                let d = &em.delays[*delay as usize];
+                let (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }) = d.key
+                else {
+                    unreachable!("an event delay is keyed as events")
+                };
+                value_cap[*dst as usize] = EventSlotCapacity::fifo(
+                    node_shapes[dense[&from.node]].event_capacity,
+                    d.len,
+                    block,
+                );
+            }
+            Pre::EventMerge { srcs, dst } => {
+                value_cap[*dst as usize] = srcs.iter().fold(EventSlotCapacity::NONE, |acc, r| {
+                    acc.plus(match *r {
+                        ERef::Val(v) => value_cap[v as usize],
+                        ERef::Fb(f) => fb_cap(&event_fb[f as usize]),
+                        ERef::Empty => EventSlotCapacity::NONE,
+                    })
+                });
+            }
+            _ => {}
         }
     }
-    let mut event_slot_weight = vec![1u32; (event_fixed + event_colour.count) as usize];
-    event_slot_weight[EMPTY_SLOT as usize] = 0;
-    for (v, &w) in value_weight.iter().enumerate() {
+    let mut event_slot_capacity =
+        vec![EventSlotCapacity::NONE; (event_fixed + event_colour.count) as usize];
+    for (f, key) in event_fb.iter().enumerate() {
+        event_slot_capacity[1 + f] = fb_cap(key);
+    }
+    for (v, &c) in value_cap.iter().enumerate() {
         let s = eslot(v as u32) as usize;
-        event_slot_weight[s] = event_slot_weight[s].max(w);
+        event_slot_capacity[s] = event_slot_capacity[s].covering(c);
     }
     let aref_slot = |r: ARef| match r {
         ARef::Val(v) => aslot(v),
@@ -880,6 +1094,8 @@ pub fn compile(
     // ---- lower ------------------------------------------------------------
     let mut audio_list: Vec<u32> = Vec::new();
     let mut event_list: Vec<u32> = Vec::new();
+    let mut param_ports: Vec<ParamPortOp> = Vec::new();
+    let mut param_sources: Vec<ParamSourceOp> = Vec::new();
     let span_of = |list: &mut Vec<u32>, items: &mut dyn Iterator<Item = u32>| {
         let start = list.len() as u32;
         list.extend(items);
@@ -915,7 +1131,36 @@ pub fn compile(
                 aout,
                 ein,
                 eout,
+                params,
             } => {
+                let pstart = param_ports.len() as u32;
+                for p in params {
+                    let sstart = param_sources.len() as u32;
+                    for (r, shaping, from) in &p.sources {
+                        param_sources.push(ParamSourceOp {
+                            from: *from,
+                            slot: match *r {
+                                PRef::Audio(v) => ParamSlot::Audio(aslot(v)),
+                                PRef::Event(v) => ParamSlot::Event(eslot(v)),
+                            },
+                            shaping: shaping.clone(),
+                        });
+                    }
+                    param_ports.push(ParamPortOp {
+                        port: p.port,
+                        param: p.param,
+                        range: p.range,
+                        sig: p.sig,
+                        sources: Span {
+                            start: sstart,
+                            len: param_sources.len() as u32 - sstart,
+                        },
+                    });
+                }
+                let params = Span {
+                    start: pstart,
+                    len: param_ports.len() as u32 - pstart,
+                };
                 let mut mask = InPlaceMask::NONE;
                 for (c, (&r, &o)) in ain.iter().zip(aout).enumerate() {
                     if let ARef::Val(u) = r {
@@ -931,6 +1176,7 @@ pub fn compile(
                     event_in: span_of(&mut event_list, &mut ein.iter().map(|&r| eref_slot(r))),
                     event_out: span_of(&mut event_list, &mut eout.iter().map(|&v| eslot(v))),
                     in_place: mask,
+                    params,
                 }
             }
             Pre::Output {
@@ -1059,7 +1305,7 @@ pub fn compile(
         task_activation,
         audio_slots: audio_fixed + audio_colour.count,
         event_slots: event_fixed + event_colour.count,
-        event_slot_weight,
+        event_slot_capacity,
         audio_feedback: audio_fb
             .iter()
             .enumerate()
@@ -1086,6 +1332,8 @@ pub fn compile(
         audio_values,
         event_values,
         value_readers,
+        param_ports,
+        param_sources,
         nodes,
     };
 
@@ -1098,7 +1346,8 @@ pub fn compile(
     Ok((plan, delta))
 }
 
-/// Merge `refs` into one event stream, in `(offset, source order)`.
+/// Merge `refs` (already in source order) into one event stream, in
+/// `(offset, source order)`.
 ///
 /// Up to [`MAX_PORTS`] sources is one `EventMerge` op. Wider fan-in becomes a
 /// tree: contiguous runs of at most `MAX_PORTS` sources merge first, and the

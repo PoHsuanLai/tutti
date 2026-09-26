@@ -43,7 +43,10 @@ use support::{Gain, Sine};
 use tutti_core::dsp::Net;
 use tutti_core::Hz;
 use tutti_core::{AudioUnit, Engine, InterleavedMut};
-use tutti_core::{ChannelLayout, MotionFsm, SampleRate, TransportSettings};
+use tutti_core::{ChannelLayout, SampleRate, Samples, Transport};
+use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::NodeKey;
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -174,12 +177,39 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// so the budget file is not silent about the most important budget in the
 /// engine, and so the two cannot drift apart unnoticed: if `rt_no_alloc` were
 /// ever deleted or made inert, this still fails.
+///
+/// The chain is the native graph's (a sine and 16 gains, each a `Legacy`
+/// node, so the engine renders chunk-major): `Engine` renders nothing else
+/// since doc 013 Phase 3 PR 15. The build and commit budgets above stay on
+/// `Net`, which is still what `topology::compile` builds.
+///
+/// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → 100
+/// blocks allocate → fails.
 #[test]
 fn rendering_blocks_allocates_nothing() {
-    let mut net = graph(16);
-    let backend = net.backend();
-    let engine = Engine::new(MotionFsm::new(TransportSettings::new()), backend);
-    let _keep = Box::leak(Box::new(net));
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    ed.insert(NodeKey(0), "sine", Legacy::new(Sine::new(Hz(440.0))));
+    for i in 1..=16u64 {
+        ed.insert(NodeKey(i), "gain", Legacy::new(Gain(0.5 + i as f32 * 1e-3)));
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: NodeKey(i),
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: NodeKey(i - 1),
+                port: 0,
+            })),
+        );
+    }
+    let last = Source::Node(OutPort {
+        node: NodeKey(16),
+        port: 0,
+    });
+    ed.spec_mut().topology.outputs = vec![last, last];
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     let mut buf = vec![0.0f32; 256 * 2];
     // Warm up: the first block may size something lazily.
@@ -198,4 +228,6 @@ fn rendering_blocks_allocates_nothing() {
         "100 render blocks allocated {allocs} times ({bytes} bytes). The audio \
          callback must not allocate — see the RT rules in CLAUDE.md."
     );
+    // Not vacuous: the chain rendered sound.
+    assert!(buf.iter().any(|&s| s != 0.0), "the chain is silent");
 }

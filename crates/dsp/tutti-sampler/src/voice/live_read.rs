@@ -45,20 +45,17 @@
 //!
 //! # The one reader
 //!
-//! The ring has one `PosReader`, and a voice holds it. A clone of the voice
-//! shares it, by a lock no block ever waits on: a block takes it with
-//! `try_lock` or renders silence. That is for a host that renders a clone:
-//! `Net::commit` hands its backend a clone of every node (the original, in
-//! the frontend, never renders), and `a_gain_change_reaches_a_cloned_voice`
-//! pins that such a clone plays. Since doc 013's PR 15 no engine runtime is a
-//! `Net`, and Phase 5 deletes it; the sharing can go with it. Two copies
-//! rendering at once — which no host does — would each read only the blocks
-//! the other was not reading. A fork severs itself (`isolate` → [`LiveRead::sever`]) and
-//! reads the file instead (`DiskVoice::isolate`), so it never touches the
-//! live reader. A block that reads nothing tells the ring so
-//! (`PosReader::idle`), so a paused voice holds no refill back.
-
-use std::sync::{Arc, Mutex, TryLockError};
+//! The ring has one `PosReader`, and the voice that took it owns it, by
+//! value. **A clone of the voice has no reader**, and renders silence: the
+//! graph renders the unit it was given, never a clone of it. (Under `Net`,
+//! whose commit handed its backend a clone of every node, clones shared the
+//! reader through a `try_lock`; no engine has rendered a `Net` since doc
+//! 013's PR 15, so the sharing went with item 7.) The clones a native graph
+//! does take — `Legacy::controlled`'s shadow, and a fork cloned from it —
+//! never read the live ring anyway: a fork severs itself (`isolate` →
+//! [`LiveRead::sever`]) and reads the file instead (`DiskVoice::isolate`). A
+//! block that reads nothing tells the ring so (`PosReader::idle`), so a
+//! paused voice holds no refill back.
 
 use tutti_core::{PosClaim, PosReader};
 
@@ -134,13 +131,25 @@ struct State {
 }
 
 /// A live voice's reader over its stream's ring.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct LiveRead {
     ring: SharedReader,
-    /// The ring's one reader, shared with this voice's clones (see the module
-    /// docs); `None` once severed, or for a ring whose reader was taken.
-    reader: Option<Arc<Mutex<PosReader>>>,
+    /// The ring's one reader, this voice's alone (see the module docs);
+    /// `None` once severed, in a clone, or for a ring whose reader was taken.
+    reader: Option<PosReader>,
     st: State,
+}
+
+impl Clone for LiveRead {
+    /// The same ring and read state, **without the reader**: a clone renders
+    /// silence until it is severed and handed a file (see the module docs).
+    fn clone(&self) -> Self {
+        Self {
+            ring: self.ring.clone(),
+            reader: None,
+            st: self.st.clone(),
+        }
+    }
 }
 
 impl LiveRead {
@@ -150,7 +159,7 @@ impl LiveRead {
         let src = ring.channels().count().max(1) as usize;
         Self {
             ring,
-            reader: reader.map(|r| Arc::new(Mutex::new(r))),
+            reader,
             st: State {
                 width,
                 src,
@@ -203,10 +212,8 @@ impl LiveRead {
     /// claims no range, so it holds no write back.
     #[inline]
     pub(crate) fn idle(&mut self) {
-        if let Some(reader) = self.reader.as_deref() {
-            if let Some(mut reader) = try_take(reader) {
-                reader.idle();
-            }
+        if let Some(reader) = self.reader.as_mut() {
+            reader.idle();
         }
     }
 
@@ -235,9 +242,8 @@ impl LiveRead {
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
-        let Some(mut reader) = self.reader.as_deref().and_then(try_take) else {
-            // Severed, or another copy reading this block: nothing to read
-            // (not an underrun).
+        let Some(reader) = self.reader.as_mut() else {
+            // Severed, or a clone: nothing to read (not an underrun).
             for i in 0..positions.len() {
                 emit(i, &silent[..w]);
             }
@@ -421,17 +427,6 @@ impl State {
             }
         };
         sounded
-    }
-}
-
-/// The live reader, if no other copy of the voice is reading it now. Never
-/// waits.
-#[inline]
-fn try_take(reader: &Mutex<PosReader>) -> Option<std::sync::MutexGuard<'_, PosReader>> {
-    match reader.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
-        Err(TryLockError::WouldBlock) => None,
     }
 }
 

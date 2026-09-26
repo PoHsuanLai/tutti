@@ -1,4 +1,5 @@
-//! **A standalone voice can be told to move, and the telling survives a commit.**
+//! **A standalone voice can be told to move, and the telling reaches the node
+//! the graph renders.**
 //!
 //! Placement is the one control that cannot ride `AudioUnit::set`: `Setting`
 //! carries a single `f32`, and a window is a [`Beat`] (`f64`) plus an optional
@@ -14,25 +15,26 @@
 //!
 //! Both are silent, and both are the reason the channel is more than a field.
 //!
-//! 1. **`Clone` must share the receiver.** `AudioUnit: DynClone`, so
-//!    `Net::commit` clones every node on each frontend↔backend swap. A clone
-//!    that minted a fresh channel would be handed to the audio thread already
-//!    deaf, and every later command would vanish with no error.
-//!    [`a_command_reaches_a_node_across_a_commit`] fails if that regresses.
+//! 1. **The node the graph renders must hold the receiver.** The native graph
+//!    renders the unit it was given, across commits and re-prepares (units
+//!    move, they are not cloned), so the receiver is the node's own.
+//!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
+//!    stops hearing its handle. (Under `Net`, which rendered a clone after a
+//!    commit, `Clone` had to share the receiver; doc 013 item 7 removed that.)
 //!
-//! 2. **A render clone must not drain it.** Crossbeam delivers each message to
-//!    exactly one receiver, so an offline worker sharing the live channel
-//!    *steals* the user's edits from the audio thread — the live voice then
-//!    misses a move with nothing logged anywhere.
-//!    [`a_render_clone_steals_no_commands`] fails if `isolate` stops severing.
+//! 2. **A copy must not drain it.** Crossbeam delivers each message to
+//!    exactly one receiver, so a fork sharing the live channel would *steal*
+//!    the user's edits from the audio thread — the live voice then misses a
+//!    move with nothing logged anywhere. A clone gets a dead channel, and
+//!    `isolate` severs one held in place.
+//!    [`a_render_clone_steals_no_commands`] fails if that regresses.
 //!
-//! `VoicePool` reaches the same two conclusions and states them at length in its
-//! own `Clone`; this is the single-voice half of the same rule.
+//! `VoicePool` reaches the same two conclusions and states them in its own
+//! `Clone`; this is the single-voice half of the same rule.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::Net;
 use tutti_core::AudioUnit;
 use tutti_core::{Beat, BeatDuration, Bpm, Timeline};
 use tutti_io::Wave;
@@ -160,72 +162,97 @@ fn a_queued_placement_moves_a_live_voice() {
     );
 }
 
-/// **A command reaches a node across a `Net::commit`.**
+/// **A command reaches a node across a native commit and a re-prepare.**
 ///
-/// The first hazard, and the one a naive `Clone` would break invisibly.
-/// `commit` swaps the frontend's clones over the backend, so the unit that
-/// renders after it is *not* the one built by `with_commands` — it is a clone.
-/// If that clone had minted its own channel, the handle would be talking to a
-/// receiver nobody drains.
+/// Re-pinned with the ownership change (doc 013 item 7). Under `Net` this
+/// asserted that a *clone* kept hearing the handle: `Net::commit` swapped the
+/// frontend's clones over the backend, so the unit rendering after a commit
+/// (with a sample-rate change marking the vertex changed) was a clone, and
+/// `VoiceNode::clone` had to share the `Receiver`. The native graph renders
+/// the unit it was given: a commit that adds a node leaves it in place, and
+/// a re-prepare (the rate change, again) checks the unit out, prepares it and
+/// sends it back — moved, never cloned. So the receiver is the node's own
+/// (a clone gets a dead one), and what this pins is the native path: the
+/// node built by `with_commands`, inserted as `bevy-tutti` inserts it
+/// (`Legacy::controlled`), hears a placement sent after both.
 ///
-/// Asserted through the **backend**, because that is the copy `commit` puts in
-/// charge. Reading the frontend would report the write as landed whatever the
-/// backend holds — the mistake `live_value_survives_commit` records making.
+/// Mutation (run): `VoiceNode::process` not draining its commands → the
+/// voice never moves → fails. Mutation (run): `Legacy`'s adapter rendering a
+/// clone of the unit taken at insert (`Legacy::controlled` handing the node
+/// `unit.clone()` instead of `unit`) → the rendering copy's channel is dead
+/// → fails.
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {
+    use tutti_core::graph::{OutPort, Source};
+    use tutti_core::{NodeKey, SampleRate, Samples};
+    use tutti_graph::{Editor, Legacy, Prepare, Transport};
+
     let transport = FixedTransport::at(10.0);
     let (node, handle) = VoiceNode::with_commands(
         voice_at(transport.clone(), 0.0),
         tutti_core::ChannelLayout::MONO,
     );
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let (legacy, _controls) = Legacy::controlled(&mut ed, node);
+    ed.insert(NodeKey(1), "voice", legacy);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let render = |exec: &mut tutti_graph::Executor| {
+        let mut out = vec![0.0f32; 256];
+        exec.process(256, &Transport::default(), &[], &mut [&mut out[..]]);
+        out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
+    };
+    assert!(render(&mut exec) < 1e-6, "silent before the move");
 
-    let mut net = Net::new(0, 1);
-    let id = net.push(Box::new(node));
-    net.pipe_output(id);
-    net.check();
-    // **Hold** the backend: a dropped one never renders, so `migrate` would not
-    // run and the whole point of this test would be lost.
-    let mut backend = Box::new(net.backend()) as Box<dyn AudioUnit>;
-
-    // **The vertex has to be marked *changed*, and a bare `commit` does not do
-    // it.** `Net::migrate` keeps the *backend's* unit for any vertex reporting
-    // `changed <= revision`, so an unchanged commit leaves the original node —
-    // and its original receiver — rendering. This test passed with `Clone`
-    // sabotaged until that was understood; measured, not assumed.
-    //
-    // `set_sample_rate` is one of the four operations that do mark a vertex
-    // changed (with `reset`, `isolate` and `rebind_offline`), and it is the one
-    // a host performs routinely — the engine calls it whenever the device rate
-    // is established. So this is the ordinary path, not a contrivance.
-    net.set_sample_rate(tutti_core::SampleRate(48_000.0));
-    net.commit();
-    assert!(peak(backend.as_mut(), 64) < 1e-6, "silent before the move");
+    // A graph edit: another node, committed.
+    let (other, _) = VoiceNode::with_commands(
+        voice_at(transport.clone(), 0.0),
+        tutti_core::ChannelLayout::MONO,
+    );
+    ed.insert(NodeKey(2), "other", Legacy::new(other));
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    // A re-prepare at another rate: the units go out and come back.
+    ed.reprepare(Prepare::new(SampleRate(44_100.0), Samples(256)))
+        .expect("reprepares");
+    exec.apply_pending();
+    ed.collect();
+    exec.apply_pending();
+    ed.collect();
+    assert!(render(&mut exec) < 1e-6, "still silent: nothing was sent");
 
     handle
         .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
         .expect("send");
 
     assert!(
-        peak(backend.as_mut(), 64) > 0.5,
-        "a command must reach the node through a commit's clone. Silence means \
-         `VoiceNode::clone` minted a fresh receiver, leaving the audio thread \
-         deaf while the handle reports every send as succeeding."
+        render(&mut exec) > 0.5,
+        "a command must reach the node the graph renders. Silence means the \
+         unit rendering is not the one `with_commands` built (a clone, whose \
+         channel is dead), or it no longer drains its channel."
     );
 }
 
 /// **A render clone steals nothing from the live node.**
 ///
-/// The second hazard, and the cost of sharing the receiver. The offline region
-/// render clones the live net and ticks it on a worker *while the audio thread
-/// plays the original*. Crossbeam delivers each message to exactly one receiver,
-/// so a clone that kept draining would consume the user's edits and the live
-/// voice would silently miss them.
+/// The second hazard. A fork renders on a worker *while the audio thread plays
+/// the original*. Crossbeam delivers each message to exactly one receiver, so
+/// a copy that drained the live channel would consume the user's edits and the
+/// live voice would silently miss them.
 ///
-/// `AudioUnit::isolate` is where a clone severs what it must not share, and this
-/// asserts the receiver is on that list. The engine's own
+/// A clone gets a dead channel of its own (`VoiceNode::clone`), and
+/// `AudioUnit::isolate` severs one held in place; this asserts the copy a
+/// render takes (clone, then isolate) drains nothing. Mutation (run):
+/// `VoiceNode::clone` sharing the receiver and `isolate` not severing it →
+/// the render drains the move → fails. The engine's own
 /// `an_isolated_pool_steals_no_commands_from_the_live_one` makes the identical
-/// claim for `VoicePool`, which solves it a different way (node replacement in a
-/// Prepare step) because its clone already holds live voices by then.
+/// claim for `VoicePool`.
 #[test]
 fn a_render_clone_steals_no_commands() {
     let transport = FixedTransport::at(10.0);

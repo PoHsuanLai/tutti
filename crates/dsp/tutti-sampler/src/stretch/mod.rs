@@ -39,11 +39,12 @@
 //!
 //! # RT-safety
 //!
-//! Every buffer is allocated in [`Unit::with_fft_size_and_channels`], or — for
-//! a unit produced by `clone`, which leaves its per-block scratch empty — in
-//! `AudioUnit::allocate`, which the graph calls before running the node.
-//! Neither `tick` nor `process` allocates or blocks, and neither does the
-//! vocoder beneath them. Dropping a `Unit` is *not* RT-safe; see its `Drop`.
+//! Every buffer is allocated in [`Unit::with_fft_size_and_channels`], and a
+//! clone allocates its own (see "Owned, not shared" on [`Unit`]). Neither
+//! `tick`, `process` nor the slot's block read allocates or blocks, and
+//! neither does the vocoder beneath them. Dropping a `Unit` frees its
+//! vocoders, so it is *not* RT-safe: the pool retires removed filters to the
+//! control thread (`VoicePool::retired`).
 
 /// Per-channel RT scratch capacity, in samples.
 ///
@@ -55,178 +56,7 @@
 /// still pass, because a `Vec` that reallocates is correct, just not RT-safe.
 const MAX_BUFFER_SIZE: usize = 8192;
 
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
-
-#[allow(
-    unused_imports,
-    reason = "referenced by the intra-doc links on this module and on `Unit::isolate`, not by any code here"
-)]
-use tutti_core::AudioUnit;
-use tutti_core::{AudioThreadCell, Ordering, RtScratch, SampleRate, Samples, Seconds};
-
-/// The vocoder bank, shared by refcount across graph generations.
-///
-/// `Net::commit` clones every node per graph edit, and a deep copy of this is
-/// ~96 KB per channel allocated with the previous generation's freed — 201.8 MB
-/// per commit over 640 stereo nodes, against a 2 ms budget. Sharing makes the
-/// commit clone a refcount bump and removes both halves at once. Full figures:
-/// `examples/profile_stretch_clone.rs`.
-///
-/// # The invariant, and why it is enforced rather than documented
-///
-/// **At most one live handle may tick a given bank.** Sharing is sound only
-/// because generations are ticked one at a time: `commit_inner` hands the
-/// backend a new net and takes the old one back for deallocation, so the two
-/// never run together.
-///
-/// Break that and the failure is quiet. Two handles ticking one bank do not
-/// race or panic — they *interleave*, each consuming samples the other expected,
-/// producing audio that is plausible and wrong. That is the same failure shape
-/// as the 60 dB gain bug this module already carries a warning about, and it is
-/// exactly what no test catches by asserting output is non-zero.
-///
-/// `AudioThreadCell` cannot catch it: its debug flag detects *concurrent*
-/// borrows, and interleaved ticking is sequential. So the bank carries its own
-/// [`Bank::ticker`] token — the id of the handle allowed to tick it. A handle
-/// claims the bank on its first tick, and a second handle claiming an
-/// already-claimed bank trips a `debug_assert` naming both.
-///
-/// The one genuinely concurrent case is the offline region render, which
-/// `clone_isolated`s the live net and ticks it on a worker pool **while the
-/// audio thread plays the original**. That is severed in
-/// [`AudioUnit::isolate`], which the render's isolation pass already calls on
-/// every node of the clone before it reaches the worker. Share on the hot path,
-/// deep-copy on the rare one.
-struct Bank {
-    channels: AudioThreadCell<Vec<Vocoder>>,
-
-    /// Per-block working buffers, one pair per channel.
-    ///
-    /// Here rather than on [`Unit`] because they follow the same rule the
-    /// vocoders do: only the one handle holding the bank's claim may touch them,
-    /// and they carry nothing between blocks. On the handle instead they cost a
-    /// fresh 64 KB per channel per generation — **98% of a shared-bank commit's
-    /// remaining traffic at both widths**. Deferring them to
-    /// [`AudioUnit::allocate`] moves only *when* that is paid, not whether: the
-    /// graph calls `allocate` on every generation.
-    scratch_in: AudioThreadCell<Vec<RtScratch<f32>>>,
-    scratch_out: AudioThreadCell<Vec<RtScratch<f32>>>,
-    /// Which [`Unit`] may tick this bank; `UNCLAIMED` until the first tick.
-    ///
-    /// Not a borrow flag — a claim. It outlives any single call, which is what
-    /// makes it able to see the interleaving a per-call guard cannot.
-    ticker: AtomicUsize,
-}
-
-/// No handle has ticked this bank yet.
-const UNCLAIMED: usize = 0;
-
-/// Source of [`Unit::id`]. Starts at 1 so no handle can collide with
-/// [`UNCLAIMED`].
-static NEXT_HANDLE_ID: AtomicUsize = AtomicUsize::new(1);
-
-/// A fresh handle identity.
-fn next_handle_id() -> usize {
-    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-impl Bank {
-    fn new(channels: Vec<Vocoder>) -> Arc<Self> {
-        // Size the scratch here, not lazily in `allocate`. A directly
-        // constructed unit must be usable without the graph's help — the RT
-        // guard `time_stretch_process_is_allocation_free` builds one and ticks
-        // it straight away, and leaving it unsized made `process` allocate in
-        // the callback. Construction is not on the commit path (a clone inherits
-        // an already-sized bank), so this costs nothing per graph edit.
-        let width = channels.len();
-        Arc::new(Self {
-            channels: AudioThreadCell::new(channels),
-            scratch_in: AudioThreadCell::new(
-                (0..width)
-                    .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-                    .collect(),
-            ),
-            scratch_out: AudioThreadCell::new(
-                (0..width)
-                    .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-                    .collect(),
-            ),
-            ticker: AtomicUsize::new(UNCLAIMED),
-        })
-    }
-
-    /// Whether the block scratch is sized for `width` channels.
-    fn scratch_is_ready(&self, width: usize) -> bool {
-        let scratch = self.scratch_in.borrow();
-        scratch.len() == width && scratch.iter().all(|s| s.capacity() >= MAX_BUFFER_SIZE)
-    }
-
-    /// Size the block scratch. Idempotent; control thread only.
-    fn allocate_scratch(&self, width: usize) {
-        if self.scratch_is_ready(width) {
-            return;
-        }
-        *self.scratch_in.borrow_mut() = (0..width)
-            .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-            .collect();
-        *self.scratch_out.borrow_mut() = (0..width)
-            .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-            .collect();
-    }
-
-    /// Assert `who` is allowed to tick, claiming the bank if it is unclaimed.
-    ///
-    /// Debug-only, and deliberately so: in release this compiles away, leaving
-    /// the sharing at full speed. The claim is what a test can assert against —
-    /// see `two_live_handles_ticking_one_bank_is_caught`.
-    #[inline]
-    fn claim(&self, who: usize) {
-        #[cfg(debug_assertions)]
-        {
-            let prev = self
-                .ticker
-                .compare_exchange(UNCLAIMED, who, Ordering::AcqRel, Ordering::Acquire)
-                .unwrap_or_else(|actual| actual);
-            debug_assert!(
-                prev == UNCLAIMED || prev == who,
-                "BUG: two live stretch::Unit handles are ticking one shared vocoder \
-                 bank (owner {prev:#x}, caller {who:#x}). They will interleave and \
-                 render plausible-but-wrong audio. A clone that is ticked \
-                 independently must call `AudioUnit::isolate` first."
-            );
-        }
-        #[cfg(not(debug_assertions))]
-        let _ = who;
-    }
-
-    /// Give up `who`'s claim, if it holds one.
-    ///
-    /// Called when a handle is dropped. Without this a retired generation keeps
-    /// its claim forever and its legitimate successor looks like an interleave —
-    /// which is exactly what the first version of
-    /// `a_successor_generation_continues_the_stream` hit.
-    ///
-    /// Conditional, not an unconditional store: a handle that never ticked, or
-    /// one whose bank has already been taken over, must not clear someone else's
-    /// claim.
-    #[inline]
-    fn release(&self, who: usize) {
-        let _ = self
-            .ticker
-            .compare_exchange(who, UNCLAIMED, Ordering::AcqRel, Ordering::Acquire);
-    }
-
-    /// Hand ticking rights to `who`, forgetting any previous claim.
-    ///
-    /// Used where a handle legitimately succeeds another on the same bank: a
-    /// committed generation replaces the one it was cloned from, and `reset`
-    /// starts the stream over.
-    #[inline]
-    fn reclaim(&self, who: usize) {
-        self.ticker.store(who, Ordering::Release);
-    }
-}
+use tutti_core::{SampleRate, Samples, Seconds};
 
 /// An analysis window length, in samples.
 ///
@@ -316,8 +146,6 @@ mod buffers;
 mod fft;
 mod unit;
 mod vocoder;
-
-use vocoder::Vocoder;
 
 pub use unit::Unit;
 

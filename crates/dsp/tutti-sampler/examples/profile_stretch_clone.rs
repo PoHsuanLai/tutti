@@ -1,5 +1,14 @@
 //! Where the time goes when a graph commit clones stretched voices.
 //!
+//! **A record of the `Net` era.** Since doc 013 item 7 a `stretch::Unit`
+//! owns its vocoders and a clone builds fresh ones: the `Arc<Bank>` sharing
+//! measured below is gone, because the native graph does not clone a node to
+//! commit it (no engine has rendered a `Net` since PR 15). Run today, the
+//! commits here move the deep-cloning figures again — the cost a `Net` commit
+//! of stretched voices would pay, which nothing pays. The harness (a counting
+//! allocator, profiler phase markers) stays until Phase 5 deletes `Net`, as a
+//! template for measuring allocation churn; its tables are history.
+//!
 //! ```text
 //! cargo build \
 //!     -p tutti-sampler --profile profiling --example profile_stretch_clone

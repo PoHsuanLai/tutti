@@ -41,8 +41,8 @@
 //!    scratch, outside the arena, never shared. What a fade adds is a claim
 //!    about *two* units under one op: each fade names a key the delta
 //!    replaces (once), and the unit it fades from was compiled with the
-//!    same ports, latency, in-place acceptance, event resolution and event
-//!    capacity as the
+//!    same ports, latency, in-place acceptance, event resolution, event
+//!    capacity and declared params as the
 //!    one it fades to — so the op, its PDC and its borrows are right for
 //!    both, and the scratch sized from the plan fits the outgoing unit.
 //!
@@ -867,7 +867,8 @@ pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(
             && was.in_place == now.in_place
             && was.event_resolution == now.event_resolution
             && was.event_capacity == now.event_capacity
-            && was.legacy == now.legacy;
+            && was.legacy == now.legacy
+            && was.params == now.params;
         if !same {
             return Err(VerifyError(format!(
                 "node {} fades from {was:?} to {now:?}: only the tail may differ",

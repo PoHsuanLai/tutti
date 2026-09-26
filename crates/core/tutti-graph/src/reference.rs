@@ -397,7 +397,8 @@ impl Reference {
                     && was.event_out == now.event_out
                     && was.latency == now.latency
                     && was.in_place == now.in_place
-                    && was.event_resolution == now.event_resolution,
+                    && was.event_resolution == now.event_resolution
+                    && was.params == now.params,
                 "node {} crossfades between shapes",
                 key.0
             );

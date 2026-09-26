@@ -583,6 +583,61 @@ fn removing_a_node_drops_its_param_edges() {
     assert_eq!(out[2][63], 1.0, "the param is still modulated");
 }
 
+/// A crossfade keeps its key's param state: the two units must declare the
+/// same params, and one that declares others is refused (`FadeShape`), as a
+/// fade between other ports is. A fade between two that agree keeps the
+/// modulation running through it, with no declick (the sources did not
+/// change).
+///
+/// Mutation (run): drop `shape.params == running.params` from
+/// `Editor::replace`'s check → the replace is accepted (and the fade's
+/// incoming unit runs on state sized for other params) → fails.
+#[test]
+fn a_fade_keeps_the_params_it_declares() {
+    struct CutoffOnly;
+    impl Node for CutoffOnly {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::MONO, ChannelLayout::from_count(3))
+                .with_params(&[UnitParam::Cutoff])
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.spec_mut().connect_param(
+        param(PROBE, UnitParam::Cutoff),
+        ParamFrom::Audio(port(1, 0)),
+        ParamShaping::Identity,
+    );
+    ed.commit().expect("commits");
+    let _ = render(&mut exec, &mut ed, 512, 64);
+
+    let fade = tutti_graph::Fade::new(Samples(128), tutti_graph::CrossfadeCurve::EqualAmplitude);
+    assert!(
+        matches!(
+            ed.replace(NodeKey(PROBE), CutoffOnly, fade),
+            Err(tutti_graph::CommitError::FadeShape { .. })
+        ),
+        "a unit declaring other params cannot fade in"
+    );
+    let (c2, q2) = (Cell::new(0.0), Cell::new(0.0));
+    ed.replace(NodeKey(PROBE), Probe::new(&c2, &q2), fade)
+        .expect("the same params fade");
+    ed.commit().expect("commits");
+    let out = render(&mut exec, &mut ed, 256, 64);
+    assert!(
+        out[0].iter().all(|&x| x == 1.0),
+        "modulated all through the fade, no declick: {:?}",
+        &out[0][..8]
+    );
+}
+
 // ---- differential: the executor against the reference ----------------------
 
 /// One generated graph: signals and ramp sources modulating probes, some

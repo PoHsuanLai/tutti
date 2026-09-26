@@ -3095,6 +3095,10 @@ under both.
     pending ramps are dropped, not flushed: its source was disconnected).
   - The step runs whether or not the node is then skipped, so its ramps
     and declick follow the timeline as the reference's do.
+  - A crossfade keeps the key's param state, so its two units must declare
+    the same params (`Editor::replace`, `verify_fades`); a fork copies the
+    modulation, and `upstream` walks param sources, so an export forks the
+    modulators too.
 - **`Legacy` bridge.** An `AudioUnit` cannot read `Io`, so `tutti-node`
   gains `ParamFeed` (`AudioUnit::param_feed` / `param_base`): per-param
   buffers `Legacy` fills per 64-frame chunk, with a live bit per param;

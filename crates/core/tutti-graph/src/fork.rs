@@ -37,8 +37,9 @@
 //!
 //! - **The graph value** as the editor holds it — its [`spec`](Editor::spec),
 //!   including edits not yet committed, which is what the next commit would
-//!   install. Wiring, event edges, resolution marks and parameter values are
-//!   copied; generations start again at 0 in the new editor.
+//!   install. Wiring, event edges, resolution marks, param modulation and
+//!   parameter values are copied; generations start again at 0 in the new
+//!   editor.
 //! - **Fresh units** from each node's fork source, prepared for the fork's
 //!   own [`Prepare`] (a render may run at a different rate or block from the
 //!   device). Latency and tail are probed again at that `Prepare`, as a
@@ -534,6 +535,15 @@ impl Editor {
             .filter(|((at, _), _)| keys.contains(&at.node))
             .map(|(k, r)| (*k, *r))
             .collect();
+        // A modulated param's sources are upstream of its node too
+        // (`upstream` walks them), so the fork modulates it as the live
+        // graph does, riding on the forked unit's own control.
+        fork.params = live
+            .params
+            .iter()
+            .filter(|(at, _)| keys.contains(&at.node))
+            .map(|(at, m)| (*at, m.clone()))
+            .collect();
         for (key, node) in fork.topology.nodes.iter_mut() {
             node.params = live.topology.nodes[key].params.clone();
         }
@@ -568,7 +578,7 @@ impl Editor {
     }
 
     /// `roots` and every node that feeds them, walking back along audio,
-    /// feedback and event edges.
+    /// feedback, event and param edges.
     fn upstream(&self, roots: impl IntoIterator<Item = NodeKey>) -> BTreeSet<NodeKey> {
         let spec = self.spec();
         let mut seen: BTreeSet<NodeKey> = roots.into_iter().collect();
@@ -597,7 +607,12 @@ impl Editor {
                     },
                 )
                 .flat_map(|(_, sources)| sources.iter().map(|e| e.from().node));
-            for from in audio.chain(events).collect::<Vec<_>>() {
+            let params = spec
+                .params
+                .iter()
+                .filter(|(at, _)| at.node == node)
+                .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+            for from in audio.chain(events).chain(params).collect::<Vec<_>>() {
                 if seen.insert(from) {
                     stack.push(from);
                 }

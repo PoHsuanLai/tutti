@@ -248,7 +248,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
 /// running before it): each names a key the delta replaces, once, and the
 /// unit it fades from has the shape of the one it fades to in everything but
 /// its tail — ports, latency, in-place acceptance, event resolution, event
-/// capacity.
+/// capacity, declared params.
 /// [`Editor::package`] runs this on every delta it is handed.
 pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
     compile::verify::verify_fades(prev, plan, delta)

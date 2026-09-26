@@ -558,7 +558,10 @@ impl Editor {
             && shape.event_capacity == running.event_capacity
             // A renderer chunks while the plan holds a `Legacy`: both halves
             // of a fade must agree, or the outgoing one would run unchunked.
-            && shape.legacy == running.legacy;
+            && shape.legacy == running.legacy
+            // The key's param state (per declared param) runs on across a
+            // fade, so both units must declare the same params.
+            && shape.params == running.params;
         if !fits {
             return Err(CommitError::FadeShape { node: key });
         }

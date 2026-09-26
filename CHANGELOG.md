@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads its base, never 0**, so modulation is connected and disconnected
   by any commit, crossfaded over `PARAM_DECLICK` frames rather than
   stepped. Param sources are PDC-aligned like inputs
-  (`DelayKey::ParamAudio` / `ParamEvent`). This replaces the per-param
+  (`DelayKey::ParamAudio` / `ParamEvent`), and `Editor::fork` (so an
+  export) copies the modulation and forks its sources. A crossfade's two
+  units must declare the same params (`CommitError::FadeShape` otherwise). This replaces the per-param
   sub-graph (`AtomicSourceNode → ParamSumNode ← ParamShaperNode × N`) and
   the extra input ports a node had to be born with. What changes for a
   caller:

@@ -1652,7 +1652,10 @@ fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
     let ports = &plan.param_ports[rec.params.range()];
     let mut next = ports.iter().peekable();
     let declared = rec.declared;
-    for (k, &param) in declared.as_slice().iter().enumerate() {
+    // The state was sized from the unit's shape; a fade's two units declare
+    // the same params (checked where it is asked for), so the two agree.
+    let n = declared.len().min(params.port_count());
+    for (k, &param) in declared.as_slice().iter().enumerate().take(n) {
         let base = node.param_base(k);
         match next.next_if(|p| p.port as usize == k) {
             Some(p) => {

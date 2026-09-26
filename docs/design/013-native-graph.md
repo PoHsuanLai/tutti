@@ -3440,15 +3440,15 @@ the whole file, before → after):
 | case | before | after | |
 |---|---:|---:|---:|
 | `pool64/memory/1` | 1.61 µs | 0.84 µs | −47% |
-| `pool64/memory/64` | 91.4 µs | 44.5 µs | −51% |
-| `pool64/memory-varispeed/64` | 92.7 µs | 47.1 µs | −50% |
-| `pool64/memory-stretch/64` | 930 µs | 839 µs | −9% |
+| `pool64/memory/64` | 91.4 µs | 45.8 µs | −50% |
+| `pool64/memory-varispeed/64` | 92.7 µs | 47.9 µs | −49% |
+| `pool64/memory-stretch/64` | 930 µs | 816 µs | −10% |
 | `pool64/disk/1` | 6.01 µs | 1.82 µs | −70% |
 | `pool64/disk/64` | 375 µs | 108 µs | −71% |
-| `pool64/disk-varispeed/64` | 379 µs | 108 µs | −71% |
+| `pool64/disk-varispeed/64` | 379 µs | 110 µs | −71% |
 | `pool64/disk-stretch/64` | 1.12 ms | 0.86 ms | −25% |
-| `voices/plain/1` | 862 ns | 433 ns | −50% |
-| `voices/stretch/0.5x` (8 voices) | 94.2 µs | 84.9 µs | −10% |
+| `voices/plain/1` | 862 ns | 445 ns | −49% |
+| `voices/stretch/0.5x` (8 voices) | 94.2 µs | 89.0 µs | −4% |
 
 (The older `voices/*` groups hold their clock at beat 0, so a placed voice
 seats once and, after ~3 000 blocks, reads past its wave's end: they mostly

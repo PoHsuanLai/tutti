@@ -485,6 +485,23 @@ pub struct ParamModShaping {
     pub curve: CurveType,
 }
 
+impl ParamModShaping {
+    /// This edge's shaping as the graph's fused param step reads it:
+    /// [`tutti_mod::shape`] baked into a [`ShapeLut`](tutti_graph::ShapeLut)
+    /// over the modulator's `[-1, 1]`. Allocates the table: build it on the
+    /// control thread.
+    pub fn shaping(&self) -> tutti_graph::ParamShaping {
+        let Self {
+            depth,
+            polarity,
+            curve,
+        } = *self;
+        tutti_graph::ParamShaping::Lut(tutti_graph::ShapeLut::from_fn(move |x| {
+            shape(x, depth, polarity, curve)
+        }))
+    }
+}
+
 /// One node of a [`ParamModParts`], named by its role in the chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamModPart {

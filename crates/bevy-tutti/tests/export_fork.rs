@@ -462,20 +462,14 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
     let mut app = app_over(graph_on());
-    let live = tutti_core::transport::Transport::new(SampleRate(RATE));
     let mut wave = tutti_io::Wave::new(1, RATE);
     for i in 0..RATE as usize {
         wave.push_frame(&[tone(i)]);
     }
     let voice = {
-        let source = MemorySource::with_transport(
-            Arc::new(wave),
-            Arc::new(live) as Arc<dyn tutti_core::Timeline>,
-            tutti_core::Beat(3.0),
-            None,
-        );
+        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(3.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let node = graph.insert(source);
+        let (node, _params) = graph.insert_node(source);
         graph.set_outputs_from(node);
         app.world_mut().spawn(node).id()
     };
@@ -484,15 +478,9 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
-        let source = MemorySource::with_transport(
-            Arc::new(wave),
-            Arc::new(tutti_core::transport::Transport::new(SampleRate(RATE)))
-                as Arc<dyn tutti_core::Timeline>,
-            tutti_core::Beat(0.0),
-            None,
-        );
+        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let node = graph.insert(source);
+        let (node, _params) = graph.insert_node(source);
         app.world_mut().spawn(node).id()
     };
 
@@ -519,12 +507,11 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         "the voice sounded before beat 3"
     );
     // From there the clip's frame `k` is the render's frame `AT + k`, from
-    // the first: the voice reads the clock once per 64-frame chunk
-    // (`Legacy`), and the chunk starting on beat 3 reads exactly beat 3,
-    // since the timeline counts frames and derives the beat (doc 013 §6).
-    // (It accumulated once, read a hair under 3 there, and the voice entered
-    // a chunk late, at 96 064.) Doc 013's chunk-major mode moves the graph's
-    // clock per chunk, as `Net`'s moved.
+    // the first: the voice reads the render's transport from its blocks'
+    // `Env`, per frame, and frame 96 000 reads exactly beat 3, since the
+    // timeline counts frames and derives the beat (doc 013 §6). (It
+    // accumulated once, read a hair under 3 there, and the voice, then
+    // polling the clock per 64-frame chunk, entered a chunk late, at 96 064.)
     for k in 0..4_000 {
         let got = planes[0][AT + k];
         assert!(
@@ -534,7 +521,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         );
     }
 
-    // A frozen clock rebinds the voice onto a timeline stopped at beat 0: it
+    // A frozen clock hands the voice a transport stopped at beat 0: it
     // plays nothing, rather than loop its first block against a rolling
     // playhead nothing advances (what a default timeline did before
     // `ExportClock`). Placed at beat 0 here, where a rolling one would sound.
@@ -1474,7 +1461,7 @@ mod disk {
     use std::path::Path;
 
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-    use tutti_core::{Beat, Bpm, SamplePosition, Timeline};
+    use tutti_core::{Beat, Bpm, SamplePosition};
     use tutti_sampler::{
         Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
     };
@@ -1527,11 +1514,11 @@ mod disk {
         streamer
     }
 
-    /// The live voice on channel 0, placed at `beat` on `clock`.
-    fn disk_voice(streamer: &DiskStreamer, clock: Arc<dyn Timeline>, beat: f64) -> DiskVoice {
+    /// The live voice on channel 0, placed at `beat`.
+    fn disk_voice(streamer: &DiskStreamer, beat: f64) -> DiskVoice {
         streamer
             .status()
-            .take_disk_voice(0, clock, Beat(beat), None)
+            .take_disk_voice(0, Beat(beat), None)
             .expect("the link is installed")
     }
 
@@ -1574,12 +1561,13 @@ mod disk {
     /// memory voice**: a node export of the file's frames in memory, placed
     /// the same, renders the same planes bit for bit.
     ///
-    /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
-    /// file (`offline.read` left `None`) → both exports silent → fails.
+    /// Mutation (run): `DiskVoice::fork_copy` not handing the copy its file
+    /// (`Offline { read: None, .. }`) → both exports silent → fails.
     /// Mutation (run): both whole-frame rules removed (`snap_to_whole_frame`
     /// in the gate, and tutti-sampler `tap_indices`'s carry of a fraction
-    /// that rounds to 1.0) → a frame of the clip reads an ulp off → fails. Mutation (run): `DiskVoice::forkable` answering
-    /// `false` again → refused as not forkable → fails.
+    /// that rounds to 1.0) → a frame of the clip reads an ulp off → fails.
+    /// Mutation (run): `DiskVoiceFork` refusing an offline fork as it
+    /// refuses a live one → the master export is refused → fails.
     #[test]
     fn a_disk_voice_exports_its_file_from_its_beat_and_matches_memory() {
         const AT: usize = 96_000;
@@ -1589,26 +1577,24 @@ mod disk {
         write_ramp(&path, RATE as u32, LEN);
         // A stream serves one live voice, so each of the two has its own.
         let (streamer, other) = (streamer_on(&path), streamer_on(&path));
-        let live = timeline(90.0) as Arc<dyn Timeline>;
 
         let mut app = app_over(graph_on());
         let (disk_node, memory_node) = {
-            let bare = disk_voice(&streamer, live.clone(), 3.0);
-            let wrapped = node_of(VoiceSource::Disk(disk_voice(&other, live.clone(), 3.0)));
+            let bare = disk_voice(&streamer, 3.0);
+            let wrapped = node_of(VoiceSource::Disk(disk_voice(&other, 3.0)));
             let mut wave = tutti_io::Wave::new(2, RATE);
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }
-            let memory = node_of(VoiceSource::Memory(MemorySource::with_transport(
+            let memory = node_of(VoiceSource::Memory(MemorySource::placed(
                 Arc::new(wave),
-                live.clone(),
                 Beat(3.0),
                 None,
             )));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let bare = graph.insert(bare);
+            let (bare, _) = graph.insert_node(bare);
             graph.set_outputs_from(bare);
-            let (wrapped, memory) = (graph.insert(wrapped), graph.insert(memory));
+            let (wrapped, memory) = (graph.insert_node(wrapped).0, graph.insert_node(memory).0);
             app.world_mut().spawn(bare);
             (
                 app.world_mut().spawn(wrapped).id(),
@@ -1653,10 +1639,10 @@ mod disk {
 
     /// **A node export of a disk voice plays its file.** (Until PR 13 this
     /// also ran on `Net`, whose node export isolated and rebound a clone of
-    /// the node, the same calls a fork makes.)
+    /// the node, the same calls a fork made then.)
     ///
-    /// Mutation (run): `DiskVoice::rebind_offline` not handing the copy its
-    /// file → silent → fails.
+    /// Mutation (run): `DiskVoice::fork_copy` not handing the copy its file
+    /// → silent → fails.
     #[test]
     fn a_node_export_of_a_disk_voice_plays_its_file() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1666,13 +1652,9 @@ mod disk {
 
         let mut app = app_over(graph_on());
         let voice = {
-            let voice = node_of(VoiceSource::Disk(disk_voice(
-                &streamer,
-                timeline(120.0),
-                1.0,
-            )));
+            let voice = node_of(VoiceSource::Disk(disk_voice(&streamer, 1.0)));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(voice);
+            let (node, _) = graph.insert_node(voice);
             app.world_mut().spawn(node).id()
         };
         let planes = export(
@@ -1708,9 +1690,9 @@ mod disk {
 
         let mut app = app_over(graph_on());
         {
-            let voice = disk_voice(&streamer, timeline(120.0), 1.0);
+            let voice = disk_voice(&streamer, 1.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(voice);
+            let (node, _) = graph.insert_node(voice);
             graph.set_outputs_from(node);
         }
         let planes = export(&mut app, on(2.0, ExportSource::Master, &timeline(120.0))).planes();
@@ -1742,10 +1724,16 @@ mod disk {
     /// time: a render that popped its ring, or asked its butler to seek,
     /// would show as a jump. The export plays the clip from its first frame.
     ///
-    /// Mutation (run): the fork taking the live path (the offline branch
-    /// removed from `DiskVoice::process`) with `isolate` keeping the live
-    /// control cell → the fork's gate asks the live butler to seek to the
-    /// render's position, and the live frames jump → fails.
+    /// Mutation (run): the fork a plain clone of the live voice
+    /// (`DiskVoice::fork_copy` returning `self.clone()`) → the export reads
+    /// nothing from the file → fails on the export's frames. Not caught
+    /// here: a fork sharing the live control cell (`fork_copy` without
+    /// `detached`) — the offline read never asks that cell's butler to seek,
+    /// so the live side plays on untouched with or without it (run: every
+    /// disk test passes). Under `Net` the fork took the live path, and that
+    /// sharing made the live frames jump; a native fork has no live path to
+    /// take, so the live-side assertion pins an outcome the structure
+    /// guarantees rather than one a one-line mutation can break.
     #[test]
     fn live_disk_playback_is_untouched_while_its_voice_exports() {
         const BLOCK: usize = 256;
@@ -1761,7 +1749,7 @@ mod disk {
         let live_clock = timeline(120.0);
 
         let mut graph = graph_on();
-        let node = graph.insert(disk_voice(&streamer, live_clock.clone(), 0.0));
+        let (node, _) = graph.insert_node(disk_voice(&streamer, 0.0));
         graph.set_outputs_from(node);
         graph.render_frame(&mut [0.0, 0.0]);
         let mut live = graph.take_audio_side();
@@ -1775,6 +1763,12 @@ mod disk {
                 let mut after = 0;
                 while after < 8 {
                     let _ = streamer.step_until_settled(64);
+                    live.set_transport(tutti_graph::Transport::new(
+                        true,
+                        Bpm(120.0),
+                        live_clock.beat(),
+                        None,
+                    ));
                     live.render(BLOCK, BLOCK, &mut block);
                     live_clock.advance(BLOCK);
                     heard.extend_from_slice(&block[0]);
@@ -1850,9 +1844,9 @@ mod disk {
 
         let mut app = app_over(graph_on());
         {
-            let voice = disk_voice(&streamer, timeline(120.0), 0.0);
+            let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(voice);
+            let (node, _) = graph.insert_node(voice);
             graph.set_outputs_from(node);
         }
         let before = open_handles(&path);
@@ -1871,8 +1865,9 @@ mod disk {
     /// handle); the fork re-opens it by its path, cannot, and its render is
     /// `ExportError::ForkFailed` naming the voice's entity and `Name`.
     ///
-    /// Mutation (run): `LegacyFork::fork` not asking the copy for its
-    /// `render_fault` → the export succeeds, silent → fails.
+    /// Mutation (run): `DiskVoiceFork::fork` not handing the graph the
+    /// copy's health (`Forked::with_health` left off) → the export succeeds,
+    /// silent → fails.
     #[test]
     fn a_disk_voice_whose_file_cannot_be_read_fails_the_export_by_name() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1882,9 +1877,9 @@ mod disk {
 
         let mut app = app_over(graph_on());
         let clip = {
-            let voice = disk_voice(&streamer, timeline(120.0), 0.0);
+            let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(voice);
+            let (node, _) = graph.insert_node(voice);
             graph.set_outputs_from(node);
             app.world_mut().spawn((node, Name::new("Clip"))).id()
         };

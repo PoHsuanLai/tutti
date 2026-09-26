@@ -136,7 +136,7 @@ impl RtState {
     /// nothing else: no counters.
     ///
     /// What a disk voice severed for an offline render keeps
-    /// (`DiskVoice::isolate`): its controls as a snapshot, like every other
+    /// (`DiskVoice::fork_copy`): its controls as a snapshot, like every other
     /// forked unit's, in a cell no butler and no live voice shares.
     pub(crate) fn detached(&self) -> Self {
         let state = Self::new();

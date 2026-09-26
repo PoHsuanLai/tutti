@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn a_rate_change_re_derives_every_streams_ratio() {
         use crate::ports::Command;
-        use tutti_core::{Beat, SamplePosition, SrcRatio, Timeline, Transport};
+        use tutti_core::{Beat, SamplePosition, SrcRatio};
 
         let dir = tempfile::tempdir().unwrap();
         let (at_48, at_44) = (dir.path().join("48k.wav"), dir.path().join("44k.wav"));
@@ -459,10 +459,9 @@ mod tests {
         assert_eq!(ratio(0), SrcRatio::UNITY, "the open stream is re-rated");
         assert_eq!(early.sample_rate(), SampleRate(48_000.0));
 
-        let clock: Arc<dyn Timeline> = Arc::new(Transport::new(48_000.0));
         let voice = sampler
             .status()
-            .take_disk_voice(0, clock, Beat(0.0), None)
+            .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
         assert_eq!(voice.file_sample_rate(), SampleRate(48_000.0));
 

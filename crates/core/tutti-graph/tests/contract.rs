@@ -399,3 +399,91 @@ fn a_fan_in_tie_goes_by_source_order() {
         );
     }
 }
+
+/// Writes, per frame, the beat of the transport it reads from its `Env`
+/// (`Env::transport_at`): a node that follows the transport, for the
+/// harness entry points that hand it one.
+#[derive(Clone)]
+struct BeatEcho;
+
+impl Node for BeatEcho {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for o in cx.env.offsets() {
+            io.output(0)[o.index()] = cx.env.transport_at(o).beat().get() as f32;
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A rolling transport at beat 2, 120 BPM at 48 kHz: 24 000 frames a beat.
+fn rolling_at_two() -> tutti_graph::Transport {
+    tutti_graph::Transport::new(true, tutti_types::Bpm(120.0), tutti_types::Beat(2.0), None)
+}
+
+/// `drive_in`, `Direct::block_in` and `BlockRig::block_in` hand the node
+/// the transport they are given (and `drive_in` its changes), where
+/// `Direct::block` and `BlockRig::block` hand it a stopped one at beat 0.
+///
+/// Mutation (run): `drive_in` building its `Cx` over a stopped `Env` of its
+/// own → frame 0 reads 0, not 2 → fails. Mutation (run): `Direct::block_in`
+/// ignoring its `env` → fails. Mutation (run): `BlockRig::block_in` passing
+/// `Transport::default()` to the executor → fails.
+#[test]
+fn the_transport_harnesses_hand_the_node_their_transport() {
+    use tutti_graph::contract::{drive_in, prepared, BlockRig, Direct};
+    use tutti_graph::{Env, Offset, TransportChanges};
+    use tutti_types::{Beat, Bpm, SampleRate};
+    let rate = SampleRate(48_000.0);
+    let per_frame = 1.0 / 24_000.0;
+
+    let mut node = prepared(BeatEcho, rate, 4);
+
+    // A seek to beat 10 on frame 2, inside the block.
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(
+            Offset::new(2, Samples(4)).unwrap(),
+            tutti_graph::Transport::new(true, Bpm(120.0), Beat(10.0), None),
+        )
+        .unwrap();
+    let env = Env {
+        frame: Frame(0),
+        sample_rate: rate,
+        block_len: Samples(4),
+        transport: rolling_at_two(),
+        changes,
+    };
+    let out = drive_in(&mut node, &env, &[], &[], &[]).audio;
+    let want = [2.0, 2.0 + per_frame, 10.0, 10.0 + per_frame];
+    for (got, want) in out[0].iter().zip(want) {
+        assert_eq!(*got, want as f32);
+    }
+
+    let mut direct = Direct::new(BeatEcho, rate, 4);
+    let env = Env {
+        changes: TransportChanges::NONE,
+        ..env
+    };
+    direct.block_in(&env);
+    assert_eq!(direct.output(0)[0], 2.0);
+    direct.block();
+    assert_eq!(direct.output(0)[0], 0.0);
+    // `outputs_mut` is the buffer the node writes and `output` reads, so a
+    // frame the node leaves unwritten shows what it was filled with.
+    direct.outputs_mut()[0].fill(7.0);
+    assert_eq!(direct.output(0)[3], 7.0);
+    direct.block_in(&env);
+    assert_eq!(direct.output(0)[3], (2.0 + 3.0 * per_frame) as f32);
+
+    let (mut rig, ()) = BlockRig::new(Unforkable(BeatEcho), rate, 4);
+    rig.block_in(&rolling_at_two());
+    assert_eq!(rig.output(0)[0], 2.0);
+    assert_eq!(rig.output(0)[1], (2.0 + per_frame) as f32);
+    rig.block();
+    assert_eq!(rig.output(0)[0], 0.0);
+}

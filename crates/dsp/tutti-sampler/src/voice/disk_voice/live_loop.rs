@@ -4,7 +4,8 @@
 //! The butler writes a stream into a ring indexed by straight position — the
 //! loop's sequence, the file mirrored in reverse — and the voice seats on the
 //! clock as the memory tier does and reads its taps there by position
-//! (`live_read`). These tests drive a live `DiskVoice` from a hand-stepped
+//! (`live_read`), each block's transport from its `Env`. These tests drive a
+//! live `DiskVoice` from a hand-stepped
 //! butler (`DiskStreamer::manual`, one cycle per block, as the butler thread
 //! stands to the audio callback) and compare it with a placed `MemorySource`
 //! on its own copy of the clock, given the same edits at the same blocks.
@@ -22,12 +23,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, PlaybackRate, SamplePosition, SampleRate, Timeline,
-};
+use tutti_core::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
+use tutti_graph::{Node, Offset, Prepare, TransportChanges};
 
 use super::DiskVoice;
-use crate::test_transport::MockTransport;
+use crate::testing::{block, MockTransport};
 use crate::{Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource};
 
 const SR: f64 = 48_000.0;
@@ -131,7 +131,6 @@ struct Live {
     streamer: DiskStreamer,
     voice: DiskVoice,
     clock: Arc<MockTransport>,
-    output: BufferVec,
 }
 
 impl Live {
@@ -180,27 +179,31 @@ impl Live {
         let clock = MockTransport::rolling(Beat::new(setup.beat), Bpm::new(120.0));
         let mut voice = streamer
             .status()
-            .take_disk_voice(0, clock.clone(), Beat(0.0), None)
+            .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
-        voice.set_sample_rate(SampleRate(SR));
+        voice.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
         voice.set_speed(PlaybackRate::new(setup.speed));
         Self {
             streamer,
             voice,
             clock,
-            output: BufferVec::new(2),
         }
     }
 
     /// One block of the voice, channel 0; then the clock moves and the
     /// butler runs a cycle, as the thread would before the next callback.
     fn block(&mut self) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        self.voice
-            .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
-        let out = self.output.buffer_ref();
-        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        let left = block(&mut self.voice, &self.clock, SR, BLOCK).swap_remove(0);
         self.clock.advance(BLOCK as i64, SR);
+        let _ = self.streamer.step_once();
+        left
+    }
+
+    /// [`block`](Self::block), the transport sought to `beat` on frame
+    /// `at` of it (a change in the block's `Env`); the clock then stands
+    /// where the seek leaves it at the block's end.
+    fn block_seeking(&mut self, at: usize, beat: f64) -> Vec<f32> {
+        let left = seeking(&mut self.voice, &self.clock, at, beat);
         let _ = self.streamer.step_once();
         left
     }
@@ -230,36 +233,52 @@ impl Live {
     }
 }
 
+/// One block of `node` under `clock`, sought to `beat` on frame `at` (a
+/// transport change in the block's `Env`), channel 0; the clock then stands
+/// where the seek leaves it at the block's end.
+fn seeking(node: &mut dyn Node, clock: &MockTransport, at: usize, beat: f64) -> Vec<f32> {
+    let mut env = clock.env(BLOCK, SR);
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(
+            Offset::new(at, Samples(BLOCK)).expect("inside the block"),
+            MockTransport::rolling(Beat::new(beat), clock.tempo()).transport(),
+        )
+        .expect("one change");
+    env.changes = changes;
+    let left = tutti_graph::contract::drive_in(node, &env, &[], &[], &[])
+        .audio
+        .swap_remove(0);
+    clock.set_beat(Beat::new(beat));
+    clock.advance((BLOCK - at) as i64, SR);
+    left
+}
+
 /// A placed memory voice at `speed` from beat `from`, looped by `loop_`,
 /// on its own clock, rendered block by block like a [`Live`] one.
 struct Memory {
     source: MemorySource,
     clock: Arc<MockTransport>,
-    output: BufferVec,
 }
 
 impl Memory {
     fn new(wave: Arc<tutti_io::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
         let clock = MockTransport::rolling(Beat::new(from), Bpm::new(120.0));
-        let mut source = MemorySource::with_transport(wave, clock.clone(), Beat(0.0), None);
+        let mut source = MemorySource::placed(wave, Beat(0.0), None);
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop_setting(loop_);
-        source.set_sample_rate(SampleRate(SR));
-        Self {
-            source,
-            clock,
-            output: BufferVec::new(2),
-        }
+        source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+        Self { source, clock }
     }
 
     fn block(&mut self) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        self.source
-            .process(BLOCK, &input.buffer_ref(), &mut self.output.buffer_mut());
-        let out = self.output.buffer_ref();
-        let left = (0..BLOCK).map(|i| out.at_f32(0, i)).collect();
+        let left = block(&mut self.source, &self.clock, SR, BLOCK).swap_remove(0);
         self.clock.advance(BLOCK as i64, SR);
         left
+    }
+
+    fn block_seeking(&mut self, at: usize, beat: f64) -> Vec<f32> {
+        seeking(&mut self.source, &self.clock, at, beat)
     }
 
     fn render(&mut self, blocks: usize) -> Vec<f32> {
@@ -747,10 +766,10 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
 
 /// **An export fork taken after a loop edit renders the loop the edit ends
 /// on, and agrees with the live voice past its switch**: a fork of the live
-/// voice (isolated, rebound onto a render clock from beat 0, as a graph fork
-/// does) plays the edited loop from the start of its render — the stream's
-/// record holds the loop the butler runs — and, frame for frame, what the
-/// live voice plays once its switch has landed and faded.
+/// voice (`fork_copy`, as a graph fork takes it, rendered on its own
+/// transport from beat 0) plays the edited loop from the start of its render
+/// — the stream's record holds the loop the butler runs — and, frame for
+/// frame, what the live voice plays once its switch has landed and faded.
 ///
 /// Mutation (run): the stream's record not told the new loop (`set_loop`
 /// dropped from `handle_set_stream_loop`) → the fork plays the old loop →
@@ -768,18 +787,11 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     got.extend(live.render(150));
 
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    let render = tutti_core::transport::OfflineTransport::new(clock.clone());
-    let mut fork = live.voice.clone();
-    fork.isolate();
-    fork.rebind_offline(&render);
-    fork.reset();
-    fork.set_sample_rate(SampleRate(SR));
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
+    let mut fork = live.voice.fork_copy();
+    fork.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let mut forked = Vec::new();
     for _ in 0..81 + 150 {
-        fork.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        forked.extend((0..BLOCK).map(|i| output.buffer_ref().at_f32(0, i)));
+        forked.extend(block(&mut fork, &clock, SR, BLOCK).swap_remove(0));
         clock.advance(BLOCK as i64, SR);
     }
     let want = Memory::new(ramp_wave(SR as u32, LEN), b, 1.0, 0.0).render(81 + 150);
@@ -927,12 +939,8 @@ fn a_starved_reader_ramps_out_and_back_in() {
     let mut got = live.render(20);
     // Far outside the window, and the butler stalls for 50 blocks.
     live.clock.set_beat(Beat::new(beats(1_450_000.0)));
-    let input = BufferVec::new(0);
     for _ in 0..50 {
-        live.voice
-            .process(BLOCK, &input.buffer_ref(), &mut live.output.buffer_mut());
-        let out = live.output.buffer_ref();
-        got.extend((0..BLOCK).map(|i| out.at_f32(0, i)));
+        got.extend(block(&mut live.voice, &live.clock, SR, BLOCK).swap_remove(0));
         live.clock.advance(BLOCK as i64, SR);
     }
     assert!(
@@ -986,49 +994,57 @@ fn a_seek_does_not_move_a_placed_voices_window() {
     assert_same_outside("across a relayed seek", &got, &want, &[]);
 }
 
-/// **A seek to the beat the clock stands on is a jump** (doc 013's follow-up
-/// for #48, after smart types 2): the seat re-seats on the clock's new
-/// `segment_generation`, and the live read keys its jump on it too, not only
-/// on a position off the continuation — here the position is exactly the
-/// continuation, so only the generation tells. The reader crossfades, and
-/// since both sides are the same frames the output is the memory tier's:
-/// bit for bit outside the fade, within an ulp's rounding of the blend inside
-/// it, nothing unread.
+/// **A seek inside a block is a jump on its frame** (doc 013 §6): the
+/// block's `Env` carries it as a transport change on frame 32, the voice's
+/// clock reports a jump there (a new generation), and the live read
+/// crossfades from its continuation on that frame — not at the block's
+/// start, and not at the next block. Outside the fade the output is the
+/// memory tier's (which cuts on the same frame), bit for bit, nothing
+/// unread.
 ///
-/// Mutation (run): the live read ignoring the segment (`moved` always
-/// false) → no fade starts at the seek → fails.
+/// (This replaced `a_seek_to_where_the_clock_stands_is_a_jump`. A block's
+/// `Env` says where the playhead is, not how it got there, so a seek to
+/// exactly the frame the playhead would have reached anyway is the same
+/// block as no seek: nothing buffered is stale after it, and the clock
+/// reads it as no jump. What stays a jump — a seek anywhere else, inside a
+/// block — is what this pins.)
+///
+/// Mutation (run): `DiskVoice::live_render` reading each piece as one run
+/// (the piece's first run's generation, one `LiveRead::render` call for the
+/// whole piece) → the read sees the seek only as positions that change mid
+/// call, with no jump → no fade at the seek → fails. Mutation (run): the
+/// live read never finding a jump (`LiveRead::render`'s jump filter always
+/// false) → fails the same way.
 #[test]
-fn a_seek_to_where_the_clock_stands_is_a_jump() {
+fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, LEN);
     let mut live = Live::new(&path, LoopSetting::Off, 1.0);
     let mut memory = Memory::new(ramp_wave(SR as u32, LEN), LoopSetting::Off, 1.0, 0.0);
-    let mut got = live.render(10);
-    let mut want = memory.render(10);
+    let mut got = live.render(100);
+    let mut want = memory.render(100);
     assert!(!live.voice.inner.read.fading(), "a fade before any seek");
-    let at = got.len();
-    live.clock.seek(Timeline::beat(&*live.clock));
-    memory.clock.seek(Timeline::beat(&*memory.clock));
-    got.extend(live.block());
-    want.extend(memory.block());
+    // Back 1 000 frames, inside what the ring keeps behind the reader.
+    let target = beats((got.len() + 32) as f64 - 1_000.0);
+    let at = got.len() + 32;
+    got.extend(live.block_seeking(32, target));
+    want.extend(memory.block_seeking(32, target));
     assert!(
         live.voice.inner.read.fading(),
-        "read on through a seek to where it stood"
+        "read on through a seek inside the block"
     );
+    assert_eq!(
+        got[at - 1].to_bits(),
+        want[at - 1].to_bits(),
+        "the frame before the seek is the memory tier's"
+    );
+    assert_ne!(got[at], want[at], "the seek's frame is the fade's first");
     got.extend(live.render(30));
     want.extend(memory.render(30));
     assert_eq!(live.underruns(), 0, "a frame went unread");
     let fade = (at, at + FADE + BLOCK);
-    assert_same_outside("across a seek in place", &got, &want, &[fade]);
-    for k in fade.0..fade.1 {
-        assert!(
-            (got[k] - want[k]).abs() <= 1e-6,
-            "frame {k}: live {} memory {}",
-            got[k],
-            want[k]
-        );
-    }
+    assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
 }
 
 /// **A paused source holds no refill back** (the review of `PosRing`, S2).
@@ -1071,19 +1087,18 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
         .status()
         .take_free_running(0)
         .expect("the link is installed");
-    source.set_sample_rate(SampleRate(SR));
+    source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
     let ring_frames = source.read.ring().frames() as u64;
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
+    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
     for _ in 0..4 {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
     }
     assert_eq!(state.take_underruns(), 0, "the source plays");
     // Its last block read 192..256: it claimed from 189.
     let claimed_from = 3 * BLOCK as u64 - 3;
     source.stop();
-    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    block(&mut source, &stopped, SR, BLOCK);
     // The window's new start (the target, less the history the ring keeps)
     // takes the slot of the first position the last block claimed.
     let target = claimed_from + ring_frames + 4;
@@ -1095,14 +1110,14 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
         })
         .expect("the butler is alive");
     for _ in 0..50 {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        block(&mut source, &stopped, SR, BLOCK);
         let _ = streamer.step_once();
     }
     source.play();
-    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    let output = block(&mut source, &stopped, SR, BLOCK);
     assert_eq!(state.take_underruns(), 0, "the resumed block was not there");
     assert_eq!(
-        output.buffer_ref().at_f32(0, 0),
+        output[0][0],
         value(target as usize),
         "resumed at the target"
     );
@@ -1119,11 +1134,7 @@ fn a_stream_serves_one_live_voice() {
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 10_000);
     let live = Live::new(&path, LoopSetting::Off, 1.0);
-    let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    let second = live
-        .streamer
-        .status()
-        .take_disk_voice(0, clock, Beat(0.0), None);
+    let second = live.streamer.status().take_disk_voice(0, Beat(0.0), None);
     assert_eq!(
         second.err(),
         Some(crate::TakeVoiceError::ReaderTaken),

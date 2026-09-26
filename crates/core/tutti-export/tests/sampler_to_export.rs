@@ -11,10 +11,12 @@
 //!
 //! A placed voice derives its read position from the playhead. Live, that
 //! playhead is the audio callback; here it is `render_to_file` advancing an
-//! [`OfflineTimeline`] once per block. One `OfflineTimeline` serves as both the
-//! voice's `Timeline` and the export's `RenderClock`, so this test also pins
-//! that the two agree — a render whose clock advanced at a different rate from
-//! the voice's would produce a file that is silent, truncated, or transposed.
+//! [`OfflineTimeline`] once per block. The voice reads that clock from its
+//! block's `Env` (the sampler's nodes are native, doc 013 items 8 and 9), so
+//! this test also pins that what the export's `RenderClock` hands the graph
+//! is what the voice plays — a render whose clock advanced at a different rate
+//! from the voice's would produce a file that is silent, truncated, or
+//! transposed.
 //!
 //! # The assertion is a measured frequency
 //!
@@ -26,20 +28,22 @@
 //! wrong clock rate) leaves the output emphatically non-zero, so `!= 0.0` cannot
 //! see any of them.
 //!
-//! # Prepared at 1024 frames; rendered 64 at a time
+//! # Prepared at 1024 frames, read frame by frame
 //!
-//! The voice runs in the native graph as a `tutti_graph::Legacy`, which calls
-//! it in 64-frame chunks from each block's start, and it reads the timeline
-//! **out of band** — `beat()` on its `Arc`, on every call. The graph is
-//! prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK` (1024), and the
-//! render clock has to move between the voice's calls:
-//! `RenderClock::render_graph` renders a graph holding a `Legacy` unit
-//! chunk-major, 64 frames across every node (doc 013's `Legacy`
-//! compatibility mode). Rendered in whole 1024-frame blocks instead, every
-//! chunk of a block reads the block's first beat and the voice replays its
-//! first 64 frames sixteen times: measured, the dry voice exports at ~768 Hz,
-//! not 440. (Until chunk-major rendering landed, this file prepared at a
-//! 64-frame `MaxBlock` to dodge it.)
+//! The graph is prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`
+//! (1024), and the voice reads the transport per frame from each block's
+//! `Env`: it seats its read at the playhead on the first frame of each
+//! 64-frame piece it renders and steps from there. Until the sampler's nodes
+//! ported, the voice ran as a `tutti_graph::Legacy` polling the timeline out
+//! of band, and `render_graph` had to render a graph holding one chunk-major,
+//! 64 frames across every node, or every chunk of a 1024-frame block read the
+//! block's first beat (measured, the dry voice exported at ~768 Hz, not
+//! 440). A native graph renders whole blocks.
+//!
+//! Mutation (run): `interp::place` seating each piece at the block's first
+//! beat (`run.beat_at(e)` → `run.beat_at(0)`, the `Legacy` failure moved
+//! into the node) → the voice replays each block's first piece → every case
+//! fails.
 //!
 //! Gated on `wav`, because the assertions decode the exported file through
 //! `hound` — which this crate only links when that feature is on. `wav` is in
@@ -91,13 +95,12 @@ fn tone(frames: usize) -> Arc<Wave> {
 /// A graph whose output is one placed sampler voice, plus the clock driving it.
 ///
 /// The returned `OfflineTimeline` is handed to `render_to_file` as its
-/// `RenderClock`, so the voice and the render share one clock by construction
-/// rather than by two configs that happen to match.
+/// `RenderClock`, which hands each block's transport to the graph, so the
+/// voice plays on the render's clock by construction: it holds none of its
+/// own.
 ///
 /// Prepared at `RenderGraph::prepare`'s `GRAPH_MAX_BLOCK`, what an export
-/// renders at: see the module docs. Mutation (run): `render_graph` rendering
-/// whole blocks with a `Legacy` unit present → every case fails, the dry
-/// voice measuring ~768 Hz.
+/// renders at: see the module docs.
 fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
@@ -111,12 +114,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     // and read as an attenuation bug rather than an exhausted source.
     let wave = tone((SR * DUR_S) as usize * 4);
 
-    let source = MemorySource::with_transport(
-        wave,
-        transport.clone() as Arc<dyn tutti_core::Timeline>,
-        Beat::new(0.0),
-        None,
-    );
+    let source = MemorySource::placed(wave, Beat::new(0.0), None);
 
     let play = Playback {
         stretch: StretchFactor::new(stretch),
@@ -124,7 +122,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
         ..Default::default()
     };
 
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = VoicePool::new();
     // `insert_voice` directly rather than through the handle: this is the
     // control thread, there is no audio thread to hand a command to, and going
     // through the channel would need a pump step that proves nothing here.
@@ -138,7 +136,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     );
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(pool));
+    let (id, _handle) = g.add_with_controls(pool);
     g.pipe_output(id);
     let (editor, executor) = g
         .build(RenderGraph::prepare(SampleRate(SR)))

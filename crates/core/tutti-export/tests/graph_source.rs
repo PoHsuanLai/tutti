@@ -744,7 +744,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     );
 }
 
-// ---- a clip reader: a `Legacy` unit that polls the render clock ----------
+// ---- a clip reader: a native node that reads the render's transport ------
 
 /// A 440 Hz sine at the render's rate, one second long: a plain wave table,
 /// so a voice reading it at unit rate reproduces it sample for sample.
@@ -771,17 +771,13 @@ fn timeline() -> Arc<OfflineTimeline> {
     }))
 }
 
-/// A voice placed at beat 0 on `clock`, pitched by `cents`, in a
-/// `VoicePool` (the unit a clip track renders).
-fn placed_pool(clock: &Arc<OfflineTimeline>, cents: f32) -> tutti_sampler::VoicePool {
+/// A voice placed at beat 0, pitched by `cents`, in a `VoicePool` (the node a
+/// clip track renders). It reads whatever transport its blocks' `Env` carry:
+/// here, the render clock's.
+fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let source = MemorySource::with_transport(
-        tone(),
-        Arc::clone(clock) as Arc<dyn tutti_core::Timeline>,
-        Beat(0.0),
-        None,
-    );
-    let (mut pool, _handle) = VoicePool::new();
+    let source = MemorySource::placed(tone(), Beat(0.0), None);
+    let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -856,15 +852,15 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// render clock ends the render's frames on; and (Linux/glibc) the pitched
 /// one is the `Net`'s render.
 ///
-/// The voice polls the render clock (its `Arc<dyn Timeline>`) on every
-/// `AudioUnit::process` call, which `Legacy` makes per 64-frame chunk. The
-/// export asks for 1024-frame blocks, so unless the render moves the clock
-/// between chunks every chunk of a block reads the block's first beat, and
-/// the voice replays its first 64 frames sixteen times (a dry 440 Hz voice
-/// measured 768 Hz). `RenderClock::render_graph` therefore renders a graph
-/// holding a `Legacy` unit chunk-major, 64 frames across every node with
-/// the clock advanced between (doc 013's `Legacy` compatibility mode), as
-/// a `Net` was rendered.
+/// The voice reads the render clock's transport from each block's `Env`,
+/// per frame: it seats its read at the playhead on the first frame of each
+/// 64-frame piece it renders. The export asks for 1024-frame blocks. Under
+/// `Net`, and then as a `Legacy` unit, the voice polled the clock out of band
+/// once per 64-frame call, and a render that did not move the clock between
+/// chunks had every chunk of a block read the block's first beat, replaying
+/// the first 64 frames sixteen times (a dry 440 Hz voice measured 768 Hz);
+/// `render_graph` rendered such a graph chunk-major. A native graph renders
+/// whole blocks, and the voice finds each piece's beat in its `Env`.
 ///
 /// Why a digest and not a tolerance for the pitched voice: the vocoder turns
 /// an ulp of beat into far more. Measured with the clock advanced a block at
@@ -876,17 +872,10 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
 /// Mutations (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the dry render is not the tone, and the pitched digest moves;
 /// `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave → the
-/// pitched voice is not a fifth up, on every target.
-///
-/// Not caught here: `render_graph` rendering whole blocks with a `Legacy`
-/// unit present (`has_legacy` ignored). A voice placed at beat 0 enters on
-/// frame 0 and then reads its own cursor, so with these fixtures a
-/// whole-block render is the same bits (measured: both voices, both
-/// digests). Where the polled beat matters, at a clip's entry mid-render,
-/// tutti-sampler's `frame_exact_entry.rs` catches it
-/// (`a_clip_enters_on_its_frame_offline_through_the_graph`). This test's
-/// note used to claim the backends parted at frame 64; that was measured
-/// before the sampler's own cursor took over, and no longer holds.
+/// pitched voice is not a fifth up, on every target; `interp::place`
+/// seating each piece at the block's first beat (`run.beat_at(e)` →
+/// `run.beat_at(0)`, the chunk replay above moved into the node) → the dry
+/// render is not the tone.
 #[test]
 fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
@@ -896,7 +885,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     ] {
         let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let k = g.add_unit(Box::new(placed_pool(&clock, cents)));
+        let (k, _handle) = g.add_with_controls(placed_pool(cents));
         g.pipe_output(k);
         let b = render_under(built(g), &clock, ChannelLayout::STEREO);
         assert_audible(&b);
@@ -927,35 +916,40 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     }
 }
 
-/// The same through a **fork**: a placed `MemorySource` in a live graph,
-/// forked offline onto the render's timeline (its `rebind_offline`
-/// re-points it), plays the tone from the render's start, to the bit, as a
-/// voice on that timeline from the start does. (Until doc 013 PR 15 it was
-/// compared with a `Net` rendering the source on that timeline.)
+/// The same through a **fork**: a placed `MemorySource` in a live graph that
+/// has played on another transport (at beat 0.25), forked offline, plays the
+/// tone from the render's start, to the bit, as a voice on the render's
+/// transport from the start does. The fork shares nothing with the live node
+/// and holds no clock: it reads the render's transport from its `Env`.
+/// (Under `Net` its `rebind_offline` re-pointed it at the render's timeline;
+/// until doc 013 PR 15 it was compared with a `Net` rendering the source on
+/// that timeline.)
 ///
 /// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
-/// → the render is not the tone. (Whole-block rendering is not caught
-/// here, for the reason the test above gives.)
+/// → the render is not the tone. Mutation (run): the `MemorySource`'s
+/// `ParamNode::fork_fresh` leaving the fork unplaced (`fork.placed = false`)
+/// → it ignores the render's transport → silent → fails. (Not caught: the
+/// fork not rewinding — a placed read derives every position from the
+/// transport, so it has no cursor to carry.)
 #[test]
 fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     use tutti_sampler::MemorySource;
-    let placed = |clock: Arc<OfflineTimeline>| {
-        MemorySource::with_transport(
-            tone(),
-            clock as Arc<dyn tutti_core::Timeline>,
-            Beat(0.0),
-            None,
-        )
-    };
 
-    // Live, the voice follows another clock, somewhere else; the fork
-    // re-points it at the render's.
-    let live_clock = timeline();
-    live_clock.seek_to(Beat(3.0));
+    // Live, the voice plays on another transport, somewhere else.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let k = g.add_unit(Box::new(placed(live_clock)));
+    let (k, _params) = g.add_with_controls(MemorySource::placed(tone(), Beat(0.0), None));
     g.pipe_output(k);
-    let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
+    exec.apply_pending();
+    let elsewhere = tutti_graph::Transport::new(true, Bpm(120.0), Beat(0.25), None);
+    let mut sink = vec![0.0f32; 256];
+    for _ in 0..8 {
+        exec.process(256, &elsewhere, &[], &mut [&mut sink[..]]);
+    }
+    assert!(
+        sink.iter().any(|&s| s != 0.0),
+        "sanity: the live reader played before the fork"
+    );
     let graph_clock = timeline();
     let rebind: OfflineTransport = OfflineTransport::new(graph_clock.clone());
     let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)

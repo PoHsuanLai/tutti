@@ -1,27 +1,29 @@
 //! A disk voice forked for an offline render plays its file itself.
 //!
-//! A fork (`isolate`, then `rebind_offline` onto the render's clock, then
-//! `reset`, the order a graph fork and `clone_isolated` both use) cannot read
-//! the butler's ring: the live audio thread is its one consumer. So it reads
-//! the file the butler's record names, on demand, as `offline_read` does.
-//! These tests pin what it plays: the file's own samples from the frame its
-//! beat falls on, at another render rate, looped as the stream is looped when
-//! the fork is taken, and nothing once its stream is gone.
+//! A fork (the node's fork source, as a graph fork takes it:
+//! `ForkMode::Offline`) cannot read the butler's ring: the live audio thread
+//! is its one consumer. So it reads the file the butler's record names, on
+//! demand, as `offline_read` does, on the render's transport from each
+//! block's `Env`. These tests pin what it plays: the file's own samples from
+//! the frame its beat falls on, at another render rate, looped as the stream
+//! is looped when the fork is taken, and nothing once its stream is gone.
 //!
-//! Each render moves its clock per 64-frame chunk, after the chunk, as the
-//! engine's chunk-major `Legacy` renders do (doc 013's per-chunk timeline).
+//! Each render hands its node blocks of `BLOCK` frames on a render clock that
+//! counts frames (as an export's does), moved after each.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, SamplePosition, SampleRate, Timeline};
+use tutti_core::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
+use tutti_graph::{contract, Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges};
 use tutti_sampler::{
     Command, DiskStreamer, DiskVoice, LoopSetting, Playback, Voice, VoiceNode, VoiceSource,
 };
 
 const SR: f64 = 48_000.0;
-const CHUNK: usize = 64;
+const BLOCK: usize = 64;
 
 /// Frame `i` of every test file: distinct per frame, and exactly what an f32
 /// WAV hands back.
@@ -68,12 +70,11 @@ fn streamer_with(path: &Path, config: tutti_sampler::DiskStreamerConfig) -> Disk
     streamer
 }
 
-/// The live voice on channel 0, placed at `beat` on a clock nothing moves.
+/// The live voice on channel 0, placed at `beat`.
 fn live_voice(streamer: &DiskStreamer, beat: f64) -> DiskVoice {
-    let live: Arc<dyn Timeline> = Arc::new(OfflineTimeline::new(&config(0.0)));
     streamer
         .status()
-        .take_disk_voice(0, live, Beat(beat), None)
+        .take_disk_voice(0, Beat(beat), None)
         .expect("the link is installed")
 }
 
@@ -86,28 +87,89 @@ fn config(start: f64) -> OfflineTimelineConfig {
     }
 }
 
-/// Fork `unit` for a render at `rate` on `clock`, as a graph fork does.
-fn fork<U: AudioUnit + Clone>(unit: &U, clock: &OfflineTransport, rate: f64) -> U {
-    let mut copy = unit.clone();
-    copy.isolate();
-    copy.rebind_offline(clock);
-    copy.reset();
-    copy.set_sample_rate(SampleRate(rate));
-    copy
+/// A render's transport: a frame clock at 120 BPM (counted, as an export's
+/// render clock), from beat 0, looping at `looping`; moved as it renders.
+struct Clock {
+    clock: Cell<FrameClock>,
+    frame: Cell<u64>,
+    looping: Option<LoopRange>,
 }
 
-/// Render `frames` of `unit`'s two channels, the clock moved after each chunk.
-fn render(unit: &mut dyn AudioUnit, clock: &OfflineTimeline, frames: usize) -> [Vec<f32>; 2] {
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
+impl Clock {
+    /// The next block of `len` frames, where the clock stands.
+    fn env(&self, len: usize) -> Env {
+        let c = self.clock.get();
+        Env {
+            frame: Frame(self.frame.get()),
+            sample_rate: c.sample_rate(),
+            block_len: Samples(len),
+            transport: tutti_graph::Transport::counted(
+                true,
+                c.tempo(),
+                c.origin(),
+                self.looping.map(|l| tutti_graph::LoopRange {
+                    start: l.start(),
+                    end: l.end(),
+                }),
+            ),
+            changes: TransportChanges::NONE,
+        }
+    }
+
+    fn advance(&self, n: usize) {
+        let mut c = self.clock.get();
+        c.advance(Samples(n), self.looping);
+        self.clock.set(c);
+        self.frame.set(self.frame.get() + n as u64);
+    }
+}
+
+/// A fork of a node, as the graph's fork source hands it over: the unit and
+/// its health probe.
+struct Fork {
+    node: Box<dyn Node>,
+    health: Option<Arc<dyn ForkHealth>>,
+}
+
+impl Fork {
+    /// The first failure the fork latched, if any.
+    fn fault(&self) -> Option<String> {
+        self.health
+            .as_ref()
+            .and_then(|h| h.fault())
+            .map(|(_, cause)| cause.to_string())
+    }
+}
+
+/// Fork `node` for an offline render (`ForkMode::Offline`, the export's), not
+/// yet prepared.
+fn fork_unprepared(node: impl IntoNode, ctx: &OfflineTransport) -> Fork {
+    let source = node.into_parts().fork.expect("forkable");
+    let forked = source.fork(ForkMode::Offline(ctx)).expect("forks");
+    Fork {
+        node: forked.node,
+        health: forked.health,
+    }
+}
+
+/// Fork `voice` for a render at `rate`, as a graph fork does: forked, then
+/// prepared.
+fn fork(voice: &DiskVoice, ctx: &OfflineTransport, rate: f64) -> Fork {
+    let mut f = fork_unprepared(voice.clone(), ctx);
+    f.node
+        .prepare(&Prepare::new(SampleRate(rate), Samples(BLOCK)));
+    f
+}
+
+/// Render `frames` of `node`'s two channels, the clock moved after each block.
+fn render(node: &mut dyn Node, clock: &Clock, frames: usize) -> [Vec<f32>; 2] {
     let mut planes = [Vec::new(), Vec::new()];
     let mut done = 0;
     while done < frames {
-        let n = CHUNK.min(frames - done);
-        unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-        let out = output.buffer_ref();
-        for (c, plane) in planes.iter_mut().enumerate() {
-            plane.extend((0..n).map(|i| out.at_f32(c, i)));
+        let n = BLOCK.min(frames - done);
+        let out = contract::drive_in(node, &clock.env(n), &[], &[]);
+        for (plane, c) in planes.iter_mut().zip(out) {
+            plane.extend(c);
         }
         clock.advance(n);
         done += n;
@@ -115,26 +177,35 @@ fn render(unit: &mut dyn AudioUnit, clock: &OfflineTimeline, frames: usize) -> [
     planes
 }
 
-/// A render's clock at the export rate, and the same clock as a rebind
-/// context.
-fn clock_at(rate: f64) -> (Arc<OfflineTimeline>, OfflineTransport) {
-    let clock = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+/// A render clock at `rate`, and the offline context a fork is asked for
+/// (the export's `ForkMode::Offline`; a native node reads its render's
+/// transport from its `Env`, not from this).
+fn clock_at(rate: f64) -> (Clock, OfflineTransport) {
+    looping_clock_at(rate, None)
+}
+
+fn looping_clock_at(rate: f64, looping: Option<LoopRange>) -> (Clock, OfflineTransport) {
+    let clock = Clock {
+        clock: Cell::new(FrameClock::new(Beat(0.0), Bpm(120.0), SampleRate(rate))),
+        frame: Cell::new(0),
+        looping,
+    };
+    let ctx = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(rate),
         ..config(0.0)
-    }));
-    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
+    })));
     (clock, ctx)
 }
 
 /// **A fork plays the file's own samples, from the frame its beat falls
 /// on**: silent before beat 2 (frame 48 000 at 120 BPM), then frame `k` of
 /// the file on render frame `48 000 + k`, exactly, on both channels. As a bare
-/// voice and inside a `VoiceNode` (which reads it a frame at a time, through
-/// `tick`, with the clock moving only between chunks).
+/// voice and inside a `VoiceNode`.
 ///
-/// Mutation (run): the seat not stepping (`frames + 1` → `frames`) → every
-/// chunk repeats one frame → fails. Mutation (run): `rebind_offline` not
-/// handing the copy its file → silence → fails. Mutation (run): both
+/// Mutation (run): the placement not stepping (`step.advance(Samples(k))` →
+/// `Samples(0)` in `place`) → every block repeats one frame → fails.
+/// Mutation (run): `fork_copy` not handing the copy its file → silence →
+/// fails. Mutation (run): both
 /// whole-frame rules removed (`snap_to_whole_frame` and `tap_indices`'s
 /// carry of a fraction that rounds to 1.0) → file frame 129 reads an ulp off
 /// → fails. Either rule alone lands this case: the gate's origin comes out a
@@ -155,22 +226,17 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
         2usize,
     );
 
-    for (what, mut unit) in [
-        (
-            "a bare voice",
-            Box::new(voice.clone()) as Box<dyn AudioUnit>,
-        ),
-        ("a voice node", Box::new(node.clone())),
+    let (_, ctx) = clock_at(SR);
+    let mut node_fork = fork_unprepared(node, &ctx);
+    node_fork
+        .node
+        .prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
+    for (what, mut copy) in [
+        ("a bare voice", fork(&voice, &ctx, SR)),
+        ("a voice node", node_fork),
     ] {
-        let (clock, ctx) = clock_at(SR);
-        let mut copy: Box<dyn AudioUnit> = {
-            unit.isolate();
-            unit.rebind_offline(&ctx);
-            unit.reset();
-            unit.set_sample_rate(SampleRate(SR));
-            unit
-        };
-        let [l, r] = render(copy.as_mut(), &clock, 48_000 + 12_000);
+        let (clock, _) = clock_at(SR);
+        let [l, r] = render(&mut *copy.node, &clock, 48_000 + 12_000);
         assert!(
             l[..48_000].iter().all(|&s| s == 0.0),
             "{what}: sounded before beat 2"
@@ -188,9 +254,10 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
 /// ramp, which the cubic kernel reproduces between frames up to rounding.
 ///
 /// Mutation (run): the read rate without the conversion
-/// (`SrcRatio::for_rates` → `SrcRatio::UNITY` in `offline_read_rate`) → one
-/// file frame per render frame → fails. Mutation (run): the gate measuring
-/// by the render's rate instead of the file's → the clip enters late → fails.
+/// (`SrcRatio::for_rates` → `SrcRatio::UNITY` in `DiskVoice::step_rate`) →
+/// one file frame per render frame → fails. Mutation (run): the gate
+/// measuring by the render's rate instead of the file's (`DiskVoice::gate`'s
+/// `source_rate`) → the clip enters late → fails.
 #[test]
 fn a_fork_at_another_rate_resamples() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -200,7 +267,7 @@ fn a_fork_at_another_rate_resamples() {
     let voice = live_voice(&streamer, 1.0);
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, 24_000 + 48_000 + 1_000);
+    let [l, _] = render(&mut *copy.node, &clock, 24_000 + 48_000 + 1_000);
 
     assert!(
         l[..24_000].iter().all(|&s| s == 0.0),
@@ -234,7 +301,7 @@ fn a_fork_at_another_rate_resamples() {
 /// every read is a frame of that sequence exactly.
 ///
 /// Mutation (run): the fork reading its loop when the voice was built rather
-/// than when it is rebound (`StreamFile::loop_` forced `Off`) → plays
+/// than when it is forked (`StreamFile::loop_` forced `Off`) → plays
 /// straight on past 3000 → fails. Mutation (run): the crossfade blend dropped
 /// → the hard-loop values in the fade → fails. Mutation (run): the lead-in
 /// `start + k` (the old head replay) → fails.
@@ -262,7 +329,7 @@ fn a_fork_loops_as_the_stream_is_looped_when_it_is_taken() {
 
         let (clock, ctx) = clock_at(SR);
         let mut copy = fork(&voice, &ctx, SR);
-        let [l, _] = render(&mut copy, &clock, 9_000);
+        let [l, _] = render(&mut *copy.node, &clock, 9_000);
         for (k, &got) in l.iter().enumerate() {
             let at = |p: usize| {
                 if p < 3_000 {
@@ -357,7 +424,7 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
 
         let (clock, ctx) = clock_at(SR);
         let mut copy = fork(&voice, &ctx, SR);
-        let [l, _] = render(&mut copy, &clock, 3_025 + 3 * 2_025);
+        let [l, _] = render(&mut *copy.node, &clock, 3_025 + 3 * 2_025);
         let at_loop = format!("[{start}, {end})");
         let (step, at) = l
             .windows(2)
@@ -399,7 +466,7 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
     voice.set_direction(tutti_sampler::Direction::Reverse);
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, LEN + 2_000);
+    let [l, _] = render(&mut *copy.node, &clock, LEN + 2_000);
     for (k, &got) in l[..LEN].iter().enumerate() {
         assert_eq!(got, value(LEN - 1 - k), "clip frame {k}");
     }
@@ -408,33 +475,35 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
     }
 }
 
-/// **A varispeed change between two clock moves continues a fork from where
-/// its read stands**: 32 frames at 1×, then 2× before the clock moves, and
-/// the next frame is two file frames on from the last — not the whole run so
-/// far rescaled to 2× (a jump of 33 frames).
+/// **A varispeed change lands on a fork's next block**, at the position the
+/// new speed gives: 32 frames at 1×, then — the live voice set to 2× and
+/// forked again — 32 more, seated where the gate puts the playhead at 2× (32
+/// frames in at 2× is file frame 64) and stepping two file frames a frame.
+/// (The `AudioUnit` era pinned a change *between two frames of one clock
+/// reading*, reachable only frame by frame; a block reads its rates once.)
 ///
-/// Mutation (run): `Seat::next` keeping the seat on a rate change → frame 32
-/// reads frame 64 → fails.
+/// Mutation (run): the fork's gate ignoring varispeed (`DiskVoice::window_rate`
+/// without `effective_speed`) → the second render starts at file frame 32 →
+/// fails.
 #[test]
-fn a_varispeed_change_mid_chunk_continues_a_fork() {
+fn a_varispeed_change_lands_on_a_forks_next_block() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 10_000);
     let streamer = streamer_on(&path);
-    let voice = live_voice(&streamer, 0.0);
-    let (_clock, ctx) = clock_at(SR);
-    let mut copy = fork(&voice, &ctx, SR);
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
-    let mut left = Vec::new();
-    for speed in [1.0f32, 2.0] {
-        copy.set_speed(tutti_core::PlaybackRate::new(speed));
-        copy.process(32, &input.buffer_ref(), &mut output.buffer_mut());
-        left.extend((0..32).map(|i| output.buffer_ref().at_f32(0, i)));
+    let mut voice = live_voice(&streamer, 0.0);
+    let (clock, ctx) = clock_at(SR);
+    let mut first = fork(&voice, &ctx, SR);
+    let left = render(&mut *first.node, &clock, 32);
+    voice.set_speed(tutti_core::PlaybackRate::new(2.0));
+    // A fork's controls are a snapshot: the 2x reaches a fork taken after it.
+    let mut second = fork(&voice, &ctx, SR);
+    let right = render(&mut *second.node, &clock, 32);
+    for (k, &got) in left[0].iter().enumerate() {
+        assert_eq!(got, value(k), "render frame {k}, at 1x");
     }
-    for (k, &got) in left.iter().enumerate() {
-        let frame = if k < 32 { k } else { 31 + 2 * (k - 31) };
-        assert_eq!(got, value(frame), "render frame {k}");
+    for (k, &got) in right[0].iter().enumerate() {
+        assert_eq!(got, value(64 + 2 * k), "render frame {}, at 2x", 32 + k);
     }
 }
 
@@ -446,7 +515,7 @@ fn a_varispeed_change_mid_chunk_continues_a_fork() {
 ///
 /// Mutation (run): `StreamOrigin::describe` not checking that the stream
 /// ended → the fork plays the other file → fails. Mutation (run): the
-/// `StreamGone` latch removed from `rebind_offline` → no fault → fails.
+/// `StreamGone` latch removed from `fork_copy` → no fault → fails.
 #[test]
 fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -467,23 +536,20 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
 
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, 4_096);
+    let [l, _] = render(&mut *copy.node, &clock, 4_096);
     assert!(
         l.iter().all(|&s| s == 0.0),
         "the fork played the channel's new file"
     );
-    let fault = copy
-        .render_fault()
-        .and_then(|probe| probe.fault())
-        .expect("the silence is a latched failure");
-    assert!(fault.to_string().contains("ended"), "{fault}");
+    let fault = copy.fault().expect("the silence is a latched failure");
+    assert!(fault.contains("ended"), "{fault}");
 }
 
 /// **A fork whose file cannot be read fails, naming the file.** The file is
 /// removed after the stream started (the butler keeps its own handle), so the
 /// fork, which re-opens it by its path, cannot: it renders silence and latches
-/// the failure its render reports (`AudioUnit::render_fault`). A live voice
-/// has no probe.
+/// the failure its render reports (the fork's health probe, which the
+/// export reads).
 ///
 /// Mutation (run): `OfflineRead::open` not latching an open failure → no
 /// fault → fails.
@@ -494,24 +560,22 @@ fn a_fork_whose_file_cannot_be_read_fails_naming_it() {
     write_ramp(&path, SR as u32, 10_000);
     let streamer = streamer_on(&path);
     let voice = live_voice(&streamer, 0.0);
-    assert!(voice.render_fault().is_none(), "a live voice has no probe");
     std::fs::remove_file(&path).expect("removes");
 
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let probe = copy.render_fault().expect("a fork has a probe");
-    assert!(probe.fault().is_none(), "healthy before it renders");
-    let [l, _] = render(&mut copy, &clock, 1_024);
+    assert!(copy.health.is_some(), "a fork has a probe");
+    assert!(copy.fault().is_none(), "healthy before it renders");
+    let [l, _] = render(&mut *copy.node, &clock, 1_024);
     assert!(l.iter().all(|&s| s == 0.0));
-    let fault = probe.fault().expect("the unreadable file is a failure");
-    assert!(
-        fault.to_string().contains("gone.wav"),
-        "names the file: {fault}"
-    );
+    let fault = copy.fault().expect("the unreadable file is a failure");
+    assert!(fault.contains("gone.wav"), "names the file: {fault}");
 }
 
-/// **A fork told no sample rate renders nothing, and says so**, rather than
-/// read at a default rate and play off pitch.
+/// **A fork rendered before it is prepared with a sample rate renders
+/// nothing, and says so**, rather than read at a default rate and play off
+/// pitch. (The graph prepares every fork before it renders; a fork source
+/// used by hand may not.)
 ///
 /// Mutation (run): the offline read falling back to 44.1 kHz when no rate
 /// was given → it plays, with no fault → fails.
@@ -523,17 +587,11 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
     let streamer = streamer_on(&path);
     let voice = live_voice(&streamer, 0.0);
     let (clock, ctx) = clock_at(SR);
-    let mut copy = voice.clone();
-    copy.isolate();
-    copy.rebind_offline(&ctx);
-    copy.reset();
-    let [l, _] = render(&mut copy, &clock, 256);
+    let mut copy = fork_unprepared(voice.clone(), &ctx);
+    let [l, _] = render(&mut *copy.node, &clock, 256);
     assert!(l.iter().all(|&s| s == 0.0));
-    let fault = copy
-        .render_fault()
-        .and_then(|probe| probe.fault())
-        .expect("no rate is a failure");
-    assert!(fault.to_string().contains("sample rate"), "{fault}");
+    let fault = copy.fault().expect("no rate is a failure");
+    assert!(fault.contains("sample rate"), "{fault}");
 }
 
 /// **A reversed fork plays the file backwards**, across its pages: frame `k`
@@ -554,7 +612,7 @@ fn a_reversed_fork_plays_the_file_backwards() {
     voice.set_direction(tutti_sampler::Direction::Reverse);
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, LEN);
+    let [l, _] = render(&mut *copy.node, &clock, LEN);
     for (k, &got) in l.iter().enumerate() {
         assert_eq!(got, value(LEN - 1 - k), "clip frame {k}");
     }
@@ -565,10 +623,10 @@ fn a_reversed_fork_plays_the_file_backwards() {
 /// of the clip reads file frame `k / 2`, across every chunk. The file is a
 /// ramp, which the kernel reproduces between frames up to rounding.
 ///
-/// Mutation (run): `.then(stretch)` dropped from the step in
-/// `offline_frame` → a file frame per render frame within each chunk →
-/// fails. Mutation (run): dropped from `offline_window_rate` (the seat) →
-/// every chunk seats at `k`, not `k / 2` → fails.
+/// Mutation (run): `.then(stretch)` dropped from the step
+/// (`DiskVoice::step_rate`) → a file frame per render frame within each
+/// piece → fails. Mutation (run): dropped from `DiskVoice::window_rate` (the
+/// seat) → every piece seats at `k`, not `k / 2` → fails.
 #[test]
 fn a_stretched_fork_reads_at_the_stretchers_rate() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -579,7 +637,7 @@ fn a_stretched_fork_reads_at_the_stretchers_rate() {
     voice.set_stretch_rate(tutti_core::ReadRate(0.5));
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, 8_192);
+    let [l, _] = render(&mut *copy.node, &clock, 8_192);
     for (k, &got) in l.iter().enumerate().skip(4) {
         let want = (k as f32 / 2.0 + 1.0) * 1e-5;
         assert!(
@@ -607,7 +665,7 @@ fn a_fork_reads_across_pages_at_a_converted_rate() {
     let (clock, ctx) = clock_at(SR);
     let mut copy = fork(&voice, &ctx, SR);
     let frames = (LEN as f64 * SR / 44_100.0) as usize - 8;
-    let [l, _] = render(&mut copy, &clock, frames);
+    let [l, _] = render(&mut *copy.node, &clock, frames);
     for (n, &got) in l.iter().enumerate().skip(4) {
         let at = n as f64 * 44_100.0 / SR;
         let want = ((at + 1.0) * 1e-5) as f32;
@@ -619,35 +677,37 @@ fn a_fork_reads_across_pages_at_a_converted_rate() {
 }
 
 /// **A fork follows its render's timeline when it loops**: on a render clock
-/// looping beats `[0, 1)` (24 000 frames at 120 BPM), a clip at beat 0 starts
-/// again from its first frame at every wrap — the read re-seats when the
-/// clock moves, rather than count on from where it was.
+/// looping beats `[0, 1.01)` (24 240 frames at 120 BPM), a clip at beat 0
+/// starts again from its first frame at every wrap, **on the wrap's frame**
+/// — the read re-seats where the render's `Env` wraps, rather than count on
+/// from where it was. The loop is not a whole number of blocks, so the
+/// wraps fall inside blocks (the first 48 frames into one).
 ///
-/// Mutation (run): the seat never re-seated (`offline_frame` keeping its
-/// seat whatever the clock reads) → it plays on past the wrap → fails.
+/// Mutation (run): `Runs` not cutting a run at a wrap (`wrap_offset`
+/// answering `None`) → it plays on past the wrap → fails. (With a loop of
+/// 24 000 frames, a whole number of blocks, every wrap fell on a block's
+/// first frame and this mutation passed.)
 #[test]
 fn a_fork_follows_a_looping_render_timeline() {
+    const LOOP: usize = 24_240;
+    assert_ne!(LOOP % BLOCK, 0, "a wrap inside a block");
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("ramp.wav");
     write_ramp(&path, SR as u32, 60_000);
     let streamer = streamer_on(&path);
     let voice = live_voice(&streamer, 0.0);
-    let clock = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        loop_range: tutti_core::LoopRange::new(Beat(0.0), Beat(1.0)),
-        ..config(0.0)
-    }));
-    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
+    let (clock, ctx) = looping_clock_at(SR, LoopRange::new(Beat(0.0), Beat(1.01)));
     let mut copy = fork(&voice, &ctx, SR);
-    let [l, _] = render(&mut copy, &clock, 60_000);
+    let [l, _] = render(&mut *copy.node, &clock, 60_000);
     for (k, &got) in l.iter().enumerate() {
-        assert_eq!(got, value(k % 24_000), "render frame {k}");
+        assert_eq!(got, value(k % LOOP), "render frame {k}");
     }
 }
 
 /// **A fork is bit-identical to the memory tier**: the same file in memory
 /// and on disk, placed at beat 1, render the same samples, bit for bit, at
-/// every frame of every chunk — the two tiers read through one seat, one
-/// step, one loop and one kernel.
+/// every frame of every block — the two tiers read through one placement,
+/// one step, one loop and one kernel.
 ///
 /// - **At 1.5× varispeed**, on fractional positions.
 /// - **A 24 kHz file at 48 kHz** (a non-unity conversion): the memory tier
@@ -676,10 +736,10 @@ fn a_fork_follows_a_looping_render_timeline() {
 /// (the memory tier).
 ///
 /// Mutation (run): the fork's step not composing varispeed (`speed` →
-/// `PlaybackRate::UNITY` in `offline_frame`'s step) → it parts from memory
-/// inside the first chunk → fails. Mutation (run): the memory tier's step
-/// `read_rate` → `window_rate` (`seated_position`) → the 24 kHz case parts
-/// inside the clip's first chunk → fails. Mutation (run): `MemorySource::read_placed_into`
+/// `PlaybackRate::UNITY` in `DiskVoice::step_rate`) → it parts from memory
+/// inside the first block → fails. Mutation (run): the memory tier's step
+/// `read_rate` → `window_rate` (`placed_positions`) → the 24 kHz case parts
+/// inside the clip's first block → fails. Mutation (run): `MemorySource::read_placed_into`
 /// ignoring the loop → the loop case parts at the first wrap → fails.
 /// Mutation (run): the memory tier's reverse holding frame 0 → the reverse
 /// case parts past the start → fails. Mutation (run): the paged blend weight
@@ -816,15 +876,10 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             wave.push_frame(&[value(i), -value(i)]);
         }
         let (clock, ctx) = clock_at(SR);
-        let mut source = tutti_sampler::MemorySource::with_transport(
-            Arc::new(wave),
-            ctx.timeline(),
-            Beat(1.0),
-            None,
-        );
+        let mut source = tutti_sampler::MemorySource::placed(Arc::new(wave), Beat(1.0), None);
         source.set_speed(tutti_core::PlaybackRate::new(case.speed));
         source.set_loop_setting(case.loop_);
-        let mut memory: Box<dyn AudioUnit> = if case.reverse {
+        let mut memory: Box<dyn Node> = if case.reverse {
             Box::new(VoiceNode::with_channels(
                 Voice {
                     source: VoiceSource::Memory(source),
@@ -839,30 +894,29 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         } else {
             Box::new(source)
         };
-        memory.set_sample_rate(SampleRate(SR));
+        memory.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));
         let mut copy = fork(&voice, &ctx, SR);
 
-        let input = BufferVec::new(0);
-        let (mut a, mut b) = (BufferVec::new(2), BufferVec::new(2));
         let mut sounded = 0usize;
         // Beat 1, then two file lengths: past the end of every case's file.
-        for chunk in 0..(24_000 + 2 * LEN) / CHUNK {
-            copy.process(CHUNK, &input.buffer_ref(), &mut a.buffer_mut());
-            memory.process(CHUNK, &input.buffer_ref(), &mut b.buffer_mut());
+        for block in 0..(24_000 + 2 * LEN) / BLOCK {
+            let env = clock.env(BLOCK);
+            let a = contract::drive_in(&mut *copy.node, &env, &[], &[]);
+            let b = contract::drive_in(&mut *memory, &env, &[], &[]);
             for c in 0..2 {
-                for i in 0..CHUNK {
-                    let (x, y) = (a.buffer_ref().at_f32(c, i), b.buffer_ref().at_f32(c, i));
+                for i in 0..BLOCK {
+                    let (x, y) = (a[c][i], b[c][i]);
                     assert_eq!(
                         x.to_bits(),
                         y.to_bits(),
                         "{}: channel {c}, frame {}: disk {x} memory {y}",
                         case.what,
-                        chunk * CHUNK + i
+                        block * BLOCK + i
                     );
                     sounded += usize::from(x != 0.0);
                 }
             }
-            clock.advance(CHUNK);
+            clock.advance(BLOCK);
         }
         assert!(sounded >= LEN, "{}: the two agreed on silence", case.what);
     }

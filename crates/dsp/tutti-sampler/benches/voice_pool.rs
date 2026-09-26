@@ -15,63 +15,67 @@
 //! most expensive thing in this crate, and `StretchFactor(1.0)` is a bypass,
 //! so the 1.0-vs-0.5 gap is the whole cost of engaging it.
 //!
-//! Driven with `pool.process`, the block path a host runs. (A placed voice's
-//! `tick` used to read one sample for a whole block, `examples/README.md`'s
-//! first trap; it now seats on the clock and steps as `process` does,
-//! `MemorySource::seated_position`.)
+//! Driven through `tutti_graph::contract::Direct` (the pool called by hand,
+//! its buffers built once), each block under the `Env` of a transport that
+//! moves a block at a time, as a host's does (see [`Rig`]).
 
 use std::f32::consts::TAU;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::BufferVec;
-use tutti_core::{
-    AudioUnit, Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor, Timeline,
-};
+use tutti_core::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
+use tutti_graph::contract::Direct;
 use tutti_io::Wave;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
     Command, DiskStreamer, DiskStreamerConfig, MemorySource, Playback, SlotId, StepOutcome, Voice,
     VoiceCommand, VoicePool, VoiceSource,
 };
 
 const SR: f64 = 48_000.0;
-/// A `BufferVec` channel is `MAX_BUFFER_SIZE` frames long, and that is 64, so a
-/// pool block cannot be longer. Block size is `tutti-core`'s axis, not this
-/// crate's.
 const BLOCK: usize = 64;
 
-/// A rolling clock. Copied from `examples/render_cases.rs` rather than shared:
-/// the crate's own `MockTransport` is `#[cfg(test)]`-private and a bench
-/// target cannot see it — the same wall `tests/tier_parity.rs:119` documents.
-#[derive(Clone)]
-struct Clock {
-    beat: Arc<AtomicU64>,
-    tempo: f64,
+/// Where the transport winds back: 2 s at 120 BPM, inside every wave the
+/// cases below read, at every rate they read it at (1.37x varispeed reads
+/// 2.74 s of the 3 s `pool64` file).
+const WRAP_BEATS: f64 = 4.0;
+
+/// A pool driven a block at a time under a transport that moves one block
+/// after every block, as a host's does, and winds back to beat 0 at
+/// [`WRAP_BEATS`].
+///
+/// A transport held still would read as a seek on every block (a placed
+/// voice's block starts where the last one should have ended, or it is a
+/// jump, which flushes the voice); one that only moved would run every read
+/// past the end of its wave after a few thousand blocks, and the pool would
+/// measure the early return for silence. The wind-back costs one seat (and,
+/// on the disk tier, one crossfade) per ~1 500 blocks.
+struct Rig {
+    direct: Direct<VoicePool>,
+    t: Arc<MockTransport>,
 }
 
-impl Clock {
-    fn new(tempo: f64) -> Self {
+impl Rig {
+    fn new(pool: VoicePool) -> Self {
         Self {
-            beat: Arc::new(AtomicU64::new(0f64.to_bits())),
-            tempo,
+            direct: Direct::new(pool, SampleRate(SR), BLOCK),
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
         }
     }
-}
 
-impl Timeline for Clock {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
+    /// One block, then the transport moves on. Returns the block's peak on
+    /// channel 0.
+    fn block(&mut self) -> f32 {
+        self.direct.block_in(&self.t.env(BLOCK, SR));
+        self.t.advance(BLOCK as i64, SR);
+        if self.t.beat().get() >= WRAP_BEATS {
+            self.t.seek(Beat::new(0.0));
+        }
+        self.direct
+            .output(0)
+            .iter()
+            .fold(0.0f32, |a, s| a.max(s.abs()))
     }
 }
 
@@ -84,21 +88,15 @@ fn tone(freq: f32, frames: usize) -> Arc<Wave> {
 }
 
 /// A pool with `n` voices resident, each on its own slot and pitch.
-fn pool_with(n: usize, stretch: f32, cents: f32) -> VoicePool {
-    let (mut pool, handle) = VoicePool::new();
-    let transport = Clock::new(120.0);
+fn pool_with(n: usize, stretch: f32, cents: f32) -> Rig {
+    let (pool, handle) = VoicePool::new().with_handle();
     // Generous length: at a slow stretch the source is consumed much faster
     // than it is emitted, and a short wave would run dry mid-measurement and
     // quietly turn the benchmark into one of silence.
     let wave = tone(440.0, 48_000 * 4);
 
     for i in 0..n {
-        let source = MemorySource::with_transport(
-            Arc::clone(&wave),
-            Arc::new(transport.clone()) as Arc<dyn Timeline>,
-            Beat::new(0.0),
-            None,
-        );
+        let source = MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None);
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(i as u128 + 1),
@@ -130,19 +128,15 @@ fn pool_with(n: usize, stretch: f32, cents: f32) -> VoicePool {
 
     // Apply the queued commands and let any analysis window settle before the
     // measurement starts.
-    let ib = BufferVec::new(2);
-    let mut ob = BufferVec::new(2);
+    let mut rig = Rig::new(pool);
     for _ in 0..64 {
-        pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
+        rig.block();
     }
-    pool
+    rig
 }
 
-fn drive(pool: &mut VoicePool) {
-    let ib = BufferVec::new(2);
-    let mut ob = BufferVec::new(2);
-    pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
-    black_box(ob.buffer_ref().at_f32(0, 0));
+fn drive(rig: &mut Rig) {
+    black_box(rig.block());
 }
 
 /// **The headline: plain playback against voice count.**
@@ -200,57 +194,8 @@ fn bench_idle(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// `pool64`: many voices, both tiers, on a clock that moves.
+// `pool64`: many voices, both tiers, on a transport that moves.
 // ---------------------------------------------------------------------------
-
-/// A clock the bench advances by one block after every `process`, as a host's
-/// transport does, and winds back to beat 0 at [`WRAP_BEATS`].
-///
-/// The groups above hold their clock at beat 0, so a placed voice seats once
-/// and steps on for ever: after ~3 000 blocks (4 s of wave) every read is past
-/// the end and the pool is measuring the early return for silence. This
-/// clock keeps every voice reading audio for the whole measurement; the
-/// wind-back costs one seat (and, on the disk tier, one crossfade) per ~1 500
-/// blocks.
-struct Moving {
-    beat: AtomicU64,
-}
-
-/// Where [`Moving`] winds back: 2 s at 120 BPM, inside the 3 s file at every
-/// rate the cases below read it at (1.37x varispeed reads 2.74 s).
-const WRAP_BEATS: f64 = 4.0;
-
-impl Moving {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            beat: AtomicU64::new(0f64.to_bits()),
-        })
-    }
-
-    fn advance(&self, frames: usize) {
-        let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-        let mut next = now + frames as f64 * 120.0 / 60.0 / SR;
-        if next >= WRAP_BEATS {
-            next = 0.0;
-        }
-        self.beat.store(next.to_bits(), Ordering::Relaxed);
-    }
-}
-
-impl Timeline for Moving {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(120.0)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
 
 /// Seconds of material every `pool64` voice reads.
 const FILE_SECS: f64 = 3.0;
@@ -262,13 +207,12 @@ enum Tier {
     Disk,
 }
 
-/// A pool of `n` placed voices on one moving clock, all reading the same
+/// A pool of `n` placed voices on the moving transport, all reading the same
 /// stereo tone at `speed` and `stretch`. The disk tier's streams are on a
 /// hand-driven butler whose rings hold the whole file (a file under 30 s is
 /// prefilled whole), so the measurement never waits on, or steps, a butler.
 struct Pool64 {
-    pool: VoicePool,
-    clock: Arc<Moving>,
+    rig: Rig,
     /// Keeps the disk tier's streams (and their rings) alive.
     _streamer: Option<DiskStreamer>,
     _dir: tempfile::TempDir,
@@ -287,9 +231,7 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tone.wav");
     let frames = (SR * FILE_SECS) as usize;
-    let clock = Moving::new();
-    let (mut pool, handle) =
-        VoicePool::with_transport(Arc::clone(&clock) as Arc<dyn Timeline>, None);
+    let (pool, handle) = VoicePool::new().with_handle();
     let mut streamer = None;
     let sources: Vec<VoiceSource> = match tier {
         Tier::Memory => {
@@ -300,14 +242,11 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
             let wave = Arc::new(wave);
             (0..n)
                 .map(|_| {
-                    let mut s = MemorySource::with_transport(
+                    VoiceSource::Memory(MemorySource::placed(
                         Arc::clone(&wave),
-                        Arc::clone(&clock) as Arc<dyn Timeline>,
                         Beat::new(0.0),
                         None,
-                    );
-                    s.set_sample_rate(SampleRate(SR));
-                    VoiceSource::Memory(s)
+                    ))
                 })
                 .collect()
         }
@@ -343,16 +282,10 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
             }
             let voices = (0..n)
                 .map(|channel_index| {
-                    let mut v = s
+                    let v = s
                         .status()
-                        .take_disk_voice(
-                            channel_index,
-                            Arc::clone(&clock) as Arc<dyn Timeline>,
-                            Beat::new(0.0),
-                            None,
-                        )
+                        .take_disk_voice(channel_index, Beat::new(0.0), None)
                         .expect("a primed stream gives a voice");
-                    v.set_sample_rate(SampleRate(SR));
                     VoiceSource::Disk(v)
                 })
                 .collect();
@@ -379,10 +312,9 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
             })
             .expect("the command queue has room");
     }
-    pool.set_sample_rate(SampleRate(SR));
+    // The rig prepares the pool, which re-rates every voice it holds.
     let mut p = Pool64 {
-        pool,
-        clock,
+        rig: Rig::new(pool),
         _streamer: streamer,
         _dir: dir,
     };
@@ -400,20 +332,14 @@ fn pool64(tier: Tier, n: usize, speed: f32, stretch: f32) -> Pool64 {
     p
 }
 
-/// One block of a `pool64` case, then the clock moves on. Returns the
+/// One block of a `pool64` case, then the transport moves on. Returns the
 /// block's peak on channel 0.
 fn drive64(p: &mut Pool64) -> f32 {
-    let ib = BufferVec::new(0);
-    let mut ob = BufferVec::new(2);
-    p.pool
-        .process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
-    p.clock.advance(BLOCK);
-    let b = ob.buffer_ref();
-    (0..BLOCK).fold(0.0f32, |a, i| a.max(b.at_f32(0, i).abs()))
+    p.rig.block()
 }
 
 /// **Many voices, both tiers, varispeed and stretch.** One block of `n`
-/// voices per iteration, on a clock that moves (see [`Moving`]).
+/// voices per iteration, on a transport that moves (see [`Rig`]).
 fn bench_pool64(c: &mut Criterion) {
     let mut group = c.benchmark_group("pool64");
     group.throughput(Throughput::Elements(BLOCK as u64));

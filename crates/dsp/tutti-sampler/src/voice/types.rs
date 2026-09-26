@@ -9,8 +9,9 @@ use std::sync::Arc;
 use super::disk_voice::DiskVoice;
 use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, Cents, PlaybackRate, StretchFactor, Timeline,
+    Amplitude, Beat, BeatDuration, Cents, FaultLatch, PlaybackRate, SampleRate, StretchFactor,
 };
+use tutti_graph::{ForkCause, ForkMode, Node};
 
 /// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
 ///
@@ -75,11 +76,11 @@ impl Direction {
 ///
 /// # Real-time
 ///
-/// The enum rather than a `Box<dyn AudioUnit>` is what the audio thread needs:
-/// dispatch on `tick`/`process` is monomorphized, so the per-sample read touches
-/// neither a vtable nor the heap. Both variants are `Clone` and `impl
-/// AudioUnit`, so the field-wise [`Voice`] clone and the stretch wrapper work
-/// uniformly across them.
+/// The enum rather than a `Box<dyn Node>` is what the audio thread needs:
+/// dispatch on the block read is monomorphized, so the per-sample read touches
+/// neither a vtable nor the heap. Both variants are `Clone` and graph nodes
+/// of their own, so the field-wise [`Voice`] clone and the stretch wrapper
+/// work uniformly across them.
 #[non_exhaustive]
 pub enum VoiceSource {
     /// The whole source is resident in memory.
@@ -109,26 +110,24 @@ impl Clone for VoiceSource {
 }
 
 impl VoiceSource {
-    /// The transport clock this source reads, if any.
-    ///
-    /// `None` for a free-running memory source. The disk tier always has one —
-    /// its gate is unconditional, so a `DiskVoice` without a clock could not
-    /// decide when to play.
-    #[inline]
-    pub(crate) fn timeline(&self) -> Option<Arc<dyn Timeline>> {
+    /// Run the source at the owner's rate (what `prepare` does to the
+    /// source as a node of its own: the memory tier's conversion, the disk
+    /// tier's step). Allocation-free: a rate and a ratio, so the pool's
+    /// `AddVoice` drain can run it.
+    pub(crate) fn prepare_rate(&mut self, sample_rate: SampleRate) {
         match self {
-            Self::Memory(s) => s.timeline(),
-            Self::Disk(r) => Some(r.timeline()),
+            Self::Memory(s) => s.set_render_rate(sample_rate),
+            Self::Disk(s) => s.set_render_rate(sample_rate),
         }
     }
 
-    /// The source as an [`AudioUnit`], for the verbs every node has
-    /// (`reset`, `set_sample_rate`). Tier-specific control is a `match` at the
-    /// call site instead — see `apply_gain`.
-    pub(crate) fn as_audio_unit_mut(&mut self) -> &mut dyn AudioUnit {
+    /// Drop the source's own mid-flight state at a jump or a reset: the
+    /// memory tier's free-running cursor (a placed read has none), the disk
+    /// tier's read (its crossfade and last position).
+    pub(crate) fn flush(&mut self) {
         match self {
-            Self::Memory(s) => s,
-            Self::Disk(s) => s,
+            Self::Memory(s) => s.reset(),
+            Self::Disk(s) => s.flush(),
         }
     }
 
@@ -273,72 +272,37 @@ impl Clone for Voice {
 }
 
 impl Voice {
-    /// Replace the transport clock behind the voice, preserving the existing
-    /// start-beat / duration. Used by the offline region render to rebind a
-    /// standalone voice onto the export transport.
-    ///
-    /// Rebinds the source's own read clock — the only clock there is, which is
-    /// what makes rebinding the wrong one unrepresentable.
-    ///
-    /// Only the `Memory` [`MemorySource`] exposes a whole-transport swap, so a
-    /// `Disk` voice is unchanged here — it needs the whole offline context, not
-    /// just a clock, and rebinds through [`rebind_offline`](Self::rebind_offline)
-    /// instead.
-    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        if let VoiceSource::Memory(sampler) = &mut self.source {
-            sampler.replace_transport(transport);
-        }
+    /// A copy of this voice for a fork of the node holding it, sharing
+    /// nothing with it: a memory voice with its own gain cell (at the value
+    /// it holds), a disk voice reading its file itself
+    /// ([`DiskVoice::fork_copy`]). A disk voice forks only for an offline
+    /// render: [`ForkMode::Live`] is refused for it (its fork would read its
+    /// file on the audio thread).
+    pub(crate) fn fork_copy(&self, mode: ForkMode<'_>) -> Result<Self, ForkCause> {
+        let source = match &self.source {
+            VoiceSource::Memory(s) => {
+                let mut s = s.clone();
+                s.detach_gain();
+                VoiceSource::Memory(s)
+            }
+            VoiceSource::Disk(_) if matches!(mode, ForkMode::Live) => {
+                return Err(ForkCause::new(super::disk_voice::LiveDiskFork));
+            }
+            VoiceSource::Disk(voice) => VoiceSource::Disk(voice.fork_copy()),
+        };
+        Ok(Self {
+            source,
+            play: self.play.clone(),
+            channel_index: self.channel_index,
+        })
     }
 
-    /// Rebind this voice onto an offline render's transport, whichever source
-    /// backs it.
-    ///
-    /// Use this and not [`replace_transport`](Self::replace_transport), which
-    /// covers only the `Memory` arm: a `Disk` voice left on the live clock
-    /// renders against a playhead nothing advances. A slot is not a graph
-    /// vertex, so the net-wide walk never reaches it either — this is the only
-    /// path that does.
-    pub fn rebind_offline(&mut self, ctx: &tutti_core::transport::OfflineTransport) {
-        use tutti_core::AudioUnit;
-        match &mut self.source {
-            VoiceSource::Memory(sampler) => sampler.rebind_offline(ctx),
-            VoiceSource::Disk(voice) => voice.rebind_offline(ctx),
-        }
-    }
-
-    /// Sever this voice from live-thread state, whichever source backs it.
-    ///
-    /// Both tiers share something a `Clone` duplicates by `Arc`: `Disk` shares
-    /// the ring and control cell, `Memory` its gain cell. Left unsevered, an
-    /// offline render pops frames the live audio thread is waiting on, and
-    /// follows the live voice's fader while it does.
-    pub fn isolate(&mut self) {
-        use tutti_core::AudioUnit;
-        match &mut self.source {
-            VoiceSource::Memory(s) => s.isolate_gain(),
-            VoiceSource::Disk(voice) => voice.isolate(),
-        }
-    }
-
-    /// `AudioUnit::render_fault` for the source that backs it: a severed disk
-    /// voice's failure latch, `None` for a memory voice (which cannot fail).
-    pub fn render_fault(&self) -> Option<Arc<dyn tutti_core::RenderFault>> {
-        use tutti_core::AudioUnit;
+    /// A forked disk voice's failure latch, `None` for a memory voice (which
+    /// cannot fail) or a live one.
+    pub(crate) fn fault(&self) -> Option<Arc<FaultLatch>> {
         match &self.source {
             VoiceSource::Memory(_) => None,
-            VoiceSource::Disk(voice) => voice.render_fault(),
-        }
-    }
-
-    /// Whether [`isolate`](Self::isolate) severs everything this voice
-    /// shares — `AudioUnit::forkable` for the source that backs it. Both
-    /// tiers answer yes: a disk voice's `isolate` cuts it off from the ring
-    /// and the butler, and its rebind hands it the file to read itself.
-    pub fn forkable(&self) -> bool {
-        use tutti_core::AudioUnit;
-        match &self.source {
-            VoiceSource::Memory(s) => s.forkable(),
-            VoiceSource::Disk(voice) => voice.forkable(),
+            VoiceSource::Disk(voice) => voice.fault(),
         }
     }
 }

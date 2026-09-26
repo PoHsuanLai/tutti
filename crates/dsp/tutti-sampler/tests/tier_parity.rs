@@ -53,11 +53,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::BufferVec;
-use tutti_core::{
-    AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline,
-};
+use tutti_core::{Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate};
+use tutti_graph::{contract, Node};
 use tutti_io::Wave;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig, StepOutcome};
 use tutti_sampler::{DiskVoice, MemorySource, VoiceWindow};
 
@@ -115,24 +114,17 @@ const SEEK_FILE_SECS: f64 = 31.0;
 /// sized by what the assertions need and nothing else.
 const OFFSET_FILE_SECS: f64 = 12.0;
 
-/// A rolling transport the test advances by hand, once per block.
-///
-/// `MockTransport` is `#[cfg(test)]` inside the crate, so an integration test
-/// cannot reach it. Reimplemented here for the same reason `render_cases.rs`
-/// does: `Timeline` is three methods, and widening a test-only surface so an
-/// integration test can borrow it would make the production API answer to this
-/// file.
-struct Clock {
-    beat: std::sync::atomic::AtomicU64,
-    tempo: f64,
-}
+/// A rolling transport the test advances by hand, once per block, in
+/// seconds of file time at the call sites that seek: the crate's
+/// [`MockTransport`], with the seek verb this file speaks.
+struct Clock(Arc<MockTransport>);
 
 impl Clock {
     fn new(tempo: f64) -> Arc<Self> {
-        Arc::new(Self {
-            beat: std::sync::atomic::AtomicU64::new(0f64.to_bits()),
-            tempo,
-        })
+        Arc::new(Self(MockTransport::rolling(
+            Beat::new(0.0),
+            Bpm::new(tempo),
+        )))
     }
 
     /// Jump the playhead to an absolute position in **seconds** of file time.
@@ -141,36 +133,17 @@ impl Clock {
     /// moving the playhead is what repositions the clip. Seconds rather than
     /// beats at the call site because the material's frequency encodes seconds.
     fn seek_seconds(&self, sec: f64) {
-        let beats = sec * self.tempo / 60.0;
-        self.beat
-            .store(beats.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        self.0.seek(Beat::new(sec * self.0.tempo().get() / 60.0));
     }
 
-    /// Move by `samples`, the way a block-driven transport does after `process`.
+    /// Move by `samples`, the way a host's transport moves after a block.
     fn advance(&self, samples: usize) {
-        let beats = samples as f64 * self.tempo / 60.0 / SR;
-        let now = f64::from_bits(self.beat.load(std::sync::atomic::Ordering::Relaxed));
-        self.beat.store(
-            (now + beats).to_bits(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.0.advance(samples as i64, SR);
     }
-}
 
-impl Timeline for Clock {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(
-            self.beat.load(std::sync::atomic::Ordering::Relaxed),
-        ))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
+    /// The next block's `Env`: where the playhead stands.
+    fn env(&self) -> tutti_graph::Env {
+        self.0.env(BLOCK, SR)
     }
 }
 
@@ -279,27 +252,24 @@ fn load_wave(path: &Path) -> Arc<Wave> {
 /// Render `blocks` blocks of a unit into interleaved stereo, advancing `clock`
 /// once per block.
 ///
-/// Block-driven via `process`, as a host drives a unit. A placed voice derives
-/// its position from the playhead, which advances once per *block*. `tick` used
-/// to re-read the playhead per call, so calling it BLOCK times against one
-/// transport reading emitted the same sample BLOCK times — a staircase that
-/// resampled the source downward (`examples/README.md`'s first trap). A placed
-/// memory read now seats on the clock and steps through the block through
-/// either entry point (`MemorySource::seated_position`).
-fn render(unit: &mut dyn AudioUnit, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
+/// Block-driven, as a host drives a node: each block's `Env` carries the
+/// playhead where it stands, and it advances once per *block*. A placed voice
+/// seats on the block's transport and steps through the block.
+fn render(unit: &mut dyn Node, clock: &Clock, blocks: usize) -> Vec<(f32, f32)> {
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {
-        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push((b.at_f32(0, i), b.at_f32(1, i)));
-        }
-        clock.advance(BLOCK);
+        push_block(unit, clock, &mut out);
     }
     out
+}
+
+/// One block of `unit` under `clock`, appended to `out` as frames; the clock
+/// then advances.
+fn push_block(unit: &mut dyn Node, clock: &Clock, out: &mut Vec<(f32, f32)>) {
+    let b = contract::drive_in(unit, &clock.env(), &[], &[]);
+    out.extend(b[0].iter().copied().zip(b[1].iter().copied()));
+    clock.advance(BLOCK);
 }
 
 /// [`render`], with one butler cycle run per block.
@@ -319,17 +289,10 @@ fn render_streamed(
     clock: &Clock,
     blocks: usize,
 ) -> Vec<(f32, f32)> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
 
     for _ in 0..blocks {
-        voice.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push((b.at_f32(0, i), b.at_f32(1, i)));
-        }
-        clock.advance(BLOCK);
+        push_block(voice, clock, &mut out);
         let _ = streamer.step_once();
     }
     out
@@ -398,21 +361,16 @@ fn stream_at(
 
     prime(streamer);
 
-    let mut voice = streamer
+    let voice = streamer
         .status()
-        .take_disk_voice(
-            channel,
-            clock.clone() as Arc<dyn Timeline>,
-            Beat::new(0.0),
-            None,
-        )
+        .take_disk_voice(channel, Beat::new(0.0), None)
         .unwrap_or_else(|e| {
             panic!(
                 "the butler applied its commands and reported its rings full, but gave no \
                  voice for channel {channel} streaming from {at_sec}s: {e}"
             )
         });
-    voice.set_sample_rate(SampleRate(SR));
+    let voice = contract::prepared(voice, SampleRate(SR), BLOCK);
     clock.seek_seconds(at_sec);
 
     (voice, clock)
@@ -437,10 +395,10 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     // ---- memory tier -----------------------------------------------------
     let mem_clock = Clock::new(120.0);
     let wave = load_wave(&path);
-    let mut mem = MemorySource::with_config(
+    let mem = MemorySource::with_config(
         wave,
         tutti_sampler::MemorySourceConfig {
-            timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             window: VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
@@ -449,7 +407,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
             ..Default::default()
         },
     );
-    mem.set_sample_rate(SampleRate(SR));
+    let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
 
     // ---- disk tier -------------------------------------------------------
     let mut streamer =
@@ -882,10 +840,10 @@ fn the_tiers_agree_under_varispeed() {
 
         // --- memory, same speed, fresh so neither tier's history leaks in ---
         let mem_clock = Clock::new(120.0);
-        let mut mem = MemorySource::with_config(
+        let mem = MemorySource::with_config(
             load_wave(&path),
             tutti_sampler::MemorySourceConfig {
-                timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
+                placed: true,
                 window: VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
@@ -895,7 +853,7 @@ fn the_tiers_agree_under_varispeed() {
                 ..Default::default()
             },
         );
-        mem.set_sample_rate(SampleRate(SR));
+        let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
         let mem_out = render(&mut mem, &mem_clock, 128);
         let mem_left: Vec<f32> = mem_out.iter().map(|&(l, _)| l).collect();
         let mem_hz = dominant_hz_in(&mem_left, 150.0, 1200.0);

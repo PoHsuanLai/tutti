@@ -1,339 +1,291 @@
 //! An offline render must not hear the live playhead — nor steal from it.
 //!
-//! Rebinding is a per-node duty (`AudioUnit::rebind_offline`), which is why the
-//! guards live here beside the implementations rather than in the exporter.
+//! Under `Net` this was a per-node duty (`AudioUnit::rebind_offline`: each
+//! transport-aware unit re-pointed its clock at the render's timeline), and
+//! these guards pinned that every such node — `VoicePool`, `VoiceNode`, a bare
+//! `MemorySource`, one nested in a sub-net — was reached. The sampler's nodes
+//! are native now (doc 013 items 8 and 9): each reads the transport from its
+//! block's `Env`, so a fork (`Editor::fork`, the export's) has nothing to
+//! rebind — it plays on whatever transport its own renderer hands it. What is
+//! left to pin is the outcome, for every node shape: a fork rendered on a
+//! **stopped** render transport is silent while the live graph, on a rolling
+//! one, sounds; a fork holds nothing the live graph's handles reach; and a
+//! node that reads no transport is unaffected.
 //!
-//! The shape matters as much as the assertions. The alternative — one free
-//! function walking the net and downcasting to each type it knows — silently
-//! skips any node the ladder forgot, and `MemorySource` and `DiskVoice` are
-//! exactly that shape: `AudioUnit` graph nodes holding a transport, easy to miss
-//! because the obvious two are `VoicePool` and `VoiceNode`. The third test pins
-//! that gap closed.
+//! Stated behaviourally, on rendered audio: "a clock lives in this field and
+//! was swapped" would pass vacuously the day the position derives from
+//! somewhere else.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineClock, OfflineTransport};
-use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_graph::{
+    Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, IntoNode, Io, Node, Prepare, Shape,
+    Status, Transport,
+};
 use tutti_io::Wave;
-use tutti_nodes::testing::Const;
 use tutti_sampler::{
-    Direction, LoopSetting, MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode,
-    VoicePool, VoiceSource,
+    MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
 
-struct MockTransport {
-    playing: AtomicBool,
-    beat: AtomicU64,
-    tempo: AtomicU64,
-}
-
-impl MockTransport {
-    fn new(playing: bool) -> Arc<Self> {
-        Arc::new(Self {
-            playing: AtomicBool::new(playing),
-            beat: AtomicU64::new(0.0f64.to_bits()),
-            tempo: AtomicU64::new(120.0f64.to_bits()),
-        })
-    }
-}
-
-// Stands in for a render's timeline in these tests.
-impl OfflineClock for MockTransport {}
-
-impl Timeline for MockTransport {
-    fn is_rolling(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-    fn beat(&self) -> Beat {
-        Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
+const RATE: SampleRate = SampleRate(44_100.0);
 
 fn ramp_wave() -> Arc<Wave> {
     Arc::new(Wave::from_samples(
-        44100.0,
-        &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
+        44_100.0,
+        &(0..4_096)
+            .map(|i| (i as f32 + 1.0) / 4_096.0)
+            .collect::<Vec<_>>(),
     ))
 }
 
-/// `isolate()` must leave the render's pool born empty and channel-less, and
-/// must not consume commands the LIVE pool needs — each command is delivered to
-/// exactly one consumer, so a shared channel means the worker steals playback.
-#[test]
-fn an_isolated_pool_steals_no_commands_from_the_live_one() {
-    let live_transport = MockTransport::new(true);
-    let (pool, handle) = VoicePool::with_transport(live_transport.clone(), None);
+fn placed() -> MemorySource {
+    MemorySource::placed(ramp_wave(), Beat::new(0.0), None)
+}
 
-    let mut net = tutti_core::dsp::Net::new(0, 2);
-    let id = net.push(Box::new(pool));
-    net.pipe_output(id);
-
-    // Clone + isolate + rebind, exactly as a render does.
-    let offline = OfflineTransport::new(MockTransport::new(true));
-    let mut clone = net.clone();
-    for nid in clone.ids().copied().collect::<Vec<_>>() {
-        let node = clone.node_mut(nid);
-        node.isolate();
-        node.rebind_offline(&offline.clone());
+fn voice() -> Voice {
+    Voice {
+        source: VoiceSource::Memory(placed()),
+        play: Playback::default(),
+        channel_index: None,
     }
+}
 
-    let cloned = clone
-        .node_mut(id)
-        .as_any_mut()
-        .downcast_mut::<VoicePool>()
-        .expect("still a voice pool after rebind");
-    assert_eq!(
-        cloned.voice_count(),
-        0,
-        "the render's pool must be born empty"
-    );
+fn prepare() -> Prepare {
+    Prepare::new(RATE, Samples(64))
+}
+
+/// `node` at key 1 on every output channel of a `width`-wide graph; its
+/// controls.
+fn graph<N: IntoNode>(node: N, width: u16) -> (Editor, Executor, N::Controls) {
+    let (mut ed, mut exec) = Editor::new(prepare());
+    let controls = ed.insert(NodeKey(1), "under test", node);
+    ed.spec_mut().topology.outputs = (0..width)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    (ed, exec, controls)
+}
+
+/// The peak of 64 frames of `exec`'s graph under `transport`.
+fn peak(exec: &mut Executor, width: usize, transport: Transport) -> f32 {
+    let mut out = vec![vec![0.0f32; 64]; width];
+    let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+    exec.process(64, &transport, &[], &mut refs);
+    out.iter().flatten().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+fn rolling() -> Transport {
+    Transport::new(true, Bpm(120.0), Beat(0.0), None)
+}
+
+fn stopped() -> Transport {
+    Transport::new(false, Bpm(120.0), Beat(0.0), None)
+}
+
+/// The offline fork of `ed`'s graph (what the export takes), applied.
+fn fork(ed: &Editor) -> Executor {
+    let clock = Arc::new(tutti_core::OfflineTimeline::new(
+        &tutti_core::OfflineTimelineConfig {
+            start_beat: Beat(0.0),
+            tempo: Bpm(120.0),
+            sample_rate: RATE,
+            loop_range: None,
+        },
+    ));
+    let ctx = tutti_core::transport::OfflineTransport::new(clock);
+    let (_ed, mut exec) = ed
+        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), prepare())
+        .expect("forks");
+    exec.apply_pending();
+    exec
+}
+
+/// **A fork of a pool is born empty and channel-less, and steals no command
+/// the live pool needs** — each command is delivered to exactly one consumer,
+/// so a shared channel means the worker steals playback.
+///
+/// Mutation (run): `PoolFork` building its pool over the live pool's
+/// command receiver (a clone of it kept in the fork source) → the fork
+/// drains the live `AddVoice` → fails. (A fork built from the pool's voices
+/// as inserted is not caught: this pool is inserted empty.)
+#[test]
+fn a_forked_pool_steals_no_commands_from_the_live_one() {
+    let (ed, mut exec, handle) = graph(VoicePool::new(), 2);
+    let mut forked = fork(&ed);
 
     // The live handle still feeds the ORIGINAL pool.
-    let sampler =
-        MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
     handle
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback::default(),
-                channel_index: None,
-            }),
+            voice: Box::new(voice()),
             stretch: None,
         })
         .expect("the command queue has room in a test");
 
-    net.set_sample_rate(SampleRate(44100.0));
-    net.allocate();
-    let live = net
-        .node_mut(id)
-        .as_any_mut()
-        .downcast_mut::<VoicePool>()
-        .unwrap();
-    let mut out = [0.0f32; 2];
-    live.tick(&[], &mut out); // drains the live channel
-    assert_eq!(
-        live.voice_count(),
-        1,
-        "the live pool must still receive its own commands"
-    );
-
-    let cloned = clone
-        .node_mut(id)
-        .as_any_mut()
-        .downcast_mut::<VoicePool>()
-        .unwrap();
-    let mut out_clone = [0.0f32; 2];
-    cloned.tick(&[], &mut out_clone);
-    assert_eq!(
-        cloned.voice_count(),
-        0,
+    assert!(
+        peak(&mut forked, 2, rolling()) == 0.0,
         "the render's pool must never receive live commands"
     );
+    assert!(
+        peak(&mut exec, 2, rolling()) > 1e-6,
+        "the live pool must still receive its own commands"
+    );
 }
 
-/// A bare `VoiceNode` must be rebound too.
+/// **A forked `VoiceNode` plays on its render's transport, not the live one.**
+/// The live graph rolls and sounds; the fork, rendered on a stopped
+/// transport, renders exact silence.
 ///
-/// Stated behaviourally rather than structurally: the live transport rolls and
-/// the offline one is stopped, so a correctly rebound node renders exact
-/// silence while the un-rebound original renders audio. Asserting "a clock
-/// lives in this field and was swapped" would pass vacuously the day the
-/// position derives from the playhead instead.
+/// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on
+/// the stopped transport → fails.
 #[test]
-fn a_rebound_voice_node_reads_the_offline_clock_not_the_live_one() {
-    let live_transport = MockTransport::new(true);
-    let sampler =
-        MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
-    assert!(
-        sampler.window_position().is_some(),
-        "sanity: the source reads a live position before rebind"
-    );
-
-    let voice = Voice {
-        source: VoiceSource::Memory(sampler),
-        play: Playback {
-            loop_: LoopSetting::Off,
-            direction: Direction::Forward,
-            ..Playback::default()
-        },
-        channel_index: None,
-    };
-
-    let mut net = tutti_core::dsp::Net::new(0, 2);
-    let id = net.push(Box::new(VoiceNode::from(voice)));
-    net.pipe_output(id);
-
-    // The offline transport is STOPPED, so a rebound node must go silent.
-    let offline = OfflineTransport::new(MockTransport::new(false));
-    let mut clone = net.clone();
-    for nid in clone.ids().copied().collect::<Vec<_>>() {
-        let node = clone.node_mut(nid);
-        node.isolate();
-        node.rebind_offline(&offline.clone());
-    }
-
-    let peak = |net: &mut tutti_core::dsp::Net| {
-        net.reset();
-        net.set_sample_rate(SampleRate(44_100.0));
-        let mut worst = 0.0f32;
-        let mut frame = [0.0f32; 2];
-        for _ in 0..64 {
-            net.tick(&[], &mut frame);
-            worst = worst.max(frame[0].abs()).max(frame[1].abs());
-        }
-        worst
-    };
-
-    let live_peak = peak(&mut net.clone());
-    let rebound_peak = peak(&mut clone);
+fn a_forked_voice_node_reads_its_renders_transport_not_the_live_one() {
+    let (ed, mut exec, _handle) =
+        graph(VoiceNode::with_channels(voice(), ChannelLayout::STEREO), 2);
+    let mut forked = fork(&ed);
+    let live_peak = peak(&mut exec, 2, rolling());
+    let forked_peak = peak(&mut forked, 2, stopped());
     assert!(
         live_peak > 1e-6,
-        "sanity: the un-rebound net must render audio from the rolling live \
-         clock, else this comparison proves nothing (peak {live_peak})"
+        "sanity: the live graph must render audio on a rolling transport, else \
+         this comparison proves nothing (peak {live_peak})"
     );
     assert_eq!(
-        rebound_peak, 0.0,
-        "the rebound net must render silence against the stopped offline clock; \
-         it rendered {rebound_peak} (live peak {live_peak})"
+        forked_peak, 0.0,
+        "the fork must render silence on its stopped transport; it rendered \
+         {forked_peak} (live peak {live_peak})"
+    );
+    assert!(
+        peak(&mut forked, 2, rolling()) > 1e-6,
+        "and sound on a rolling one"
     );
 }
 
-/// The gap the predecessor had: a **bare** `MemorySource` sitting directly in
-/// the graph, wrapped in neither a pool nor a voice node.
+/// **A bare `MemorySource`** sitting directly in the graph, wrapped in neither
+/// a pool nor a voice node: the node `rebind_net_transport`'s type ladder
+/// once skipped. It forks through `param_parts`, and reads its render's
+/// transport like the others.
 ///
-/// `rebind_net_transport` matched `VoicePool` and `VoiceNode` only, so this node
-/// kept the live transport and rendered against a playhead the offline driver
-/// never advanced — silently, with no error and no compile failure. Declaring
-/// the rebind on the node itself is what closes it.
+/// Mutation (run): `ParamNode::fork_fresh` for `MemorySource` leaving the
+/// copy free-running (`placed = false`) → the fork plays its stopped cursor:
+/// silent on the rolling transport too → the last assertion fails.
 #[test]
-fn a_bare_memory_source_node_is_rebound_too() {
-    let live_transport = MockTransport::new(true);
-    let source =
-        MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
+fn a_bare_memory_source_node_is_forked_too() {
+    let (ed, mut exec, _params) = graph(placed(), 2);
+    let mut forked = fork(&ed);
     assert!(
-        source.window_position().is_some(),
-        "sanity: bound to the rolling live clock before rebind"
+        peak(&mut exec, 2, rolling()) > 1e-6,
+        "sanity: it sounds live"
     );
-
-    let mut net = tutti_core::dsp::Net::new(0, 1);
-    let id = net.push(Box::new(source));
-    net.pipe_output(id);
-
-    let offline = OfflineTransport::new(MockTransport::new(false));
-    let node = net.node_mut(id);
-    node.isolate();
-    node.rebind_offline(&offline);
-
-    let rebound = net
-        .node_mut(id)
-        .as_any_mut()
-        .downcast_mut::<MemorySource>()
-        .expect("still a memory source");
+    assert_eq!(peak(&mut forked, 2, stopped()), 0.0, "silent when stopped");
     assert!(
-        rebound.window_position().is_none(),
-        "a bare MemorySource must be re-seated on the STOPPED offline clock — \
-         the predecessor's type ladder skipped this node entirely"
+        peak(&mut forked, 2, rolling()) > 1e-6,
+        "the fork sounds on a rolling render transport"
     );
 }
 
-/// A node that reads no transport must be left alone. (A foreign context
-/// was the other half of this test while `rebind_offline` took `&dyn Any`:
-/// it is typed now, so a wrong-typed context no longer compiles —
-/// `AudioUnit::rebind_offline`'s `compile_fail` doctest.)
-#[test]
-fn pure_dsp_is_a_no_op() {
-    let mut net = tutti_core::dsp::Net::new(0, 1);
-    let id = net.push(Box::new(Const::mono(0.5)));
-    net.pipe_output(id);
+/// A constant: a node that reads no transport.
+#[derive(Clone)]
+struct Const(f32);
 
-    let offline = OfflineTransport::new(MockTransport::new(false));
-    net.node_mut(id).rebind_offline(&offline);
-
-    net.set_sample_rate(SampleRate(44_100.0));
-    net.allocate();
-    let mut frame = [0.0f32; 1];
-    net.tick(&[], &mut frame);
-    assert!(
-        (frame[0] - 0.5).abs() < 1e-6,
-        "a pure-DSP node must be unaffected by rebinding, got {}",
-        frame[0]
-    );
-}
-
-/// **The rebind must reach into nested networks.**
-///
-/// `Net` implements `AudioUnit`, so a sub-graph can be pushed as a single node.
-/// Before `Net` forwarded `isolate`/`rebind_offline` to its vertices, such a
-/// node inherited the do-nothing defaults and everything inside it kept the live
-/// transport: an export of a bus whose contents are a sub-net rendered against a
-/// playhead nothing advances.
-///
-/// The failure is silent — no value to compare, no error — which is exactly what
-/// the per-node design was meant to eliminate. It only eliminates it if the walk
-/// is deep.
-#[test]
-fn a_voice_nested_inside_a_sub_net_is_rebound_too() {
-    let live_transport = MockTransport::new(true);
-    let sampler =
-        MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
-
-    let voice = Voice {
-        source: VoiceSource::Memory(sampler),
-        play: Playback {
-            loop_: LoopSetting::Off,
-            direction: Direction::Forward,
-            ..Playback::default()
-        },
-        channel_index: None,
-    };
-
-    // The voice lives one level down, inside a Net used as a node.
-    let mut inner = tutti_core::dsp::Net::new(0, 2);
-    let vid = inner.push(Box::new(VoiceNode::from(voice)));
-    inner.pipe_output(vid);
-
-    let mut outer = tutti_core::dsp::Net::new(0, 2);
-    let nested = outer.push(Box::new(inner));
-    outer.pipe_output(nested);
-
-    // Offline transport is STOPPED: a rebound voice must fall silent.
-    let offline = OfflineTransport::new(MockTransport::new(false));
-    let mut clone = outer.clone();
-    for nid in clone.ids().copied().collect::<Vec<_>>() {
-        let node = clone.node_mut(nid);
-        node.isolate();
-        node.rebind_offline(&offline.clone());
+impl Node for Const {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
     }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(self.0);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
-    let peak = |net: &mut tutti_core::dsp::Net| {
-        net.reset();
-        net.set_sample_rate(SampleRate(44_100.0));
-        let mut worst = 0.0f32;
-        let mut frame = [0.0f32; 2];
-        for _ in 0..64 {
-            net.tick(&[], &mut frame);
-            worst = worst.max(frame[0].abs()).max(frame[1].abs());
-        }
-        worst
-    };
+/// **A node that reads no transport is unaffected by the render's.** A fork
+/// of a constant renders the constant, stopped or rolling.
+///
+/// A control for the tests above: no sampler code runs here, so no
+/// sampler mutation reaches it. It fails if the render's transport alone
+/// changed what a fork renders.
+#[test]
+fn pure_dsp_is_unaffected() {
+    let (ed, _exec, ()) = graph(ForkByClone(Const(0.5)), 1);
+    let mut forked = fork(&ed);
+    for t in [stopped(), rolling()] {
+        let p = peak(&mut forked, 1, t);
+        assert!(
+            (p - 0.5).abs() < 1e-6,
+            "a pure-DSP node must be unaffected by the render's transport, got {p}"
+        );
+    }
+}
 
-    let live_peak = peak(&mut outer.clone());
-    let rebound_peak = peak(&mut clone);
+/// Passes its input through: a node between a voice and the outputs.
+#[derive(Clone)]
+struct Pass;
 
-    assert!(
-        live_peak > 0.0,
-        "sanity: the nested voice must sound on a rolling live clock"
+impl Node for Pass {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let (ins, mut outs) = io.split();
+        outs.get(0).copy_from_slice(ins.get(0));
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **The fork reaches a voice behind another node.** Under `Net`, a voice
+/// nested in a sub-net used as a node inherited `rebind_offline`'s
+/// do-nothing default until `Net` forwarded it; the graph's fork walks every
+/// node an output reaches, and each reads its own `Env`. A voice feeding a
+/// pass-through, forked, renders silence on a stopped render transport.
+///
+/// Mutation (run): `place` ignoring `run.rolling()` → the fork sounds on the
+/// stopped transport → fails. (The `Net`-era mutation — the fork keeping the
+/// live clock — has no counterpart: a native node holds no clock to keep.)
+#[test]
+fn a_voice_behind_another_node_is_forked_too() {
+    let (mut ed, mut exec) = Editor::new(prepare());
+    ed.insert(
+        NodeKey(1),
+        "voice",
+        VoiceNode::with_channels(voice(), ChannelLayout::MONO),
     );
+    ed.insert(NodeKey(2), "pass", ForkByClone(Pass));
+    ed.spec_mut().topology.edges.insert(
+        tutti_core::graph::InPort {
+            node: NodeKey(2),
+            port: 0,
+        },
+        tutti_core::graph::Edge::Direct(Source::Node(OutPort {
+            node: NodeKey(1),
+            port: 0,
+        })),
+    );
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(2),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    let mut forked = fork(&ed);
+    let live_peak = peak(&mut exec, 1, rolling());
+    assert!(live_peak > 0.0, "sanity: the voice sounds through the pass");
     assert_eq!(
-        rebound_peak, 0.0,
-        "a voice one level down must follow the offline clock; it read the live \
-         one instead (live {live_peak}, rebound {rebound_peak})"
+        peak(&mut forked, 1, stopped()),
+        0.0,
+        "a voice behind another node must follow the fork's transport"
     );
 }

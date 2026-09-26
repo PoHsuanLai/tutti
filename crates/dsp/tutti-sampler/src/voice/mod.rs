@@ -13,6 +13,9 @@
 
 // A loop as the frames it plays: shared by every reader that indexes a file.
 pub(crate) mod loop_span;
+// The transport over one block, read from its `Env`: what a placed read
+// places itself by.
+pub(crate) mod clock;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
 pub mod memory_source;
@@ -45,7 +48,7 @@ pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
 /// See [`disk_voice`] for the full docs on each; they are re-exported flat so a
 /// consumer writes `tutti_sampler::DiskVoice` rather than tracking which file a
 /// type happens to live in.
-pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
+pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig, DiskVoiceControls};
 /// In-memory playback: the reader, its loop and window vocabulary, and its
 /// configuration. Documented on [`memory_source`].
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};

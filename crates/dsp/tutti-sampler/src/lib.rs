@@ -50,9 +50,9 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 ///
 /// [`ChannelLayout`](tutti_core::ChannelLayout) can represent an empty bus
 /// (`Multi(0)`) — deliberately, because a plugin port genuinely can be zero
-/// wide. A sampler node cannot: `outputs()` feeds fundsp's graph planner, and a
-/// node that reports zero outputs is a node nothing can be wired to. So the
-/// widths that reach `AudioUnit::outputs` go through here.
+/// wide. A sampler node cannot: a node that reports zero outputs is a node
+/// nothing can be wired to. So the widths a node's `Shape` declares go
+/// through here.
 ///
 /// This is the one place that clamp lives: the layout carries the declaration
 /// and this carries the node-arity invariant, so no call site has to re-remember
@@ -73,10 +73,11 @@ mod macros;
 
 mod node_id;
 
-// One mock `Timeline` for every test in the crate, replacing three near-identical
-// copies whose constructors disagreed on argument order. Test-only.
-#[cfg(test)]
-mod test_transport;
+// One mock transport and block driver for every test of the crate, in-crate
+// and in `tests/` (through `test-support`): a node reads the transport from
+// its block's `Env`, and this is what hands it one.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`. Re-exported again here because the butler's refill path speaks

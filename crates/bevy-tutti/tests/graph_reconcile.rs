@@ -6,8 +6,8 @@
 //!   node's own value. What a live node's scalars do.
 //! - `audio_tap` — the tap the audio callback pushes into, reachable from the
 //!   ECS. What a live node's output is observed through.
-//! - `engine_nodes` — the clock and click `build_into` makes, and the beat edge
-//!   it declares between them.
+//! - `engine_nodes` — the clock and click `build_into` makes (the click reads
+//!   its block's `Env`, with no edge from the clock).
 //!
 //! Grouped because params and taps are both per-node state whose reconcilers
 //! run in the same phase ordering as spawn and despawn, and a lifecycle change
@@ -606,28 +606,29 @@ mod audio_tap {
 /// The nodes the engine builds for itself, and the one edge between them.
 mod engine_nodes {
     use bevy_app::App;
-    use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
     use tutti_core::transport::BEAT_PORTS;
     use tutti_core::AudioNode;
 
-    /// The metronome takes its beat from the clock's two ports, per sample.
+    /// The metronome reads the beat of every frame from its block's `Env`,
+    /// so it has no inputs to wire; the beat clock beside it keeps its two
+    /// beat ports for the nodes that read the beat as a signal.
     ///
-    /// That edge is what makes a click start on the frame its beat lands on
-    /// (D8, design doc 013). Without it the click reads beat 0 forever and
-    /// sounds once — and nothing else would notice, because its *outputs* are
-    /// the host's to declare, so a default app renders no click either way.
+    /// Until the click's native port it took the beat from the clock's two
+    /// ports (the edge `build_into` declared, `PortSources::stereo_from`), and
+    /// this pinned that edge: without it the click read beat 0 forever. The
+    /// native click reads its block's transport (D8, design doc 013) and
+    /// cannot miss a wire.
     ///
     /// Ignored: `build_into`
     /// opens a real CPAL device. It passes on a machine with ALSA's default
     /// device, which is how it was run.
     ///
-    /// Mutation: spawning the click with `PortSources::silent()` instead of
-    /// `stereo_from(clock_entity)` in `build_into` leaves both ports on
-    /// `GraphSource::Silence` and fails.
+    /// Mutation (not run here: needs a device): inserting the click as a
+    /// two-input node → "the click has no inputs" fails.
     #[test]
     #[ignore = "requires an audio device"]
-    fn the_click_reads_the_beat_from_the_clock() {
+    fn the_click_reads_the_beat_from_its_env() {
         let mut app = App::new();
         app.add_plugins(bevy_tutti::TuttiPlugin::default());
         app.update();
@@ -637,12 +638,12 @@ mod engine_nodes {
         let (clock, click) = (id_of(nodes.clock), id_of(nodes.click));
 
         let graph = app.world().resource::<AudioGraphRes>();
-        for port in 0..BEAT_PORTS {
-            assert_eq!(
-                graph.source(click, port),
-                GraphSource::Node(clock, port),
-                "click beat port {port} must come from the clock's port {port}"
-            );
-        }
+        assert_eq!(graph.node_inputs(click), 0, "the click has no inputs");
+        assert_eq!(graph.node_outputs(click), 2, "the click is stereo");
+        assert_eq!(
+            graph.node_outputs(clock),
+            BEAT_PORTS,
+            "the clock emits the beat on its ports"
+        );
     }
 }

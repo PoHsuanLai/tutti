@@ -1,18 +1,21 @@
-//! Regression gate: `SoundFontUnit::process` and `tick` must not allocate.
+//! Regression gate: the unit's `Node::process` must not allocate, at any
+//! block length.
 //!
 //! This crate had no such gate before the frame-offset fix, which is what made
-//! the fix worth gating: `process` now walks a variable number of render
+//! the fix worth gating: a block now walks a variable number of render
 //! segments per block rather than one fixed refill, so the obvious regressions
 //! are shaped like allocation — collecting the segment boundaries into a `Vec`,
 //! growing the scratch buffers to `size` on the audio thread, or re-sizing
 //! `midi_buffer` when a block carries more events than usual.
 //!
 //! What the unit owns, and where each is sized:
-//! - `left_buffer` / `right_buffer` — `MAX_BUFFER_SIZE` frames each, allocated
-//!   in `new` and never resized. `process` clamps `size` into them rather than
-//!   growing.
+//! - `left_buffer` / `right_buffer` — sized in `prepare` to the prepared
+//!   `MaxBlock` and never resized on the audio thread (no block is longer).
 //! - `midi_buffer` — `MIDI_BUFFER_CAPACITY` events, fully initialised in `new`
-//!   because `poll_into` iterates existing slots.
+//!   because the event input is gathered into existing slots.
+//!
+//! Driven by hand through `support::Hand` (`tutti_graph::contract::Direct`
+//! underneath), prepared outside every gate as a graph prepares a node.
 //! - the rustysynth `Synthesizer` — its voice blocks, chorus and reverb lines
 //!   are all sized from `block_size` at construction.
 //!
@@ -24,7 +27,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, BufferVec};
+mod support;
+
+use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
@@ -50,9 +55,10 @@ fn load_test_soundfont() -> Arc<SoundFont> {
     )
 }
 
-fn unit() -> SoundFontUnit {
+/// A unit at 44.1 kHz, prepared (outside any gate) and driven by hand.
+fn unit() -> Hand {
     let settings = SynthesizerSettings::new(44_100);
-    SoundFontUnit::new(load_test_soundfont(), &settings).expect("create SoundFontUnit")
+    Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).expect("create SoundFontUnit"))
 }
 
 fn note_on(key: u8, offset: u32) -> MidiEvent {
@@ -67,20 +73,14 @@ fn note_off(key: u8, offset: u32) -> MidiEvent {
 #[test]
 fn soundfont_process_idle_is_allocation_free() {
     let mut unit = unit();
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
 
     for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        unit.block(64);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            unit.block(64);
         }
     });
 }
@@ -90,20 +90,13 @@ fn soundfont_process_with_active_voices_is_allocation_free() {
     let mut unit = unit();
     unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
-
     for _ in 0..32 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        unit.block(64);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            unit.block(64);
         }
     });
 }
@@ -119,21 +112,14 @@ fn soundfont_process_with_active_voices_is_allocation_free() {
 fn soundfont_process_with_events_inside_block_is_allocation_free() {
     let mut unit = unit();
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
-
     // Warm up every lazily-sized buffer at full occupancy first.
     unit.queue_midi(&[note_on(48, 0), note_on(60, 16), note_on(72, 48)]);
     for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        unit.block(64);
     }
     unit.queue_midi(&[note_off(48, 0), note_off(60, 0), note_off(72, 0)]);
     for _ in 0..256 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        unit.process(64, &input, &mut output);
+        unit.block(64);
     }
 
     // Steady churn with events spread across the block, including frame 0 and
@@ -145,9 +131,7 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
             } else {
                 unit.queue_midi(&[note_off(60, 0), note_off(64, 24), note_off(67, 63)]);
             }
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            unit.block(64);
         }
     });
 }
@@ -161,9 +145,6 @@ fn soundfont_process_with_events_inside_block_is_allocation_free() {
 fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
     let mut unit = unit();
 
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(2);
-
     // One event per frame of the block, alternating on and off across keys so
     // the voice collection churns rather than retriggering one slot.
     let on: Vec<MidiEvent> = (0..64u32)
@@ -176,15 +157,11 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
     for _ in 0..8 {
         unit.queue_midi(&on);
         for _ in 0..16 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            unit.block(64);
         }
         unit.queue_midi(&off);
         for _ in 0..64 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            unit.process(64, &input, &mut output);
+            unit.block(64);
         }
     }
 
@@ -192,34 +169,30 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
         for _ in 0..64 {
             unit.queue_midi(&on);
             for _ in 0..8 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                unit.process(64, &input, &mut output);
+                unit.block(64);
             }
             unit.queue_midi(&off);
             for _ in 0..32 {
-                let input = input_vec.buffer_ref();
-                let mut output = output_vec.buffer_mut();
-                unit.process(64, &input, &mut output);
+                unit.block(64);
             }
         }
     });
 }
 
-/// `tick` is the per-sample path — one frame per call, polled at block size 1.
+/// One-frame blocks (the old per-sample `tick` path's shape): a graph may
+/// hand the node a block of one frame.
 #[test]
-fn soundfont_tick_is_allocation_free() {
+fn soundfont_one_frame_blocks_are_allocation_free() {
     let mut unit = unit();
     unit.queue_midi(&[note_on(60, 0), note_on(64, 0), note_on(67, 0)]);
 
-    let mut output = [0.0f32; 2];
     for _ in 0..256 {
-        unit.tick(&[], &mut output);
+        unit.tick();
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..100_000 {
-            unit.tick(&[], &mut output);
+            unit.tick();
         }
     });
 }

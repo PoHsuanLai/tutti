@@ -2,11 +2,12 @@
 //!
 //! `Plugin::open` dispatches VST2-with-the-`vst2`-feature to
 //! `vst2_in_process`, and every other format to a **subprocess** over an
-//! shm/IPC bridge. Loaded in-process the plugin is an ordinary `AudioUnit`
+//! shm/IPC bridge. Loaded in-process the plugin is an ordinary graph node
 //! and behaves like any other steady-state, fixed-working-set DSP — which is
 //! what criterion measures honestly. This benches that path directly, via
-//! `in_process_vst2`, so the measurement is of the plugin rather than of the
-//! dispatch.
+//! `in_process_vst2_client` and `Node::process` by hand
+//! (`tutti_graph::contract::Direct`), so the measurement is of the plugin
+//! rather than of the dispatch.
 //!
 //! The subprocess path is not here, and that is deliberate rather than
 //! unfinished. Its cost is dominated by the OS scheduler, so what decides
@@ -29,9 +30,9 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::AudioUnit;
-use tutti_core::BufferVec;
-use tutti_plugin::in_process_vst2;
+use tutti_core::SampleRate;
+use tutti_graph::contract::Direct;
+use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
 
 // The bench target gets dev-dependencies and the build script's env, so the
 // test suites' resolver works here unchanged rather than being copied.
@@ -39,20 +40,19 @@ use tutti_plugin::in_process_vst2;
 mod probe_path;
 
 const SR: f64 = 48_000.0;
-/// A `BufferVec` channel is `MAX_BUFFER_SIZE` frames long, and that is 64.
+/// The block every case renders (the figures `engine_render`'s header
+/// reads against are per 64-frame block).
 const BLOCK: usize = 64;
 
-fn unit() -> Box<dyn AudioUnit> {
-    let (unit, _handle) = in_process_vst2(probe_path::probe_path(), SR)
+fn unit() -> Direct<InProcessVst2Client> {
+    let (unit, _handle) = in_process_vst2_client(probe_path::probe_path(), SR)
         .expect("the reference VST2 plugin must be built — see tutti-fixture-resolve");
-    unit
+    Direct::new(unit, SampleRate(SR), BLOCK)
 }
 
-fn drive(unit: &mut dyn AudioUnit) {
-    let ib = BufferVec::new(2);
-    let mut ob = BufferVec::new(2);
-    unit.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
-    black_box(ob.buffer_ref().at_f32(0, 0));
+fn drive(unit: &mut Direct<InProcessVst2Client>) {
+    unit.block();
+    black_box(unit.output(0).first().copied());
 }
 
 /// One in-process VST2 instance, per block.
@@ -60,7 +60,7 @@ fn bench_one(c: &mut Criterion) {
     let mut group = c.benchmark_group("vst2/one");
     group.throughput(Throughput::Elements(BLOCK as u64));
     let mut u = unit();
-    group.bench_function("process", |b| b.iter(|| drive(u.as_mut())));
+    group.bench_function("process", |b| b.iter(|| drive(&mut u)));
     group.finish();
 }
 
@@ -73,11 +73,11 @@ fn bench_many(c: &mut Criterion) {
     let mut group = c.benchmark_group("vst2/instances");
     group.throughput(Throughput::Elements(BLOCK as u64));
     for n in [1usize, 4, 16] {
-        let mut units: Vec<Box<dyn AudioUnit>> = (0..n).map(|_| unit()).collect();
+        let mut units: Vec<Direct<InProcessVst2Client>> = (0..n).map(|_| unit()).collect();
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 for u in &mut units {
-                    drive(u.as_mut());
+                    drive(u);
                 }
             })
         });

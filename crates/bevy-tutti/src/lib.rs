@@ -117,9 +117,9 @@ pub mod sampler;
 pub mod soundfont;
 
 /// The polyphonic synth, re-exported whole from `tutti-polysynth`. There is no
-/// adapter code: `PolySynth` is an `AudioUnit` spawned like any other node, and
-/// its one ECS touchpoint is the `MidiNode` impl beside the trait in
-/// `midi::target`.
+/// adapter code: `PolySynth` is a native graph node spawned with
+/// `spawn_graph_node`, its one ECS touchpoint the `GraphNode` registration in
+/// `graph/events.rs` (its params by address, so an `AudioParam` reaches it).
 #[cfg(feature = "synth")]
 pub use tutti_polysynth as polysynth;
 

@@ -18,8 +18,11 @@
 //! [`graph`](crate::graph) with the rest of the per-frame machinery.
 //!
 //! The rest is already the right shape to hold directly: [`WavOut`] is handed
-//! to a pump, and [`MicMonitorNode`] is an `AudioUnit` declared through
-//! [`PortSources`](crate::graph::PortSources) like any other node.
+//! to a pump, and [`MicMonitorNode`] is a native graph node
+//! ([`AudioGraphRes::insert_node`](crate::graph::AudioGraphRes::insert_node),
+//! unforkable: an export of a graph holding the live mic is refused, naming
+//! it) declared through [`PortSources`](crate::graph::PortSources) like any
+//! other node.
 //!
 //! # [`Recorder`] or [`AudioPump`](crate::graph::AudioPump)?
 //!
@@ -53,7 +56,7 @@
 //!     // than a drift nobody reports.
 //!     let (_mic, monitor) = MicIn::open_with_monitor(None, config.sample_rate)
 //!         .expect("a capture device at the graph rate");
-//!     let id = graph.insert(monitor);
+//!     let (id, ()) = graph.insert_node(monitor);
 //!     let node = commands.spawn(id).id();
 //!     // Without this the ring fills and every later frame is discarded, with
 //!     // no error and no counter.

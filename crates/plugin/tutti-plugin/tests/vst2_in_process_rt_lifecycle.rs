@@ -1,11 +1,14 @@
 //! What the in-process VST2 node dispatches from the audio thread.
 //!
-//! `AudioUnit::reset` and `AudioUnit::set_sample_rate` are audio-thread calls,
-//! so neither may reach `Vst2Instance::set_sample_rate`: that brackets
-//! `effSetSampleRate`(10) in `effMainsChanged`(12) — the opcode plugins
-//! allocate and free their rate-dependent buffers in. Routing there dispatches
-//! two main-thread-only opcodes, plus `effStopProcess`(71) /
-//! `effStartProcess`(72), from the audio thread on every graph reset.
+//! `Node::reset` and `Node::prepare` may run while the plugin is rendering
+//! (a graph resets and re-prepares a node between blocks, on another thread
+//! from the one that renders it), so neither may reach
+//! `Vst2Instance::set_sample_rate`: that brackets `effSetSampleRate`(10) in
+//! `effMainsChanged`(12) — the opcode plugins allocate and free their
+//! rate-dependent buffers in. Routing there dispatches two main-thread-only
+//! opcodes, plus `effStopProcess`(71) / `effStartProcess`(72), racing the
+//! render. (Under `AudioUnit` these were `reset` and `set_sample_rate`,
+//! called on the audio thread itself.)
 //!
 //! Asserting a *negative* — that no opcode was dispatched — needs the plugin's
 //! own view, not the host's. The reference probe counts `effMainsChanged`
@@ -21,7 +24,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::{AudioUnit, BufferVec, SampleRate};
+use tutti_core::SampleRate;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{in_process_vst2_client, InProcessVst2Client};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -113,15 +116,41 @@ fn load() -> Loaded {
     Loaded { unit, handle, path }
 }
 
-/// Render one block through the node, so a following call lands on a plugin
-/// that has actually processed — the state a reset exists to clear.
-fn drive_block(unit: &mut impl AudioUnit) {
-    let input = BufferVec::new(AudioUnit::inputs(unit).max(1));
-    let mut output = BufferVec::new(AudioUnit::outputs(unit).max(1));
-    unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+/// `unit` prepared at `rate`, for blocks of up to [`BLOCK`].
+fn prepare_at(unit: &mut InProcessVst2Client, rate: SampleRate) {
+    tutti_graph::Node::prepare(
+        unit,
+        &tutti_graph::Prepare::new(rate, tutti_core::Samples(BLOCK)),
+    );
 }
 
-/// `AudioUnit::reset` must dispatch nothing.
+/// Render one block through the node, prepared as a graph prepares it
+/// (`Node::prepare`, which sizes its scratch and parks its rate), then
+/// `Node::process` by hand (`tutti_graph::contract::drive_in`).
+fn drive_block(unit: &mut InProcessVst2Client) {
+    drive_blocks(unit, BLOCK, BLOCK);
+}
+
+/// One block of `frames` through `unit` prepared for blocks of up to `max`.
+fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
+    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    let rate = SampleRate(SAMPLE_RATE);
+    Node::prepare(unit, &Prepare::new(rate, tutti_core::Samples(max)));
+    let silence = vec![0.0f32; frames];
+    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
+        .map(|_| &silence[..])
+        .collect();
+    let env = Env {
+        frame: tutti_core::Frame(0),
+        sample_rate: rate,
+        block_len: tutti_core::Samples(frames),
+        transport: Transport::default(),
+        changes: TransportChanges::NONE,
+    };
+    let _ = tutti_graph::contract::drive_in(unit, &env, &inputs, &[], &[]);
+}
+
+/// `Node::reset` must dispatch nothing.
 ///
 /// It ran `Vst2Instance::set_sample_rate`, so pre-fix this saw the full
 /// `effStopProcess` → `effMainsChanged(0)` → `effSetSampleRate` →
@@ -146,7 +175,7 @@ fn reset_dispatches_no_opcode_to_the_plugin() {
          trivially true against a plugin that was never driven"
     );
 
-    AudioUnit::<tutti_core::F32>::reset(&mut loaded.unit);
+    tutti_graph::Node::reset(&mut loaded.unit);
 
     let after = read_capture(&loaded.path);
     assert_eq!(
@@ -161,10 +190,21 @@ fn reset_dispatches_no_opcode_to_the_plugin() {
     drop(loaded.handle);
 }
 
-/// The f64 `AudioUnit` impl is a separate function body and carried the same
-/// call, so it needs its own witness rather than inheriting the f32 one's.
+/// Blocks of any length up to the prepared maximum reach the plugin, and a
+/// re-prepare for a longer maximum dispatches nothing to it.
+///
+/// The `AudioUnit` path this node had beside the graph's sized its scratch
+/// to 64 frames (`BLOCK_SIZE`, the D4 shape of doc 013) and grew it on the
+/// audio thread past that; the node now sizes it in `prepare`, to the
+/// graph's `MaxBlock`. (This test replaced one for the `AudioUnit<F64>`
+/// body's `reset`, a second audio-thread entry that went with it: the graph
+/// is `f32` only.)
+///
+/// Mutation (run): `ensure_scratch_size` not resizing the render scratch
+/// (`RenderScratch` left at its load-time size) → the 1 000-frame block
+/// renders past it → fails.
 #[test]
-fn f64_reset_dispatches_no_opcode_to_the_plugin() {
+fn blocks_past_64_frames_reach_the_plugin_after_a_prepare() {
     let _guard = lock_probe();
     let mut loaded = load();
 
@@ -172,23 +212,24 @@ fn f64_reset_dispatches_no_opcode_to_the_plugin() {
     let before = read_capture(&loaded.path);
     assert!(before.valid, "the probe observed no render");
 
-    AudioUnit::<tutti_core::F64>::reset(&mut loaded.unit);
-
+    drive_blocks(&mut loaded.unit, 1_024, 1_000);
+    drive_blocks(&mut loaded.unit, 1_024, 1);
     let after = read_capture(&loaded.path);
     assert_eq!(
         after.suspend_count, before.suspend_count,
-        "the f64 reset dispatched effMainsChanged(0) from the audio thread"
+        "a re-prepare dispatched effMainsChanged(0)"
     );
     assert_eq!(
         after.resume_count, before.resume_count,
-        "the f64 reset dispatched effMainsChanged(1) from the audio thread"
+        "a re-prepare dispatched effMainsChanged(1)"
     );
 
     drop(loaded.handle);
 }
 
-/// `AudioUnit::set_sample_rate` is an audio-thread call too, and carried the
-/// same bracket. It must park the rate rather than dispatch it.
+/// `Node::prepare` at a new rate (a device change re-prepares a running
+/// graph) must park the rate rather than dispatch it. It was
+/// `AudioUnit::set_sample_rate`, and carried the same bracket.
 ///
 /// The rate is *also* asserted not to have reached the plugin, not only the
 /// mains counters: a host that skipped the bracket but still dispatched
@@ -208,20 +249,20 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
         "load must have told the plugin the rate it was loaded at"
     );
 
-    AudioUnit::<tutti_core::F32>::set_sample_rate(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
 
     let after = read_capture(&loaded.path);
     assert_eq!(
         after.suspend_count, before.suspend_count,
-        "set_sample_rate dispatched effMainsChanged(0) from the audio thread"
+        "prepare dispatched effMainsChanged(0)"
     );
     assert_eq!(
         after.resume_count, before.resume_count,
-        "set_sample_rate dispatched effMainsChanged(1) from the audio thread"
+        "prepare dispatched effMainsChanged(1)"
     );
     assert_eq!(
         after.sample_rate, SAMPLE_RATE as f32,
-        "set_sample_rate dispatched effSetSampleRate from the audio thread"
+        "prepare dispatched effSetSampleRate"
     );
 
     drop(loaded.handle);
@@ -242,7 +283,7 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let before = read_capture(&loaded.path);
     assert_eq!(before.sample_rate, SAMPLE_RATE as f32);
 
-    AudioUnit::<tutti_core::F32>::set_sample_rate(&mut loaded.unit, SampleRate(96_000.0));
+    prepare_at(&mut loaded.unit, SampleRate(96_000.0));
     // The drain point: `editor_idle` is the per-frame main-thread call, and it
     // is reached through the handle rather than the node — the two ends of the
     // deferral are deliberately on opposite sides of the audio/control split.
@@ -251,7 +292,7 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let after = read_capture(&loaded.path);
     assert_eq!(
         after.sample_rate, 96_000.0,
-        "the rate parked by the audio thread never reached the plugin"
+        "the rate parked by prepare never reached the plugin"
     );
     // And it arrived through the bracket, which is what makes it safe to
     // deliver at all: one suspend and one resume, on the main thread.

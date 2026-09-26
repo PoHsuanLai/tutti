@@ -116,8 +116,8 @@ fn the_node_follows_its_graphs_rate() {
 /// **A forked graph plays the clip**, on its render's `Env`, from frame
 /// 1 000 as live.
 ///
-/// Mutation: the fork source's `native` false → a `Legacy` fork with no event
-/// input; the fork's compile refuses the edge → fails.
+/// Mutation: the unit inserted with no fork source (`fork: None` in its
+/// `IntoNode`) → the fork is refused → fails.
 #[test]
 fn a_forked_graph_plays_the_clip() {
     let lead = {

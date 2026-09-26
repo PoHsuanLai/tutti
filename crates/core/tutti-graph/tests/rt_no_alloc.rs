@@ -641,3 +641,45 @@ fn modulated_params_are_allocation_free() {
         "a param source was delayed by PDC inside the gate"
     );
 }
+
+/// `contract::Direct`, the by-hand driver an instrument's allocation gate
+/// runs its node through, allocates nothing per block while it plays a full
+/// block of events into a node's event input, and while it collects a
+/// node's event output (both lists are reserved at `new`), under a rolling
+/// transport.
+///
+/// Mutation (run): `Direct::new` reserving no capacity (`Vec::new()` for
+/// the event lists) → the first `events` inside the gate allocates → fails.
+#[test]
+fn direct_driving_events_does_not_allocate() {
+    use tutti_graph::contract::{Direct, Emitter, Pulse};
+    use tutti_graph::{Event, Offset};
+    use tutti_types::{Bpm, SampleRate};
+
+    let rate = SampleRate(48_000.0);
+    let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let mut pulse = Direct::new(Pulse::new(Latency::ZERO), rate, 64);
+    pulse.set_transport(rolling);
+    let events: Vec<Event> = (0..64)
+        .map(|k| {
+            Event::midi(
+                Offset::new(k, Samples(64)).expect("inside"),
+                [0x2090_3c64, 0, 0, 0],
+            )
+        })
+        .collect();
+    let note = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+    let mut emitter = Direct::new(Emitter::new(Frame(70), note), rate, 64);
+    emitter.set_transport(rolling);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..4 {
+            pulse.events(0, &events);
+            pulse.block();
+            emitter.block();
+        }
+    });
+    assert!(
+        pulse.output(0).iter().any(|&s| s != 0.0),
+        "the events played"
+    );
+}

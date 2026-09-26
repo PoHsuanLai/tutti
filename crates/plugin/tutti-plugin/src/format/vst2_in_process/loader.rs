@@ -1,4 +1,5 @@
-//! Construct the `(AudioUnit, PluginHandle)` pair for an in-process VST2.
+//! Construct the `(InProcessVst2Client, PluginHandle)` pair for an
+//! in-process VST2.
 
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
-use super::audio_unit::InProcessVst2Client;
+use super::client::InProcessVst2Client;
 use super::control_backend::InProcessVst2Backend;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
@@ -22,26 +23,13 @@ use smallvec::SmallVec;
 /// smaller.
 const MAX_BLOCK_SIZE: usize = 4096;
 
-/// Load a VST2 plugin in-process. Returns the audio-graph node (a
-/// boxed `AudioUnit`) and a control handle.
+/// Load a VST2 plugin in-process. Returns the graph node (insert it with
+/// `Editor::insert`: it is a `tutti_graph::Node`) and a control handle.
 ///
-/// The returned audio unit and handle share the underlying
+/// The returned node and handle share the underlying
 /// `tutti_vst2_host::Vst2Instance` via an `Arc<Mutex<…>>`. Drop both to drop
 /// the plugin. Editors are opened through the handle; audio happens on
-/// whatever thread fundsp drives the unit from.
-pub fn load(
-    path: &Path,
-    sample_rate: f64,
-) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-    let (client, handle) = load_client(path, sample_rate)?;
-    Ok((Box::new(client), handle))
-}
-
-/// [`load`], keeping the concrete [`InProcessVst2Client`].
-///
-/// The same load, one boxing step earlier, so a caller that needs the client's
-/// own surface (its MIDI port) is not left with only the `AudioUnit` supertrait.
-/// `load` is this plus a `Box::new`, so the two cannot drift.
+/// whatever thread the graph's executor runs on.
 pub fn load_client(
     path: &Path,
     sample_rate: impl Into<tutti_core::SampleRate>,
@@ -128,7 +116,7 @@ pub fn load_client(
     // Built here rather than inside the node so the node's producer end and the
     // backend's drain end are the same cell: the audio thread parks a rate in
     // it, `editor_idle` dispatches from it.
-    let pending_sample_rate = Arc::new(AtomicU64::new(super::audio_unit::NO_PENDING_RATE));
+    let pending_sample_rate = Arc::new(AtomicU64::new(super::client::NO_PENDING_RATE));
 
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),

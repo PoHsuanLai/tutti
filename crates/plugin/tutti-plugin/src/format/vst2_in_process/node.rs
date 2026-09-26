@@ -3,21 +3,21 @@
 //! on an event output (a plugin that declared `Features::MIDI_OUT`), each
 //! event on the frame the plugin gave it.
 //!
-//! Not forkable (see `AudioUnit::forkable` on [`InProcessVst2Client`]): a
-//! graph holding one is refused a fork. Its transport still comes from the
-//! reader installed with `set_transport_source`, polled once per block.
+//! Not forkable (see its `IntoNode` below): a graph holding one is refused a
+//! fork. Its transport still comes from the reader installed with
+//! `set_transport_source`, polled once per block.
 
-use tutti_core::{AudioUnit, ChannelLayout, Samples};
+use tutti_core::{ChannelLayout, Samples};
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status, Ump,
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 
-use super::audio_unit::{drive_f32, InProcessVst2Client};
+use super::client::{drive_f32, InProcessVst2Client};
 use crate::protocol::Features;
 
-/// The most channels a block hands the plugin, as the `AudioUnit` path does.
+/// The most channels a block hands the plugin (`drive_f32`'s stack tables).
 const MAX_CHANNELS: usize = 16;
 
 impl Node for InProcessVst2Client {
@@ -35,10 +35,10 @@ impl Node for InProcessVst2Client {
         .with_tail(self.metadata.tail)
     }
 
-    /// The rate (queued for the plugin, as `AudioUnit::set_sample_rate`
-    /// does), and scratch for the largest block. Control thread.
+    /// The rate (parked for the plugin, dispatched from the main thread),
+    /// and scratch for the largest block. Control thread.
     fn prepare(&mut self, p: &Prepare) {
-        <Self as AudioUnit>::set_sample_rate(self, p.sample_rate());
+        self.set_rate(p.sample_rate());
         self.ensure_scratch_size(p.max_block().get());
     }
 
@@ -46,9 +46,9 @@ impl Node for InProcessVst2Client {
         let size = io.frames();
         let n_in = (self.metadata.num_inputs.count() as usize).min(MAX_CHANNELS);
         let n_out = (self.metadata.num_outputs.count() as usize).min(MAX_CHANNELS);
-        if size == 0 || size > self.process_scratch.f32_in.first().map_or(size, Vec::len) {
-            return Status::Modified;
-        }
+        // No clamp and no size check: `prepare` sized the scratch to the
+        // prepared `MaxBlock`, and a block is never longer (doc 013 defect
+        // D4; the `AudioUnit` path it replaced was capped at 64 frames).
         // The event input's MIDI, in its (sorted) order; past the inline
         // capacity it is dropped rather than spill (allocate).
         self.midi.clear();
@@ -117,7 +117,14 @@ impl Node for InProcessVst2Client {
     }
 
     fn reset(&mut self) {
-        <Self as AudioUnit>::reset(self);
+        // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
+        // opcode that clears DSP state on its own: the only two that touch it
+        // are `effMainsChanged`, where plugins allocate and free their
+        // rate-dependent buffers, and the `effStartProcess`/`effStopProcess`
+        // pair, which announces an interruption rather than a clear and is only
+        // legal while resumed. Neither may race the audio thread's `process`.
+        // `Vst2Instance::reset_processing_state` is that cycle, on the main
+        // thread, for a host that wants it on a locate or a loop wrap.
     }
 }
 
@@ -133,8 +140,19 @@ fn sort_by_offset(events: &mut crate::protocol::MidiEventVec) {
 }
 
 /// The plugin, inserted as a graph node. No controls (its per-block inputs
-/// are installed through it before it goes in), and no fork source: see the
-/// module docs.
+/// are installed through it before it goes in), and **no fork source**: a
+/// clone shares the one in-process plugin instance, so a fork would render
+/// through the live plugin's state beside the live graph. A fork needs a
+/// second instance loaded from this one's state.
+///
+/// The subprocess `PluginClient` has that (`host::node::fork`); this node
+/// does not yet. It would be a second `AEffect` from the same library *in
+/// this process* — one more image-global the two instances could share —
+/// and a plugin whose state is not a chunk (`programsAreChunks` clear)
+/// saves only its current program's parameters, so what "the state" is
+/// differs per plugin in a way the subprocess formats do not. Until that is
+/// built and tested against the VST2 probe, a graph holding an in-process
+/// VST2 plugin is refused a fork (`ForkError::NotForkable`).
 impl IntoNode for InProcessVst2Client {
     type Controls = ();
 

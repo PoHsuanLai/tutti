@@ -1,121 +1,55 @@
 //! Forking a [`PolySynth`] for the graph's export (`Editor::fork`, design
-//! doc 013 PR 12): a fresh synth that shares nothing with the live one. Its
-//! MIDI comes from its event input, as the live synth's does: the fork of
-//! the graph forks the clip node feeding it too (doc 013, rewrite item 5).
+//! doc 013): a fresh synth that shares nothing with the live one. Its MIDI
+//! comes from its event input, as the live synth's does: the fork of the
+//! graph forks the clip node feeding it too (doc 013, rewrite item 5).
 //!
-//! # Why not a clone of the graph's shadow
+//! # A `ParamNode` fork
 //!
-//! A host that inserts the synth through `tutti_graph::Legacy::controlled`
-//! gets a fork source for free: a clone of the node's **shadow**, isolated
-//! when the node was inserted. Its `Param` cells were detached then, and the
-//! synth's settings path (`AudioUnit::set`) is a no-op, so no write after
-//! insert reaches the shadow: the master volume and the unison detune and
-//! spread are read by the live synth from cells a host (or a modulation
-//! target) writes, and the export rendered the values the synth was built
-//! with.
-//!
-//! # What this forks from instead
-//!
-//! A **template**: a clone of the synth taken when the source is made, never
-//! processed and deliberately **not** isolated, so it shares the live synth's
-//! `Param` cells. A fork is then a clone of the template,
-//! `AudioUnit::isolate` (detaching the `Param` cells **at their values now**,
-//! so a live move after the fork does not reach the render, and emptying the
-//! voices), then `AudioUnit::reset`.
+//! The synth is a `tutti_graph::ParamNode`, inserted through
+//! `tutti_graph::param_parts`: the editor keeps a **template** (a clone taken
+//! at insert, never processed, sharing the live synth's `Param` cells) and
+//! the synth's `ParamSet`. A fork is the template's
+//! [`fork_fresh`](tutti_graph::ParamNode::fork_fresh) —
+//! [`fork_instance`](PolySynth::fork_instance): a clone with its `Param`
+//! cells **detached** (so a live move after the fork does not reach the
+//! render, nor a move on the fork the live synth) and every voice silenced —
+//! and then each param set to its **authored** value: what the host last
+//! set through the `ParamSet`, not whatever a modulation source had added to
+//! the cell at the instant of the fork (the export runs its own modulation).
 //!
 //! What the fork does **not** carry: sounding voices, and by-value state the
 //! live synth reached through MIDI after the template was taken (a pitch
 //! bend, a CC-driven cutoff, an MPE toggle) — the clip replays whatever of
 //! that it holds.
-//!
-//! A `Param` cell read at the fork is its **live value**: the authored base
-//! plus whatever a modulation source had added at that instant. The render
-//! then holds it.
-
-use tutti_core::AudioUnit;
-use tutti_graph::{ForkCause, ForkMode, ForkSource, Forked, IntoNode, Legacy};
 
 use crate::PolySynth;
 
-/// [`PolySynth::fork_source`]'s source: the template in the module docs.
-pub(crate) struct SynthFork {
-    template: PolySynth,
-    /// Whether the fork is a native node (the synth was inserted as one,
-    /// `IntoNode for PolySynth`) rather than a `Legacy` one.
-    native: bool,
-}
-
-impl SynthFork {
-    /// The source of a synth inserted as a native node.
-    pub(crate) fn native(synth: &PolySynth) -> Self {
-        Self {
-            template: synth.clone(),
-            native: true,
-        }
-    }
-
-    /// The fork, as a synth: what [`ForkSource::fork`] wraps.
-    fn synth(&self) -> PolySynth {
-        self.template.fork_instance()
-    }
-}
-
-impl ForkSource for SynthFork {
-    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        let fork = self.synth();
-        // The fork runs as the host runs the live synth: natively, or
-        // through `Legacy` (`into_node`, so it carries no fork source of its
-        // own: a fork is not forked again).
-        Ok(Forked::new(if self.native {
-            Box::new(fork)
-        } else {
-            Legacy::new(fork).into_node().0
-        }))
-    }
-}
-
 impl PolySynth {
     /// A fresh synth for a fork of the graph this one plays in: the same
-    /// config, voices and control values (the `Param` cells read now), and no
-    /// sounding voice. See the `fork` module docs (`src/fork.rs`).
+    /// config and voices, control cells of its own (at the values this
+    /// synth's hold now), and no sounding voice. See the `fork` module docs
+    /// (`src/fork.rs`). What `ParamNode::fork_fresh` returns.
     pub fn fork_instance(&self) -> PolySynth {
         let mut fork = self.clone();
-        fork.isolate();
-        fork.reset();
+        // Control cells: detached at their current values, so the fork
+        // renders the controls it was taken with rather than following live
+        // moves (and a move on the fork never reaches the live synth).
+        fork.detach_controls();
+        // A clean, inactive voice set: a clone carries the live synth's
+        // sounding notes, which a fork must not replay.
+        fork.reset_voices();
         fork
-    }
-
-    /// The [`ForkSource`] a host hands the graph's editor when it inserts
-    /// this synth, so that a fork of the graph (an export) forks it through
-    /// [`fork_instance`](Self::fork_instance).
-    ///
-    /// For a host that wraps the synth in its own node builder (bevy-tutti's
-    /// `Legacy::controlled`, for a settings ring and a shadow):
-    /// `NodeParts { node, controls, fork: Some(synth.fork_source()) }`.
-    ///
-    /// Take it from the synth that goes into the graph, **before** it goes
-    /// in: it keeps a template clone that shares that synth's `Param` cells
-    /// (see the `fork` module docs), and costs a second copy of
-    /// the synth's voices for as long as the node is in the graph.
-    pub fn fork_source(&self) -> Box<dyn ForkSource> {
-        Box::new(self.fork_template())
-    }
-
-    fn fork_template(&self) -> SynthFork {
-        SynthFork {
-            template: self.clone(),
-            native: false,
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use tutti_core::{AudioUnit, BufferVec, SampleRate, Seconds, MAX_BUFFER_SIZE};
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_core::{SampleRate, Seconds, UnitParam};
+    use tutti_graph::contract::{assert_param_fork, Direct};
+    use tutti_graph::{Event, Offset, ParamFork};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 
-    use crate::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
+    use crate::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
     const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -128,6 +62,7 @@ mod tests {
                 attack: Seconds(0.0),
                 ..Default::default()
             },
+            unison: Some(UnisonConfig::default()),
             ..Default::default()
         })
         .expect("synth builds")
@@ -137,44 +72,69 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
     }
 
-    /// Render `frames` of channel 0 in 64-frame blocks.
-    fn render(unit: &mut PolySynth, frames: usize) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        let mut out = Vec::with_capacity(frames);
-        while out.len() < frames {
-            let n = (frames - out.len()).min(MAX_BUFFER_SIZE);
-            unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-            out.extend_from_slice(&output.buffer_ref().channel_f32(0)[..n]);
+    /// The peak of channel 0 over `frames` of `synth` with a note on at
+    /// frame 0, in 64-frame blocks.
+    fn peak(synth: PolySynth, frames: usize) -> f32 {
+        let mut hand = Direct::new(synth, RATE, 64);
+        let on = Offset::new(0, tutti_core::Samples(64)).expect("inside");
+        hand.events(0, &[Event::midi(on, note_on().data)]);
+        let mut peak = 0.0f32;
+        for _ in 0..frames / 64 {
+            hand.block();
+            peak = hand.output(0).iter().fold(peak, |a, s| a.max(s.abs()));
         }
-        out
+        peak
     }
 
-    /// **A fork renders the controls as they stood at the fork**: a volume
-    /// set on the live synth after its source was made reaches the fork (the
-    /// cell is read at fork time), and one set after the fork does not
-    /// (`isolate` detached the cell).
+    /// The synth's params by address fork as a `ParamNode`'s must: every one
+    /// in its `ParamSet` (volume, and with unison the detune and spread), a
+    /// fork starting from the authored value, and no cell shared either way.
     ///
-    /// Mutation (run): dropping `self.master_volume.detach()` from
-    /// `PolySynth::isolate` → the move after the fork reaches it. Mutation
-    /// (run): `fork_template` isolating its template → the fork renders the
-    /// volume the synth was built with.
+    /// Mutations (run): drop `unison.detach()` from `fork_instance` →
+    /// "Detune: a live write reached the fork" → fails; `param_set` leaving
+    /// out `StereoSpread` → the list above is short (and
+    /// `a_fork_renders_the_volume_and_unison_it_was_taken_with`, which sets
+    /// it by address, is refused) → fails.
     #[test]
-    fn a_fork_takes_the_controls_at_the_fork() {
-        let peak = |before: f32, after: f32| {
+    fn the_synth_forks_as_a_param_node() {
+        let synth = saw();
+        let params: Vec<UnitParam> = tutti_graph::ParamNode::param_set(&synth).params().collect();
+        assert_eq!(
+            params,
+            [
+                UnitParam::Volume,
+                UnitParam::Detune,
+                UnitParam::StereoSpread
+            ]
+        );
+        assert_param_fork(synth);
+    }
+
+    /// **A fork renders the volume last set through the synth's params**: a
+    /// volume set before the fork is the fork's, one set after is not, and
+    /// what a modulation driver left in the live cell is not either.
+    ///
+    /// Mutation (run): `fork_instance` not detaching `master_volume` → the
+    /// move after the fork reaches it → fails. Mutation (run): the template
+    /// taken detached (`ParamFork::new(&synth.fork_instance())`) → the fork
+    /// renders the volume the synth was built with → fails.
+    #[test]
+    fn a_fork_takes_the_authored_volume_at_the_fork() {
+        let at = |before: f32, after: f32| {
             let live = saw();
-            let source = live.fork_template();
-            live.set_volume(before);
-            let mut fork = source.synth();
-            live.set_volume(after);
-            fork.queue_midi(&[note_on()]);
-            let out = render(&mut fork, 4_096);
-            out.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+            let source = ParamFork::new(&live);
+            let set = source.params().clone();
+            set.set(UnitParam::Volume, before);
+            // A modulation driver's composite in the live cell: not authored.
+            live.set_volume(before * 3.0);
+            let fork = source.fork_node();
+            set.set(UnitParam::Volume, after);
+            peak(fork, 4_096)
         };
-        let half = peak(0.5, 0.5);
+        let half = at(0.5, 0.5);
         assert!(half > 0.0, "the note sounds");
-        assert_eq!(peak(0.5, 1.0), half, "a move after the fork reached it");
-        let full = peak(1.0, 1.0);
+        assert_eq!(at(0.5, 1.0), half, "a move after the fork reached it");
+        let full = at(1.0, 1.0);
         assert!(
             (full - 2.0 * half).abs() < 1e-5,
             "the volume set before the fork is the fork's: {full} vs 2 × {half}"

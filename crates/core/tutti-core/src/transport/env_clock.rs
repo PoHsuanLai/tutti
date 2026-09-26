@@ -98,21 +98,36 @@ impl Node for EnvClock {
 /// ([`Transport::clock`](tutti_graph::Transport::clock)).
 fn beats(env: &tutti_graph::Env, mut emit: impl FnMut(usize, Beat)) {
     for (start, piece) in env.segments() {
-        let t = piece.transport;
-        let from = start.index();
-        let to = from + piece.block_len.get();
-        let mut clock = t.clock(piece.sample_rate);
-        debug_assert_eq!(
-            clock.beat(),
-            t.beat(),
-            "the clock a transport describes starts on its beat"
-        );
-        let region = t.looping.and_then(|l| LoopRange::new(l.start, l.end));
-        for i in from..to {
-            emit(i, clock.beat());
-            if t.playing {
-                clock.advance(Samples(1), region);
-            }
+        piece_beats(start, &piece, &mut emit);
+    }
+}
+
+/// The beat of every frame of one piece of a block ([`Env::segments`]'s
+/// `(start, piece)`), handed to `emit` with its index in the whole block:
+/// the piece's transport's clock, walked emit-then-roll. The one walk
+/// [`EnvClock`] and the metronome (`ClickNode`, which gates each piece on
+/// its transport) share.
+///
+/// [`Env::segments`]: tutti_graph::Env::segments
+pub(super) fn piece_beats(
+    start: tutti_graph::Offset,
+    piece: &tutti_graph::Env,
+    mut emit: impl FnMut(usize, Beat),
+) {
+    let t = piece.transport;
+    let from = start.index();
+    let to = from + piece.block_len.get();
+    let mut clock = t.clock(piece.sample_rate);
+    debug_assert_eq!(
+        clock.beat(),
+        t.beat(),
+        "the clock a transport describes starts on its beat"
+    );
+    let region = t.looping.and_then(|l| LoopRange::new(l.start, l.end));
+    for i in from..to {
+        emit(i, clock.beat());
+        if t.playing {
+            clock.advance(Samples(1), region);
         }
     }
 }

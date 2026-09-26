@@ -70,7 +70,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         // SAFETY: as above.
         unsafe { std::env::set_var(k, v) };
     }
-    let (_unit, handle) = tutti_plugin::in_process_vst2(&path, SAMPLE_RATE)
+    let (_unit, handle) = tutti_plugin::in_process_vst2_client(&path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process VST2 load failed for {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving it.
     clear_probe_env();
@@ -388,10 +388,10 @@ fn the_node_carries_midi_on_its_event_ports() {
 /// The in-process node reports the tail the host decoded, not a blanket
 /// `Unknown`.
 ///
-/// Both `AudioUnit` impls on this type (f32 and f64) used to hard-code
+/// The `AudioUnit` impls this type had (f32 and f64) used to hard-code
 /// `Unknown` with a comment claiming VST2 has no tail query. It has one —
 /// `effGetTailSize` — and `tutti-vst2-host` now asks it at load. This is the
-/// audio-thread-side consumer of that answer, so it gets its own coverage: the
+/// graph-side consumer of that answer (the node's declared tail), so it gets its own coverage: the
 /// out-of-process loader's tests cannot see this code path at all.
 ///
 /// The raw `1` case is the one worth pinning. VST2 inverts the convention every
@@ -400,7 +400,6 @@ fn the_node_carries_midi_on_its_event_ports() {
 /// an unmeasured one.
 #[test]
 fn the_node_reports_the_decoded_tail_rather_than_unknown() {
-    use tutti_core::{AudioUnit, F32};
     use tutti_plugin_types::{PluginTail, Samples};
 
     for (raw, want) in [
@@ -414,12 +413,13 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         // SAFETY: the probe lock is held, so no other test thread is touching
         // the environment.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
-        let (mut unit, _handle) = tutti_plugin::in_process_vst2_client(&path, SAMPLE_RATE)
+        let (unit, _handle) = tutti_plugin::in_process_vst2_client(&path, SAMPLE_RATE)
             .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
         clear_probe_env();
 
+        // The tail the graph's compiler folds: the node's declared shape.
         assert_eq!(
-            AudioUnit::<F32>::tail(&mut unit),
+            tutti_graph::Node::shape(&unit).tail,
             want,
             "raw tail {raw} must decode to {want:?}"
         );

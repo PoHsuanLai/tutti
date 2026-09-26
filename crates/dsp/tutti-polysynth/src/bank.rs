@@ -620,16 +620,6 @@ impl VoiceBank {
         self.rng.iter().flat_map(|g| g.to_array()).collect()
     }
 
-    pub(crate) fn footprint(&self) -> usize {
-        let groups = self.phase.len();
-        let lanes = self.stage.len();
-        groups
-            * (core::mem::size_of::<V>() * (3 + 3 + 4 + 3 + 3 + 3 + 2 + 2)
-                + core::mem::size_of::<u32x8>()
-                + 1)
-            + lanes * (2 * core::mem::size_of::<f32>() + core::mem::size_of::<EnvStage>())
-    }
-
     // --- Render ----------------------------------------------------------
 
     /// Render `n <= CONTROL_BLOCK` frames of every live group and return the

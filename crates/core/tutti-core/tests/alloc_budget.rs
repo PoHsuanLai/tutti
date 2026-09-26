@@ -35,6 +35,7 @@
 //! the message says so.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod support;
@@ -51,23 +52,35 @@ use tutti_types::NodeKey;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 
-/// A counting allocator, modelled on `profile_stretch_clone.rs`'s.
+thread_local! {
+    /// Whether this thread's allocations are counted: set by [`measure`] on
+    /// the thread that runs the measured work, and nowhere else. `const`, so
+    /// reading it from inside the allocator never allocates.
+    static COUNTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A counting allocator, modelled on `profile_stretch_clone.rs`'s, that
+/// counts only the thread [`measure`] runs on.
 struct Counting;
 
 // SAFETY: forwards every call to `System` unchanged; the counters are the
 // only addition and they cannot affect allocation behaviour.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        if COUNTED.with(Cell::get) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(new_size.saturating_sub(layout.size()), Ordering::Relaxed);
+        if COUNTED.with(Cell::get) {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(new_size.saturating_sub(layout.size()), Ordering::Relaxed);
+        }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -75,16 +88,23 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static A: Counting = Counting;
 
-/// Run `f`, returning `(allocations, bytes)` attributable to it.
+/// Run `f`, returning `(allocations, bytes)` attributable to it: those made
+/// on **this** thread while it runs.
 ///
-/// Single-threaded by construction — nextest gives every test its own
-/// process, so nothing else is allocating while this runs. Under plain
-/// `cargo test` the counters would pick up other tests' work, which is one
-/// more reason this repo does not use it.
+/// Only this thread's, because the process is not single-threaded even under
+/// nextest: libtest runs the test on a thread of its own, and its main thread
+/// allocates around that on its own schedule. Counting every thread let those
+/// land in the window now and then — `rendering_blocks_allocates_nothing`
+/// failed about 1 run in 4 under CPU load with exactly "4 times (900 bytes)",
+/// all of them from another thread (instrumented: none on the rendering
+/// thread). Everything measured here runs on the calling thread (the engine
+/// renders where `process` is called), so nothing it does escapes the count.
 fn measure<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
     ALLOCS.store(0, Ordering::Relaxed);
     BYTES.store(0, Ordering::Relaxed);
+    COUNTED.with(|c| c.set(true));
     let out = f();
+    COUNTED.with(|c| c.set(false));
     (
         ALLOCS.load(Ordering::Relaxed),
         BYTES.load(Ordering::Relaxed),
@@ -184,7 +204,8 @@ fn a_no_op_commit_allocates_a_bounded_amount() {
 /// `Net`, which is still what `topology::compile` builds.
 ///
 /// Mutation (run): allocate a `Vec` at the top of `Engine::walk` → 100
-/// blocks allocate → fails.
+/// blocks allocate → fails. (Counted because the engine renders on the
+/// calling thread; see [`measure`] for why only that thread counts.)
 #[test]
 fn rendering_blocks_allocates_nothing() {
     let transport = Transport::new(48_000.0);

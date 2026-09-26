@@ -1,34 +1,20 @@
-//! Beat-scheduled parameter automation as a sample-accurate producer.
+//! The curves a hosted plugin's parameter automation samples: [`TimedParam`]
+//! (one curve per parameter), and the curve shapes a host builds them from
+//! ([`LfoCurve`], [`LfoOffset`], [`OffsetCurve`], [`PluginParamTarget`]).
 //!
-//! The parameter-automation counterpart of [`super::harmony_source::HarmonySource`]:
-//! a [`ParamAutomationSource`] holds one [`AutomationEnvelope`] per plugin
-//! parameter id plus a [`TransportState`]. Each block it reads the transport
-//! beat, walks the block sample-by-sample stepping the beat cursor, and fills a
-//! reused [`ParameterChanges`] with one [`ParameterPoint`] per parameter at
-//! sample-accurate offsets across the block window.
-//!
-//! Unlike chord/scale (stepwise *context* emitted only at change boundaries) an
-//! automation envelope is a *continuous* signal, so it is densely sampled: one
-//! point per `stride` samples, matching how `AutomationLaneNode::process` fills an
-//! audio block. Plugins receive real per-block parameter ramps rather than a
-//! single frame-rate `set_parameter` value.
-//!
-//! This is deliberately the *only* automation path for hosted plugins — the
-//! frame-rate `set_parameter` route was never wired for hosted-plugin params
-//! (no `AutomationTarget` fed it), so there is no legacy behaviour to preserve;
-//! automation reaches plugins sample-accurate or not at all.
+//! What samples them is the automation node
+//! ([`PluginAutomation`](super::PluginAutomation)), an event source wired to
+//! the plugin's event input; this module holds its point budget
+//! ([`stride_for`], [`MAX_POINTS`]). Plugins receive real per-block parameter
+//! ramps rather than a single frame-rate `set_parameter` value: automation
+//! reaches a hosted plugin sample-accurate or not at all.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use atomic_float::AtomicF64;
-
-use tutti_core::transport::TransportState;
-use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, SampleRate};
+use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement};
 use tutti_nodes::automation::Curve;
 
-use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
-use crate::protocol::{ParamAddress, ParameterChanges};
+use crate::protocol::ParamAddress;
 
 /// One plugin parameter's automation curve, keyed by the parameter's address.
 /// The [`Curve`] is evaluated against the transport beat — any beat-keyed curve
@@ -226,7 +212,7 @@ impl Curve for OffsetCurve {
 /// [`AtomicTarget`](tutti_nodes::AtomicTarget) (which collapses its curve to one
 /// scalar per frame and mirrors it into an atomic) this target **keeps the whole
 /// curve** and re-evaluates it per beat: it implements [`Curve`] as
-/// `layered.value_at(beat)`, and the plugin's per-block [`ParameterChanges`]
+/// `layered.value_at(beat)`, and the plugin's per-block `ParameterChanges`
 /// producer samples that several times per audio block. So a beat-varying
 /// (LFO) layer traces a smooth ramp across the block instead of stepping once
 /// per frame, while a constant (automation) layer sums in beside it — one
@@ -370,7 +356,7 @@ const SAMPLE_STRIDE: usize = 8;
 
 /// The most points one parameter gets per block: a `ParameterQueue`'s inline
 /// capacity, so a queue never spills to the heap on the audio thread.
-const MAX_POINTS: usize = 10;
+pub(super) const MAX_POINTS: usize = 10;
 
 /// The spacing of automation points in a `block_size`-frame block: every
 /// [`SAMPLE_STRIDE`] samples, widened for a long block so the points (the
@@ -380,202 +366,16 @@ const MAX_POINTS: usize = 10;
 /// 512-frame block and allocate. The plugin interpolates between points, so a
 /// wider spacing over a longer block is a coarser ramp, not a lost value: the
 /// block's end is still exact.
-fn stride_for(block_size: usize) -> usize {
+pub(super) fn stride_for(block_size: usize) -> usize {
     let last = block_size.saturating_sub(1);
     SAMPLE_STRIDE.max(last.div_ceil(MAX_POINTS - 1))
-}
-
-/// Beat-scheduled parameter-automation producer. Cheap to clone (envelopes
-/// shared via `Arc`, transport shared via `Arc`) so the fundsp graph-commit
-/// clone of the parent node doesn't reallocate the curves.
-#[derive(Clone)]
-pub struct ParamAutomationSource {
-    params: Arc<[TimedParam]>,
-    transport: Arc<dyn TransportState>,
-    /// Shared, like [`TransportSource`](super::transport_source::TransportSource)'s,
-    /// so a device rate change reaches the box fundsp is running. A plain field
-    /// here is unreachable rather than merely stale: the source lives behind an
-    /// `Arc` and fundsp commits a *different clone* than a setter would touch,
-    /// so there is no `&mut` to update and no path to the running copy.
-    ///
-    /// `refill` divides by this every block, so a stale value mistimes every
-    /// automation point after a rate switch.
-    sample_rate: Arc<AtomicF64>,
-}
-
-impl ParamAutomationSource {
-    /// Build a parameter-automation source from one envelope per parameter id.
-    ///
-    /// Takes a [`TransportState`], not a bare [`Timeline`](tutti_core::transport::Timeline):
-    /// `refill` reads `loop_range()` to wrap the beat inside the active cycle, and
-    /// looping lives on the live supertrait. An offline render never drives this
-    /// source.
-    pub fn new(
-        params: impl IntoIterator<Item = TimedParam>,
-        transport: Arc<dyn TransportState>,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Self {
-        Self {
-            params: params.into_iter().collect::<Vec<_>>().into(),
-            transport,
-            // `.get()` at the atomic: an `AtomicF64` needs a primitive.
-            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
-        }
-    }
-
-    /// Update the stamped sample rate live (device / rate switch). Reaches the
-    /// running box because the atomic is shared across clones.
-    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
-        self.sample_rate
-            .store(sample_rate.into().get(), Ordering::Release);
-    }
-
-    /// The same curves, read through `transport` — a source for a forked
-    /// instance (`host::node::fork`). Each curve is [frozen](Curve::frozen):
-    /// an immutable one is shared, one that reads live state (a
-    /// [`PluginParamTarget`] the mod router writes) is copied as it stands,
-    /// authored layers only, so no later live write reaches the fork. The
-    /// rate cell is the fork's own.
-    pub(crate) fn rebound(
-        &self,
-        transport: Arc<dyn TransportState>,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Self {
-        Self {
-            params: self
-                .params
-                .iter()
-                .map(|p| TimedParam {
-                    param_id: p.param_id,
-                    curve: p.curve.frozen().unwrap_or_else(|| Arc::clone(&p.curve)),
-                })
-                .collect::<Vec<_>>()
-                .into(),
-            transport,
-            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
-        }
-    }
-
-    /// The transport this source reads.
-    pub(crate) fn transport(&self) -> &Arc<dyn TransportState> {
-        &self.transport
-    }
-
-    /// The rate `refill` is currently dividing by.
-    pub(super) fn rate(&self) -> SampleRate {
-        SampleRate::from(self.sample_rate.load(Ordering::Acquire))
-    }
-
-    /// Whether this source drives no parameters, in which case every block
-    /// emits an empty queue.
-    pub fn is_empty(&self) -> bool {
-        self.params.is_empty()
-    }
-
-    /// Fill `out` (cleared first) with one [`ParameterQueue`] per parameter,
-    /// densely sampled across this block's beat window. No points are emitted
-    /// while the transport is stopped or at non-positive tempo/rate — the
-    /// plugin keeps its last value, matching how a paused transport freezes the
-    /// playhead.
-    ///
-    /// RT-alloc-free: reuses the queue storage already in `out` across blocks
-    /// (points are reset in place, queues are grown only when the param count
-    /// rises), and each queue's inline capacity holds a full block's points
-    /// without spilling (see `ParameterQueue`).
-    ///
-    /// [`ParameterQueue`]: crate::protocol::ParameterQueue
-    pub fn refill(&self, block_size: usize, out: &mut ParameterChanges) {
-        // Retain `out.queues`' capacity across blocks; reset each queue's points
-        // in place below rather than dropping and reallocating the queue.
-        for q in out.queues.iter_mut() {
-            q.points.clear();
-        }
-        if block_size == 0 || self.params.is_empty() || !self.transport.is_rolling() {
-            out.queues.clear();
-            return;
-        }
-        let start_beat = self.transport.beat();
-        let tempo = self.transport.tempo();
-        let sample_rate = self.rate();
-        if tempo.get() <= 0.0 || sample_rate.get() <= 0.0 {
-            out.queues.clear();
-            return;
-        }
-        // Through the shared conversion, not `tempo / 60 / rate` by hand, so
-        // every reader divides by the same rate. This samples the curve at
-        // offsets from the block's first beat (one rounding each, nothing
-        // accumulated across blocks: the block's beat is the clock's own,
-        // derived from its frame count).
-        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
-        let loop_range = self.transport.loop_range();
-        let last = block_size - 1;
-        let stride = stride_for(block_size);
-
-        // Ensure `out.queues` has exactly one slot per parameter, reusing the
-        // slots (and their inline point storage) that already exist. Growing
-        // pushes; shrinking truncates — both retain capacity for next block.
-        for (i, param) in self.params.iter().enumerate() {
-            if i < out.queues.len() {
-                out.queues[i].param_id = param.param_id;
-            } else {
-                out.queues
-                    .push(crate::protocol::ParameterQueue::new(param.param_id));
-            }
-            let queue = &mut out.queues[i];
-            // Sample at 0, every `SAMPLE_STRIDE`, and always the final sample so
-            // the block's end value is exact (the next block starts from here).
-            let mut offset = 0usize;
-            loop {
-                let beat = start_beat + beats_per_sample * offset as f64;
-                // `LoopRange::wrap` clamps a beat into the loop region; it is a
-                // no-op when there is no region or the beat is already inside.
-                let eff_beat = match loop_range {
-                    Some(region) => region.wrap(beat),
-                    None => beat,
-                };
-                // A curve with no value here (empty / disabled) yields `None`,
-                // so an empty curve simply contributes no points — the queue
-                // stays empty (dropped by `is_empty` consumers), leaving the
-                // plugin at its last value.
-                if let Some(v) = param.curve.value_at(eff_beat) {
-                    queue.add_point(offset as i32, v as f64);
-                }
-                if offset == last {
-                    break;
-                }
-                offset = (offset + stride).min(last);
-            }
-        }
-        // Drop any stale trailing queues from a previous, larger param set
-        // (retains their capacity for a future block that grows again).
-        out.queues.truncate(self.params.len());
-    }
-}
-
-impl BlockInput for ParamAutomationSource {
-    type Out = ParameterChanges;
-    fn refill(&self, ctx: BlockCtx, out: &mut ParameterChanges) {
-        // Inherent `refill` self-clears, so it satisfies the "fully overwrite
-        // `out`" contract.
-        ParamAutomationSource::refill(self, ctx.block_size, out);
-    }
-}
-
-impl BlockReset for ParameterChanges {
-    fn reset(&mut self) {
-        self.clear();
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::ParamId;
-    use atomic_float::AtomicF64;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tutti_core::transport::Timeline;
-    use tutti_core::Bpm;
 
     // ── PluginParamTarget: a ModTarget whose value reaches the Curve path ──
 
@@ -683,232 +483,6 @@ mod tests {
         ModTarget::accumulate(&*target, LayerKey(1), 0.25);
         // … and the installed curve sees it.
         assert!((timed.curve.value_at(tutti_core::Beat::new(0.0)).unwrap() - 0.75).abs() < 1e-6);
-    }
-
-    /// **Live modulation does not reach a fork's automation.** A
-    /// `PluginParamTarget` installed as a `TimedParam` is live state the mod
-    /// router writes every frame; a forked source gets a frozen copy of its
-    /// authored part — base and `AUTOMATION` layer as they stood — and nothing
-    /// written to the live target afterwards (a layer edit, a mod offset, a
-    /// base move) reaches it. Modulation layers present at the fork are
-    /// dropped too, by decision (doc 013 gap 7).
-    ///
-    /// Mutation: share the curve in `rebound` (`Arc::clone(&p.curve)`) → the
-    /// fork reads every live write → fails. Mutation: keep modulation layers
-    /// in `PluginParamTarget::frozen` (drop `clear_mod_layers`) → the fork
-    /// reads the LFO present at the fork → fails. Mutation: don't forward
-    /// `frozen` through `OffsetCurve` → the wrapped target stays live → fails.
-    #[test]
-    fn a_rebound_source_freezes_live_modulation_targets() {
-        use tutti_nodes::{LayerKey, ModTarget};
-        let direct = Arc::new(PluginParamTarget::new(0.5, 0.0, 1.0));
-        direct.accumulate(LayerKey::AUTOMATION, 0.1);
-        direct.accumulate(LayerKey(3), 0.2); // live mod present at the fork
-        let wrapped = Arc::new(PluginParamTarget::new(0.5, 0.0, 1.0));
-        let live = ParamAutomationSource::new(
-            [
-                TimedParam {
-                    param_id: ParamAddress::Opaque(ParamId::new(1)),
-                    curve: direct.clone() as Arc<dyn Curve>,
-                },
-                TimedParam {
-                    param_id: ParamAddress::Opaque(ParamId::new(2)),
-                    curve: Arc::new(OffsetCurve::new(wrapped.clone(), 0.25)),
-                },
-            ],
-            Arc::new(TestTransport::new(120.0)),
-            SampleRate(48_000.0),
-        );
-        let fork = live.rebound(Arc::new(TestTransport::new(120.0)), SampleRate(48_000.0));
-        let at = |src: &ParamAutomationSource, i: usize| {
-            src.params[i].curve.value_at(tutti_core::Beat(0.0)).unwrap()
-        };
-        assert!(
-            (at(&fork, 0) - 0.6).abs() < 1e-6,
-            "base + automation, no mod"
-        );
-        assert!((at(&fork, 1) - 0.25).abs() < 1e-6);
-
-        // After the fork, everything moves on the live targets.
-        direct.accumulate(LayerKey(3), 0.3);
-        direct.accumulate(LayerKey::AUTOMATION, -0.4);
-        direct.set_curve_layer(LayerKey(4), Arc::new(OffsetCurve::new(direct.clone(), 0.0)));
-        wrapped.set_base(0.9);
-        wrapped.accumulate(LayerKey(5), 0.05);
-        assert!((at(&live, 1) - 0.7).abs() < 1e-6, "the live side did move");
-        assert!((at(&fork, 0) - 0.6).abs() < 1e-6, "fork param 1 unchanged");
-        assert!((at(&fork, 1) - 0.25).abs() < 1e-6, "fork param 2 unchanged");
-    }
-
-    struct TestTransport {
-        beat: AtomicF64,
-        tempo: f64,
-        playing: AtomicBool,
-    }
-    impl TestTransport {
-        fn new(tempo: f64) -> Self {
-            Self {
-                beat: AtomicF64::new(0.0),
-                tempo,
-                playing: AtomicBool::new(true),
-            }
-        }
-        fn set_beat(&self, b: f64) {
-            self.beat.store(b, Ordering::Release);
-        }
-    }
-    impl Timeline for TestTransport {
-        fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat(self.beat.load(Ordering::Acquire))
-        }
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Acquire)
-        }
-        fn tempo(&self) -> Bpm {
-            Bpm(self.tempo)
-        }
-        fn segment_generation(&self) -> u64 {
-            0
-        }
-    }
-    impl TransportState for TestTransport {
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
-        }
-        // No continuous sample clock in this mock — return 0 deliberately, the
-        // value the plugin ABIs read as "host has no steady clock" (the source
-        // under test reads beat/tempo, not steady_time).
-        fn steady_time(&self) -> i64 {
-            0
-        }
-    }
-
-    /// A 0→1 ramp over 4 beats, labelled with parameter id `7`.
-    fn ramp(id: u32) -> TimedParam {
-        let param_id = ParamAddress::Opaque(ParamId::new(id));
-        let mut env: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0f32);
-        env.add_point(AutomationPoint::new(0.0, 0.0));
-        env.add_point(AutomationPoint::new(4.0, 1.0));
-        TimedParam {
-            param_id,
-            curve: Arc::new(env),
-        }
-    }
-
-    /// A curve returning NaN must not put NaN into a queue.
-    ///
-    /// `Curve` is a public trait a user implements and its `value_at` carries
-    /// no finiteness contract, so this is reachable from ordinary code — an
-    /// envelope interpolating across a zero-length segment divides by zero and
-    /// returns `f32::NAN`.
-    ///
-    /// Before `ParameterPoint::value` became a `Normalized`, that NaN reached
-    /// the plugin: AU and CLAP clamped it through `ParamRange`, but VST2 and
-    /// VST3 guarded with `clamp`, which returns NaN unchanged. On a VST3 filter
-    /// cutoff it became a NaN coefficient, then a NaN IIR state, and every
-    /// subsequent sample on that channel was NaN until the plugin was
-    /// re-instantiated.
-    ///
-    /// Asserted on `is_finite` rather than on a specific value: what matters is
-    /// that nothing non-finite leaves here, not which finite value stands in.
-    #[test]
-    fn a_nan_curve_cannot_put_nan_into_a_queue() {
-        struct NanCurve;
-        impl Curve for NanCurve {
-            fn value_at(&self, _beat: Beat) -> Option<f32> {
-                Some(f32::NAN)
-            }
-        }
-
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new(
-            vec![TimedParam {
-                param_id: ParamAddress::Opaque(ParamId::new(7)),
-                curve: Arc::new(NanCurve),
-            }],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-
-        let points = &out.queues[0].points;
-        assert!(
-            !points.is_empty(),
-            "the curve answers everywhere, so it fills"
-        );
-        for p in points {
-            let v = p.value.get();
-            assert!(
-                v.is_finite(),
-                "a NaN reached a queue at offset {}",
-                p.sample_offset
-            );
-            assert!(
-                (0.0..=1.0).contains(&v),
-                "value {v} is off the unit interval"
-            );
-        }
-    }
-
-    #[test]
-    fn fills_one_queue_per_param_with_ramp() {
-        let transport = Arc::new(TestTransport::new(120.0)); // 22050 samples/beat @ 44.1k
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-        assert_eq!(out.queues.len(), 1);
-        let q = &out.queues[0];
-        assert_eq!(q.param_id, ParamAddress::Opaque(ParamId::new(7)));
-        // First point at offset 0, beat 0 → value 0.
-        assert_eq!(q.points[0].sample_offset, 0);
-        assert!(q.points[0].value.get().abs() < 1e-6);
-        // Points ascend in offset and the last is the block's final sample.
-        assert_eq!(q.points.last().unwrap().sample_offset, 63);
-        for w in q.points.windows(2) {
-            assert!(w[1].sample_offset > w[0].sample_offset);
-            assert!(w[1].value >= w[0].value); // ramp is monotonic up
-        }
-    }
-
-    #[test]
-    fn paused_emits_nothing() {
-        let transport = Arc::new(TestTransport::new(120.0));
-        transport.playing.store(false, Ordering::Release);
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn advancing_transport_moves_the_value() {
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-        let start_v = out.queues[0].points[0].value.get();
-        // Jump to beat 4 (envelope top) — the first point should now read ~1.0.
-        transport.set_beat(4.0);
-        src.refill(64, &mut out);
-        let later_v = out.queues[0].points[0].value.get();
-        assert!(later_v > start_v);
-        assert!((later_v - 1.0).abs() < 1e-3);
     }
 
     #[test]
@@ -1027,108 +601,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn full_block_fill_does_not_spill_the_point_smallvec() {
-        // A stride-8 sample over a full 64-sample block emits offsets
-        // 0,8,16,24,32,40,48,56,63 = 9 points. The queue's inline capacity (10)
-        // must hold them without spilling to the heap — the RT-alloc guarantee.
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-        let q = &out.queues[0];
-        assert_eq!(q.points.len(), 9, "stride-8 over 64 samples = 9 points");
-        assert!(
-            !q.points.spilled(),
-            "a full block's points must stay inline (no heap spill)"
-        );
-    }
-
-    /// A device-callback block (512, 1024, 4096 frames) keeps every queue
-    /// inline: the stride widens with the block so a parameter gets at most
-    /// `MAX_POINTS` points, the first at offset 0 and the last on the block's
-    /// final frame. A 64-frame block keeps the stride of 8.
-    ///
-    /// Mutation: always stride `SAMPLE_STRIDE` → 65 points in a 512-frame
-    /// block, spilled to the heap → fails.
-    #[test]
-    fn a_long_block_stays_inline() {
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        for block in [64, 480, 512, 1024, 4096] {
-            let mut out = ParameterChanges::new();
-            src.refill(block, &mut out);
-            let q = &out.queues[0];
-            assert!(!q.points.spilled(), "{block}-frame block spilled");
-            assert!(q.points.len() <= MAX_POINTS, "{block}: {}", q.points.len());
-            assert_eq!(q.points.first().map(|p| p.sample_offset), Some(0));
-            assert_eq!(
-                q.points.last().map(|p| p.sample_offset),
-                Some(block as i32 - 1),
-                "{block}: the block's end is exact"
-            );
-        }
-        assert_eq!(
-            stride_for(64),
-            SAMPLE_STRIDE,
-            "a 64-frame block is unchanged"
-        );
-    }
-
-    #[test]
-    fn refill_reuses_queue_storage_without_reallocating() {
-        // Second fill into the same `out` must reuse the existing queue slot and
-        // its inline point buffer — no new queue is pushed, so a plugin under a
-        // rolling transport allocates nothing per block after the first.
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new(
-            vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportState>,
-            44100.0,
-        );
-        let mut out = ParameterChanges::new();
-        src.refill(64, &mut out);
-        assert_eq!(out.queues.len(), 1);
-        let ptr_before = out.queues[0].points.as_ptr();
-        transport.set_beat(1.0);
-        src.refill(64, &mut out);
-        assert_eq!(out.queues.len(), 1, "no extra queue pushed on refill");
-        assert_eq!(
-            out.queues[0].points.as_ptr(),
-            ptr_before,
-            "inline point buffer reused in place (no realloc)"
-        );
-    }
-
-    #[test]
-    fn empty_source_and_empty_envelope_emit_nothing() {
-        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportState>;
-        let empty_src = ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
-        let mut out = ParameterChanges::new();
-        empty_src.refill(64, &mut out);
-        assert!(out.is_empty());
-
-        let empty_env: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0f32);
-        let src = ParamAutomationSource::new(
-            vec![TimedParam {
-                param_id: ParamAddress::Opaque(ParamId::new(3)),
-                curve: Arc::new(empty_env),
-            }],
-            transport,
-            44100.0,
-        );
-        src.refill(64, &mut out);
-        assert!(out.is_empty());
-    }
-
     // ── Offset layers at PRODUCTION arguments (the review gap: the existing
     //    tests used base=0.5,min=0,max=1; the real wiring uses offset layers on a
     //    base-0.5 target, span 1.0). ──────────────────────────────────────────
@@ -1235,29 +707,6 @@ mod tests {
         assert!(
             (t.value_at(Beat::new(0.25)).unwrap() - 0.8).abs() < 1e-3,
             "peak = automation 0.6 + LFO 0.2 = 0.8 (both layers SUM)"
-        );
-    }
-
-    /// A device rate change reaches an already-installed source.
-    ///
-    /// The rate is a shared atomic rather than a plain field because the source
-    /// lives behind an `Arc` and fundsp commits a *different clone* than a
-    /// setter would touch — a plain field is unreachable, not merely stale.
-    /// `refill` divides by this every block, so a stale value mistimes every
-    /// automation point after a device switch.
-    #[test]
-    fn a_rate_change_reaches_the_clone_fundsp_runs() {
-        let transport = Arc::new(TestTransport::new(120.0));
-        let src = ParamAutomationSource::new([ramp(1)], transport, SampleRate::SR_48K);
-        assert_eq!(src.rate(), SampleRate::SR_48K);
-
-        // Clone first: this is what the running box actually is.
-        let running = src.clone();
-        src.set_sample_rate(SampleRate::SR_44K1);
-        assert_eq!(
-            running.rate(),
-            SampleRate::SR_44K1,
-            "the clone fundsp runs must see the new rate"
         );
     }
 }

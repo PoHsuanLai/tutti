@@ -3437,11 +3437,33 @@ under both.
   `spawn_audio_node`). Deleting it is a breaking change for those hosts:
   an owner decision, then the synth's and plugin's `rebind_offline_into` go
   with it.
-- **The plugin's other three inputs** (automation, harmony, note
-  expression) still poll a timeline each, through their `InputSlot`s. They
-  no longer need the plugin to be `legacy` (above); they go when their
-  sources become event source nodes (the automation lane as a ramp source,
-  harmony through a published table or a node that reads `Env`).
+- **Parameter automation as an event source: landed** (stacked on the
+  plugin MIDI-out PR; owner decision: replace the setters, breaking).
+  `PluginControls::automation(params)` makes a `PluginAutomation` node: it
+  samples one curve per parameter at `Env::transport_at` each point (the
+  host's clock, loop wraps and mid-block starts included; 8-frame stride
+  widened to at most 10 points a parameter a block; nothing while stopped;
+  non-finite values dropped) and sends `ParamRamp::foreign` events. The
+  plugin node reads them from its event input into the chunk's
+  `ParameterChanges`, keeping each queue at 10 points by replacing the last.
+  **Addresses**: a ramp carries a bare `u32`, so the node is made for one
+  plugin and refuses an address of the other model (a VST2 index on a CLAP
+  plugin), and the plugin decodes in its own (VST2 by index, found from its
+  path at load). A fork samples frozen curves (the `PluginParamTarget`
+  authored part, as the old source's `rebound` did). The edge is a graph
+  edge, so PDC covers it (D9). `set_param_automation_source`,
+  `clear_param_automation_source`, `has_param_automation_source`,
+  `ParamAutomationSource` and its `InputSlot` are gone; `Plugin::automation`
+  answers `None` for the in-process VST2 node (no event input). bevy-tutti's
+  `plugin_bind_params` keeps one automation node per plugin entity
+  (`PluginAutomationNode`), fed through `EventFeeds` (now keyed by feeder as
+  well as sink), following a crossfade, removed with the entity. Pinned by
+  `automation_node`'s unit tests, `clap_automation` (the reference plugin's
+  gain, in an export) and `plugin_capture`.
+- **Harmony and note expression** still poll a timeline each, through their
+  `InputSlot`s (the next stacked PR): harmony as a node sending harmony
+  events, note expression as MIDI 2 per-note messages (its source holds no
+  data yet).
 - **Plugin MIDI out on an event output: landed** (stacked on item 5's first
   PR). A plugin that declares `Features::MIDI_OUT` has one MIDI event
   output. Its reply is now taken when its chunk's audio is collected

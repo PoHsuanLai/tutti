@@ -49,8 +49,6 @@ use tutti_core::AudioNode;
 use tutti_plugin::handles::PluginControls;
 
 use crate::graph::MetronomeRes;
-#[cfg(feature = "modulation")]
-use crate::graph::TransportRes;
 use crate::plugin_host::editor::PluginEmitter;
 
 /// A loaded plugin's [`PluginControls`], captured from its node before the node
@@ -152,6 +150,50 @@ pub fn plugin_bind_meter(
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginParamsBound;
 
+/// The automation node feeding a plugin entity's event input
+/// (`PluginControls::automation`), made by [`plugin_bind_params`]. Removing
+/// it (or despawning the entity) removes the node
+/// ([`remove_plugin_automation`]).
+#[cfg(feature = "modulation")]
+#[derive(Component)]
+pub struct PluginAutomationNode {
+    /// The automation node.
+    pub node: AudioNode,
+    /// Its curves.
+    pub controls: tutti_plugin::handles::AutomationControls,
+}
+
+/// The automation feeder's name among a plugin entity's
+/// [`EventFeeds`](crate::graph::EventFeeds).
+#[cfg(feature = "modulation")]
+const AUTOMATION: &str = "plugin automation";
+
+/// Take a plugin entity's automation node out of the graph when its
+/// [`PluginAutomationNode`] goes (the entity despawned, or the component
+/// removed), and stop feeding it.
+#[cfg(feature = "modulation")]
+pub fn remove_plugin_automation(
+    remove: On<Remove, PluginAutomationNode>,
+    automation: Query<&PluginAutomationNode>,
+    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
+    feeds: Option<ResMut<crate::graph::EventFeeds>>,
+    dirty: Option<ResMut<crate::graph::GraphDirty>>,
+) {
+    let entity = remove.event_target();
+    let Ok(automation) = automation.get(entity) else {
+        return;
+    };
+    if let Some(mut graph) = graph {
+        graph.remove(automation.node);
+    }
+    if let Some(mut feeds) = feeds {
+        feeds.remove(entity, AUTOMATION);
+    }
+    if let Some(mut dirty) = dirty {
+        dirty.0 = true;
+    }
+}
+
 /// What param binding reads off each entity.
 #[cfg(feature = "modulation")]
 type ParamBindItem = (
@@ -231,17 +273,19 @@ type ParamsNeedRebind = (
 pub fn plugin_bind_params(
     mut commands: Commands,
     registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
-    transport: Option<Res<TransportRes>>,
-    changed: Query<ParamBindItem, ParamsNeedRebind>,
+    graph: Option<ResMut<crate::graph::AudioGraphRes>>,
+    mut feeds: ResMut<crate::graph::EventFeeds>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
+    changed: Query<(ParamBindItem, Option<&PluginAutomationNode>), ParamsNeedRebind>,
 ) {
     if changed.is_empty() {
         return;
     }
-    let (Some(mut registry), Some(transport)) = (registry, transport) else {
+    let (Some(mut registry), Some(mut graph)) = (registry, graph) else {
         return;
     };
 
-    for (entity, node, shadow, ranges) in changed.iter() {
+    for ((entity, node, shadow, ranges), existing) in changed.iter() {
         let Some(client) = shadow.controls_for(node) else {
             continue; // captured for another node — retried next frame
         };
@@ -274,13 +318,20 @@ pub fn plugin_bind_params(
             });
         }
 
-        if timed.is_empty() {
-            client.clear_param_automation_source();
-        } else {
-            // The rate is the node's own — `set_param_automation_source`
-            // supplies it and re-stamps the source on a device change, so
-            // passing `config.sample_rate` here could only agree or be wrong.
-            client.set_param_automation_source(timed, (**transport).clone());
+        // The automation is a node of its own, fed into this entity's event
+        // input: kept across rebinds (and across a crossfade to another
+        // plugin, whose node the feed follows), its curves replaced in place.
+        match existing {
+            Some(automation) => automation.controls.set_params(timed),
+            None if !timed.is_empty() => {
+                let (node, controls) = graph.insert_node(client.automation(timed));
+                feeds.set(entity, AUTOMATION, vec![node]);
+                dirty.0 = true;
+                commands
+                    .entity(entity)
+                    .insert(PluginAutomationNode { node, controls });
+            }
+            None => {}
         }
 
         commands.entity(entity).insert(PluginParamsBound);

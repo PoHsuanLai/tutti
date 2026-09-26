@@ -34,8 +34,8 @@ pub struct NoteExpressionSource {
     #[allow(dead_code)]
     transport: Arc<dyn Timeline>,
     /// Typed because the reader this is held for will hand it to
-    /// `BeatCursor::new`, which takes `impl Into<SampleRate>` — the same reason
-    /// `ParamAutomationSource` stores one. This field crosses no boundary at
+    /// `BeatCursor::new`, which takes `impl Into<SampleRate>`, as the harmony
+    /// source's does. This field crosses no boundary at
     /// all: no ABI, no wire, no fundsp call.
     #[allow(dead_code)]
     sample_rate: SampleRate,

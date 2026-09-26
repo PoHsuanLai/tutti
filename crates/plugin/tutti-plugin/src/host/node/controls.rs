@@ -42,7 +42,7 @@ use tutti_types::Latency;
 use super::batcher::MAX_CHUNK;
 use super::input_slot::InputSlot;
 use super::{
-    HarmonySource, NoteExpressionSource, ParamAutomationSource, PluginParamTarget, TimedChord,
+    HarmonySource, NoteExpressionSource, PluginAutomation, PluginParamTarget, TimedChord,
     TimedParam, TimedScale,
 };
 use crate::protocol::Features;
@@ -61,18 +61,16 @@ use crate::protocol::Features;
 #[derive(Clone)]
 pub(super) struct PluginInputs {
     pub(super) harmony: InputSlot<HarmonySource>,
-    pub(super) params: InputSlot<ParamAutomationSource>,
     pub(super) note_expression: InputSlot<NoteExpressionSource>,
 }
 
 impl PluginInputs {
     /// Slots with the gates that decide which plugins receive each input:
-    /// harmony → `SEQUENCER_CONTEXT`, note-expression → `NOTE_EXPRESSION`,
-    /// params → universal (empty gate = always send).
+    /// harmony → `SEQUENCER_CONTEXT`, note-expression → `NOTE_EXPRESSION`.
+    /// (Parameter automation is an event source node: [`PluginAutomation`].)
     fn new() -> Self {
         Self {
             harmony: InputSlot::new(Features::SEQUENCER_CONTEXT),
-            params: InputSlot::new(Features::empty()),
             note_expression: InputSlot::new(Features::NOTE_EXPRESSION),
         }
     }
@@ -117,11 +115,21 @@ pub struct PluginControls {
     /// The rate stamped onto a freshly-installed source. Shared — see the module
     /// docs for why it could not stay a per-clone field. `f64` at the atomic.
     sample_rate: Arc<AtomicF64>,
+    /// Whether the plugin addresses its parameters by VST2 index rather than
+    /// by opaque handle: what a parameter ramp's number means to its node.
+    /// Fixed at load.
+    indexed: bool,
 }
 
 impl PluginControls {
-    pub(super) fn new(latency: Samples, tail: PluginTail, sample_rate: SampleRate) -> Self {
+    pub(super) fn new(
+        latency: Samples,
+        tail: PluginTail,
+        sample_rate: SampleRate,
+        indexed: bool,
+    ) -> Self {
         Self {
+            indexed,
             inputs: PluginInputs::new(),
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(ArcSwap::from_pointee(tail)),
@@ -220,9 +228,6 @@ impl PluginControls {
         if let Some(src) = self.inputs.harmony.source_ref().load().as_ref() {
             src.set_sample_rate(sample_rate);
         }
-        if let Some(src) = self.inputs.params.source_ref().load().as_ref() {
-            src.set_sample_rate(sample_rate);
-        }
     }
 
     /// Give `fork`'s slots a copy of every per-block source installed here,
@@ -242,12 +247,6 @@ impl PluginControls {
         let rate = fork.sample_rate();
         if let Some(meter) = self.meter.load_full() {
             fork.set_meter(meter);
-        }
-        if let Some(src) = self.inputs.params.source_ref().load_full() {
-            let transport = bind.state(src.transport());
-            fork.inputs
-                .params
-                .install(Arc::new(src.rebound(transport, rate)));
         }
         if let Some(src) = self.inputs.harmony.source_ref().load_full() {
             let timeline = bind.timeline(src.timeline());
@@ -298,35 +297,27 @@ impl PluginControls {
         self.inputs.note_expression.clear();
     }
 
-    /// Whether a parameter-automation source is installed.
-    pub fn has_param_automation_source(&self) -> bool {
-        self.inputs.params.source_ref().load().is_some()
+    /// Whether the plugin addresses its parameters by VST2 index.
+    pub(super) fn indexed(&self) -> bool {
+        self.indexed
     }
 
-    /// Install sample-accurate per-block automation, one curve per param. See
-    /// [`PluginClient::set_param_automation_source`](super::PluginClient::set_param_automation_source).
-    pub fn set_param_automation_source(
-        &self,
-        params: impl IntoIterator<Item = TimedParam>,
-        transport: impl tutti_core::transport::TransportState + 'static,
-    ) {
-        self.inputs
-            .params
-            .install(Arc::new(ParamAutomationSource::new(
-                params,
-                Arc::new(transport),
-                self.sample_rate(),
-            )));
-    }
-
-    /// Drop the automation source; the plugin keeps its current param values.
-    pub fn clear_param_automation_source(&self) {
-        self.inputs.params.clear();
+    /// Parameter automation for this plugin: an event source node sampling
+    /// one curve per parameter at each block's beats, to insert in the graph
+    /// and wire to the plugin node's event input (doc 013 item 5). The
+    /// automation reaches the plugin through the graph, so its delay
+    /// compensation covers it. An address of the other model than this
+    /// plugin's (a VST2 index on a CLAP plugin) is refused, logged. Replace
+    /// the curves through the node's [`AutomationControls`](super::AutomationControls).
+    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
+        PluginAutomation::new(params, self.indexed)
     }
 
     /// Build an accumulator for one of the plugin's params. See
     /// [`PluginClient::param_target`](super::PluginClient::param_target) — it
-    /// stores nothing, so the caller keeps the returned `Arc` for both roles.
+    /// stores nothing, so the caller keeps the returned `Arc` for both roles
+    /// (a modulation target, and a [`TimedParam`]'s curve for
+    /// [`automation`](Self::automation)).
     pub fn param_target(
         &self,
         _param_id: u32,
@@ -357,7 +348,12 @@ mod tests {
     use tutti_core::transport::Transport;
 
     fn controls() -> PluginControls {
-        PluginControls::new(Samples(0), PluginTail::default(), SampleRate(44_100.0))
+        PluginControls::new(
+            Samples(0),
+            PluginTail::default(),
+            SampleRate(44_100.0),
+            false,
+        )
     }
 
     /// A handle taken *before* a rate change stamps its installs with the new
@@ -378,22 +374,21 @@ mod tests {
         node.restamp(SampleRate(48_000.0));
         assert_eq!(held.sample_rate(), SampleRate(48_000.0));
 
-        held.set_param_automation_source(Vec::<super::super::TimedParam>::new(), {
-            Transport::new(48_000.0)
-        });
+        held.set_harmony_source([], [], Transport::new(48_000.0));
 
         // The node's slot holds what the held handle installed, stamped at the
         // rate the node was last given.
         let installed = node
             .inputs
-            .params
+            .harmony
             .source_ref()
             .load_full()
             .expect("the install through the held handle reaches the node's slot");
         assert_eq!(installed.rate(), SampleRate(48_000.0));
     }
 
-    /// A fork's per-block sources read **the transport its mode names**: the
+    /// A fork's per-block sources (here the harmony source) read **the
+    /// transport its mode names**: the
     /// offline timeline for an offline fork (never the live playhead), and
     /// the live transport for a live one (`ForkMode::Offline` is typed, so
     /// there is no offline context without a timeline). Their rate is the
@@ -403,8 +398,8 @@ mod tests {
     ///
     /// Mutation: make `Rebind::state` return the live reader for `Offline` →
     /// the offline fork reads the live beat 2.0 → fails. Mutation: share the
-    /// live source's rate cell in `ParamAutomationSource::rebound` → the live
-    /// restamp reaches the fork → fails. Mutation: drop the meter copy from
+    /// live source's rate cell in `HarmonySource::rebound` → the live restamp
+    /// reaches the fork → fails. Mutation: drop the meter copy from
     /// `rebind_sources_into` → fails.
     #[test]
     fn a_fork_reads_the_transport_its_mode_names() {
@@ -418,7 +413,7 @@ mod tests {
             .clock_links()
             .expect("the only playhead writer")
             .set_playhead(2.0);
-        live.set_param_automation_source(Vec::<super::super::TimedParam>::new(), transport);
+        live.set_harmony_source([], [], transport);
         let meter = Arc::new(RtPublish::new(MeterMap::default()));
         live.set_meter(Arc::clone(&meter));
 
@@ -428,7 +423,12 @@ mod tests {
                 ..Default::default()
             })));
         let beat_of = |bind: Rebind| {
-            let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
+            let fork = PluginControls::new(
+                Samples(0),
+                PluginTail::default(),
+                SampleRate(96_000.0),
+                false,
+            );
             live.rebind_sources_into(&fork, &bind);
             live.restamp(SampleRate(22_050.0));
             let shared_meter = fork
@@ -436,9 +436,9 @@ mod tests {
                 .load_full()
                 .is_some_and(|m| Arc::ptr_eq(&m, &meter));
             assert!(shared_meter, "the fork reads the live node's meter");
-            fork.inputs.params.source_ref().load_full().map(|src| {
+            fork.inputs.harmony.source_ref().load_full().map(|src| {
                 assert_eq!(src.rate(), SampleRate(96_000.0), "the fork's own rate");
-                src.transport().beat()
+                src.timeline().beat()
             })
         };
         assert_eq!(beat_of(Rebind::Offline(offline.clone())), Some(Beat(8.0)));

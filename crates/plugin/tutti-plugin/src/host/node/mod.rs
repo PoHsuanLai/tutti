@@ -77,6 +77,7 @@ mod harmony_source;
 // in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
 // subprocess client, and reuses the same gated per-block plumbing and the same
 // transport mapping rather than hand-rolling a second copy.
+mod automation_node;
 pub(crate) mod input_slot;
 mod note_expression_source;
 mod param_automation_source;
@@ -103,6 +104,7 @@ mod tests;
 // `crate::host::node::{Midi, ...}` paths keep resolving.
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use crate::util::node::{Midi, ParameterChangeSink};
+pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT_CAPACITY};
 pub(crate) use capability_view::is_declined;
 pub use capability_view::{
     HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
@@ -111,7 +113,7 @@ pub use controls::PluginControls;
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
-    LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
+    LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
 };
 pub(crate) use process::ProcessGuard;
 // The largest chunk that can cross the process edge. Re-exported because
@@ -253,6 +255,10 @@ impl PluginClient<Unbound> {
         let sample_rate = sample_rate.into();
         // `.get()` at the wire: `launch` hands the rate to the subprocess.
         let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
+        // VST2 addresses its parameters by position, every other format by
+        // an opaque handle: what a parameter ramp's number means to this node.
+        let indexed = crate::host::discovery::format_from_path(&plugin_path)
+            == Some(crate::host::discovery::PluginFormat::Vst2);
         // Guard the process before the first fallible step below: an `Err`
         // from `PluginBridge::new` would otherwise drop a bare `Child`, which
         // std neither kills nor waits.
@@ -281,6 +287,7 @@ impl PluginClient<Unbound> {
             server.loaded.latency_samples,
             server.loaded.tail,
             sample_rate,
+            indexed,
         );
         // The chunk ceiling, matching the slab — `slab_layout_for` clamps to
         // `MAX_CHUNK` for the same reason. Passing the raw `max_buffer_size`
@@ -643,34 +650,11 @@ impl<S> PluginClient<S> {
         self.controls.set_meter(meter);
     }
 
-    /// Install sample-accurate per-block [`ParameterChanges`] for the automated
-    /// parameters — one curve per parameter id.
-    ///
-    /// The *only* automation path for hosted-plugin parameters; the frame-rate
-    /// `set_parameter` route is never wired for them.
-    ///
-    /// Takes the curves and the transport and builds the source here. The
-    /// rate the source divides by is the node's own, so a caller passing one
-    /// could only agree with it or be wrong; it is re-stamped by the node's
-    /// `prepare`.
-    ///
-    /// `transport` is a [`TransportState`](tutti_core::transport::TransportState),
-    /// not a bare `Timeline` like harmony's: `refill` reads `loop_range()` to wrap
-    /// the beat inside the active cycle, and looping lives on the live
-    /// supertrait.
-    pub fn set_param_automation_source(
-        &mut self,
-        params: impl IntoIterator<Item = TimedParam>,
-        transport: impl tutti_core::transport::TransportState + 'static,
-    ) {
-        self.controls.set_param_automation_source(params, transport);
-    }
-
-    /// Drop a previously-installed parameter-automation source; subsequent
-    /// blocks feed the plugin empty [`ParameterChanges`] (it keeps its current
-    /// parameter values).
-    pub fn clear_param_automation_source(&mut self) {
-        self.controls.clear_param_automation_source();
+    /// Parameter automation for this plugin: an event source node sampling
+    /// one curve per parameter, to wire to this plugin node's event input.
+    /// See [`PluginControls::automation`].
+    pub fn automation(&self, params: impl IntoIterator<Item = TimedParam>) -> PluginAutomation {
+        self.controls.automation(params)
     }
 
     /// Build a [`PluginParamTarget`] for one of this plugin's params — a
@@ -679,8 +663,8 @@ impl<S> PluginClient<S> {
     /// [`ParameterChanges`] path.
     ///
     /// The returned `Arc` is usable as BOTH a `ModTarget` (route to it) and a
-    /// [`Curve`](tutti_nodes::automation::Curve) (install it in a `TimedParam`
-    /// via [`set_param_automation_source`](Self::set_param_automation_source));
+    /// [`Curve`](tutti_nodes::automation::Curve) (a `TimedParam`'s, for
+    /// [`automation`](Self::automation));
     /// keep the same `Arc` for both so accumulation is visible to the per-block
     /// read.
     ///
@@ -712,8 +696,9 @@ impl<S> PluginClient<S> {
 ///
 /// The returned target is a [`PluginParamTarget`] — a keyed accumulator whose
 /// value the plugin receives over the per-block `ParameterChanges` path (vs a
-/// native node's target, which mirrors into an atomic). The caller installs it
-/// (as a `TimedParam` via `set_param_automation_source`) after routing.
+/// native node's target, which mirrors into an atomic). The caller hands it
+/// to the plugin's automation node (as a `TimedParam`, through
+/// `PluginControls::automation`) after routing.
 impl<S: Send + Sync> tutti_nodes::ModParams for PluginClient<S> {
     fn mod_target(
         &self,

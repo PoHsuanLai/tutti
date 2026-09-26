@@ -37,10 +37,10 @@ pub struct ParameterPoint {
 /// one block. Inline storage keeps a full block's automation run
 /// allocation-free on the RT path.
 ///
-/// Sized for the densest producer: `ParamAutomationSource` samples one point
-/// per `SAMPLE_STRIDE` (8) samples plus the final sample, so a full
-/// `MAX_BUFFER_SIZE` (64) block yields `64/8 + 1 = 9` points — 10 inline
-/// leaves headroom and never spills mid-block.
+/// Sized for the densest producer: the host's automation node sends at most
+/// 10 points a parameter a block (one per 8 samples, the stride widening with
+/// the block, plus the final sample), and the plugin node keeps a chunk's
+/// queue at 10 by replacing its last point, so the queue never spills.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ParameterQueue {

@@ -937,6 +937,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (`PluginBridge::take_replies`; `submit` no longer takes a MIDI-out
     buffer), and an export waits for it. The reference CLAP plugin's `Notes`
     mode echoes the notes it receives.
+  - **Breaking:** a hosted plugin's parameter automation is an event source
+    node. `PluginControls::automation(params)` / `PluginClient::automation` /
+    `Plugin::automation` make a `PluginAutomation` (controls:
+    `AutomationControls::{set_params, clear}`) to insert and wire to the
+    plugin node's event input; `set_param_automation_source`,
+    `clear_param_automation_source`, `has_param_automation_source` and
+    `ParamAutomationSource` are removed. An address of the other model than
+    the plugin's is refused. bevy-tutti: `plugin_bind_params` keeps a
+    `PluginAutomationNode` per plugin entity; `EventFeeds` is keyed by feeder
+    (`set`, `remove`, `nodes`).
   - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
     graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
     own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a

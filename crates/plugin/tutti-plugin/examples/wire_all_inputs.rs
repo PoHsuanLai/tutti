@@ -79,24 +79,23 @@ fn main() -> Result<()> {
         transport.clone(),
     );
 
-    // Parameter automation is ungated — every format carries it, so there is
-    // no "declined" answer and the call returns nothing. One slow LFO on the
-    // plugin's first parameter.
-    plugin.set_param_automation_source(
-        [TimedParam {
-            param_id: ParamAddress::Opaque(ParamId::new(0)),
-            curve: Arc::new(LfoCurve::new(
-                LfoShape::Sine,
-                BeatDuration(4.0),
-                Depth(1.0),
-                PhaseIncrement(0.0),
-                0.5, // base
-                0.0, // min
-                1.0, // max
-            )),
-        }],
-        transport.clone(),
-    );
+    // Parameter automation is a node of its own, an event source to insert
+    // beside the plugin and wire to its event input, so the graph's delay
+    // compensation covers it. Ungated — every format carries it; `None` only
+    // for a node with no event input (the in-process VST2 node). One slow LFO
+    // on the plugin's first parameter.
+    let automation = plugin.automation([TimedParam {
+        param_id: ParamAddress::Opaque(ParamId::new(0)),
+        curve: Arc::new(LfoCurve::new(
+            LfoShape::Sine,
+            BeatDuration(4.0),
+            Depth(1.0),
+            PhaseIncrement(0.0),
+            0.5, // base
+            0.0, // min
+            1.0, // max
+        )),
+    }]);
 
     // MIDI has two paths that coexist: a live sender for hardware and panel
     // previews, and an installed source polled per block for clip playback.
@@ -105,6 +104,7 @@ fn main() -> Result<()> {
 
     report("transport", took_transport);
     report("harmony", took_harmony);
+    report("automation", automation.is_some());
     report("midi in", midi_sender.is_some());
 
     if plugin.role() == PluginRole::Instrument && midi_sender.is_none() {

@@ -58,11 +58,25 @@ impl Rig {
 
     /// `client` in a graph prepared with `prepare` (a device quantum, say).
     pub fn prepared(client: PluginClient<Bound>, prepare: Prepare) -> Self {
+        Self::prepared_with(client, prepare, None)
+    }
+
+    /// As [`prepared`](Self::prepared), with `automation` (when given) feeding
+    /// the plugin's event input.
+    pub fn prepared_with(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+    ) -> Self {
         let (inputs, outputs) = (client.inputs(), client.outputs());
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
         let (key, controls) = g.add_with_controls(client);
         g.pipe_input(key).pipe_output(key);
+        if let Some(automation) = automation {
+            let (from, _controls) = g.add_with_controls(automation);
+            g.event_connect(from, 0, key, 0);
+        }
         let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
         Self {
             renderer,

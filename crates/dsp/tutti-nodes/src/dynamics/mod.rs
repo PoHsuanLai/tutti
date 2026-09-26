@@ -19,6 +19,6 @@ mod limiter;
 
 mod params;
 
-pub use compressor::CompressorNode;
-pub use gate::GateNode;
-pub use limiter::{BrickwallLimiterNode, LimiterNode};
+pub use compressor::{CompressorNode, COMPRESSOR_PARAMS};
+pub use gate::{GateNode, GATE_PARAMS};
+pub use limiter::{BrickwallLimiterNode, LimiterNode, BRICKWALL_PARAMS, LIMITER_PARAMS};

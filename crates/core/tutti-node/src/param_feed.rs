@@ -113,6 +113,21 @@ impl ParamFeed {
     pub fn clear_all(&mut self) {
         self.live = 0;
     }
+
+    /// Move the feed out of `slot`, leaving an empty one that allocated
+    /// nothing: for a unit whose `process` reads the feed while it renders
+    /// through `&mut self`. Put it back when done. Audio-thread safe.
+    #[inline]
+    pub fn take(slot: &mut Self) -> Self {
+        core::mem::replace(
+            slot,
+            Self {
+                params: &[],
+                live: 0,
+                frames: Vec::new(),
+            },
+        )
+    }
 }
 
 #[cfg(test)]

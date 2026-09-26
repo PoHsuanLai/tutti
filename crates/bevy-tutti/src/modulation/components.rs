@@ -217,19 +217,22 @@ pub enum ModDelivery {
     /// [`AtomicTarget`](tutti_mod::AtomicTarget) collapses at a fixed beat, so
     /// a curve stored there would never move and the route falls back.
     PerBlock,
-    /// **Per sample.** Materialises `source → shaper → sum → the sink's param
-    /// port` as real graph nodes; the driver never touches the param.
+    /// **Per sample.** Declares the route to the graph as a param modulation
+    /// — the source's node, through the route's shaping, summed onto the
+    /// param's own control and clamped per frame by the graph (design doc 013
+    /// item 6); the driver never touches the param.
     ///
     /// A different *mechanism* rather than a request, and its outcome is
-    /// **observable**: the chain either appears in
-    /// [`AudioRateChains`](super::audio_rate::AudioRateChains) or it does not.
-    /// It falls back when the sink exposes no audio-rate port for the param —
-    /// a fact about the node, not an error.
+    /// **observable**: the param either appears in
+    /// [`AudioRateRoutes`](super::audio_rate::AudioRateRoutes) (and in the
+    /// graph's `param_mod`) or it does not. It falls back when the sink's
+    /// node declares no modulatable param of that name — a fact about the
+    /// node, not an error.
     ///
     /// Worth asking for when the staircase is audible: a fast LFO on a filter
-    /// cutoff or a distortion drive. It costs two idle graph nodes per
-    /// modulated param (~0.1% of a block at four effects, ~2% at sixty-four),
-    /// so it is opt-in rather than the default.
+    /// cutoff or a distortion drive. It costs one fused step in the node's op
+    /// per block and nothing when unrouted, so the choice is about the sound,
+    /// not the budget.
     PerSample,
 }
 

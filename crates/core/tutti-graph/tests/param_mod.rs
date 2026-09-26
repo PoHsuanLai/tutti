@@ -547,6 +547,42 @@ fn undeclared_params_and_missing_sources_are_refused() {
     assert!(ed.commit().is_err(), "the signal has no output 3");
 }
 
+/// Removing a node drops every param edge that names it: the ports it
+/// modulated, and its outputs as a source of anyone else's — so the value
+/// never names a node the graph no longer holds, and the other sources of a
+/// port keep modulating it.
+///
+/// Mutation (run): in `Editor::remove`, keep sources from the removed key
+/// (drop the `m.sources.retain`) → the commit is refused as naming an unknown
+/// node → fails.
+#[test]
+fn removing_a_node_drops_its_param_edges() {
+    let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
+    let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
+    ed.insert(NodeKey(1), "a", Signal { seed: 3 });
+    ed.insert(NodeKey(2), "b", Signal { seed: 5 });
+    for k in [1, 2] {
+        ed.spec_mut().connect_param(
+            param(PROBE, UnitParam::Cutoff),
+            ParamFrom::Audio(port(k, 0)),
+            ParamShaping::Identity,
+        );
+    }
+    ed.commit().expect("commits");
+    let _ = render(&mut exec, &mut ed, 64, 64);
+
+    ed.remove(NodeKey(1));
+    let m = &ed.spec().params[&param(PROBE, UnitParam::Cutoff)];
+    assert_eq!(
+        m.sources.iter().map(|s| s.from).collect::<Vec<_>>(),
+        vec![ParamFrom::Audio(port(2, 0))],
+        "the removed node's source is gone, the other stays"
+    );
+    ed.commit().expect("the value names no removed node");
+    let out = render(&mut exec, &mut ed, 64, 64);
+    assert_eq!(out[2][63], 1.0, "the param is still modulated");
+}
+
 // ---- differential: the executor against the reference ----------------------
 
 /// One generated graph: signals and ramp sources modulating probes, some

@@ -194,27 +194,12 @@ impl PortSources {
 
     /// Set one port, growing with [`PortSource::Silence`] to reach it.
     ///
-    /// # Audio-rate param ports belong here too
-    ///
-    /// A node's audio-rate *param* port (a filter's cutoff, a distortion's
-    /// drive) is an ordinary input port that happens to sit after the audio
-    /// inputs — get its index from the unit's
-    /// [`ParamPorts::param_port`](tutti_nodes::ParamPorts) before boxing it into
-    /// the graph, then name it here like any other port.
-    ///
-    /// Declaring it here is not a stylistic preference. Wiring a param port
-    /// imperatively is *fragile*: a wiring call that walks **every** input
-    /// port of a node (as `Net::pipe_input` did, before the native graph) lets
-    /// a later "wire the audio in" call silently
-    /// overwrites a param edge with a global input — no error, no warning, the
-    /// modulation just stops arriving.
-    ///
-    /// One `PortSources` per entity (the ECS enforces that) and one index per
-    /// port makes that clobber unrepresentable: [`rebuild`] writes the whole
-    /// declared range from a single `Vec`. A sibling `ParamSources` component
-    /// would put two writers back in one port space and let archetype iteration
-    /// order pick the winner — the silent last-write-wins this module refuses
-    /// for audio fan-in.
+    /// Audio ports only. A node's modulatable params (a filter's cutoff, a
+    /// distortion's drive) are not input ports: the graph modulates them
+    /// through its own param edges (`AudioGraphRes::set_param_mod`, which the
+    /// audio-rate modulation reconciler drives), so re-declaring a node's
+    /// audio ports cannot disturb its modulation — they are two different
+    /// spaces, and neither can clobber the other.
     pub fn with(mut self, port: usize, source: PortSource) -> Self {
         self.set(port, source);
         self
@@ -226,9 +211,8 @@ impl PortSources {
     /// The consuming builder is the right shape when assembling a declaration
     /// from nothing, and the wrong one when amending a component already in the
     /// world: reaching it through `&mut` costs a full clone of the port vector
-    /// per amendment, which turns a loop over N changed routes into N clones of
-    /// an N-element vector. `modulation::audio_rate` re-points shaper entities
-    /// exactly that way.
+    /// per amendment, which turns a loop over N changed edges into N clones of
+    /// an N-element vector.
     pub fn set(&mut self, port: usize, source: PortSource) {
         if self.0.len() <= port {
             self.0.resize(port + 1, PortSource::Silence);
@@ -367,7 +351,6 @@ pub fn rebuild(
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<PortSources>,
     mut unbound: RemovedComponents<AudioNode>,
-    #[cfg(feature = "modulation")] shaping: Query<&crate::modulation::audio_rate::ShaperShaping>,
 ) {
     let is_dirty = !changed.is_empty()
         || !removed.is_empty()
@@ -391,14 +374,7 @@ pub fn rebuild(
     // What the ECS says the graph should be, built before anything is written.
     // From here on this value is the truth for edges and outputs; the engine is
     // what gets brought into line with it.
-    let want = topology::build(
-        &graph,
-        &nodes,
-        &sinks,
-        &master,
-        #[cfg(feature = "modulation")]
-        &shaping,
-    );
+    let want = topology::build(&graph, &nodes, &sinks, &master);
 
     // **The change detection, as one comparison.** The dirty gate above only
     // decides whether it is worth asking; this decides whether anything actually
@@ -482,14 +458,7 @@ pub fn rebuild(
     // applied — and stored as `live` — describes the graph that now exists,
     // rather than the one that did a moment ago.
     let want = if master.is_changed() {
-        topology::build(
-            &graph,
-            &nodes,
-            &sinks,
-            &master,
-            #[cfg(feature = "modulation")]
-            &shaping,
-        )
+        topology::build(&graph, &nodes, &sinks, &master)
     } else {
         want
     };

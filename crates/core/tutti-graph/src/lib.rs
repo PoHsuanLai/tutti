@@ -126,6 +126,10 @@
 //! - [`Editor::replace`] and [`Fade`] — swapping a running unit with a
 //!   crossfade: both units run for the fade, the old one retires on the
 //!   control thread, and a replace during a fade waits for it.
+//! - [`GraphSpec::connect_param`] and [`Io::param`] — compiler-owned param
+//!   modulation: a node's declared params ([`Shape::params`]) summed with
+//!   their sources onto the node's own control, clamped, per frame; an
+//!   unconnected param reads its base, never 0 (design doc 013 item 6).
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
 //!   [`pure`](Legacy::pure), with a `Net::set` replacement

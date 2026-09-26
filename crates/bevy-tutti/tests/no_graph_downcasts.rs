@@ -67,18 +67,6 @@ const PATTERNS: &[Pattern] = &[
 /// A count rather than a path: a new use in an allow-listed file still fails.
 const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
-        "tests/mod_audio_rate.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "a_depth_edit_reaches_a_live_shaper ticks the graph's own ParamShaperNode \
-         (through `AudioGraphRes::inspect`) to prove the node changed, not the \
-         declaration: the shaper's LUT is baked at construction and has no control \
-         handle. A depth edit rebuilds the shaper, so the inspected copy (the \
-         node's shadow) is the new unit's. \
-         a_range_edit_reaches_a_live_clamp renders the chain instead, since its \
-         clamp lives in a cell a native shadow does not share.",
-    ),
-    (
         "src/midi/endpoint/target.rs",
         "downcast_ref / downcast_mut",
         1,

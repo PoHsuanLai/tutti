@@ -107,30 +107,27 @@ mod lfo;
 pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
 mod delay;
-pub use delay::{DelayLine, DelayLineNode, InterpolationMode};
+pub use delay::{DelayLine, DelayLineNode, InterpolationMode, DELAY_PARAMS};
 
 mod distortion;
-pub use distortion::{DistortionNode, ShapeKind};
+pub use distortion::{DistortionNode, ShapeKind, DISTORTION_PARAMS};
 
 mod filter;
 pub use filter::{
     compute_ladder_coeffs, compute_svf_coeffs, BandState, EqBandNode, LadderCoeffs,
-    LadderFilterNode, LadderType, SvfCoeffs, SvfFilterNode, SvfType,
+    LadderFilterNode, LadderType, SvfCoeffs, SvfFilterNode, SvfType, LADDER_PARAMS, SVF_PARAMS,
 };
 
 mod dynamics;
-pub use dynamics::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
-
-// A node declares its own audio-rate param-input ports (cutoff, drive, …). No
-// Bevy dependency — pure node capability.
-mod param_ports;
-pub use param_ports::ParamPorts;
-
-pub mod param_mod;
-pub use param_mod::{
-    build_param_mod, param_mod_parts, wire_param_mod, AtomicSourceNode, ClampBounds, ParamModChain,
-    ParamModEdge, ParamModPart, ParamModParts, ParamModShaping, ParamShaperNode, ParamSumNode,
+pub use dynamics::{
+    BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode, BRICKWALL_PARAMS,
+    COMPRESSOR_PARAMS, GATE_PARAMS, LIMITER_PARAMS,
 };
+
+// The shaping an audio-rate modulation edge authors; the edge itself is the
+// native graph's (design doc 013 item 6).
+pub mod param_mod;
+pub use param_mod::ParamModShaping;
 
 // The native `ModParams` impls (the trait itself lives in tutti-mod).
 mod mod_params;
@@ -157,7 +154,7 @@ pub use downmix_unit::DownmixNode;
 // The mixer strip: volume, stereo balance, mute. Ungated for the same reason as
 // `mix_bus` — a fader is not a spatial concept.
 mod strip;
-pub use strip::BusStripNode;
+pub use strip::{BusStripNode, STRIP_PARAMS};
 
 // NOTE: the spatial panners (`VbapPannerNode`, the HRTF binaural pair) and
 // `build_vbap_mix` moved to the `tutti-spatial` crate. They were the crate's

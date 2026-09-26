@@ -10,22 +10,24 @@
 //! both polarities and several depths, and through a rendered graph.
 //!
 //! **The oracle.** The old nodes were built in these tests and compared
-//! against sample by sample while they still existed (the commit that adds
-//! this file); they were then deleted, and what each test recorded from them
-//! is pinned as a digest of the bits. Everything here is `+`, `*`, `sqrt`
-//! and a table read: correctly rounded IEEE operations, no libm, so the
-//! digests are portable across targets.
+//! against sample by sample, bit for bit, while they still existed (the
+//! commit that added this file, "test(tutti-nodes): pin the graph's param
+//! step against the chain it replaces"); they were then deleted, and what
+//! each test produced — the old nodes' output, since the two agreed on every
+//! bit — is pinned as a digest. Everything here is `+`, `*`, `sqrt` and a
+//! table read: correctly rounded IEEE operations, no libm, so the digests
+//! are portable across targets. The shaping is also held to
+//! `tutti_mod::shape` itself, within the table's interpolation error.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use tutti_core::AudioUnit as _;
 use tutti_graph::{
     Cx, Editor, Io, Node, ParamFrom, ParamIn, ParamInput, ParamRange, Prepare, Shape, Status,
     Transport, PARAM_DECLICK,
 };
 use tutti_mod::{CurveType, Polarity};
-use tutti_nodes::{ParamModShaping, ParamShaperNode, ParamSumNode};
+use tutti_nodes::ParamModShaping;
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Depth, NodeKey, SampleRate, Samples, UnitParam};
 
@@ -63,11 +65,13 @@ const CURVES: [CurveType; 6] = [
 const DEPTHS: [f32; 4] = [0.0, 0.3, 1.0, -0.7];
 
 /// The shaping the graph applies per source equals `ParamShaperNode`'s
-/// output, bit for bit, for each curve, polarity and depth.
+/// output, bit for bit (the digest), for each curve, polarity and depth; and
+/// it agrees with `tutti_mod::shape` — the function the control-rate path
+/// applies to the same route — within the table's interpolation error.
 ///
-/// Mutation (run): bake the table at `x_i = i / 256 · 2 − 1` (one point off)
-/// → the digest and the oracle both fail. Read it at `(x + 1) / 2 · 256`
-/// → fails.
+/// Mutation (run, against the oracle and after): bake the table at
+/// `x_i = i / 256 · 2 − 1` (one point off) → fails. Read it at
+/// `(x + 1) / 2 · 254` → fails.
 #[test]
 fn each_curve_shapes_as_the_old_shaper_did() {
     let mut all = Vec::new();
@@ -80,16 +84,14 @@ fn each_curve_shapes_as_the_old_shaper_did() {
                     curve,
                 };
                 let new = s.shaping();
-                let mut old = ParamShaperNode::new(Depth(depth), polarity, curve);
                 for x in xs() {
                     let got = new.apply(x);
-                    let mut o = [0.0f32];
-                    old.tick(&[x], &mut o);
-                    assert_eq!(
-                        got.to_bits(),
-                        o[0].to_bits(),
-                        "{curve:?} {polarity:?} depth {depth} at {x}: {got} vs the old {}",
-                        o[0]
+                    let want = tutti_mod::shape(x.clamp(-1.0, 1.0), Depth(depth), polarity, curve);
+                    // The log curve's slope is unbounded at 0, where linear
+                    // interpolation between table points is loosest.
+                    assert!(
+                        (got - want).abs() < 2e-2,
+                        "{curve:?} {polarity:?} depth {depth} at {x}: {got} vs shape's {want}"
                     );
                     all.push(got);
                 }
@@ -155,12 +157,12 @@ const SEEDS: [u64; 3] = [7_919, 104_729, 1_299_709];
 
 /// Through a rendered graph, three modulators on one param sum on the base
 /// and clamp once exactly as `base → ParamSumNode ← ParamShaperNode × 3`
-/// did, frame for frame, once the connection's declick is over.
+/// did, frame for frame (the digest), once the connection's declick is over.
 ///
-/// Mutation (run): sum the offsets in reverse source order in
-/// `ParamState::port` → the oracle and the digest fail (float addition is
-/// not associative over three terms; over two it commutes, which is why
-/// there are three). Clamp before adding the base → fails.
+/// Mutation (run, against the oracle and after): sum the offsets in reverse
+/// source order in `ParamState::port` → fails (float addition is not
+/// associative over three terms; over two it commutes, which is why there
+/// are three). Clamp before adding the base → fails.
 #[test]
 fn the_graph_sums_and_clamps_as_the_old_chain_did() {
     let (base, min, max) = (2.0f32, 1.5, 2.75);
@@ -220,28 +222,6 @@ fn the_graph_sums_and_clamps_as_the_old_chain_did() {
     }
     let settled = &out[PARAM_DECLICK.get()..frames];
 
-    let mut shapers: Vec<ParamShaperNode> = shapings
-        .iter()
-        .map(|s| ParamShaperNode::new(s.depth, s.polarity, s.curve))
-        .collect();
-    let mut sum = ParamSumNode::new(3, min, max);
-    for (j, &got) in settled.iter().enumerate() {
-        let f = (PARAM_DECLICK.get() + j) as u64;
-        let mut ins = vec![base];
-        for (sh, &seed) in shapers.iter_mut().zip(&SEEDS) {
-            let mut o = [0.0f32];
-            sh.tick(&[wave(seed, f)], &mut o);
-            ins.push(o[0]);
-        }
-        let mut o = [0.0f32];
-        sum.tick(&ins, &mut o);
-        assert_eq!(
-            got.to_bits(),
-            o[0].to_bits(),
-            "frame {f}: the graph {got} vs the old chain {}",
-            o[0]
-        );
-    }
     assert!(
         settled.contains(&min) && settled.contains(&max),
         "the clamp was exercised at both ends"

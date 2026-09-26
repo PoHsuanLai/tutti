@@ -1,360 +1,122 @@
-//! Audio-rate delivery: materialising a route as a per-sample graph edge.
+//! Audio-rate delivery: a route as a per-sample param modulation in the
+//! graph.
 //!
 //! The third delivery tier, beside the per-frame scalar and the beat-evaluated
-//! curve. Where those hand a *value* to a sink, this builds the chain the engine
-//! renders:
+//! curve. Where those hand a *value* to a sink, this declares a modulation the
+//! graph renders (design doc 013 item 6):
 //!
 //! ```text
-//! ModulatorNode ─► ParamShaperNode ─► ParamSumNode ─► node's param port
-//!  (the source)     (depth·polarity     (base + Σ offsets,
-//!                    ·curve, LUT)        one clamp)
+//! ModulatorNode ──(shaping: depth · polarity · curve)──► the node's param
+//!  (the source)      summed with the param's own control, clamped once,
+//!                    per frame, by the graph's fused param step
 //! ```
+//!
+//! # What the graph does, and what is left here
+//!
+//! The graph owns the arithmetic: each declared param of a node (its
+//! `ParamFeed`, `AudioGraphRes::declares_param`) is `clamp(base + Σ shaped
+//! sources)` per frame, where the **base is the node's own control** — the
+//! cell an authored write, `AudioParam`, `write_param` and `set_param` all
+//! reach. An unconnected param reads that control, never 0, so a route can be
+//! connected and disconnected by a commit; the graph declicks the change.
+//!
+//! This reconciler only declares: per `(target, param)`, the group's source
+//! nodes and shapings and the declared range, written into the graph value
+//! with `AudioGraphRes::set_param_mod` when they change. It used to build a
+//! sub-graph per param — an `AtomicSourceNode` base, a `ParamSumNode`, a
+//! `ParamShaperNode` per route — into extra input ports the node had to be
+//! born with, and to keep a base cell, a clamp cell and each shaper's shaping
+//! on entities to diff against; none of that exists any more.
 //!
 //! # Why this is a reconciler and not part of `rebuild`
 //!
 //! [`rebuild`](super::rebuild) compiles the *value* matrix — a routing table the
-//! driver reads. This compiles a *graph*, and a graph is reconciled against what
-//! already exists rather than rebuilt from scratch: respawning the chain every
-//! time a depth slider moved would re-allocate nodes on a frame that only
-//! needed one atomic written, and would revert the authored base — the chain's
-//! base cell does not survive a respawn.
-//!
-//! **What "do not respawn" protects, precisely.** The instinct is "it restarts
-//! the LFO", and that is true of a *source* node but not of this chain: the
-//! `LfoNode` lives on the `ModSource` entity ([`ModSourceNode`]), spawned once
-//! by [`ensure_source_nodes`] and skipped forever after. So a shaper can be
-//! swapped without touching a modulator's phase, which is what
-//! `reshape_chain` does for an edit no setter can carry.
-//!
-//! So the two are deliberately separate systems over the same declaration. A
-//! route asks for audio rate with [`ModDelivery::PerSample`]; anything else
-//! stays on the value path untouched.
-//!
-//! # The base chain is not optional
-//!
-//! A node born with a param port reads that port *unconditionally* — it cannot
-//! ask whether anything is connected. An unconnected input in the graph is `Zero`,
-//! so a port with nothing feeding it delivers the param as literal `0.0`, not
-//! as its authored value: a distortion at drive 0 is silence, not a passthrough.
-//!
-//! That is why `spawn_chain` wires base → sum → port in the same call that
-//! claims the port. "Ports on now, base later" is not a cheap idle state, it is
-//! a broken node. (`tutti-nodes`' `born_with_ports` test pins this.)
+//! driver reads. This declares graph modulation, reconciled against what it
+//! last declared so an unchanged frame writes nothing (a changed declaration
+//! is a recompile). The source's node (`ModSourceNode`, the `LfoNode`) is
+//! spawned once by [`ensure_source_nodes`] and never respawned, so a depth
+//! edit does not restart the modulator's phase.
 
 use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 
-use tutti_types::{ParamAddr, UnitParam};
-// The three chain units are not imported here: `build_param_mod` owns their
-// construction, which is what keeps the base cell reachable.
+use tutti_core::AudioNode;
+use tutti_types::ParamAddr;
 
-use crate::graph::{AudioGraphRes, GraphDirty, PortSource, PortSources};
+use crate::graph::{AudioGraphRes, GraphDirty};
 use crate::modulation::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
 use crate::modulation::driver::ParamKey;
 
-/// The graph chain materialising one modulated param's audio-rate routes.
-///
-/// Keyed by `(target entity, param)` — the same key the value matrix groups by,
-/// because the constraint is the same: however many routes drive one param, they
-/// must sum into *one* value. Here that is literal, as `ParamSumNode`'s arity.
-#[derive(Debug, Clone)]
-pub struct ParamChain {
-    /// Feeds the sum's base port — the authored value, riding under the
-    /// modulation. Its cell is [`base_cell`](ParamChain::base_cell), which is
-    /// where every authored write for this param lands.
-    pub base: Entity,
-    /// `base + Σ offsets`, clamped once. Its arity is a function of the whole
-    /// route group, which is why chains are built per param and not per route.
-    pub sum: Entity,
-    /// One shaper per route, in the order their offsets occupy the sum's ports.
-    pub shapers: Vec<Entity>,
-    /// The sink's param-port index, resolved from `ParamPorts` at spawn.
-    pub port: usize,
-    /// The atomic the base unit reads — **the chain's single base owner**.
-    ///
-    /// An authored write lands here, not on the node: a node whose param port
-    /// is wired never reads its own atomic. Held so the chain outlives its
-    /// construction value — without it the base is frozen at whatever
-    /// `ModParamRange` said when the chain was built, which is what
-    /// [`write_param`](crate::graph::write_param)'s audio-rate branch and
-    /// [`refresh_base`](Self::refresh_base) both exist to prevent.
-    base_cell: std::sync::Arc<tutti_core::AtomicF32>,
-    /// The sum's live clamp range.
-    ///
-    /// Held for the same reason as [`base_cell`](Self::base_cell), and against
-    /// the same failure: a range is authored state that moves without the graph
-    /// moving, and it is baked into `ParamSumNode` at construction. Without a
-    /// handle the only way to apply a new range is to rebuild the sum — which
-    /// rebuilds the chain, which loses the base.
-    bounds: std::sync::Arc<tutti_nodes::ClampBounds>,
+/// One param's audio-rate modulation, as this reconciler declared it to the
+/// graph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioRateParam {
+    /// The graph node the param is on.
+    pub node: AudioNode,
+    /// Each route's source node and shaping, in route order.
+    pub sources: Vec<(AudioNode, tutti_nodes::ParamModShaping)>,
+    /// The declared range the sum is clamped to.
+    pub range: (f32, f32),
+    /// The declared base last written to the node's control.
+    pub base: f32,
 }
 
-impl ParamChain {
-    /// The chain's base cell — see the field's doc for why it is the only
-    /// address an authored write has.
-    pub fn base_cell(&self) -> std::sync::Arc<tutti_core::AtomicF32> {
-        std::sync::Arc::clone(&self.base_cell)
-    }
-
-    /// Store `base` if it differs from what the cell already holds.
-    ///
-    /// Guarded rather than unconditional: the audio thread loads this cell once
-    /// per block, and a same-value store is a pointless write to a line another
-    /// thread is reading.
-    fn refresh_base(&self, base: f32) {
-        use tutti_core::Ordering;
-        if self.base_cell.load(Ordering::Acquire) != base {
-            self.base_cell.store(base, Ordering::Release);
-        }
-    }
-
-    /// Store `(min, max)` if either differs from what the sum already clamps to.
-    ///
-    /// Guarded like [`refresh_base`](Self::refresh_base), and for the same
-    /// reason — but here the guard also narrows the window in which a reader can
-    /// observe the two stores half-applied. It cannot close it; `ParamSumNode`
-    /// orders the pair at the read for that.
-    fn refresh_bounds(&self, min: f32, max: f32) {
-        if self.bounds.get() != (min, max) {
-            self.bounds.set(min, max);
-        }
-    }
-}
-
-/// The shaping a live [`ParamShaperNode`](tutti_nodes::ParamShaperNode) was
-/// **built with**, carried by the shaper's own entity.
+/// Every param driven at audio rate, by the param it drives.
 ///
-/// `ParamShaperNode` bakes depth, polarity and curve into a LUT at construction
-/// and exposes no setter, so a reconciler can only tell that a depth slider
-/// moved by comparing the declaration against what the node was made from.
-///
-/// # Why this is a component and not a field on the chain
-///
-/// It used to be `AudioRateChains::shaping: Vec<ParamModShaping>` — a parallel
-/// vector, index-aligned with `ParamChain::shapers`, living in a resource. That
-/// is a second owner of a fact the shaper entity already embodies, and the two
-/// could disagree: the vector was written at spawn and patched in place on every
-/// reshape, so any path that replaced a shaper without updating its slot left
-/// the reconciler comparing against a node that no longer existed.
-///
-/// Keyed to the entity instead, the shaping cannot drift from the node it
-/// describes — despawning the shaper takes its shaping with it, and the index
-/// alignment that made a stale slot possible is gone. "Did this route's shaping
-/// move" becomes a comparison against the value on the entity, which is the same
-/// question the [`Topology`](tutti_types::graph::Topology) asks of everything
-/// else.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct ShaperShaping(pub tutti_nodes::ParamModShaping);
-
-/// Every audio-rate chain currently materialised, by the param it drives.
-///
-/// The reconciler's memory of what it built. Without it a rebuild could not tell
-/// "this chain already exists" from "this chain is new", and would either
-/// duplicate nodes or leak them.
+/// The reconciler's memory of what it declared, keyed by `(target entity,
+/// param)` — the same key the value matrix groups by, because however many
+/// routes drive one param, they sum into *one* value.
 #[derive(Resource, Debug, Default)]
-pub struct AudioRateChains(pub HashMap<ParamKey, ParamChain>);
+pub struct AudioRateRoutes(pub HashMap<ParamKey, AudioRateParam>);
 
-impl AudioRateChains {
-    /// The chain driving `param` on `target`, if one is built.
-    pub fn get(&self, target: Entity, param: ParamAddr) -> Option<&ParamChain> {
+impl AudioRateRoutes {
+    /// What drives `param` on `target` at audio rate, if anything does.
+    pub fn get(&self, target: Entity, param: ParamAddr) -> Option<&AudioRateParam> {
         self.0.get(&(target, param))
     }
 
     /// Whether this param is driven at audio rate.
     ///
     /// The audio-rate sibling of
-    /// [`ModulationMatrix::is_modulated`](super::ModulationMatrix::is_modulated),
-    /// and it matters for the same reason: a param whose port is fed by a sum
-    /// does not read its own atomic at all, so an authored write has to reach
-    /// the sum's base cell instead of the node.
+    /// [`ModulationMatrix::is_modulated`](super::ModulationMatrix::is_modulated).
+    /// Unlike the control-rate tier, it changes nothing about where an
+    /// authored write goes: the graph rides the modulation on the node's own
+    /// control, so [`write_param`](crate::graph::write_param) writes the
+    /// control either way.
     pub fn is_audio_rate(&self, target: Entity, param: ParamAddr) -> bool {
         self.0.contains_key(&(target, param))
     }
-
-    /// The base cell for an audio-rate param, if one is materialised.
-    ///
-    /// The write half of [`is_audio_rate`](Self::is_audio_rate): that predicate
-    /// says an authored write must go elsewhere, and this says where.
-    /// [`write_param`](crate::graph::write_param) is the caller.
-    pub fn base_cell(
-        &self,
-        target: Entity,
-        param: ParamAddr,
-    ) -> Option<std::sync::Arc<tutti_core::AtomicF32>> {
-        self.0.get(&(target, param)).map(ParamChain::base_cell)
-    }
 }
 
-/// The routes wanting audio rate, grouped by the param they drive.
-///
-/// Grouping is forced, not stylistic: `ParamSumNode`'s arity is the *group's*
-/// size, so nothing can be spawned until the whole group is known.
+/// The routes wanting audio rate, grouped by the param they drive, each group
+/// in a stable order (the route entities').
 fn group_routes<'a>(
-    routes: impl Iterator<Item = &'a ModRoute>,
+    routes: impl Iterator<Item = (Entity, &'a ModRoute)>,
 ) -> HashMap<ParamKey, Vec<&'a ModRoute>> {
-    let mut grouped: HashMap<ParamKey, Vec<&ModRoute>> = HashMap::new();
-    for route in routes {
+    let mut grouped: HashMap<ParamKey, Vec<(Entity, &ModRoute)>> = HashMap::new();
+    for (entity, route) in routes {
         if !route.enabled || route.delivery != ModDelivery::PerSample {
             continue;
         }
         grouped
             .entry((route.target, route.param))
             .or_default()
-            .push(route);
+            .push((entity, route));
     }
     grouped
-}
-
-/// Spawn the chain for one param and declare its wiring.
-///
-/// Returns `None` if the sink has no audio-rate port for this param — a node
-/// that was never built with `with_param_inputs` cannot be modulated at audio
-/// rate, and that is a fact about the node, not an error here. The route falls
-/// back to the value path, which is always correct.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the chain needs its sink entity, the param, its range, the route \
-              group and the port declarations; bundling them would only move the list"
-)]
-fn spawn_chain(
-    commands: &mut Commands<'_, '_>,
-    graph: &mut AudioGraphRes,
-    dirty: &mut GraphDirty,
-    sink: Entity,
-    param: ParamAddr,
-    range: &crate::modulation::components::ParamRange,
-    routes: &[&ModRoute],
-    source_nodes: &HashMap<Entity, Entity>,
-    ports: &Query<&crate::graph::ParamPortMap>,
-) -> Option<ParamChain> {
-    // Only a `UnitParam` can name a native port; a foreign `ParamAddr::Id`
-    // belongs to a plugin, which has its own parameter path.
-    let ParamAddr::Unit(unit) = param else {
-        return None;
-    };
-    let port = param_port(ports, sink, unit)?;
-
-    // A `ModSource` entity carries a *modulator*, not a graph node — the value
-    // path never needed one. `ensure_source_nodes` spawns the `LfoNode` that
-    // makes the same modulator renderable, and this is where the shapers pick
-    // them up. Resolved before building so a missing source aborts the whole
-    // chain rather than leaving half of it in the graph.
-    let feeds: Vec<Entity> = routes
-        .iter()
-        .map(|r| source_nodes.get(&r.source).copied())
-        .collect::<Option<_>>()?;
-
-    // Through the engine's own assembler, which is what keeps the base cell.
-    // `param_mod_parts`, not `wire_param_mod`: this crate declares its edges as
-    // `PortSources` and diffs them against the graph each frame, so an edge
-    // connected here would be reverted on the next wire pass. The builder makes
-    // the nodes; the declarations below make the edges.
-    let shaping: Vec<tutti_nodes::ParamModShaping> = routes
-        .iter()
-        .map(|r| tutti_nodes::ParamModShaping {
-            depth: r.depth,
-            polarity: r.polarity,
-            curve: r.curve,
+        .into_iter()
+        .map(|(k, mut v)| {
+            v.sort_by_key(|(e, _)| *e);
+            (k, v.into_iter().map(|(_, r)| r).collect())
         })
-        .collect();
-    let parts = tutti_nodes::param_mod_parts(range.base, range.min, range.max, &shaping);
-    // **The handle, not a copy.** A node whose param port is wired never reads
-    // its own atomic, so this cell is the only address an authored write has —
-    // see `ParamModChain::base_cell` and `write_param`'s audio-rate branch.
-    let base_cell = parts.base_cell();
-    let bounds = parts.bounds();
-
-    // Inserted in `ParamModParts::insert_into`'s order: base, sum, shapers.
-    let base = commands.spawn(graph.insert(parts.base)).id();
-    let sum = commands.spawn(graph.insert(parts.sum)).id();
-
-    let mut shapers = Vec::with_capacity(routes.len());
-    let mut sum_sources = PortSources::silent().with(0, PortSource::node(base));
-    for (i, (shaper_unit, &feed)) in parts.shapers.into_iter().zip(feeds.iter()).enumerate() {
-        let shaper = commands
-            .spawn((
-                graph.insert(shaper_unit),
-                // The shaping rides the entity that carries the node it built,
-                // so the two cannot drift apart.
-                ShaperShaping(shaping[i]),
-            ))
-            .id();
-        commands.entity(shaper).insert(PortSources::from(feed));
-        // Offsets occupy ports 1..=N, in group order.
-        sum_sources = sum_sources.with(i + 1, PortSource::node(shaper));
-        shapers.push(shaper);
-    }
-
-    commands.entity(sum).insert(sum_sources);
-    // The param port joins the sink's existing declaration rather than
-    // replacing it — a param port is an ordinary input port, and one
-    // `PortSources` owns the whole port space (see `graph::wire`). Reading the
-    // current declaration and extending it is what keeps the audio ports the
-    // host declared intact.
-    commands.queue(move |world: &mut World| {
-        let existing = world
-            .get::<PortSources>(sink)
-            .cloned()
-            .unwrap_or_else(PortSources::silent);
-        if let Ok(mut e) = world.get_entity_mut(sink) {
-            e.insert(existing.with(port, PortSource::node(sum)));
-        }
-    });
-
-    dirty.0 = true;
-    Some(ParamChain {
-        base,
-        sum,
-        shapers,
-        port,
-        base_cell,
-        bounds,
-    })
-}
-
-/// The sink's param-port index, or `None` if it exposes none for this param.
-///
-/// Read off the sink's [`ParamPortMap`](crate::graph::ParamPortMap) — the
-/// component the spawn site recorded from the node's own
-/// [`ParamPorts`](tutti_nodes::ParamPorts) impl.
-///
-/// # What this replaced, and why the replacement is not just tidier
-///
-/// This used to downcast through a hand-maintained list of nine concrete node
-/// types. A `ParamPorts` impl missing from that list answered `None`, which is
-/// indistinguishable from the legitimate "this node exposes no port", so the
-/// route was silently downgraded to per-frame. **Both filters were missing**,
-/// and `Cutoff`/`Q` are the only params either offers — so the tier's headline
-/// use case (a fast LFO on a filter cutoff) was the one it could not serve.
-///
-/// The two failures are now distinguishable, which is the whole gain:
-///
-/// - a map that is **present and has no entry** for `param` is the node saying
-///   no, and the fallback to per-frame is correct;
-/// - a map that is **absent** means nobody declared this node's ports, and that
-///   is reported by name rather than acted on in silence.
-fn param_port(
-    ports: &Query<&crate::graph::ParamPortMap>,
-    sink: Entity,
-    param: UnitParam,
-) -> Option<usize> {
-    match ports.get(sink) {
-        Ok(map) => map.port(param),
-        Err(_) => {
-            bevy_log::warn!(
-                "{}",
-                crate::graph::ParamPortMap::missing_declaration_warning(sink, param)
-            );
-            None
-        }
-    }
+        .collect()
 }
 
 /// The graph node standing in for a `ModSource` on the audio-rate path.
 ///
 /// The value path builds a `tutti_mod::Modulator` — a pure `phase -> value`
 /// function with no ports — because the driver samples it directly. Audio rate
-/// needs something a graph edge can *connect to*, which is
+/// needs something the graph can read a signal from, which is
 /// [`ModulatorNode`](tutti_nodes::ModulatorNode) wrapping that same modulator.
 ///
 /// One modulator, two adapters: the marker records which entity's node is which
@@ -365,7 +127,7 @@ pub struct ModSourceNode(pub Entity);
 /// Give every source feeding an audio-rate route a renderable node.
 ///
 /// Runs before [`reconcile_audio_rate`], which needs the node to exist before
-/// it can point a shaper at it. Sources with no audio-rate route get nothing —
+/// it can name it as a source. Sources with no audio-rate route get nothing —
 /// the value path does not need a node and should not pay for one.
 pub fn ensure_source_nodes(
     mut commands: Commands,
@@ -407,30 +169,20 @@ pub fn ensure_source_nodes(
     }
 }
 
-/// "Did a route, a range, or a sink's node move this frame?" — the
-/// reconciler's dirty gate.
+/// "Did a route, a range, or a node move this frame?" — the reconciler's
+/// dirty gate.
 ///
 /// A named alias because the tuple is unreadable inline and clippy is right to
 /// say so; the `()` fetch is deliberate, since only the emptiness matters.
 ///
 /// # Why `AudioNode` is in here
 ///
-/// `spawn_chain` needs the sink's graph node in order to resolve its param
-/// port, and returns `None` when the sink has none yet. That is the right answer
-/// at the time, but not a *permanent* one — so `Changed<AudioNode>` is in the
-/// gate to ask again when the node lands.
-///
-/// The order it covers is the ordinary one. A host that compiles a document
-/// declares routes and spawns nodes in the same frame, and a node inserted
-/// through `insert_audio_node` lands as a *deferred* command — so the route is
-/// visible one frame before the `AudioNode` is. Without this arm the route is
-/// evaluated exactly once, against a sink that has no node, and falls back to
-/// per-frame permanently. Nothing reports it, because falling back is a legal
-/// outcome meaning "this sink exposes no port".
-///
-/// `Changed` rather than `Added`: replacing a node's unit (a crossfade, a
-/// re-arity) rewrites the component, and the new node's port index need not
-/// match the old one's.
+/// The declaration needs the sink's graph node and each source's, and a route
+/// is routinely visible one frame before its sink's node is (a node inserted
+/// through `insert_audio_node` lands as a *deferred* command). Without this arm
+/// the route is evaluated exactly once, against a sink that has no node, and
+/// falls back to per-frame permanently. `Changed` rather than `Added`:
+/// replacing a node's unit (a crossfade, a re-arity) rewrites the component.
 type RouteChanged<'w, 's> = Query<
     'w,
     's,
@@ -438,31 +190,46 @@ type RouteChanged<'w, 's> = Query<
     Or<(
         Changed<ModRoute>,
         Changed<ModParamRange>,
-        Changed<tutti_core::AudioNode>,
+        Changed<AudioNode>,
+        Changed<ModSourceNode>,
     )>,
 >;
 
-/// Reconcile audio-rate routes into graph chains.
+/// Declare audio-rate routes to the graph as param modulations.
+///
+/// Per `(target, param)` group: the param must be one the target's node
+/// declares modulatable (`AudioGraphRes::declares_param`) — a node that
+/// declares no such param cannot be modulated at audio rate, a fact about the
+/// node rather than an error, and the route falls back to the value path,
+/// which is always correct. What changed since the last declaration is
+/// written; an unchanged group writes nothing.
+///
+/// The declared range's base is written to the node's own control when the
+/// group is first declared and whenever the range moves: that control is the
+/// base the modulation rides on, as the old chain's base cell was.
 #[allow(
     clippy::too_many_arguments,
     reason = "Bevy systems declare their data access as parameters; every one \
               here is a distinct query or resource the reconcile genuinely reads"
 )]
 pub fn reconcile_audio_rate(
-    mut commands: Commands,
-    mut chains: ResMut<AudioRateChains>,
+    mut declared: ResMut<AudioRateRoutes>,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    routes: Query<&ModRoute>,
+    routes: Query<(Entity, &ModRoute)>,
     ranges: Query<&ModParamRange>,
-    source_nodes: Query<(Entity, &ModSourceNode)>,
-    ports: Query<&crate::graph::ParamPortMap>,
-    shaping: Query<&ShaperShaping>,
+    source_nodes: Query<&ModSourceNode>,
+    nodes: Query<&AudioNode>,
     changed: RouteChanged,
     mut removed: RemovedComponents<ModRoute>,
+    mut unbound: RemovedComponents<AudioNode>,
 ) {
-    let is_dirty = !changed.is_empty() || !removed.is_empty();
+    // A despawned node (a source's, or the target's) is a change too: the
+    // graph already dropped its param edges with it (`Editor::remove`), and
+    // this keeps the declaration's memory in step.
+    let is_dirty = !changed.is_empty() || !removed.is_empty() || !unbound.is_empty();
     removed.clear();
+    unbound.clear();
     if !is_dirty {
         return;
     }
@@ -470,342 +237,136 @@ pub fn reconcile_audio_rate(
         return;
     };
 
-    let source_nodes: HashMap<Entity, Entity> =
-        source_nodes.iter().map(|(e, n)| (e, n.0)).collect();
-    let grouped = group_routes(routes.iter());
-
-    // Retire chains whose routes are gone, so a deleted route does not leave a
-    // sum feeding a stale offset into the node forever.
-    let stale: Vec<ParamKey> = chains
-        .0
-        .keys()
-        .filter(|key| !grouped.contains_key(*key))
-        .copied()
-        .collect();
-    for key in stale {
-        if let Some(chain) = chains.0.remove(&key) {
-            despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &chain);
-        }
-    }
-
-    for (key, group) in grouped {
-        // An existing chain of the right shape is left alone: respawning would
-        // restart every LFO in it.
-        //
-        // But "left alone" must not mean "left stale". The base is authored
-        // state that changes without the chain's *shape* changing — a fader
-        // move, a document edit — and `ModParamRange` is in this system's dirty
-        // gate precisely so those arrive here. Without this refresh the base is
-        // read once at spawn and never again, and an authored edit to an
-        // audio-rate param is silently discarded for the chain's whole life.
-        //
-        // Cheap and in-place: guarded atomic stores, no respawn. The bounds
-        // ride along for the same reason the base does — a range is authored
-        // state that moves without the graph moving, and `ParamSumNode` holds
-        // both in a shared cell rather than baking them at construction.
-        //
-        // Shaping is handled just below, and needs more than a store because
-        // `ParamShaperNode` has no setter either.
-        if chains
-            .0
-            .get(&key)
-            .is_some_and(|c| c.shapers.len() == group.len())
-        {
-            if let Some(range) = ranges.get(key.0).ok().and_then(|r| r.get(key.1)) {
-                if let Some(chain) = chains.0.get(&key) {
-                    chain.refresh_base(range.base);
-                    chain.refresh_bounds(range.min, range.max);
-                }
-            }
-            reshape_chain(
-                &mut commands,
-                &mut graph,
-                &mut dirty,
-                &mut chains,
-                key,
-                &group,
-                &source_nodes,
-                &shaping,
+    let mut want: HashMap<ParamKey, AudioRateParam> = HashMap::new();
+    for (key, group) in group_routes(routes.iter()) {
+        let (target, param) = key;
+        // Only a `UnitParam` can name a native param; a foreign
+        // `ParamAddr::Id` belongs to a plugin, which has its own parameter
+        // path.
+        let ParamAddr::Unit(unit) = param else {
+            continue;
+        };
+        let Ok(&node) = nodes.get(target) else {
+            continue;
+        };
+        if !graph.declares_param(node, unit) {
+            bevy_log::debug!(
+                "audio-rate route on {target:?} for {unit:?}: its node declares no such \
+                 modulatable param, so the route falls back to per-frame"
             );
             continue;
         }
-        if let Some(old) = chains.0.remove(&key) {
-            despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &old);
-        }
-        let (target, param) = key;
-        let Ok(range) = ranges.get(target) else {
+        let Some(range) = ranges.get(target).ok().and_then(|r| r.get(param)) else {
             continue;
         };
-        let Some(range) = range.get(param) else {
+        // A route whose source has no node (not spawned yet, or its node
+        // was despawned) is left out: its offset is not there to sum, and
+        // the rest of the group still is. A group with none waits.
+        let sources: Vec<(AudioNode, tutti_nodes::ParamModShaping)> = group
+            .iter()
+            .filter_map(|r| {
+                let src = source_nodes.get(r.source).ok()?;
+                let &src_node = nodes.get(src.0).ok()?;
+                graph.contains(src_node).then_some((
+                    src_node,
+                    tutti_nodes::ParamModShaping {
+                        depth: r.depth,
+                        polarity: r.polarity,
+                        curve: r.curve,
+                    },
+                ))
+            })
+            .collect();
+        if sources.is_empty() {
             continue;
-        };
-        if let Some(chain) = spawn_chain(
-            &mut commands,
-            &mut graph,
-            &mut dirty,
-            target,
-            param,
-            range,
-            &group,
-            &source_nodes,
-            &ports,
-        ) {
-            chains.0.insert(key, chain);
         }
+        want.insert(
+            key,
+            AudioRateParam {
+                node,
+                sources,
+                range: (range.min, range.max),
+                base: range.base,
+            },
+        );
     }
-}
 
-/// Rebuild only those shapers whose declared shaping has moved.
-///
-/// # Why a targeted respawn rather than a setter or a whole-chain rebuild
-///
-/// [`ParamShaperNode`](tutti_nodes::ParamShaperNode) bakes depth, polarity and
-/// curve into a LUT at construction and exposes no setter, so a moved slider
-/// cannot be written into the live node — something has to be rebuilt.
-///
-/// Rebuilding the *chain* is what the module's anti-respawn note warns against,
-/// but read that note precisely: it protects the **LFO's phase**, and the LFO is
-/// not in the chain. `ensure_source_nodes` spawns it on the `ModSource` entity
-/// (`ModSourceNode`) and skips any source that already has one, so it survives
-/// anything done here. What a whole-chain respawn would actually cost is the
-/// base cell — the authored value would silently revert to `ModParamRange`'s —
-/// and two extra nodes churned for a param that only needed one.
-///
-/// So: one shaper out, one shaper in, the sum and the base untouched. A depth
-/// drag churns exactly one node per moved route per frame.
-fn reshape_chain(
-    commands: &mut Commands<'_, '_>,
-    graph: &mut AudioGraphRes,
-    dirty: &mut GraphDirty,
-    chains: &mut AudioRateChains,
-    key: ParamKey,
-    routes: &[&ModRoute],
-    source_nodes: &HashMap<Entity, Entity>,
-    shaping: &Query<&ShaperShaping>,
-) {
-    let Some(chain) = chains.0.get_mut(&key) else {
-        return;
-    };
-
-    let mut sum_sources: Option<PortSources> = None;
-    for (i, route) in routes.iter().enumerate() {
-        let want = tutti_nodes::ParamModShaping {
-            depth: route.depth,
-            polarity: route.polarity,
-            curve: route.curve,
-        };
-        // The comparison is against the value on the shaper's own entity, so a
-        // shaper replaced by any path carries its own answer — there is no
-        // index-aligned sidecar left to go stale.
-        if chain
-            .shapers
-            .get(i)
-            .and_then(|&e| shaping.get(e).ok())
-            .is_some_and(|live| live.0 == want)
-        {
-            continue;
-        }
-
-        let unit = tutti_nodes::ParamShaperNode::new(want.depth, want.polarity, want.curve);
-        let replacement = commands
-            .spawn((graph.insert(unit), ShaperShaping(want)))
-            .id();
-
-        // The new shaper needs the same feed the old one had. Re-declared from
-        // the route rather than copied off the old entity, because the route is
-        // the source of truth and the old entity is about to be despawned.
-        //
-        // A source with no node is not an error here — it means the LFO has not
-        // spawned yet. Leaving the old shaper in place is the right failure: a
-        // stale depth beats an offset port fed by nothing.
-        let Some(&feed) = source_nodes.get(&route.source) else {
-            commands.entity(replacement).despawn();
-            continue;
-        };
-        commands.entity(replacement).insert(PortSources::from(feed));
-
-        let old = std::mem::replace(&mut chain.shapers[i], replacement);
-        commands.entity(old).despawn();
-
-        // The sum's declaration names the shaper *entity*, so it has to be
-        // re-declared with the replacement. Built once and inserted after the
-        // loop so N moved routes cost one component write, not N.
-        let sources = sum_sources.get_or_insert_with(|| {
-            let mut s = PortSources::silent().with(0, PortSource::node(chain.base));
-            for (j, &sh) in chain.shapers.iter().enumerate() {
-                s = s.with(j + 1, PortSource::node(sh));
+    // Retire what is no longer wanted: the param reads its own control again.
+    let stale: Vec<ParamKey> = declared
+        .0
+        .keys()
+        .filter(|k| !want.contains_key(*k))
+        .copied()
+        .collect();
+    for key in stale {
+        let old = declared.0.remove(&key).expect("listed");
+        if let ParamAddr::Unit(unit) = key.1 {
+            if graph.contains(old.node) {
+                graph.clear_param_mod(old.node, unit);
+                dirty.0 = true;
             }
-            s
-        });
-        sources.set(i + 1, PortSource::node(replacement));
-        dirty.0 = true;
-    }
-
-    if let Some(sources) = sum_sources {
-        commands.entity(chain.sum).insert(sources);
-    }
-}
-
-/// Tear a chain down: despawn its entities and let the `AudioNode` remove
-/// observer take the graph nodes with them.
-///
-/// # The sink's declaration goes too
-///
-/// `spawn_chain` extended the sink's `PortSources` with
-/// `port -> PortSource::node(sum)`. Leaving that behind points the declaration
-/// at a despawned entity, and the wire rebuild then resolves it to nothing — so
-/// the param port ends up **unfed**, which this module's own docs note reads as
-/// a literal `0.0` rather than as the authored value. A distortion at drive 0
-/// is silence, not a passthrough.
-///
-/// Retiring the declaration returns the port to `Silent`, which is the state
-/// `spawn_chain` found it in.
-fn despawn_chain(
-    commands: &mut Commands<'_, '_>,
-    _graph: &mut AudioGraphRes,
-    dirty: &mut GraphDirty,
-    sink: Entity,
-    chain: &ParamChain,
-) {
-    for e in std::iter::once(chain.base)
-        .chain(std::iter::once(chain.sum))
-        .chain(chain.shapers.iter().copied())
-    {
-        commands.entity(e).despawn();
-    }
-
-    // Deferred for the same reason the insert was: one `PortSources` owns the
-    // sink's whole port space, so this reads the current declaration and edits
-    // one port of it rather than replacing the component.
-    let port = chain.port;
-    commands.queue(move |world: &mut World| {
-        let Some(existing) = world.get::<PortSources>(sink).cloned() else {
-            return; // sink already gone — nothing to retire
-        };
-        if let Ok(mut e) = world.get_entity_mut(sink) {
-            e.insert(existing.with(port, PortSource::Silence));
         }
-    });
+    }
 
-    dirty.0 = true;
+    for (key, p) in want {
+        let ParamAddr::Unit(unit) = key.1 else {
+            continue;
+        };
+        let old = declared.0.get(&key);
+        if old == Some(&p) {
+            continue;
+        }
+        // The base first, so the modulation's first frame rides on it.
+        if old.is_none_or(|o| o.base != p.base || o.node != p.node) {
+            graph.set_param(p.node, unit, p.base);
+        }
+        if old.is_none_or(|o| o.sources != p.sources || o.range != p.range || o.node != p.node) {
+            if let Some(o) = old.filter(|o| o.node != p.node) {
+                graph.clear_param_mod(o.node, unit);
+            }
+            let shaped: Vec<(AudioNode, tutti_graph::ParamShaping)> =
+                p.sources.iter().map(|(n, s)| (*n, s.shaping())).collect();
+            graph.set_param_mod(
+                p.node,
+                unit,
+                &shaped,
+                tutti_graph::ParamRange::new(p.range.0, p.range.1),
+            );
+        }
+        dirty.0 = true;
+        declared.0.insert(key, p);
+    }
 }
 
 #[cfg(test)]
-mod param_port_tests {
+mod tests {
     use super::*;
-    use crate::graph::ParamPortMap;
     use bevy_ecs::world::World;
+    use tutti_types::UnitParam;
 
-    /// Build a world holding one entity with `map`, and resolve `param` on it.
+    /// A group's routes are ordered by their entities, whatever order the
+    /// query yields them in: the graph sums sources in source order, and a
+    /// group that reordered from frame to frame would be declared anew each
+    /// frame (a recompile and a declick for nothing).
     ///
-    /// Goes through the real `Query` the reconciler uses rather than calling
-    /// `ParamPortMap::port` directly — the lookup path *is* what was broken, so
-    /// a direct call would have passed throughout the bug.
-    fn resolve(map: Option<ParamPortMap>, param: UnitParam) -> (Option<usize>, Entity) {
+    /// Mutation (run): drop the sort → the reversed input comes out
+    /// reversed → fails.
+    #[test]
+    fn a_group_is_in_route_entity_order() {
         let mut world = World::new();
-        let mut e = world.spawn_empty();
-        if let Some(map) = map {
-            e.insert(map);
-        }
-        let entity = e.id();
-        let mut q = world.query::<&ParamPortMap>();
-        let got = {
-            let query = q.query(&world);
-            match query.get(entity) {
-                Ok(m) => m.port(param),
-                Err(_) => None,
-            }
-        };
-        (got, entity)
-    }
-
-    /// **The shipped bug, as a test.** A filter built with audio-rate param
-    /// inputs must resolve a port for `Cutoff`.
-    ///
-    /// This is the regression the whole slice exists for. `param_port` used to
-    /// downcast through a hand-maintained list of nine concrete types, and both
-    /// filter types were absent from it. A type missing from that list answered
-    /// `None` — indistinguishable from "this node exposes no port" — so
-    /// `ModDelivery::PerSample` fell back to per-frame in silence. `Cutoff` and
-    /// `Q` are the only params either filter offers, so the tier's headline use
-    /// case was the one it could not serve.
-    ///
-    /// # Mutation
-    ///
-    /// Deleting the two filter arms (then `StereoSvfFilterNode`) from the old
-    /// `try_kinds!` list is what the bug *was*, and this test fails under it: the map is
-    /// built from the node's own `ParamPorts` impl, so there is no list left to
-    /// omit a type from. Making `ParamPortMap::of` return `Self::default()`
-    /// fails it the same way — that is the same defect expressed in the new
-    /// code's terms.
-    #[test]
-    fn a_filters_cutoff_resolves_to_an_audio_rate_port() {
-        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
-            tutti_types::ChannelLayout::STEREO,
-            tutti_nodes::SvfType::LowPass,
-            tutti_types::Hz(1000.0),
-            tutti_types::Q(0.707),
-            true,
-            true,
+        let (a, b, t) = (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
         );
-        let (port, _) = resolve(Some(ParamPortMap::of(&unit)), UnitParam::Cutoff);
-        assert!(
-            port.is_some(),
-            "a filter built with param inputs must resolve a Cutoff port; \
-             answering None here is the silent downgrade to per-frame that shipped"
-        );
-    }
-
-    /// A node that genuinely has no port for a param resolves `None` — and that
-    /// is a *correct* answer, not the bug above.
-    ///
-    /// Mutation: making `param_port` return `Some(0)` whenever a map exists
-    /// fails this, which is what keeps the test above from being satisfiable by
-    /// a blanket "yes".
-    #[test]
-    fn a_param_the_node_does_not_port_resolves_to_none() {
-        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
-            tutti_types::ChannelLayout::STEREO,
-            tutti_nodes::SvfType::LowPass,
-            tutti_types::Hz(1000.0),
-            tutti_types::Q(0.707),
-            true,
-            true,
-        );
-        let (port, _) = resolve(Some(ParamPortMap::of(&unit)), UnitParam::Drive);
-        assert_eq!(port, None, "an SVF exposes no Drive port");
-    }
-
-    /// The two failures the old list could not tell apart are now distinct.
-    ///
-    /// "No entry in a present map" is the node saying no; "no map at all" is a
-    /// missing declaration. The old code produced `None` for both and acted on
-    /// it identically, which is why the filter omission was invisible.
-    ///
-    /// Mutation: making the `Err` arm of `param_port` fall back to some default
-    /// port collapses the two again and fails this.
-    #[test]
-    fn a_missing_declaration_is_distinguishable_from_a_declared_absence() {
-        let unit = tutti_nodes::SvfFilterNode::<f32>::with_param_inputs(
-            tutti_types::ChannelLayout::STEREO,
-            tutti_nodes::SvfType::LowPass,
-            tutti_types::Hz(1000.0),
-            tutti_types::Q(0.707),
-            true,
-            true,
-        );
-        // Declared, and the node says no to Drive.
-        let declared = ParamPortMap::of(&unit);
-        assert_eq!(resolve(Some(declared.clone()), UnitParam::Drive).0, None);
-        // Not declared at all.
-        let (undeclared, entity) = resolve(None, UnitParam::Cutoff);
-        assert_eq!(undeclared, None, "no map still resolves to no port");
-        // The states differ in what can be *said* about them, which is the
-        // whole point: only one of them names the entity and the param.
-        let warning = ParamPortMap::missing_declaration_warning(entity, UnitParam::Cutoff);
-        assert!(
-            warning.contains("Cutoff") && warning.contains("ParamPortMap"),
-            "a missing declaration must name the param and the component; got {warning}"
-        );
+        let p = ParamAddr::Unit(UnitParam::Drive);
+        // Routes keyed by their own entities, the later one handed in first.
+        let (first, second) = if a < b { (a, b) } else { (b, a) };
+        let r1 = ModRoute::new(first, t, p).per_sample();
+        let r2 = ModRoute::new(second, t, p).per_sample();
+        let g = group_routes([(second, &r2), (first, &r1)].into_iter());
+        let group = &g[&(t, p)];
+        assert_eq!(group[0].source, first);
+        assert_eq!(group[1].source, second);
     }
 }

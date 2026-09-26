@@ -69,7 +69,7 @@
 //! right for a node whose output depends only on its audio inputs, and wrong
 //! for one fed **out of band** — a SoundFont or a PolySynth steered through a
 //! channel, a plugin instrument driven through its own MIDI queue, a mic
-//! monitor, an `AtomicSourceNode` whose base is 0 until someone writes it.
+//! monitor, a constant source whose value is 0 until someone writes its cell.
 //! Skipped once, such a unit is never called again to notice that it has
 //! something to say: parked for good.
 //!

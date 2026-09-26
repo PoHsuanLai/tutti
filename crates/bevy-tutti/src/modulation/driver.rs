@@ -498,16 +498,7 @@ mod tests {
         app.world_mut()
             .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
                 let matrix = w.resource::<ModulationMatrix>();
-                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
-                crate::graph::write_param(
-                    &mut graph,
-                    matrix,
-                    chains,
-                    target,
-                    &node,
-                    UnitParam::Drive,
-                    8.0,
-                );
+                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
             });
 
         advance_transport(&mut app, 480);
@@ -552,16 +543,7 @@ mod tests {
         app.world_mut()
             .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
                 let matrix = w.resource::<ModulationMatrix>();
-                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
-                crate::graph::write_param(
-                    &mut graph,
-                    matrix,
-                    chains,
-                    target,
-                    &node,
-                    UnitParam::Drive,
-                    8.0,
-                );
+                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
             });
         advance_transport(&mut app, 480);
         app.update();

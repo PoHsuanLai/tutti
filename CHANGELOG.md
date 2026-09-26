@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Compiler-owned param modulation** (design doc 013, "Rewrite order"
+  item 6). A node declares the params the graph may modulate
+  (`Shape::with_params(&[UnitParam])`), a spec drives any of them from
+  audio or `ParamRamp` event outputs (`GraphSpec::connect_param`,
+  `disconnect_param`, `set_param_range`), and the compiler fuses each one
+  into a step of the node's op: the node's own control (its base, read
+  through the new `Node::param_base` once per block and ramped across it)
+  plus every source through its `ParamShaping`, summed in source order and
+  clamped once. The node reads it through `Io::param(k)`: per-frame values,
+  or `ParamInput::Base` when nothing modulates it — **an unconnected param
+  reads its base, never 0**, so modulation is connected and disconnected
+  by any commit, crossfaded over `PARAM_DECLICK` frames rather than
+  stepped. Param sources are PDC-aligned like inputs
+  (`DelayKey::ParamAudio` / `ParamEvent`). This replaces the per-param
+  sub-graph (`AtomicSourceNode → ParamSumNode ← ParamShaperNode × N`) and
+  the extra input ports a node had to be born with. What changes for a
+  caller:
+
+  | Was | Now |
+  |---|---|
+  | `SvfFilterNode::with_param_inputs(.., mod_cutoff, mod_q)` and the same on `LadderFilterNode`, `DelayLineNode`, `DistortionNode`, `CompressorNode`, `GateNode`, `LimiterNode`, `BrickwallLimiterNode`, `BusStripNode`; their `cutoff_port()` / `q_port()` / `drive_port()` / `feedback_port()` / `delay_time_port()` / `threshold_port()` / `ceiling_port()` / `volume_port()` / `pan_port()` | removed. Build the node with its plain constructor (`with_channels`, `new`, …): every one of them is modulatable by the graph, and its arity is its audio width. Each declares its params as a `*_PARAMS` list (`SVF_PARAMS`, `DELAY_PARAMS`, …) in port order |
+  | `tutti_nodes::ParamPorts` (`param_port(UnitParam) -> Option<usize>`) | removed: the graph asks the node's shape (`Shape::params`; `AudioGraphRes::declares_param` in bevy-tutti) |
+  | `ParamShaperNode`, `ParamSumNode`, `AtomicSourceNode`, `ClampBounds`, `ParamModChain`, `ParamModParts`, `ParamModPart`, `ParamModEdge`, `param_mod_parts`, `build_param_mod`, `wire_param_mod` | removed. A modulation edge is `GraphSpec::connect_param(ParamIn { node, param }, ParamFrom::Audio(out), shaping)`; `ParamModShaping::shaping()` bakes a route's depth / polarity / curve into the `ShapeLut` (bit for bit the old shaper's table: `tests/param_mod_oracle.rs`); the range is `GraphSpec::set_param_range`; the base is the node's own control |
+  | an `AudioUnit` read a modulated param from an input channel | an `AudioUnit` with a `ParamFeed` (new, `tutti_node`; `AudioUnit::param_feed` / `param_base`) is fed its modulated params per 64-frame chunk by `Legacy`, and reads its own control when a param is not fed. A forwarding wrapper must forward both methods |
+  | `Op::Node { .., in_place }` | gains `params: Span` (into `Plan::param_ports`, each with its sources in `Plan::param_sources`) |
+  | `GraphSpec`, `ValidGraph` | gain `params` (`ValidGraph::params`); `GraphInvalid` gains `UnknownParamNode`, `UnsortedParamSources`, `TooManyParamSources`; `CompileError` gains `UnknownParam`, `ParamSourceOutOfRange`; `CycleEdge` gains `Param`; `DelayKey` gains `ParamAudio`, `ParamEvent`; `Shape` gains `params` |
+  | bevy-tutti: `ParamPortMap`, `DeclareParamPorts::with_param_ports` | removed: nothing to declare at spawn, the node's shape says it |
+  | bevy-tutti: `AudioRateChains` (`base_cell`, `ParamChain`), `ShaperShaping` | `AudioRateRoutes` (`AudioRateParam`: the node, each route's source node and shaping, the range, the base). The modulation lives in the graph value: `AudioGraphRes::param_mod`, set with `set_param_mod` / `clear_param_mod` |
+  | bevy-tutti: `write_param(graph, matrix, chains, ..)` sent an audio-rate param's write to the chain's base cell | `write_param(graph, matrix, ..)`: an audio-rate param's base is the node's own control, so the write goes through `set_param` like an unmodulated one — and so reaches a fork, which the base cell never did |
+
+  New tests: `tutti-graph`'s `tests/param_mod.rs` (base-only equals the
+  plain param, sums and clamps, base ramps, declicked connect/disconnect,
+  sample-exact steps and ramps, a node without a base, a differential
+  proptest against the reference interpreter), an `Excite::Param` row in
+  the sample-accuracy contract (`param_echo`), a no-alloc gate, `Legacy`'s
+  feed bridge; `tutti-nodes`' `tests/graph_param_mod.rs` (each node's fed
+  params are the ones its DSP reads, at widths 1, 2 and 6, through the
+  graph) and `tests/param_mod_oracle.rs` (the old chain as an oracle,
+  pinned as digests). The tests of the deleted chain
+  (`born_with_ports.rs`, `param_writer_ownership.rs`,
+  `audio_rate_param_mod.rs`, `idle_chain_cost.rs`, the `param_port_wire`
+  module) are replaced by those; bevy-tutti's modulation tests keep their
+  properties, asserted on the graph value and on what renders.
+
 - **tutti-graph: events as ports, the graph side** (design doc 013,
   "Rewrite order" item 5; no MIDI node is ported yet, and `Legacy` MIDI
   through `MidiInPort` mailboxes is unchanged). What changes for a caller:

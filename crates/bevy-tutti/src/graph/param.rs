@@ -123,26 +123,20 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// Write one authored scalar to `param` on `node`, respecting modulation.
 ///
 /// **The single home for "an authored value reaches the graph".** A param write
-/// is three branches, not one, and the order is fixed:
+/// is two branches, not one, and the order is fixed:
 ///
-/// 1. an **audio-rate** param's port is fed by a `ParamSumNode`, and a node with
-///    a wired param port never reads its own atomic — so the value goes to the
-///    sum's *base cell*;
-/// 2. a **control-rate modulated** param has a second writer, so the value goes
+/// 1. a **control-rate modulated** param has a second writer, so the value goes
 ///    to the accumulator's *base* and rides under the modulation;
-/// 3. an **unmodulated** one goes straight to the node's own atomic.
+/// 2. any other goes straight to the node's own control — including an
+///    **audio-rate** modulated one: the graph's param modulation rides on the
+///    node's own control as its base (design doc 013 item 6), so the authored
+///    value lands where the modulation reads it, and through the settings ring
+///    a fork records. (It used to go to a base chain's cell instead, which a
+///    fork could not see; that chain is gone.)
 ///
-/// The three are mutually exclusive by construction — `ModDelivery` is one axis,
+/// The two are mutually exclusive by construction — `ModDelivery` is one axis,
 /// and `a_per_sample_route_is_not_also_claimed_by_the_driver` pins that the
-/// driver does not claim an audio-rate param. Ordering them anyway makes that
-/// independent of the invariant rather than dependent on it.
-///
-/// Taking only the last two loses every write to an audio-rate param, and it is
-/// the quietest of the three failures: the write lands on the node's atomic,
-/// which is a real cell that a debugger and a read of the node both show
-/// holding the new value — while the DSP reads the port and hears the old one.
-/// `tutti-nodes`' `a_wired_param_port_makes_the_node_ignore_its_atomic` is the
-/// engine-level statement of it.
+/// driver does not claim an audio-rate param.
 ///
 /// Taking only the first silently drops every write to an unmodulated param —
 /// which is why `ModulationMatrix::set_base` is crate-private.
@@ -195,25 +189,12 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 pub fn write_param(
     graph: &mut AudioGraphRes,
     #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
-    #[cfg(feature = "modulation")] chains: &crate::modulation::audio_rate::AudioRateChains,
     entity: Entity,
     node: &AudioNode,
     param: UnitParam,
     value: f32,
 ) {
-    // 1. Audio rate: the node reads its port, not its atomic.
-    //
-    // A known export limit (doc 013, PR 11): the base
-    // node (`AtomicSourceNode`) takes no `Setting`, so this cell write cannot
-    // ride its settings ring, and a fork sees the cell as the node's
-    // `isolate` leaves its shadow.
-    #[cfg(feature = "modulation")]
-    if let Some(cell) = chains.base_cell(entity, ParamAddr::Unit(param)) {
-        cell.store(value, tutti_core::Ordering::Release);
-        return;
-    }
-
-    // 2. Control rate: the driver owns the atomic, so the value rides the base.
+    // 1. Control rate: the driver owns the atomic, so the value rides the base.
     // The node's fork snapshot gets the base too: the driver's live composite
     // never reaches a fork (an export runs its own modulation), and without
     // this the fork would start from the value the node was built with.
@@ -225,7 +206,8 @@ pub fn write_param(
     #[cfg(not(feature = "modulation"))]
     let _ = entity;
 
-    // 3. Unmodulated: the node's own atomic is the value. Through the graph's
+    // 2. Unmodulated, or modulated at audio rate (the graph's modulation rides
+    // on this control): the node's own atomic is the value. Through the graph's
     // settings path — the node's ring, which is also
     // what its shadow (and so any fork of it) records. Never through a handle
     // captured from the unit: that would move the live unit and leave a fork
@@ -248,7 +230,6 @@ pub fn write_param(
 pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
     mut graph: ResMut<AudioGraphRes>,
     #[cfg(feature = "modulation")] matrix: Res<crate::modulation::ModulationMatrix>,
-    #[cfg(feature = "modulation")] chains: Res<crate::modulation::audio_rate::AudioRateChains>,
     changed: Query<(Entity, &AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
 ) {
     let Ok(param) = UnitParam::try_from(P) else {
@@ -259,8 +240,6 @@ pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P
             &mut graph,
             #[cfg(feature = "modulation")]
             &matrix,
-            #[cfg(feature = "modulation")]
-            &chains,
             entity,
             node,
             param,

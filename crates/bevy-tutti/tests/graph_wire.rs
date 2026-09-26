@@ -772,27 +772,28 @@ mod graph_wire {
     }
 }
 
-/// Spike: declaring an audio-rate **param** port through `PortSources`.
+/// A param modulation and a node's audio ports are two spaces: declaring one
+/// cannot clobber the other.
 ///
-/// The imperative form of this edge is fragile — `Net::pipe_input` walks every
-/// input port of a node, so a later "wire the audio in" call silently
-/// overwrites a param edge (see tutti-nodes' `audio_rate_param_mod` test). This
-/// file asks whether routing the same edge through the declarative layer makes
-/// that clobber unrepresentable.
-/// (Was `tests/param_port_wire.rs`.)
-mod param_port_wire {
+/// This module used to ask whether routing an audio-rate *param port* — an
+/// extra input channel after a node's audio inputs, fed by a base/sum chain —
+/// through `PortSources` made the clobber an imperative `pipe_input` suffered
+/// unrepresentable. The graph now modulates params through its own param
+/// edges (design doc 013 item 6), not input channels, so the clobber has no
+/// representation at all; these pin that the two spaces stay apart through
+/// the declarative layer. (Was `tests/param_port_wire.rs`.)
+mod param_mod_wire {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::graph::GraphSource;
-    use bevy_tutti::graph::{
-        AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSource, PortSources,
-    };
+    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, PortSource, PortSources};
     use bevy_tutti::AudioEngineState;
     use tutti_core::AudioNode;
     use tutti_core::Hz;
+    use tutti_graph::{ParamRange, ParamShaping};
     use tutti_nodes::testing::Osc;
-    use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
+    use tutti_nodes::{DistortionNode, ShapeKind};
     use tutti_types::UnitParam;
 
     fn app() -> App {
@@ -815,122 +816,94 @@ mod param_port_wire {
         *app.world().get::<AudioNode>(entity).expect("AudioNode")
     }
 
-    /// The headline: audio and param ports declared on **one** component, both
-    /// reaching the engine.
-    ///
-    /// This is what makes the port space have a single writer — the thing the
-    /// imperative form cannot guarantee.
+    /// Audio ports declared, and the drive modulated: both reach the graph,
+    /// and the node's arity is its audio width — the param is no port.
     #[test]
-    fn audio_and_param_ports_are_declared_together() {
+    fn audio_ports_and_a_param_modulation_reach_the_graph_together() {
         let mut app = app();
-
-        // A distortion born with its drive port on: inputs are [L, R, drive].
-        let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
-        let drive_port = dist.param_port(UnitParam::Drive).expect("drive port");
-        assert_eq!(drive_port, 2, "the param port follows the audio inputs");
-
-        let target = spawn_node(&mut app, dist);
+        let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        // The base-sum chain feeding the param port.
-        let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
-        let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
-
-        // ONE declaration covering both kinds of port.
-        app.world_mut()
-            .entity_mut(sum)
-            .insert(PortSources::from(base));
-        app.world_mut().entity_mut(target).insert(
-            PortSources::silent()
-                .with(
-                    0,
-                    PortSource::Node {
-                        entity: osc,
-                        port: 0,
-                    },
-                )
-                .with(
-                    1,
-                    PortSource::Node {
-                        entity: osc,
-                        port: 0,
-                    },
-                )
-                .with(
-                    drive_port,
-                    PortSource::Node {
-                        entity: sum,
-                        port: 0,
-                    },
-                ),
-        );
-        app.update();
-
-        let (target_id, osc_id, sum_id, base_id) = (
+        let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));
+        let (target_id, osc_id, lfo_id) = (
             node_id(&app, target),
             node_id(&app, osc),
-            node_id(&app, sum),
-            node_id(&app, base),
+            node_id(&app, lfo),
         );
-        let graph = app.world().resource::<AudioGraphRes>();
 
+        let o = PortSource::Node {
+            entity: osc,
+            port: 0,
+        };
+        app.world_mut()
+            .entity_mut(target)
+            .insert(PortSources::silent().with(0, o).with(1, o));
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_param_mod(
+                target_id,
+                UnitParam::Drive,
+                &[(lfo_id, ParamShaping::Identity)],
+                ParamRange::new(0.0, 10.0),
+            );
+        app.update();
+
+        let graph = app.world().resource::<AudioGraphRes>();
+        assert_eq!(graph.node_inputs(target_id), 2, "no param port: two inputs");
+        assert!(graph.declares_param(target_id, UnitParam::Drive));
         assert_eq!(graph.source(target_id, 0), GraphSource::Node(osc_id, 0));
         assert_eq!(graph.source(target_id, 1), GraphSource::Node(osc_id, 0));
         assert_eq!(
-            graph.source(target_id, drive_port),
-            GraphSource::Node(sum_id, 0),
-            "the param port is fed by the sum, declared alongside the audio"
+            graph
+                .param_mod(target_id, UnitParam::Drive)
+                .expect("the modulation")
+                .sources
+                .len(),
+            1,
+            "the drive is modulated beside the audio"
         );
-        assert_eq!(graph.source(sum_id, 0), GraphSource::Node(base_id, 0));
     }
 
-    /// The clobber the imperative form suffers cannot be expressed here.
+    /// Re-declaring the audio ports — the operation that, imperatively, would
+    /// have been `pipe_input` and would have taken a param edge with it —
+    /// leaves the modulation untouched, and clearing the modulation leaves
+    /// the audio untouched.
     ///
-    /// `PortSources` is one component per entity (the ECS enforces that), and
-    /// `rebuild` writes the whole declared port range from that one `Vec`. So
-    /// "something else overwrote the param port" has no representation: re-declaring
-    /// the audio ports means editing the same `Vec` that holds the param port, and
-    /// a `Vec` shorter than the param index leaves it *undeclared* — untouched, not
-    /// zeroed.
+    /// Mutation (run): make the wire rebuild clear `spec.params` for a node
+    /// whose audio it rewrites → the first assertion after the redeclaration
+    /// fails.
     #[test]
-    fn redeclaring_audio_does_not_disturb_the_param_port() {
+    fn redeclaring_audio_does_not_disturb_the_param_modulation() {
         let mut app = app();
-
-        let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
-        let drive_port = dist.param_port(UnitParam::Drive).unwrap();
-        let target = spawn_node(&mut app, dist);
+        let target = spawn_node(&mut app, DistortionNode::new(ShapeKind::Tanh, 5.0));
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
         let other = spawn_node(&mut app, Osc::sine(Hz(220.0)));
-        let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
+        let lfo = spawn_node(&mut app, Osc::sine(Hz(2.0)));
+        let (target_id, lfo_id) = (node_id(&app, target), node_id(&app, lfo));
 
-        app.world_mut().entity_mut(target).insert(
-            PortSources::silent()
-                .with(
-                    0,
-                    PortSource::Node {
-                        entity: osc,
-                        port: 0,
-                    },
-                )
-                .with(
-                    drive_port,
-                    PortSource::Node {
-                        entity: sum,
-                        port: 0,
-                    },
-                ),
-        );
+        app.world_mut()
+            .entity_mut(target)
+            .insert(PortSources::silent().with(
+                0,
+                PortSource::Node {
+                    entity: osc,
+                    port: 0,
+                },
+            ));
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_param_mod(
+                target_id,
+                UnitParam::Drive,
+                &[(lfo_id, ParamShaping::Identity)],
+                ParamRange::new(0.0, 10.0),
+            );
         app.update();
+        let before = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .param_mod(target_id, UnitParam::Drive)
+            .expect("the modulation");
 
-        let (target_id, sum_id) = (node_id(&app, target), node_id(&app, sum));
-        assert_eq!(
-            app.world()
-                .resource::<AudioGraphRes>()
-                .source(target_id, drive_port),
-            GraphSource::Node(sum_id, 0)
-        );
-
-        // Now re-point the AUDIO input — the operation that, imperatively, would
-        // have been `pipe_input` and would have taken the param edge with it.
         let mut decl = app.world_mut().get_mut::<PortSources>(target).unwrap();
         decl.0[0] = PortSource::Node {
             entity: other,
@@ -939,116 +912,30 @@ mod param_port_wire {
         app.update();
 
         let other_id = node_id(&app, other);
+        {
+            let graph = app.world().resource::<AudioGraphRes>();
+            assert_eq!(
+                graph.param_mod(target_id, UnitParam::Drive),
+                Some(before),
+                "the modulation is untouched by an audio redeclaration"
+            );
+            assert_eq!(
+                graph.source(target_id, 0),
+                GraphSource::Node(other_id, 0),
+                "the audio input moved"
+            );
+        }
+
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .clear_param_mod(target_id, UnitParam::Drive);
+        app.update();
         let graph = app.world().resource::<AudioGraphRes>();
+        assert!(graph.param_mod(target_id, UnitParam::Drive).is_none());
         assert_eq!(
             graph.source(target_id, 0),
             GraphSource::Node(other_id, 0),
-            "the audio input moved"
+            "and clearing the modulation leaves the audio alone"
         );
-        assert_eq!(
-            graph.source(target_id, drive_port),
-            GraphSource::Node(sum_id, 0),
-            "and the param edge is untouched — one writer owns the whole port space"
-        );
-    }
-
-    /// A param port the declaration does not mention is left alone, exactly as an
-    /// unmentioned audio port is. "Undeclared" and "declared silent" stay distinct.
-    #[test]
-    fn an_undeclared_param_port_is_untouched() {
-        let mut app = app();
-
-        let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
-        let drive_port = dist.param_port(UnitParam::Drive).unwrap();
-        let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
-
-        // Wire the param port imperatively first — a host that has not adopted the
-        // declaration for it yet.
-        let (target_id, sum_id) = (node_id(&app, target), node_id(&app, sum));
-        {
-            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.set_source(target_id, drive_port, GraphSource::Node(sum_id, 0));
-        }
-
-        // Declare ONLY the audio ports. The Vec stops before the param index.
-        app.world_mut()
-            .entity_mut(target)
-            .insert(PortSources::from(osc));
-        app.update();
-
-        let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(
-            graph.source(target_id, drive_port),
-            GraphSource::Node(sum_id, 0),
-            "a short declaration leaves trailing ports undeclared, not silenced"
-        );
-    }
-
-    /// The full chain, declared: global input → node audio, and
-    /// `base → sum → node.drive_port` for the modulation.
-    ///
-    /// Structure only, matching this crate's other wiring tests — that the chain
-    /// *renders* (drive 9.0 saturating where 1.0 does not) is asserted in
-    /// tutti-nodes' `audio_rate_param_mod`.
-    #[test]
-    fn the_whole_declared_chain_reaches_the_graph() {
-        let mut app = app();
-        app.insert_resource(MasterSources::default());
-
-        let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
-        let drive_port = dist.param_port(UnitParam::Drive).unwrap();
-        let target = spawn_node(&mut app, dist);
-        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
-        let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
-        let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
-
-        app.world_mut()
-            .entity_mut(sum)
-            .insert(PortSources::from(base));
-        app.world_mut().entity_mut(target).insert(
-            PortSources::silent()
-                .with(
-                    0,
-                    PortSource::Node {
-                        entity: osc,
-                        port: 0,
-                    },
-                )
-                .with(
-                    1,
-                    PortSource::Node {
-                        entity: osc,
-                        port: 0,
-                    },
-                )
-                .with(
-                    drive_port,
-                    PortSource::Node {
-                        entity: sum,
-                        port: 0,
-                    },
-                ),
-        );
-        app.update();
-
-        let (target_id, osc_id, sum_id, base_id) = (
-            node_id(&app, target),
-            node_id(&app, osc),
-            node_id(&app, sum),
-            node_id(&app, base),
-        );
-        let graph = app.world().resource::<AudioGraphRes>();
-
-        // Audio in from the oscillator...
-        assert_eq!(graph.source(target_id, 0), GraphSource::Node(osc_id, 0));
-        assert_eq!(graph.source(target_id, 1), GraphSource::Node(osc_id, 0));
-        // ...and the modulation chain into the param port, all from one declaration.
-        assert_eq!(
-            graph.source(target_id, drive_port),
-            GraphSource::Node(sum_id, 0)
-        );
-        assert_eq!(graph.source(sum_id, 0), GraphSource::Node(base_id, 0));
     }
 }

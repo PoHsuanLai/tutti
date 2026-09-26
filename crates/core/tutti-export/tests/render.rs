@@ -219,7 +219,9 @@ fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
 
     assert_eq!(
@@ -237,8 +239,12 @@ fn cascaded_convolvers_sum_their_tails() {
     let b = vec![0.5f32; 2048];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let first = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
-    let second = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
+    let first = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&a))
+        .0;
+    let second = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&b))
+        .0;
     g.connect(src, 0, first, 0)
         .connect(first, 0, second, 0)
         .pipe_output(second);
@@ -305,7 +311,9 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let src = g.add_unit(Box::new(Const::mono(0.5)));
     let quiet = g.add_unit(Box::new(Unreporting));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, quiet, 0)
         .connect(quiet, 0, conv, 0)
         .pipe_output(conv);
@@ -432,7 +440,9 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let src = g.add_unit(Box::new(Const::mono(0.5)));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
 
     let reported = built(g, RATE).reported_tail();

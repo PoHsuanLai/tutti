@@ -228,7 +228,9 @@ fn convolved() -> GraphBuilder {
     let src = g.add_unit(Box::new(
         Osc::sine(Hz(330.0)).with_amplitude(Amplitude(0.5)),
     ));
-    let conv = g.add_unit(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir())));
+    let conv = g
+        .add_with_controls(tutti_nodes::ConvolverNode::with_ir(&ir()))
+        .0;
     g.connect(src, 0, conv, 0).pipe_output(conv);
     g
 }

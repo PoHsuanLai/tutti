@@ -22,9 +22,9 @@ default = []
 # builds its mixes out of `ChannelSumNode` + `SvfFilterNode`), not the reverse.
 # Consequence worth knowing: this crate now has **no fallible operation at all**,
 # which is why there is no longer an `Error` type here.
-# FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
+# FFT convolution reverb (partitioned IR). The convolver DSP node is Bevy-free;
 # its deferred-load ECS glue lives app-side now.
-convolution = ["dep:fft-convolver"]
+convolution = ["dep:realfft"]
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
 # benches (`Const`, `Osc`, `Through`, `Split`, `Sink`). Off by default and
 # enabled only from `[dev-dependencies]`, so it is never production API: the
@@ -54,8 +54,11 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 # on tutti-types and tutti-node, so the edge adds no cycle.
 tutti-graph = { path = "../../core/tutti-graph" }
 
-# Partitioned FFT convolver (optional, gated by `convolution` feature)
-fft-convolver = { version = "0.3", optional = true }
+# The real FFT under the partitioned convolver (optional, gated by the
+# `convolution` feature). The convolution itself is this crate's
+# (`convolution/convolver.rs`), so its IR spectra can be stored once and
+# shared; it was `fft-convolver`, which keeps them per convolver.
+realfft = { version = "3.5", optional = true }
 
 # Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.

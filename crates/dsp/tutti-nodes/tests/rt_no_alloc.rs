@@ -1,13 +1,29 @@
-//! Regression gate for RT-safety: built-in AudioUnits must not allocate on the
+//! Regression gate for RT-safety: built-in nodes must not allocate on the
 //! process path. The panner tests live in `tutti-spatial`'s own copy of this
 //! gate, alongside the nodes they cover.
 
 use assert_no_alloc::AllocDisabler;
-#[cfg(feature = "convolution")]
-use tutti_core::{AudioUnit, BufferVec};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
+
+/// A native node through `BlockRig`, silent inputs: 16 warm-up blocks (past
+/// the first FFT partition, so `process` takes the hot path), then 1 000
+/// blocks under `assert_no_alloc`. Its `prepare` (which sizes the fold's
+/// scratch) runs when the rig is built, outside the gate.
+#[cfg(feature = "convolution")]
+fn native_gate<N: tutti_graph::IntoNode>(node: N) {
+    let (mut rig, _controls) =
+        tutti_graph::contract::BlockRig::new(node, tutti_core::SampleRate(48_000.0), 64);
+    for _ in 0..16 {
+        rig.block();
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            rig.block();
+        }
+    });
+}
 
 #[cfg(feature = "convolution")]
 #[test]
@@ -15,26 +31,7 @@ fn convolver_process_is_allocation_free() {
     use tutti_nodes::{generate_test_ir, ConvolverNode};
 
     let ir = generate_test_ir(2048, 0.3, 48_000.0);
-    let mut node = ConvolverNode::new(&ir, 512);
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(1);
-    let mut output_vec = BufferVec::new(1);
-
-    // Warm up past the first FFT block so `process` takes the hot path.
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    native_gate(ConvolverNode::new(&ir, 512));
 }
 
 #[cfg(feature = "convolution")]
@@ -44,34 +41,16 @@ fn stereo_convolver_process_is_allocation_free() {
 
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
-    let mut node = ConvolverNode::stereo(&ir_l, &ir_r, 512);
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    native_gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
 }
 
 /// The fold path is the one with scratch: a width-long frame buffer and a
-/// block-long mono buffer. Both must be pre-sized (the frame) or on the stack
-/// (the mono block), never grown in `process`. Six channels, so the fold does
-/// real work rather than the stereo average.
+/// block-long mono buffer, both sized before the first block (the frame at
+/// construction, the mono block at `prepare`), never grown in `process`. Six
+/// channels, so the fold does real work rather than the stereo average.
 ///
-/// Mutation: building the mono block as a `vec!` inside `process` fails the
-/// no-alloc gate.
+/// Mutation (run): building the mono block as a `vec!` inside `render`
+/// fails the no-alloc gate.
 #[cfg(feature = "convolution")]
 #[test]
 fn folded_six_channel_convolver_process_is_allocation_free() {
@@ -81,25 +60,7 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
         .map(|c| generate_test_ir(1024, 0.2 + 0.05 * c as f32, 48_000.0))
         .collect();
     let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
-    let mut node = ConvolverNode::folded(&refs, 256);
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(6);
-    let mut output_vec = BufferVec::new(6);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    native_gate(ConvolverNode::folded(&refs, 256));
 }
 
 /// `DownmixNode::process` gathers an interleaved frame per sample and folds it.

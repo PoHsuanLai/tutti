@@ -17,6 +17,9 @@ default = []
 [dependencies]
 tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-features = false, features = ["midi"] }
+# The native graph's node contract and event ports: `MidiClipNode` is an event
+# source node (doc 013 item 5). No cycle: tutti-graph names no MIDI crate.
+tutti-graph = { version = "0.0.1", path = "../../core/tutti-graph" }
 
 # Lock-free / concurrent
 arc-swap = "1.7"
@@ -27,7 +30,3 @@ parking_lot = "0.12"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
-# The native graph, to drive a clip source as a `Legacy` node through the
-# graph engine and an offline `render_graph` (`tests/frame_exact_clip.rs`).
-# No cycle: `tutti-graph` names only `tutti-types` and `tutti-node`.
-tutti-graph = { path = "../../core/tutti-graph" }

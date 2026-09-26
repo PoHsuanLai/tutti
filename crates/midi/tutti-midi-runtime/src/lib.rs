@@ -55,7 +55,8 @@ pub use outbound::{
     JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
 };
 pub use schedule::{
-    MidiClipSource, MidiSnapshot, MidiSnapshotReader, TimedClipEvent, TimedMidiEvent,
+    MidiClipControls, MidiClipNode, MidiClipSource, MidiSnapshot, MidiSnapshotReader,
+    TimedClipEvent, TimedMidiEvent, CLIP_EVENT_CAPACITY,
 };
 // The two capacity ceilings come along: a caller sizing its own SysEx buffer, or
 // choosing a non-default limit, has to name the same bound.

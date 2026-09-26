@@ -237,7 +237,6 @@ pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    capture: crate::graph::ControlCapture,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     // `TuttiSoundFontPlugin` is `pub` and separately addable, but `GraphDirty`
@@ -265,10 +264,12 @@ pub fn promote_pending_soundfonts(
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
         // Captured before the unit moves into the graph — the `MidiTarget` that
-        // makes this player addressable comes from here.
-        // `insert_with` so an export's fork of it plays its clip.
-        let mut controls = capture.capture(&unit);
-        let id = graph.insert_with(Box::new(unit), &mut controls);
+        // makes this player addressable comes from here. Inserted as a graph
+        // node: a MIDI event input (so a `MidiSourceInstall` plays through a
+        // clip node), a fork that plays that clip, and a node that follows the
+        // graph's rate on a device restart (`Node::prepare`).
+        let controls = crate::graph::GraphNode::captured(&unit);
+        let (id, ()) = graph.insert_node(unit);
         edited = true;
 
         // `AudioNode` is the whole binding: node teardown

@@ -12,14 +12,16 @@
 //! Only [`Bound`] is either: an unbound client is not a node.
 
 use tutti_core::meter::MeterMap;
-use tutti_graph::{Cx, Env, Io, Node, Offset, Prepare, Shape, Status, MAX_PORTS};
+use tutti_graph::{
+    Cx, Env, EventKind, Io, Node, Offset, Prepare, Shape, SortedEvents, Status, MAX_PORTS,
+};
 use tutti_types::{ChannelLayout, Samples};
 
 use super::batcher::Chunks;
 use super::transport_source::{self, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::node::input_slot::BlockCtx;
-use crate::protocol::{Features, MidiEventVec, TransportInfo};
+use crate::protocol::{Features, MidiEvent, MidiEventVec, TransportInfo};
 use crate::util::node::Midi;
 
 /// A bound plugin, owned by a graph's executor. See the module docs.
@@ -39,19 +41,29 @@ impl Node for PluginClient<Bound> {
     /// the next commit re-plans PDC. The tail is the plugin's, as it reports
     /// it (a CLAP plugin's live cell).
     ///
-    /// **`legacy`**: the node still reads four inputs out of band — MIDI (its
-    /// port's clip source), parameter automation, harmony and note expression
-    /// each poll a timeline of their own, once per call, as an `AudioUnit`
-    /// did. A plan holding it is therefore rendered in blocks of at most 64
-    /// frames with the timeline moved between them (tutti-graph's
-    /// `LEGACY_CHUNK` mode). The transport is not one of them: it is read from
-    /// `Env`. The flag goes when those inputs become event ports (doc 013).
+    /// **One MIDI event input**: what reaches it (a clip node, an
+    /// arpeggiator) is sent with the chunk its frames go into, on its frame,
+    /// alongside what the plugin's own MIDI port holds.
+    ///
+    /// **Not `legacy`**, though four inputs are still read out of band — its
+    /// MIDI port's installed clip source, parameter automation, harmony and
+    /// note expression each poll a timeline of their own. They are read when
+    /// a chunk begins, for the frames from the call's first to the chunk's
+    /// last, and re-based to the chunk (`PluginChunks`): right wherever the
+    /// timeline stands at the call's first frame, which a host that moves it
+    /// once per block (tutti-core's engine, `RenderClock::render_graph`)
+    /// keeps, in whole blocks as in `LEGACY_CHUNK` passes. So a plan holding
+    /// a plugin renders whole blocks. The transport itself is read from `Env`.
+    /// The cost: a transport command scheduled inside a block reaches those
+    /// polled inputs from the block's first frame (up to a block early, where
+    /// passes bounded it to 64 frames); doc 013, "The plugin is no longer
+    /// `legacy`".
     fn shape(&self) -> Shape {
         let c = self;
         Shape::audio(width(c.inputs), width(c.outputs))
+            .with_events(1, 0)
             .with_latency(c.controls.declared_latency())
             .with_tail(c.controls.tail())
-            .with_legacy()
     }
 
     /// Settle the pipeline's chunk for `p`'s `MaxBlock`, and tell the plugin
@@ -107,8 +119,14 @@ impl Node for PluginClient<Bound> {
         let meter_ref = meter_slot.as_ref().map(|m| m.read());
         let meter = meter_ref.as_deref().unwrap_or(default_meter);
 
+        let events = if io.event_input_count() > 0 {
+            io.events(0)
+        } else {
+            SortedEvents::EMPTY
+        };
         let mut host = PluginChunks {
             env: cx.env,
+            events,
             frames,
             meter,
             features: c.loaded.features,
@@ -166,6 +184,9 @@ impl Node for PluginClient<Bound> {
 /// still tile, so a clip emits every event once.
 struct PluginChunks<'a> {
     env: &'a Env,
+    /// The block's MIDI event input, handed to the chunks its frames go
+    /// into ([`Chunks::take`]).
+    events: SortedEvents<'a>,
     frames: usize,
     meter: &'a MeterMap,
     features: Features,
@@ -205,7 +226,39 @@ impl Chunks for PluginChunks<'_> {
         rebase(self.pending, at);
     }
 
+    /// The event input's events on these frames join the chunk's MIDI, at
+    /// the chunk's frames. Past the MIDI list's inline capacity they are
+    /// dropped rather than spill (allocate) on the audio thread.
+    fn take(&mut self, from: usize, n: usize, at: usize) {
+        let events = self.events.as_slice();
+        let first = events.partition_point(|e| e.offset.index() < from);
+        for e in &events[first..] {
+            let o = e.offset.index();
+            if o >= from + n {
+                break;
+            }
+            let EventKind::Midi(ump) = e.kind else {
+                continue;
+            };
+            let midi = &mut self.pending.midi;
+            if midi.len() < midi.inline_size() {
+                midi.push(MidiEvent::from_ump((at + o - from) as u32, &ump.0));
+            }
+        }
+    }
+
+    /// The chunk's MIDI, sorted by frame: the port's events were gathered
+    /// when it began, the event input's as its frames came in. A stable
+    /// insertion sort, in place: the list is short, and nearly sorted.
     fn payload(&mut self, _frames: usize) -> BlockPayload {
+        let midi = &mut self.pending.midi;
+        for i in 1..midi.len() {
+            let mut j = i;
+            while j > 0 && midi[j - 1].frame_offset > midi[j].frame_offset {
+                midi.swap(j - 1, j);
+                j -= 1;
+            }
+        }
         std::mem::take(self.pending)
     }
 

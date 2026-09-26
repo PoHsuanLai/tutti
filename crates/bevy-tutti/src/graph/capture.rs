@@ -146,6 +146,18 @@ impl CapturedControls {
         }
     }
 
+    /// A node's MIDI port, captured as its `MidiTarget` so keyboards, routing
+    /// and the sequencer's all-notes-off reach it: for a node inserted as a
+    /// graph node ([`spawn_graph_node`](crate::graph::SpawnGraphNode)), whose
+    /// fork source carries its own clip.
+    #[cfg(feature = "midi")]
+    pub fn for_midi_port(port: tutti_midi_runtime::MidiInPort) -> Self {
+        Self {
+            midi: Some(port),
+            ..Self::default()
+        }
+    }
+
     /// How a fork of the unit carries its MIDI clip, taken out for the graph
     /// the unit goes into. `None` for a unit with no captured port, and after
     /// the first take.

@@ -887,6 +887,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MIDI on event ports, first part (doc 013 item 5): `MidiClipNode`, and
+  `PolySynth` as a native node.**
+  - `tutti_midi_runtime::MidiClipNode`: a clip as a graph node with one MIDI
+    event output (`CLIP_EVENT_CAPACITY` per block). It places each event on
+    the frame playback reaches its beat in the block's `Env`, segment by
+    segment, so a seek, a loop wrap or a tempo change inside a block lands
+    exactly, and it keeps no play cursor: an offline fork plays the clip on
+    its render's `Env` with nothing rebound. It ends the notes it started
+    when playback stops, jumps (a seek, a loop wrap) or the clip is replaced.
+    Its controls, `MidiClipControls`, replace the clip (`set_events`,
+    `clear`) through `RtPublish`; a fork plays the clip as it was when forked.
+  - `PolySynth` implements `Node` and `IntoNode` (controls `()`, a native
+    fork source): stereo out, one MIDI event input, the release as its tail.
+    Wire a clip to it with `GraphSpec::connect_events`; its note sounds on
+    its frame in the block the clip writes it. The synth's own MIDI port
+    (`midi_sender`, an installed source) is still read each block and merged
+    with the event input by offset, the port's first at an equal offset.
+    Inserting the synth through `Legacy` (bevy-tutti's path) is unchanged.
+  - tutti-midi-runtime depends on tutti-graph (was a dev-dependency).
+  - A hosted plugin's node declares a MIDI event input: what reaches it is
+    sent with the chunk its frames go into, on its frame, beside its own
+    port's MIDI (`Chunks::take`).
+  - bevy-tutti: `SpawnGraphNode::spawn_graph_node` inserts a node that brings
+    its own `IntoNode` (a `MidiClipNode`, a `PolySynth` as a graph node),
+    keeping its controls on the entity as `NodeControls<C>` and capturing a
+    synth's MIDI port as before (`GraphNode::captured`,
+    `CapturedControls::for_midi_port`). `EventSources` on a sink entity
+    declares what feeds its event input (a list: event inputs fan in);
+    `GraphEventsPlugin` (part of `GraphReconcilePlugin`) writes it into the
+    graph. `AudioGraphRes::{insert_node, set_event_sources, event_sources,
+    node_event_inputs}` are the imperative forms.
+  - A hosted plugin's node no longer declares `Shape::legacy`: a plan
+    holding plugins and graph nodes renders whole blocks instead of 64-frame
+    passes. Its timeline-polling inputs are read when a chunk begins and
+    re-based to it, which is right in either mode.
+  - tutti-soundfont: `SoundFontUnit: Node + IntoNode` (stereo out, one MIDI
+    event input at `Resolution::Frames(8)`, a graph-node fork). As a node it
+    follows its graph's rate: `prepare` rebuilds the synthesizer at the
+    prepared rate, keeping preset and port, so a device restart at a new rate
+    no longer leaves it playing at the old one. bevy-tutti's SoundFont
+    promotion inserts it this way.
+  - tutti-midi-runtime: `MidiInPort::gather`, the port's events merged with a
+    node's event input by offset (the port's first on a tie), for a node that
+    reads both; the synth and the SoundFont node use it.
+  - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
+    graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
+    own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a
+    target inserted as an `AudioUnit` still gets a `MidiClipSource` on its
+    port.
+
 - **`just check-features` / `just test-features`, and a `dark features` CI job
   — the feature-gated code nothing was compiling.**
   `cargo tree --workspace -e features -i tutti-cpal` reported only `default`:

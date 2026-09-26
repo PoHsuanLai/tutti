@@ -1,10 +1,19 @@
 //! Beat-scheduled MIDI playback, declared in the ECS and clocked by the engine.
 //!
 //! A [`MidiSourceInstall`] names a target entity and the events to play at it.
-//! [`rebuild`] compiles those into a
-//! [`MidiClipSource`] and installs it on the
-//! target's port; the engine converts beats to sample offsets *on the audio
-//! thread*, where the block being rendered is known.
+//! [`rebuild`] compiles those into a clip the audio thread plays, converting
+//! beats to sample offsets where the block being rendered is known:
+//!
+//! - **A target with a MIDI event input** (a synth or plugin inserted as a
+//!   graph node, [`spawn_graph_node`](crate::graph::SpawnGraphNode)) is fed by
+//!   a [`MidiClipNode`] of its own, wired to that input
+//!   ([`EventFeeds`]). The clip reads the block's
+//!   `Env`, so its notes land on their frames through seeks and loop wraps,
+//!   in the same block, and an export forks it with the target (doc 013
+//!   item 5). An edit replaces its events in place; it ends the notes the old
+//!   events left sounding.
+//! - **A target inserted as an `AudioUnit`** (through `Legacy`) has no event
+//!   input: a [`MidiClipSource`] is installed on its port, as before.
 //!
 //! # Why the ECS cannot do the scheduling
 //!
@@ -43,11 +52,15 @@ use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use tutti_midi_runtime::{MidiClipSource, TimedMidiEvent};
+use tutti_midi_runtime::{MidiClipControls, MidiClipNode, MidiClipSource, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 
 use super::endpoint::target::MidiTargetResolver;
-use crate::graph::{engine_ready, GraphReconcileSystems, TransportRes};
+use crate::graph::{
+    engine_ready, AudioGraphRes, EventFeeds, EventWiring, GraphDirty, GraphReconcileSystems,
+    TransportRes,
+};
+use tutti_core::AudioNode;
 use tutti_midi_types::cc;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
@@ -84,6 +97,19 @@ impl MidiSourceInstall {
 #[derive(Resource, Default)]
 pub struct InstalledMidiSources(HashSet<Entity>);
 
+/// The clip node playing each target that has an event input: its node and
+/// its controls. The node is the sequencer's, not an entity's; it goes when
+/// the last install naming its target does.
+#[derive(Resource, Default)]
+pub struct SequencedClips(HashMap<Entity, (AudioNode, MidiClipControls)>);
+
+impl SequencedClips {
+    /// The clip node playing `target`, if it has one.
+    pub fn node(&self, target: Entity) -> Option<AudioNode> {
+        self.0.get(&target).map(|(n, _)| *n)
+    }
+}
+
 /// Recompile every changed install into a clip source and install it.
 ///
 /// Runs only when an install changed or went away. **Not** when the device's
@@ -104,6 +130,11 @@ pub fn rebuild(
     recaptured: Query<(), Changed<super::MidiTarget>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut installed: ResMut<InstalledMidiSources>,
+    mut clips: ResMut<SequencedClips>,
+    mut feeds: ResMut<EventFeeds>,
+    mut graph_dirty: ResMut<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    nodes: Query<&AudioNode>,
     resolver: MidiTargetResolver,
     // `engine::build_into`'s, and `engine_ready` does not cover it — it reads
     // `AudioEngineState`, which a host can insert alone. No sample rate: a
@@ -133,7 +164,61 @@ pub fn rebuild(
             .extend(install.events.iter().copied());
     }
 
-    // Targets that had a source but no longer have any install naming them.
+    let Some(mut graph) = graph else {
+        return;
+    };
+
+    // Which targets play through a clip node: those whose node has an event
+    // input. The rest (no node yet, or a `Legacy` unit) get a port source.
+    let through_clip: HashSet<Entity> = by_target
+        .keys()
+        .copied()
+        .filter(|t| {
+            nodes
+                .get(*t)
+                .is_ok_and(|&node| graph.node_event_inputs(node) > 0)
+        })
+        .collect();
+
+    // Clip nodes no longer wanted: no install names their target, or it now
+    // takes the port path (it lost its node, or was rebound to a `Legacy`
+    // one). Removing a node sends nothing, so the notes it left sounding are
+    // ended through the target's port, as the port path's clear does.
+    let gone: Vec<Entity> = clips
+        .0
+        .keys()
+        .copied()
+        .filter(|t| !through_clip.contains(t))
+        .collect();
+    for target in gone {
+        if let Some((node, _)) = clips.0.remove(&target) {
+            graph.remove(node);
+            graph_dirty.0 = true;
+        }
+        feeds.0.remove(&target);
+        if let Some(port) = resolver.port(target) {
+            all_notes_off(port);
+        }
+    }
+
+    by_target.retain(|&target, events| {
+        if !through_clip.contains(&target) {
+            return true;
+        }
+        match clips.0.get(&target) {
+            Some((_, controls)) => controls.set_events(events.iter().copied()),
+            None => {
+                let (clip, controls) = graph.insert_node(MidiClipNode::new(events.iter().copied()));
+                clips.0.insert(target, (clip, controls));
+                feeds.0.insert(target, vec![clip]);
+                graph_dirty.0 = true;
+            }
+        }
+        false
+    });
+
+    // Targets that had a source but no longer have any install naming them
+    // on their port (or now play through a clip node).
     let orphaned: Vec<Entity> = installed
         .0
         .iter()
@@ -194,6 +279,8 @@ pub struct MidiSequencePlugin;
 impl Plugin for MidiSequencePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InstalledMidiSources>();
+        app.init_resource::<SequencedClips>();
+        app.init_resource::<EventFeeds>();
         app.add_systems(
             Update,
             rebuild
@@ -203,6 +290,9 @@ impl Plugin for MidiSequencePlugin {
                 // resolves through the same registry that populates the bus.
                 .after(GraphReconcileSystems::Spawn)
                 .after(super::endpoint::registration::register_midi_senders)
+                // Before the event wiring, so a new clip node is wired to its
+                // target on the frame it is made.
+                .before(EventWiring)
                 .before(GraphReconcileSystems::Commit)
                 .run_if(engine_ready),
         );

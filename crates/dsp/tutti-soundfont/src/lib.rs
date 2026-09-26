@@ -31,6 +31,7 @@ mod node_id;
 // `SoundFontUnit::fork_source` / `fork_instance`: the unit in a fork of the
 // native graph (an export), with its clip.
 mod fork;
+mod node;
 
 pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
@@ -322,6 +323,37 @@ impl SoundFontUnit {
         count
     }
 
+    /// Render `size` frames into the scratch, applying the first `count`
+    /// (sorted) events of `midi_buffer` at their offsets: the loop
+    /// [`AudioUnit::process`] documents, shared with the graph node.
+    fn render_events(&mut self, size: usize, count: usize) {
+        let mut event_idx = 0;
+        let mut pos = 0usize;
+        while pos < size {
+            // Apply every event due at or before `pos` — the equal-offset run
+            // lands in full before any of the frames it governs is rendered.
+            while event_idx < count
+                && (self.midi_buffer[event_idx].frame_offset as usize).min(size - 1) <= pos
+            {
+                let event = self.midi_buffer[event_idx];
+                self.apply_event(&event);
+                event_idx += 1;
+            }
+
+            // Render up to the next event's offset, so the segment [pos, next)
+            // carries exactly the state the events at `pos` established.
+            let next = if event_idx < count {
+                (self.midi_buffer[event_idx].frame_offset as usize)
+                    .min(size - 1)
+                    .max(pos + 1)
+            } else {
+                size
+            };
+            self.render_range(pos..next);
+            pos = next;
+        }
+    }
+
     /// Normalize one polled event into MIDI 2.0 vocabulary, then hand it to
     /// [`Self::dispatch`], which is where the downscale to 7-bit happens.
     fn apply_event(&mut self, event: &MidiEvent) {
@@ -506,31 +538,7 @@ impl AudioUnit for SoundFontUnit {
         }
 
         let count = self.poll_midi_events_sorted(size);
-        let mut event_idx = 0;
-        let mut pos = 0usize;
-        while pos < size {
-            // Apply every event due at or before `pos` — the equal-offset run
-            // lands in full before any of the frames it governs is rendered.
-            while event_idx < count
-                && (self.midi_buffer[event_idx].frame_offset as usize).min(size - 1) <= pos
-            {
-                let event = self.midi_buffer[event_idx];
-                self.apply_event(&event);
-                event_idx += 1;
-            }
-
-            // Render up to the next event's offset, so the segment [pos, next)
-            // carries exactly the state the events at `pos` established.
-            let next = if event_idx < count {
-                (self.midi_buffer[event_idx].frame_offset as usize)
-                    .min(size - 1)
-                    .max(pos + 1)
-            } else {
-                size
-            };
-            self.render_range(pos..next);
-            pos = next;
-        }
+        self.render_events(size, count);
 
         for i in 0..size {
             output.set_f32(0, i, self.left_buffer[i]);

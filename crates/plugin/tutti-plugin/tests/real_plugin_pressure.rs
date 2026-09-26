@@ -90,6 +90,10 @@ struct GraphUnit {
 
 impl GraphUnit {
     fn new<N: tutti_graph::IntoNode>(node: N, inputs: usize, outputs: usize) -> Self {
+        assert!(
+            inputs <= 16 && outputs <= 16,
+            "`run` holds 16 ports on the stack"
+        );
         let layout =
             |n: usize| tutti_types::ChannelLayout::from_count(u16::try_from(n).expect("ports"));
         let mut g = tutti_graph::GraphBuilder::new(layout(inputs), layout(outputs));
@@ -135,20 +139,50 @@ impl GraphUnit {
     }
 
     /// One block: `input`'s first `inputs` channels in, the plugin's outputs
-    /// into `output`'s first `outputs` channels.
+    /// into `output`'s first `outputs` channels. [`stage`](Self::stage),
+    /// [`run`](Self::run) and [`read`](Self::read) in one, for the untimed
+    /// callers.
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        self.stage(size, input);
+        self.run(size);
+        self.read(size, output);
+    }
+
+    /// Copy `input` into this unit's planar input buffers. Not the plugin
+    /// path: outside a timed region.
+    fn stage(&mut self, size: usize, input: &BufferRef) {
         for (c, ch) in self.ins.iter_mut().enumerate() {
             for (i, s) in ch[..size].iter_mut().enumerate() {
                 *s = input.at_f32(c, i);
             }
         }
-        let ins: Vec<&[f32]> = self.ins.iter().map(|c| &c[..size]).collect();
-        let mut outs: Vec<&mut [f32]> = self.outs.iter_mut().map(|c| &mut c[..size]).collect();
-        if self.inputs == 0 {
-            self.renderer.render_into(&mut outs);
-        } else {
-            self.renderer.render_input_into(&ins, &mut outs);
+    }
+
+    /// The plugin path, and nothing else: one executor block over the staged
+    /// buffers, the port tables on the stack. What a timed region measures.
+    fn run(&mut self, size: usize) {
+        const MAX: usize = 16;
+        let mut ins: [&[f32]; MAX] = [&[]; MAX];
+        for (slot, c) in ins.iter_mut().zip(&self.ins) {
+            *slot = &c[..size];
         }
+        let mut outs: [&mut [f32]; MAX] = std::array::from_fn(|_| Default::default());
+        for (slot, c) in outs.iter_mut().zip(self.outs.iter_mut()) {
+            *slot = &mut c[..size];
+        }
+        let transport = tutti_graph::Transport::default();
+        self.renderer.executor_mut().process(
+            size,
+            &transport,
+            &ins[..self.inputs],
+            &mut outs[..self.outputs],
+        );
+    }
+
+    /// Copy the last block's output out, and drain what the executor sent
+    /// back. Outside a timed region.
+    fn read(&mut self, size: usize, output: &mut BufferMut) {
+        self.renderer.editor_mut().collect();
         for (c, ch) in self.outs.iter().enumerate() {
             for (i, &s) in ch[..size].iter().enumerate() {
                 output.set_f32(c, i, s);
@@ -393,13 +427,22 @@ fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize
         // a chain that carries almost nothing while the timing numbers look
         // fine — timing empty work. Same input to each keeps every stage
         // genuinely processing audio, so the costs measured are real.
+        // Only the plugin path is timed: the copies into and out of each
+        // unit's planar buffers, and the editor's collect, are the harness's
+        // and happen outside the region.
+        for unit in units.iter_mut() {
+            unit.stage(BLOCK, &input.buffer_ref());
+        }
         let start = Instant::now();
         for unit in units.iter_mut() {
-            output.clear();
-            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.run(BLOCK);
         }
         let cost = start.elapsed();
         costs.push(cost);
+        for unit in units.iter_mut() {
+            output.clear();
+            unit.read(BLOCK, &mut output.buffer_mut());
+        }
 
         if peak(&output, max_ch) > 0.0 {
             non_silent += 1;

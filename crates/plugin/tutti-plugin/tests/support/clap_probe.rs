@@ -372,6 +372,13 @@ impl ProbeEnv {
         self
     }
 
+    /// Add `frames` to the plugin's latency (and its `Latency`-mode delay)
+    /// while it renders offline, telling the host through `clap.latency`.
+    pub fn offline_extra_latency(mut self, frames: u32) -> Self {
+        self.set("TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY", frames.to_string());
+        self
+    }
+
     /// Make the plugin's `clap.state` load refuse.
     pub fn refuse_state_load(mut self, on: bool) -> Self {
         self.set(

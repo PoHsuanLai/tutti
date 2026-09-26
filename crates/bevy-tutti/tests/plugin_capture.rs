@@ -42,9 +42,11 @@ use common::plugin::{clap_probe, plugin_server};
 use std::time::{Duration, Instant};
 
 use bevy_app::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+    AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
+    MetronomeRes, TransportRes,
 };
 use bevy_tutti::midi::MidiTarget;
 use bevy_tutti::plugin_host::{
@@ -144,6 +146,30 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         "the graph plans PDC against the node's latency"
     );
 
+    // Idle frames after the load leave the graph clean: the poll compares
+    // the plugin's declared latency with the editor's own figure, and while
+    // the two agree it raises nothing, so nothing is recompiled or
+    // republished frame after frame. Observed between the poll and the
+    // commit (which clears the flag), by a probe system (`record_dirty`).
+    //
+    // Mutation (run): raise `GraphDirty` in the poll whether or not the
+    // figure moved → the probe sees it set → fails.
+    app.init_resource::<DirtySeen>();
+    app.add_systems(
+        Update,
+        record_dirty
+            .after(bevy_tutti::plugin_host::plugin_latency_poll)
+            .before(GraphReconcileSystems::Commit),
+    );
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<DirtySeen>().0,
+        0,
+        "an unchanged plugin latency marked the graph dirty"
+    );
+
     // A latency change after load — what a plugin's `latency.changed`
     // delivers into its cell — reaches the graph through the poll: a `Shape`
     // change at the next commit. That is the one path: the editor read the
@@ -184,6 +210,20 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         tutti_core::latency::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
     );
+}
+
+/// Frames on which `GraphDirty` was set between the latency poll and the
+/// commit.
+#[derive(bevy_ecs::prelude::Resource, Default)]
+struct DirtySeen(usize);
+
+fn record_dirty(
+    dirty: bevy_ecs::prelude::Res<GraphDirty>,
+    mut seen: bevy_ecs::prelude::ResMut<DirtySeen>,
+) {
+    if dirty.0 {
+        seen.0 += 1;
+    }
 }
 
 /// What the capture's consumers left on the entity.

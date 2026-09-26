@@ -18,10 +18,12 @@
 //! nothing outside the module can name or build. Every line of the node is
 //! still the bound client's: `PluginNode` only owns it.
 
-use tutti_graph::{Cx, Io, Node, Offset, Prepare, Shape, Status, MAX_PORTS};
+use tutti_core::meter::MeterMap;
+use tutti_graph::{Cx, Env, Io, Node, Offset, Prepare, Shape, Status, MAX_PORTS};
 use tutti_types::{ChannelLayout, Samples};
 
-use super::transport_source;
+use super::batcher::Chunks;
+use super::transport_source::{self, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::node::input_slot::BlockCtx;
 use crate::protocol::{Features, MidiEventVec, TransportInfo};
@@ -72,12 +74,26 @@ impl Node for PluginNode {
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
         // on the IPC wire, which is where the types stop.
         let _ = c.bridge.set_sample_rate_rt(p.sample_rate().get());
+        // A fork's graph is compiled from the shape read right after this, and
+        // a plugin may move its latency when its rate or render mode changes
+        // (an HQ offline mode is the usual case). Both changes are queued
+        // commands the server has not necessarily handled yet, so wait for
+        // them and for any latency they caused (`PluginBridge::settle`), then
+        // record the figure the plan will hold: the fork's health reports a
+        // later move as a fault rather than a silently misaligned export.
+        // Live, the latency poll re-plans instead, and prepare never blocks.
+        if let Some(watch) = &c.fork_watch {
+            c.bridge.settle();
+            watch.plan(c.controls.declared_latency());
+        }
     }
 
-    /// Walk the block in chunks of at most the prepared chunk, each one
-    /// submitted with its own payload (MIDI, automation, harmony, note
-    /// expression, and the transport at the chunk's first frame) and
-    /// collecting the chunk before it.
+    /// Hand the block to the pipeline, which ships whole chunks (the
+    /// batcher's FIFO) and plays the chunk before: output frame `t` is the
+    /// plugin's output for input frame `t - chunk`, however the blocks are
+    /// cut. Each chunk is submitted with its own payload — MIDI, automation,
+    /// harmony, note expression, and the transport at the chunk's first frame
+    /// ([`PluginChunks`]).
     ///
     /// Always [`Status::Modified`]: the node is fed out of band (a MIDI
     /// mailbox, a clip), so the executor must never park it on silent
@@ -85,64 +101,55 @@ impl Node for PluginNode {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let c = &mut self.0;
         let frames = io.frames();
-        let chunk = c.state.io.chunk();
-        let features = c.loaded.features;
-        let sends_transport = features.contains(Features::TRANSPORT);
-        let rate = cx.env.sample_rate;
         let n_in = c.inputs.min(io.input_count()).min(MAX_PORTS);
         let n_out = c.outputs.min(io.output_count()).min(MAX_PORTS);
+        let Bound {
+            io: batcher,
+            default_meter,
+            pending_transport,
+            steady,
+        } = &mut c.state;
 
         // One meter read per block, never per chunk. A nested read (the
         // slot's load, then the cell's), as the transport source always made.
         let meter_slot = c.controls.meter.load();
         let meter_ref = meter_slot.as_ref().map(|m| m.read());
-        let meter = meter_ref.as_deref().unwrap_or(&c.state.default_meter);
+        let meter = meter_ref.as_deref().unwrap_or(default_meter);
 
+        let mut host = PluginChunks {
+            env: cx.env,
+            frames,
+            meter,
+            features: c.loaded.features,
+            steady: *steady,
+            midi: &mut c.midi,
+            inputs: &mut c.controls.inputs,
+            pending: pending_transport,
+        };
+
+        // The block's channels, on the stack: no allocation per call.
         let (inputs, mut outputs) = io.split();
-        let mut start = 0;
-        while start < frames {
-            let len = chunk.min(frames - start);
-            let range = start..start + len;
-            let ctx = BlockCtx { block_size: len };
-
-            let transport = match Offset::new(start, Samples(frames)) {
-                Some(offset) if sends_transport => {
-                    transport_source::from_env(cx.env, offset, meter)
-                }
-                _ => TransportInfo::default(),
-            };
-            let inputs_slots = &mut c.controls.inputs;
-            let payload = BlockPayload {
-                midi: c.midi.drain_for_process(len, rate).clone(),
-                params: inputs_slots.params.drain(ctx, features).clone(),
-                harmony: inputs_slots.harmony.drain(ctx, features).clone(),
-                note_expression: inputs_slots.note_expression.drain(ctx, features).clone(),
-                transport,
-            };
-
-            // The chunk's channels, on the stack: no allocation per call.
-            let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
-            for (ch, slot) in ins.iter_mut().enumerate().take(n_in) {
-                *slot = &inputs.get(ch)[range.clone()];
-            }
-            let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| Default::default());
-            for (slot, out) in outs.iter_mut().zip(outputs.iter_mut()).take(n_out) {
-                *slot = &mut out[range.clone()];
-            }
-
-            c.state.io.process(
-                &c.bridge,
-                len,
-                &ins[..n_in],
-                &mut outs[..n_out],
-                payload,
-                &mut c.state.midi_out,
-            );
-            if features.contains(Features::MIDI_OUT) {
-                emit_midi_out(&c.midi, &mut c.state.midi_out, chunk);
-            }
-            start += len;
+        let mut ins: [&[f32]; MAX_PORTS] = [&[]; MAX_PORTS];
+        for (ch, slot) in ins.iter_mut().enumerate().take(n_in) {
+            *slot = inputs.get(ch);
         }
+        let mut outs: [&mut [f32]; MAX_PORTS] = std::array::from_fn(|_| Default::default());
+        for (slot, out) in outs.iter_mut().zip(outputs.iter_mut()).take(n_out) {
+            *slot = out;
+        }
+        batcher.process(
+            &c.bridge,
+            frames,
+            &ins[..n_in],
+            &mut outs[..n_out],
+            &mut host,
+        );
+        // Never reset, not even by `prepare`: see `SteadyTime`. (Not pinned
+        // end to end: the reference CLAP plugin reads CLAP's own `steady_time`,
+        // which its loader counts; this counter reaches VST2 and VST3 only.
+        // `the_snapshot_is_env_at_the_frame` pins that the snapshot carries
+        // it rather than `Env`'s frame.)
+        steady.advance(frames);
         Status::Modified
     }
 
@@ -150,6 +157,57 @@ impl Node for PluginNode {
     fn reset(&mut self) {
         self.0.state.io.reset();
         let _ = self.0.bridge.reset_rt();
+    }
+}
+
+/// What the node hands the batcher for each chunk: its payload, built when
+/// the chunk is submitted, and the transport at its first frame, taken when
+/// the chunk begins (possibly a block earlier; see the batcher's FIFO).
+struct PluginChunks<'a> {
+    env: &'a Env,
+    frames: usize,
+    meter: &'a MeterMap,
+    features: Features,
+    /// The steady-time counter at this block's first frame.
+    steady: SteadyTime,
+    midi: &'a mut Midi,
+    inputs: &'a mut super::controls::PluginInputs,
+    pending: &'a mut TransportInfo,
+}
+
+impl Chunks for PluginChunks<'_> {
+    fn begin(&mut self, at: usize) {
+        *self.pending = match Offset::new(at, Samples(self.frames)) {
+            Some(offset) if self.features.contains(Features::TRANSPORT) => {
+                transport_source::from_env(self.env, offset, self.steady.at(at), self.meter)
+            }
+            _ => TransportInfo::default(),
+        };
+    }
+
+    fn payload(&mut self, frames: usize) -> BlockPayload {
+        let ctx = BlockCtx { block_size: frames };
+        let rate = self.env.sample_rate;
+        // Clones of the drained buffers: every one is an inline `SmallVec`
+        // below its spill size, so a clone copies and never allocates
+        // (`clap_node_no_alloc` drives MIDI and automation through here).
+        BlockPayload {
+            midi: self.midi.drain_for_process(frames, rate).clone(),
+            params: self.inputs.params.drain(ctx, self.features).clone(),
+            harmony: self.inputs.harmony.drain(ctx, self.features).clone(),
+            note_expression: self
+                .inputs
+                .note_expression
+                .drain(ctx, self.features)
+                .clone(),
+            transport: *self.pending,
+        }
+    }
+
+    fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize) {
+        if self.features.contains(Features::MIDI_OUT) {
+            emit_midi_out(self.midi, events, chunk);
+        }
     }
 }
 

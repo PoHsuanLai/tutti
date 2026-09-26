@@ -644,3 +644,118 @@ fn an_export_through_a_failing_fork_fails_by_name() {
     let _hang = ProbeEnv::new().block_from(5);
     failed(ForkFaultKind::TimedOut);
 }
+
+/// A ramp source reading its block's `Env`: frame `t` is [`ramp`]`(t)`. Forks
+/// by clone (it holds nothing), so an export of a graph it feeds forks it.
+#[derive(Clone)]
+struct RampSource;
+
+/// Input frame `t` of the alignment test: distinct, never zero, exact in f32.
+fn ramp(t: u64) -> f32 {
+    ((t % 997) + 1) as f32 / 1024.0
+}
+
+impl tutti_graph::Node for RampSource {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
+        )
+        .with_tail(tutti_types::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let first = cx.env.frame.get();
+        for (i, s) in io.output(0).iter_mut().enumerate() {
+            *s = ramp(first + i as u64);
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **An export is aligned when the plugin's latency moves in offline mode.**
+/// The probe adds 24 frames to its latency (and its delay) once it is told to
+/// render offline, as a plugin with a higher-quality offline mode does. The
+/// fork is told so asynchronously; its `prepare` waits for the change to land
+/// (`PluginBridge::settle`) before the fork's graph is compiled, so the
+/// export's plan carries 137 + 24 + 64 and trims exactly that: the render is
+/// the ramp from frame 0, sample for sample, and the fork reports no fault.
+///
+/// Mutation: drop the `settle()` from `PluginNode::prepare` → the plan is
+/// compiled against the realtime 201 while the plugin delays 225 → the
+/// render is 24 frames late, and (the backstop) the fork's health reports
+/// `Failed` with `PluginRenderFault::LatencyChanged` → fails.
+#[test]
+fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new()
+        .render_mode(render::LATENCY)
+        .offline_extra_latency(24);
+    let probe = load_probe(SAMPLE_RATE);
+    let inputs = probe.client.inputs();
+
+    let rate = SampleRate(SAMPLE_RATE);
+    let (mut live, _exec) = Editor::new(Prepare::new(rate, Samples(BLOCK)));
+    let (src, key) = (NodeKey(1), NodeKey(2));
+    live.insert(src, "ramp", tutti_graph::ForkByClone(RampSource));
+    let _controls = live.insert(key, "plugin", probe.client.bind());
+    for port in 0..inputs {
+        live.spec_mut().topology.edges.insert(
+            tutti_types::graph::InPort {
+                node: key,
+                port: port as u16,
+            },
+            tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: src, port: 0 })),
+        );
+    }
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+
+    let offline = offline();
+    let graph = tutti_export::RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&offline),
+        rate,
+    )
+    .expect("the graph forks");
+    let latency = graph.reported_latency();
+    assert_eq!(
+        latency,
+        Samples(137 + 24 + 64),
+        "the plan carries the offline latency"
+    );
+    let config = tutti_export::ExportConfig {
+        render: tutti_export::RenderConfig {
+            sample_rate: rate,
+            duration_seconds: 0.1,
+            latency,
+            ..Default::default()
+        },
+        encode: tutti_export::EncodeConfig {
+            channels: tutti_export::ChannelLayout::MONO,
+            ..Default::default()
+        },
+        dither: tutti_export::Dither::Off,
+        ..Default::default()
+    };
+    let rendered = tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+        .expect("a fork whose latency settled exports without a fault");
+    let plane = &rendered.planes[0];
+    assert!(!plane.is_empty());
+    let wrong = plane
+        .iter()
+        .enumerate()
+        .filter(|&(j, &s)| s != ramp(j as u64))
+        .count();
+    assert_eq!(
+        wrong,
+        0,
+        "{wrong} of {} samples are not the ramp: the export is misaligned",
+        plane.len()
+    );
+}

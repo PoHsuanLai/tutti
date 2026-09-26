@@ -20,7 +20,7 @@
 //!
 //! An unbound plugin can be neither inserted into a graph —
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! use tutti_graph::Editor;
 //! use tutti_plugin::handles::PluginClient;
 //! use tutti_types::NodeKey;
@@ -32,7 +32,7 @@
 //!
 //! — nor boxed as a node to be processed by hand:
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! use tutti_graph::Node;
 //! use tutti_plugin::handles::PluginClient;
 //! fn boxed(client: PluginClient) -> Box<dyn Node> {
@@ -150,10 +150,13 @@ pub struct Bound {
     /// The pipelined IPC path, sized for the chunk ceiling at bind and
     /// narrowed by `prepare`.
     io: Batcher,
-    /// Per-chunk scratch the plugin's MIDI-out is drained into, then
-    /// re-injected into routing via [`Midi::emit`]. Cleared at the start of
-    /// each submission; steady-state capacity makes the drain alloc-free.
-    midi_out: crate::protocol::MidiEventVec,
+    /// The transport at the first frame of the chunk being filled: taken
+    /// when the chunk begins, sent when it is submitted (possibly a block
+    /// later; see the batcher's FIFO).
+    pending_transport: TransportInfo,
+    /// The free-running sample counter the plugin's transport carries:
+    /// frames this node has rendered, monotonic across a re-prepare.
+    steady: transport_source::SteadyTime,
     /// The meter the transport snapshot reads when none is installed on the
     /// controls: built once here, on the control thread, because building a
     /// `MeterMap` allocates.
@@ -393,7 +396,8 @@ impl PluginClient<Unbound> {
             fork_watch,
             state: Bound {
                 io,
-                midi_out: crate::protocol::MidiEventVec::new(),
+                pending_transport: TransportInfo::default(),
+                steady: transport_source::SteadyTime::default(),
                 default_meter: MeterMap::default(),
             },
         }

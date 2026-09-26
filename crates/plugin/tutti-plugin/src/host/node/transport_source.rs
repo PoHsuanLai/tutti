@@ -42,11 +42,36 @@ pub(crate) struct Snapshot {
     pub(crate) sample_rate: SampleRate,
 }
 
+/// The free-running sample counter a node hands its plugin: frames it has
+/// rendered, whatever the transport did.
+///
+/// Its own count, not [`Env::frame`]: the executor's frame is the graph's
+/// clock, which a re-prepare (a sample-rate change) starts over, and the plugin
+/// ABIs' steady time (VST2 `samplePos`'s continuous twin, VST3
+/// `continousTimeSamples`) must never jump. A node keeps one and advances it by
+/// every block it renders.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SteadyTime(u64);
+
+impl SteadyTime {
+    /// Count `frames` more rendered frames.
+    pub(crate) fn advance(&mut self, frames: usize) {
+        self.0 = self.0.saturating_add(frames as u64);
+    }
+
+    /// The counter `at` frames past this one, as the ABIs carry it: an
+    /// `i64`. 2^63 frames is three million years at 96 kHz, so the saturation
+    /// is unreachable.
+    pub(crate) fn at(self, at: usize) -> i64 {
+        i64::try_from(self.0.saturating_add(at as u64)).unwrap_or(i64::MAX)
+    }
+}
+
 impl Snapshot {
     /// The transport at frame `offset` of `env`'s block: the change in force
-    /// there, its beat advanced to the frame (wrapping at the loop), and the
-    /// frame itself as the continuous counter.
-    pub(crate) fn at(env: &Env, offset: Offset) -> Self {
+    /// there, its beat advanced to the frame (wrapping at the loop), with
+    /// `continuous` as the free-running counter ([`SteadyTime`]).
+    pub(crate) fn at(env: &Env, offset: Offset, continuous: i64) -> Self {
         let t = env.transport_at(offset);
         Self {
             playing: t.playing,
@@ -54,9 +79,7 @@ impl Snapshot {
             tempo: t.tempo,
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),
-            // `Frame` is a `u64`; the ABIs carry `i64`. 2^63 frames is three
-            // million years at 96 kHz, so the saturation is unreachable.
-            continuous: i64::try_from(env.frame_at(offset).get()).unwrap_or(i64::MAX),
+            continuous,
             sample_rate: env.sample_rate,
         }
     }
@@ -64,8 +87,13 @@ impl Snapshot {
 
 /// [`Snapshot::at`], as the plugin ABIs carry it, with `meter`'s signature
 /// and bar at the playhead.
-pub(crate) fn from_env(env: &Env, offset: Offset, meter: &MeterMap) -> TransportInfo {
-    transport_info(&Snapshot::at(env, offset), meter)
+pub(crate) fn from_env(
+    env: &Env,
+    offset: Offset,
+    continuous: i64,
+    meter: &MeterMap,
+) -> TransportInfo {
+    transport_info(&Snapshot::at(env, offset, continuous), meter)
 }
 
 /// Map `s` onto the snapshot the plugin ABIs read, with `meter`'s signature
@@ -252,21 +280,24 @@ mod tests {
         Offset::new(i, Samples(len)).expect("inside the block")
     }
 
-    /// Every field the snapshot carries is `Env`'s, at the frame asked for:
-    /// the block's own transport at its first frame, the beat advanced to a
-    /// later frame at the tempo, and the frame as the continuous counter.
+    /// Every transport field the snapshot carries is `Env`'s, at the frame
+    /// asked for: the block's own transport at its first frame, the beat
+    /// advanced to a later frame at the tempo. The continuous counter is the
+    /// node's own [`SteadyTime`], not `Env`'s frame (which a re-prepare starts
+    /// over).
     ///
     /// Mutation: read `env.transport` instead of `env.transport_at(offset)`
     /// in `Snapshot::at` → the beat at offset 24 stays 2.0 → fails. Mutation:
-    /// `continuous: env.frame` → the counter at offset 24 is 1000 → fails.
-    /// Mutation: drop `.with_recording` in `transport_info` → fails.
+    /// `continuous: env.frame_at(offset)` → the counter is 1024, not the
+    /// node's 7 024 → fails. Mutation: drop `.with_recording` in
+    /// `transport_info` → fails.
     #[test]
     fn the_snapshot_is_env_at_the_frame() {
         let t = Transport::new(true, Bpm(120.0), Beat(2.0), None).with_recording(true);
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
-        let first = from_env(&e, at(0, 64), &meter);
+        let first = from_env(&e, at(0, 64), 0, &meter);
         assert!(first.state.playing);
         assert!(first.state.recording);
         assert_eq!(first.timing.tempo, 120.0);
@@ -274,13 +305,17 @@ mod tests {
         assert_eq!(first.sample_rate, 48_000.0);
 
         // 24 frames at 120 BPM / 48 kHz: 24 / 24 000 of a beat.
-        let later = from_env(&e, at(24, 64), &meter);
+        // The node has rendered 7 000 frames of its own, whatever `Env`'s
+        // frame says (1 000 here: as after a re-prepare restarted the graph).
+        let mut steady = SteadyTime::default();
+        steady.advance(7_000);
+        let later = from_env(&e, at(24, 64), steady.at(24), &meter);
         assert_eq!(
             later.position.beats,
             e.transport_at(at(24, 64)).beat().get()
         );
         assert!((later.position.beats - (2.0 + 24.0 / 24_000.0)).abs() < 1e-12);
-        assert_eq!(later.position.continuous_samples, 1_024);
+        assert_eq!(later.position.continuous_samples, 7_024);
     }
 
     /// A seek and a tempo change inside the block, and a loop wrap: the
@@ -316,16 +351,16 @@ mod tests {
         let meter = MeterMap::default();
 
         for i in 0..64 {
-            let got = from_env(&e, at(i, 64), &meter);
+            let got = from_env(&e, at(i, 64), 0, &meter);
             let want = e.transport_at(at(i, 64));
             assert_eq!(got.position.beats, want.beat().get(), "frame {i}");
             assert_eq!(got.timing.tempo, want.tempo.get(), "frame {i}");
             assert_eq!(got.state.cycle_active, want.looping.is_some(), "frame {i}");
         }
         // The wrap: 32 frames into a 32-frame loop is back at its start.
-        assert_eq!(from_env(&e, at(32, 64), &meter).position.beats, 4.0);
+        assert_eq!(from_env(&e, at(32, 64), 0, &meter).position.beats, 4.0);
         // The seek, and its tempo.
-        let seeked = from_env(&e, at(40, 64), &meter);
+        let seeked = from_env(&e, at(40, 64), 0, &meter);
         assert_eq!(seeked.position.beats, 16.0);
         assert_eq!(seeked.timing.tempo, 90.0);
         assert!(!seeked.state.cycle_active);
@@ -346,7 +381,7 @@ mod tests {
             Transport::new(true, Bpm(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
-        let out = from_env(&e, at(0, 64), &meter);
+        let out = from_env(&e, at(0, 64), 0, &meter);
 
         assert_eq!(out.timing.signature, seven_eight);
         assert_eq!(out.bar.number, BarNumber(2));

@@ -111,15 +111,16 @@
 //! not forkable; see its `forkable`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use tutti_core::transport::{LoopRange, OfflineTransport, Timeline, TransportState};
-use tutti_core::{Beat, Bpm};
+use tutti_core::{Beat, Bpm, Samples};
 use tutti_graph::{
     ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
 };
+use tutti_types::Latency;
 
 use super::graph_node::PluginNode;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
@@ -216,6 +217,12 @@ impl TransportState for OfflineState {
 /// `tutti_graph::ForkHealth` probe. See "When the fork fails while
 /// rendering" in the module docs.
 pub(super) struct ForkWatch {
+    /// The fork's controls: the latency it declares now.
+    controls: PluginControls,
+    /// The latency the fork's graph was compiled against, recorded by the
+    /// node's `prepare` once the plugin has settled (`usize::MAX`: not
+    /// prepared yet).
+    planned: AtomicUsize,
     /// The fork's bridge and process. Weak: a probe the editor keeps must not
     /// keep the fork alive after its node is gone (a dropped fork has nothing
     /// left to fail), and the fork's own batcher holds this watch.
@@ -245,6 +252,25 @@ impl ForkWatch {
         self.gave_up.store(true, Ordering::Release);
     }
 
+    /// Record the latency the fork's graph is compiled against: what the
+    /// node's `Shape` declares right after this `prepare`.
+    pub(super) fn plan(&self, latency: Latency) {
+        self.planned
+            .store(latency.samples().get(), Ordering::Release);
+    }
+
+    /// The fork's latency, if it moved since [`plan`](Self::plan): `(planned,
+    /// now)`.
+    fn latency_moved(&self) -> Option<(Latency, Latency)> {
+        let planned = self.planned.load(Ordering::Acquire);
+        if planned == usize::MAX {
+            return None;
+        }
+        let planned = Latency::new(Samples(planned));
+        let now = self.controls.declared_latency();
+        (now != planned).then_some((planned, now))
+    }
+
     /// Ask the process whether it has exited, and latch it if so.
     pub(super) fn server_died(&self) -> bool {
         let mut died = lock(&self.died);
@@ -266,7 +292,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl ForkHealth for ForkWatch {
     /// A timeout first if one was latched (it happened before anything the
     /// bridge noticed later), then a dead process or a crash the bridge
-    /// latched.
+    /// latched, then a latency that moved after the fork's graph was compiled
+    /// (`Failed`: the render ran, misaligned).
     fn fault(&self) -> Option<(ForkFaultKind, ForkCause)> {
         if self.gave_up.load(Ordering::Acquire) {
             let cause = PluginRenderFault::TimedOut {
@@ -281,13 +308,18 @@ impl ForkHealth for ForkWatch {
         if self.server_died() {
             return lock(&self.died).clone().map(crashed);
         }
-        let bridge = self.bridge.upgrade()?;
-        bridge.is_crashed().then(|| {
-            crashed(
-                bridge
-                    .crash_cause()
-                    .unwrap_or_else(|| "no cause latched".to_string()),
-            )
+        if let Some(bridge) = self.bridge.upgrade() {
+            if bridge.is_crashed() {
+                return Some(crashed(
+                    bridge
+                        .crash_cause()
+                        .unwrap_or_else(|| "no cause latched".to_string()),
+                ));
+            }
+        }
+        self.latency_moved().map(|(planned, now)| {
+            let cause = PluginRenderFault::LatencyChanged { planned, now };
+            (ForkFaultKind::Failed, ForkCause::new(cause))
         })
     }
 }
@@ -372,6 +404,8 @@ impl PluginFork {
             }
         }
         let watch = Arc::new(ForkWatch {
+            controls: fork.controls.clone(),
+            planned: AtomicUsize::new(usize::MAX),
             bridge: Arc::downgrade(&fork.bridge),
             server: Arc::downgrade(&fork.process_guard),
             gave_up: AtomicBool::new(false),
@@ -477,6 +511,48 @@ impl IntoNode for PluginClient<Bound> {
             node,
             controls,
             fork: Some(Box::new(fork)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_core::SampleRate;
+    use tutti_plugin_types::PluginTail;
+
+    /// A fork's health reports a latency that moved after its graph was
+    /// compiled — `Failed`, with `PluginRenderFault::LatencyChanged` naming
+    /// both figures — and nothing before `plan` or while the figure holds.
+    ///
+    /// Mutation: have `latency_moved` return `None` → the moved figure is not
+    /// reported → fails. Mutation: compare the plugin's own latency (without
+    /// the pipeline chunk) → the unmoved plan reads as moved → fails.
+    #[test]
+    fn a_latency_moved_after_the_plan_is_a_fault() {
+        let controls =
+            PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
+        let watch = ForkWatch {
+            controls: controls.clone(),
+            planned: AtomicUsize::new(usize::MAX),
+            bridge: Weak::new(),
+            server: Weak::new(),
+            gave_up: AtomicBool::new(false),
+            died: Mutex::new(None),
+            budget: Duration::from_secs(1),
+        };
+        assert!(watch.fault().is_none(), "not planned yet");
+        watch.plan(controls.declared_latency());
+        assert!(watch.fault().is_none(), "the plan holds");
+        controls.set_latency(Samples(161));
+        let (kind, cause) = watch.fault().expect("the latency moved");
+        assert_eq!(kind, ForkFaultKind::Failed);
+        match cause.downcast_ref::<PluginRenderFault>() {
+            Some(PluginRenderFault::LatencyChanged { planned, now }) => {
+                assert_eq!(planned.samples(), Samples(137 + 64));
+                assert_eq!(now.samples(), Samples(161 + 64));
+            }
+            other => panic!("expected LatencyChanged, got {other:?}"),
         }
     }
 }

@@ -3147,14 +3147,28 @@ vocoder retirement channel for voices the pool removes.
 - **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
   transport (`PolledTransport`, sharing the snapshot mapping); it ports with
   the "Port mechanically" group.
-- **The 64-frame chunk inside a longer block, live.** Once a graph with a
-  plugin renders blocks longer than 64 frames (after the `legacy` flag goes),
-  a live node's second chunk collects the first chunk submitted microseconds
-  earlier, so the pipeline reads silence for it unless the server is that
-  fast. That is today's behaviour under chunk-major rendering too (the whole
-  graph runs 64-frame passes back to back inside one device callback); an
-  offline fork waits and is unaffected. Revisit with owner decision 8 if
-  device-quantum rendering of plugin graphs shows it.
+- **The 64-frame chunk inside a longer block, live.** The batcher ships
+  whole chunks through a FIFO and plays output from a ring, so the output is
+  exactly one chunk late however the blocks are cut (a review of this PR
+  found ragged blocks corrupting audio before: fixed here, pinned by
+  `clap_ragged`). What the FIFO cannot give a live plugin is *time*: a chunk
+  whose output is needed in the same call it was completed in (any chunk
+  boundary falling mid-call: a device quantum that is not a multiple of 64,
+  or blocks longer than 64 once the `legacy` flag goes) is collected
+  microseconds after its submission, and reads as silence unless the server
+  is that fast. Chunk-major rendering has the same exposure today (the
+  whole graph runs its 64-frame passes back to back inside one device
+  callback, so only the first pass of a callback collects a chunk submitted
+  in the previous one). An offline fork waits and is unaffected. This is
+  owner decision 8's trade-off made concrete; revisit it before device-quantum
+  rendering of plugin graphs.
+- **A fork's latency.** A fork's `prepare` waits for the latency change a
+  rate or render-mode switch causes (`PluginBridge::settle`: two round trips
+  on the command queue, after which the latency cell holds what the server
+  sent), then records the figure its plan compiles; a later move is a fork
+  fault (`PluginRenderFault::LatencyChanged`), never a silently misaligned
+  export. Pinned by `an_export_is_aligned_when_the_plugin_latency_moves_offline`
+  (the reference plugin adds 24 frames in offline mode).
 
 #### Item 3 landed (#10)
 

@@ -406,6 +406,32 @@ impl AudioBridge {
         ask_resp.recv_timeout(PARAM_TIMEOUT).unwrap_or(false)
     }
 
+    /// Wait until every command queued before this call has reached the
+    /// server, been handled, and every event the server sent because of it
+    /// (a `LatencyChanged` a render-mode or rate change caused) has reached
+    /// the listener. Control thread; blocks for two round trips, each bounded
+    /// by the parameter timeout.
+    ///
+    /// Why two. The server handles commands in order and sends the events a
+    /// command caused before it reads the next one, so a request's reply
+    /// comes after them on the socket, and the bridge thread reads them off
+    /// first. But it hands them to the listener only once it has finished
+    /// the command it read them during — after that command's reply has
+    /// already woken its caller. The bridge thread takes the next command only
+    /// after that hand-off, so the second request's reply means the first's
+    /// events were delivered. A cheap request that every server answers
+    /// (`GetCurrentPreset`) does for both.
+    ///
+    /// The second trip closes a window of microseconds (the bridge thread's
+    /// hand-off after a reply), which no test here loses reliably: tutti-plugin's
+    /// `an_export_is_aligned_when_the_plugin_latency_moves_offline` pins the
+    /// settle, not the second trip. A fork that lost the race anyway reports
+    /// it through its health (`PluginRenderFault::LatencyChanged`).
+    pub fn settle(&self) {
+        let _ = self.current_preset();
+        let _ = self.current_preset();
+    }
+
     /// Which preset the plugin considers current, if it will say.
     pub fn current_preset(&self) -> Option<PresetId> {
         if self.lifecycle.is_crashed() {

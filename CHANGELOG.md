@@ -117,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `Plugin::into_unit()` / `Plugin::into_parts()` (a `Box<dyn AudioUnit>`) | `Plugin` is itself an `IntoNode` (`Controls = Option<PluginControls>`, `None` for in-process VST2): `editor.insert(key, kind, plugin)`. Clone `plugin.handle()` first to keep it. `into_client()` still returns the (unbound) `PluginClient`, or the VST2 node boxed |
   | `PluginClient::set_transport_source(reader, meter)`, `clear_transport_source`, `PluginControls::{set_transport_source, has_transport_source, clear_transport_source}`, `TransportView::{set_source, clear}` | the transport needs no install. Give the meter: `PluginClient::set_meter`, `PluginControls::{set_meter, clear_meter, has_meter}`, `TransportView::{set_meter, clear_meter}`. `Plugin::set_transport_source(reader, meter)` stays; the subprocess backend takes only the meter |
   | the declared latency was `AudioUnit::latency()` (`route`) | `PluginControls::declared_latency()`, what the node's `Shape` declares; `PluginClient::latency()` is still the plugin's own figure |
-  | offline, the transport snapshot's continuous-sample counter was 0 and the loop was reported off | it is the render's frame, and the loop is the render's |
+  | offline, the transport snapshot's loop was reported off | the loop is the render's. The continuous-sample counter is a per-node monotonic count of rendered frames (it does not jump on a re-prepare) |
+  | `PluginRenderFault` had `Crashed` and `TimedOut` | also `LatencyChanged { planned, now }`: a fork whose plugin moved its latency after the fork's graph was compiled reports it (`ForkFaultKind::Failed`) rather than exporting misaligned. A fork's `prepare` first waits for a latency its rate or render-mode change caused (`PluginBridge::settle`, new), so the plan holds it |
   | `PluginHandle::from_client(&PluginClient)` | generic over the state: `from_client(&PluginClient<S>)` |
   | `tutti_plugin::backend::route_with_latency` from `host::node` | the same function, re-exported from `util::node` (only the in-process VST2 node still uses it) |
   | tutti-graph: `Transport` had no recording flag | `Transport::recording()` and `with_recording` (additive; the field is private, like the position); tutti-core's engine sets it from the transport settings, and `Env::transport_at` keeps it |
@@ -131,7 +132,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (doc 013's open `Batcher` question, decided): a node handed a longer block
   ships 64-frame chunks, so its pipeline latency stays 64 frames. Tick mode
   and `TickStorage` are gone from the batcher; the chunk comes from
-  `prepare(max_block)`. The plugin's MIDI, parameter automation, harmony and
+  `prepare(max_block)`.
+
+  **Fixed: ragged blocks corrupted plugin audio** (also on main before this).
+  Each call was submitted as its own chunk and collected into the next
+  call's frames, so wherever consecutive lengths differed (an export's
+  100-frame blocks; a 441- or 480-frame device quantum rendered in 64-frame
+  passes plus a remainder) frames were dropped or zero-padded: 2 303 of
+  3 399 samples wrong at 100-frame blocks. The batcher now fills a FIFO and
+  ships only whole chunks, reading output from a ring, so a plugin's output
+  is its input delayed by exactly the declared latency however the blocks
+  are cut. The plugin's MIDI, parameter automation, harmony and
   note expression still arrive through `InputSlot`s (event ports come
   later), so the node still declares `Shape::legacy` and a graph holding it
   is still rendered in 64-frame blocks.

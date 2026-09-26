@@ -247,8 +247,9 @@ pub enum PluginForkError {
 }
 
 /// How a forked plugin instance failed **while rendering** — the cause behind
-/// a `tutti_graph::ForkFault` (see `PluginClient::fork_health`). From the
-/// failure on, the fork renders silence.
+/// a `tutti_graph::ForkFault` (see `PluginClient::fork_health`). After a crash
+/// or a timeout the fork renders silence; after a latency change it renders
+/// misaligned.
 #[derive(Error, Debug)]
 pub enum PluginRenderFault {
     /// The fork's plugin-server died.
@@ -267,6 +268,22 @@ pub enum PluginRenderFault {
     TimedOut {
         /// The per-block budget it missed.
         budget: std::time::Duration,
+    },
+    /// The forked instance's latency is not the one its graph was compiled
+    /// against: the plugin changed it after the fork's plan was made, so the
+    /// render's delay compensation (and an export's latency trim) is off by
+    /// the difference. The fork waits for a latency its render-mode and rate
+    /// changes cause before its plan is made, so this is a change the plugin
+    /// made later, on its own.
+    #[error(
+        "the forked instance's latency moved from {planned:?} to {now:?} after \
+         its graph was compiled; the render is misaligned by the difference"
+    )]
+    LatencyChanged {
+        /// What the fork's graph compensates for.
+        planned: tutti_types::Latency,
+        /// What the instance declares now.
+        now: tutti_types::Latency,
     },
 }
 

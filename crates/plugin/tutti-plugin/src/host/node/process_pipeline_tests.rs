@@ -43,6 +43,21 @@ use std::sync::Arc;
 const CHANNELS: usize = 2;
 const GAIN: f32 = 2.0;
 
+/// The tests' side of each chunk: an empty payload, and the plugin's MIDI-out
+/// kept as drained (unshifted), so a test reads what the bridge returned.
+impl super::batcher::Chunks for MidiEventVec {
+    fn begin(&mut self, _at: usize) {}
+
+    fn payload(&mut self, _frames: usize) -> BlockPayload {
+        BlockPayload::default()
+    }
+
+    fn midi_out(&mut self, events: &mut MidiEventVec, _chunk: usize) {
+        self.clear();
+        self.extend_from_slice(events);
+    }
+}
+
 /// `CHANNELS` planar channels of `BATCH_SIZE` frames: the buffers the
 /// batcher is handed, as the plugin node hands them. Fixed-size arrays so a
 /// test can borrow them as the batcher's slice-of-slices without allocating
@@ -289,7 +304,6 @@ fn a_sidechain_port_reaches_the_plugin() {
             BATCH_SIZE,
             &[&main, &main, &side],
             &mut out.outs(),
-            BlockPayload::default(),
             &mut midi_out,
         );
         wait_for_reply(&bridge, block + 1, std::time::Duration::from_secs(2));
@@ -356,7 +370,6 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
             BATCH_SIZE,
             &input.ins(),
             &mut output.outs(),
-            BlockPayload::default(),
             &mut midi_out,
         );
 
@@ -661,7 +674,6 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
             BATCH_SIZE,
             &input.ins(),
             &mut output.outs(),
-            BlockPayload::default(),
             &mut midi_out,
         );
 
@@ -778,7 +790,6 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
                 BATCH_SIZE,
                 &input.ins(),
                 &mut output.outs(),
-                BlockPayload::default(),
                 &mut midi_out,
             );
         }
@@ -846,7 +857,6 @@ fn drive_one_block(
         BATCH_SIZE,
         &input.ins(),
         &mut output.outs(),
-        BlockPayload::default(),
         midi_out,
     );
 }
@@ -1072,7 +1082,6 @@ fn a_late_reply_does_not_permanently_crash_the_bridge() {
         BATCH_SIZE,
         &input.ins(),
         &mut output.outs(),
-        BlockPayload::default(),
         &mut midi_out,
     );
 
@@ -1148,7 +1157,6 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
             BATCH_SIZE,
             &input.ins(),
             &mut output.outs(),
-            BlockPayload::default(),
             &mut midi_out,
         );
         stamps.push(midi_out.iter().map(|e| e.frame_offset).collect());

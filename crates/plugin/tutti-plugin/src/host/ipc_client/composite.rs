@@ -394,6 +394,13 @@ impl PluginBridge {
         self.audio.current_preset()
     }
 
+    /// Wait until every command queued so far has been handled and every
+    /// event it caused has reached the listener. See the audio bridge's
+    /// `settle`.
+    pub fn settle(&self) {
+        self.audio.settle()
+    }
+
     pub fn editor_capabilities(&self) -> EditorCapabilities {
         let Ok(mut guard) = self.gui.lock() else {
             return EditorCapabilities::default();

@@ -1,21 +1,21 @@
-//! [`Batcher`] — ships one chunk of planar audio to the plugin-server bridge
-//! and collects the one before it.
+//! [`Batcher`] — the pipeline between the plugin node and the plugin-server
+//! bridge: every chunk it ships is exactly [`chunk`](Batcher::chunk) frames,
+//! and the output is exactly one chunk late.
 //!
-//! [`process`](Batcher::process) stages a chunk's input channels into the
-//! shared-memory slab, submits it, and writes the previous chunk's output into
-//! the caller's buffers. The plugin node (`PluginClient<Bound>`'s `Node` impl)
-//! walks its block in chunks of at most [`chunk`](Batcher::chunk) frames and
-//! calls it once per chunk.
+//! [`process`](Batcher::process) takes a call's input into a FIFO and writes
+//! the call's output from a ring. When the FIFO fills, the chunk is staged
+//! into the shared-memory slab and submitted; when the ring's first frame is
+//! next needed, the chunk submitted last is collected into it.
 //!
 //! # Pipelined, never waiting
 //!
-//! Every call **submits chunk N and consumes chunk N−1's output**, never
-//! waiting for a reply. This replaced a synchronous version that spun on the
-//! audio thread, where each node's wait was individually reasonable — half its
-//! own block period — but the budgets *summed*: the graph runs nodes serially
-//! in one callback, so three stalled plugins spent 3 × 667 µs against a
-//! 1333 µs deadline. Parallelising the graph would not have helped; plugins in
-//! series are a dependency chain. The defect was the waiting.
+//! The batcher **submits chunk N and plays chunk N−1's output**, never waiting
+//! for a reply. This replaced a synchronous version that spun on the audio
+//! thread, where each node's wait was individually reasonable — half its own
+//! block period — but the budgets *summed*: the graph runs nodes serially in
+//! one callback, so three stalled plugins spent 3 × 667 µs against a 1333 µs
+//! deadline. Parallelising the graph would not have helped; plugins in series
+//! are a dependency chain. The defect was the waiting.
 //!
 //! Not waiting makes a stalled plugin cost zero, however many there are and
 //! whatever the graph's shape. The price is one chunk of latency per
@@ -23,6 +23,20 @@
 //! (the node's `Shape::latency`, through `PluginControls::declared_latency`)
 //! and so compensated rather than heard. This is what JACK, PipeWire and AUv3
 //! all do.
+//!
+//! # A FIFO, so every chunk is whole
+//!
+//! The calls the node is handed need not line up with chunks: a 480-frame
+//! device quantum rendered in 64-frame passes ends each callback on a 32-frame
+//! pass, and an export may render 100-frame blocks. Shipping each call as it
+//! came (a 36-frame submission, then a 64-frame one collecting it) dropped or
+//! zero-padded frames wherever consecutive lengths differed. So a call's input
+//! only ever fills the FIFO, a submission is always one whole chunk, and the
+//! output is read from the ring at the same position the input is written:
+//! output frame `t` is the plugin's output for input frame `t - chunk`, for
+//! any cut of the calls. When calls are whole chunks (a 64-frame graph) this
+//! is exactly the old behaviour: submit at the end of one call, collect at the
+//! start of the next.
 //!
 //! # A 64-frame pipeline, whatever the block
 //!
@@ -143,32 +157,60 @@ impl WireStorage {
     }
 }
 
-/// One chunk of audio between the plugin node and the plugin-server bridge.
-pub(crate) struct Batcher {
-    /// Total input ports (main + sidechain/aux input buses). Each port `ch` is
-    /// written to input-region channel `ch` (bus-ordered), so a graph edge
-    /// into the node's port 2 feeds the plugin's sidechain bus.
-    pub(super) inputs: usize,
-    pub(super) outputs: usize,
+/// What the plugin node gives the batcher per chunk: the chunk's payload, and
+/// where its MIDI-out goes.
+///
+/// A trait rather than arguments because a chunk and a call are not the same
+/// span (module docs, "A FIFO, so every chunk is whole"): the node is told
+/// where each chunk **begins** in the call that begins it, and is asked for
+/// its payload when the chunk is **submitted**, possibly a call later.
+pub(super) trait Chunks {
+    /// A chunk begins at frame `at` of this call (its first frame is the next
+    /// input frame the batcher takes).
+    fn begin(&mut self, at: usize);
+    /// The payload of the chunk being submitted now, `frames` long.
+    fn payload(&mut self, frames: usize) -> BlockPayload;
+    /// The plugin's MIDI-out drained with this submission, belonging to the
+    /// chunk submitted before it (`chunk` frames long).
+    fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize);
+}
 
+/// The pipeline between the plugin node and the plugin-server bridge: an
+/// input FIFO that ships a chunk when full, and an output ring the previous
+/// chunk's output is read from.
+pub(crate) struct Batcher {
     wire: WireStorage,
 
     /// The slab's per-chunk size: the most [`chunk`](Self::chunk) can be.
     ceiling: usize,
-    /// The chunk [`prepare`](Self::prepare) settled on: the frames one
+    /// The chunk [`prepare`](Self::prepare) settled on: the frames every
     /// submission carries, and so the pipeline's latency.
     chunk: usize,
+
+    /// Input frames not shipped yet, one row per input port (main plus
+    /// sidechain/aux buses, bus-ordered: row `ch` is the slab's input-region
+    /// channel `ch`, so a graph edge into the node's port 2 feeds the plugin's
+    /// sidechain bus), `ceiling` long.
+    fifo: Vec<Vec<f32>>,
+    /// The output of the chunk collected last, one row per output port.
+    ring: Vec<Vec<f32>>,
+    /// Frames of the current chunk taken so far (`0..chunk`): where the next
+    /// input frame goes, and which ring frame the next output reads.
+    pos: usize,
 
     /// The sequence number the next submitted chunk will carry. Starts at 1
     /// because 0 means "nothing published" in a freshly zeroed slab.
     next_seq: u64,
-    /// The chunk whose output is expected on the *next* call, or `None`
-    /// when nothing is in flight (start-up, and after a reset).
+    /// The chunk submitted and not collected yet, or `None` when nothing is
+    /// in flight (start-up, after a reset, after a failed submission).
     expect_seq: Option<u64>,
     /// `Some` only on an **offline fork** (`host::node::fork`): before
-    /// collecting chunk N−1, wait up to this long for the server to publish
-    /// it. See [`await_output`](Self::await_output).
+    /// collecting a chunk, wait up to this long for the server to publish it.
+    /// See [`await_output`](Self::await_output).
     offline_wait: Option<OfflineWait>,
+    /// Per-submission scratch the plugin's MIDI-out is drained into. Its
+    /// steady-state capacity makes the drain alloc-free.
+    midi_out: MidiEventVec,
 }
 
 /// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
@@ -180,38 +222,40 @@ struct OfflineWait {
 impl Batcher {
     /// A batcher for a plugin with these widths and wire format, over a slab
     /// whose chunks hold `ceiling` frames. Control thread: allocates the wire
-    /// scratch. The chunk starts at the ceiling; [`prepare`](Self::prepare)
-    /// narrows it to the graph's `MaxBlock`.
+    /// scratch, the FIFO and the ring. The chunk starts at the ceiling;
+    /// [`prepare`](Self::prepare) narrows it to the graph's `MaxBlock`.
     pub(super) fn new(inputs: usize, outputs: usize, format: SampleFormat, ceiling: usize) -> Self {
         Self {
-            inputs,
-            outputs,
             wire: WireStorage::new(format, ceiling),
             ceiling,
             chunk: ceiling,
+            fifo: vec![vec![0.0; ceiling]; inputs],
+            ring: vec![vec![0.0; ceiling]; outputs],
+            pos: 0,
             next_seq: 1,
             expect_seq: None,
             offline_wait: None,
+            midi_out: MidiEventVec::new(),
         }
     }
 
     /// Settle the chunk for blocks of up to `max_block` frames: the slab's
     /// ceiling, or `max_block` when that is smaller — a graph that never hands
     /// the node more than 32 frames gets a 32-frame pipeline, and one handed
-    /// 1024 still ships 64-frame chunks (module docs). Drops anything in
-    /// flight, as a re-prepare starts the node over.
+    /// 1024 still ships 64-frame chunks (module docs). Starts the pipeline
+    /// over, as a re-prepare starts the node over.
     pub(super) fn prepare(&mut self, max_block: MaxBlock) {
         self.chunk = self.ceiling.min(max_block.get()).max(1);
         self.reset();
     }
 
-    /// The frames one submission carries at most: the node walks its block in
-    /// pieces this long.
+    /// The frames every submission carries.
     pub(super) fn chunk(&self) -> usize {
         self.chunk
     }
 
-    /// [`chunk`](Self::chunk) as the latency the pipeline adds: one chunk.
+    /// [`chunk`](Self::chunk) as the latency it adds: exactly one chunk,
+    /// whatever the blocks (module docs).
     pub(super) fn pipeline_latency(&self) -> Samples {
         Samples(self.chunk)
     }
@@ -224,9 +268,9 @@ impl Batcher {
     /// worker with no deadline, as fast as the plugin answers — so there the
     /// same rule is the defect: a render loop outpaces the subprocess, every
     /// chunk it has not published yet reads as silence, and the export is
-    /// mostly silent with no error. Waiting keeps the pipelined shape (submit
-    /// N, collect N−1) and so the declared one-chunk latency, and makes the
-    /// output a function of the input rather than of scheduling.
+    /// mostly silent with no error. Waiting keeps the pipelined shape and so
+    /// the declared one-chunk latency, and makes the output a function of the
+    /// input rather than of scheduling.
     ///
     /// The budget and the latches are the fork's [`ForkWatch`]: it records a
     /// miss or a dead server there, and its health probe reports them.
@@ -287,7 +331,8 @@ impl Batcher {
         }
     }
 
-    /// Drop the in-flight chunk and start collecting fresh.
+    /// Drop the chunk in flight, the frames taken towards the next one and
+    /// the output not yet played, and start collecting fresh.
     ///
     /// **`next_seq` is deliberately not reset.** This is the load-bearing
     /// subtlety of the whole pipeline: if the count restarted at 1, a chunk
@@ -301,29 +346,10 @@ impl Batcher {
     /// audio from arriving.
     pub(super) fn reset(&mut self) {
         self.expect_seq = None;
-    }
-
-    /// Unpack a [`BlockPayload`] into the positional `bridge.submit` call. The
-    /// one place the host-side aggregate meets the IPC boundary; `midi_out` is
-    /// the caller-owned sink the plugin's MIDI-out is drained into.
-    fn dispatch(
-        &self,
-        bridge: &PluginBridge,
-        seq: u64,
-        size: usize,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) -> bool {
-        bridge.submit(
-            seq,
-            size,
-            payload.midi,
-            payload.params,
-            payload.note_expression,
-            payload.harmony,
-            payload.transport,
-            midi_out,
-        )
+        self.pos = 0;
+        for row in self.fifo.iter_mut().chain(self.ring.iter_mut()) {
+            row.fill(0.0);
+        }
     }
 
     /// Whether chunk `expect_seq`'s output is really available to read.
@@ -341,92 +367,114 @@ impl Batcher {
         bridge.audio_buffer().has_output(seq).then_some(seq)
     }
 
-    /// Finish submitting chunk `seq`: publish the input slot and hand the chunk
-    /// to the bridge.
+    /// Fill the ring with the output of the chunk in flight: the one submitted
+    /// last, whose input the ring's frames were played against a chunk ago.
+    /// Silence when nothing is collectable (start-up, a reset, a crashed
+    /// bridge, a chunk the server never answered).
     ///
-    /// The publish happens **exactly once, after the last channel**. A
-    /// per-channel publish would let the server observe the slot as valid while
-    /// later channels are still being copied, and half of this chunk spliced
-    /// onto half of the previous one sounds almost right — far worse than
-    /// silence.
-    ///
-    /// `payload` bundles this chunk's host-produced inputs (see
-    /// `crate::host::node::BlockPayload`).
-    fn submit(
-        &mut self,
-        bridge: &PluginBridge,
-        seq: u64,
-        size: usize,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) -> bool {
-        bridge.audio_buffer().publish_input(seq);
-        if !self.dispatch(bridge, seq, size, payload, midi_out) {
-            return false;
+    /// Called when the ring's first frame is needed and not before, so a chunk
+    /// submitted at the end of one call has until the next call's output to
+    /// be answered — the time the pipeline exists to give the plugin.
+    fn collect(&mut self, bridge: &PluginBridge) {
+        self.await_output(bridge);
+        let chunk = self.chunk;
+        match self.collectable(bridge) {
+            Some(seq) => {
+                for (ch, row) in self.ring.iter_mut().enumerate() {
+                    self.wire.recv(bridge, seq, ch, &mut row[..chunk]);
+                }
+            }
+            None => {
+                for row in &mut self.ring {
+                    row[..chunk].fill(0.0);
+                }
+            }
         }
-        self.next_seq += 1;
-        self.expect_seq = Some(seq);
-        true
+        self.expect_seq = None;
     }
 
-    /// Ship one chunk: `input` (one slice per input port, each at least `size`
-    /// frames) goes to the plugin, and the previous chunk's output lands in
-    /// `output` (one slice per output port, likewise) — silence when nothing is
-    /// collectable.
-    ///
-    /// `size` is at most [`chunk`](Self::chunk); the caller walks a longer
-    /// block in chunks. An input port past `input.len()` is not staged (its
-    /// slab slot keeps what it held, zero for a fresh slab); an output port
-    /// past `output.len()` is not written.
-    pub(super) fn process(
-        &mut self,
-        bridge: &PluginBridge,
-        size: usize,
-        input: &[&[f32]],
-        output: &mut [&mut [f32]],
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) {
-        debug_assert!(
-            size <= self.chunk,
-            "a {size}-frame chunk past the prepared {}",
-            self.chunk
-        );
-        // Decide what is collectable BEFORE overwriting the input ring with
-        // this chunk — at ring depth 2, chunk N's input slot is the one chunk
-        // N-2 used.
-        self.await_output(bridge);
-        let collected = self.collectable(bridge);
-
+    /// Ship the full FIFO as the next chunk: stage every input port, publish
+    /// the input slot **exactly once, after the last channel** (a per-channel
+    /// publish would let the server observe the slot as valid while later
+    /// channels are still being copied, and half of this chunk spliced onto
+    /// half of the previous one sounds almost right — far worse than
+    /// silence), and hand the chunk and its payload to the bridge.
+    fn submit(&mut self, bridge: &PluginBridge, host: &mut impl Chunks) {
+        let chunk = self.chunk;
         let seq = self.next_seq;
         let mut staged = true;
-        for (ch, samples) in input.iter().enumerate().take(self.inputs) {
-            if self.wire.stage(bridge, seq, ch, &samples[..size]).is_err() {
+        for (ch, row) in self.fifo.iter().enumerate() {
+            if self.wire.stage(bridge, seq, ch, &row[..chunk]).is_err() {
                 staged = false;
                 break;
             }
         }
-        let submitted = staged && self.submit(bridge, seq, size, payload, midi_out);
-
-        let outs = self.outputs;
-        match collected {
-            Some(collect_seq) => {
-                for (ch, out) in output.iter_mut().enumerate().take(outs) {
-                    self.wire.recv(bridge, collect_seq, ch, &mut out[..size]);
-                }
-            }
-            // Nothing to collect: start-up, after a reset, a crashed bridge, or
-            // a chunk the server never answered. All four are silence.
-            None => {
-                for out in output.iter_mut().take(outs) {
-                    out[..size].fill(0.0);
-                }
-            }
-        }
-
-        if !submitted {
-            // The chunk we just failed to submit will never be collectable.
+        if !staged {
+            // The chunk will never be collectable; its output plays as silence.
             self.expect_seq = None;
+            return;
+        }
+        bridge.audio_buffer().publish_input(seq);
+        let p = host.payload(chunk);
+        let submitted = bridge.submit(
+            seq,
+            chunk,
+            p.midi,
+            p.params,
+            p.note_expression,
+            p.harmony,
+            p.transport,
+            &mut self.midi_out,
+        );
+        if submitted {
+            self.next_seq += 1;
+            self.expect_seq = Some(seq);
+        } else {
+            self.expect_seq = None;
+        }
+        host.midi_out(&mut self.midi_out, chunk);
+    }
+
+    /// Take `frames` frames of `input` (one slice per input port) and write
+    /// `frames` frames of `output` (one slice per output port): output frame
+    /// `t` is the plugin's output for input frame `t - chunk`, exactly, however
+    /// the calls are cut.
+    ///
+    /// An input port past `input.len()` is taken as silence; an output port
+    /// past `output.len()` is not written.
+    pub(super) fn process(
+        &mut self,
+        bridge: &PluginBridge,
+        frames: usize,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        host: &mut impl Chunks,
+    ) {
+        let chunk = self.chunk;
+        let mut i = 0;
+        while i < frames {
+            if self.pos == 0 {
+                // A new chunk: its output-side frames need the chunk before it.
+                self.collect(bridge);
+                host.begin(i);
+            }
+            let n = (chunk - self.pos).min(frames - i);
+            let (at, to) = (self.pos, self.pos + n);
+            for (row, out) in self.ring.iter().zip(output.iter_mut()) {
+                out[i..i + n].copy_from_slice(&row[at..to]);
+            }
+            for (ch, row) in self.fifo.iter_mut().enumerate() {
+                match input.get(ch) {
+                    Some(inp) => row[at..to].copy_from_slice(&inp[i..i + n]),
+                    None => row[at..to].fill(0.0),
+                }
+            }
+            self.pos = to;
+            i += n;
+            if self.pos == chunk {
+                self.submit(bridge, host);
+                self.pos = 0;
+            }
         }
     }
 }

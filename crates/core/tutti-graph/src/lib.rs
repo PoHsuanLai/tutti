@@ -126,6 +126,10 @@
 //! - [`Editor::replace`] and [`Fade`] — swapping a running unit with a
 //!   crossfade: both units run for the fade, the old one retires on the
 //!   control thread, and a replace during a fade waits for it.
+//! - [`GraphSpec::connect_param`] and [`Io::param`] — compiler-owned param
+//!   modulation: a node's declared params ([`Shape::params`]) summed with
+//!   their sources onto the node's own control, clamped, per frame; an
+//!   unconnected param reads its base, never 0 (design doc 013 item 6).
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
 //! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
 //!   [`pure`](Legacy::pure), with a `Net::set` replacement
@@ -191,6 +195,7 @@ mod io;
 mod kernels;
 mod legacy;
 mod node;
+mod param;
 mod plan;
 mod reference;
 mod spec;
@@ -219,9 +224,15 @@ pub use node::{
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
+pub use param::{
+    ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
+    ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK,
+    SHAPE_LUT_LEN,
+};
 pub use plan::{
-    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, Placement,
-    Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT, ZERO_SLOT,
+    Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,
+    ParamSlot, ParamSourceOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, EMPTY_SLOT,
+    ZERO_SLOT,
 };
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
@@ -238,7 +249,7 @@ pub fn verify(plan: &Plan) -> Result<(), VerifyError> {
 /// running before it): each names a key the delta replaces, once, and the
 /// unit it fades from has the shape of the one it fades to in everything but
 /// its tail — ports, latency, in-place acceptance, event resolution, event
-/// capacity.
+/// capacity, declared params.
 /// [`Editor::package`] runs this on every delta it is handed.
 pub fn verify_fades(prev: Option<&Plan>, plan: &Plan, delta: &Delta) -> Result<(), VerifyError> {
     compile::verify::verify_fades(prev, plan, delta)

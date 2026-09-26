@@ -61,8 +61,9 @@ use tutti_core::{
     Tail,
 };
 use tutti_graph::{
-    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, NodeParts, Prepare, Resolution,
-    Transport,
+    CommitError, Editor, Executor, Fade, GraphInvalid, Legacy, LegacyControls, NodeParts,
+    ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping, Prepare, Resolution, Transport,
+    MAX_PARAM_SOURCES,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -111,6 +112,12 @@ impl AudioUnit for Boxed {
     }
     fn render_fault(&self) -> Option<std::sync::Arc<dyn tutti_core::RenderFault>> {
         self.0.render_fault()
+    }
+    fn param_feed(&mut self) -> Option<&mut tutti_core::ParamFeed> {
+        self.0.param_feed()
+    }
+    fn param_base(&self, k: usize) -> Option<f32> {
+        self.0.param_base(k)
     }
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.0.set_sample_rate(sample_rate);
@@ -760,6 +767,87 @@ impl NativeGraph {
         self.edited = true;
     }
 
+    // --- Param modulation (design doc 013 item 6) ---
+
+    /// Whether `node` declares `param` modulatable (its shape's params).
+    pub(crate) fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
+        self.shape(node)
+            .is_some_and(|s| s.params.index_of(param).is_some())
+    }
+
+    /// Drive `node`'s `param` from exactly `sources` (each a node's output 0,
+    /// shaped), clamped to `range`: replaces whatever modulated it. Refused,
+    /// touching nothing, with the error the commit would otherwise fail on
+    /// — every commit after it, since the same spec fails the same way — for
+    /// a NaN bound, more than `MAX_PARAM_SOURCES` sources, or one node listed
+    /// twice (which the spec could only keep once).
+    pub(crate) fn set_param_mod(
+        &mut self,
+        node: AudioNode,
+        param: UnitParam,
+        sources: &[(AudioNode, ParamShaping)],
+        range: ParamRange,
+    ) -> Result<(), GraphInvalid> {
+        let at = ParamIn {
+            node: key(node),
+            param,
+        };
+        if range.min.is_nan() || range.max.is_nan() {
+            return Err(GraphInvalid::BadParamRange { at, range });
+        }
+        if sources.len() > MAX_PARAM_SOURCES {
+            return Err(GraphInvalid::TooManyParamSources {
+                at,
+                count: sources.len(),
+            });
+        }
+        if sources
+            .iter()
+            .enumerate()
+            .any(|(i, (n, _))| sources[..i].iter().any(|(m, _)| m == n))
+        {
+            return Err(GraphInvalid::UnsortedParamSources { at });
+        }
+        let spec = self.editor.spec_mut();
+        spec.params.remove(&at);
+        for (from, shaping) in sources {
+            spec.connect_param(
+                at,
+                ParamFrom::Audio(OutPort {
+                    node: key(*from),
+                    port: 0,
+                }),
+                shaping.clone(),
+            );
+        }
+        spec.set_param_range(at, range);
+        self.edited = true;
+        Ok(())
+    }
+
+    /// Stop modulating `node`'s `param`: it reads its own control again.
+    pub(crate) fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
+        let at = ParamIn {
+            node: key(node),
+            param,
+        };
+        if self.editor.spec_mut().params.remove(&at).is_some() {
+            self.edited = true;
+        }
+    }
+
+    /// How `node`'s `param` is modulated, as the graph value holds it.
+    pub(crate) fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<ParamMod> {
+        self.editor
+            .spec()
+            .params
+            .get(&ParamIn {
+                node: key(node),
+                param,
+            })
+            .cloned()
+    }
+
     pub(crate) fn output_source(&self, channel: usize) -> GraphSource {
         self.editor
             .spec()
@@ -1191,9 +1279,11 @@ mod tests {
     ///   (an export) runs its own modulation — and the live render shows it is
     ///   there, so the fork's plain base is not the driver doing nothing.
     ///
-    /// Not a path here, and listed in doc 013 as a known export limitation:
-    /// the audio-rate base (`AudioRateChains::base_cell`), a cell the chain's
-    /// `AtomicSourceNode` reads, which takes no `Setting`.
+    /// An audio-rate modulated param is the first path: the graph's param
+    /// modulation rides on the node's own control (design doc 013 item 6),
+    /// so its authored base goes through `set_param` like any unmodulated
+    /// write. (It used to live in a base chain's cell no `Setting` reached,
+    /// which a fork could not see.)
     ///
     /// Mutations (run; each fails its channel):
     /// - `write_param`'s unmodulated arm not going through `graph.set_param`

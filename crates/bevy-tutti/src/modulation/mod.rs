@@ -265,7 +265,7 @@ pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<audio_rate::AudioRateChains>();
+        app.init_resource::<audio_rate::AudioRateRoutes>();
         app.init_resource::<ModulationMatrix>()
             .init_resource::<ModTargetRegistry>()
             .init_resource::<CollectedModSources>()
@@ -303,10 +303,10 @@ impl Plugin for TuttiModulationPlugin {
                     .after(ModSourceSystems::Collect)
                     .before(GraphReconcileSystems::Params),
                 drive.in_set(GraphReconcileSystems::Params),
-                // Audio-rate delivery builds a *graph*, so it runs in the graph
-                // reconcile phase rather than beside `rebuild`. Source nodes
-                // first: a shaper cannot be pointed at a node that does not
-                // exist yet.
+                // Audio-rate delivery declares *graph* modulation, so it runs
+                // in the graph reconcile phase rather than beside `rebuild`.
+                // Source nodes first: a modulation cannot name a node that
+                // does not exist yet.
                 audio_rate::ensure_source_nodes
                     .before(audio_rate::reconcile_audio_rate)
                     .in_set(GraphReconcileSystems::Spawn),

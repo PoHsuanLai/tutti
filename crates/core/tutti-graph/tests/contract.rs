@@ -18,12 +18,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 use tutti_graph::contract::{
-    Detect, Emitter, Excite, Lookahead, Path, Pulse, Row, MAX_BLOCK, OFFSETS, SAMPLE_RATE,
+    Detect, Emitter, Excite, Lookahead, ParamEcho, Path, Pulse, Row, MAX_BLOCK, OFFSETS,
+    SAMPLE_RATE,
 };
 use tutti_graph::{
     contract_tests, Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Ump,
 };
-use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail};
+use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
 
 /// A MIDI 1.0 note-on, middle C: the event every event row is excited by.
 const NOTE_ON: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
@@ -91,6 +92,29 @@ fn lookahead_row() -> Row {
     .expect_latency(Samples(45))
 }
 
+/// Compiler-owned param modulation (doc 013 item 6): a step in a modulator
+/// at frame `F` reaches the node's param at `F + arrival`, exactly — on the
+/// PDC path through the compiler's delay of the early param source.
+///
+/// Mutations (run): in `compile`, treat a param source's gap as zero (no
+/// `DelayKey::ParamAudio` delay) → `behind_pdc`, both recompile paths and
+/// the PDC half of every `blocks_*` path fail, `direct` passes. In
+/// `ParamState::port`, write the sum one frame late (`out[i]` from source
+/// frame `i - 1`) → every path fails. In `Executor::rebuild`, carry no ring
+/// across a commit → both recompile paths fail.
+fn param_row() -> Row {
+    Row::new(
+        "ParamEcho on Cutoff",
+        || Box::new(ParamEcho::new(UnitParam::Cutoff)),
+        Excite::Param {
+            param: UnitParam::Cutoff,
+            amplitude: 0.5,
+        },
+        Detect::Exact(vec![0.5]),
+    )
+}
+
+contract_tests!(audio param_echo => param_row());
 contract_tests!(event pulse => pulse_row());
 contract_tests!(event latent_pulse => latent_pulse_row());
 contract_tests!(event chunked_pulse => chunked_pulse_row());

@@ -100,6 +100,13 @@ impl ParamRamp {
         (self.addr == ParamAddr::Id(id)).then_some(self.target)
     }
 
+    /// The target as the wire carries it, whatever the unit: for the
+    /// graph's own param modulation, which is erased over the unit as the
+    /// port it drives is.
+    pub(crate) fn raw_target(&self) -> f32 {
+        self.target
+    }
+
     /// How long the ramp takes.
     pub fn duration(&self) -> Samples {
         self.duration

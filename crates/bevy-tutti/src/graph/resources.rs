@@ -406,6 +406,50 @@ impl AudioGraphRes {
         self.write().set_source(node, port, source);
     }
 
+    // --- Param modulation ---
+
+    /// Whether `node` declares `param` modulatable by the graph (design doc
+    /// 013 item 6): a unit with a `ParamFeed` that lists it. False for a node
+    /// not in the graph.
+    pub fn declares_param(&self, node: AudioNode, param: UnitParam) -> bool {
+        self.read().declares_param(node, param)
+    }
+
+    /// Drive `node`'s declared `param` from exactly `sources` — each a node's
+    /// output 0, through its shaping — summed onto the param's own control
+    /// (its base) and clamped to `range`, per frame, by the graph's fused
+    /// param step. Replaces whatever modulated it; the change crossfades
+    /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
+    /// commit, like any edge.
+    ///
+    /// Refused, changing nothing, with the error the commit would otherwise
+    /// fail on (every commit after it, too): a NaN bound
+    /// (`GraphInvalid::BadParamRange`), more than
+    /// [`MAX_PARAM_SOURCES`](tutti_graph::MAX_PARAM_SOURCES) sources
+    /// (`TooManyParamSources`), or one node listed twice
+    /// (`UnsortedParamSources`: sum its shapings into one first).
+    pub fn set_param_mod(
+        &mut self,
+        node: AudioNode,
+        param: UnitParam,
+        sources: &[(AudioNode, tutti_graph::ParamShaping)],
+        range: tutti_graph::ParamRange,
+    ) -> Result<(), tutti_graph::GraphInvalid> {
+        self.write().set_param_mod(node, param, sources, range)
+    }
+
+    /// Stop modulating `node`'s `param`: it reads its own control again,
+    /// declicked.
+    pub fn clear_param_mod(&mut self, node: AudioNode, param: UnitParam) {
+        self.write().clear_param_mod(node, param);
+    }
+
+    /// How `node`'s `param` is modulated, as the graph value holds it:
+    /// `None` when nothing modulates it.
+    pub fn param_mod(&self, node: AudioNode, param: UnitParam) -> Option<tutti_graph::ParamMod> {
+        self.read().param_mod(node, param)
+    }
+
     /// What feeds global output `channel`.
     pub fn output_source(&self, channel: usize) -> GraphSource {
         self.read().output_source(channel)

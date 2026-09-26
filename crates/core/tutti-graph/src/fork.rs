@@ -37,16 +37,21 @@
 //!
 //! - **The graph value** as the editor holds it — its [`spec`](Editor::spec),
 //!   including edits not yet committed, which is what the next commit would
-//!   install. Wiring, event edges, resolution marks and parameter values are
-//!   copied; generations start again at 0 in the new editor.
+//!   install. Wiring, event edges, resolution marks, param modulation and
+//!   parameter values are copied; generations start again at 0 in the new
+//!   editor. A modulated param starts at its modulated value on the fork's
+//!   first frame (no declick, `src/param.rs`), and an event source driving
+//!   one starts at the ramp value the live unit holds, a ramp under way
+//!   carrying on from where it is.
 //! - **Fresh units** from each node's fork source, prepared for the fork's
 //!   own [`Prepare`] (a render may run at a different rate or block from the
 //!   device). Latency and tail are probed again at that `Prepare`, as a
 //!   re-prepare does, so a figure set with
 //!   [`set_latency`](Editor::set_latency) is not carried over — the unit
 //!   reports it again at the fork's rate.
-//! - **No state.** PDC delay rings, feedback edges' captured blocks and event
-//!   FIFOs belong to the executor, and a fork gets a new one: it starts
+//! - **No state** but those ramps. PDC delay rings, feedback edges' captured
+//!   blocks and event FIFOs belong to the executor, and a fork gets a new
+//!   one: it starts
 //!   silent, exactly as a `Net` did after `net.reset()`. A feedback loop in a
 //!   fork does not carry the live loop's circulating signal. The executor's
 //!   clock starts at frame 0, and no scheduled command is copied.
@@ -534,9 +539,27 @@ impl Editor {
             .filter(|((at, _), _)| keys.contains(&at.node))
             .map(|(k, r)| (*k, *r))
             .collect();
+        // A modulated param's sources are upstream of its node too
+        // (`upstream` walks them), so the fork modulates it as the live
+        // graph does, riding on the forked unit's own control.
+        fork.params = live
+            .params
+            .iter()
+            .filter(|(at, _)| keys.contains(&at.node))
+            .map(|(at, m)| (*at, m.clone()))
+            .collect();
         for (key, node) in fork.topology.nodes.iter_mut() {
             node.params = live.topology.nodes[key].params.clone();
         }
+        // The event sources' ramps as the live units hold them, so a held
+        // automation value is where the live graph has it from the fork's
+        // first frame (a ramp under way carries on from where it is).
+        editor.seed_params(
+            keys.iter()
+                .flat_map(|&key| self.param_ramps(key))
+                .filter(|(_, ramps)| !ramps.is_empty())
+                .collect(),
+        );
         editor.commit().map_err(ForkError::Commit)?;
         executor.apply_pending();
         editor.collect();
@@ -568,7 +591,7 @@ impl Editor {
     }
 
     /// `roots` and every node that feeds them, walking back along audio,
-    /// feedback and event edges.
+    /// feedback, event and param edges.
     fn upstream(&self, roots: impl IntoIterator<Item = NodeKey>) -> BTreeSet<NodeKey> {
         let spec = self.spec();
         let mut seen: BTreeSet<NodeKey> = roots.into_iter().collect();
@@ -597,7 +620,12 @@ impl Editor {
                     },
                 )
                 .flat_map(|(_, sources)| sources.iter().map(|e| e.from().node));
-            for from in audio.chain(events).collect::<Vec<_>>() {
+            let params = spec
+                .params
+                .iter()
+                .filter(|(at, _)| at.node == node)
+                .flat_map(|(_, m)| m.sources.iter().map(|s| s.from.node()));
+            for from in audio.chain(events).chain(params).collect::<Vec<_>>() {
                 if seen.insert(from) {
                     stack.push(from);
                 }

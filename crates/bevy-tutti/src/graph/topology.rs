@@ -147,10 +147,6 @@ pub fn build(
     nodes: &Query<(Entity, &AudioNode)>,
     sinks: &Query<(Entity, &PortSources)>,
     master: &MasterSources,
-    // Only the audio-rate modulation reconciler authors shaping, and that
-    // reconciler is the `modulation` feature's. Without it no shaper exists, so
-    // the parameter would name a component nothing can spawn.
-    #[cfg(feature = "modulation")] shaping: &Query<&crate::modulation::audio_rate::ShaperShaping>,
 ) -> Topology {
     let mut topology = Topology {
         inputs: ChannelLayout::from_count(graph.inputs() as u16),
@@ -161,20 +157,7 @@ pub fn build(
         if !graph.contains(*node) {
             continue;
         }
-        // `mut` only under `modulation`: without that feature no shaper exists,
-        // so nothing writes to the spec after it is built.
-        #[cfg_attr(not(feature = "modulation"), allow(unused_mut))]
-        let mut spec = spec_of(graph, *node);
-        // A shaper's identity is not observable from its unit: `ParamShaperNode`
-        // bakes depth, polarity and curve into a LUT and exposes no accessor, so
-        // two shapers built from different sliders present identically here.
-        // The authoring reconciler records what it built on the entity, and this
-        // lifts it into the value — which is what lets "did this route's shaping
-        // move" be answered by comparing topologies rather than by a sidecar.
-        #[cfg(feature = "modulation")]
-        if let Ok(s) = shaping.get(entity) {
-            put_shaping(&mut spec, s.0);
-        }
+        let spec = spec_of(graph, *node);
         topology.nodes.insert(key_of(entity), spec);
     }
 
@@ -237,86 +220,6 @@ pub fn build(
     };
 
     topology
-}
-
-#[cfg(feature = "modulation")]
-/// Record a shaper's shaping in its [`NodeSpec`], losslessly.
-///
-/// Separate params rather than one opaque id, because the value is compared —
-/// `Topology` derives `Eq` — and a hash would make two different shapings
-/// collide into "unchanged", which is the exact bug class this slice removes.
-///
-/// **Three params for most curves, five for `Bezier`.** Depth, polarity and
-/// curve are always written. `CurveType::Bezier(f32, f32)` carries a payload, so
-/// a discriminant alone would be lossy the same way a hash is: its two control
-/// points ride as `shaper.curve.a` / `shaper.curve.b`, which are absent for
-/// every other curve. A spec's param count is therefore not fixed, and nothing
-/// should key on it.
-///
-/// The names are namespaced so they cannot be confused with a param a node
-/// genuinely exposes: nothing in the catalog builds a node from these, and
-/// `bevy-tutti` builds no nodes from specs at all (see the module docs).
-fn put_shaping(spec: &mut NodeSpec, shaping: tutti_nodes::ParamModShaping) {
-    use tutti_types::graph::ParamValue;
-
-    spec.params.insert(
-        "shaper.depth".into(),
-        ParamValue::Scalar(shaping.depth.get()),
-    );
-    spec.params.insert(
-        "shaper.polarity".into(),
-        ParamValue::Index(match shaping.polarity {
-            tutti_mod::Polarity::Bipolar => 0,
-            tutti_mod::Polarity::Unipolar => 1,
-        }),
-    );
-    // Discriminant plus payload. `Bezier`'s two control points are what make a
-    // bare discriminant lossy, so they are carried beside it rather than folded
-    // into it.
-    let (curve, bezier) = curve_key(shaping.curve);
-    spec.params
-        .insert("shaper.curve".into(), ParamValue::Index(curve));
-    if let Some((a, b)) = bezier {
-        spec.params
-            .insert("shaper.curve.a".into(), ParamValue::Scalar(a));
-        spec.params
-            .insert("shaper.curve.b".into(), ParamValue::Scalar(b));
-    }
-}
-
-#[cfg(feature = "modulation")]
-/// A `CurveType`'s stable discriminant, plus its `Bezier` payload when it has
-/// one.
-///
-/// Written as an exhaustive match rather than a cast so that adding a variant
-/// upstream is a compile error here, instead of silently sharing a number with
-/// an existing curve — which would make two different shapings compare equal.
-fn curve_key(curve: tutti_mod::CurveType) -> (u32, Option<(f32, f32)>) {
-    use tutti_mod::CurveType as C;
-    match curve {
-        C::Linear => (0, None),
-        C::Exponential => (1, None),
-        C::Logarithmic => (2, None),
-        C::SCurve => (3, None),
-        C::Stepped => (4, None),
-        C::Bezier(a, b) => (5, Some((a, b))),
-        C::Elastic => (6, None),
-        C::Bounce => (7, None),
-        C::Back => (8, None),
-        C::Circular => (9, None),
-        C::QuadIn => (10, None),
-        C::QuadOut => (11, None),
-        C::QuadInOut => (12, None),
-        C::CubicIn => (13, None),
-        C::CubicOut => (14, None),
-        C::CubicInOut => (15, None),
-        C::QuartIn => (16, None),
-        C::QuartOut => (17, None),
-        C::QuartInOut => (18, None),
-        C::QuintIn => (19, None),
-        C::QuintOut => (20, None),
-        C::QuintInOut => (21, None),
-    }
 }
 
 /// Bring the engine into line with the value, and say whether anything moved.

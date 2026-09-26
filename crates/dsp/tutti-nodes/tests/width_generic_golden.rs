@@ -67,6 +67,12 @@ struct Case {
     name: &'static str,
     node: Box<dyn AudioUnit>,
     inputs: Vec<Vec<f32>>,
+    /// Per param of the node's feed, its values over the render when fed —
+    /// what the graph's modulation hands a `Legacy` unit. Empty: nothing fed.
+    /// (These were extra input channels, `with_param_inputs`' ports, when the
+    /// goldens were captured; the values and the DSP that reads them are
+    /// unchanged, so the pins are too.)
+    params: Vec<Option<Vec<f32>>>,
     automation: Option<Automation>,
 }
 
@@ -75,6 +81,7 @@ fn case(name: &'static str, node: impl AudioUnit + 'static, inputs: Vec<Vec<f32>
         name,
         node: Box::new(node),
         inputs,
+        params: Vec::new(),
         automation: None,
     }
 }
@@ -112,20 +119,19 @@ fn cases() -> Vec<Case> {
             .with_gain_db(-4.0),
         noise_channels(6),
     ));
-    let mut inputs = noise_channels(2);
-    inputs.push(sweep(200.0, 8_000.0));
-    v.push(case(
-        "svf_stereo_swept",
-        SvfFilterNode::<f64>::with_param_inputs(
-            ChannelLayout::STEREO,
-            SvfType::LowPass,
-            1_000.0,
-            0.707,
-            true,
-            false,
-        ),
-        inputs,
-    ));
+    v.push(Case {
+        params: vec![Some(sweep(200.0, 8_000.0)), None],
+        ..case(
+            "svf_stereo_swept",
+            SvfFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                SvfType::LowPass,
+                1_000.0,
+                0.707,
+            ),
+            noise_channels(2),
+        )
+    });
     let node =
         SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::LowPass, 500.0, 0.8);
     let automation = automate(node.frequency(), |k| 300.0 + 700.0 * (k % 5) as f32);
@@ -148,21 +154,19 @@ fn cases() -> Vec<Case> {
         LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP12, 1_500.0, 0.3),
         noise_channels(6),
     ));
-    let mut inputs = noise_channels(2);
-    inputs.push(sweep(200.0, 8_000.0));
-    v.push(case(
-        "ladder_stereo_swept",
-        LadderFilterNode::<f64>::with_param_inputs(
-            ChannelLayout::STEREO,
-            LadderType::LP24,
-            1_000.0,
-            0.6,
-            true,
-            false,
-            false,
-        ),
-        inputs,
-    ));
+    v.push(Case {
+        params: vec![Some(sweep(200.0, 8_000.0)), None, None],
+        ..case(
+            "ladder_stereo_swept",
+            LadderFilterNode::<f64>::with_channels(
+                ChannelLayout::STEREO,
+                LadderType::LP24,
+                1_000.0,
+                0.6,
+            ),
+            noise_channels(2),
+        )
+    });
     let node =
         LadderFilterNode::<f64>::with_channels(ChannelLayout::STEREO, LadderType::LP24, 800.0, 0.5);
     let automation = automate(node.drive(), |k| 1.0 + (k % 4) as f32);
@@ -183,16 +187,16 @@ fn cases() -> Vec<Case> {
     let node = DelayLineNode::with_channels(6usize, 0.5, 0.011, 0.45);
     node.set_mix(0.6);
     v.push(case("delay_wide6", node, noise_channels(6)));
-    let mut inputs = noise_channels(2);
-    inputs.push((0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect());
-    inputs.push(
-        (0..LEN)
-            .map(|i| 0.002 + 0.01 * (i as f32 / LEN as f32))
-            .collect(),
-    );
-    let node = DelayLineNode::with_param_inputs(ChannelLayout::STEREO, 0.5, 0.01, 0.4, true, true);
+    let feedback = (0..LEN).map(|i| 0.9 * (i as f32 / LEN as f32)).collect();
+    let time = (0..LEN)
+        .map(|i| 0.002 + 0.01 * (i as f32 / LEN as f32))
+        .collect();
+    let node = DelayLineNode::with_channels(ChannelLayout::STEREO, 0.5, 0.01, 0.4);
     node.set_cross_feedback(0.2);
-    v.push(case("delay_stereo_ports", node, inputs));
+    v.push(Case {
+        params: vec![Some(feedback), Some(time)],
+        ..case("delay_stereo_ports", node, noise_channels(2))
+    });
     let n = 6usize;
     let mut ring = vec![0.0f32; n * n];
     for c in 0..n {
@@ -281,6 +285,15 @@ fn render(case: &mut Case) -> Vec<Vec<f32>> {
         for (c, sig) in case.inputs.iter().enumerate() {
             for i in 0..n {
                 ib.set_f32(c, i, sig[pos + i]);
+            }
+        }
+        if !case.params.is_empty() {
+            let feed = node.param_feed().expect("a fed case has a feed");
+            for (k, p) in case.params.iter().enumerate() {
+                match p {
+                    Some(v) => feed.feed(k, &v[pos..pos + n]),
+                    None => feed.clear(k),
+                }
             }
         }
         node.process(n, &ib.buffer_ref(), &mut ob.buffer_mut());

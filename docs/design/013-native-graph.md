@@ -1185,9 +1185,9 @@ nothing to move):
 | `PhaserNode` | tutti-nodes | rate, depth, feedback, mix | detaches all | yes | `phaser` |
 | `ConvolverNode` | tutti-nodes | mix, gain (the IR is read-only) | detaches both | yes | `convolver` |
 | `BusStripNode` | tutti-nodes | volume, pan, mute flag | detaches all, fresh mute | yes | `bus_strip` |
-| `ParamSumNode` | tutti-nodes | clamp bounds | fresh bounds | yes | `param_sum` |
-| `AtomicSourceNode` | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
-| `ParamShaperNode`, `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
+| `ParamSumNode` (deleted by item 6) | tutti-nodes | clamp bounds | fresh bounds | yes | `param_sum` |
+| `AtomicSourceNode` (deleted by item 6) | tutti-nodes | base cell | fresh cell | yes | `atomic_source` |
+| `ParamShaperNode` (deleted by item 6), `AutomationLaneNode` | tutti-nodes | none: an immutable LUT / `Arc<dyn Curve>` (`set_curve` is `&mut`) | — | yes | — |
 | `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
 | `VbapPannerNode` | tutti-spatial | azimuth, elevation, spread, width (the inner panner's cells are private per clone) | detaches all | yes | `vbap` |
 | `HrtfBinauralNode` | tutti-spatial | azimuth, elevation, blend | detaches all | yes | `hrtf` |
@@ -1620,9 +1620,12 @@ export limits, each a cell a `Setting` cannot reach:
 - **The audio-rate base** (`AudioRateChains::base_cell`) is read by
   `AtomicSourceNode`, which takes no `Setting`; a fork sees the cell as that
   node's `isolate` leaves its shadow. Fix: `AtomicSourceNode::set` (a
-  `tutti-nodes` change).
+  `tutti-nodes` change). **Fixed by item 6**: the base is now the node's own
+  control, written through `set_param` and its settings ring like any
+  param.
 - **An audio-rate chain's range** (`ClampBounds` on `ParamSumNode`), for the
-  same reason.
+  same reason. **Fixed by item 6**: the range is part of the graph value
+  (`GraphSpec::params`), which a fork compiles.
 - **Metronome volume and mode** (`MetronomeRes`, `ClickSettings` atomics):
   live-only; a click is not part of an export.
 - **Hosted plugin parameters** go over the plugin's own transport, and a
@@ -2718,8 +2721,8 @@ clip entering mid-render) and `graph_engine_clock.rs`'s
 
 **What of `Net` remains, all Phase 5's:** `tutti_core::dsp::{Net, NodeId,
 Source}` and `topology::compile`; the `Net` forms of `build_vbap_mix` /
-`VbapMixParts::insert_into` (tutti-spatial) and
-`ParamModParts::insert_into` (tutti-nodes); `PdcDelay`,
+`VbapMixParts::insert_into` (tutti-spatial) (`ParamModParts::insert_into`
+went with the whole param chain in item 6); `PdcDelay`,
 `tutti_types::latency::compensate(&mut Net)` and `unit_param`; the nodes'
 own tests (tutti-nodes, tutti-sampler, tutti-spatial, tutti-graph's builder
 and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
@@ -2833,7 +2836,7 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | Node | Replaced by |
 |---|---|
 | `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
-| `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
+| **Done (item 6).** `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
 | `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar` kernel in `tutti-types` |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The executor advances the transport once per block and publishes `Env { frame, beat_window, tempo, rate, transport_epoch }`. Nodes keep `last_epoch: u64`. The arithmetic in `beat_window.rs` is kept, and all 8 `rebind_offline` impls go |
@@ -2894,7 +2897,7 @@ vocoder retirement channel for voices the pool removes.
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); porting the MIDI nodes and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
-| 6 | **Compiler-owned param modulation** | Deletes the 3 param-mod node types and most of `audio_rate.rs` | Yes |
+| 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
 | 9 | Remaining mechanical ports, then delete `Legacy` | | Yes |
@@ -3042,6 +3045,157 @@ fade check compares, and `event_capacity` is now one of them. The
 reference's fading-out unit gets detached event writers, as the
 executor's does, so a node that reacts to a refused push behaves the same
 under both.
+
+#### Item 6 landed: compiler-owned param modulation
+
+**What landed.**
+
+- **Param ports on `Shape`.** A node declares the params the graph may
+  modulate, by `UnitParam` id, in port order: `Shape::with_params`
+  (`ParamPorts`, at most `MAX_PARAM_PORTS` = 8). `ParamRamp` keeps its
+  typed `ParamKey<U>` constructor; a port itself is erased over its unit,
+  as the `ParamRamp` wire is.
+- **The value.** `GraphSpec::params: BTreeMap<ParamIn, ParamMod>`: per
+  param port, its range and its sources in source order (`ParamFrom`'s
+  `Ord`), each an audio output or an event output with a `ParamShaping`
+  (the identity, or a `ShapeLut` over `[-1, 1]`). `connect_param`,
+  `disconnect_param`, `set_param_range`; `Editor::remove` drops a node's
+  param edges both ways.
+- **The fused step.** For each modulated param a node op computes, before
+  the node runs, `clamp(base_ramp[i] + Σ shape_j(source_j[i]))` into a
+  buffer the unit owns (sized with its commit, so the audio thread never
+  allocates it), and the node reads it through `Io::param(k)`. The step is
+  part of the node op, not an op of its own: its only output is read by
+  that op, so a separate op would need a slot, an ordering edge and a
+  verifier rule for a buffer nothing else can read. Its sources are reads
+  of the node op (verifier rule 9), so colouring and the verifier cover
+  them; an input aliased in place is never also a param source.
+  - **Base**: the node's own control, `Node::param_base(port)`, read once
+    per block and ramped linearly across it, landing on the new value at
+    the last frame. `None` (the default) is a node that cannot say, and its
+    param is never modulated — it keeps reading its control — rather than
+    riding a base of 0.
+  - **Unconnected**: `ParamInput::Base`, and the node reads its own
+    control: the fast path costs one branch per node call
+    (`rec.params.len != 0 || busy`), nothing is copied. **An unconnected
+    param resolves to its base, never 0**, so a port can be connected and
+    disconnected by any commit; nothing is born with ports.
+  - **Declick**: a port whose sources change (a new source, one gone, a
+    new shaping — told by a signature the compiler computes over them)
+    crossfades from where it was (its last value, or the base) to the new
+    value over `PARAM_DECLICK` = 256 frames. Nothing else is smoothed: a
+    modulator's own step lands on its frame. A unit's **first** block (an
+    insert, a hard replace, a fork's first commit, a re-prepare's resume)
+    is not a change: it starts at its modulated value, so an export matches
+    the live graph from frame 0.
+  - **Event sources**: each `ParamRamp` addressed to the port's param
+    starts a linear ramp of that source's value on its frame, landing on
+    the target on its last frame (a zero-length ramp is a step); the value
+    starts at 0 and is an offset like an audio source's. A source's state
+    (its ramp, its last value) is kept by `ParamFrom`, not by its slot, so
+    another source joining or leaving the port, or this one being
+    reshaped, does not reset a held value. A fork starts each event source
+    at the ramp the live unit holds (the executor publishes them per unit
+    to a seqlocked `ParamTap` the editor keeps per key).
+  - **PDC**: param sources take part in the one Kahn order and the arrival
+    solve, and an early one is delayed to the node's arrival
+    (`DelayKey::ParamAudio` / `ParamEvent`; a vanished event delay's
+    pending ramps are dropped, not flushed: its source was disconnected).
+    An audio source's delay that appears (the node's arrival moved) starts
+    full of the source's last value, and one that grows is padded with it,
+    so the port holds rather than dropping to its base for the delay's
+    length.
+  - **Range**: a NaN bound is refused by `GraphSpec::validate`
+    (`GraphInvalid::BadParamRange`); it would otherwise reach
+    `f32::clamp` on the audio thread. Crossed bounds are ordered.
+  - **Crossfade base**: a fade keeps the key's param state; the base is
+    the incoming unit's control, ramped over one block like any control
+    move, not over the fade: ramping it over the fade would hold the
+    incoming unit off its own control for the fade's length, and the
+    audio crossfade already covers the swap.
+  - The step runs whether or not the node is then skipped, so its ramps
+    and declick follow the timeline as the reference's do.
+  - A crossfade keeps the key's param state, so its two units must declare
+    the same params (`Editor::replace`, `verify_fades`); a fork copies the
+    modulation, and `upstream` walks param sources, so an export forks the
+    modulators too.
+- **`Legacy` bridge.** An `AudioUnit` cannot read `Io`, so `tutti-node`
+  gains `ParamFeed` (`AudioUnit::param_feed` / `param_base`): per-param
+  buffers `Legacy` fills per 64-frame chunk, with a live bit per param;
+  an unfed param reads the unit's own control. The feed's params are the
+  node's `Shape::params`. It goes with `Legacy` (Phase 5).
+- **Ported**: `SvfFilterNode` (cutoff, Q), `LadderFilterNode` (cutoff,
+  resonance as `Q`, drive), `DelayLineNode` (feedback, delay time),
+  `DistortionNode` (drive), `CompressorNode` / `GateNode` (threshold),
+  `LimiterNode` (ceiling, threshold), `BrickwallLimiterNode` (ceiling),
+  `BusStripNode` (volume, pan) — each keeps its DSP and reads the feed
+  where it read an input channel; the goldens (`width_generic_golden`,
+  `dynamics_per_block`) render the same bits. Their arity is their audio
+  width again.
+- **Deleted**: `ParamShaperNode`, `ParamSumNode`, `AtomicSourceNode`,
+  `ClampBounds`, the `param_mod_parts` / `build_param_mod` /
+  `wire_param_mod` builders, `ParamPorts` and every `*_port()` accessor,
+  the `mod_*` flags and `with_param_inputs` on all nine node types;
+  bevy-tutti's `ParamPortMap` / `DeclareParamPorts`, `ShaperShaping` and
+  the shaper plumbing in `topology::build`, and the chain entities in
+  `modulation::audio_rate` (now `AudioRateRoutes`, declaring
+  `AudioGraphRes::set_param_mod`). `write_param` lost its base-cell
+  branch: the base is the node's control, reached through the settings
+  ring — so the two "known export limits" of the base cell and the clamp
+  cell (Phase 3 PR 12, above) are gone.
+- **Curves.** `ParamModShaping::shaping()` bakes `tutti_mod::shape` with
+  the old shaper's bake and lookup, and the fused sum folds from `-0.0` as
+  `f32`'s `Sum` does, so the new step is bit-identical to the old chain:
+  `tutti-nodes`' `param_mod_oracle.rs` compared them sample by sample
+  (every curve, both polarities, four depths; three sources through a
+  rendered graph, clamped at both ends) while the old nodes existed, and
+  pins what they produced as digests (no libm involved, so portable).
+
+**Tests.** tutti-graph: `tests/param_mod.rs` (base-only equals the plain
+param; one and several sources sum and clamp; base ramps; declicked
+connect and disconnect; sample-exact audio steps and ramps under block
+sizes 1–128; a node without a base; `Editor::remove` of a source and of a
+modulated target; no declick on a unit's first block; a held event value
+surviving another source joining; a param delay appearing or growing
+without a dropout; a fork carrying held and in-flight ramps; a NaN range
+refused; a differential proptest against the reference interpreter over
+random modulated graphs with PDC-delayed sources, latency changes,
+recompiles, base moves and regenerations), the verifier's param
+corruptions (rule 9, the param reads other rules see, the in-place
+check), the
+contract suite's `Excite::Param` row (`param_echo`: a modulation step at
+frame `F` lands at `F + arrival` on every audio path), a no-alloc gate
+(`modulated_params_are_allocation_free`, declicks included), `Legacy`'s
+feed bridge. tutti-nodes: `graph_param_mod.rs` (each fed param is the one
+the DSP reads, at widths 1, 2, 6, through the graph; an authored write
+moves the base under modulation; a crossed range; an unmodulated param
+adds nothing to the plan; a fork matches the live graph from frame 0).
+bevy-tutti's modulation suites keep their properties, asserted on the
+graph value and on renders; the reconciler sums two routes from one
+source, caps a param at `MAX_PARAM_SOURCES` source nodes (dropping the
+rest with a warning, so the graph keeps committing) and never declares a
+NaN range; `AudioGraphRes::set_param_mod` refuses what a commit would
+fail on, by name.
+
+**Deferred / open.**
+
+- A native node declaring params reads `Io::param` itself; none of the
+  ported nodes is native yet (they are `Legacy` + `ParamFeed`), so the
+  per-frame slice crosses one copy per 64-frame chunk into the feed.
+- **Follow-up: a range change recompiles** (the range is part of the
+  value, and of the plan's `ParamPortOp`). The old `ClampBounds` moved
+  without one, so a UI dragging a range now costs a commit per move where
+  it cost an atomic store. The fix is a per-port range control in
+  `ParamState` written from the control side (as a base is), with the
+  spec's range as its initial value; not done here. Until then a host
+  that animates a range should modulate the param instead.
+- A re-prepare resumes each unit with fresh param state: event sources'
+  held ramps restart at 0 (a sample-rate change would make their frame
+  counts wrong anyway), as the reference does.
+- Event-sourced offsets are unshaped ramps of the target value; a
+  curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.
+- Param edges are direct only: no feedback modulation (a node modulating
+  something upstream of itself is a `CompileError::Cycle`).
 
 ## Decisions for the owner
 

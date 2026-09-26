@@ -2,7 +2,8 @@
 //!
 //! [`DelayLine`] is the bare fractional-read ring; [`DelayLineNode`] wraps it
 //! into a width-generic `AudioUnit` with feedback, an explicit cross-feedback
-//! routing matrix, wet/dry [`Mix`] and optional audio-rate param-input ports. The fractional read is the
+//! routing matrix, wet/dry [`Mix`], and feedback and delay time the graph can
+//! modulate per frame. The fractional read is the
 //! reason this is not just a [`CircularBuffer`](crate::buffer::CircularBuffer):
 //! a delay whose time is modulated must interpolate between taps or it steps
 //! audibly.
@@ -11,7 +12,8 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
 
-use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds};
+use tutti_core::{ChannelLayout, Feedback, Mix, Param, ParamFeed, SampleRate, Seconds};
+use tutti_types::UnitParam;
 
 use crate::ramp::{finite_or, LastGood, Ramp};
 
@@ -207,15 +209,16 @@ struct DelayControls {
 /// reallocated on the audio thread; a longer request is clamped rather than
 /// rejected.
 ///
-/// # Port layout
+/// # Modulated params
 ///
-/// `N` audio inputs, then optional param-input ports (see
-/// [`Self::with_param_inputs`]) in the order **feedback, then delay-time**. A
-/// present delay-time port drives *every* channel's delay time through one
-/// shared input (the natural flanger/chorus control — the lines interpolate),
-/// and a present feedback port overrides the feedback atomic; both are read
-/// every sample, since they are audio signals. Cross-feedback and mix stay
-/// atomic-only. Absent ports cost nothing, which is the common case.
+/// `N` audio inputs, `N` outputs. **Feedback** and **delay time** are
+/// modulatable by the graph (design doc 013 item 6), in that port order
+/// ([`DELAY_PARAMS`]): the `Legacy` adapter feeds the node's
+/// [`ParamFeed`](tutti_core::ParamFeed) per frame, and a fed delay time
+/// drives *every* channel through one shared value (the natural
+/// flanger/chorus control — the lines interpolate). An unfed param reads its
+/// own control, which costs nothing, the common case. Cross-feedback and mix
+/// are not modulatable.
 pub struct DelayLineNode {
     /// Per-channel delay lines; `len()` is the audio width. Built at
     /// construction — never resized in `tick`/`process` (RT no-alloc).
@@ -238,8 +241,9 @@ pub struct DelayLineNode {
     /// The longest delay this line can hold. Kept typed: it is a duration the
     /// setters clamp against, not scratch.
     max_delay: Seconds,
-    mod_feedback: bool,
-    mod_delay_time: bool,
+    /// Per-frame feedback and delay time from the graph, when it modulates
+    /// them ([`DELAY_PARAMS`]).
+    feed: ParamFeed,
     /// The controls the previous block ended on — where this block's ramp
     /// starts. `None` until the first block (and after `reset`), which then
     /// starts on its targets rather than ramping in from nothing.
@@ -259,6 +263,9 @@ pub struct DelayLineNode {
     good: [LastGood; 3],
     good_delay: Vec<LastGood>,
 }
+
+/// The params a [`DelayLineNode`] lets the graph modulate, in port order.
+pub const DELAY_PARAMS: [UnitParam; 2] = [UnitParam::Feedback, UnitParam::DelayTime];
 
 impl DelayLineNode {
     /// A mono delay (1 in, 1 out): a line sized for `max_delay_secs`, an
@@ -347,8 +354,7 @@ impl DelayLineNode {
             interpolation: InterpolationMode::Linear,
             sample_rate: SampleRate::DEFAULT,
             max_delay,
-            mod_feedback: false,
-            mod_delay_time: false,
+            feed: ParamFeed::new(&DELAY_PARAMS),
             last: None,
             last_delay: vec![0.0; n],
             delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
@@ -360,36 +366,6 @@ impl DelayLineNode {
             ],
             good_delay: vec![LastGood::new(delay_secs.get()); n],
         }
-    }
-
-    /// A delay with optional audio-rate `feedback` / `delay_time` param-input
-    /// ports, appended after the audio inputs in that order (feedback first).
-    /// Each present port overrides its atomic; the atomics still hold the base.
-    /// A present `delay_time` port drives every channel's delay time (shared),
-    /// through the interpolating read — the flanger / chorus path.
-    ///
-    /// Width and modulation are **independent axes**: `channels` says how wide
-    /// the delay is, the `mod_*` flags say which params it reads at audio rate.
-    /// Collapsing them — building the modulated form at a fixed width 2 — turns
-    /// a request for a modulated 5.1 delay into a *stereo* one, and the only
-    /// symptom is a `set_source` on a param port that resolves and carries the
-    /// wrong signal.
-    ///
-    /// The param ports follow the audio inputs, so their indices **move with the
-    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
-    /// never assume an index.
-    pub fn with_param_inputs(
-        channels: impl Into<ChannelLayout>,
-        max_delay_secs: impl Into<Seconds>,
-        delay_secs: impl Into<Seconds>,
-        feedback: impl Into<Feedback>,
-        mod_feedback: bool,
-        mod_delay_time: bool,
-    ) -> Self {
-        let mut node = Self::with_channels(channels, max_delay_secs, delay_secs, feedback);
-        node.mod_feedback = mod_feedback;
-        node.mod_delay_time = mod_delay_time;
-        node
     }
 
     /// Replaces the cross-feed routing with `matrix`, `N×N` row-major: entry
@@ -437,21 +413,6 @@ impl DelayLineNode {
         self.delays.len()
     }
 
-    /// Input-port index of the feedback param input, if present (right after
-    /// the audio inputs).
-    #[inline]
-    pub fn feedback_port(&self) -> Option<usize> {
-        self.mod_feedback.then_some(self.width())
-    }
-
-    /// Input-port index of the delay-time param input, if present (after the
-    /// audio inputs and the feedback port).
-    #[inline]
-    pub fn delay_time_port(&self) -> Option<usize> {
-        self.mod_delay_time
-            .then_some(self.width() + self.mod_feedback as usize)
-    }
-
     /// Selects the fractional-read [`InterpolationMode`], replacing the
     /// [`Linear`](InterpolationMode::Linear) default.
     ///
@@ -465,7 +426,7 @@ impl DelayLineNode {
     /// The shared [`Seconds`] delay-time cell of channel 0 — the whole delay's
     /// on a mono node, the left one's on a stereo node.
     ///
-    /// Read once per block and ramped. A present delay-time param-input port
+    /// Read once per block and ramped. A delay time the graph feeds
     /// **overrides** it. Shared across clones, so a write reaches the live
     /// node.
     pub fn delay_time(&self) -> Arc<AtomicF32> {
@@ -576,8 +537,8 @@ impl DelayLineNode {
     /// The one render kernel behind `tick` and `process`.
     ///
     /// Every control atomic is read once, here. `fb_port` / `dt_port` are the
-    /// param-port signals for the block when those ports exist; they are audio
-    /// and read per sample. Everything else ramps from where the previous block
+    /// graph's per-frame feedback and delay time for the block when it
+    /// modulates them (the node's param feed); they are read per sample. Everything else ramps from where the previous block
     /// ended (see [`ramp`](crate::ramp)).
     fn render(
         &mut self,
@@ -759,7 +720,7 @@ fn delay_step(
 
 impl AudioUnit for DelayLineNode {
     fn inputs(&self) -> usize {
-        self.width() + self.mod_feedback as usize + self.mod_delay_time as usize
+        self.width()
     }
 
     fn outputs(&self) -> usize {
@@ -797,26 +758,32 @@ impl AudioUnit for DelayLineNode {
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // A block of one through the same kernel as `process`: the one-sample
         // ramps land on the new values at once, as the old per-sample read did.
-        let fb = self.feedback_port().map(|p| &input[p..p + 1]);
-        let dt = self.delay_time_port().map(|p| &input[p..p + 1]);
-        self.render(1, |c, _| input[c], |c, _, v| output[c] = v, fb, dt);
+        let feed = ParamFeed::take(&mut self.feed);
+        self.render(
+            1,
+            |c, _| input[c],
+            |c, _, v| output[c] = v,
+            feed.get(0, 1),
+            feed.get(1, 1),
+        );
+        self.feed = feed;
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         if size == 0 {
             return;
         }
-        let fb = self.feedback_port().map(|p| &input.channel_f32(p)[..size]);
-        let dt = self
-            .delay_time_port()
-            .map(|p| &input.channel_f32(p)[..size]);
+        // The feed is moved out for the call so the render can take `&mut
+        // self` while reading it; moving it allocates nothing.
+        let feed = ParamFeed::take(&mut self.feed);
         self.render(
             size,
             |c, i| input.at_f32(c, i),
             |c, i, v| output.set_f32(c, i, v),
-            fb,
-            dt,
+            feed.get(0, size),
+            feed.get(1, size),
         );
+        self.feed = feed;
     }
 
     fn set(&mut self, setting: tutti_core::Setting) {
@@ -830,9 +797,21 @@ impl AudioUnit for DelayLineNode {
         }
     }
 
+    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
+        Some(&mut self.feed)
+    }
+
+    fn param_base(&self, k: usize) -> Option<f32> {
+        // Delay time's base is the first channel's: a fed delay time drives
+        // every channel through one shared value.
+        match k {
+            0 => Some(self.feedback.load().get()),
+            1 => Some(self.delay_time[0].load().get()),
+            _ => None,
+        }
+    }
+
     fn get_id(&self) -> u64 {
-        // Keyed on the audio width, not `inputs()`: param ports are not a
-        // channel, so a mono delay with a feedback port is still mono.
         if self.width() == 1 {
             crate::node_id::DELAY_LINE_ID
         } else {
@@ -892,8 +871,7 @@ impl Clone for DelayLineNode {
             interpolation: self.interpolation,
             sample_rate: self.sample_rate,
             max_delay: self.max_delay,
-            mod_feedback: self.mod_feedback,
-            mod_delay_time: self.mod_delay_time,
+            feed: self.feed.clone(),
             last: self.last,
             last_delay: self.last_delay.clone(),
             delay_ramps: self.delay_ramps.clone(),
@@ -1110,81 +1088,63 @@ mod tests {
         );
     }
 
-    // ── Audio-rate param-input ports ─────────────────────────────────────────
+    // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// Tick a stereo delay sample by sample, appending `params` (the param-port
-    /// values) after the two audio inputs each sample.
-    fn process_stereo_delay(
+    /// Tick a stereo delay sample by sample with `params` (feedback, delay
+    /// time: `Some` held at a value, `None` unfed) in its feed each sample.
+    fn tick_stereo_delay(
         node: &mut dyn AudioUnit,
         l: &[f32],
         r: &[f32],
-        params: &[f32],
+        params: [Option<f32>; 2],
     ) -> (Vec<f32>, Vec<f32>) {
-        let mut out_l = vec![0.0f32; l.len()];
-        let mut out_r = vec![0.0f32; r.len()];
-        for i in 0..l.len() {
-            let mut input = vec![l[i], r[i]];
-            input.extend_from_slice(params);
-            let mut output = [0.0f32; 2];
-            node.tick(&input, &mut output);
-            out_l[i] = output[0];
-            out_r[i] = output[1];
-        }
-        (out_l, out_r)
+        let held: Vec<Option<Vec<f32>>> =
+            params.iter().map(|p| p.map(|v| vec![v; l.len()])).collect();
+        let refs: Vec<Option<&[f32]>> = held.iter().map(|p| p.as_deref()).collect();
+        let out = crate::testing::tick_fed(node, &[l, r], &refs);
+        (out[0].clone(), out[1].clone())
+    }
+
+    /// The feed declares feedback then delay time, and never changes the
+    /// arity: a modulatable delay is as wide as it was built, in and out.
+    ///
+    /// Mutation (run): swap `DELAY_PARAMS`' order → the first assertion
+    /// fails (and `feedback_feed_modulates` reads a delay time as feedback).
+    #[test]
+    fn the_feed_declares_feedback_then_delay_time() {
+        let mut d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
+        assert_eq!(
+            d.param_feed().map(|f| f.params()),
+            Some(&[UnitParam::Feedback, UnitParam::DelayTime][..])
+        );
+        assert_eq!((d.inputs(), d.outputs()), (2, 2));
+        let wide = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.5);
+        assert_eq!((wide.inputs(), wide.outputs()), (6, 6));
+        assert_eq!(d.param_base(0), Some(0.5), "feedback's base is its control");
+        assert_eq!(
+            d.param_base(1),
+            Some(0.01),
+            "delay time's base is channel 0's"
+        );
     }
 
     #[test]
-    fn stereo_delay_param_port_arity_and_indices() {
-        // Plain constructor: no ports, audio arity untouched.
-        let d = DelayLineNode::stereo(1.0, 0.01, 0.01, 0.5);
-        assert_eq!(d.inputs(), 2);
-        assert_eq!(d.outputs(), 2);
-        assert_eq!(d.feedback_port(), None);
-        assert_eq!(d.delay_time_port(), None);
-        // feedback only → port 2 (delay-time absent).
-        let f =
-            DelayLineNode::with_param_inputs(ChannelLayout::STEREO, 1.0, 0.01, 0.5, true, false);
-        assert_eq!(f.inputs(), 3);
-        assert_eq!(f.feedback_port(), Some(2));
-        assert_eq!(f.delay_time_port(), None);
-        // delay-time only → port 2 (no feedback port before it).
-        let d =
-            DelayLineNode::with_param_inputs(ChannelLayout::STEREO, 1.0, 0.01, 0.5, false, true);
-        assert_eq!(d.inputs(), 3);
-        assert_eq!(d.feedback_port(), None);
-        assert_eq!(d.delay_time_port(), Some(2));
-        // both → feedback at 2, delay-time at 3.
-        let b = DelayLineNode::with_param_inputs(ChannelLayout::STEREO, 1.0, 0.01, 0.5, true, true);
-        assert_eq!(b.inputs(), 4);
-        assert_eq!(b.feedback_port(), Some(2));
-        assert_eq!(b.delay_time_port(), Some(3));
-    }
-
-    #[test]
-    fn feedback_port_modulates() {
-        // An impulse through the delay: a higher feedback via the port produces
-        // a longer / louder tail than a low one. Proves the port drives the
+    fn feedback_feed_modulates() {
+        // An impulse through the delay: a higher fed feedback produces a
+        // longer / louder tail than a low one. Proves the feed drives the
         // feedback per sample.
         let sr = 1000.0;
         let delay_secs = 0.01; // 10 samples
         let n = 200;
 
         let run = |fb: f32| -> f32 {
-            let mut node = DelayLineNode::with_param_inputs(
-                ChannelLayout::STEREO,
-                1.0,
-                delay_secs,
-                0.0,
-                true,
-                false,
-            );
+            let mut node = DelayLineNode::stereo(1.0, delay_secs, delay_secs, 0.0);
             node.set_sample_rate(tutti_core::SampleRate(sr));
             let mut l = vec![0.0f32; n];
             let mut r = vec![0.0f32; n];
             l[0] = 1.0;
             r[0] = 1.0;
-            // feedback held on port 2.
-            let (out_l, _) = process_stereo_delay(&mut node, &l, &r, &[fb]);
+            let (out_l, _) = tick_stereo_delay(&mut node, &l, &r, [Some(fb), None]);
             // Late-buffer energy (well past the first echo) — feedback governs
             // how much survives.
             out_l[50..].iter().map(|s| s * s).sum()
@@ -1194,15 +1154,15 @@ mod tests {
         let high = run(0.9);
         assert!(
             high > low * 2.0,
-            "higher feedback via param port should yield a longer/louder tail: low={low}, high={high}"
+            "higher fed feedback should yield a longer/louder tail: low={low}, high={high}"
         );
     }
 
     #[test]
     fn unmodulated_matches_held_constant() {
-        // A modulated node whose ports are held at the atomic values must
-        // produce the same output as a plain node — the modulated path is a
-        // faithful superset.
+        // A delay whose feed holds its params at the atomic values must
+        // produce the same output as one reading its controls — the fed path
+        // is a faithful superset.
         let sr = 1000.0;
         let delay_secs = 0.01;
         let fb = 0.5;
@@ -1217,19 +1177,13 @@ mod tests {
 
         let mut plain = DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb);
         plain.set_sample_rate(tutti_core::SampleRate(sr));
-        let (plain_l, plain_r) = process_stereo_delay(&mut plain, &input_l, &input_r, &[]);
+        let (plain_l, plain_r) = tick_stereo_delay(&mut plain, &input_l, &input_r, [None, None]);
 
-        // Both ports present, held at the atomic values (feedback then delay-time).
-        let mut modn = DelayLineNode::with_param_inputs(
-            ChannelLayout::STEREO,
-            1.0,
-            delay_secs,
-            fb,
-            true,
-            true,
-        );
+        // Both params fed, held at the atomic values.
+        let mut modn = DelayLineNode::stereo(1.0, delay_secs, delay_secs, fb);
         modn.set_sample_rate(tutti_core::SampleRate(sr));
-        let (mod_l, mod_r) = process_stereo_delay(&mut modn, &input_l, &input_r, &[fb, delay_secs]);
+        let (mod_l, mod_r) =
+            tick_stereo_delay(&mut modn, &input_l, &input_r, [Some(fb), Some(delay_secs)]);
 
         for i in 0..n {
             assert!(
@@ -1245,31 +1199,6 @@ mod tests {
                 mod_r[i]
             );
         }
-    }
-
-    /// Width and modulation are independent axes.
-    ///
-    /// Building the modulated form at a fixed width 2 makes a 6-channel request
-    /// come back *stereo*; the arity assertion is what catches it.
-    #[test]
-    fn a_modulated_delay_is_as_wide_as_it_was_asked_for() {
-        let d = DelayLineNode::with_param_inputs(6usize, 1.0, 0.01, 0.5, true, true);
-        assert_eq!(d.outputs(), 6, "the width is what was asked for");
-        assert_eq!(
-            d.inputs(),
-            8,
-            "six audio inputs, then feedback and delay-time"
-        );
-        assert_eq!(
-            d.feedback_port(),
-            Some(6),
-            "param ports follow the audio inputs, so their indices move with the width"
-        );
-        assert_eq!(
-            d.delay_time_port(),
-            Some(7),
-            "and keep their documented order"
-        );
     }
 
     // ── Per-block reads, routing and width ───────────────────────────────────

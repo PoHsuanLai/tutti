@@ -47,12 +47,14 @@ pub mod audiounit;
 pub mod buffer;
 pub mod math;
 pub mod num;
+pub mod param_feed;
 pub mod setting;
 pub mod signal;
 pub mod value;
 
 pub use audiounit::{AudioUnit, FaultLatch, RenderFault};
 pub use math::AttoHash;
+pub use param_feed::{ParamFeed, ParamFeedError, MAX_FED_PARAMS};
 pub use setting::{Address, NodeAddr, Parameter, Setting};
 pub use signal::{Routing, Signal, SignalFrame};
 pub use value::{SampleRate, Samples, Tail};

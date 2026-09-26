@@ -679,19 +679,37 @@ proptest! {
     /// survive by key carry their state, in both interpreters, identically.
     #[test]
     fn recompiles_preserve_state_identically(seed in any::<u64>(), which in 0usize..5) {
-        let first = random_graph(seed);
-        let mut rng = Rng::new(seed ^ 0x5EED);
-        let second = mutate(&first, &mut rng);
-        let third = mutate(&second, &mut rng);
-
-        let mut pair = Pair::new(MAX_BLOCK);
-        let mut frame = 0;
-        for (i, desc) in [&first, &second, &third].into_iter().enumerate() {
-            let valid = desc.spec.validate().expect("mutations stay valid");
-            pair.switch(&valid, &desc.kinds);
-            run(&mut pair, &schedule(which, seed.wrapping_add(i as u64), 300), &mut frame);
-        }
+        recompile_case(seed, which);
     }
+}
+
+/// [`recompiles_preserve_state_identically`]'s body, for one `(seed, which)`.
+fn recompile_case(seed: u64, which: usize) {
+    let first = random_graph(seed);
+    let mut rng = Rng::new(seed ^ 0x5EED);
+    let second = mutate(&first, &mut rng);
+    let third = mutate(&second, &mut rng);
+
+    let mut pair = Pair::new(MAX_BLOCK);
+    let mut frame = 0;
+    for (i, desc) in [&first, &second, &third].into_iter().enumerate() {
+        let valid = desc.spec.validate().expect("mutations stay valid");
+        pair.switch(&valid, &desc.kinds);
+        run(
+            &mut pair,
+            &schedule(which, seed.wrapping_add(i as u64), 300),
+            &mut frame,
+        );
+    }
+}
+
+/// A case `recompiles_preserve_state_identically` found on main (seed
+/// 3280887136571273968, which = 3), kept as a plain test: the regressions
+/// file persists proptest's RNG seeds, not generated values, so a case found
+/// by another run of the generator cannot be written into it by hand.
+#[test]
+fn recompile_regression_3280887136571273968() {
+    recompile_case(3_280_887_136_571_273_968, 3);
 }
 
 /// The generator is not vacuous: over a fixed range of seeds it produces the

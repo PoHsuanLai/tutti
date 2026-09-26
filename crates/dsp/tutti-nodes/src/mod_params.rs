@@ -3,9 +3,10 @@
 //!
 //! The [`ModParams`] trait itself lives in `tutti-mod` (it is node-agnostic —
 //! it names only [`ParamAddr`] and [`ModTarget`]); the *impls* live here, beside
-//! the nodes. The control-rate sibling of [`crate::ParamPorts`] (audio-rate
-//! *ports*): a thing is control-rate-modulatable **iff** it implements
-//! [`ModParams`], the enforced opt-in.
+//! the nodes. The control-rate sibling of a node's param feed (the audio-rate
+//! params the native graph modulates per frame, `AudioUnit::param_feed`): a
+//! thing is control-rate-modulatable **iff** it implements [`ModParams`], the
+//! enforced opt-in.
 //!
 //! Each impl is a thin dispatch over the node's existing `Arc<AtomicF32>`
 //! accessors (`frequency()`, `q()`, `drive()`, …), wrapping the atomic in an

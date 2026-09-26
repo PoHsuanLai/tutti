@@ -25,10 +25,12 @@ use std::num::NonZeroU32;
 
 use tutti_types::{
     Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, SampleRate, Samples, SegmentOrigin, Tail,
+    UnitParam,
 };
 
 use crate::fork::ForkSource;
 use crate::io::Io;
+use crate::param::ParamPorts;
 use crate::time::Offset;
 
 /// Most audio channels, or event ports, on one side of one node.
@@ -118,6 +120,14 @@ pub struct Shape {
     /// `legacy` module docs, `src/legacy.rs`). Set only by `Legacy`; a
     /// native node reads [`Env`] and leaves it `false`.
     pub legacy: bool,
+    /// The params this node lets the graph modulate, in **port order** —
+    /// the index [`Io::param`](crate::Io::param) and
+    /// [`Node::param_base`] take (design doc 013 item 6; see
+    /// [`GraphSpec::connect_param`](crate::GraphSpec::connect_param)). A
+    /// param declared here reads [`ParamInput::Base`](crate::ParamInput::Base)
+    /// until something is connected to it, and the node must then answer
+    /// [`Node::param_base`] for it.
+    pub params: ParamPorts,
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -176,6 +186,7 @@ impl Shape {
             in_place: false,
             event_resolution: Resolution::Sample,
             legacy: false,
+            params: ParamPorts::NONE,
         }
     }
 
@@ -265,6 +276,19 @@ impl Shape {
     #[must_use]
     pub const fn with_event_resolution(mut self, resolution: Resolution) -> Self {
         self.event_resolution = resolution;
+        self
+    }
+
+    /// This shape, letting the graph modulate `params`, in this port order
+    /// (see [`params`](Self::params)).
+    ///
+    /// # Panics
+    ///
+    /// If `params` holds more than [`MAX_PARAM_PORTS`](crate::MAX_PARAM_PORTS),
+    /// or one param twice (in a `const` context, at compile time).
+    #[must_use]
+    pub const fn with_params(mut self, params: &[UnitParam]) -> Self {
+        self.params = ParamPorts::new(params);
         self
     }
 
@@ -790,6 +814,23 @@ pub trait Node: Send + 'static {
 
     /// Return to the state of a freshly prepared node.
     fn reset(&mut self);
+
+    /// The **base** of declared param `port` ([`Shape::params`]): the current
+    /// value of the node's own control for it — the `Param<U>` its
+    /// `Controls` hand out. The executor reads it once per block for a
+    /// modulated param and ramps it across the block under the modulation;
+    /// an unmodulated param is not asked (the node reads its control
+    /// itself, [`ParamInput::Base`](crate::ParamInput::Base)).
+    ///
+    /// `None`, the default, is a node that cannot say: its param is then
+    /// never modulated — it keeps reading [`ParamInput::Base`](crate::ParamInput::Base)
+    /// whatever the graph connects — rather than riding on a base of 0,
+    /// which is what an unconnected port read under `Net`. Audio thread:
+    /// must not allocate, lock or block.
+    fn param_base(&self, port: usize) -> Option<f32> {
+        let _ = port;
+        None
+    }
 }
 
 /// How a value becomes a node, and what the caller gets back to control it.

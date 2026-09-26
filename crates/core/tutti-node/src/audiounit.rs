@@ -201,6 +201,28 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
         None
     }
 
+    /// The unit's per-frame param buffers, if it has params the native
+    /// graph can modulate (design doc 013 item 6; see
+    /// [`ParamFeed`](crate::ParamFeed)). `None`, the default, for a unit with
+    /// none. The `Legacy` adapter declares the feed's params as the node's
+    /// param ports and fills it before each call.
+    ///
+    /// A forwarding wrapper must forward this and [`param_base`](Self::param_base),
+    /// or the unit it wraps silently stops being modulatable.
+    fn param_feed(&mut self) -> Option<&mut crate::ParamFeed> {
+        None
+    }
+
+    /// The current value of feed param `k`'s own control cell — its **base**,
+    /// which the graph's modulation rides on and which a param nothing
+    /// modulates reads anyway. `None` (the default) for a unit with no
+    /// [`param_feed`](Self::param_feed); a unit with one answers for every
+    /// param in it.
+    fn param_base(&self, k: usize) -> Option<f32> {
+        let _ = k;
+        None
+    }
+
     /// Set the sample rate of the unit.
     /// The default sample rate is 44100 Hz.
     /// The unit is allowed to reset itself here in response to sample rate changes.

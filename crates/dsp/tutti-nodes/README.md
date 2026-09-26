@@ -21,9 +21,10 @@ through. Every node here goes into a `Net`, gets wired, and renders.
   adapter over a pure `tutti_mod::Modulator`.
 - **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
   `DownmixNode`, `BusStripNode` (volume / balance / mute).
-- **Param modulation** — `ParamPorts` plus the `param_mod` chain builders
-  (`ParamSumNode`, `ParamShaperNode`, `AtomicSourceNode`), for a node that
-  declares its own audio-rate control inputs.
+- **Param modulation** — each modulatable node carries a `ParamFeed` (its
+  `*_PARAMS` list: `SVF_PARAMS`, `DELAY_PARAMS`, …) that the native graph's
+  compiler-owned modulation fills per frame, and `ParamModShaping` turns a
+  route's depth / polarity / curve into the shaping the graph applies.
 - **Automation / convolution** — the `automation` module's `AutomationLaneNode`
   and recording units, and `ConvolverNode` with its IR generators (behind a
   feature).

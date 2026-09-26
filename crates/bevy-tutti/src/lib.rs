@@ -123,9 +123,11 @@ pub mod soundfont;
 #[cfg(feature = "synth")]
 pub use tutti_polysynth as polysynth;
 
-/// Spatial audio, re-exported whole from `tutti-spatial`. There is no adapter
-/// code: the VBAP / binaural panners are plain `AudioUnit`s, and
-/// `build_vbap_mix` assembles a subgraph a host spawns like any other node.
+/// Spatial audio, re-exported whole from `tutti-spatial`. The only adapter
+/// code is a `GraphNode` impl per panner (`graph::events`): the VBAP /
+/// binaural panners are native graph nodes, spawned with `spawn_graph_node`
+/// (the binaural one with the `hrtf` feature), and `build_vbap_mix` assembles
+/// a subgraph into a `tutti_graph::GraphBuilder`.
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 

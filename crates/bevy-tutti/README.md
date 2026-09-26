@@ -350,12 +350,20 @@ commands.spawn((GateNode, ThresholdDb(-25.0), Attack(0.002), Release(0.2)));
 Requires `spatial` feature.
 
 ```rust
-// `tutti-spatial` is re-exported whole; there is no adapter code. The VBAP
-// and binaural panners are plain `AudioUnit`s, spawned like any other node,
-// and `build_vbap_mix` assembles a subgraph the host spawns the same way.
-use bevy_tutti::spatial::vbap::VbapPannerNode;
+// `tutti-spatial` is re-exported whole. The VBAP and binaural panners are
+// native graph nodes (the binaural one with the `hrtf` feature): spawned with
+// `spawn_graph_node`, their controls land on the entity as `NodeControls`.
+use bevy_tutti::spatial::{VbapPannerControls, VbapPannerNode};
 
-commands.spawn_audio_node(VbapPannerNode::new(layout, sample_rate)?);
+let panner = VbapPannerNode::for_layout(layout)?;
+panner.set_position(30.0, 0.0);
+commands.spawn_graph_node(panner);
+// Later, from a system:
+fn orbit(q: Query<&NodeControls<VbapPannerControls>>) {
+    for c in &q {
+        c.0.set_position(c.0.azimuth().get() + 1.0, 0.0);
+    }
+}
 ```
 
 ## Features
@@ -373,7 +381,8 @@ All features are opt-in and aligned with Tutti's feature flags.
 | `plugin` | VST3/VST2/CLAP/AU hosting: editor windows, catalog scan, crash detection |
 | `vst2` / `vst3` / `clap` / `au` | Individual plugin format support (each implies `plugin`) |
 | `modulation` | Control-rate modulation: LFO sources and mod-matrix edges as entities |
-| `spatial` | 3D spatial audio with distance attenuation (implies `dsp`) |
+| `spatial` | Spatial audio: VBAP speaker panning and surround mix assembly (`tutti-spatial`) |
+| `hrtf` | The binaural panner (`HrtfBinauralNode`), on top of `spatial` |
 | `dsp` | The VBAP/binaural panner. Dynamics are always compiled |
 | `convolution` | FFT convolution reverb (partitioned IR) |
 | `export` | The `tutti-export` dependency (no ECS surface — see above) |

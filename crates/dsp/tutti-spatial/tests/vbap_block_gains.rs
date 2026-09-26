@@ -1,4 +1,4 @@
-//! Golden renders of `VbapPannerNode::process`, pinned from the per-frame
+//! Golden renders of `VbapPannerNode`'s block render, pinned from the per-frame
 //! implementation that solved the gains twice per frame.
 //!
 //! The panner now solves once per block and linearly ramps the gain vector
@@ -37,7 +37,9 @@
 //! compared, and `a_width_crossing_the_fold_threshold_crossfades` pins the
 //! crossfade itself.
 
-use tutti_core::{AudioUnit, Azimuth, BufferVec, ChannelLayout, Elevation, Spread, StereoWidth};
+use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate, Spread, StereoWidth};
+use tutti_graph::contract::{drive, prepared};
+use tutti_graph::Node;
 use tutti_spatial::VbapPannerNode;
 
 const BLOCK: usize = 64;
@@ -47,16 +49,39 @@ const BLOCKS: usize = 6;
 const PINNED: [usize; 3] = [0, 31, 63];
 const EDGE_TOL: f32 = 1e-6;
 const RAMP_TOL: f32 = 0.06;
+const RATE: SampleRate = SampleRate(48_000.0);
+
+/// A two-channel block, one `Vec` per input.
+type Block = [Vec<f32>; 2];
+
+/// `node`, prepared at 48 kHz for blocks of up to [`BLOCK`] frames (what
+/// `set_sample_rate` was).
+fn prep(node: VbapPannerNode) -> VbapPannerNode {
+    prepared(node, RATE, BLOCK)
+}
+
+/// One block through the node, one `Vec` per output channel.
+fn process(node: &mut VbapPannerNode, input: &Block) -> Vec<Vec<f32>> {
+    drive(node, RATE, &[&input[0], &input[1]], &[])
+}
+
+/// A block of one frame (what `AudioUnit::tick` was), written to `out`.
+fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
+    let rendered = drive(node, RATE, &[&input[..1], &input[1..]], &[]);
+    for (o, c) in out.iter_mut().zip(rendered) {
+        *o = c[0];
+    }
+}
 
 /// Deterministic, decorrelated L/R input, so the width path's two virtual
 /// sources are distinguishable in the output.
-fn input_block(block: usize) -> BufferVec {
-    let mut buf = BufferVec::new(2);
+fn input_block(block: usize) -> Block {
+    let mut buf: Block = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
     let mut state = 0x9e37_79b9_u32 ^ (block as u32).wrapping_mul(0x85eb_ca6b);
-    for c in 0..2 {
-        for i in 0..BLOCK {
+    for c in &mut buf {
+        for x in c.iter_mut() {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            buf.set_f32(c, i, (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0);
+            *x = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
         }
     }
     buf
@@ -83,7 +108,7 @@ fn cases() -> Vec<Case> {
             speakers: 2,
             setup: |n| {
                 n.set_position(Azimuth(20.0), Elevation::LEVEL);
-                n.reset();
+                Node::reset(n);
             },
             per_block: nothing,
             in_block: true,
@@ -95,7 +120,7 @@ fn cases() -> Vec<Case> {
             speakers: 2,
             setup: |n| {
                 n.set_position(Azimuth::FRONT, Elevation::LEVEL);
-                n.reset();
+                Node::reset(n);
                 n.set_position(Azimuth(120.0), Elevation::LEVEL);
             },
             per_block: nothing,
@@ -107,7 +132,7 @@ fn cases() -> Vec<Case> {
             setup: |n| {
                 n.set_position(Azimuth(45.0), Elevation::LEVEL);
                 n.set_spread(Spread(0.3));
-                n.reset();
+                Node::reset(n);
             },
             per_block: nothing,
             in_block: true,
@@ -117,7 +142,7 @@ fn cases() -> Vec<Case> {
             speakers: 6,
             setup: |n| {
                 n.set_position(Azimuth::FRONT, Elevation::LEVEL);
-                n.reset();
+                Node::reset(n);
                 n.set_position(Azimuth(120.0), Elevation::LEVEL);
             },
             per_block: nothing,
@@ -140,7 +165,7 @@ fn cases() -> Vec<Case> {
             speakers: 6,
             setup: |n| {
                 n.set_position(Azimuth(10.0), Elevation::LEVEL);
-                n.reset();
+                Node::reset(n);
             },
             per_block: |n, b| n.set_position(Azimuth(10.0 + 25.0 * b as f32), Elevation(5.0)),
             in_block: true,
@@ -151,7 +176,7 @@ fn cases() -> Vec<Case> {
             speakers: 2,
             setup: |n| {
                 n.set_position(Azimuth(-15.0), Elevation::LEVEL);
-                n.reset();
+                Node::reset(n);
             },
             per_block: |n, b| {
                 n.set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
@@ -161,20 +186,15 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-/// Render a case: `BLOCKS` blocks of `process`, every channel, every frame.
+/// Render a case: `BLOCKS` blocks, every channel, every frame.
 /// Indexed `[block][channel][frame]`.
 fn render(case: &Case) -> Vec<Vec<Vec<f32>>> {
-    let mut node = VbapPannerNode::for_layout(ChannelLayout::from(case.speakers)).unwrap();
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    let mut node = prep(VbapPannerNode::for_layout(ChannelLayout::from(case.speakers)).unwrap());
     (case.setup)(&mut node);
-    let mut out = BufferVec::new(node.outputs());
     (0..BLOCKS)
         .map(|b| {
             (case.per_block)(&mut node, b);
-            node.process(BLOCK, &input_block(b).buffer_ref(), &mut out.buffer_mut());
-            (0..node.outputs())
-                .map(|c| (0..BLOCK).map(|i| out.at_f32(c, i)).collect())
-                .collect()
+            process(&mut node, &input_block(b))
         })
         .collect()
 }
@@ -234,8 +254,8 @@ fn process_matches_the_per_sample_solver() {
     }
 }
 
-/// `tick` is a block of one, so it must reproduce the per-sample solver bit
-/// for bit — the ramp collapses to its end point.
+/// A block of one frame (what `tick` was) must reproduce the per-sample
+/// solver bit for bit — the ramp collapses to its end point.
 ///
 /// Mutation: solving at the block's first frame instead of its last fails
 /// here. (Writing the ramp as `from + (to - from) * 1.0` does *not*: frame to
@@ -244,15 +264,14 @@ fn process_matches_the_per_sample_solver() {
 /// in `render_channel` is exact without relying on that.)
 #[test]
 fn tick_matches_the_per_sample_solver() {
-    let mut node = VbapPannerNode::surround_5_1().unwrap();
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
     node.set_position(Azimuth(100.0), Elevation(10.0));
     let mut got = Vec::new();
     let mut out = [0.0f32; 6];
     for k in 0..40 {
         let l = ((k * 37 % 17) as f32 / 8.5) - 1.0;
         let r = ((k * 53 % 19) as f32 / 9.5) - 1.0;
-        node.tick(&[l, r], &mut out);
+        tick(&mut node, [l, r], &mut out);
         if k % 13 == 0 || k == 39 {
             got.extend_from_slice(&out);
         }
@@ -267,15 +286,14 @@ fn tick_matches_the_per_sample_solver() {
 #[test]
 #[ignore = "generator, not a check"]
 fn print_tick_golden() {
-    let mut node = VbapPannerNode::surround_5_1().unwrap();
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
     node.set_position(Azimuth(100.0), Elevation(10.0));
     let mut got = Vec::new();
     let mut out = [0.0f32; 6];
     for k in 0..40 {
         let l = ((k * 37 % 17) as f32 / 8.5) - 1.0;
         let r = ((k * 53 % 19) as f32 / 9.5) - 1.0;
-        node.tick(&[l, r], &mut out);
+        tick(&mut node, [l, r], &mut out);
         if k % 13 == 0 || k == 39 {
             got.extend_from_slice(&out);
         }
@@ -890,30 +908,23 @@ const GOLDENS: &[(&str, &[f32])] = &[
 ];
 
 /// A constant `(l, r)` block, so every output frame *is* a gain readout.
-fn dc_block(l: f32, r: f32) -> BufferVec {
-    let mut buf = BufferVec::new(2);
-    for i in 0..BLOCK {
-        buf.set_f32(0, i, l);
-        buf.set_f32(1, i, r);
-    }
-    buf
+fn dc_block(l: f32, r: f32) -> Block {
+    [vec![l; BLOCK], vec![r; BLOCK]]
 }
 
 /// Render `blocks` blocks of DC through `node`, calling `per_block` before
 /// each, and return every channel's frames concatenated across blocks.
 fn dc_stream(
     node: &mut VbapPannerNode,
-    input: &BufferVec,
+    input: &Block,
     blocks: usize,
     per_block: impl Fn(&VbapPannerNode, usize),
 ) -> Vec<Vec<f32>> {
-    let mut out = BufferVec::new(node.outputs());
-    let mut stream = vec![Vec::new(); node.outputs()];
+    let mut stream = vec![Vec::new(); node.num_channels()];
     for b in 0..blocks {
         per_block(node, b);
-        node.process(BLOCK, &input.buffer_ref(), &mut out.buffer_mut());
-        for (c, s) in stream.iter_mut().enumerate() {
-            s.extend((0..BLOCK).map(|i| out.at_f32(c, i)));
+        for (s, out) in stream.iter_mut().zip(process(node, input)) {
+            s.extend(out);
         }
     }
     stream
@@ -948,11 +959,10 @@ fn assert_boundaries_are_on_the_ramp(stream: &[Vec<f32>], what: &str) {
 fn the_gain_ramp_is_continuous_across_block_boundaries() {
     for speakers in [2u16, 6] {
         for width in [0.0f32, 1.0] {
-            let mut node = VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap();
-            node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+            let mut node = prep(VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap());
             node.set_width(StereoWidth(width));
             node.set_position(Azimuth(-20.0), Elevation::LEVEL);
-            node.reset();
+            Node::reset(&mut node);
             let stream = dc_stream(&mut node, &dc_block(1.0, 0.5), 24, |n, b| {
                 // A 140° jump, then a sweep that moves the target every block.
                 let az = if b < 12 {
@@ -980,10 +990,9 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 /// crossfade when the branches differ) fails at the first crossing.
 #[test]
 fn a_width_crossing_the_fold_threshold_crossfades() {
-    let mut node = VbapPannerNode::stereo().unwrap();
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    let mut node = prep(VbapPannerNode::stereo().unwrap());
     node.set_position(Azimuth(-15.0), Elevation::LEVEL);
-    node.reset();
+    Node::reset(&mut node);
     // L only: the two-source branch and the fold weigh it differently.
     let stream = dc_stream(&mut node, &dc_block(1.0, 0.0), 8, |n, b| {
         n.set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
@@ -1002,8 +1011,8 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 /// the block starts one ramp step from where the previous block ended, and
 /// its last frame is exactly the per-frame solve at that frame.
 ///
-/// The reference is the same scenario driven by `tick`, which is a block of
-/// one and therefore the per-frame solver itself (see
+/// The reference is the same scenario driven one frame at a time, which is
+/// therefore the per-frame solver itself (see
 /// `tick_matches_the_per_sample_solver`).
 ///
 /// Mutation: solving at the block's *first* frame (stepping the smoother after
@@ -1012,46 +1021,44 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 #[test]
 fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let setup = || {
-        let mut n = VbapPannerNode::surround_5_1().unwrap();
-        n.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        let mut n = prep(VbapPannerNode::surround_5_1().unwrap());
         n.set_position(Azimuth(0.0), Elevation::LEVEL);
-        n.reset();
+        Node::reset(&mut n);
         n
     };
     let input = dc_block(0.8, 0.8);
 
     let mut node = setup();
-    let mut out = BufferVec::new(6);
-    node.process(BLOCK, &input.buffer_ref(), &mut out.buffer_mut());
-    let settled: Vec<f32> = (0..6).map(|c| out.at_f32(c, BLOCK - 1)).collect();
+    let out = process(&mut node, &input);
+    let settled: Vec<f32> = (0..6).map(|c| out[c][BLOCK - 1]).collect();
     // Seated and unchanged: the first block is flat.
     for (c, &s) in settled.iter().enumerate() {
-        assert_eq!(out.at_f32(c, 0), s, "ch {c} moved without a change");
+        assert_eq!(out[c][0], s, "ch {c} moved without a change");
     }
 
     node.set_position(Azimuth(90.0), Elevation::LEVEL);
-    node.process(BLOCK, &input.buffer_ref(), &mut out.buffer_mut());
+    let out = process(&mut node, &input);
 
     let mut reference = setup();
     let mut frame = [0.0f32; 6];
     for _ in 0..BLOCK {
-        reference.tick(&[0.8, 0.8], &mut frame);
+        tick(&mut reference, [0.8, 0.8], &mut frame);
     }
     reference.set_position(Azimuth(90.0), Elevation::LEVEL);
     for _ in 0..BLOCK {
-        reference.tick(&[0.8, 0.8], &mut frame);
+        tick(&mut reference, [0.8, 0.8], &mut frame);
     }
 
     let mut any_moved = false;
     for (c, &s) in settled.iter().enumerate() {
-        let last = out.at_f32(c, BLOCK - 1);
+        let last = out[c][BLOCK - 1];
         assert_eq!(
             last.to_bits(),
             frame[c].to_bits(),
             "ch {c}: the block must end on the per-frame solve"
         );
         let step = (last - s) / BLOCK as f32;
-        let first = out.at_f32(c, 0);
+        let first = out[c][0];
         assert!(
             (first - (s + step)).abs() <= 1e-6,
             "ch {c}: the block must start one ramp step from {s}, got {first}"

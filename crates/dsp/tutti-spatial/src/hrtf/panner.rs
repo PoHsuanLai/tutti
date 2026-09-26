@@ -329,10 +329,12 @@ impl HrtfBinaural {
     /// unchanged-rate early return above and must never be called on the audio
     /// path.
     ///
-    /// The fundsp contract allows either answer (`AudioUnit::set_sample_rate`:
-    /// "the unit is allowed to reset itself here... if the sample rate stays
-    /// unchanged, the goal is to maintain current state"), and tutti's two
-    /// implementors sit at opposite ends of that latitude. The other is
+    /// The node calls this from `Node::prepare`, which a graph calls again
+    /// whenever the rate *or the maximum block* changes: the unchanged-rate
+    /// early return is what keeps a block-size change from dropping the tail.
+    /// Rate changes may reset or keep state (the fundsp contract this was
+    /// written against allowed either), and tutti's two implementors sit at
+    /// opposite ends of that latitude. The other is
     /// `tutti_sampler`'s stretch unit, which retunes its grid geometry and keeps
     /// its phase history, allocation-free. A caller that treats the two as
     /// interchangeable is the thing that breaks.

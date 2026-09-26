@@ -166,11 +166,13 @@ param_graph_node!(
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}
 
-/// The synth as a graph node: one MIDI event input. A keyboard reaches it
-/// through a `LiveMidiInput` (with the `midi` feature), routing through a
-/// `MidiRouteRule`.
+// The synth as a graph node: one MIDI event input, and its live params
+// (master volume, unison detune and spread) as a `ParamSet`, so an
+// `AudioParam` on its entity reaches it and a fork of it starts from what was
+// set. A keyboard reaches it through a `LiveMidiInput` (with the `midi`
+// feature), routing through a `MidiRouteRule`.
 #[cfg(feature = "synth")]
-impl GraphNode for tutti_polysynth::PolySynth {}
+param_graph_node!(tutti_polysynth::PolySynth);
 
 /// `Commands` extension: add a [`GraphNode`] and spawn an entity bound to it.
 pub trait SpawnGraphNode {

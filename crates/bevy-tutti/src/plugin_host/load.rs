@@ -37,7 +37,7 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
 
-use crate::graph::{AudioGraphRes, CapturedControls, ControlCapture, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty};
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
@@ -269,7 +269,6 @@ pub fn plugin_load_promote(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    capture: ControlCapture,
     mut pending: Query<(Entity, &PluginRequest, &mut PendingPlugin)>,
 ) {
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
@@ -309,19 +308,17 @@ pub fn plugin_load_promote(
                 // An out-of-process plugin is bound as it goes in
                 // (`PluginClient::bind`): a native node, with its own fork
                 // source so an export can fork it (by state transfer; doc
-                // 013, PR 12). An in-process VST2 plugin is an `AudioUnit` with
-                // no fork source yet: it goes in boxed, and an export of a
-                // native graph holding it is refused, naming it.
+                // 013, PR 12). An in-process VST2 plugin is a native node with
+                // no fork source yet: it goes in `Unforkable`, and an export
+                // of a graph holding it is refused, naming it.
                 let (id, controls) = match plugin.into_client() {
                     Ok(client) => {
                         let controls = CapturedControls::for_plugin(&client);
                         (graph.insert_plugin(client), controls)
                     }
-                    Err(unit) => {
-                        let controls = capture.capture(unit.as_ref());
-                        // `insert_boxed`: the unit is already boxed, and
-                        // `insert` boxes what it is given.
-                        (graph.insert_boxed(unit), controls)
+                    Err(node) => {
+                        let (id, ()) = graph.insert_node(tutti_graph::Unforkable(node));
+                        (id, CapturedControls::default())
                     }
                 };
                 edited = true;

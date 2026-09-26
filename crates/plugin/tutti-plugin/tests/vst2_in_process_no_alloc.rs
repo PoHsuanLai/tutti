@@ -19,14 +19,12 @@
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
 
-use tutti_core::BufferVec;
+use tutti_core::{SampleRate, Samples};
+use tutti_graph::contract::Direct;
+use tutti_graph::{Event, Offset};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
-
-/// The in-process client's f32 audio path, named: it is also a graph node
-/// and an `AudioUnit<F64>`.
-type Vst2Unit = dyn tutti_core::AudioUnit;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -36,29 +34,30 @@ mod probe_path;
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
+/// `event` on frame 0 of a 64-frame block.
+fn at_start(event: MidiEvent) -> Event {
+    Event::midi(Offset::new(0, Samples(64)).expect("inside"), event.data)
+}
+
 #[test]
 fn process_steady_state_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (mut unit, handle) =
-        tutti_plugin::in_process_vst2(probe_path::probe_path(), 48_000.0).expect("load failed");
-
-    let loaded = handle.loaded();
-    let in_ch = loaded.total_inputs().max(1); // BufferVec::new(0) panics on at()
-    let out_ch = loaded.total_outputs().max(1);
-
-    let input = BufferVec::new(in_ch);
-    let mut output = BufferVec::new(out_ch);
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)
+        .expect("load failed");
+    // Prepared (outside the gate) as a graph prepares a node, then driven by
+    // hand through `Node::process`.
+    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
 
     // Warm up: many plugins allocate on their first few process calls
     // (sample buffers, lookup tables). Run enough blocks to settle.
     for _ in 0..32 {
-        unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        unit.block();
     }
 
     // Steady state: no allocation per block.
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..256 {
-            unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.block();
         }
     });
 
@@ -71,20 +70,13 @@ fn process_steady_state_does_not_allocate() {
 #[test]
 fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (mut unit, handle) =
-        tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)
-            .expect("load failed");
-
-    let loaded = handle.loaded();
-    let in_ch = loaded.total_inputs().max(1);
-    let out_ch = loaded.total_outputs().max(1);
-
-    let input = BufferVec::new(in_ch);
-    let mut output = BufferVec::new(out_ch);
+    let (unit, handle) = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)
+        .expect("load failed");
+    let mut unit = Direct::new(unit, SampleRate(48_000.0), 64);
 
     // Warm up audio path.
     for _ in 0..32 {
-        Vst2Unit::process(&mut unit, 64, &input.buffer_ref(), &mut output.buffer_mut());
+        unit.block();
     }
 
     // Pre-warm MIDI codec — first event triggers any one-shot
@@ -95,13 +87,13 @@ fn process_with_midi_does_not_allocate() {
         60,
         midi1_velocity_to_midi2(100),
     );
-    unit.queue_midi(&[warm_event]);
-    Vst2Unit::process(&mut unit, 64, &input.buffer_ref(), &mut output.buffer_mut());
+    unit.events(0, &[at_start(warm_event)]);
+    unit.block();
     let warm_off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60, 0);
-    unit.queue_midi(&[warm_off]);
-    Vst2Unit::process(&mut unit, 64, &input.buffer_ref(), &mut output.buffer_mut());
+    unit.events(0, &[at_start(warm_off)]);
+    unit.block();
 
-    // Steady state with periodic MIDI: no allocation.
+    // Steady state with periodic MIDI on the event input: no allocation.
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128 {
             if i % 16 == 0 {
@@ -111,7 +103,7 @@ fn process_with_midi_does_not_allocate() {
                     60 + (i as u8 % 12),
                     midi1_velocity_to_midi2(100),
                 );
-                unit.queue_midi(&[ev]);
+                unit.events(0, &[at_start(ev)]);
             }
             if i % 16 == 8 {
                 let ev = MidiEvent::note_off(
@@ -120,9 +112,9 @@ fn process_with_midi_does_not_allocate() {
                     60 + (i as u8 % 12),
                     0,
                 );
-                unit.queue_midi(&[ev]);
+                unit.events(0, &[at_start(ev)]);
             }
-            Vst2Unit::process(&mut unit, 64, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.block();
         }
     });
 

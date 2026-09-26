@@ -1,175 +1,65 @@
 //! Forking a [`SoundFontUnit`] for the graph's export (`Editor::fork`,
-//! design doc 013 PR 12): a fresh unit over the same decoded SoundFont, at
-//! the render's rate. Its MIDI comes from its event input, as the live
-//! unit's does: the fork of the graph forks the clip node feeding it too
-//! (doc 013, rewrite item 5).
+//! design doc 013): a fresh unit over the same decoded SoundFont, at the
+//! render's rate. Its MIDI comes from its event input, as the live unit's
+//! does: the fork of the graph forks the clip node feeding it too (doc 013,
+//! rewrite item 5).
 //!
-//! # Why not a clone of the graph's shadow
+//! # What this forks from
 //!
-//! A host that inserts the unit through `tutti_graph::Legacy::controlled` gets
-//! a fork source for free: a clone of the node's **shadow**, taken when the
-//! node was inserted. It kept the live unit's rate whatever the export's was:
-//! a 96 kHz export of a 48 kHz unit played every note an octave low, at half
-//! its frame.
-//!
-//! # What this forks from instead
-//!
-//! A **template**: a clone of the unit taken when the source is made, never
+//! A **template**: a clone of the unit taken when it is inserted, never
 //! processed. Its synthesizer is a clone too, and that clone shares the
 //! decoded SoundFont (`Arc<SoundFont>`, sample data included): nothing is
 //! reloaded or copied but the per-channel and voice state. Its preset is
-//! whatever `program_change` set before the source was made. A fork is a
-//! clone of the template, `AudioUnit::isolate` (nothing queued), then
-//! `AudioUnit::reset` — every key released. The template never rendered, so
-//! it holds no voice to release, and the fork starts silent.
+//! whatever `program_change` set before the unit went in. A fork is
+//! [`fork_instance`](SoundFontUnit::fork_instance) of the template: a clone
+//! with every key released. The template never rendered, so it holds no
+//! voice to release, and the fork starts silent.
 //!
-//! **The forked node follows its graph's rate.** A live unit's rate is fixed
-//! (see [`SoundFontUnit`]'s "The sample rate is fixed"); the node a fork
-//! source hands the graph wraps its unit in [`RateFollowing`], whose
-//! `set_sample_rate` — called when the fork is prepared at the render's rate
-//! — swaps in [`SoundFontUnit::with_sample_rate`], keeping the preset. A rate
-//! RustySynth refuses (outside 16–192 kHz) leaves the unit at its own, as a
-//! live unit stays.
+//! **The fork follows its graph's rate**, as the live node does: the editor
+//! prepares it at the render's rate, and the node's `prepare` swaps in
+//! [`SoundFontUnit::with_sample_rate`], keeping the preset. (Under `Legacy`
+//! this took a `RateFollowing` wrapper whose `set_sample_rate` re-rated; a
+//! native node's `prepare` runs on the control thread, where rebuilding is
+//! allowed, so the node does it itself.)
 //!
 //! What the fork does **not** carry: sounding voices, and channel state the
 //! live unit reached through MIDI after the template was taken (a program
 //! change, a CC) — the clip replays whatever of that it holds.
 
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, Setting, SignalFrame};
-use tutti_graph::{ForkCause, ForkMode, ForkSource, Forked, IntoNode, Legacy};
+use tutti_graph::{ForkCause, ForkMode, ForkSource, Forked};
 
 use crate::SoundFontUnit;
 
-/// [`SoundFontUnit::fork_source`]'s source: the template in the module docs.
+/// The fork source a [`SoundFontUnit`] is inserted with: the template in the
+/// module docs.
 pub(crate) struct SoundFontFork {
     template: SoundFontUnit,
-    /// Whether the fork is a graph node (the unit was inserted as one,
-    /// `IntoNode for SoundFontUnit`, which re-rates in `prepare`) rather than
-    /// a `Legacy` one.
-    native: bool,
-}
-
-impl SoundFontFork {
-    /// The fork, as the unit the graph runs: what [`ForkSource::fork`]
-    /// wraps.
-    fn unit(&self) -> RateFollowing {
-        RateFollowing(self.template.fork_instance())
-    }
 }
 
 impl ForkSource for SoundFontFork {
     fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
-        if self.native {
-            // A graph node follows its graph's rate itself (`Node::prepare`).
-            return Ok(Forked::new(Box::new(self.template.fork_instance())));
-        }
-        let fork = self.unit();
-        // Run through `Legacy`, as a host runs the live unit; `into_node` so
-        // it carries no fork source of its own (a fork is not forked again).
-        Ok(Forked::new(Legacy::new(fork).into_node().0))
-    }
-}
-
-/// A forked [`SoundFontUnit`] that renders at whatever rate its graph
-/// prepares it for (see "The forked node follows its graph's rate" in the
-/// module docs). Every other method forwards, `as_any` included, so a
-/// downcast sees the unit.
-#[derive(Clone)]
-struct RateFollowing(SoundFontUnit);
-
-impl AudioUnit for RateFollowing {
-    fn reset(&mut self) {
-        self.0.reset();
-    }
-    fn isolate(&mut self) {
-        self.0.isolate();
-    }
-    /// Control thread (a graph prepares a unit there): may allocate.
-    fn set_sample_rate(&mut self, sample_rate: SampleRate) {
-        if sample_rate.get().round() == self.0.sample_rate().get() {
-            return;
-        }
-        if let Ok(unit) = self.0.with_sample_rate(sample_rate) {
-            self.0 = unit;
-        }
-    }
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.0.tick(input, output);
-    }
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.0.process(size, input, output);
-    }
-    fn inputs(&self) -> usize {
-        self.0.inputs()
-    }
-    fn outputs(&self) -> usize {
-        self.0.outputs()
-    }
-    fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
-        self.0.route(input, frequency)
-    }
-    fn set(&mut self, setting: Setting) {
-        self.0.set(setting);
-    }
-    fn get_id(&self) -> u64 {
-        self.0.get_id()
-    }
-    fn as_any(&self) -> &dyn core::any::Any {
-        self.0.as_any()
-    }
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self.0.as_any_mut()
-    }
-    fn footprint(&self) -> usize {
-        self.0.footprint()
-    }
-    fn allocate(&mut self) {
-        self.0.allocate();
+        Ok(Forked::new(Box::new(self.template.fork_instance())))
     }
 }
 
 impl SoundFontUnit {
     /// A fresh unit for a fork of the graph this one plays in: the same
-    /// SoundFont (shared, not reloaded), settings, rate and preset, nothing
-    /// queued and no sounding voice. See the `fork` module docs
-    /// (`src/fork.rs`); [`with_sample_rate`](Self::with_sample_rate) moves it
-    /// to a render's rate.
+    /// SoundFont (shared, not reloaded), settings, rate and preset, and no
+    /// sounding voice. See the `fork` module docs (`src/fork.rs`); its graph
+    /// re-rates it when it is prepared.
     pub fn fork_instance(&self) -> SoundFontUnit {
         let mut fork = self.clone();
-        fork.isolate();
-        fork.reset();
+        fork.release_all();
         fork
     }
 
-    /// The [`ForkSource`] a host hands the graph's editor when it inserts
-    /// this unit, so that a fork of the graph (an export) forks it through
-    /// [`fork_instance`](Self::fork_instance), at the fork's rate.
-    ///
-    /// For a host that wraps the unit in its own node builder (bevy-tutti's
-    /// `Legacy::controlled`, for a settings ring and a shadow):
-    /// `NodeParts { node, controls, fork: Some(unit.fork_source()) }`.
-    ///
-    /// Take it from the unit that goes into the graph, **before** it goes in
-    /// and after its `program_change`: it keeps a template clone (see the
-    /// `fork` module docs), and costs a second
-    /// copy of the synthesizer's voice and effect state — not of the
-    /// SoundFont — for as long as the node is in the graph.
-    pub fn fork_source(&self) -> Box<dyn ForkSource> {
-        Box::new(self.fork_template())
-    }
-
-    fn fork_template(&self) -> SoundFontFork {
+    /// The fork source of a unit inserted as a graph node: a template
+    /// clone, costing a second copy of the synthesizer's voice and effect
+    /// state — not of the SoundFont — for as long as the node is in the
+    /// graph.
+    pub(crate) fn fork_template(&self) -> SoundFontFork {
         SoundFontFork {
             template: self.clone(),
-            native: false,
-        }
-    }
-
-    /// The fork source of a unit inserted as a graph node.
-    pub(crate) fn native_fork(&self) -> SoundFontFork {
-        SoundFontFork {
-            template: self.clone(),
-            native: true,
         }
     }
 }
@@ -178,7 +68,11 @@ impl SoundFontUnit {
 mod tests {
     use std::sync::Arc;
 
-    use tutti_core::{AudioUnit, BufferVec, SampleRate, MAX_BUFFER_SIZE};
+    use tutti_core::{SampleRate, Samples};
+    use tutti_graph::contract::drive_in;
+    use tutti_graph::{
+        Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
+    };
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
@@ -211,20 +105,33 @@ mod tests {
         unit
     }
 
-    fn note_on() -> MidiEvent {
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
-    }
-
-    /// Render `frames` of channel 0 in 64-frame blocks.
-    fn render(unit: &mut dyn AudioUnit, frames: usize) -> Vec<f32> {
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
+    /// Render `frames` of channel 0 of `node`, prepared at `rate` (as a
+    /// graph prepares a fork at its render's), in 64-frame blocks, a note-on
+    /// at frame 0.
+    fn render(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
+        node.prepare(&Prepare::new(rate, Samples(64)));
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let at = Offset::new(0, Samples(64)).expect("inside");
+        let first = [Event::midi(at, note.data)];
         let mut out = Vec::with_capacity(frames);
+        let mut frame = 0u64;
         while out.len() < frames {
-            let n = (frames - out.len()).min(MAX_BUFFER_SIZE);
-            unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-            out.extend_from_slice(&output.buffer_ref().channel_f32(0)[..n]);
+            let env = Env {
+                frame: tutti_core::Frame(frame),
+                sample_rate: rate,
+                block_len: Samples(64),
+                transport: Transport::default(),
+                changes: TransportChanges::NONE,
+            };
+            let events: &[Event] = if frame == 0 { &first } else { &[] };
+            out.extend(
+                drive_in(&mut *node, &env, &[], &[], &[events])
+                    .audio
+                    .swap_remove(0),
+            );
+            frame += 64;
         }
+        out.truncate(frames);
         out
     }
 
@@ -234,10 +141,10 @@ mod tests {
     /// note renders sample for sample what a fresh unit built at the render's
     /// rate on that preset renders.
     ///
-    /// Mutation (run): `RateFollowing::set_sample_rate` doing nothing → at
-    /// 96 kHz the fork renders the 48 kHz unit's note, not the reference.
-    /// Mutation (run): `Synthesizer::with_sample_rate` not copying `channels`
-    /// → the 96 kHz fork plays the piano.
+    /// Mutation (run): the node's `prepare` not re-rating → at 96 kHz the
+    /// fork renders the 48 kHz unit's note, not the reference. Mutation
+    /// (run): `Synthesizer::with_sample_rate` not copying `channels` → the
+    /// 96 kHz fork plays the piano.
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
@@ -246,24 +153,72 @@ mod tests {
 
         for rate in [LIVE, SampleRate(96_000.0)] {
             let held = Arc::strong_count(&font);
-            let mut fork = source.unit();
+            let fork = source.fork(ForkMode::Live).expect("forks").node;
             assert_eq!(
                 Arc::strong_count(&font),
                 held + 1,
                 "the fork shares the decoded SoundFont"
             );
-            // What a graph does when it prepares the fork.
-            fork.set_sample_rate(rate);
-            fork.0.queue_midi(&[note_on()]);
-            let out = render(&mut fork, 4_096);
-            let reference = {
-                let mut fresh = unit(&font, rate, 24);
-                fresh.queue_midi(&[note_on()]);
-                render(&mut fresh, 4_096)
-            };
+            let out = render(fork, rate, 4_096);
+            let reference = render(Box::new(unit(&font, rate, 24)), rate, 4_096);
             assert!(reference.iter().any(|&s| s != 0.0), "the note sounds");
             assert_eq!(out, reference, "{rate:?}: the note at the render's rate");
         }
         assert_eq!(live.sample_rate(), LIVE, "the live unit keeps its rate");
+    }
+
+    /// **A fork releases every key**: a note held on the unit when it went
+    /// in (a `note_on` before insert, so the template carries the voice)
+    /// is released in the fork, and dies away there, while the live unit
+    /// holds it. An organ preset (16), which sustains while its key is down,
+    /// tells the two apart.
+    ///
+    /// Mutation (run): `fork_instance` not calling `release_all` → the fork
+    /// sustains the held organ note → fails.
+    #[test]
+    fn a_fork_releases_every_held_key() {
+        let font = soundfont();
+        let mut live = unit(&font, LIVE, 16);
+        live.note_on(0, 60, 100);
+        let fork = live
+            .fork_template()
+            .fork(ForkMode::Live)
+            .expect("forks")
+            .node;
+        // No new events: the tail of each render, two seconds on.
+        let tail = |out: &[f32]| {
+            let t = &out[out.len() - 4_096..];
+            (t.iter().map(|s| s * s).sum::<f32>() / t.len() as f32).sqrt()
+        };
+        let held = tail(&render_quiet(Box::new(live), LIVE, 96_000));
+        let forked = tail(&render_quiet(fork, LIVE, 96_000));
+        assert!(held > 1e-3, "the live organ note sustains ({held})");
+        assert!(
+            forked < held * 0.01,
+            "the fork released it ({forked} vs {held})"
+        );
+    }
+
+    /// `render` with no events at all.
+    fn render_quiet(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
+        node.prepare(&Prepare::new(rate, Samples(64)));
+        let mut out = Vec::with_capacity(frames);
+        let mut frame = 0u64;
+        while out.len() < frames {
+            let env = Env {
+                frame: tutti_core::Frame(frame),
+                sample_rate: rate,
+                block_len: Samples(64),
+                transport: Transport::default(),
+                changes: TransportChanges::NONE,
+            };
+            out.extend(
+                drive_in(&mut *node, &env, &[], &[], &[])
+                    .audio
+                    .swap_remove(0),
+            );
+            frame += 64;
+        }
+        out
     }
 }

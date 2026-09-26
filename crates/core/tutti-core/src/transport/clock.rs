@@ -1,15 +1,17 @@
-//! Sample-accurate transport clock — the graph node that turns the transport's
-//! atomics into a per-sample beat signal.
+//! Sample-accurate transport clock — the engine's playhead: it turns the
+//! transport's atomics into the transport each graph block is rendered under,
+//! and writes the playhead back to the transport once per block.
 //!
-//! Emits the beat across [`BEAT_PORTS`](super::state::BEAT_PORTS) output ports
-//! (whole, then fraction) so precision does not decay as a session runs long,
-//! and writes the playhead back to the transport once per buffer.
+//! It is not a graph node. The engine holds one and drives it (its
+//! crate-private `begin`, `advance` and `publish_position`); a node reads the
+//! transport from its block's `Env`, and one that wants the beat as a signal
+//! is wired to an [`EnvClock`](super::EnvClock).
 
-use super::state::{ClockLinks, LoopSpan};
+use super::state::ClockLinks;
+#[cfg(test)]
+use super::state::LoopSpan;
 use crate::Ordering;
 use crate::{Beat, Bpm, Samples};
-use fundsp::prelude::*;
-use std::any;
 use tutti_types::FrameClock;
 
 /// How far the tempo must move before the clock takes it (and starts a new
@@ -72,7 +74,8 @@ impl Control {
     }
 }
 
-/// Split a beat into the two `f32` port values (whole, fraction).
+/// Split a beat into the two `f32` port values (whole, fraction): what an
+/// [`EnvClock`](super::EnvClock) emits.
 ///
 /// The inverse of [`beat_from_ports`](super::state::beat_from_ports); see
 /// [`BEAT_PORTS`](super::state::BEAT_PORTS) for why the split exists at all.
@@ -81,12 +84,14 @@ pub(super) fn split_beat(beat: Beat) -> (f32, f32) {
     (beat.floor().get() as f32, beat.fract().get() as f32)
 }
 
-/// The beat generator: a zero-input, two-output [`AudioUnit`] emitting the
-/// playhead as `(whole, fraction)`.
+/// The engine's playhead: a frame count on a segment, stepped a block at a
+/// time by the engine (its crate-private `begin`, then `advance`).
 ///
-/// Emit-then-advance. Sample 0 of a block carries the block's start beat, and
-/// only then does the beat move — anything that advances a second clock
-/// alongside this one must match that order or sit permanently one frame out
+/// Emit-then-advance. A block's first frame carries the block's start beat,
+/// and only then does the beat move — anything that advances a second clock
+/// alongside this one (an [`EnvClock`](super::EnvClock),
+/// [`Env::transport_at`](tutti_graph::Env::transport_at), an
+/// `OfflineTimeline`) matches that order, or sits permanently one frame out
 /// of step.
 ///
 /// **The frame is the source of truth** (doc 013 §6). The playhead is a
@@ -97,12 +102,14 @@ pub(super) fn split_beat(beat: Beat) -> (f32, f32) {
 /// their frame.
 #[derive(Clone, Debug)]
 pub struct TransportClock {
-    /// Everything shared with the live transport. `isolate()` replaces this
-    /// wholesale; every other field is this clock's own.
+    /// Everything shared with the live transport. A derived stream
+    /// ([`starting_at`](Self::starting_at), [`at_tempo`](Self::at_tempo))
+    /// severs it wholesale; every other field is this clock's own.
     links: ClockLinks,
     /// The playhead, and the tempo in force (its hysteresis applied) and rate
-    /// it rolls at. Advanced once per sample in `tick`/`process`, or a block
-    /// at a time by [`advance`](Self::advance): the same beats either way.
+    /// it rolls at. Advanced a block at a time by [`advance`](Self::advance):
+    /// the beat of any frame is in closed form from the segment, so the same
+    /// beats as a frame-by-frame walk.
     clock: FrameClock,
     /// Whether the last block (or frame) this clock ran was rolling, so a
     /// play start moves the segment generation on
@@ -154,21 +161,36 @@ impl TransportClock {
     /// Absolute, not an offset: the returned clock's first emitted beat is
     /// exactly `beat`, matching the one-shot absolute semantics of seek.
     ///
-    /// Severs every shared link to the live transport (the same cut
-    /// [`AudioUnit::isolate`] makes), so this clock writes to nothing live and
-    /// reads no live loop or seek state.
+    /// Severs every shared link to the live transport
+    /// ([`ClockLinks::severed`](super::ClockLinks::severed)), so this clock
+    /// writes to nothing live and reads no live loop or seek state.
+    ///
+    /// # Why a clone is not already safe
+    ///
+    /// `Clone` shares `tempo`, `paused`, `seek`, the loop span and
+    /// `position_writeback` by `Arc`. A clock stepped on a worker thread for
+    /// seconds while the live engine plays **writes** `position_writeback`
+    /// and consumes `seek` every block: a shared clone stomps the live
+    /// playhead and swallows live seeks.
     pub fn starting_at(&self, beat: impl Into<Beat>) -> Self {
-        let mut derived = self.clone();
-        derived.isolate();
+        let mut derived = self.severed();
         derived.clock.seat(beat.into());
         derived
     }
 
-    /// Derive an independent stream running at a fixed `bpm`.
+    /// Derive an independent stream running at a fixed `bpm` (severed, as
+    /// [`starting_at`](Self::starting_at) is).
     pub fn at_tempo(&self, bpm: impl Into<crate::Bpm>) -> Self {
-        let mut derived = self.clone();
-        derived.isolate();
+        let mut derived = self.severed();
         derived.set_tempo(bpm);
+        derived
+    }
+
+    /// A clone sharing nothing with the live transport. The tempo is copied
+    /// into a cell of its own; the loop is dropped.
+    fn severed(&self) -> Self {
+        let mut derived = self.clone();
+        derived.links = derived.links.severed();
         derived
     }
 
@@ -181,15 +203,9 @@ impl TransportClock {
     }
 
     /// The beat this clock will emit next. Its own position, not the live
-    /// transport's — an isolated clone reports its private playhead here.
+    /// transport's — a derived stream reports its private playhead here.
     pub fn current_beat(&self) -> Beat {
         self.clock.beat()
-    }
-
-    #[inline]
-    fn update_tempo_if_changed(&mut self) {
-        let asked = Bpm(self.links.tempo.load(Ordering::Acquire));
-        self.take_tempo(asked);
     }
 
     /// Take `asked` as the tempo, if it moved past the hysteresis: a new
@@ -322,140 +338,34 @@ impl TransportClock {
     }
 }
 
-impl AudioUnit for TransportClock {
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        2
-    }
-
-    fn reset(&mut self) {
-        self.clock.seat(Beat(0.0));
-    }
-
-    /// Sever every shared link to the *live* transport so this clone can be
-    /// ticked on a worker thread — an offline region render — without
-    /// disturbing live playback.
-    ///
-    /// # Why a clone is not already safe
-    ///
-    /// `Clone` shares `tempo`, `paused`, `seek`, the loop span and
-    /// `position_writeback` by `Arc`. That is correct for the commit-clone,
-    /// where only the original is ticked. An offline render is not that: it
-    /// ticks the clone for seconds while the live graph plays, and this clock
-    /// **writes** `position_writeback` and consumes `seek` every buffer. A
-    /// shared clone therefore stomps the live playhead and swallows live seeks,
-    /// jerking the live samplers to garbage positions — continuous noise for
-    /// the whole render.
-    ///
-    /// The cut itself is [`ClockLinks::severed`](super::ClockLinks::severed).
-    /// Dropping the loop costs nothing: a render's length and start come from
-    /// the offline transport and the region bounds, never from this clock's
-    /// loop fields.
-    fn isolate(&mut self) {
-        self.links = self.links.severed();
-    }
-
-    /// Re-seat the clock on the render's start beat and tempo.
-    ///
-    /// `isolate()` severs the live links but leaves the clock at whatever beat
-    /// the *live* playhead held when it was cloned, which would make the render
-    /// depend on when it was started. See [`OfflineTransport`](super::OfflineTransport).
-    fn rebind_offline(&mut self, transport: &super::OfflineTransport) {
-        // Read at rebind time — before the renderer has advanced anything — so
-        // these are the seeded start values, not a moving position.
-        *self = self
-            .at_tempo(transport.tempo())
-            .starting_at(transport.beat());
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
-        // A new segment at the new rate, at the tempo in force, not the one
-        // asked: the clock takes a tempo only through `take_tempo`'s
-        // hysteresis, and the tempo in force is the one a graph engine
-        // reports in its `Env` and an `EnvClock` steps by. A request inside
-        // the hysteresis would otherwise run this clock at a tempo it does
-        // not publish.
+impl TransportClock {
+    /// A new segment at `sample_rate`, at the tempo in force, not the one
+    /// asked: the clock takes a tempo only through `take_tempo`'s
+    /// hysteresis, and the tempo in force is the one a graph engine reports
+    /// in its `Env` and an `EnvClock` steps by. A request inside the
+    /// hysteresis would otherwise run this clock at a tempo it does not
+    /// publish.
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         self.clock.set_sample_rate(sample_rate);
     }
 
-    #[inline]
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        self.apply_pending_seek();
-        self.update_tempo_if_changed();
-
-        let rolling = !self.links.paused.load(Ordering::Acquire);
-        self.note_rolling(rolling);
-        let (whole, frac) = split_beat(self.clock.beat());
-        output[0] = whole;
-        output[1] = frac;
-
-        if rolling {
-            // `LoopRange` is non-empty by construction; only a playhead that
-            // crosses the end wraps (`FrameClock::advance`).
-            let region = self.links.loop_span.as_ref().and_then(LoopSpan::range);
-            self.clock.advance(Samples(1), region);
-        }
-
+    /// Step `frames` as the engine steps a block, under the transport's live
+    /// inputs read off this clock's links (what `Control::read` reads off the
+    /// settings): take a pending seek and the tempo, advance, publish. The
+    /// beat of the block's first frame. For tests that drive a bare clock.
+    #[cfg(test)]
+    pub(crate) fn step(&mut self, frames: usize) -> Beat {
+        let control = Control {
+            tempo: Bpm(self.links.tempo.load(Ordering::Acquire)),
+            paused: self.links.paused.load(Ordering::Acquire),
+            looping: self.links.loop_span.as_ref().and_then(LoopSpan::range),
+            recording: false,
+        };
+        let t = self.begin(&control, true);
+        let first = self.clock.beat();
+        self.advance(frames, &t);
         self.publish_position();
-        self.advance_steady_time(1);
-    }
-
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        self.apply_pending_seek();
-        self.update_tempo_if_changed();
-
-        let is_paused = self.links.paused.load(Ordering::Acquire);
-        self.note_rolling(!is_paused);
-        // Hoisted once per buffer: the loop region cannot change mid-block.
-        let active_loop = self.links.loop_span.as_ref().and_then(LoopSpan::range);
-
-        if is_paused {
-            let (whole, frac) = split_beat(self.clock.beat());
-            for i in 0..size {
-                output.set_f32(0, i, whole);
-                output.set_f32(1, i, frac);
-            }
-        } else {
-            // Frame by frame, each beat in closed form from the segment: what
-            // `advance(size)` lands on, and what an `EnvClock` continuing this
-            // clock's origin emits.
-            for i in 0..size {
-                let (whole, frac) = split_beat(self.clock.beat());
-                output.set_f32(0, i, whole);
-                output.set_f32(1, i, frac);
-                self.clock.advance(Samples(1), active_loop);
-            }
-        }
-
-        self.publish_position();
-        self.advance_steady_time(size);
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::TRANSPORT_CLOCK_ID
-    }
-
-    fn as_any(&self) -> &dyn any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn any::Any {
-        self
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let (whole, frac) = split_beat(self.clock.beat());
-        let mut output = SignalFrame::new(2);
-        output.set(0, Signal::Value(f64::from(whole)));
-        output.set(1, Signal::Value(f64::from(frac)));
-        output
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+        first
     }
 }
 
@@ -518,8 +428,10 @@ mod tests {
         (clock, seek)
     }
 
-    fn reconstruct_beat(output: &[f32; 2]) -> f32 {
-        output[0] + output[1]
+    /// One frame, as the engine steps a one-frame block: the beat the frame
+    /// carries (what `tick` emitted on its ports).
+    fn tick(clock: &mut TransportClock) -> f64 {
+        clock.step(1).get()
     }
 
     #[test]
@@ -527,50 +439,50 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
-        let mut output = [0.0f32; 2];
+        assert!((tick(&mut clock) - 0.0).abs() < 0.001);
 
-        clock.tick(&[], &mut output);
-        assert!((reconstruct_beat(&output) - 0.0).abs() < 0.001);
-
+        let mut beat = 0.0;
         for _ in 0..44100 {
-            clock.tick(&[], &mut output);
+            beat = tick(&mut clock);
         }
 
-        assert!((reconstruct_beat(&output) - 2.0).abs() < 0.01);
+        assert!((beat - 2.0).abs() < 0.01);
     }
 
-    /// An offline region render clones the live net and ticks the clone on a
-    /// worker thread, and `tick` *writes* `position_writeback` every sample.
-    /// `isolate()` must sever it, or the worker stomps the live playhead the
+    /// A derived stream (an offline render's clock) is stepped on a worker
+    /// thread, and stepping *writes* `position_writeback` every block. The
+    /// derivation must sever it, or the worker stomps the live playhead the
     /// rest of the app reads as "current beat".
+    ///
+    /// Mutation (run): `severed` keeping the live links (drop its
+    /// `links.severed()`) → the live playhead reads the stream's beat → fails.
     #[test]
-    fn isolate_severs_live_position_writeback() {
+    fn a_derived_stream_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
         let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
-        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let mut links = ClockLinks::bare(tempo, paused);
+        links.position_writeback = Some(Arc::clone(&live_position));
+        let clock = TransportClock::new(links, 44100.0);
 
-        // The render's clone, isolated as the render's rebind pass does.
-        let mut render = clock.clone();
-        render.isolate();
+        let mut render = clock.starting_at(0.0);
 
-        // Tick the isolated clone a full second — if it still shared the
-        // writeback, it would overwrite `live_position` with its own advancing
-        // beat (starting from 0.0), wrecking the live playhead.
-        let mut out = [0.0f32; 2];
+        // Step the stream a full second — if it still shared the writeback,
+        // it would overwrite `live_position` with its own advancing beat
+        // (starting from 0.0), wrecking the live playhead.
         for _ in 0..44100 {
-            render.tick(&[], &mut out);
+            tick(&mut render);
         }
 
         assert_eq!(
             live_position.load(Ordering::Acquire),
             7.5,
-            "live playhead must be untouched by the isolated render clock"
+            "live playhead must be untouched by the render clock"
         );
-        // The clone still advances its own private beat (~2 beats at 120 BPM),
-        // so the render actually produces audio over its window.
+        // The stream still advances its own private beat (~2 beats at 120
+        // BPM), so the render actually produces audio over its window.
         assert!(
             (render.current_beat().get() - 2.0).abs() < 0.01,
-            "isolated clock must still advance its own beat, got {}",
+            "the stream must still advance its own beat, got {}",
             render.current_beat().get()
         );
     }
@@ -592,16 +504,13 @@ mod tests {
         });
         let mut clock = TransportClock::new(links, 44100.0);
 
-        let empty = BufferRef::new(&[]);
-        let mut scratch = BufferArray::<U2>::new();
-
-        clock.process(64, &empty, &mut scratch.buffer_mut());
+        clock.step(64);
         assert_eq!(steady.load(Ordering::Relaxed), 64);
 
         // Paused: musical time stops, sample time does not.
         paused.store(true, Ordering::Release);
         let beat_while_paused = clock.current_beat();
-        clock.process(64, &empty, &mut scratch.buffer_mut());
+        clock.step(64);
         assert_eq!(
             steady.load(Ordering::Relaxed),
             128,
@@ -616,7 +525,7 @@ mod tests {
         // Rolling again across many loop wraps: still strictly monotonic.
         paused.store(false, Ordering::Release);
         for _ in 0..100 {
-            clock.process(64, &empty, &mut scratch.buffer_mut());
+            clock.step(64);
         }
         assert_eq!(
             steady.load(Ordering::Relaxed),
@@ -627,26 +536,26 @@ mod tests {
 
     /// `steady_time` is `Arc`-shared, so it is subject to the same cut as the
     /// position writeback: an offline render must not advance the live counter.
+    ///
+    /// Mutation (run): `ClockLinks::severed` keeping `steady_time` → the live
+    /// counter reads 10 000 → fails.
     #[test]
-    fn isolate_severs_steady_time() {
+    fn a_derived_stream_severs_steady_time() {
         let (tempo, paused) = create_test_atomics();
         let steady = Arc::new(crate::AtomicI64::new(9_000));
         let mut links = ClockLinks::bare(tempo, paused);
         links.steady_time = Some(Arc::clone(&steady));
         let clock = TransportClock::new(links, 44100.0);
 
-        let mut render = clock.clone();
-        render.isolate();
-
-        let mut out = [0.0f32; 2];
+        let mut render = clock.starting_at(0.0);
         for _ in 0..1_000 {
-            render.tick(&[], &mut out);
+            tick(&mut render);
         }
 
         assert_eq!(
             steady.load(Ordering::Relaxed),
             9_000,
-            "an isolated render clock must not advance the live steady time"
+            "a render clock must not advance the live steady time"
         );
     }
 
@@ -655,20 +564,21 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused.clone()), 44100.0);
 
-        let mut output = [0.0f32; 2];
-
+        let mut beat = 0.0;
         for _ in 0..1000 {
-            clock.tick(&[], &mut output);
+            beat = tick(&mut clock);
         }
-        let beat_before_pause = reconstruct_beat(&output);
+        let beat_before_pause = beat;
 
         paused.store(true, Ordering::Release);
 
         for _ in 0..1000 {
-            clock.tick(&[], &mut output);
+            beat = tick(&mut clock);
         }
 
-        assert!((reconstruct_beat(&output) - beat_before_pause).abs() < 0.001);
+        // The first paused frame carries the beat the last rolling one
+        // advanced to.
+        assert!((beat - beat_before_pause).abs() < 0.001);
     }
 
     #[test]
@@ -678,10 +588,7 @@ mod tests {
 
         seek.request(4.0);
 
-        let mut output = [0.0f32; 2];
-        clock.tick(&[], &mut output);
-
-        assert!((reconstruct_beat(&output) - 4.0).abs() < 0.001);
+        assert!((tick(&mut clock) - 4.0).abs() < 0.001);
     }
 
     #[test]
@@ -689,19 +596,18 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let mut clock = TransportClock::new(ClockLinks::bare(tempo.clone(), paused), 44100.0);
 
-        let mut output = [0.0f32; 2];
-
         for _ in 0..44100 {
-            clock.tick(&[], &mut output);
+            tick(&mut clock);
         }
 
         tempo.store(240.0, Ordering::Release);
 
+        let mut beat = 0.0;
         for _ in 0..44100 {
-            clock.tick(&[], &mut output);
+            beat = tick(&mut clock);
         }
 
-        assert!((reconstruct_beat(&output) - 6.0).abs() < 0.1);
+        assert!((beat - 6.0).abs() < 0.1);
     }
 
     #[test]
@@ -712,13 +618,11 @@ mod tests {
 
         let mut clock = clock_with_loop(tempo, paused, loop_span);
 
-        let mut output = [0.0f32; 2];
-
+        let mut beat = 0.0;
         for _ in 0..90000 {
-            clock.tick(&[], &mut output);
+            beat = tick(&mut clock);
         }
 
-        let beat = reconstruct_beat(&output);
         assert!(
             beat > 4.0,
             "Expected beat > 4.0 with loop disabled, got {}",
@@ -749,12 +653,9 @@ mod tests {
         );
 
         seek.request(0.99999);
-        let mut output = [0.0f32; 2];
-        clock.tick(&[], &mut output);
+        tick(&mut clock);
 
-        clock.tick(&[], &mut output);
-
-        let beat = reconstruct_beat(&output);
+        let beat = tick(&mut clock);
         assert!(beat >= 0.0, "Beat should be >= 0 after wrap");
         assert!(
             beat < 0.01,
@@ -763,24 +664,23 @@ mod tests {
         );
     }
 
+    /// Far into a session the beat still splits into its two ports without
+    /// losing the fraction: what an `EnvClock` emits for this clock's beat.
     #[test]
     fn test_transport_clock_dual_channel_precision() {
         let (tempo, paused) = create_test_atomics();
         let (mut clock, seek) = clock_with_seek(tempo, paused);
 
-        let mut output = [0.0f32; 2];
-
         // Advance to beat ~16384 where f32 truncation would lose precision
         seek.request(16384.5);
-        clock.tick(&[], &mut output);
+        let (whole, frac) = split_beat(clock.step(1));
 
         // Channel 0 should be the floor (16384.0)
-        assert_eq!(output[0], 16384.0);
+        assert_eq!(whole, 16384.0);
         // Channel 1 should be the fractional part (~0.5) with full f32 precision
         assert!(
-            (output[1] - 0.5).abs() < 0.001,
-            "Fractional part should be ~0.5, got {}",
-            output[1]
+            (frac - 0.5).abs() < 0.001,
+            "Fractional part should be ~0.5, got {frac}"
         );
     }
 
@@ -801,8 +701,7 @@ mod tests {
         // Inside the hysteresis: asked, but not taken.
         tempo.store(120.0005, Ordering::Release);
         clock.set_sample_rate(crate::SampleRate(48_000.0));
-        let mut out = [0.0f32; 2];
-        clock.tick(&[], &mut out);
+        tick(&mut clock);
         assert_eq!(in_force.load(Ordering::Acquire), 120.0);
         assert_eq!(
             clock.current_beat(),
@@ -818,13 +717,11 @@ mod tests {
         let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         let mut derived = live.starting_at(8.0);
-        let mut output = [0.0f32; 2];
-        derived.tick(&[], &mut output);
+        let first = tick(&mut derived);
 
         assert!(
-            (reconstruct_beat(&output) - 8.0).abs() < 1e-4,
-            "expected first beat 8.0, got {}",
-            reconstruct_beat(&output)
+            (first - 8.0).abs() < 1e-4,
+            "expected first beat 8.0, got {first}"
         );
     }
 
@@ -832,13 +729,14 @@ mod tests {
     fn derived_stream_does_not_disturb_the_live_playhead() {
         let (tempo, paused) = create_test_atomics();
         let writeback = Arc::new(AtomicF64::new(0.0));
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
+        let mut links = ClockLinks::bare(tempo, paused);
+        links.position_writeback = Some(Arc::clone(&writeback));
+        let live = TransportClock::new(links, 44100.0);
 
-        // Tick a derived stream for a while; the live writeback must not move.
+        // Step a derived stream for a while; the live writeback must not move.
         let mut derived = live.starting_at(100.0);
-        let mut output = [0.0f32; 2];
         for _ in 0..1000 {
-            derived.tick(&[], &mut output);
+            tick(&mut derived);
         }
 
         assert_eq!(
@@ -873,12 +771,10 @@ mod tests {
 
         // A live seek must not yank the derived stream.
         seek.request(0.0);
-        let mut output = [0.0f32; 2];
-        derived.tick(&[], &mut output);
+        let first = tick(&mut derived);
         assert!(
-            (reconstruct_beat(&output) - 20.0).abs() < 1e-4,
-            "live seek leaked into the derived stream: {}",
-            reconstruct_beat(&output)
+            (first - 20.0).abs() < 1e-4,
+            "live seek leaked into the derived stream: {first}"
         );
         // ...and the live seek is still pending for the live clock.
         assert!(seek.is_pending(), "derived stream consumed the live seek");
@@ -891,12 +787,11 @@ mod tests {
 
         // One second of samples at 240 BPM = 4 beats.
         let mut derived = live.at_tempo(240.0);
-        let mut output = [0.0f32; 2];
+        let mut beat = 0.0;
         for _ in 0..44100 {
-            derived.tick(&[], &mut output);
+            beat = tick(&mut derived);
         }
 
-        let beat = reconstruct_beat(&output);
         assert!(
             (beat - 4.0).abs() < 0.01,
             "expected ~4 beats at 240 BPM, got {beat}"
@@ -909,35 +804,33 @@ mod tests {
         let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         let mut derived = live.at_tempo(240.0).starting_at(8.0);
-        let mut output = [0.0f32; 2];
-        derived.tick(&[], &mut output);
-        assert!((reconstruct_beat(&output) - 8.0).abs() < 1e-4);
+        assert!((tick(&mut derived) - 8.0).abs() < 1e-4);
 
         // Still at the derived tempo: one second later is 4 beats on.
+        let mut beat = 0.0;
         for _ in 0..44100 {
-            derived.tick(&[], &mut output);
+            beat = tick(&mut derived);
         }
-        let beat = reconstruct_beat(&output);
         assert!(
             (beat - 12.0).abs() < 0.01,
             "expected ~12.0 (8 + 4 beats at 240 BPM), got {beat}"
         );
     }
 
-    /// A fork of the clock steps at the tempo it was taken at: a live tempo
+    /// A derived stream steps at the tempo it was derived at: a live tempo
     /// change must not reach it (`ClockLinks::severed` copies the tempo into
     /// a fresh cell). The pause flag is deliberately *not* a snapshot — a
-    /// fork always rolls — so it is not a control here.
+    /// derived stream always rolls — so it is not checked here.
     ///
-    /// Mutation: in `ClockLinks::severed`, keep `tempo: Arc::clone(tempo)`
-    /// → "a live move reached the fork".
+    /// Mutation (run): in `ClockLinks::severed`, keep `tempo: Arc::clone(tempo)`
+    /// → the stream takes 140 BPM → fails.
     #[test]
-    fn isolate_snapshots_the_tempo() {
-        tutti_graph::contract::IsolateRow::new("TransportClock", || {
-            let (tempo, paused) = create_test_atomics();
-            TransportClock::new(ClockLinks::bare(tempo, paused), 48_000.0)
-        })
-        .control("tempo", |c| c.links.tempo.store(140.0, Ordering::Release))
-        .check();
+    fn a_derived_stream_keeps_its_tempo() {
+        let (tempo, paused) = create_test_atomics();
+        let live = TransportClock::new(ClockLinks::bare(Arc::clone(&tempo), paused), 48_000.0);
+        let mut derived = live.starting_at(0.0);
+        tempo.store(140.0, Ordering::Release);
+        derived.step(48_000);
+        assert_eq!(derived.current_beat(), Beat(2.0), "one second at 120 BPM");
     }
 }

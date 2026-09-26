@@ -31,7 +31,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::{AudioUnit, BufferVec};
+use tutti_core::SampleRate;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{in_process_vst2_client, InProcessVst2Client, RenderMode};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -124,11 +124,30 @@ fn load() -> Loaded {
     Loaded { unit, handle, path }
 }
 
-/// Render one block, which is when the probe asks for the process level.
-fn drive_block(unit: &mut impl AudioUnit) {
-    let input = BufferVec::new(AudioUnit::inputs(unit).max(1));
-    let mut output = BufferVec::new(AudioUnit::outputs(unit).max(1));
-    unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+/// Render one block through the node, prepared as a graph prepares it
+/// (`Node::prepare`, which sizes its scratch and parks its rate), then
+/// `Node::process` by hand (`tutti_graph::contract::drive_in`).
+fn drive_block(unit: &mut InProcessVst2Client) {
+    drive_blocks(unit, BLOCK, BLOCK);
+}
+
+/// One block of `frames` through `unit` prepared for blocks of up to `max`.
+fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
+    use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
+    let rate = SampleRate(SAMPLE_RATE);
+    Node::prepare(unit, &Prepare::new(rate, tutti_core::Samples(max)));
+    let silence = vec![0.0f32; frames];
+    let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
+        .map(|_| &silence[..])
+        .collect();
+    let env = Env {
+        frame: tutti_core::Frame(0),
+        sample_rate: rate,
+        block_len: tutti_core::Samples(frames),
+        transport: Transport::default(),
+        changes: TransportChanges::NONE,
+    };
+    let _ = tutti_graph::contract::drive_in(unit, &env, &inputs, &[], &[]);
 }
 
 /// The handle carries a render-mode route at all.

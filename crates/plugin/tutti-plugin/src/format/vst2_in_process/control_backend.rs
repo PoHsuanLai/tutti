@@ -4,7 +4,7 @@
 //! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
 //! holds. GUI thread calls take the lock for the duration of one plugin operation
 //! — short for parameter / state methods, potentially long for editor ones. The
-//! audio thread always uses `try_lock` (in `super::audio_unit`) and falls back to
+//! audio thread always uses `try_lock` (in `super::client`) and falls back to
 //! silence on contention so a slow `editor_idle` can't underrun audio.
 
 use std::ffi::c_void;
@@ -176,7 +176,7 @@ impl HostRenderMode for InProcessVst2Backend {
     ///
     /// Takes the lock rather than caching the flag here: the answer lives on the
     /// `HostState` the plugin already polls, and a second copy could disagree
-    /// with it. `super::audio_unit::InProcessVst2Client::set_render_mode` writes
+    /// with it. `super::client::InProcessVst2Client::set_render_mode` writes
     /// the same cell through the same `Arc`, so the two routes cannot drift.
     fn set_render_mode(&self, mode: RenderMode) -> bool {
         self.inner.lock().set_offline_render(mode.is_offline());
@@ -209,7 +209,7 @@ impl HostEditor for InProcessVst2Backend {
         // and would deadlock under that guard. This runs on the main thread,
         // every editor frame, which is what makes it the delivery point for the
         // rate the audio thread had to park.
-        super::audio_unit::drain_sample_rate(&self.pending_sample_rate, &self.inner);
+        super::client::drain_sample_rate(&self.pending_sample_rate, &self.inner);
 
         let mut instance = self.inner.lock();
         instance.editor_idle();

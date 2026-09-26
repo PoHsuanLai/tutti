@@ -4,17 +4,22 @@
 //! hardware source — in the same block it was written.
 //!
 //! A keyboard reaches it the same way: through a `MidiQueueNode` wired to
-//! its input. What [`queue_midi`](PolySynth::queue_midi) was given is for a
-//! synth driven by hand, and a graph block drops it.
+//! its input. Driven by hand (a test, a bench), its events are handed to it
+//! the same way, through `tutti_graph::contract::{drive_in, Direct}`.
+//!
+//! Its controls are its [`ParamSet`]: the master volume and, with a unison
+//! engine, the unison detune and stereo spread, by `UnitParam`. It is a
+//! [`ParamNode`], inserted through [`tutti_graph::param_parts`], so a fork
+//! starts from the values last set through the set (see `src/fork.rs`).
 
-use tutti_core::{AudioUnit, ChannelLayout};
+use tutti_core::{ChannelLayout, UnitParam};
 use tutti_graph::{
-    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, SortedEvents, Status, Ump,
+    Cx, EventKind, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape,
+    SortedEvents, Status, Ump,
 };
 use tutti_midi_types::MidiEvent;
 
 use super::PolySynth;
-use crate::fork::SynthFork;
 
 /// The synth's MIDI scratch, in events: a block's event input past it is
 /// dropped.
@@ -24,7 +29,6 @@ impl PolySynth {
     /// The block's MIDI from `events` into the scratch, in their (sorted)
     /// order; returns how many it holds.
     fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
-        self.pending = 0;
         let mut n = 0;
         for e in events {
             if n == self.midi_buffer.len() {
@@ -52,7 +56,7 @@ impl Node for PolySynth {
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        AudioUnit::set_sample_rate(self, p.sample_rate());
+        self.set_rate(p.sample_rate());
     }
 
     /// Always [`Status::Modified`]: the synth sounds after its input's last
@@ -88,23 +92,41 @@ impl Node for PolySynth {
     }
 
     fn reset(&mut self) {
-        AudioUnit::reset(self);
+        self.reset_voices();
     }
 }
 
-/// The synth, inserted natively: its fork is a native synth too (see the
-/// `fork` module docs for what a fork carries). No controls: the synth's
-/// `Param` handles are taken from it before it goes in.
-impl IntoNode for PolySynth {
-    type Controls = ();
-
-    fn into_parts(self) -> NodeParts<()> {
-        let fork = SynthFork::native(&self);
-        NodeParts {
-            node: Box::new(self),
-            controls: (),
-            fork: Some(Box::new(fork)),
+impl ParamNode for PolySynth {
+    /// `Volume` (the master gain, as a linear amplitude), and — only when
+    /// this synth has a unison engine — `Detune` (cents) and `StereoSpread`
+    /// (0..1): the cells the synth reads once per block. The same cells
+    /// `tutti_mod::ModParams::mod_target` hands a modulation source.
+    fn param_set(&self) -> ParamSet {
+        let set = ParamSet::builder().param(UnitParam::Volume, self.volume_atomic());
+        match (self.detune_atomic(), self.spread_atomic()) {
+            (Some(detune), Some(spread)) => set
+                .param(UnitParam::Detune, detune)
+                .param(UnitParam::StereoSpread, spread),
+            _ => set,
         }
+        .build()
+    }
+
+    /// See the `fork` module docs (`src/fork.rs`).
+    fn fork_fresh(&self) -> Self {
+        self.fork_instance()
+    }
+}
+
+/// The synth, inserted natively with its [`ParamSet`] as its controls and a
+/// fork that starts from the values last set through it
+/// ([`tutti_graph::param_parts`]; see the `fork` module docs for what a fork
+/// carries).
+impl IntoNode for PolySynth {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -119,15 +141,13 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
     }
 
-    /// **A graph block plays its event input, on its offsets, and drops what
-    /// was queued by hand.**
+    /// **A graph block plays its event input, on its offsets.**
     ///
-    /// Mutation (run): not clearing `pending` → the queued note stays for the
-    /// next hand-driven block → fails.
+    /// Mutation (run): `gather_events` writing every event at index 0 (not
+    /// advancing `n`) → no event gathered → fails.
     #[test]
     fn a_graph_block_plays_its_event_input() {
         let mut synth = PolySynth::new(SynthConfig::default()).expect("builds");
-        assert_eq!(synth.queue_midi(&[note(61)]), 1);
         let at = |k: usize| Offset::new(k, tutti_core::Samples(512)).expect("inside");
         let events = [
             Event::midi(at(5), note(70).data),
@@ -140,6 +160,5 @@ mod tests {
             .map(|e| (e.frame_offset, (e.data[0] >> 8) & 0x7f))
             .collect();
         assert_eq!(got, [(5, 70), (200, 72)]);
-        assert_eq!(synth.take_pending_sorted(), 0);
     }
 }

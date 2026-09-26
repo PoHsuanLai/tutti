@@ -4,17 +4,17 @@ SoundFont (`.sf2`) synthesis for the Tutti audio engine, via RustySynth.
 
 ## What this is
 
-One type: `SoundFontUnit`, a stereo `AudioUnit` with zero inputs and two outputs
-— the unit *is* the source, so it enters a `Net` with only its output piped.
-Build it with `SoundFontUnit::new` from a decoded `SoundFont` and a
-`SynthesizerSettings`, then `program_change` to pick the preset and channel.
+One type: `SoundFontUnit`, a stereo graph node with zero audio inputs and two
+outputs — the unit *is* the source. Build it with `SoundFontUnit::new` from a
+decoded `SoundFont` and a `SynthesizerSettings`, then `program_change` to pick
+the preset and channel.
 
 **Notes arrive on its MIDI event input.** It is a `tutti_graph::Node` with one
 MIDI event input (a clip node, a keyboard's queue, the hardware input wire to
-it); driven by hand as an `AudioUnit`, its next block plays what `queue_midi`
-was given. Events are applied **at their own `frame_offset`** within a block,
-to a resolution of **8 frames** — see the timing-resolution section below for
-what that floor is and where it comes from.
+it). Events are applied **at their own offset** within a block, to a
+resolution of **8 frames** — see the timing-resolution section below for what
+that floor is and where it comes from. A test or bench hands it events the
+way a graph does (`tutti_graph::contract::{drive_in, Direct}`).
 
 The unit also exposes `note_on(channel, key, velocity)` / `note_off(channel, key)`
 as bare MIDI-1 integers, calling RustySynth directly. They are **not** the
@@ -48,59 +48,46 @@ build.
 
 ```rust,no_run
 use std::fs::File;
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::Arc;
-use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{Arc, NodeKey, SampleRate, Samples};
+use tutti_graph::{Editor, Prepare};
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 let mut file = File::open("piano.sf2")?;
 let soundfont = Arc::new(SoundFont::new(&mut file)?);
 
-// The rate is fixed here: `set_sample_rate` is a no-op on this unit, so a
-// graph at another rate needs a new one rather than a reconfigured one.
 let settings = SynthesizerSettings::new(44_100);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;
 unit.program_change(0, 0); // channel 0 → preset 0
 
-// Driven by hand: the next block plays what was queued. (In a graph, MIDI
-// arrives on the unit's event input instead.)
-unit.queue_midi(&[MidiEvent::note_on(
-    MidiGroup::FIRST,
-    MidiChannel::FIRST,
-    60,
-    0x8000,
-)]);
-
-let mut net = Net::new(0, 2);
-let node = net.push(Box::new(unit));
-net.pipe_output(node);
-net.check();
-
-let mut out = [0.0f32; 2];
-net.tick(&[], &mut out);
+// Into the graph: no audio input, stereo out, one MIDI event input (wire a
+// clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
+// The graph runs at 48 kHz, so `prepare` rebuilds the synthesizer at 48 kHz,
+// keeping the preset.
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+let key = NodeKey(1);
+editor.insert(key, "piano", unit);
+editor.spec_mut().topology.outputs = (0..2)
+    .map(|port| Source::Node(OutPort { node: key, port }))
+    .collect();
+editor.commit()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Constraint: the sample rate is fixed for the unit's lifetime
+## Constraint: a synthesizer's rate is fixed; the node follows its graph
 
-The rate is set once from `SynthesizerSettings::sample_rate` and cannot change:
 RustySynth builds its voice tables against a rate at construction and offers no
-way to re-rate them, so `AudioUnit::set_sample_rate` is a deliberate no-op here
-rather than a missing implementation.
-
-**The graph will not complain.** A unit built at 44.1 kHz and run in a 48 kHz
-graph keeps rendering — every note simply plays at the wrong pitch and tempo,
-with no error at any layer. A rate change means constructing a new unit and
-swapping it into the graph; `with_sample_rate` builds it from this one, with the
-same SoundFont (shared) and preset. The one unit that follows its graph's rate
-is a fork for an export (`fork_source`), which is rendered at the export's.
+way to re-rate them, so a `SoundFontUnit` renders at the rate its synthesizer
+was built at. As a graph node it **follows its graph's rate**: `prepare` (on
+the control thread) swaps in `with_sample_rate`, a new synthesizer over the
+same SoundFont (shared) and preset, when the graph runs at another rate. So
+does a fork for an export, rendered at the export's rate. A rate RustySynth
+refuses (outside 16–192 kHz) leaves the unit at its own.
 
 ## Constraint: MIDI timing resolution stops at 8 frames
 
-`process` splits its block at every pending event's `frame_offset` — render the
-frames before the offset, apply the event, carry on — so an event affects the
+A block is split at every event's offset — render the frames before the
+offset, apply the event, carry on — so an event affects the
 sample at its offset and no sample before it. What it cannot do is resolve two
 offsets that fall inside the same 8-frame window.
 

@@ -94,7 +94,7 @@ use crate::transport::{
     FadeOut, MotionEvent, MotionFsm, MotionState, TransportClock, TransportCommand,
 };
 use crate::transport::{Schedule, Scheduled, SCHEDULE_CAPACITY};
-use crate::{AudioThreadCell, AudioUnit, InterleavedMut, SampleRate, Samples};
+use crate::{AudioThreadCell, InterleavedMut, SampleRate, Samples};
 use tutti_types::{At, Frame};
 
 /// The widest graph root an engine renders — the most global outputs it
@@ -826,7 +826,7 @@ impl GraphRender {
             // A re-prepare changed the rate: the executor has rescaled its
             // frame clock; the beat increment and the transport's own
             // frame-timed commands follow.
-            AudioUnit::set_sample_rate(&mut self.clock, rate);
+            self.clock.set_sample_rate(rate);
             schedule.rescale(rate.get() / was.get());
         }
         let bound = self.exec.prepare().max_block().get();

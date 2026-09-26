@@ -1,7 +1,7 @@
 //! Format-specific FFI — the only code in this crate that touches a concrete
 //! plugin SDK.
 //!
-//! Everything else (catalog, IPC client, fundsp node, control surface) is
+//! Everything else (catalog, IPC client, graph node, control surface) is
 //! format-agnostic. Per-format knowledge is confined here, in two groups:
 //!
 //! - [`gui`] — **in-process editors** for the out-of-process formats

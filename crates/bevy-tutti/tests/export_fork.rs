@@ -1150,7 +1150,9 @@ mod synths {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
-    use tutti_core::{Beat, Bpm, BufferVec, Seconds, MAX_BUFFER_SIZE};
+    use tutti_core::{Beat, Bpm, Seconds};
+    use tutti_graph::contract::Direct;
+    use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -1273,21 +1275,17 @@ mod synths {
         )
     }
 
-    /// `unit` fed a note-on at frame 0 through `queue`, rendered in 64-frame
-    /// blocks: what the note sounds like from its first frame, at the unit's
-    /// rate.
-    fn reference<U: AudioUnit>(mut unit: U, queue: impl FnOnce(&mut U)) -> Vec<f32> {
-        queue(&mut unit);
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
+    /// `unit` prepared at `rate` and fed a note-on at frame 0 on its event
+    /// input, rendered in 64-frame blocks by hand (`contract::Direct`): what
+    /// the note sounds like from its first frame, at `rate`.
+    fn reference<N: Node>(unit: N, rate: f64) -> Vec<f32> {
+        let mut unit = Direct::new(unit, SampleRate(rate), 64);
+        let at = Offset::new(0, Samples(64)).expect("inside");
+        unit.events(0, &[Event::midi(at, note_on().data)]);
         let mut out = Vec::with_capacity(NOTE);
         while out.len() < NOTE {
-            unit.process(
-                MAX_BUFFER_SIZE,
-                &input.buffer_ref(),
-                &mut output.buffer_mut(),
-            );
-            out.extend_from_slice(&output.buffer_ref().channel_f32(0)[..MAX_BUFFER_SIZE]);
+            unit.block();
+            out.extend_from_slice(unit.output(0));
         }
         out
     }
@@ -1348,14 +1346,66 @@ mod synths {
             let (mut app, synth) = app_with(poly());
             install_clip(&mut app, synth);
             let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
-            let mut rerated = poly();
-            rerated.set_sample_rate(SampleRate(rate));
-            let reference = reference(rerated, |s| {
-                s.queue_midi(&[note_on()]);
-            });
+            // Prepared at the render's rate, as the fork is.
+            let reference = reference(poly(), rate);
             assert_note_at_beat_1("PolySynth", rate, &planes, &reference);
             assert_live_untouched(&mut app, synth);
         }
+    }
+
+    /// **An `AudioParam` on a spawned synth reaches it and its fork.** The
+    /// synth is a `ParamNode` registered as a graph node, so an
+    /// `AudioParam<Amplitude, Volume>` on its entity writes its master-volume
+    /// cell (the live synth reads it on its next block) and the authored
+    /// value an export's fork starts from: the exported note at a quarter
+    /// volume peaks at a quarter of the note at unity. Before the synth's
+    /// params were a `ParamSet` (its controls were `()`), an `AudioParam` on
+    /// a native synth reached nothing.
+    ///
+    /// Mutation (run): the synth registered with no params (`impl GraphNode
+    /// for PolySynth {}` instead of `param_graph_node!`) → the live cell
+    /// stays at 1 and the export at full volume → fails.
+    #[test]
+    fn an_audio_param_on_a_synth_reaches_it_and_its_fork() {
+        use bevy_tutti::graph::{AudioParam, AudioParamAppExt, NodeControls};
+        use tutti_core::{Amplitude, UnitParam};
+        type VolumeParam = AudioParam<Amplitude, { UnitParam::Volume as u16 }>;
+
+        let peak = |volume: Option<f32>| {
+            let (mut app, synth) = app_with(poly());
+            // Under `modulation` the param reconciler asks the matrix whether
+            // a param has a second writer, so the plugin that owns it must
+            // be present.
+            #[cfg(feature = "modulation")]
+            app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
+            app.add_audio_param::<Amplitude, { UnitParam::Volume as u16 }>();
+            if let Some(v) = volume {
+                app.world_mut()
+                    .entity_mut(synth)
+                    .insert(VolumeParam::new(Amplitude(v)));
+                app.update();
+                let set = &app
+                    .world()
+                    .get::<NodeControls<tutti_graph::ParamSet>>(synth)
+                    .expect("the synth's controls are its ParamSet")
+                    .0;
+                assert_eq!(
+                    set.get(UnitParam::Volume),
+                    Some(v),
+                    "the AudioParam reaches the live synth's volume cell"
+                );
+            }
+            install_clip(&mut app, synth);
+            let planes = export(&mut app, request(ExportSource::Master, RATE)).planes();
+            planes[0].iter().fold(0.0f32, |a, s| a.max(s.abs()))
+        };
+        let full = peak(None);
+        assert!(full > 0.0, "the note sounds in the export");
+        let quarter = peak(Some(0.25));
+        assert!(
+            (quarter - 0.25 * full).abs() < 1e-5,
+            "the fork renders the volume the AudioParam set: {quarter} vs ¼ × {full}"
+        );
     }
 
     /// **An exported `SoundFontUnit` plays its clip**, on the live unit's
@@ -1373,9 +1423,7 @@ mod synths {
             let (mut app, synth) = app_with(sf2(&font, RATE));
             install_clip(&mut app, synth);
             let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
-            let reference = reference(sf2(&font, rate), |s| {
-                s.queue_midi(&[note_on()]);
-            });
+            let reference = reference(sf2(&font, rate), rate);
             assert_note_at_beat_1("SoundFontUnit", rate, &planes, &reference);
             assert_live_untouched(&mut app, synth);
         }
@@ -1392,7 +1440,7 @@ mod synths {
     /// arm rendered it, bit for bit.
     ///
     /// Mutation (run): the synth's fork not reset (`PolySynth::fork_instance`
-    /// skipping `reset`) → no change: a fork from the template never
+    /// skipping `reset_voices`) → no change: a fork from the template never
     /// sounded. The clip edge missing → silent ("the note enters on beat 1"
     /// fails).
     #[test]
@@ -1400,9 +1448,7 @@ mod synths {
         let (mut app, synth) = app_with(poly());
         install_clip(&mut app, synth);
         let native = export(&mut app, request(ExportSource::Node(synth), RATE)).planes();
-        let reference = reference(poly(), |s| {
-            s.queue_midi(&[note_on()]);
-        });
+        let reference = reference(poly(), RATE);
         assert_note_at_beat_1("PolySynth node export", RATE, &native, &reference);
         assert_golden(
             "the synth's node export",

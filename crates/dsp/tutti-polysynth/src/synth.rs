@@ -281,7 +281,7 @@ pub struct FilterModConfig {
 #[derive(Debug, Clone)]
 pub struct SynthConfig {
     /// Rate the voices are built at. `PolySynth` re-derives everything
-    /// rate-dependent on `AudioUnit::set_sample_rate`, so a host that runs at a
+    /// rate-dependent when its graph prepares it (`Node::prepare`), so a host that runs at a
     /// different rate does not need this to be right — only the LFO and
     /// portamento step sizes are computed from it.
     pub sample_rate: tutti_core::SampleRate,

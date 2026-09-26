@@ -276,9 +276,9 @@ pub use tutti_node::{Real, Sample, F32, F64};
 
 mod node_id;
 // The node-id helpers. `assert_unique` is the one every DSP crate calls from its
-// own `node_id` module to prove its ids do not collide; the other three are the
+// own `node_id` module to prove its ids do not collide; the other two are the
 // vocabulary that call sites build ids out of.
-pub use node_id::{assert_unique, mnemonic, PDC_DELAY_ID, TRANSPORT_CLOCK_ID};
+pub use node_id::{assert_unique, mnemonic, PDC_DELAY_ID};
 
 // MIDI vocabulary types (MidiEvent, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather

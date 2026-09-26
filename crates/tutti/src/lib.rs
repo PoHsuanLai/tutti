@@ -76,9 +76,10 @@ pub use tutti_node as node;
 /// and this module goes with fundsp in Phase 5.
 ///
 /// Three names, not `tutti_core::dsp` whole. That module also carries the
-/// fundsp combinators `tutti-polysynth` still builds its sub-voice from; they
-/// are the fork's, not the engine's vocabulary, and a consumer that wants a
-/// stimulus or a filter has `nodes` (`nodes::testing` for the former).
+/// fundsp combinators; they are the fork's, not the engine's vocabulary (no
+/// engine node builds from them: `tutti-polysynth` renders its voices in a
+/// SIMD voice bank of its own), and a consumer that wants a stimulus or a
+/// filter has `nodes` (`nodes::testing` for the former).
 ///
 /// `Net` stays a name you spell out — `tutti::dsp::Net` — rather than joining
 /// the prelude, for the reason `tutti_core`'s own prelude gives for excluding

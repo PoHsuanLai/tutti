@@ -12,7 +12,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tutti_core::AudioUnit;
+mod support;
+
+use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
@@ -52,40 +54,30 @@ fn rms(samples: &[(f32, f32)]) -> f32 {
     (sum_sq / (samples.len() * 2) as f32).sqrt()
 }
 
-/// Render N samples from a SoundFontUnit
-fn render_samples(unit: &mut SoundFontUnit, count: usize) -> Vec<(f32, f32)> {
-    let mut samples = Vec::with_capacity(count);
-    for _ in 0..count {
-        let mut output = [0.0f32; 2];
-        unit.tick(&[], &mut output);
-        samples.push((output[0], output[1]));
-    }
-    samples
+/// Render N samples from a SoundFontUnit, one-frame blocks.
+fn render_samples(unit: &mut Hand, count: usize) -> Vec<(f32, f32)> {
+    (0..count)
+        .map(|_| {
+            let [l, r] = unit.tick();
+            (l, r)
+        })
+        .collect()
 }
 
-/// Render `blocks` consecutive `process` calls of `size` frames, queueing
-/// `events` into the unit's MIDI inbox before the first — the RT path the
-/// engine drives (poll + apply each event at its `frame_offset`), not the
-/// per-sample `tick` path. `BufferVec` holds exactly one SIMD block per
-/// channel, so `size` is capped at [`MAX_BUFFER_SIZE`].
+/// Render `blocks` consecutive blocks of `size` frames (at most
+/// `support::BLOCK`), `events` on the first block's event input, each on its
+/// `frame_offset`: the path a graph drives.
 fn render_process_blocks(
-    unit: &mut SoundFontUnit,
+    unit: &mut Hand,
     size: usize,
     blocks: usize,
     events: &[MidiEvent],
 ) -> Vec<(f32, f32)> {
-    assert!(
-        size <= tutti_core::MAX_BUFFER_SIZE,
-        "one BufferVec block only"
-    );
     unit.queue_midi(events);
-
     let mut out = Vec::with_capacity(size * blocks);
     for _ in 0..blocks {
-        let mut buffer = tutti_core::BufferVec::new(2);
-        let input = tutti_core::BufferRef::new(&[]);
-        unit.process(size, &input, &mut buffer.buffer_mut());
-        out.extend((0..size).map(|i| (buffer.at_f32(0, i), buffer.at_f32(1, i))));
+        let (l, r) = unit.block(size);
+        out.extend(l.iter().copied().zip(r.iter().copied()));
     }
     out
 }
@@ -144,8 +136,9 @@ fn process_honors_frame_offset_within_block() {
     };
 
     let render_at = |offset: u32| {
-        let mut unit =
-            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+        let mut unit = Hand::new(
+            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
+        );
         render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(offset)])
     };
 
@@ -232,8 +225,9 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     };
 
     let render = |events: &[MidiEvent]| {
-        let mut unit =
-            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+        let mut unit = Hand::new(
+            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"),
+        );
         render_process_blocks(&mut unit, BLOCK, BLOCKS, events)
     };
 
@@ -320,10 +314,11 @@ fn event_at_last_frame_of_block_still_applies() {
             .with_frame_offset(offset)
     };
 
-    let mut unit = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+    let mut unit =
+        Hand::new(SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit"));
     let late = render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(LAST)]);
 
-    let mut unit0 = SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit");
+    let mut unit0 = Hand::new(SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit"));
     let base = render_process_blocks(&mut unit0, BLOCK, BLOCKS, &[note(0)]);
 
     // Applied, not dropped: the note sounds inside the render.
@@ -357,20 +352,22 @@ fn event_at_last_frame_of_block_still_applies() {
     );
 }
 
-/// A `set_sample_rate` call mid-stream is a documented no-op, and must not
-/// disturb rendering — the unit keeps producing the same audio it would have.
+/// A re-prepare at the unit's own rate mid-stream (a graph re-preparing for
+/// a longer block, say) must not disturb rendering — the unit keeps producing
+/// the same audio it would have.
 ///
-/// The rate is fixed at construction (rustysynth cannot be re-rated), so the
-/// property is *continuity*: rendering, calling `set_sample_rate`, then
-/// rendering on must equal rendering straight through. The fix removed the
-/// unit's own buffer-position state, and this pins that no stale-cursor bug
-/// took its place.
+/// The node re-rates only when the prepared rate differs (rebuilding the
+/// synthesizer, see `the_node_follows_its_graphs_rate`), so the property at
+/// the same rate is *continuity*: rendering, re-preparing, then rendering on
+/// must equal rendering straight through. This pins that no stale-cursor bug
+/// took the place of the unit's old buffer-position state. (Until the native
+/// port it pinned `AudioUnit::set_sample_rate`, a no-op.)
 ///
-/// Mutation: make `set_sample_rate` touch render state (a single
-/// `render_range(0..1)` in the body) → fails, since the second half is then one
-/// frame out of step with the straight-through render.
+/// Mutation (run): `prepare` rebuilding the synthesizer whatever the rate
+/// (drop the rate comparison) → the second half starts from fresh channel
+/// state, the note released → fails.
 #[test]
-fn set_sample_rate_mid_stream_does_not_disturb_rendering() {
+fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     let sf = load_test_soundfont();
     let settings = SynthesizerSettings::new(44100);
     const BLOCK: usize = 64;
@@ -378,13 +375,17 @@ fn set_sample_rate_mid_stream_does_not_disturb_rendering() {
 
     let note = || MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
 
-    let mut straight = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit");
+    let mut straight =
+        Hand::new(SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit"));
     let expected = render_process_blocks(&mut straight, BLOCK, BLOCKS, &[note()]);
 
-    let mut interrupted = SoundFontUnit::new(sf, &settings).expect("create unit");
+    let mut interrupted = Hand::new(SoundFontUnit::new(sf, &settings).expect("create unit"));
     let mut got = render_process_blocks(&mut interrupted, BLOCK, BLOCKS / 2, &[note()]);
-    // The documented no-op, called between blocks.
-    interrupted.set_sample_rate(tutti_core::SampleRate::from(48_000.0));
+    // A re-prepare at the unit's own rate, between blocks.
+    tutti_graph::Node::prepare(
+        &mut *interrupted,
+        &tutti_graph::Prepare::new(tutti_core::SampleRate(44_100.0), tutti_core::Samples(128)),
+    );
     got.extend(render_process_blocks(
         &mut interrupted,
         BLOCK,
@@ -395,7 +396,7 @@ fn set_sample_rate_mid_stream_does_not_disturb_rendering() {
     assert!(rms(&expected) > 0.001, "the note must sound at all");
     assert_eq!(
         got, expected,
-        "set_sample_rate is a no-op and must not perturb the render"
+        "a same-rate re-prepare must not perturb the render"
     );
 }
 
@@ -418,7 +419,8 @@ fn test_note_on_produces_audio() {
     let sf = load_test_soundfont();
 
     let settings = SynthesizerSettings::new(44100);
-    let mut unit = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play middle C
     unit.note_on(0, 60, 100);
@@ -435,14 +437,16 @@ fn test_velocity_affects_volume() {
 
     // Soft note
     let settings = SynthesizerSettings::new(44100);
-    let mut unit_soft =
-        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit");
+    let mut unit_soft = Hand::new(
+        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
+    );
     unit_soft.note_on(0, 60, 30);
     let samples_soft = render_samples(&mut unit_soft, 2000);
     let rms_soft = rms(&samples_soft);
 
     // Loud note
-    let mut unit_loud = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit_loud =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
     unit_loud.note_on(0, 60, 127);
     let samples_loud = render_samples(&mut unit_loud, 2000);
     let rms_loud = rms(&samples_loud);
@@ -460,7 +464,8 @@ fn test_note_off_stops_sound() {
     let sf = load_test_soundfont();
 
     let settings = SynthesizerSettings::new(44100);
-    let mut unit = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play note
     unit.note_on(0, 60, 100);
@@ -492,14 +497,16 @@ fn test_polyphony_multiple_notes() {
     let settings = SynthesizerSettings::new(44100);
 
     // Single note
-    let mut unit_single =
-        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit");
+    let mut unit_single = Hand::new(
+        SoundFontUnit::new(Arc::clone(&sf), &settings).expect("Failed to create SoundFontUnit"),
+    );
     unit_single.note_on(0, 60, 80);
     let samples_single = render_samples(&mut unit_single, 2000);
     let rms_single = rms(&samples_single);
 
     // Chord (3 notes)
-    let mut unit_chord = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit_chord =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
     unit_chord.note_on(0, 60, 80); // C
     unit_chord.note_on(0, 64, 80); // E
     unit_chord.note_on(0, 67, 80); // G
@@ -519,7 +526,8 @@ fn test_reset_silences_all_notes() {
     let sf = load_test_soundfont();
 
     let settings = SynthesizerSettings::new(44100);
-    let mut unit = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play several notes
     unit.note_on(0, 60, 100);
@@ -532,7 +540,7 @@ fn test_reset_silences_all_notes() {
     assert!(rms_playing > 0.001);
 
     // Reset
-    unit.reset();
+    tutti_graph::Node::reset(&mut *unit);
 
     // Wait for any release to complete
     let _ = render_samples(&mut unit, 20000);
@@ -553,14 +561,15 @@ fn test_clone_creates_independent_instance() {
     let sf = load_test_soundfont();
 
     let settings = SynthesizerSettings::new(44100);
-    let mut unit = SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit");
+    let mut unit =
+        Hand::new(SoundFontUnit::new(sf, &settings).expect("Failed to create SoundFontUnit"));
 
     // Play note on original
     unit.note_on(0, 60, 100);
     let _ = render_samples(&mut unit, 100);
 
     // Clone
-    let mut clone = unit.clone();
+    let mut clone = Hand::new((*unit).clone());
 
     // RustySynth clones the synthesizer state, so both start with the note
     // already sounding — a clone is not a fresh voice. Independence is

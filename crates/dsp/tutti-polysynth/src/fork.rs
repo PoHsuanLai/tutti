@@ -53,11 +53,22 @@ use tutti_midi_runtime::OfflineRebind;
 use crate::{Error, PolySynth};
 
 /// [`PolySynth::fork_source`]'s source: the template in the module docs.
-struct SynthFork {
+pub(crate) struct SynthFork {
     template: PolySynth,
+    /// Whether the fork is a native node (the synth was inserted as one,
+    /// `IntoNode for PolySynth`) rather than a `Legacy` one.
+    native: bool,
 }
 
 impl SynthFork {
+    /// The source of a synth inserted as a native node.
+    pub(crate) fn native(synth: &PolySynth) -> Self {
+        Self {
+            template: synth.clone(),
+            native: true,
+        }
+    }
+
     /// The fork, as a synth: what [`ForkSource::fork`] wraps.
     fn synth(&self, mode: ForkMode<'_>) -> crate::Result<PolySynth> {
         self.template.fork_instance(mode)
@@ -67,10 +78,14 @@ impl SynthFork {
 impl ForkSource for SynthFork {
     fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
         let fork = self.synth(mode).map_err(ForkCause::new)?;
-        // The fork runs as a host runs the live synth, through `Legacy`;
-        // `into_node` so it carries no fork source of its own (a fork is not
-        // forked again).
-        Ok(Forked::new(Legacy::new(fork).into_node().0))
+        // The fork runs as the host runs the live synth: natively, or
+        // through `Legacy` (`into_node`, so it carries no fork source of its
+        // own: a fork is not forked again).
+        Ok(Forked::new(if self.native {
+            Box::new(fork)
+        } else {
+            Legacy::new(fork).into_node().0
+        }))
     }
 }
 
@@ -124,6 +139,7 @@ impl PolySynth {
     fn fork_template(&self) -> SynthFork {
         SynthFork {
             template: self.clone(),
+            native: false,
         }
     }
 }

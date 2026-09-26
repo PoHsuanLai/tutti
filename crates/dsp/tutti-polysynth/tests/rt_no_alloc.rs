@@ -424,3 +424,91 @@ fn a_first_block_on_a_cold_thread_allocates() {
         synth.process(64, &input, &mut output);
     });
 }
+
+/// **The native path is allocation-free too:** a clip node playing a dense
+/// clip into a native synth, through the executor, rolling, then across a
+/// stop (the clip ends its held notes) and a restart. Nothing is published
+/// inside the gate: publishing is the control thread's.
+///
+/// Mutation: a `Vec` built in `MidiClipNode::process` → the gate aborts.
+/// Mutation: the synth's `gather_events` collecting the event input into a
+/// `Vec` before merging → the gate aborts.
+#[test]
+fn a_clip_into_a_native_synth_is_allocation_free() {
+    use tutti_core::{Beat, Bpm, NodeKey, Samples};
+    use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
+    use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+
+    const BLOCK: usize = 256;
+    // A note on or off every 37 frames over the first 8 192.
+    let clip = MidiClipNode::new((0..220u64).map(|i| {
+        let event = if i % 2 == 0 {
+            note_on(0, 48 + (i % 24) as u8, 100)
+        } else {
+            note_off(0, 48 + ((i - 1) % 24) as u8)
+        };
+        TimedMidiEvent::new(Beat((i * 37) as f64 / 24_000.0), event)
+    }));
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    ed.insert(NodeKey(1), "clip", clip);
+    ed.insert(
+        NodeKey(2),
+        "synth",
+        PolySynth::new(SynthConfig {
+            sample_rate: SampleRate(48_000.0),
+            max_voices: 8,
+            oscillator: OscillatorType::Saw,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            tutti_core::graph::Source::Node(tutti_core::graph::OutPort {
+                node: NodeKey(2),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let at = |frame: usize, playing: bool| {
+        Transport::new(playing, Bpm(120.0), Beat(frame as f64 / 24_000.0), None)
+    };
+    // Installs the plan (and its first-block setup) outside the gate.
+    let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    exec.process(BLOCK, &at(0, true), &[], &mut [&mut l[..], &mut r[..]]);
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 1..40 {
+            exec.process(
+                BLOCK,
+                &at(b * BLOCK, true),
+                &[],
+                &mut [&mut l[..], &mut r[..]],
+            );
+        }
+        exec.process(
+            BLOCK,
+            &at(40 * BLOCK, false),
+            &[],
+            &mut [&mut l[..], &mut r[..]],
+        );
+        for b in 0..8 {
+            exec.process(
+                BLOCK,
+                &at(b * BLOCK, true),
+                &[],
+                &mut [&mut l[..], &mut r[..]],
+            );
+        }
+    });
+}

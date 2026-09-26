@@ -148,7 +148,7 @@ impl PolySynth {
             pitch_bend: 0.0,
             master_volume,
             midi: MidiInPort::new(),
-            midi_buffer: vec![MidiEvent::noop(); 256],
+            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -1079,15 +1079,7 @@ impl AudioUnit for PolySynth {
     /// A bounce that ends at the last note-off without it chops the release off
     /// every note in the project.
     fn tail(&mut self) -> Tail {
-        match self
-            .config
-            .envelope
-            .release
-            .to_samples_ceil(self.config.sample_rate)
-        {
-            s if s.is_zero() => Tail::None,
-            s => Tail::Finite(s),
-        }
+        self.release_tail()
     }
 
     fn set(&mut self, _setting: tutti_core::Setting) {}
@@ -1168,7 +1160,7 @@ impl Clone for PolySynth {
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
             midi: self.midi.clone(),
-            midi_buffer: vec![MidiEvent::noop(); 256],
+            midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }
@@ -3677,3 +3669,20 @@ mod tests {
         .check();
     }
 }
+
+impl PolySynth {
+    /// The amplitude envelope's release, as a tail (see `AudioUnit::tail`).
+    fn release_tail(&self) -> Tail {
+        match self
+            .config
+            .envelope
+            .release
+            .to_samples_ceil(self.config.sample_rate)
+        {
+            s if s.is_zero() => Tail::None,
+            s => Tail::Finite(s),
+        }
+    }
+}
+
+mod node;

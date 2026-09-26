@@ -19,10 +19,12 @@
 //!
 //! [`Timeline`]: tutti_core::transport::Timeline
 
+pub mod clip_node;
 pub mod clip_player;
 pub mod snapshot;
 pub mod snapshot_reader;
 
+pub use clip_node::{MidiClipControls, MidiClipNode, CLIP_EVENT_CAPACITY};
 pub use clip_player::{MidiClipSource, TimedClipEvent};
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;

@@ -9,9 +9,8 @@
 //!
 //! The graphs are native (`tutti_graph::GraphBuilder`, rendered as a
 //! `RenderGraph`; doc 013 Phase 3 PR 8), and the mix is
-//! `tutti_spatial::vbap_mix_parts` wired on the builder — the same units and
-//! edges `build_vbap_mix` puts in a `Net` (`tutti-spatial`'s
-//! `tests/vbap_mix_parts.rs` pins the two bit-identical).
+//! `tutti_spatial::build_vbap_mix` on the builder (`tutti-spatial`'s
+//! `tests/vbap_mix_parts.rs` pins it against the parts wired by hand).
 
 #![cfg(feature = "wav")]
 
@@ -49,41 +48,16 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
     .expect("export");
 }
 use tutti_nodes::testing::Const;
-use tutti_spatial::{vbap_mix_parts, VbapMixNode, VbapSource};
+use tutti_spatial::VbapSource;
 
-/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node —
-/// `build_vbap_mix` for the builder: `vbap_mix_parts`' units added, and every
-/// one of its edges wired, the sources resolved by position in `sources`.
+/// Assemble a VBAP mix of `sources` into `g` and return the summed mix node
+/// (`build_vbap_mix`, which builds into a `GraphBuilder`).
 fn vbap_mix(
     g: &mut GraphBuilder,
     layout: ChannelLayout,
     sources: &[VbapSource<NodeKey>],
 ) -> Result<NodeKey, tutti_spatial::VbapError> {
-    let parts = vbap_mix_parts(layout, sources)?;
-    let edges = parts.edges().to_vec();
-    let panners: Vec<NodeKey> = parts
-        .panners
-        .into_iter()
-        .map(|p| g.add_unit(Box::new(p)))
-        .collect();
-    let lfe = parts.lfe.map(|send| {
-        (
-            g.add_unit(Box::new(send.sum)),
-            g.add_unit(Box::new(send.lowpass)),
-        )
-    });
-    let sum = g.add_unit(Box::new(parts.sum));
-    let key = |n: VbapMixNode| match n {
-        VbapMixNode::Source(i) => sources[i].node,
-        VbapMixNode::Panner(i) => panners[i],
-        VbapMixNode::LfeSum => lfe.expect("an LFE edge implies the send").0,
-        VbapMixNode::LfeLowpass => lfe.expect("an LFE edge implies the send").1,
-        VbapMixNode::Sum => sum,
-    };
-    for e in edges {
-        g.connect(key(e.from), e.from_port, key(e.to), e.to_port);
-    }
-    Ok(sum)
+    tutti_spatial::build_vbap_mix(g, layout, sources)
 }
 
 /// Build a quad surround graph via the engine's VBAP mix: one source at the

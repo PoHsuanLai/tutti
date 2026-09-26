@@ -168,30 +168,25 @@ fn ladder() {
     .check();
 }
 
+/// The SVF and the EQ band are native nodes: their fork is
+/// `tutti_graph::param_parts`', from the values set through their
+/// `ParamSet`, and `assert_param_fork` is its snapshot check (their own
+/// unit tests run it, with its mutations).
 #[test]
 fn svf() {
-    IsolateRow::new("SvfFilterNode (bell)", || {
-        SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7)).with_gain_db(Db(6.0))
-    })
-    .control("cutoff", |s| s.set_frequency(Hz(3_000.0)))
-    .control("q", |s| s.set_q(Q(4.0)))
-    .control("gain", |s| s.set_gain_db(Db(-6.0)))
-    .check();
+    tutti_graph::contract::assert_param_fork(
+        SvfFilterNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7)).with_gain_db(Db(6.0)),
+    );
 }
 
 #[test]
 fn eq_band() {
-    IsolateRow::new("EqBandNode (bell)", || {
-        EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(0.7), Db(6.0))
-    })
-    .control("cutoff", |b| {
-        b.frequency().store(3_000.0, tutti_core::Ordering::Release)
-    })
-    .control("q", |b| b.q().store(4.0, tutti_core::Ordering::Release))
-    .control("gain", |b| {
-        b.gain_db().store(-6.0, tutti_core::Ordering::Release)
-    })
-    .check();
+    tutti_graph::contract::assert_param_fork(EqBandNode::<f64>::new(
+        SvfType::Bell,
+        Hz(1_000.0),
+        Q(0.7),
+        Db(6.0),
+    ));
 }
 
 #[test]

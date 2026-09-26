@@ -7,9 +7,8 @@
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
 //! need it too.
 
-use tutti_core::dsp::Net;
-use tutti_core::dsp::NodeId;
-use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, Q};
+use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeKey, Q};
+use tutti_graph::GraphBuilder;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
 
 use super::error::Result;
@@ -30,13 +29,12 @@ const LFE_Q: Q = Q(0.707);
 /// what keeps them from being passed in the wrong order.
 ///
 /// Generic over the node handle because the mix is built in more than one
-/// graph: `N` is a `Net` [`NodeId`] for [`build_vbap_mix`] (the default), and
-/// whatever key another graph uses for [`vbap_mix_parts`] — `tutti_graph`'s
-/// `NodeKey`, say. The mix never reads it; it is carried so a caller keeps
-/// each source's handle beside its position, in the order
-/// [`VbapMixNode::Source`] indexes.
+/// graph: `N` is a graph [`NodeKey`] for [`build_vbap_mix`] (the default),
+/// and whatever handle another graph uses for [`vbap_mix_parts`]. The mix
+/// never reads it; it is carried so a caller keeps each source's handle
+/// beside its position, in the order [`VbapMixNode::Source`] indexes.
 #[derive(Debug, Clone, Copy)]
-pub struct VbapSource<N = NodeId> {
+pub struct VbapSource<N = NodeKey> {
     /// The node whose output ports 0 and 1 feed this source's panner. A mono
     /// source should present the same sample on both.
     pub node: N,
@@ -104,14 +102,14 @@ pub struct VbapLfeSend {
 /// A VBAP mix's units, **not yet in any graph**, with every edge between them
 /// and from the caller's sources, as data.
 ///
-/// The graph-agnostic half of [`build_vbap_mix`], for a caller whose graph is
-/// not a `Net` (the native graph of doc 013): it inserts the units into its
-/// own graph and wires [`edges`](Self::edges) there, resolving
+/// The graph-agnostic half of [`build_vbap_mix`], for a caller that builds
+/// its graph its own way (bevy-tutti inserts through its `AudioGraphRes`): it
+/// inserts the units and wires [`edges`](Self::edges) there, resolving
 /// [`VbapMixNode::Source`]`(i)` to its `i`th source. The mix's output is the
 /// [`sum`](Self::sum), `layout`-wide. [`insert_into`](Self::insert_into) is
-/// that step for a `Net`, and `build_vbap_mix` is exactly
-/// `vbap_mix_parts(..)?.insert_into(..)`, so both graphs are built from one
-/// description of the mix rather than from two copies that must agree.
+/// that step for a [`GraphBuilder`], and `build_vbap_mix` is exactly
+/// `vbap_mix_parts(..)?.insert_into(..)`, so every graph is built from one
+/// description of the mix rather than from copies that must agree.
 pub struct VbapMixParts {
     /// One panner per source, placed at the source's position, in source
     /// order ([`VbapMixNode::Panner`]).
@@ -133,28 +131,29 @@ impl VbapMixParts {
         &self.edges
     }
 
-    /// Push every unit into `net` and wire [`edges`](Self::edges), resolving
-    /// [`VbapMixNode::Source`]`(i)` to `sources[i]`. Returns the sum's id.
+    /// Add every unit to `g` and wire [`edges`](Self::edges), resolving
+    /// [`VbapMixNode::Source`]`(i)` to `sources[i]`. Returns the sum's key.
     ///
-    /// The `Net` adapter. It pushes in `build_vbap_mix`'s historical order
-    /// (panners, the LFE send, the sum).
+    /// The [`GraphBuilder`] adapter. It adds in `build_vbap_mix`'s historical
+    /// order (panners, the LFE send, the sum). The low-pass's controls are
+    /// dropped: the send's cutoff is fixed.
     ///
     /// # Panics
     ///
     /// If `sources` is shorter than the list the parts were built from.
-    pub fn insert_into(self, net: &mut Net, sources: &[NodeId]) -> NodeId {
-        let panners: Vec<NodeId> = self
+    pub fn insert_into(self, g: &mut GraphBuilder, sources: &[NodeKey]) -> NodeKey {
+        let panners: Vec<NodeKey> = self
             .panners
             .into_iter()
-            .map(|p| net.push(Box::new(p)))
+            .map(|p| g.add_unit(Box::new(p)))
             .collect();
         let lfe = self.lfe.map(|send| {
             (
-                net.push(Box::new(send.sum)),
-                net.push(Box::new(send.lowpass)),
+                g.add_unit(Box::new(send.sum)),
+                g.add_with_controls(send.lowpass).0,
             )
         });
-        let sum = net.push(Box::new(self.sum));
+        let sum = g.add_unit(Box::new(self.sum));
         let id = |n: VbapMixNode| match n {
             VbapMixNode::Source(i) => sources[i],
             VbapMixNode::Panner(i) => panners[i],
@@ -163,7 +162,7 @@ impl VbapMixParts {
             VbapMixNode::Sum => sum,
         };
         for e in &self.edges {
-            net.connect(id(e.from), e.from_port, id(e.to), e.to_port);
+            g.connect(id(e.from), e.from_port, id(e.to), e.to_port);
         }
         sum
     }
@@ -263,20 +262,20 @@ pub fn vbap_mix_parts<N>(
     })
 }
 
-/// Assemble a VBAP surround producer into `net` and return the summed mix node.
+/// Assemble a VBAP surround producer into `g` and return the summed mix node.
 ///
 /// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
 /// every panner's `CH` outputs are summed by a [`ChannelSumNode`] into one
-/// `layout`-wide node, whose id is returned. The caller decides what to do with
-/// it — `net.pipe_output(mix)` for a direct surround render, or feed it into a
-/// master strip. Pure graph surgery, no ECS.
+/// `layout`-wide node, whose key is returned. The caller decides what to do
+/// with it — `g.pipe_output(mix)` for a direct surround render, or feed it
+/// into a master strip. Pure graph surgery, no ECS.
 ///
 /// This is the one-call form of the `sources → panners → ChannelSumNode` graph
 /// (the shape proven by the surround tests). It builds the whole mix at once, so
 /// it suits offline assembly and tests; an incremental reconciler that adds and
 /// removes sources over time borrows the *structure* rather than calling this.
 /// It is [`vbap_mix_parts`] followed by [`VbapMixParts::insert_into`]; a graph
-/// other than `Net` uses the first half alone.
+/// built another way uses the first half alone.
 ///
 /// Each source node is wired stereo-in (its ports 0 and 1) to its panner. A
 /// mono source should present the same sample on both — the panner treats a
@@ -284,18 +283,34 @@ pub fn vbap_mix_parts<N>(
 /// preset (see [`VbapPannerNode::for_layout`]). An empty `sources` yields a
 /// silent (but valid) `layout`-wide sum node.
 pub fn build_vbap_mix(
-    net: &mut Net,
+    g: &mut GraphBuilder,
     layout: tutti_types::ChannelLayout,
     sources: &[VbapSource],
-) -> Result<NodeId> {
-    let nodes: Vec<NodeId> = sources.iter().map(|s| s.node).collect();
-    Ok(vbap_mix_parts(layout, sources)?.insert_into(net, &nodes))
+) -> Result<NodeKey> {
+    let nodes: Vec<NodeKey> = sources.iter().map(|s| s.node).collect();
+    Ok(vbap_mix_parts(layout, sources)?.insert_into(g, &nodes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tutti_core::AudioUnit;
+    use tutti_graph::Prepare;
+    use tutti_types::Samples;
+
+    /// Render `g` (no global inputs) for 49 blocks of 256 frames — past the
+    /// panners' ~0.05 s position smoother — and return each output channel's
+    /// energy over the last block.
+    fn settled_energy(g: GraphBuilder) -> Vec<f32> {
+        let mut r = g
+            .renderer(Prepare::new(tutti_core::SampleRate(48_000.0), Samples(256)))
+            .expect("builds");
+        let mut last = Vec::new();
+        for _ in 0..49 {
+            last = r.render(256);
+        }
+        last.iter().map(|c| c.iter().map(|s| s * s).sum()).collect()
+    }
 
     /// The pure-tutti surround producer, end to end, assembled via
     /// [`build_vbap_mix`]: two DC sources, one placed at a *front* speaker
@@ -309,25 +324,20 @@ mod tests {
     /// ch3 RR -135°.
     #[test]
     fn surround_graph_places_front_and_rear_sources() {
-        use tutti_core::dsp::Net;
-        use tutti_core::BufferRef;
-        use tutti_core::{BufferVec, MAX_BUFFER_SIZE};
         use tutti_nodes::testing::Const;
         use tutti_types::ChannelLayout;
 
-        const CH: usize = 4; // quad
-
-        let mut net = Net::new(0, CH);
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
         // Two DC sources (constant on both stereo inputs of each panner).
-        let src_front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-        let src_rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+        let src_front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+        let src_rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
 
         // Place one at the front-left speaker (45° → ch0) and one at the
         // rear-left speaker (135° → ch2). The builder wires each source through a
         // quad panner and sums them into one 4-wide node.
         let mix = build_vbap_mix(
-            &mut net,
+            &mut g,
             ChannelLayout::QUAD,
             &[
                 VbapSource::at(src_front, 45.0),
@@ -335,29 +345,12 @@ mod tests {
             ],
         )
         .expect("build quad surround mix");
-        net.pipe_output(mix);
-        net.set_sample_rate(tutti_core::SampleRate(48000.0));
+        g.pipe_output(mix);
 
         // The panner de-zippers position changes with a ~0.05s one-pole smoother
         // starting from 0°, so the azimuth ramps to its target over a few
-        // thousand samples. Render several blocks to let it settle, then measure
-        // energy only from the final (settled) block.
-        let block = 256usize.min(MAX_BUFFER_SIZE);
-        let empty = BufferRef::new(&[]);
-        let mut buf = BufferVec::new(CH);
-        let mut energy = vec![0.0f32; CH];
-        // ~12k samples of warm-up (well past the 0.05s @ 48k ≈ 2400-sample time
-        // constant) then measure the last block.
-        let settle_blocks = 48;
-        for b in 0..=settle_blocks {
-            let mut out = buf.buffer_mut();
-            net.process(block, &empty, &mut out);
-            if b == settle_blocks {
-                for (c, e) in energy.iter_mut().enumerate() {
-                    *e = out.channel_f32(c)[..block].iter().map(|s| s * s).sum();
-                }
-            }
-        }
+        // thousand samples: measure the settled last block.
+        let energy = settled_energy(g);
 
         let total: f32 = energy.iter().sum();
         assert!(total > 0.0, "surround graph produced silence");
@@ -410,67 +403,38 @@ mod tests {
 
     #[test]
     fn build_vbap_mix_empty_sources_is_a_silent_valid_node() {
-        use tutti_core::dsp::Net;
         use tutti_types::ChannelLayout;
 
-        let mut net = Net::new(0, 4);
-        let mix =
-            build_vbap_mix(&mut net, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
+        let mix = build_vbap_mix(&mut g, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
         // ChannelSumNode clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
-        assert_eq!(net.outputs_in(mix), 4);
+        assert_eq!(g.outputs_in(mix), 4);
     }
 
     /// Render a 5.1 `build_vbap_mix` graph and return settled per-channel
-    /// energy over the last block. `src_freq_hz` sets the DC/tone for each
-    /// source (constant if 0). Positions are `(azimuth, elevation)` per source.
+    /// energy over the last block. Positions are `(azimuth, elevation)` per
+    /// source; `src_signal(i)` is source `i`'s (stereo) unit.
     fn render_5_1_energy(
         sources: &[(f32, f32)],
-        src_signal: impl Fn(usize) -> tutti_core::dsp::Net + Copy,
+        src_signal: impl Fn(usize) -> Box<dyn AudioUnit>,
     ) -> [f32; 6] {
-        use tutti_core::dsp::Net;
-        use tutti_core::BufferRef;
-        use tutti_core::{BufferVec, MAX_BUFFER_SIZE};
         use tutti_types::ChannelLayout;
 
-        let mut net = Net::new(0, 6);
-        let src_ids: Vec<_> = (0..sources.len())
-            .map(|i| {
-                // Splice a per-source signal sub-net in: push its single node.
-                let sub = src_signal(i);
-                net.push(Box::new(sub))
-            })
-            .collect();
-        let surround: Vec<VbapSource> = src_ids
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from(6u16));
+        let surround: Vec<VbapSource> = sources
             .iter()
-            .zip(sources)
-            .map(|(&node, &(az, el))| VbapSource {
-                node,
+            .enumerate()
+            .map(|(i, &(az, el))| VbapSource {
+                node: g.add_unit(src_signal(i)),
                 azimuth: Azimuth(az),
                 elevation: Elevation(el),
             })
             .collect();
-
         let mix =
-            build_vbap_mix(&mut net, ChannelLayout::from(6u16), &surround).expect("build 5.1 mix");
-        net.pipe_output(mix);
-        net.set_sample_rate(tutti_core::SampleRate(48000.0));
-
-        let block = 256usize.min(MAX_BUFFER_SIZE);
-        let empty = BufferRef::new(&[]);
-        let mut buf = BufferVec::new(6);
-        let mut energy = [0.0f32; 6];
-        let settle_blocks = 48;
-        for b in 0..=settle_blocks {
-            let mut out = buf.buffer_mut();
-            net.process(block, &empty, &mut out);
-            if b == settle_blocks {
-                for (c, e) in energy.iter_mut().enumerate() {
-                    *e = out.channel_f32(c)[..block].iter().map(|s| s * s).sum();
-                }
-            }
-        }
-        energy
+            build_vbap_mix(&mut g, ChannelLayout::from(6u16), &surround).expect("build 5.1 mix");
+        g.pipe_output(mix);
+        settled_energy(g).try_into().expect("six channels")
     }
 
     /// A center-panned (0° azimuth) source must land in the CENTER channel (2)
@@ -484,12 +448,7 @@ mod tests {
         // One DC source, dead center. (No high frequencies, so the LFE low-pass
         // passes the DC send — the assertion is that center DOMINATES and LFE
         // is a smaller (bass-managed) share, not that LFE is zero.)
-        let energy = render_5_1_energy(&[(0.0, 0.0)], |_| {
-            let mut n = tutti_core::dsp::Net::new(0, 2);
-            let id = n.push(Box::new(Const::frame(&[1.0, 1.0])));
-            n.pipe_output(id);
-            n
-        });
+        let energy = render_5_1_energy(&[(0.0, 0.0)], |_| Box::new(Const::frame(&[1.0, 1.0])));
         let total: f32 = energy.iter().sum();
         assert!(total > 0.0);
         // Center (ch2) carries the panned source.
@@ -517,12 +476,7 @@ mod tests {
 
         // A DC (0 Hz) source is entirely below the 120 Hz cutoff, so the LFE
         // send passes it — LFE must be non-silent.
-        let energy = render_5_1_energy(&[(30.0, 0.0)], |_| {
-            let mut n = tutti_core::dsp::Net::new(0, 2);
-            let id = n.push(Box::new(Const::frame(&[1.0, 1.0])));
-            n.pipe_output(id);
-            n
-        });
+        let energy = render_5_1_energy(&[(30.0, 0.0)], |_| Box::new(Const::frame(&[1.0, 1.0])));
         let total: f32 = energy.iter().sum();
         assert!(
             energy[3] > total * 0.02,

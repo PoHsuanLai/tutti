@@ -79,6 +79,7 @@ use tutti_types::{
 };
 
 use crate::builder::GraphBuilder;
+use crate::controls::{ParamFork, ParamNode};
 use crate::editor::Editor;
 use crate::event::{Event, EventKind};
 use crate::exec::Executor;
@@ -86,7 +87,7 @@ use crate::fork::Unforkable;
 use crate::io::Io;
 use crate::legacy::Legacy;
 use crate::node::{
-    Cx, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
+    Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
 use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
@@ -1426,4 +1427,347 @@ macro_rules! contract_tests {
             }
         )*
     };
+}
+
+/// One block of `node`, called by hand with no graph around it: `inputs`
+/// on its audio inputs (one slice per port, all one length, which is the
+/// block's), `params[k]` on its declared param `k` (`None`, or a port past
+/// the end, reads its base), no events, transport stopped at frame 0. One
+/// `Vec` per audio output.
+///
+/// For a node's own unit tests, which inspect its state between blocks —
+/// what a [`Solo`](crate::Solo), whose node the executor owns, cannot show.
+/// `node` must already be [`prepare`](Node::prepare)d for a maximum block
+/// at least this long ([`prepared`]).
+///
+/// # Panics
+///
+/// If the block is empty (a node is never called with zero frames), or the
+/// input count is not the node's.
+pub fn drive(
+    node: &mut dyn Node,
+    rate: SampleRate,
+    inputs: &[&[f32]],
+    params: &[Option<&[f32]>],
+) -> Vec<Vec<f32>> {
+    let shape = node.shape();
+    let frames = inputs
+        .first()
+        .map(|c| c.len())
+        .or_else(|| params.iter().flatten().next().map(|p| p.len()))
+        .expect("a block needs a length: an input or a param");
+    assert_eq!(
+        inputs.len(),
+        usize::from(shape.audio_in.count()),
+        "one slice per audio input"
+    );
+    let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
+    let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+    let params: Vec<ParamInput<'_>> = params
+        .iter()
+        .map(|p| p.map_or(ParamInput::Base, ParamInput::Frames))
+        .collect();
+    let env = Env {
+        frame: Frame(0),
+        sample_rate: rate,
+        block_len: Samples(frames),
+        transport: Transport::default(),
+        changes: TransportChanges::NONE,
+    };
+    let cx = Cx {
+        env: &env,
+        arrival: Latency::ZERO,
+    };
+    let max = Prepare::new(rate, Samples(frames)).max_block();
+    let io = Io::new(
+        max,
+        frames,
+        inputs,
+        &mut refs,
+        crate::node::SilenceMask::NONE,
+        crate::node::ConstantMask::NONE,
+        crate::node::InPlaceMask::NONE,
+        &[],
+        &mut [],
+    )
+    .with_params(&params);
+    node.process(&cx, io);
+    out
+}
+
+/// `node`, prepared at `rate` for blocks of up to `max_block` frames: the
+/// state a graph hands [`drive`] a node in.
+pub fn prepared<N: Node>(mut node: N, rate: SampleRate, max_block: usize) -> N {
+    node.prepare(&Prepare::new(rate, Samples(max_block)));
+    node
+}
+
+/// Check a [`ParamNode`]'s fork, the promise [`param_parts`](crate::param_parts)
+/// relies on: a fork of `node` starts from the values last **set** through
+/// its [`ParamSet`](crate::ParamSet) (the authored values, not a live
+/// composite a modulation driver left in the cells), and shares no cell with
+/// the live node in either direction.
+///
+/// What this catches in a node: a param missing from
+/// [`ParamNode::param_set`] (a host cannot reach it by address), and a cell
+/// [`ParamNode::fork_fresh`] forgot to detach (a fork that follows the live
+/// knob, or moves it).
+///
+/// # Panics
+///
+/// On the first broken promise, naming the param. Also if the node's set is
+/// empty: a node with no params has nothing to check here.
+pub fn assert_param_fork<N: ParamNode + Clone>(node: N) {
+    let fork = ParamFork::new(&node);
+    let live = fork.params().clone();
+    let params: Vec<UnitParam> = live.params().collect();
+    assert!(!params.is_empty(), "a ParamNode with no params");
+    // A distinct value per param, away from anything a constructor picks.
+    let authored = |i: usize| 0.37 + i as f32 * 1.13;
+    for (i, &p) in params.iter().enumerate() {
+        live.set(p, authored(i));
+        // A modulation driver's composite, left in the live cell.
+        live.cell(p)
+            .expect("the set has it")
+            .store(authored(i) + 100.0, std::sync::atomic::Ordering::Release);
+    }
+    let forked = fork.fork_node();
+    let fresh = forked.param_set();
+    for (i, &p) in params.iter().enumerate() {
+        assert_eq!(
+            fresh.get(p),
+            Some(authored(i)),
+            "{p:?}: a fork starts from the authored value, not the live composite"
+        );
+    }
+    for (i, &p) in params.iter().enumerate() {
+        live.set(p, authored(i) + 7.0);
+        assert_eq!(
+            fresh.get(p),
+            Some(authored(i)),
+            "{p:?}: a live write reached the fork (a cell fork_fresh did not detach)"
+        );
+        fresh.set(p, -1.0);
+        assert_eq!(
+            live.get(p),
+            Some(authored(i) + 7.0),
+            "{p:?}: a write to the fork reached the live node"
+        );
+    }
+}
+
+/// The widest node [`BlockRig`] drives: its per-block slice lists live on
+/// the stack, so the rig allocates nothing per block.
+pub const RIG_MAX_CHANNELS: usize = 16;
+
+/// One node alone in a graph, driven block by block **without allocating**:
+/// the harness for a node's allocation gate (`assert_no_alloc` around
+/// [`block`](Self::block)). Its inputs read [`inputs_mut`](Self::inputs_mut)
+/// and its outputs land in [`output`](Self::output), channel for channel.
+///
+/// Everything is built in [`new`](Self::new); a block after that touches
+/// only the executor and buffers sized there.
+pub struct BlockRig {
+    _editor: Editor,
+    exec: Executor,
+    frames: usize,
+    inputs: Vec<Vec<f32>>,
+    outputs: Vec<Vec<f32>>,
+}
+
+impl BlockRig {
+    /// `node`, alone, prepared at `rate` for blocks of `frames`, with
+    /// silent inputs. Returns its controls.
+    ///
+    /// # Panics
+    ///
+    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way, or the
+    /// one-node graph does not commit.
+    pub fn new<N: IntoNode>(node: N, rate: SampleRate, frames: usize) -> (Self, N::Controls) {
+        let (mut editor, mut exec) = Editor::new(Prepare::new(rate, Samples(frames)));
+        let key = NodeKey(1);
+        let controls = editor.insert(key, N::kind(), node);
+        let shape = editor
+            .spec()
+            .topology
+            .nodes
+            .get(&key)
+            .map(|n| (n.inputs, n.outputs))
+            .expect("inserted");
+        let (ins, outs) = (usize::from(shape.0.count()), usize::from(shape.1.count()));
+        assert!(
+            ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,
+            "a rig drives at most {RIG_MAX_CHANNELS} channels a side"
+        );
+        let topology = &mut editor.spec_mut().topology;
+        topology.inputs = ChannelLayout::from_count(ins as u16);
+        for c in 0..ins {
+            topology.edges.insert(
+                tutti_types::graph::InPort {
+                    node: key,
+                    port: c as u16,
+                },
+                tutti_types::graph::Edge::Direct(tutti_types::graph::Source::Global(c as u16)),
+            );
+        }
+        topology.outputs = (0..outs)
+            .map(|c| {
+                tutti_types::graph::Source::Node(OutPort {
+                    node: key,
+                    port: c as u16,
+                })
+            })
+            .collect();
+        editor.commit().expect("a one-node graph commits");
+        exec.apply_pending();
+        editor.collect();
+        (
+            Self {
+                _editor: editor,
+                exec,
+                frames,
+                inputs: vec![vec![0.0; frames]; ins],
+                outputs: vec![vec![0.0; frames]; outs],
+            },
+            controls,
+        )
+    }
+
+    /// The input channels, to fill before a block.
+    pub fn inputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.inputs
+    }
+
+    /// Output channel `c` of the last block.
+    pub fn output(&self, c: usize) -> &[f32] {
+        &self.outputs[c]
+    }
+
+    /// One block, transport stopped. Allocation-free.
+    pub fn block(&mut self) {
+        let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
+        for (slot, c) in ins.iter_mut().zip(&self.inputs) {
+            *slot = c;
+        }
+        let (n_in, n_out) = (self.inputs.len(), self.outputs.len());
+        let mut outs = self.outputs.iter_mut();
+        let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
+            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..]));
+        self.exec.process(
+            self.frames,
+            &Transport::default(),
+            &ins[..n_in],
+            &mut out_refs[..n_out],
+        );
+    }
+}
+
+/// One node called by hand, block after block, **without allocating** —
+/// [`drive`] with its buffers built once. For a node's bench, or an
+/// allocation gate that needs its param ports fed (which [`BlockRig`], with
+/// no param source, cannot). Inputs, params and outputs are fixed-length
+/// buffers of the block's frames; fill them between blocks.
+pub struct Direct<N> {
+    /// The node, prepared.
+    pub node: N,
+    rate: SampleRate,
+    frames: usize,
+    inputs: Vec<Vec<f32>>,
+    params: Vec<Option<Vec<f32>>>,
+    outputs: Vec<Vec<f32>>,
+}
+
+impl<N: Node> Direct<N> {
+    /// `node`, prepared at `rate` for blocks of `frames`, silent inputs, no
+    /// param fed.
+    ///
+    /// # Panics
+    ///
+    /// If the node is wider than [`RIG_MAX_CHANNELS`] either way.
+    pub fn new(node: N, rate: SampleRate, frames: usize) -> Self {
+        let node = prepared(node, rate, frames);
+        let shape = node.shape();
+        let (ins, outs) = (
+            usize::from(shape.audio_in.count()),
+            usize::from(shape.audio_out.count()),
+        );
+        assert!(
+            ins <= RIG_MAX_CHANNELS && outs <= RIG_MAX_CHANNELS,
+            "a direct driver drives at most {RIG_MAX_CHANNELS} channels a side"
+        );
+        Self {
+            params: vec![None; shape.params.as_slice().len()],
+            node,
+            rate,
+            frames,
+            inputs: vec![vec![0.0; frames]; ins],
+            outputs: vec![vec![0.0; frames]; outs],
+        }
+    }
+
+    /// The input channels, to fill before a block.
+    pub fn inputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.inputs
+    }
+
+    /// Feed declared param `k` with `values` (one per frame) from the next
+    /// block on, or `None` to read its base again.
+    ///
+    /// # Panics
+    ///
+    /// If `values` is not one block long.
+    pub fn feed(&mut self, k: usize, values: Option<&[f32]>) {
+        if let Some(v) = values {
+            assert_eq!(v.len(), self.frames, "one value per frame");
+        }
+        self.params[k] = values.map(<[f32]>::to_vec);
+    }
+
+    /// Output channel `c` of the last block.
+    pub fn output(&self, c: usize) -> &[f32] {
+        &self.outputs[c]
+    }
+
+    /// One block. Allocation-free.
+    pub fn block(&mut self) -> Status {
+        let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
+        for (slot, c) in ins.iter_mut().zip(&self.inputs) {
+            *slot = c;
+        }
+        let (n_in, n_out, n_par) = (self.inputs.len(), self.outputs.len(), self.params.len());
+        let mut outs = self.outputs.iter_mut();
+        let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
+            core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..]));
+        let mut params = [ParamInput::Base; crate::param::MAX_PARAM_PORTS];
+        for (slot, p) in params.iter_mut().zip(&self.params) {
+            if let Some(v) = p {
+                *slot = ParamInput::Frames(v);
+            }
+        }
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: self.rate,
+            block_len: Samples(self.frames),
+            transport: Transport::default(),
+            changes: TransportChanges::NONE,
+        };
+        let cx = Cx {
+            env: &env,
+            arrival: Latency::ZERO,
+        };
+        let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
+        let io = Io::new(
+            max,
+            self.frames,
+            &ins[..n_in],
+            &mut out_refs[..n_out],
+            crate::node::SilenceMask::NONE,
+            crate::node::ConstantMask::NONE,
+            crate::node::InPlaceMask::NONE,
+            &[],
+            &mut [],
+        )
+        .with_params(&params[..n_par]);
+        self.node.process(&cx, io)
+    }
 }

@@ -58,6 +58,12 @@
 //! `set_sample_rate` reallocates. That is why the RT no-alloc suites call it
 //! outside their no-alloc gate rather than inside it.
 //!
+//! **Native nodes are exempt**: [`SvfFilterNode`] and [`EqBandNode`] are
+//! graph nodes (`tutti_graph::Node`), and the graph calls their `prepare`
+//! with the device rate before their first block — there is no path on
+//! which they run at the placeholder. A test drives one prepared
+//! (`tutti_graph::contract::prepared`, or a `tutti_graph::Solo`).
+//!
 //! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
 //! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`] — are exempt and say
 //! nothing, because a wrong rate has nothing to skew. The placeholder is also

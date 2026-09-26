@@ -1,18 +1,23 @@
 //! **A `Legacy::controlled` shadow never moves a live filter.**
 //!
-//! `SvfFilterNode::clone` shares its param cells (`Param::handle`), which is
+//! Pinned on the ladder filter, a unit that still runs through `Legacy`. (It
+//! was the SVF's until the SVF became a native node, which has no settings
+//! ring: its `ParamSet` writes the live cell directly. This file goes with
+//! `Legacy`.)
+//!
+//! `LadderFilterNode::clone` shares its param cells (`Param::handle`), which is
 //! what keeps a `Net`'s frontend and backend in step. A shadow built from a
 //! plain clone would therefore write the *live* cutoff the moment
 //! `LegacyControls::set` applied a setting to it — ahead of the settings
 //! ring — and the ring's drain would then write older values back. The
-//! shadow is `clone()` + `AudioUnit::isolate()`, and `SvfFilterNode::isolate`
+//! shadow is `clone()` + `AudioUnit::isolate()`, and `LadderFilterNode::isolate`
 //! severs the cells, so the live cutoff follows the ring and nothing else.
 
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::unit_param::setting;
-use tutti_core::{Hz, NodeKey, SampleRate, Samples, UnitParam, Q};
+use tutti_core::{Hz, NodeKey, Resonance, SampleRate, Samples, UnitParam};
 use tutti_graph::{Delivery, Editor, Legacy, Prepare, Transport, LEGACY_SETTINGS_CAPACITY};
-use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_nodes::{LadderFilterNode, LadderType};
 
 fn cutoff(hz: f32) -> tutti_core::Setting {
     setting(UnitParam::Cutoff, hz)
@@ -24,15 +29,16 @@ fn cutoff(hz: f32) -> tutti_core::Setting {
 ///
 /// Mutation: build the shadow without `isolate()` in `Legacy::controlled` →
 /// the first `set` moves the live cutoff at once → fails. Mutation: drop
-/// `SvfFilterNode::isolate`'s frequency re-seat → fails the same way.
+/// `LadderFilterNode::isolate`'s frequency re-seat → fails the same way.
 #[test]
 fn a_held_cutoff_never_moves_the_live_filter_ahead_of_the_ring() {
-    let filter = SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(500.0), Q(0.707));
+    let filter =
+        LadderFilterNode::<f64>::new(LadderType::LP24, Hz(500.0), Resonance::new_clamped(0.3));
     let live = filter.frequency();
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
     let (node, mut controls) = Legacy::controlled(&mut ed, filter);
     let key = NodeKey(1);
-    ed.insert(key, "svf", node);
+    ed.insert(key, "ladder", node);
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
     ed.commit().expect("commits");
     exec.apply_pending();

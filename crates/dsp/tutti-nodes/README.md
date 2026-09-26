@@ -52,44 +52,40 @@ fail here, and it left with the panners.
 ## Quick start
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::{Hz, Q};
+use tutti_core::{Hz, Q, UnitParam};
+use tutti_graph::{Prepare, Solo};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::{SampleRate, Samples};
 
-// A stereo net whose single node is a lowpass, fed by the net's input.
-let mut net = Net::new(2, 2);
+// A lowpass alone in a graph, fed by the graph's input. The filter is a
+// native graph node: inserted, it hands back its `ParamSet` — cutoff, Q and
+// gain by `UnitParam` — and the graph prepares it at the graph's rate.
 let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
-let cutoff = filter.frequency(); // the shared cell, before the node is moved
-let node = net.push(Box::new(filter));
-net.pipe_input(node);
-net.pipe_output(node);
-net.check();
+let mut solo = Solo::new(filter, Prepare::new(SampleRate(48_000.0), Samples(64)));
+let out = solo.render_input(&[&[1.0; 64]]);
 
-// The backend is what actually renders; `commit` only hands it a new net.
-let mut backend = Box::new(net.backend()) as Box<dyn AudioUnit>;
-let mut out = [0.0f32; 2];
-backend.tick(&[1.0, 1.0], &mut out);
-
-// Sweeping the cutoff on a *live* node: the write goes through the shared
-// `Param` cell, so it reaches the copy the backend is rendering.
-cutoff.store(Hz(2_000.0).get(), std::sync::atomic::Ordering::Release);
-backend.tick(&[1.0, 1.0], &mut out);
+// Sweeping the cutoff on the *running* node: the set writes the `Param`
+// cell the node reads, at the start of its next block.
+assert!(solo.controls().set(UnitParam::Cutoff, 2_000.0));
+let out = solo.render_input(&[&[1.0; 64]]);
 ```
 
 ## Live control values must live in shared storage (MANDATORY)
 
 > A value a user can change **while the node is rendering** lives behind an `Arc`
 > — a `Param<U>`, an `Arc<AtomicBool>`, an `Arc<AtomicU8>` — and its setter takes
-> **`&self`**. A `&mut self` setter on an `AudioUnit` means exactly one thing:
-> *restructure me, and expect a respawn.*
+> **`&self`**. A `&mut self` setter means exactly one thing: *restructure me,
+> and expect a respawn.*
 
-This is not style. `Net`'s frontend holds **clones** of its vertices, and
-`Net::migrate` swaps the backend's unit back over any vertex it considers
-unchanged. A control stored **by value** therefore cannot be changed on a live
-node: the write lands on a clone the next commit discards. There is no error and
-no diagnostic — the fader moves on screen and not in the sound.
-`tests/live_value_survives_commit.rs` is that mechanism as three assertions.
+This is not style. A node in the graph belongs to the executor: nothing on the
+control side can reach it but what it shares — its cells, through the controls
+it was inserted with. A control stored **by value** cannot be changed on a live
+node at all; the change is a replacement (a crossfade to a new node).
+`tests/live_controls_reach_the_node.rs` is that rule as assertions. (Under
+`Net` it was worse: its frontend held **clones** of its vertices, so a by-value
+write compiled, landed on a clone, and the next commit discarded it, with no
+error and no diagnostic. An `AudioUnit` still inserted through `Legacy` keeps
+its settings ring for the same reason.)
 
 **`&self` is necessary, not sufficient.** A plain `AtomicBool` field also permits
 `&self` and is *still* lost, because `Clone` copies the atomic rather than

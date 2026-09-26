@@ -3086,15 +3086,15 @@ vocoder retirement channel for voices the pool removes.
 
 | # | Change | Why first | Needs the graph? |
 |---|---|---|---|
-| 1 | **Latency defects D1–D3, plus D5, D7, D8** | These are bugs, and small | No |
-| 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
+| 1 | **Done.** **Latency defects D1–D3, plus D5, D7, D8** (D1–D3 in #3; D5 with the SoA bank, D7 with the strip's per-block ramp, D8 with the click's per-sample onset off `EnvClock`'s beat ports) | These are bugs, and small | No |
+| 2 | **Done (#5).** **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
-| 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
-| 9 | Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
+| 8 | **Folded into 9: a node's fork is ported with the node** ([below](#items-8-and-9-the-per-node-port)). **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s (the count at the time; ~29 `isolate`s by the 2026-09-26 audit). The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
+| 9 | **Under way: the contract and the first port (SVF, EQ band) landed** ([below](#items-8-and-9-the-per-node-port)). Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
 #### Item 4's plugin half landed
 
@@ -3884,6 +3884,77 @@ place. `rt_no_alloc`'s two clone tests lost their `allocate` call and
 `filter_lanes_is_tick_per_frame`, `lanes::tests`, `rt_no_free`, and the two
 width tests (`a_pool_wider_than_the_sampler_reads_is_refused`,
 `a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels`).
+
+#### Items 8 and 9: the per-node port
+
+Items 3, 7, 8 and 9 all end in the same files: a node's controls (3's
+per-block reads, 7's `VoiceNode` commands), its fork (8) and its contract
+(9). So they are done **per node**, not per item: each port leaves the node
+native, on `Controls`, forking without `isolate`, reading `Env`. The nodes
+split by crate, so the ports run in parallel without touching each other's
+files.
+
+**What landed first** (the contract, and one node through it end to end):
+
+- **`tutti_graph::ParamSet`** — a node's params by `UnitParam`, over the
+  node's own `Param<U>` cells: `set` writes the live cell and the
+  *authored* value; `set_authored` only the latter (for a param a
+  control-rate modulation driver owns, whose live cell holds the driver's
+  composite); a fork starts from the authored values. It replaces, for a
+  native node, `AudioUnit::set(Setting)`, `Legacy::controlled`'s settings
+  ring and its shadow.
+- **`tutti_graph::ParamNode` + `param_parts`** — a node declares its set
+  (`param_set`) and a copy that shares nothing (`fork_fresh`: detach the
+  cells, reset); `param_parts` inserts it with the set as its controls and
+  a `ParamFork` as its fork source. That is item 8 for every such node:
+  `isolate` and `rebind_offline` have no replacement to write, because a
+  native node reads time from `Env` and its fork is `fork_fresh`.
+- **`Editor::replace_or_swap`** — a crossfade when the incoming unit fits
+  the running one, a swap on the next commit when it does not (what
+  bevy's `replace` did for a `Legacy` unit).
+- **Test support in `tutti_graph::contract`:** `drive` (one block by hand,
+  params fed, the node inspectable), `prepared`, `assert_param_fork` (the
+  native `IsolateRow`), `BlockRig` (a one-node graph driven without
+  allocating: the allocation gates) and `Direct` (a node called by hand
+  without allocating, params fed: the benches). `tutti_graph::Solo` runs one
+  node through a graph for tests, benches and examples.
+- **bevy-tutti:** `GraphNode::params` (a node's `ParamSet` off its
+  controls, so `AudioParam` / `set_param` write through it and the fork
+  snapshot sets its authored value), `CapturedControls::for_params` (its
+  cells as control-rate modulation targets, with no `ModTargetRegistry`
+  entry) and `crossfade_graph_node`. A `ParamNode` is registered with one
+  line in `graph/events.rs`' `param_graph_node!`.
+- **`SvfFilterNode` and `EqBandNode`** ported. `build_vbap_mix` builds into a
+  `GraphBuilder` now: its LFE low-pass is the SVF, which a `Net` cannot
+  hold, and nothing else used its `Net` form.
+
+**The recipe, per node** (what the SVF's port did; the diffs are the
+reference):
+
+1. `impl Node`: `shape` (width, `with_params(&PARAMS)` for the params the
+   graph modulates, latency and tail as `route`/`tail` reported them),
+   `prepare` (rate-derived state: what `set_sample_rate` did; allocation is
+   allowed here), `process` over `Io` (`io.split()`, `io.param(k).frames()`
+   in place of `ParamFeed`), `reset`, `param_base`. Keep the DSP: a port
+   moves buffers, not arithmetic, and the width-generic goldens hold it to
+   that.
+2. `impl ParamNode` (`param_set` over every `Param` a host sets by address;
+   `fork_fresh` detaching each) and `impl IntoNode` via `param_parts`. A
+   node whose controls are more than params (the sampler's voice commands)
+   writes its own `Controls` type and `ForkSource`; the rule is the same —
+   the fork shares nothing and starts from what the host set.
+3. Delete its `AudioUnit` impl: `tick`, `route`, `footprint`, `get_id`,
+   `as_any`, `set(Setting)`, `isolate`, `rebind_offline`, `param_feed`. A
+   reader of `Arc<dyn Timeline>` / `BeatCursor` reads `Env::transport_at`.
+4. bevy-tutti: add the type to `param_graph_node!`; its spawns become
+   `spawn_graph_node`, its crossfades `crossfade_graph_node`.
+5. Tests move, never shrink: `drive`/`prepared` for unit tests that look
+   inside the node, `Solo` for renders, `assert_param_fork` for its
+   `IsolateRow`, `BlockRig` / `Direct` for its allocation gate and benches, a
+   `Row::new` for its contract row. Each new assertion is mutation-tested,
+   and a test of `Net` or `Legacy` behaviour that used the node as its
+   fixture moves to a node still on that path, or is rewritten for what
+   replaced it (`live_controls_reach_the_node.rs`), never dropped.
 
 ## Decisions for the owner
 

@@ -1,8 +1,9 @@
 //! One scene, rendered through the adapter and pinned to what fundsp's `Net`
 //! rendered for it (design doc 013, Phase 3).
 //!
-//! The scene is built through the ECS — `spawn_audio_node`, `PortSources`,
-//! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
+//! The scene is built through the ECS — `spawn_audio_node` and
+//! `spawn_graph_node` (the filter is a native node), `PortSources`,
+//! `MasterSources`, `AudioParam`, `crossfade_graph_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
 //! (`AudioGraphRes::take_audio_side`) and plays it in device-sized blocks.
@@ -43,8 +44,9 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_tutti::graph::latency::LatencyCompensationPlugin;
 use bevy_tutti::graph::{
-    crossfade_audio_node, AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide,
+    crossfade_graph_node, AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide,
     GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources, SpawnAudioNode,
+    SpawnGraphNode,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::{ChannelLayout, Db, Drive, Hz, SampleRate, Samples, UnitParam, Q};
@@ -114,7 +116,7 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let mut commands = world.commands();
     let osc = commands.spawn_audio_node(saw()).id();
     let filter = commands
-        .spawn_audio_node(low_pass(1_200.0))
+        .spawn_graph_node(low_pass(1_200.0))
         .insert(PortSources::from(osc))
         .id();
     let drive = commands
@@ -349,7 +351,7 @@ impl Node for From {
     fn reset(&mut self) {}
 }
 
-/// **A crossfade follows its law to the new filter.** `crossfade_audio_node`
+/// **A crossfade follows its law to the new filter.** `crossfade_graph_node`
 /// fades the filter to one with another cutoff over 5 ms (240 frames),
 /// starting on the first frame of the next block (1 024), along
 /// `CrossfadeCurve::EqualAmplitude`:
@@ -367,9 +369,9 @@ impl Node for From {
 /// Until doc 013 PR 15 the oracle was `NetEra`'s `Net::crossfade` on the same
 /// law, bit for bit before and after, within two fade steps inside.
 ///
-/// Mutations (run): `NativeGraph::replace` landing the unit with
-/// `Editor::insert` even when it fits (a hard swap) → the fade's frames are
-/// the new filter's → fails; `CrossfadeCurve::gains` a linear `g_in = x` →
+/// Mutations (run): `Editor::replace_or_swap` not setting the fade when the
+/// shape fits (a hard swap) → the fade's frames are the new filter's →
+/// fails; `CrossfadeCurve::gains` a linear `g_in = x` →
 /// the fade's frames part from the law → fails.
 #[test]
 fn a_crossfade_follows_its_law_to_the_new_filter() {
@@ -377,11 +379,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     const FADE: usize = 240;
     let mut s = scene(false);
     let mut b = render(&mut s.side, FADE_AT, 256);
-    crossfade_audio_node(
-        &mut s.app.world_mut().commands(),
-        s.filter,
-        Box::new(low_pass(300.0)),
-    );
+    crossfade_graph_node(&mut s.app.world_mut().commands(), s.filter, low_pass(300.0));
     s.app.world_mut().flush();
     s.app.update();
     for (c, rest) in b.iter_mut().zip(render(&mut s.side, 3_072 - FADE_AT, 256)) {
@@ -394,11 +392,11 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
     // one shaped.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::from_count(3));
     let osc = g.add_unit(Box::new(saw()));
-    let old_filter = g.add_unit(Box::new(low_pass(1_200.0)));
+    let old_filter = g.add_with_controls(low_pass(1_200.0)).0;
     let gate = g.add(Unforkable(From {
         from: FADE_AT as u64,
     }));
-    let filter = g.add_unit(Box::new(low_pass(300.0)));
+    let filter = g.add_with_controls(low_pass(300.0)).0;
     let drive = g.add_unit(Box::new(shaper(DRIVE)));
     g.connect(osc, 0, old_filter, 0)
         .connect(osc, 0, gate, 0)

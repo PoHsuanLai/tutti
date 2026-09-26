@@ -23,7 +23,11 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, PhaseIncrement, SampleRate};
+use tutti_core::{
+    AtomicF32, AudioUnit, BufferVec, ChannelLayout, PhaseIncrement, SampleRate, Samples,
+};
+use tutti_graph::contract::drive;
+use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
@@ -63,9 +67,17 @@ fn sweep(from: f32, to: f32) -> Vec<f32> {
 /// each `process`.
 type Automation = Box<dyn Fn(usize)>;
 
+/// A case's node: an `AudioUnit` driven by `process`, or a native node
+/// driven as a graph drives it (`tutti_graph::contract::drive`), its params
+/// on its param ports.
+enum Under {
+    Unit(Box<dyn AudioUnit>),
+    Native(Box<dyn Node>),
+}
+
 struct Case {
     name: &'static str,
-    node: Box<dyn AudioUnit>,
+    node: Under,
     inputs: Vec<Vec<f32>>,
     /// Per param of the node's feed, its values over the render when fed —
     /// what the graph's modulation hands a `Legacy` unit. Empty: nothing fed.
@@ -79,7 +91,17 @@ struct Case {
 fn case(name: &'static str, node: impl AudioUnit + 'static, inputs: Vec<Vec<f32>>) -> Case {
     Case {
         name,
-        node: Box::new(node),
+        node: Under::Unit(Box::new(node)),
+        inputs,
+        params: Vec::new(),
+        automation: None,
+    }
+}
+
+fn native_case(name: &'static str, node: impl Node, inputs: Vec<Vec<f32>>) -> Case {
+    Case {
+        name,
+        node: Under::Native(Box::new(node)),
         inputs,
         params: Vec::new(),
         automation: None,
@@ -91,6 +113,37 @@ fn automate(cell: Arc<AtomicF32>, f: impl Fn(usize) -> f32 + 'static) -> Option<
     Some(Box::new(move |k| cell.store(f(k), Ordering::Release)))
 }
 
+/// [`render`] for a native node: the same blocks, through `drive`.
+fn render_native(
+    node: &mut dyn Node,
+    inputs: &[Vec<f32>],
+    params: &[Option<Vec<f32>>],
+    automation: Option<&Automation>,
+) -> Vec<Vec<f32>> {
+    node.prepare(&Prepare::new(SR, Samples(64)));
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    let (mut pos, mut k) = (0, 0);
+    while pos < LEN {
+        let n = PATTERN[k % PATTERN.len()].min(LEN - pos);
+        if let Some(a) = automation {
+            a(k);
+        }
+        k += 1;
+        let ins: Vec<&[f32]> = inputs.iter().map(|c| &c[pos..pos + n]).collect();
+        let params: Vec<Option<&[f32]>> = params
+            .iter()
+            .map(|p| p.as_ref().map(|v| &v[pos..pos + n]))
+            .collect();
+        let block = drive(node, SR, &ins, &params);
+        out.resize(block.len(), Vec::with_capacity(LEN));
+        for (o, b) in out.iter_mut().zip(block) {
+            o.extend(b);
+        }
+        pos += n;
+    }
+    out
+}
+
 // One push per case, each beside the setup it needs, reads as the table it is;
 // a `vec![]` literal would force the setup out of line.
 #[allow(clippy::vec_init_then_push)]
@@ -98,22 +151,22 @@ fn cases() -> Vec<Case> {
     let mut v = Vec::new();
 
     // ── SVF ──
-    v.push(case(
+    v.push(native_case(
         "svf_mono_lowpass",
         SvfFilterNode::<f64>::new(SvfType::LowPass, 1_200.0, 0.9),
         noise_channels(1),
     ));
-    v.push(case(
+    v.push(native_case(
         "svf_mono_bell",
         SvfFilterNode::<f64>::new(SvfType::Bell, 900.0, 1.4).with_gain_db(6.0),
         noise_channels(1),
     ));
-    v.push(case(
+    v.push(native_case(
         "svf_stereo_f32_bandpass",
         SvfFilterNode::<f32>::with_channels(ChannelLayout::STEREO, SvfType::BandPass, 300.0, 2.0),
         noise_channels(2),
     ));
-    v.push(case(
+    v.push(native_case(
         "svf_wide6_highshelf",
         SvfFilterNode::<f64>::with_channels(6usize, SvfType::HighShelf, 2_000.0, 0.7)
             .with_gain_db(-4.0),
@@ -121,7 +174,7 @@ fn cases() -> Vec<Case> {
     ));
     v.push(Case {
         params: vec![Some(sweep(200.0, 8_000.0)), None],
-        ..case(
+        ..native_case(
             "svf_stereo_swept",
             SvfFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
@@ -137,7 +190,7 @@ fn cases() -> Vec<Case> {
     let automation = automate(node.frequency(), |k| 300.0 + 700.0 * (k % 5) as f32);
     v.push(Case {
         automation,
-        ..case("svf_stereo_automated", node, noise_channels(2))
+        ..native_case("svf_stereo_automated", node, noise_channels(2))
     });
 
     // ── Ladder ──
@@ -263,7 +316,17 @@ fn cases() -> Vec<Case> {
 }
 
 fn render(case: &mut Case) -> Vec<Vec<f32>> {
-    let node = case.node.as_mut();
+    let node = match &mut case.node {
+        Under::Unit(node) => node.as_mut(),
+        Under::Native(node) => {
+            return render_native(
+                node.as_mut(),
+                &case.inputs,
+                &case.params,
+                case.automation.as_ref(),
+            )
+        }
+    };
     node.set_sample_rate(SR);
     let (nin, nout) = (node.inputs(), node.outputs());
     assert_eq!(

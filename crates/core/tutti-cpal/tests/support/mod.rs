@@ -65,11 +65,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
         ed.insert(
             filter,
             "filter",
-            Legacy::new(SvfFilterNode::<f64>::new(
-                SvfType::LowPass,
-                Hz(2_000.0),
-                Q(0.7),
-            )),
+            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
         );
         ed.spec_mut().topology.edges.insert(
             InPort {

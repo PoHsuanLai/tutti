@@ -287,6 +287,31 @@ impl AudioGraphRes {
         self.write().insert_node(node)
     }
 
+    /// Address `node`'s params by `params`, a native node's controls: what
+    /// [`set_param`](Self::set_param) writes through for it, and what a fork
+    /// of it starts from. `None` takes the address away.
+    /// [`spawn_graph_node`](crate::graph::SpawnGraphNode::spawn_graph_node)
+    /// does this from [`GraphNode::params`](crate::graph::GraphNode::params).
+    pub fn set_node_params(&mut self, node: AudioNode, params: Option<tutti_graph::ParamSet>) {
+        self.write().set_node_params(node, params);
+    }
+
+    /// [`replace`](Self::replace) for a native node: a fade when its shape
+    /// fits the running unit's, else a plain swap on the next commit. Hands
+    /// back its controls; address its params with
+    /// [`set_node_params`](Self::set_node_params).
+    /// [`crossfade_graph_node`](crate::graph::crossfade_graph_node) does both,
+    /// and re-captures.
+    pub fn replace_node<N: tutti_graph::IntoNode>(
+        &mut self,
+        node: AudioNode,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
+        self.write().replace_node(node, incoming, fade, curve)
+    }
+
     /// How many event inputs `node` declares: 0 for a unit inserted as an
     /// `AudioUnit` (through `Legacy`).
     pub fn node_event_inputs(&self, node: AudioNode) -> usize {

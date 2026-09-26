@@ -74,7 +74,7 @@ fn build_chain(mut commands: Commands) {
     let osc = commands.spawn_audio_node(Osc::saw(Hz(110.0))).id();
 
     let filter = commands
-        .spawn_audio_node(SvfFilterNode::<f64>::new(
+        .spawn_graph_node(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             Hz(800.0),
             Q(1.0),

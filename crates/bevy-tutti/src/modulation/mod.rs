@@ -246,6 +246,7 @@ pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
     CollectedModSources, ModRateCell, ModSourceAppExt, ModSourceKind, ModSourceSystems,
 };
+pub(crate) use target::ParamSetTargets;
 pub use target::{ModBusRes, ModParamsHandle, ModTargetRegistry, ModTargetResolver};
 
 use bevy_app::{App, Plugin, Update};

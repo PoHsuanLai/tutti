@@ -197,6 +197,31 @@ impl std::fmt::Debug for ModParamsHandle {
     }
 }
 
+/// A native node's [`ParamSet`](tutti_graph::ParamSet) as its control-rate
+/// modulation targets: an [`AtomicTarget`](tutti_mod::AtomicTarget)
+/// mirroring into the cell the node reads, for any [`ParamAddr::Unit`] the
+/// set addresses. What [`CapturedControls::for_params`](crate::graph::CapturedControls::for_params)
+/// captures, so such a node needs no [`ModTargetRegistry`] entry.
+pub(crate) struct ParamSetTargets(pub(crate) tutti_graph::ParamSet);
+
+impl ModParams for ParamSetTargets {
+    fn mod_target(
+        &self,
+        param: ParamAddr,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<Arc<dyn ModTarget>> {
+        let ParamAddr::Unit(unit) = param else {
+            return None;
+        };
+        let cell = self.0.cell(unit)?;
+        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
+            base, min, max, cell,
+        )))
+    }
+}
+
 /// The shared id→sink map the driver dispatches through.
 ///
 /// A resource so the registry and the driver agree on one bus: targets are

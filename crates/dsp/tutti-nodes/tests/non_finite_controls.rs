@@ -15,7 +15,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, SampleRate};
+use tutti_core::{AtomicF32, AudioUnit, BufferVec, ChannelLayout, SampleRate, Samples};
+use tutti_graph::contract::drive;
+use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
@@ -98,6 +100,66 @@ fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
     }
 }
 
+/// [`render_finite`] for a native node: `blocks` 64-frame blocks through
+/// `tutti_graph::contract::drive` at `rate`.
+fn render_node_finite(node: &mut dyn Node, rate: SampleRate, blocks: usize, seed: u32) -> bool {
+    let width = usize::from(node.shape().audio_in.count());
+    let mut all = true;
+    for b in 0..blocks {
+        let input = noise_block(width, seed + b as u32);
+        let chans: Vec<Vec<f32>> = (0..width)
+            .map(|c| (0..64).map(|i| input.at_f32(c, i)).collect())
+            .collect();
+        let refs: Vec<&[f32]> = chans.iter().map(|c| &c[..]).collect();
+        let out = drive(node, rate, &refs, &[]);
+        all &= out.iter().flatten().all(|s| s.is_finite());
+    }
+    all
+}
+
+/// [`survives`] for a native node: the same cases, the rate change a
+/// re-`prepare`.
+fn survives_node<N: Node>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -> Vec<Cell>) {
+    let (a, b) = (SampleRate(48_000.0), SampleRate(44_100.0));
+    for bad in BAD {
+        let count = cells(&make()).len();
+        for k in 0..count {
+            let mut node = make();
+            node.prepare(&Prepare::new(a, Samples(64)));
+            assert!(
+                render_node_finite(&mut node, a, 4, 1),
+                "{name}: finite before"
+            );
+            let cs = cells(&node);
+            let (cell, atomic, alt) = &cs[k];
+            let before = atomic.load(Ordering::Acquire);
+            atomic.store(bad, Ordering::Release);
+            for (j, (_, other, other_alt)) in cs.iter().enumerate() {
+                if j != k {
+                    other.store(*other_alt, Ordering::Release);
+                }
+            }
+            assert!(
+                render_node_finite(&mut node, a, 8, 10),
+                "{name}: {cell} = {bad} (with every other control moving) reached the output"
+            );
+            node.prepare(&Prepare::new(b, Samples(64)));
+            assert!(
+                render_node_finite(&mut node, b, 8, 30),
+                "{name}: {cell} = {bad} reached the output through a rate change"
+            );
+            atomic.store(
+                if before.is_finite() { *alt } else { before },
+                Ordering::Release,
+            );
+            assert!(
+                render_node_finite(&mut node, b, 8, 20),
+                "{name}: {cell} = {bad} left the state non-finite after a finite write"
+            );
+        }
+    }
+}
+
 /// Mutation (each run, each fails): dropping the `LastGood` read on the SVF's
 /// cutoff (`read_controls`), on the ladder's resonance, on the delay's delay
 /// time, on the LFO rate (`LfoDrive::fill_block`), on the mod-mix depth
@@ -110,7 +172,7 @@ fn survives<N: AudioUnit>(name: &str, make: impl Fn() -> N, cells: impl Fn(&N) -
 /// into a gate held open for good.
 #[test]
 fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls() {
-    survives(
+    survives_node(
         "svf",
         || SvfFilterNode::<f64>::with_channels(ChannelLayout::STEREO, SvfType::Bell, 900.0, 1.0),
         |n| {

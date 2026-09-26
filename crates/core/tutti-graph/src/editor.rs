@@ -585,6 +585,71 @@ impl Editor {
         Ok(controls)
     }
 
+    /// [`replace`](Self::replace) where it can fade, and a plain placement at
+    /// `key` where it cannot — the node not running yet, or a shape the
+    /// running unit's plan does not fit (a latency change): then the new unit
+    /// lands as a swap on the next commit, as [`insert`](Self::insert) at an
+    /// existing key does, keeping the key's kind. What a host that swaps a
+    /// unit under a node wants: the fade when there is one to have, never a
+    /// refusal for want of it.
+    ///
+    /// Refused, changing nothing, only when the editor is poisoned or
+    /// re-preparing (check [`is_repreparing`](Self::is_repreparing) first to
+    /// keep the node: a refusal consumes it). `key` must be in the spec.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is not in the spec: a replace names a node that exists.
+    pub fn replace_or_swap<N: IntoNode>(
+        &mut self,
+        key: NodeKey,
+        node: N,
+        fade: Fade,
+    ) -> Result<N::Controls, CommitError> {
+        self.check_poisoned()?;
+        if self.repreparing.is_some() {
+            return Err(CommitError::Repreparing);
+        }
+        let kind = self
+            .spec
+            .topology
+            .nodes
+            .get(&key)
+            .map(|n| n.kind.clone())
+            .expect("replace_or_swap names a node in the spec");
+        let running = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.unit(key))
+            .map(|u| u.shape);
+        let NodeParts {
+            node: mut unit,
+            controls,
+            fork,
+        } = node.into_parts();
+        unit.prepare(&self.prepare);
+        let shape = unit.shape();
+        let fits = running.is_some_and(|r| {
+            (
+                shape.audio_in,
+                shape.audio_out,
+                shape.event_in,
+                shape.event_out,
+            ) == (r.audio_in, r.audio_out, r.event_in, r.event_out)
+                && shape.latency == r.latency
+                && shape.in_place == r.in_place
+                && shape.event_resolution == r.event_resolution
+                && shape.event_capacity == r.event_capacity
+                && shape.legacy == r.legacy
+                && shape.params == r.params
+        });
+        self.place(key, &kind, unit, shape, fork);
+        if fits {
+            self.fades.insert(key, fade);
+        }
+        Ok(controls)
+    }
+
     /// Write a prepared unit at `key` with a fresh generation — the common
     /// half of [`insert`](Self::insert) and [`replace`](Self::replace).
     fn place(

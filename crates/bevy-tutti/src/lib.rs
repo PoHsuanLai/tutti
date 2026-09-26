@@ -165,11 +165,11 @@ pub use engine::AudioEngineState;
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
-        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
-        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes, GraphDirty,
-        GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode, MasterSources,
-        MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished, SpawnAudioNode,
-        TransportRes,
+        commit_graph, crossfade_audio_node, crossfade_graph_node, engine_ready, AudioConfig,
+        AudioGraphRes, AudioParam, AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes,
+        EngineNodes, GraphDirty, GraphNode, GraphReconcilePlugin, GraphReconcileSystems,
+        GraphSource, InsertAudioNode, MasterSources, MeteringRes, MetronomeRes, PortSource,
+        PortSources, PumpFinished, SpawnAudioNode, SpawnGraphNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,

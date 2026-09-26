@@ -12,7 +12,7 @@ use bevy_ecs::system::EntityCommands;
 use tutti_core::AudioNode;
 use tutti_core::AudioUnit;
 
-use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
+use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, GraphNode, ReplaceRefused};
 
 /// `Commands` extension that adds a unit to the graph and spawns an entity
 /// with `AudioNode(id)` attached.
@@ -42,7 +42,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, GraphDirty, ReplaceRefused};
 /// fn build(mut commands: Commands) {
 ///     let osc = commands.spawn_audio_node(Osc::sine(Hz(440.0))).id();
 ///     let filt = commands
-///         .spawn_audio_node(SvfFilterNode::<f64>::new(
+///         .spawn_graph_node(SvfFilterNode::<f64>::new(
 ///             SvfType::LowPass,
 ///             Hz(1000.0),
 ///             Q(1.0),
@@ -228,9 +228,93 @@ pub fn crossfade_plugin_node(
 enum Incoming {
     /// An `AudioUnit`, through `Legacy`.
     Unit(Box<dyn AudioUnit>),
+    /// A native [`GraphNode`], its type erased. In a `Mutex` only to be
+    /// `Sync` (a node is `Send`, not `Sync`), which a parked request in
+    /// [`PendingCrossfades`] must be; it is only ever taken whole.
+    Node(std::sync::Mutex<Box<dyn NativeSwap>>),
     /// A hosted plugin, a native node.
     #[cfg(feature = "plugin")]
     Plugin(Box<tutti_plugin::handles::PluginClient>),
+}
+
+/// [`crossfade_audio_node`] for a native [`GraphNode`]: swap `entity`'s node
+/// for `node` under the same 5 ms fade when its shape fits the running
+/// unit's (else as a plain swap on the next commit), and — only if the graph
+/// took it — bind what it brings: its captured controls, its params by
+/// address ([`GraphNode::params`]) and its controls as
+/// [`NodeControls`](crate::graph::NodeControls). Parked in
+/// [`PendingCrossfades`] while the graph re-prepares, as a unit is.
+///
+/// The outgoing node's `NodeControls` component is left in place when the
+/// incoming node's controls are of another type; they no longer reach
+/// anything.
+pub fn crossfade_graph_node<N>(commands: &mut Commands<'_, '_>, entity: Entity, node: N)
+where
+    N: GraphNode,
+    N::Controls: Send + Sync + 'static,
+{
+    commands.queue(move |world: &mut World| {
+        if world.get::<AudioNode>(entity).is_none() {
+            bevy_log::warn!(
+                "crossfade_graph_node: entity {:?} has no AudioNode; nothing to crossfade",
+                entity
+            );
+            return;
+        }
+        let controls = node.captured();
+        let swap: Box<dyn NativeSwap> = Box::new(Swap(node));
+        apply_crossfade(
+            world,
+            entity,
+            Incoming::Node(std::sync::Mutex::new(swap)),
+            controls,
+        );
+    });
+}
+
+/// What binds an incoming native node's controls to its entity once it
+/// landed.
+type Bind = Box<dyn FnOnce(&mut EntityWorldMut) + Send>;
+
+/// A native node waiting to be swapped in, its type erased: what
+/// [`crossfade_graph_node`] hands [`apply_crossfade`], and parks while the
+/// graph re-prepares.
+trait NativeSwap: Send {
+    /// Swap it in under `node`; on success, what binds its controls.
+    fn swap(
+        self: Box<Self>,
+        graph: &mut AudioGraphRes,
+        node: AudioNode,
+        fade: tutti_core::Seconds,
+        curve: tutti_core::CrossfadeCurve,
+    ) -> Result<Bind, ReplaceRefused<Box<dyn NativeSwap>>>;
+}
+
+struct Swap<N>(N);
+
+impl<N> NativeSwap for Swap<N>
+where
+    N: GraphNode,
+    N::Controls: Send + Sync + 'static,
+{
+    fn swap(
+        self: Box<Self>,
+        graph: &mut AudioGraphRes,
+        node: AudioNode,
+        fade: tutti_core::Seconds,
+        curve: tutti_core::CrossfadeCurve,
+    ) -> Result<Bind, ReplaceRefused<Box<dyn NativeSwap>>> {
+        match graph.replace_node(node, self.0, fade, curve) {
+            Ok(controls) => {
+                graph.set_node_params(node, N::params(&controls));
+                Ok(Box::new(move |e: &mut EntityWorldMut| {
+                    e.insert(crate::graph::NodeControls(controls));
+                }))
+            }
+            Err(ReplaceRefused::Busy(n)) => Err(ReplaceRefused::Busy(Box::new(Swap(n)))),
+            Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
+        }
+    }
 }
 
 /// Crossfades [`crossfade_audio_node`] could not apply yet, because the graph
@@ -281,31 +365,43 @@ fn apply_crossfade(world: &mut World, entity: Entity, unit: Incoming, controls: 
     let fade = tutti_core::Seconds(0.005);
     let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
     let landed = match unit {
-        Incoming::Unit(unit) => {
-            graph
-                .replace(node, unit, fade, curve)
-                .map_err(|refused| match refused {
-                    ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
-                    ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
-                })
-        }
+        Incoming::Unit(unit) => graph
+            .replace(node, unit, fade, curve)
+            .map(|()| None)
+            .map_err(|refused| match refused {
+                ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
+                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+            }),
+        Incoming::Node(swap) => swap
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .swap(&mut graph, node, fade, curve)
+            .map(Some)
+            .map_err(|refused| match refused {
+                ReplaceRefused::Busy(swap) => {
+                    ReplaceRefused::Busy(Incoming::Node(std::sync::Mutex::new(swap)))
+                }
+                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+            }),
         #[cfg(feature = "plugin")]
-        Incoming::Plugin(client) => {
-            graph
-                .replace_plugin(node, client, fade, curve)
-                .map_err(|refused| match refused {
-                    ReplaceRefused::Busy(client) => ReplaceRefused::Busy(Incoming::Plugin(client)),
-                    ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
-                })
-        }
+        Incoming::Plugin(client) => graph
+            .replace_plugin(node, client, fade, curve)
+            .map(|()| None)
+            .map_err(|refused| match refused {
+                ReplaceRefused::Busy(client) => ReplaceRefused::Busy(Incoming::Plugin(client)),
+                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+            }),
     };
     match landed {
-        Ok(()) => {
+        Ok(bind) => {
             if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
                 dirty.0 = true;
             }
             if let Ok(mut e) = world.get_entity_mut(entity) {
                 controls.replace(&mut e, node);
+                if let Some(bind) = bind {
+                    bind(&mut e);
+                }
             }
         }
         Err(ReplaceRefused::Busy(unit)) => {

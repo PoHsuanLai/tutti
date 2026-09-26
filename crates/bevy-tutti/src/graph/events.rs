@@ -21,7 +21,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 use tutti_core::AudioNode;
-use tutti_graph::IntoNode;
+use tutti_graph::{IntoNode, ParamSet};
 
 use crate::graph::{
     engine_ready, AudioGraphRes, CapturedControls, GraphDirty, GraphReconcileSystems,
@@ -128,7 +128,40 @@ pub trait GraphNode: IntoNode + Send + 'static {
     fn captured(&self) -> CapturedControls {
         CapturedControls::default()
     }
+
+    /// The node's params by address, read off its controls once it is in:
+    /// what an [`AudioParam`](crate::graph::AudioParam) on the entity writes
+    /// through, and what a fork of the node starts from. `None`, the
+    /// default, for a node with none.
+    fn params(controls: &Self::Controls) -> Option<ParamSet> {
+        let _ = controls;
+        None
+    }
 }
+
+/// A [`GraphNode`] whose controls are its [`ParamSet`]: its params reached
+/// by address (and, with `modulation`, as control-rate targets). For a
+/// `tutti_graph::ParamNode` inserted through `tutti_graph::param_parts`.
+macro_rules! param_graph_node {
+    ($($ty:ty),* $(,)?) => {$(
+        impl GraphNode for $ty {
+            fn captured(&self) -> CapturedControls {
+                CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
+            }
+
+            fn params(controls: &ParamSet) -> Option<ParamSet> {
+                Some(controls.clone())
+            }
+        }
+    )*};
+}
+
+param_graph_node!(
+    tutti_nodes::SvfFilterNode<f32>,
+    tutti_nodes::SvfFilterNode<f64>,
+    tutti_nodes::EqBandNode<f32>,
+    tutti_nodes::EqBandNode<f64>,
+);
 
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}
@@ -178,6 +211,7 @@ where
         return;
     };
     let (id, controls) = graph.insert_node(node);
+    graph.set_node_params(id, N::params(&controls));
     if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
         dirty.0 = true;
     }

@@ -429,10 +429,15 @@ fn event_sources_wire_a_clip_node_to_a_graph_synth() {
 /// its own, edited in place, removed with the last install**, and nothing is
 /// installed on the synth's port (which would play the clip twice).
 ///
+/// Removing the clip node sends nothing itself, so the notes it left
+/// sounding are ended through the synth's port: an all-notes-off (CC 123) on
+/// every channel, as the port path's clear sends.
+///
 /// Mutation: always taking the port path (ignoring `node_event_inputs`) →
 /// no clip node → fails. Mutation: a fresh clip node per edit → the node
 /// changes across the edit → fails. Mutation: keeping the clip node when the
-/// install goes → it is still in the graph → fails.
+/// install goes → it is still in the graph → fails. Mutation: no
+/// all-notes-off when it goes → the port is empty → fails.
 #[test]
 fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
     use bevy_tutti::midi::SequencedClips;
@@ -484,4 +489,48 @@ fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
         "the clip node goes with the last install"
     );
     assert!(graph.event_sources(node_of(&app, synth), 0).is_empty());
+    let sent = poll(&app, synth, 64);
+    assert_eq!(sent.len(), 16, "an all-notes-off per channel: {sent:?}");
+    assert!(sent
+        .iter()
+        .all(|e| (e.data[0] >> 20) & 0xf == 0xB && (e.data[0] >> 8) & 0x7f == 123));
+}
+
+/// **A clip node goes when its target leaves the event path**: here the
+/// target loses its node, and the install stays. The clip node is removed
+/// rather than left playing into nothing.
+///
+/// Mutation: drop only targets no install names (not those off the event
+/// path) → the clip node stays in the graph → fails.
+#[test]
+fn a_clip_node_goes_when_its_target_loses_its_node() {
+    use bevy_tutti::midi::SequencedClips;
+
+    let mut app = app();
+    let synth = spawn_graph_synth(&mut app);
+    let install = app
+        .world_mut()
+        .spawn(MidiSourceInstall::new(
+            synth,
+            note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
+        ))
+        .id();
+    app.update();
+    let clip = app
+        .world()
+        .resource::<SequencedClips>()
+        .node(synth)
+        .expect("a clip node");
+    app.world_mut()
+        .entity_mut(synth)
+        .remove::<tutti_core::AudioNode>();
+    // A rebuild runs when an install changes: write it back unchanged.
+    let mut changed = app
+        .world_mut()
+        .get_mut::<MidiSourceInstall>(install)
+        .unwrap();
+    changed.events = changed.events.clone();
+    app.update();
+    assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
+    assert!(!app.world().resource::<AudioGraphRes>().contains(clip));
 }

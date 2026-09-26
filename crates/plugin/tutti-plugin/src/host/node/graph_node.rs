@@ -54,6 +54,10 @@ impl Node for PluginClient<Bound> {
     /// once per block (tutti-core's engine, `RenderClock::render_graph`)
     /// keeps, in whole blocks as in `LEGACY_CHUNK` passes. So a plan holding
     /// a plugin renders whole blocks. The transport itself is read from `Env`.
+    /// The cost: a transport command scheduled inside a block reaches those
+    /// polled inputs from the block's first frame (up to a block early, where
+    /// passes bounded it to 64 frames); doc 013, "The plugin is no longer
+    /// `legacy`".
     fn shape(&self) -> Shape {
         let c = self;
         Shape::audio(width(c.inputs), width(c.outputs))

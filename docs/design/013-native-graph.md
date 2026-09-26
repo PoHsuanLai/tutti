@@ -3395,18 +3395,31 @@ under both.
   `MidiSourceInstall` on a target with an event input (a graph-node synth, a
   plugin) plays through a clip node of its own (`SequencedClips`, fed through
   `EventFeeds`), edited in place with `set_events`; a `Legacy` target keeps
-  its port source.
+  its port source. Found in review and fixed: removing a clip node (the last
+  install gone, or the target off the event path) sends an all-notes-off
+  through the target's port, as the port path does; a loop that wraps exactly
+  at a block's end ends the notes held across it; a non-finite beat is
+  dropped rather than silencing the clip; owed note-offs are retried each
+  block; setting the events a clip already holds cuts nothing.
 - **The plugin is no longer `legacy`.** Its timeline-polling inputs (the
   port's clip source, automation, harmony, note expression) are read when a
   chunk begins, for the frames from the call's first through the chunk's
   last, and re-based to the chunk (the fix #51's review made). That is right
   wherever the timeline stands at the call's first frame, and every host that
   renders the graph moves it once per call (the engine per block,
-  `RenderClock::render_graph` per block or per `LEGACY_CHUNK` pass), so the
-  64-frame passes bought nothing. A plan holding plugins and native nodes
-  renders whole blocks; one that also holds a `Legacy` unit still renders in
-  passes, which the plugin handles the same way. Pinned both ways by
-  `clap_fork`'s `a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame`.
+  `RenderClock::render_graph` per block or per `LEGACY_CHUNK` pass). A plan
+  holding plugins and graph nodes renders whole blocks; one that also holds
+  a `Legacy` unit still renders in passes, which the plugin handles the same
+  way. Pinned both ways by `clap_fork`'s
+  `a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame`.
+  **What the passes still bought (found in review):** a transport command
+  scheduled inside a block (a stop, a start, a tempo change at frame `k`)
+  is applied to the live timeline before the block renders, so an input
+  that polls the timeline sees it from the block's first frame. In 64-frame
+  passes that error was under 64 frames; in whole blocks it is up to a block.
+  The plugin's transport comes from `Env` and its clips from clip nodes, both
+  exact; what is coarsened is parameter automation and harmony on a plugin,
+  until they become event sources too.
 
 - **SoundFont as a graph node**, the synth's shape at `Resolution::Frames(8)`
   (rustysynth's chunk). It follows its graph's rate: `prepare` rebuilds the
@@ -3440,7 +3453,16 @@ under both.
 - **A clip denser than `CLIP_EVENT_CAPACITY` in one block** has the rest
   refused and counted (`Executor::dropped_events`); with no cursor they are
   not retried. The capacity is sized for any real clip at the largest block;
-  a cursor that resumes after a refusal is the fix if one is not.
+  a cursor that resumes after a refusal is the fix if one is not. (Note-offs
+  it owes are retried: `HeldNotes::owed`.)
+- **Review follow-ups not taken here:** a loop shorter than a block plays
+  one wrap per segment, so its later passes in that block are missed; a
+  note started twice and ended once leaves a voice the clip no longer
+  tracks; the plugin drops event-input MIDI past its inline capacity with
+  no counter; the sequencer's `EventFeeds` for a target replaces edges a
+  host wired on its event input 0 by hand (unlike audio's partial
+  declarations); a synth spawned with `spawn_graph_node` captures its MIDI
+  port but not its modulation targets.
 
 #### Item 6 landed: compiler-owned param modulation
 

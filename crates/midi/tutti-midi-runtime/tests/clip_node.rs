@@ -249,3 +249,93 @@ fn a_fork_plays_the_clip_as_it_was_at_the_fork() {
     roll(&mut exec, 512, 256);
     assert_eq!(*seen.lock().unwrap(), vec![(300, word(on(60)))]);
 }
+
+/// **A loop that wraps exactly at a block's end ends the notes held across
+/// it**, at the next block's first frame. Loop [0, 1); 100-frame blocks from
+/// timeline frames 23 800 and 23 900 (which ends on the loop's end), then
+/// from 0. Note 60, on at 23 850, is ended at executor frame 200.
+///
+/// Mutation: keep `expected` after an edge wrap → the next block reads as
+/// continuous and the note is never ended → fails.
+#[test]
+fn a_loop_that_wraps_at_a_block_edge_ends_its_held_notes() {
+    let clip = MidiClipNode::new([at(23_850, on(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 512);
+    let lp = Some(LoopRange {
+        start: Beat(0.0),
+        end: Beat(1.0),
+    });
+    let looping = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), lp);
+    exec.process(100, &looping(23_800), &[], &mut []);
+    exec.process(100, &looping(23_900), &[], &mut []);
+    exec.process(100, &looping(0), &[], &mut []);
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(50, word(on(60))), (200, word(off(60)))]
+    );
+}
+
+/// **A beat that is not finite is dropped, not the clip.** A NaN made at run
+/// time (negative on x86, which `total_cmp` sorts first) beside a note at
+/// frame 100: the note plays.
+///
+/// Mutation: keep non-finite beats in `sorted` → the NaN sorts first, the
+/// walk stops on it, nothing plays → fails.
+#[test]
+fn a_nan_beat_does_not_silence_the_clip() {
+    let nan = Beat(0.0 / std::hint::black_box(0.0));
+    let clip = MidiClipNode::new([TimedMidiEvent::new(nan, on(61)), at(100, on(60))]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    roll(&mut exec, 256, 256);
+    assert_eq!(*seen.lock().unwrap(), vec![(100, word(on(60)))]);
+}
+
+/// **Note-offs the port refuses go out in the blocks after, until none is
+/// held.** 400 notes are started over two blocks (200 each, under the
+/// port's 256); a seek then owes 400 note-offs: 256 on the seek block's
+/// first frame, the other 144 on the next block's, which rolls on from the
+/// seek (continuous: nothing but the debt would release them).
+///
+/// Mutation: never retry an owed release → 144 notes hang → fails.
+#[test]
+fn refused_note_offs_are_retried_until_none_is_held() {
+    let note = |i: u16| {
+        MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new((i / 128) as u8),
+            (i % 128) as u8,
+            0xFFFF,
+        )
+    };
+    let clip = MidiClipNode::new((0..400u16).map(|i| at(if i < 200 { 10 } else { 300 }, note(i))));
+    let (_ed, mut exec, _c, seen) = rig(clip, 256);
+    roll(&mut exec, 512, 256);
+    // The seek, far from any event, then rolling on from it.
+    for f in [48_000u64, 48_256, 48_512] {
+        exec.process(256, &rolling(f), &[], &mut []);
+    }
+    let seen = seen.lock().unwrap();
+    let offs: Vec<u64> = seen
+        .iter()
+        .filter(|(_, w)| (w >> 20) & 0xf == 0x8)
+        .map(|&(f, _)| f)
+        .collect();
+    assert_eq!(offs.len(), 400, "every started note is ended");
+    assert_eq!(offs.iter().filter(|&&f| f == 512).count(), 256);
+    assert_eq!(offs.iter().filter(|&&f| f == 768).count(), 144);
+}
+
+/// **Setting the events the clip already holds cuts nothing.** Note 60 is
+/// sounding; the same events (in another order) are set again; no note-off.
+///
+/// Mutation: publish a new generation whatever the events → note 60 is ended
+/// at 64 → fails.
+#[test]
+fn setting_the_same_events_cuts_nothing() {
+    let events = [at(10, on(60)), at(1_000, off(60))];
+    let (_ed, mut exec, controls, seen) = rig(MidiClipNode::new(events), 64);
+    exec.process(64, &rolling(0), &[], &mut []);
+    controls.set_events([events[1], events[0]]);
+    exec.process(64, &rolling(64), &[], &mut []);
+    assert_eq!(*seen.lock().unwrap(), vec![(10, word(on(60)))]);
+}

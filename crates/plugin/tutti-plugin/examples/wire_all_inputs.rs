@@ -18,11 +18,10 @@
 
 use std::sync::Arc;
 
+use tutti_graph::Harmony;
+use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 use tutti_plugin::catalog::{Plugin, PluginRole};
-use tutti_plugin::handles::{
-    ChordValue, LfoCurve, LfoShape, ParamAddress, ParamId, ScaleValue, TimedChord, TimedParam,
-    TimedScale,
-};
+use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedParam};
 use tutti_plugin::Result;
 
 use tutti_core::transport::Transport;
@@ -55,29 +54,14 @@ fn main() -> Result<()> {
 
     let took_transport = plugin.set_transport_source(transport.clone(), Arc::clone(&meter));
 
-    let took_harmony = plugin.set_harmony_source(
-        [TimedChord {
-            beat: Beat(0.0),
-            value: ChordValue {
-                sample_offset: 0,
-                root: 0,
-                bass_note: 0,
-                // C major triad, as a 12-bit degree mask.
-                mask: 0b0000_1001_0001,
-                text: "Cmaj".to_string(),
-            },
-        }],
-        [TimedScale {
-            beat: Beat(0.0),
-            value: ScaleValue {
-                sample_offset: 0,
-                root: 0,
-                mask: 0b1010_1101_0101,
-                text: "C major".to_string(),
-            },
-        }],
-        transport.clone(),
-    );
+    // Chords and scales are a node of their own too, wired to the plugin's
+    // event input: `takes_harmony` answers whether the plugin will read them
+    // (it declared sequencer context). C major, the C major scale.
+    let took_harmony = plugin.takes_harmony();
+    let _harmony = HarmonyNode::new([
+        TimedHarmony::new(Beat(0.0), Harmony::chord(60, 60, 0b0000_1001_0001)),
+        TimedHarmony::new(Beat(0.0), Harmony::scale(60, 0b1010_1011_0101)),
+    ]);
 
     // Parameter automation is a node of its own, an event source to insert
     // beside the plugin and wire to its event input, so the graph's delay

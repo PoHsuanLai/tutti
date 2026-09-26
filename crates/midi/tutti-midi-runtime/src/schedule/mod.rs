@@ -21,10 +21,13 @@
 
 pub mod clip_node;
 pub mod clip_player;
+pub mod harmony_node;
 pub mod snapshot;
 pub mod snapshot_reader;
+mod walk;
 
 pub use clip_node::{MidiClipControls, MidiClipNode, CLIP_EVENT_CAPACITY};
 pub use clip_player::{MidiClipSource, TimedClipEvent};
+pub use harmony_node::{HarmonyControls, HarmonyNode, TimedHarmony, HARMONY_EVENT_CAPACITY};
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;

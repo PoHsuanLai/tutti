@@ -206,8 +206,8 @@ pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
-    Event, EventKind, EventOrderError, EventRejected, EventWriter, ParamRamp, SortedEvents,
-    SubBlocks, Ump,
+    Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
+    SortedEvents, SubBlocks, Ump,
 };
 pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

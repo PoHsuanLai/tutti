@@ -45,6 +45,7 @@ impl Node for Probe {
                         self.level = r.foreign_target(0).expect("ramps address id 0");
                         u32::MAX
                     }
+                    EventKind::Harmony(_) => unreachable!("this test sends none"),
                 };
                 self.log.lock().unwrap().push((
                     cx.env.frame_at(e.offset).get(),

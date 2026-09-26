@@ -19,17 +19,14 @@ pub(crate) mod control_handle;
 // (structural). `ResyncKind` stays exported as the underlying wire signal.
 pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
 pub use crate::host::node::{
-    AutomationControls, HarmonySource, LfoCurve, LfoOffset, NoteExpressionSource, OffsetCurve,
-    PluginAutomation, PluginParamTarget, TimedChord, TimedParam, TimedScale,
-    AUTOMATION_EVENT_CAPACITY,
+    AutomationControls, LfoCurve, LfoOffset, OffsetCurve, PluginAutomation, PluginParamTarget,
+    TimedParam, AUTOMATION_EVENT_CAPACITY,
 };
 pub use crate::host::node::{Bound, PluginClient, PluginControls, Unbound};
 // The per-block installers, each reachable only when the plugin can receive
 // that input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
-pub use crate::host::node::{
-    HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
-};
+pub use crate::host::node::{MidiInView, MidiOutView, TransportView};
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-nodes`), so the app can build an [`LfoCurve`] / route to a
 // [`PluginParamTarget`] without naming `tutti-nodes` directly.

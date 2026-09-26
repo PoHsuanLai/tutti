@@ -947,6 +947,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the plugin's is refused. bevy-tutti: `plugin_bind_params` keeps a
     `PluginAutomationNode` per plugin entity; `EventFeeds` is keyed by feeder
     (`set`, `remove`, `nodes`).
+  - tutti-graph: `EventKind::Harmony(Harmony)` (`Harmony::{chord, scale}`,
+    `HarmonyKind`, `Event::harmony`): a chord or scale taking effect.
+  - tutti-midi-runtime: `HarmonyNode` (`HarmonyControls::{set, clear}`,
+    `TimedHarmony`) sends chord and scale lanes on their frames and
+    re-states the context in force wherever playback jumps. The clip node's
+    playback walk is shared with it.
+  - **Breaking:** a hosted plugin takes chords and scales on its event input
+    (for a plugin that takes sequencer context). `HarmonySource`,
+    `TimedChord`, `TimedScale`, `set_harmony_source`, `clear_harmony_source`,
+    `HarmonyView`, `NoteExpressionSource`, `set_note_expression_source`,
+    `clear_note_expression_source`, `NoteExpressionView` and
+    `Plugin::{set_harmony_source, set_note_expression_source}` are removed;
+    `PluginClient::takes_harmony` / `Plugin::takes_harmony` answer whether to
+    wire a `HarmonyNode`.
   - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
     graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
     own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a

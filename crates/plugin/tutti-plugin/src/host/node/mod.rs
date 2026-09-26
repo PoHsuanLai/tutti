@@ -72,14 +72,14 @@ mod capability_view;
 mod controls;
 mod fork;
 mod graph_node;
-mod harmony_source;
 // `input_slot` / `transport_source` are `pub(crate)` rather than private: the
 // in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
 // subprocess client, and reuses the same gated per-block plumbing and the same
 // transport mapping rather than hand-rolling a second copy.
 mod automation_node;
+// Only the in-process VST2 node still polls a per-block input slot.
+#[cfg(feature = "vst2")]
 pub(crate) mod input_slot;
-mod note_expression_source;
 mod param_automation_source;
 mod process;
 pub(crate) mod transport_source;
@@ -106,12 +106,8 @@ pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use crate::util::node::{Midi, ParameterChangeSink};
 pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT_CAPACITY};
 pub(crate) use capability_view::is_declined;
-pub use capability_view::{
-    HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
-};
+pub use capability_view::{MidiInView, MidiOutView, TransportView};
 pub use controls::PluginControls;
-pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
-pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
 };
@@ -602,44 +598,6 @@ impl<S> PluginClient<S> {
     /// the live `MidiReceiver` again.
     pub fn clear_midi_source(&mut self) {
         self.midi.clear_source();
-    }
-
-    /// Install per-block chord/scale context (VST3 `kChordEvent` /
-    /// `kScaleEvent`) from a track's chord/scale lanes.
-    ///
-    /// Takes the lanes and the timeline, and builds the source here: the
-    /// sample rate the source needs is the node's own, so a caller passing one
-    /// could only ever agree with it or be wrong. Its rate is re-stamped by
-    /// the node's `prepare`.
-    pub fn set_harmony_source(
-        &mut self,
-        chords: impl IntoIterator<Item = TimedChord>,
-        scales: impl IntoIterator<Item = TimedScale>,
-        transport: impl tutti_core::transport::Timeline + 'static,
-    ) {
-        self.controls.set_harmony_source(chords, scales, transport);
-    }
-
-    /// Drop a previously-installed harmony source. Subsequent blocks feed the
-    /// plugin empty chord/scale context.
-    pub fn clear_harmony_source(&mut self) {
-        self.controls.clear_harmony_source();
-    }
-
-    /// Install a [`NoteExpressionSource`] that supplies per-block note-expression
-    /// (VST3 `kNoteExpressionValueEvent`) from a track's expression lanes. Mirrors
-    /// [`set_harmony_source`](Self::set_harmony_source). NOTE: the producer's
-    /// reader is deferred (no expression-lane storage yet), so an installed source
-    /// currently drains empty — the rail exists so the data source can be dropped
-    /// in without touching the plugin-node wiring.
-    pub fn set_note_expression_source(&mut self, source: std::sync::Arc<NoteExpressionSource>) {
-        self.controls.set_note_expression_source(source);
-    }
-
-    /// Drop a previously-installed note-expression source. Subsequent blocks feed
-    /// the plugin empty note-expression.
-    pub fn clear_note_expression_source(&mut self) {
-        self.controls.clear_note_expression_source();
     }
 
     /// Give the plugin the project meter, for the time signature and bar in

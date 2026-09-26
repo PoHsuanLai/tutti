@@ -53,7 +53,7 @@ pub enum BeatPlacement {
 ///
 /// The two discontinuity variants stay distinct rather than collapsing into one
 /// `Discontinuous`, because callers react to them differently. A cursor into a
-/// sorted event list (`MidiClipSource`, `HarmonySource`) must *rewind* on a
+/// sorted event list (`MidiClipSource`) must *rewind* on a
 /// backward jump, but a forward jump is self-correcting for it — the cursor
 /// walks past stale events on its own. Merging them would force a needless
 /// backward rescan on every forward scrub.

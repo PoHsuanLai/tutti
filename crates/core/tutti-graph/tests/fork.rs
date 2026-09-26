@@ -21,7 +21,8 @@ use tutti_node::signal::{Signal, SignalFrame};
 use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
-    Beat, Bpm, ChannelLayout, NodeKey, OfflineTransport, SampleRate, Samples, Timeline,
+    Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, SampleRate, Samples,
+    Timeline,
 };
 
 /// The `AudioUnit` methods every probe below has alike: `outs` outputs, no
@@ -134,8 +135,10 @@ impl Timeline for At {
     }
 }
 
+impl OfflineClock for At {}
+
 fn at(beat: f64) -> OfflineTransport {
-    Arc::new(At(beat))
+    OfflineTransport::new(Arc::new(At(beat)))
 }
 
 /// A ramp whose position lives in an `Arc` cell a clone **shares** — the

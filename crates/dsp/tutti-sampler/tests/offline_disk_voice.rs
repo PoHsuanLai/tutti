@@ -122,7 +122,7 @@ fn clock_at(rate: f64) -> (Arc<OfflineTimeline>, OfflineTransport) {
         sample_rate: SampleRate(rate),
         ..config(0.0)
     }));
-    let ctx: OfflineTransport = clock.clone();
+    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
     (clock, ctx)
 }
 
@@ -636,7 +636,7 @@ fn a_fork_follows_a_looping_render_timeline() {
         loop_range: tutti_core::LoopRange::new(Beat(0.0), Beat(1.0)),
         ..config(0.0)
     }));
-    let ctx: OfflineTransport = clock.clone();
+    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
     let mut copy = fork(&voice, &ctx, SR);
     let [l, _] = render(&mut copy, &clock, 60_000);
     for (k, &got) in l.iter().enumerate() {
@@ -818,7 +818,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         let (clock, ctx) = clock_at(SR);
         let mut source = tutti_sampler::MemorySource::with_transport(
             Arc::new(wave),
-            ctx.clone(),
+            ctx.timeline(),
             Beat(1.0),
             None,
         );

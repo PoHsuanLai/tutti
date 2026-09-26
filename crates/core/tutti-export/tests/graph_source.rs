@@ -132,10 +132,11 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// fresh one glides there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
-    let timeline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: RATE,
-        ..Default::default()
-    }));
+    let timeline: OfflineTransport =
+        OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            sample_rate: RATE,
+            ..Default::default()
+        })));
     RenderGraph::fork(
         &live,
         ForkTarget::Master,
@@ -953,7 +954,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     g.pipe_output(k);
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     let graph_clock = timeline();
-    let rebind: OfflineTransport = graph_clock.clone();
+    let rebind: OfflineTransport = OfflineTransport::new(graph_clock.clone());
     let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)
         .expect("a memory source is forkable");
     let b = render_under(forked, &graph_clock, ChannelLayout::MONO);

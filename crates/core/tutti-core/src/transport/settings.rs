@@ -24,14 +24,33 @@ pub struct TransportSettings {
     /// Beats per minute. Read by the clock every buffer.
     pub tempo: Arc<AtomicF64>,
     /// The playhead, in beats. Written by `TransportClock` via its position
-    /// writeback; read by the UI and by pull-based sources.
-    pub beat: Arc<AtomicF64>,
+    /// writeback (and by a locate, which moves the readout at once); read by
+    /// the UI and by pull-based sources through [`beat`](Self::beat).
+    ///
+    /// Crate-private, as is [`segment_generation`](Self::segment_generation):
+    /// only the transport's one playhead writer
+    /// ([`Transport::clock_links`](super::Transport::clock_links)) stores
+    /// them. A public cell was a second writer anyone could be:
+    ///
+    /// ```compile_fail,E0616
+    /// let t = tutti_core::Transport::new(48_000.0);
+    /// t.settings.beat.store(8.0, std::sync::atomic::Ordering::Release);
+    /// ```
+    ///
+    /// A host that drives the playhead by hand takes the writer and stores
+    /// through it ([`ClockLinks::set_playhead`](super::ClockLinks::set_playhead)).
+    pub(crate) beat: Arc<AtomicF64>,
     /// The segment the playhead is on
     /// ([`Timeline::segment_generation`](super::Timeline::segment_generation)):
     /// moves on at every seek, tempo or rate change, loop wrap and play
     /// start. Written by `TransportClock` beside [`beat`](Self::beat), and
-    /// before it.
-    pub segment_generation: Arc<AtomicU64>,
+    /// before it. Crate-private, like [`beat`](Self::beat):
+    ///
+    /// ```compile_fail,E0616
+    /// let t = tutti_core::Transport::new(48_000.0);
+    /// t.settings.segment_generation.store(0, std::sync::atomic::Ordering::Release);
+    /// ```
+    pub(crate) segment_generation: Arc<AtomicU64>,
     /// Loop region and whether looping is armed.
     pub loop_span: LoopSpan,
     /// Whether the transport is armed and capturing. Read by the metronome's
@@ -105,12 +124,11 @@ impl TransportSettings {
         self.segment_generation.load(Ordering::Acquire)
     }
 
-    /// Overwrite the published playhead.
-    ///
-    /// This moves the *readout*, not the clock — a control-thread caller that
-    /// wants the graph to jump sends [`MotionEvent::locate`](super::MotionEvent::locate)
-    /// instead, which requests a seek the clock consumes.
-    pub fn set_beat(&self, beat: impl Into<Beat>) {
+    /// Overwrite the published playhead: this crate's tests, which stand in
+    /// for the clock. Outside it, the writer is
+    /// [`ClockLinks::set_playhead`](super::ClockLinks::set_playhead).
+    #[cfg(test)]
+    pub(crate) fn set_beat(&self, beat: impl Into<Beat>) {
         self.beat.store(beat.into().get(), Ordering::Release);
     }
 

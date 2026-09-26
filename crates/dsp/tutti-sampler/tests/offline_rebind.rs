@@ -13,6 +13,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use tutti_core::transport::{OfflineClock, OfflineTransport};
 use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline};
 use tutti_io::Wave;
 use tutti_nodes::testing::Const;
@@ -36,6 +37,9 @@ impl MockTransport {
         })
     }
 }
+
+// Stands in for a render's timeline in these tests.
+impl OfflineClock for MockTransport {}
 
 impl Timeline for MockTransport {
     fn is_rolling(&self) -> bool {
@@ -72,7 +76,7 @@ fn an_isolated_pool_steals_no_commands_from_the_live_one() {
     net.pipe_output(id);
 
     // Clone + isolate + rebind, exactly as a render does.
-    let offline = MockTransport::new(true) as Arc<dyn Timeline>;
+    let offline = OfflineTransport::new(MockTransport::new(true));
     let mut clone = net.clone();
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);
@@ -167,7 +171,7 @@ fn a_rebound_voice_node_reads_the_offline_clock_not_the_live_one() {
     net.pipe_output(id);
 
     // The offline transport is STOPPED, so a rebound node must go silent.
-    let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+    let offline = OfflineTransport::new(MockTransport::new(false));
     let mut clone = net.clone();
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);
@@ -222,7 +226,7 @@ fn a_bare_memory_source_node_is_rebound_too() {
     let id = net.push(Box::new(source));
     net.pipe_output(id);
 
-    let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+    let offline = OfflineTransport::new(MockTransport::new(false));
     let node = net.node_mut(id);
     node.isolate();
     node.rebind_offline(&offline);
@@ -249,7 +253,7 @@ fn pure_dsp_is_a_no_op() {
     let id = net.push(Box::new(Const::mono(0.5)));
     net.pipe_output(id);
 
-    let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+    let offline = OfflineTransport::new(MockTransport::new(false));
     net.node_mut(id).rebind_offline(&offline);
 
     net.set_sample_rate(SampleRate(44_100.0));
@@ -300,7 +304,7 @@ fn a_voice_nested_inside_a_sub_net_is_rebound_too() {
     outer.pipe_output(nested);
 
     // Offline transport is STOPPED: a rebound voice must fall silent.
-    let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+    let offline = OfflineTransport::new(MockTransport::new(false));
     let mut clone = outer.clone();
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);

@@ -64,7 +64,7 @@ pub use value::{
 
 // What a transport-aware node reads, and the typed context an offline render
 // hands it (`ForkMode::Offline`, `AudioUnit::rebind_offline`).
-pub use timeline::{OfflineTransport, Timeline};
+pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 
 // Channel layout — how many channels.
 pub use channels::ChannelLayout;

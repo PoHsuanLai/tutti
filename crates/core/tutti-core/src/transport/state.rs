@@ -308,7 +308,7 @@ impl Default for Declick {
 ///     paused: Arc::new(AtomicBool::new(false)),
 ///     loop_span: None,
 ///     seek: t.motion.seek.clone(),
-///     position_writeback: Some(Arc::clone(&t.settings.beat)),
+///     position_writeback: Some(Arc::new(AtomicF64::new(0.0))),
 ///     segment_generation: None,
 ///     steady_time: None,
 ///     tempo_in_force: None,
@@ -408,6 +408,33 @@ impl ClockLinks {
             steady_time: None,
             tempo_in_force: None,
             claim: None,
+        }
+    }
+
+    /// Move the playhead by hand: a host with no clock (a headless tool, a
+    /// test standing in for the engine) publishes `beat` as the transport's
+    /// playhead through the writer it holds. A jump, as far as a reader can
+    /// tell, so the segment generation moves on first. A no-op on links
+    /// that write no playhead ([`writes_playhead`](Self::writes_playhead)).
+    ///
+    /// ```
+    /// use tutti_core::{Beat, Timeline, Transport};
+    /// let transport = Transport::new(48_000.0);
+    /// let playhead = transport.clock_links().expect("the only writer");
+    /// playhead.set_playhead(Beat(4.0));
+    /// assert_eq!(transport.beat(), Beat(4.0));
+    /// // A jump: a reader keyed on the segment re-seats.
+    /// assert_eq!(transport.segment_generation(), 1);
+    /// // The writer is held: nobody else may store.
+    /// assert!(transport.clock_links().is_err());
+    /// ```
+    pub fn set_playhead(&self, beat: impl Into<Beat>) {
+        let beat = beat.into();
+        if let Some(ref generation) = self.segment_generation {
+            generation.fetch_add(1, Ordering::AcqRel);
+        }
+        if let Some(ref writeback) = self.position_writeback {
+            writeback.store(beat.get(), Ordering::Release);
         }
     }
 

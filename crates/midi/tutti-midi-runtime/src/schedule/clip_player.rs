@@ -222,7 +222,7 @@ impl MidiUnitIn for MidiClipSource {
     ) -> Option<Arc<dyn MidiUnitIn>> {
         Some(Arc::new(Self {
             events: Arc::clone(&self.events),
-            beats: BeatCursor::unrated(Arc::clone(timeline)),
+            beats: BeatCursor::unrated(timeline.timeline()),
             cursor: Arc::new(AtomicU64::new(0)),
             target_unit: unit,
             out_tap: None,
@@ -567,12 +567,14 @@ mod tests {
             .with_out_tap(Arc::new(tap.sender())),
         ));
         let offline: tutti_core::transport::OfflineTransport =
-            Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                start_beat: Beat(0.0),
-                tempo: Bpm(90.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            }));
+            tutti_core::transport::OfflineTransport::new(Arc::new(OfflineTimeline::new(
+                &OfflineTimelineConfig {
+                    start_beat: Beat(0.0),
+                    tempo: Bpm(90.0),
+                    sample_rate: SampleRate(48_000.0),
+                    loop_range: None,
+                },
+            )));
         (live, tap, offline)
     }
 

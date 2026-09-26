@@ -147,7 +147,7 @@ impl Rebind {
             // Typed: no downcast, so no context that rebinds nothing (the
             // `Sever` case this had while `ForkMode::Offline` carried a
             // `&dyn Any`).
-            ForkMode::Offline(timeline) => Self::Offline(Arc::clone(timeline)),
+            ForkMode::Offline(timeline) => Self::Offline(timeline.clone()),
         }
     }
 
@@ -155,7 +155,7 @@ impl Rebind {
     pub(super) fn state(&self, live: &Arc<dyn TransportState>) -> Arc<dyn TransportState> {
         match self {
             Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => Arc::new(OfflineState(Arc::clone(timeline))),
+            Self::Offline(timeline) => Arc::new(OfflineState(timeline.clone())),
         }
     }
 
@@ -163,7 +163,7 @@ impl Rebind {
     pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Arc<dyn Timeline> {
         match self {
             Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => Arc::clone(timeline),
+            Self::Offline(timeline) => timeline.timeline(),
         }
     }
 }

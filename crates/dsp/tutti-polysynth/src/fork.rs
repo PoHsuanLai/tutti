@@ -214,7 +214,7 @@ mod tests {
 
         let timeline = offline();
         // The render's timeline, the type `ForkMode::Offline` carries.
-        let ctx: OfflineTransport = timeline.clone();
+        let ctx: OfflineTransport = OfflineTransport::new(timeline.clone());
         let mut fork = source
             .synth(ForkMode::Offline(&ctx))
             .expect("the synth forks");
@@ -275,7 +275,7 @@ mod tests {
     fn an_unrebindable_source_is_a_named_fork_error() {
         let live = saw();
         live.midi_port().install(Arc::new(Unrebindable));
-        let ctx: OfflineTransport = offline();
+        let ctx: OfflineTransport = OfflineTransport::new(offline());
         assert!(matches!(
             live.fork_instance(ForkMode::Offline(&ctx)),
             Err(Error::MidiSource)

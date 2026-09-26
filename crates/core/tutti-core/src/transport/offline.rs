@@ -292,6 +292,25 @@ impl super::Timeline for OfflineTimeline {
     }
 }
 
+/// Only a render advances it: the offline context a fork is handed
+/// ([`OfflineTransport::new`](super::OfflineTransport::new)).
+///
+/// The live transport is not one, so it cannot be passed as that context:
+///
+/// ```compile_fail,E0277
+/// use std::sync::Arc;
+/// use tutti_core::transport::{OfflineTransport, Transport};
+/// let live = Arc::new(Transport::new(48_000.0));
+/// let ctx = OfflineTransport::new(live); // the live playhead as a render's: refused
+/// ```
+///
+/// ```
+/// use std::sync::Arc;
+/// use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+/// let ctx = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig::default())));
+/// ```
+impl super::OfflineClock for OfflineTimeline {}
+
 impl super::RenderClock for OfflineTimeline {
     fn advance(&self, frames: tutti_types::Samples) {
         // The inherent `advance` takes a raw count; this is the same call with

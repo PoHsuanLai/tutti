@@ -378,14 +378,18 @@ mod tests {
 
         let live = controls();
         let transport = Transport::new(44_100.0);
-        transport.settings.set_beat(2.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(2.0);
         let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
         live.set_transport_source(transport, meter);
 
-        let offline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: Beat(8.0),
-            ..Default::default()
-        }));
+        let offline: OfflineTransport =
+            OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(8.0),
+                ..Default::default()
+            })));
         let beat_of = |bind: Rebind| {
             let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
             live.rebind_sources_into(&fork, &bind);
@@ -397,7 +401,7 @@ mod tests {
                 out.position.beats
             })
         };
-        assert_eq!(beat_of(Rebind::Offline(Arc::clone(&offline))), Some(8.0));
+        assert_eq!(beat_of(Rebind::Offline(offline.clone())), Some(8.0));
         assert_eq!(beat_of(Rebind::Live), Some(2.0));
     }
 

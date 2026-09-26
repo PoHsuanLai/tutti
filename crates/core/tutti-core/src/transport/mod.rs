@@ -46,7 +46,7 @@ pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 // name the offline context its forks hand every unit (`ForkMode::Offline`)
 // instead of passing it as `&dyn Any`. Re-exported here, where every
 // transport-aware crate already imports them from.
-pub use tutti_types::{OfflineTransport, Timeline};
+pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 
 /// A clock an offline render drives, one block at a time.
 ///

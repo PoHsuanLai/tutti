@@ -1070,7 +1070,10 @@ mod mod_curve_delivery {
         let mut seen: Vec<f32> = Vec::new();
         for i in 0..16 {
             let transport = app.world().resource::<TransportRes>().clone();
-            transport.settings.set_beat(Beat(i as f64 / 8.0));
+            transport
+                .clock_links()
+                .expect("the only playhead writer")
+                .set_playhead(Beat(i as f64 / 8.0));
             app.update();
             let v = drive(&app);
             if !seen.iter().any(|s| (s - v).abs() < 1e-3) {

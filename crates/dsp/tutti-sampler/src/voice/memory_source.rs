@@ -1099,7 +1099,7 @@ impl AudioUnit for MemorySource {
     /// leaves a bare memory source rendering against the live playhead.
     /// Declaring it here covers both routes, and any future one.
     fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
-        self.replace_transport(transport.clone());
+        self.replace_transport(transport.timeline());
     }
 
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {

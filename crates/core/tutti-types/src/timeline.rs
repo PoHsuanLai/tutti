@@ -84,11 +84,29 @@ pub trait Timeline: Send + Sync {
     fn segment_generation(&self) -> u64;
 }
 
+/// A [`Timeline`] that only an offline render advances: the promise
+/// [`OfflineTransport::new`] asks for.
+///
+/// A marker, so the offline context cannot be the live transport. The live
+/// transport is tutti-core's `Transport`, and by the orphan rule only
+/// tutti-core (or this crate) could implement this for it, and neither
+/// does: handing the live playhead to a fork as its render timeline, which
+/// would export whatever the live transport happened to be doing, does not
+/// compile. tutti-core's `OfflineTimeline` implements it; so may a test's
+/// own clock, or a render's stopped timeline.
+pub trait OfflineClock: Timeline {}
+
 /// The timeline an offline render advances, one block at a time: what
 /// `tutti_graph::ForkMode::Offline` carries and what
 /// `AudioUnit::rebind_offline` receives, typed on both sides, so a context
 /// of another type is a compile error rather than a rebind that silently
 /// does nothing.
+///
+/// A newtype over `Arc<dyn Timeline>`, built only from an [`OfflineClock`]
+/// ([`new`](Self::new)): a timeline of the right *type* but the wrong
+/// *kind* — the live transport — is refused too. It derefs to the
+/// timeline; [`timeline`](Self::timeline) hands out the shared handle for a
+/// node that keeps one.
 ///
 /// # What a node does on rebind
 ///
@@ -107,4 +125,37 @@ pub trait Timeline: Send + Sync {
 /// timeline already answers, and a copy beside it can disagree: one rebind
 /// path reading the scalar while another follows the timeline renders half
 /// the graph at one tempo and half at another, silently.
-pub type OfflineTransport = Arc<dyn Timeline>;
+#[derive(Clone)]
+pub struct OfflineTransport(Arc<dyn Timeline>);
+
+impl OfflineTransport {
+    /// The offline context for a render advancing `timeline`.
+    pub fn new<T: OfflineClock + 'static>(timeline: Arc<T>) -> Self {
+        Self(timeline)
+    }
+
+    /// The timeline, as the shared handle a node keeps (a clip reader's
+    /// cursor, a voice's transport).
+    pub fn timeline(&self) -> Arc<dyn Timeline> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl std::ops::Deref for OfflineTransport {
+    type Target = dyn Timeline;
+
+    fn deref(&self) -> &(dyn Timeline + 'static) {
+        &*self.0
+    }
+}
+
+impl std::fmt::Debug for OfflineTransport {
+    /// A timeline is not `Debug`; its position is what tells two renders
+    /// apart.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OfflineTransport")
+            .field("beat", &self.0.beat())
+            .field("tempo", &self.0.tempo())
+            .finish()
+    }
+}

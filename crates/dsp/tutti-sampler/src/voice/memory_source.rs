@@ -15,9 +15,10 @@ use tutti_core::{
 };
 use tutti_io::Wave;
 
-use super::interp::{read_looped_frame, Seat};
+use super::interp::{hermite_lanes, read_looped_frame, tap_indices, Seat};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
+use crate::lanes::{Lanes, LANE_FRAMES};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -867,6 +868,117 @@ impl MemorySource {
         });
         self.seat = seat;
         seat.map(|seat| seat.position())
+    }
+
+    /// [`seated_position`](Self::seated_position) for each of the next
+    /// `out.len()` frames, reading the clock once (`Seat::run`): the block
+    /// read's positions. `None`s when unplaced.
+    #[inline]
+    pub(crate) fn seated_positions(
+        &mut self,
+        stretch_rate: ReadRate,
+        out: &mut [Option<SamplePosition>],
+    ) {
+        let Some(timeline) = self.timeline.as_ref() else {
+            out.fill(None);
+            return;
+        };
+        let rate = self.read_rate().then(stretch_rate);
+        let seat = Seat::run(
+            self.seat,
+            timeline.as_ref(),
+            rate,
+            || self.stretched_window_position(stretch_rate),
+            out,
+        );
+        self.seat = seat;
+    }
+
+    /// [`read_placed_into`](Self::read_placed_into) for a block: frame `i`
+    /// read at `positions[i]` (`None`: silence) into frame `i` of the first
+    /// `n` lanes, every frame written. Un-gained, as `read_placed_into` is.
+    ///
+    /// An unlooped read (forward, or reversed) of a wave that is mono or as
+    /// wide as the lanes runs the kernel **along time**: each frame's four
+    /// taps are gathered into four lanes (a scattered read, one per voice
+    /// position — the gather is the cost that stays scalar), then the cubic
+    /// runs over the lanes, where the compiler vectorises it. Same taps, same
+    /// fraction, same arithmetic per frame as [`read_frame`], so the same
+    /// samples bit for bit; a frame with no sample (no position, or at or past
+    /// the end) is read from four zero taps at `t` = 0, which the cubic
+    /// returns as exactly `0.0`, as `read_frame`'s callers fill it. A loop
+    /// (its fade blends taps) or a wave folded to another width reads a frame
+    /// at a time through `read_placed_into`.
+    ///
+    /// [`read_frame`]: super::interp::read_frame
+    pub(crate) fn read_placed_lanes(
+        &self,
+        positions: &[Option<SamplePosition>],
+        direction: Direction,
+        lanes: &mut Lanes,
+        n: usize,
+    ) {
+        let frames = positions.len();
+        let len = self.wave.len();
+        let src_ch = self.wave.channels();
+        let looped = direction == Direction::Forward && self.loop_mode.span(len).is_some();
+        let along_time = !looped && len > 0 && (src_ch == 1 || src_ch == n);
+        if !along_time {
+            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+            for (i, pos) in positions.iter().enumerate() {
+                match pos {
+                    Some(pos) => self.read_placed_into(*pos, direction, &mut frame[..n]),
+                    None => frame[..n].fill(0.0),
+                }
+                lanes.put(i, &frame[..n]);
+            }
+            return;
+        }
+        // Each frame's taps and fraction, as `read_placed_into` →
+        // `get_sample_raw_into` → `read_frame` derive them. A frame with no
+        // sample keeps taps 0 and a zero weight mask.
+        let mut taps = [[0usize; 4]; LANE_FRAMES];
+        let mut frac = [0.0f32; LANE_FRAMES];
+        let mut live = [false; LANE_FRAMES];
+        let flen = len as f64;
+        for (i, pos) in positions.iter().enumerate() {
+            let Some(pos) = pos else { continue };
+            let p = pos.get();
+            // The reversed mirror, and the forward end: `read_placed_into`.
+            let at = match direction {
+                Direction::Reverse if p >= flen => continue,
+                Direction::Reverse => (flen - 1.0 - p).max(0.0),
+                Direction::Forward if p >= flen => continue,
+                Direction::Forward => p,
+            };
+            (taps[i], frac[i]) = tap_indices(len, at);
+            live[i] = true;
+        }
+        let (taps, frac, live) = (&taps[..frames], &frac[..frames], &live[..frames]);
+        // Mono fans one interpolated lane to every channel.
+        let reads = if src_ch == 1 { 1 } else { n };
+        let mut y = [[0.0f32; LANE_FRAMES]; 4];
+        for c in 0..reads {
+            let wave = self.wave.channel(c);
+            for (t, lane) in y.iter_mut().enumerate() {
+                for ((s, tap), &on) in lane.iter_mut().zip(taps).zip(live) {
+                    *s = if on { wave[tap[t]] } else { 0.0 };
+                }
+            }
+            let [y0, y1, y2, y3] = &y;
+            let out = &mut lanes.lanes_mut()[c][..frames];
+            hermite_lanes(
+                out,
+                [&y0[..frames], &y1[..frames], &y2[..frames], &y3[..frames]],
+                frac,
+            );
+        }
+        if src_ch == 1 {
+            let (first, rest) = lanes.lanes_mut().split_at_mut(1);
+            for lane in rest.iter_mut().take(n.saturating_sub(1)) {
+                lane[..frames].copy_from_slice(&first[0][..frames]);
+            }
+        }
     }
 
     /// [`get_sample_raw_into`](Self::get_sample_raw_into) with this unit's gain

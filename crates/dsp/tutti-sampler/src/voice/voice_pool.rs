@@ -95,7 +95,6 @@ mod tests {
             },
             1usize,
         );
-        live.allocate();
         assert!(live.slot.stretch.is_some(), "vacuous without a filter");
 
         // Build real vocoder history. The playhead must ADVANCE: a placed
@@ -133,61 +132,86 @@ mod tests {
         );
     }
 
-    /// Every node type the offline render can carry must sever its shared state.
+    /// Every node type the offline render can carry must share no running
+    /// state with the live node.
     ///
-    /// The render clones the live net and ticks it on a worker pool while the
-    /// audio thread plays the original — the one genuinely concurrent path in
-    /// the engine. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
-    /// its slot, so it has to sever its stretch filter explicitly.
+    /// A fork renders on another thread while the audio thread plays the
+    /// original. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
+    /// its slot, so its stretch filter must be the fork's own.
     ///
-    /// Asserted on `Arc` identity rather than on audio, because the failure is a
-    /// data race: in release two threads would mutate one `UnsafeCell` with no
-    /// synchronisation, which no output assertion can reliably observe.
+    /// Re-pinned with the ownership change (doc 013 item 7): this asserted
+    /// that a clone *shared* the live filter's vocoder bank until `isolate`
+    /// severed it (`shares_bank_with`), because `Net` cloned every node per
+    /// commit and the bank rode by `Arc`. A clone now builds its own filter,
+    /// so the property is asserted on audio: a live voice whose clone was
+    /// isolated, reset and rendered for 4096 frames plays, sample for sample,
+    /// what an identical voice that was never cloned plays.
+    ///
+    /// Mutation: none expressible as a one-line edit any more. The sharing
+    /// this guards against needs a shared bank type, which the ownership
+    /// change deleted (the filter owns its vocoders by value, so the types
+    /// rule it out); the unit-level twin,
+    /// `stretch::tests::a_clone_and_its_original_tick_independently`, runs
+    /// its mutation. This pins, at the voice, what a reintroduced shared bank
+    /// would break.
     #[test]
-    fn isolate_severs_a_standalone_voices_stretch_bank() {
-        let wave = make_wave(4096);
+    fn a_standalone_voices_clone_shares_no_stretch_state() {
+        const SR: f64 = 44_100.0;
+        let wave = make_wave(48_000);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-        let live = VoiceNode::with_channels(
-            Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Playback::default()
+        let node = || {
+            let sampler = MemorySource::with_transport(
+                Arc::clone(&wave),
+                transport.clone(),
+                Beat::new(0.0),
+                None,
+            );
+            VoiceNode::with_channels(
+                Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        stretch: StretchFactor::new(2.0),
+                        ..Playback::default()
+                    },
+                    channel_index: None,
                 },
-                channel_index: None,
-            },
-            2usize,
-        );
+                1usize,
+            )
+        };
+        let (mut live, mut twin) = (node(), node());
         assert!(
             live.slot.stretch.is_some(),
             "test is vacuous unless a filter is resident"
         );
+        let mut out = [0.0f32; 1];
+        let mut out_twin = [0.0f32; 1];
+        for _ in 0..4096 {
+            live.tick(&[], &mut out);
+            twin.tick(&[], &mut out_twin);
+            transport.advance(1, SR);
+        }
 
-        // What `clone_isolated` produces, then what the render's isolation pass
-        // does to it.
         let mut render = live.clone();
-        assert!(
-            render
-                .slot
-                .stretch
-                .as_ref()
-                .unwrap()
-                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
-            "the clone should start out sharing — otherwise this proves nothing"
-        );
-
         render.isolate();
-        assert!(
-            !render
-                .slot
-                .stretch
-                .as_ref()
-                .unwrap()
-                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
-            "isolate() left the render sharing the live voice's vocoder bank; \
-             a worker thread would race the audio thread on it"
-        );
+        render.reset();
+        let mut scratch = [0.0f32; 1];
+        for _ in 0..4096 {
+            render.tick(&[], &mut scratch);
+        }
+
+        let mut heard = false;
+        for i in 0..8192 {
+            live.tick(&[], &mut out);
+            twin.tick(&[], &mut out_twin);
+            transport.advance(1, SR);
+            assert_eq!(
+                out[0].to_bits(),
+                out_twin[0].to_bits(),
+                "frame {i}: the render's clone reached the live voice's filter"
+            );
+            heard |= out[0].abs() > 1e-4;
+        }
+        assert!(heard, "silence proves nothing");
     }
 
     /// **An isolated pool does not write the live pool's beat cursor.** The

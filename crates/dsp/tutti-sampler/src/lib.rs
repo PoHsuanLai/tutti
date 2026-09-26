@@ -95,6 +95,10 @@ pub use tutti_io::Wave;
 // share. Bevy-free apart from the asset loader, gated inside.
 pub mod voice;
 
+// Planar block scratch and its kernels: the voices render into it, the
+// stretch filter reads and writes it. Crate-level because both use it.
+mod lanes;
+
 // Time-stretch / pitch-shift (phase vocoder). A peer DSP subsystem, not a
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;

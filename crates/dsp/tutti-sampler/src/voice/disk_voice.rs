@@ -19,7 +19,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SignalFrame;
 use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, ChannelLayout, PlaybackRate,
-    ReadRate, SampleRate, SrcRatio, Timeline,
+    ReadRate, SamplePosition, SampleRate, SrcRatio, Timeline,
 };
 
 use super::interp::Seat;
@@ -29,11 +29,14 @@ use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RtState, SharedReader};
+use crate::lanes::Lanes;
 use tutti_core::{FaultLatch, RenderFault};
 
 /// Frames a block's positions are computed for at a time: `process` renders a
 /// longer block in pieces this long, so the positions live in a fixed array.
-const BLOCK_FRAMES: usize = 256;
+/// The slot's lane length, so a voice read through a slot claims the ring at
+/// the same piece boundaries as one read directly.
+const BLOCK_FRAMES: usize = crate::lanes::LANE_FRAMES;
 
 /// Disk streaming sampler, free-running: the streaming tier's bare reader.
 ///
@@ -45,8 +48,8 @@ const BLOCK_FRAMES: usize = 256;
 /// for its width and its ring, and reads by the clock instead.
 ///
 /// The audio thread holds the ring through a `SharedReader` (an `Arc`) and
-/// the ring's one `PosReader`, which a clone shares (`LiveRead`'s module
-/// docs): every access is an atomic or a `try_lock` no block waits on.
+/// the ring's one `PosReader`, which this source owns and a clone does not
+/// get (`LiveRead`'s module docs): every access is an atomic.
 /// [`isolate`](AudioUnit::isolate) lets go of it.
 pub struct DiskSource {
     /// Boxed: a voice in a pool should not carry the reader's jump state
@@ -231,12 +234,12 @@ impl AudioUnit for DiskSource {
 
     /// Stop this clone from touching the live stream.
     ///
-    /// `Clone` shares the ring, its one reader and the control state by `Arc`
-    /// — correct for a clone that stays in the live graph, wrong for one taken
-    /// to render offline: its reads would publish a position the butler
-    /// follows, moving the live voice's window. So the copy lets go of the
-    /// reader (it can no longer claim, or idle, the live ring), stops, and
-    /// drops `shared_state`: a complete severing.
+    /// `Clone` shares the ring and the control state by `Arc` (a clone gets
+    /// no reader of the ring: the live source owns it). Kept, the control
+    /// state would let a copy taken to render offline write the live voice's
+    /// gain and speed; so the copy stops, drops `shared_state`, and lets go of
+    /// any reader it holds (one isolated in place, not cloned, still owns the
+    /// live reader and would claim the live ring): a complete severing.
     ///
     /// The honest severed state of this bare unit is *silent*: there is no
     /// second ring to hand this clone. A [`DiskVoice`], which knows where on
@@ -609,6 +612,53 @@ impl DiskVoice {
         })
     }
 
+    /// [`next_seat`](Self::next_seat) for the next `out.len()` frames, the
+    /// clock read once (`Seat::run`); the last frame's seat.
+    #[inline]
+    fn run_seat(
+        &self,
+        last: Option<Seat>,
+        rate: ReadRate,
+        out: &mut [Option<SamplePosition>],
+    ) -> Option<Seat> {
+        Seat::run(
+            last,
+            self.timeline.as_ref(),
+            rate,
+            || {
+                super::interp::window_position(
+                    self.timeline.as_ref(),
+                    self.window.start,
+                    self.window.duration,
+                    self.file_sample_rate,
+                    self.window_rate(),
+                )
+            },
+            out,
+        )
+    }
+
+    /// Render the next `frames` frames (at most [`BLOCK_FRAMES`]) into frame
+    /// `i` of the first `n` lanes, every frame written: the voice's own
+    /// channels, then silence on any lane past them. What `frames` calls of
+    /// `tick`, each handed a zeroed `n`-wide frame, write — the live read as
+    /// one block (one ring claim, the clock read once) rather than a claim per
+    /// frame. The block read of a slot holding this voice
+    /// (`PlaybackSlot::render_lanes`).
+    pub(crate) fn render_lanes(&mut self, frames: usize, lanes: &mut Lanes, n: usize) {
+        let w = self.outputs().min(n);
+        lanes.clear(n, frames);
+        if self.offline.is_some() {
+            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+            for i in 0..frames {
+                self.offline_frame(&mut frame[..w]);
+                lanes.put(i, &frame[..w]);
+            }
+            return;
+        }
+        self.live_render(frames, |i, f| lanes.put(i, &f[..w]));
+    }
+
     /// Render `size` live frames, frame `i` handed to `emit`: the seat's
     /// positions, less the channel's preroll, read from the ring.
     fn live_render(&mut self, size: usize, mut emit: impl FnMut(usize, &[f32])) {
@@ -616,18 +666,18 @@ impl DiskVoice {
         let preroll = self.inner.read.ring().preroll() as f64;
         let gain = self.shared_state.gain().get();
         let state = Arc::clone(&self.shared_state);
+        let mut seated = [None; BLOCK_FRAMES];
         let mut positions = [None; BLOCK_FRAMES];
         let mut done = 0;
         while done < size {
             let n = (size - done).min(BLOCK_FRAMES);
-            let mut seat = self.seat;
-            let mut segment = None;
-            for p in positions[..n].iter_mut() {
-                seat = self.next_seat(seat, rate);
-                segment = segment.or(seat.map(|s| s.generation()));
-                *p = seat.map(|s| (s.position().get() - preroll).max(0.0));
+            // The clock read once for the piece (`Seat::run`): every frame of
+            // a block reads the beat and segment the first did.
+            self.seat = self.run_seat(self.seat, rate, &mut seated[..n]);
+            let segment = self.seat.map(|s| s.generation());
+            for (p, s) in positions[..n].iter_mut().zip(&seated[..n]) {
+                *p = s.map(|s| (s.get() - preroll).max(0.0));
             }
-            self.seat = seat;
             self.inner.read.render(
                 &positions[..n],
                 segment.unwrap_or_default(),
@@ -1204,15 +1254,17 @@ mod tests {
         }
     }
 
-    /// **A severed copy lets go of the live reader.** A clone shares the
-    /// ring's one reader (a `Net` commit renders from a clone); a copy
-    /// isolated for a fork must not claim or idle it. Here the live source
-    /// claims a block, and its isolated copy, stopped, renders: the ranges the
-    /// live block claimed must still stand.
+    /// **A severed source lets go of the live reader.** A clone never holds
+    /// it (the reader is the live source's alone, doc 013 item 7), so the one
+    /// way an isolated copy could still speak for the live ring is a source
+    /// isolated in place. Here the live source claims a block, is isolated,
+    /// and, stopped, renders again: the ranges the live block claimed must
+    /// still stand, and a clone of it renders nothing into them either.
     ///
-    /// Mutation (run): `isolate` not severing (`read.sever()` removed) → the
-    /// copy's stopped block idles the live reader and clears its ranges →
-    /// fails.
+    /// Re-pinned with item 7: this isolated a *clone*, which under `Net`
+    /// shared the reader. Mutation (run): `isolate` not severing
+    /// (`read.sever()` removed) → the isolated source's stopped block idles
+    /// the reader and clears its ranges → fails.
     #[test]
     fn a_severed_copy_holds_no_live_reader() {
         let (mut writer, ring) =
@@ -1224,13 +1276,20 @@ mod tests {
         live.process(64, &input.buffer_ref(), &mut output.buffer_mut());
         let claimed = writer.in_flight_end();
         assert!(claimed > 0, "the live block claimed nothing");
-        let mut fork = live.clone();
-        fork.isolate();
-        fork.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        let mut clone = live.clone();
+        clone.play();
+        clone.process(64, &input.buffer_ref(), &mut output.buffer_mut());
         assert_eq!(
             writer.in_flight_end(),
             claimed,
-            "a severed copy spoke for the live reader"
+            "a clone spoke for the live reader"
+        );
+        live.isolate();
+        live.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        assert_eq!(
+            writer.in_flight_end(),
+            claimed,
+            "a severed source spoke for the live reader"
         );
     }
 
@@ -1805,49 +1864,65 @@ mod tests {
         }
     }
 
-    /// **A gain change must reach a voice that is already rendering.**
+    /// **A gain change must reach a voice that is already rendering**, written
+    /// through a clone of it — and the clone renders nothing.
     ///
-    /// The clone half of the live-value rule, at the disk tier. `Net`'s
-    /// frontend holds clones of its vertices, so a gain stored **by value** in
-    /// `DiskSource` is written on one copy and rendered from another — the
-    /// authored value silently stops having any effect once the voice exists.
-    /// `tutti_nodes`' crate docs state the rule; this pins it for the tier that
-    /// broke it.
+    /// The clone half of the live-value rule, at the disk tier: a gain stored
+    /// **by value** in `DiskSource` would be written on one copy and never
+    /// reach the one that renders. The gain lives in the stream's control
+    /// cell (`RtState`), which every copy shares until `isolate`.
     ///
-    /// Asserted through a **clone**, not through the original, because that is
-    /// the only way the two storage conventions differ: a by-value field looks
-    /// perfect until something clones the unit, which `Net::commit` does to
-    /// every node on every graph edit.
+    /// Re-pinned with doc 013 item 7 (the follow-up #48 left). This used to
+    /// render *from* the clone and write through the original, because
+    /// `Net::commit` handed its backend a clone of every node; the clone then
+    /// shared the ring's one reader through a `try_lock`. No engine renders a
+    /// `Net` since #49: the native graph renders the unit it was given, and
+    /// the only copies it takes (`Legacy::controlled`'s shadow, a fork cloned
+    /// from it) never render the live stream. So the reader is the original's
+    /// alone. What native does, and this pins: the original renders at the
+    /// gain a copy wrote (a copy holding the cell is how a host's handle, or a
+    /// shadow before its `isolate`, reaches it), and a clone, holding no
+    /// reader, renders silence — it cannot claim the live ring.
+    ///
+    /// Mutation (run): `LiveRead::clone` keeping the reader (a shared
+    /// `Arc<Mutex<PosReader>>` again) → the clone renders the stream → fails.
+    /// Mutation (run): `DiskSource::set_gain` writing a by-value field instead
+    /// of the shared cell → the original renders at unity → fails.
     #[test]
     fn a_gain_change_reaches_a_cloned_voice() {
         let (mut unit, _state) = make_unit(&[(1.0, 1.0); 256]);
         unit.set_sample_rate(SampleRate(48_000.0));
         unit.play();
 
-        // The clone stands in for the copy `Net::commit` hands the audio
-        // thread; the original stands in for the frontend the app writes to.
-        let mut rendering = unit.clone();
-
-        unit.set_gain(Amplitude::new(0.25));
+        // The clone stands in for a copy the host writes through; the
+        // original is what the graph renders.
+        let mut copy = unit.clone();
+        copy.set_gain(Amplitude::new(0.25));
 
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(2);
-        let mut rendered = 0.0f32;
-        for _ in 0..4 {
-            rendering.process(8, &input.buffer_ref(), &mut output.buffer_mut());
-            for i in 0..8 {
-                let v = output.buffer_ref().at_f32(0, i).abs();
-                if v > rendered {
-                    rendered = v;
+        let peak = |u: &mut DiskSource, output: &mut BufferVec| {
+            let mut peak = 0.0f32;
+            for _ in 0..4 {
+                u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+                for i in 0..8 {
+                    peak = peak.max(output.buffer_ref().at_f32(0, i).abs());
                 }
             }
-        }
-
+            peak
+        };
+        let rendered = peak(&mut unit, &mut output);
         assert!(
             (rendered - 0.25).abs() < 1e-4,
             "a gain written on one copy of the voice must be seen by the copy \
              that renders; expected ~0.25, got {rendered}. A value near 1.0 \
-             means `gain` is still stored by value and the write went nowhere."
+             means `gain` is stored by value and the write went nowhere."
+        );
+        let cloned = peak(&mut copy, &mut output);
+        assert_eq!(
+            cloned, 0.0,
+            "a clone must hold no reader of the live ring, so it renders \
+             silence; it rendered {cloned}"
         );
     }
 }

@@ -10,10 +10,11 @@ use std::sync::Arc;
 use tutti_analysis::StftGeometry;
 
 use super::vocoder::Vocoder;
-use super::{next_handle_id, Bank, FftSize};
+use super::{FftSize, MAX_BUFFER_SIZE};
+use crate::lanes::Lane;
 use tutti_core::{
     AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Ordering, ReadRate,
-    SampleRate, Samples, SignalFrame, StretchFactor, Tail,
+    RtScratch, SampleRate, Samples, SignalFrame, StretchFactor, Tail,
 };
 
 /// Real-time time-stretching and pitch-shifting unit.
@@ -37,9 +38,29 @@ use tutti_core::{
 /// # Real-time safety
 ///
 /// Every buffer is allocated in
-/// [`with_fft_size_and_channels`](Self::with_fft_size_and_channels), and a
-/// clone's per-block scratch in [`AudioUnit::allocate`]. Neither `tick` nor
-/// `process` allocates or blocks; both are safe on the audio thread.
+/// [`with_fft_size_and_channels`](Self::with_fft_size_and_channels), or by
+/// `clone`. Neither `tick` nor `process` allocates or blocks; both are safe
+/// on the audio thread.
+///
+/// # Owned, not shared
+///
+/// The vocoders and the block scratch are this unit's, by value. They used
+/// to sit in an `Arc<Bank>` that every clone shared, with a `ticker` claim
+/// token and `AudioThreadCell`s to catch two handles ticking one bank: `Net`
+/// cloned every node on every graph commit, and a deep copy was 201.8 MB per
+/// commit over 640 stereo nodes (`examples/profile_stretch_clone.rs`). The
+/// native graph does not clone a node to commit it (doc 013 item 7), so the
+/// sharing, the claim and the cells went, and so did the `allocate` hook that
+/// sized the scratch a sharing clone left empty.
+///
+/// A clone is now what the two remaining callers of `Clone` need, and no
+/// more: a **fresh** filter with the same width, window and parameters — its
+/// own vocoders built on the same grid (sharing the immutable window and phase
+/// tables, `Vocoder::clone_fresh`), none of the running state. Those callers
+/// are `tutti_graph::Legacy::controlled`'s shadow (taken once, at insert) and
+/// a fork cloned from it; both reset what they clone, so copying a running
+/// stream's rings would buy nothing. It allocates about 100 KB per channel,
+/// on the control thread, once per insert and once per fork.
 ///
 /// # Channels
 ///
@@ -49,29 +70,13 @@ use tutti_core::{
 /// source can drift channel-to-channel. Fixing that is a separate question from
 /// width.
 pub struct Unit {
-    /// One per channel; the bank's length **is** the unit's width, so the
-    /// scratch vectors are always the same length.
-    ///
-    /// Shared across graph generations — see [`Bank`]. `width` mirrors the
-    /// length so `inputs()`/`outputs()` need no borrow: fundsp calls them during
-    /// graph planning, where taking a borrow would collide with a live one.
-    ///
-    /// **Note the names.** `channels` here is the vocoder *bank*, not a count —
-    /// the count is [`width`](Self::width). They were named this way before
-    /// [`ChannelLayout`] existed; a blind rename would swap a `Vec<Vocoder>` for
-    /// a channel count.
-    pub(super) channels: Arc<Bank>,
+    /// The per-channel state, owned. Boxed so a `Unit` moves as a pointer:
+    /// the pool's drain moves filters in and out of `VoiceCommand`s, which
+    /// stay small (and a move out of a field frees nothing, where a move out
+    /// of a `Box<Unit>` would free the box on the audio thread).
+    pub(super) ch: Box<Channels>,
     /// The unit's declared width — one vocoder per channel.
     pub(super) width: ChannelLayout,
-
-    /// This handle's identity for [`Bank::claim`], unique among live handles.
-    ///
-    /// A counter, **not** `self as *const Self`. The address is not an identity:
-    /// `Net::push(Box::new(unit))` moves the value, so a handle that claimed the
-    /// bank before the move could never release its own claim afterwards — and
-    /// the guard would then fire on the legitimate successor. Pinned by
-    /// `a_successor_generation_continues_the_stream`.
-    pub(super) id: usize,
     pub(super) stretch_factor: Arc<AtomicF32>,
     pub(super) pitch_cents: Arc<AtomicF32>,
     pub(super) enabled: bool,
@@ -88,6 +93,18 @@ pub struct Unit {
     /// per-channel debts would always be equal and could only drift through a
     /// bug that skewed the channels against each other.
     pub(super) intake_debt: f64,
+}
+
+/// A [`Unit`]'s per-channel state: one vocoder per channel, and `process`'s
+/// block scratch.
+pub(super) struct Channels {
+    /// One per channel; its length **is** the unit's width.
+    pub(super) vocoders: Vec<Vocoder>,
+    /// `process`'s per-block working buffers, one pair per channel. Carry
+    /// nothing between blocks: `process` overwrites `scratch_in` from its
+    /// input and clears `scratch_out` before draining into it.
+    pub(super) scratch_in: Vec<RtScratch<f32>>,
+    pub(super) scratch_out: Vec<RtScratch<f32>>,
 }
 
 // Hand-rolled: holds non-`Debug` vocoders and `RtScratch` buffers. Print the
@@ -140,13 +157,41 @@ impl Unit {
         let width = crate::nonempty(channels.into());
         // Stride derived once, here on the construction path.
         let n = width.count() as usize;
-        Self {
-            channels: Bank::new((0..n).map(|_| Vocoder::new(geometry)).collect()),
+        Self::from_vocoders(
+            (0..n).map(|_| Vocoder::new(geometry)).collect(),
             width,
-            id: next_handle_id(),
-            stretch_factor: Arc::new(AtomicF32::new(StretchFactor::UNITY.get())),
-            pitch_cents: Arc::new(AtomicF32::new(0.0)),
-            enabled: true,
+            StretchFactor::UNITY.get(),
+            0.0,
+            true,
+        )
+    }
+
+    /// A unit over `vocoders` (one per channel of `width`), its block scratch
+    /// sized here: a unit must be usable without a later hook, and this is the
+    /// control thread.
+    fn from_vocoders(
+        vocoders: Vec<Vocoder>,
+        width: ChannelLayout,
+        stretch_factor: f32,
+        pitch_cents: f32,
+        enabled: bool,
+    ) -> Self {
+        let n = vocoders.len();
+        let scratch = || {
+            (0..n)
+                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                .collect::<Vec<_>>()
+        };
+        Self {
+            ch: Box::new(Channels {
+                vocoders,
+                scratch_in: scratch(),
+                scratch_out: scratch(),
+            }),
+            width,
+            stretch_factor: Arc::new(AtomicF32::new(stretch_factor)),
+            pitch_cents: Arc::new(AtomicF32::new(pitch_cents)),
+            enabled,
             intake_debt: 0.0,
         }
     }
@@ -264,18 +309,6 @@ impl Unit {
                 || self.pitch_cents().get().abs() > PITCH_EPSILON_CENTS)
     }
 
-    /// Whether these two units share one vocoder bank.
-    ///
-    /// Exposed so callers that must sever sharing before running a clone on
-    /// another thread can *assert* they did — the alternative is trusting that
-    /// [`AudioUnit::isolate`] was reached, which is exactly the assumption that
-    /// shipped a data race in `VoiceNode`. Sharing is otherwise invisible from
-    /// outside this module: it changes no output until two threads race, and by
-    /// then nothing is observable in a test.
-    pub fn shares_bank_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.channels, &other.channels)
-    }
-
     /// Processing latency, in samples — **zero while bypassing**.
     ///
     /// One whole window must arrive before the first frame can be analysed, so a
@@ -297,9 +330,8 @@ impl Unit {
         if !self.is_processing() {
             return 0;
         }
-        self.channels
-            .channels
-            .borrow()
+        self.ch
+            .vocoders
             .first()
             .map_or(0, |v| v.geometry.window().get())
     }
@@ -392,9 +424,8 @@ impl Unit {
     #[inline]
     pub(super) fn hops(&self) -> (usize, usize) {
         let synthesis = self
-            .channels
-            .channels
-            .borrow()
+            .ch
+            .vocoders
             .first()
             .map_or(1, |v| v.geometry.hop().get());
         let analysis = ((synthesis as f32 / self.effective_stretch()).round() as usize).max(1);
@@ -443,58 +474,97 @@ pub(super) const MIN_PITCH_CENTS: f32 = -2400.0;
 /// Two octaves up.
 pub(super) const MAX_PITCH_CENTS: f32 = 2400.0;
 
-impl Clone for Unit {
-    fn clone(&self) -> Self {
-        // Fresh vocoder state rather than cloned: the phase accumulators and
-        // overlap-add rings are mid-frame history, and a clone is a new voice
-        // rather than a continuation of this one. Only the parameters carry.
-        //
-        // The block scratch is left **empty**, not cloned. It carries nothing
-        // across blocks — `process` overwrites `scratch_in` from its input and
-        // `fill(0.0)`s `scratch_out` before draining into it — so copying 64 KB
-        // per channel only to overwrite it was 40% of a clone's bytes buying
-        // nothing. `allocate` sizes it, which is exactly the hook fundsp
-        // documents for "buffers for block processing" and which `Net::commit`
-        // calls on the graph it is about to run.
-        let mut cloned = Self {
-            // The whole point: a refcount bump, not ~96 KB per channel.
-            channels: Arc::clone(&self.channels),
-            width: self.width,
-            // A distinct identity: the clone is a different live handle, and the
-            // guard exists precisely to tell it apart from its predecessor.
-            id: next_handle_id(),
-            stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
-            pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
-            enabled: self.enabled,
-            intake_debt: 0.0,
-        };
-        cloned.enabled = self.enabled;
-        cloned
+impl Unit {
+    /// Filter frames `frames` of the lanes `input` into the same frames of
+    /// `output`, `n` lanes each (`n` ≥ 1: the caller's width): **exactly**
+    /// what one [`tick`](AudioUnit::tick) per frame, each handed `n` input
+    /// samples and an `n`-wide output frame cleared to zero, would write.
+    ///
+    /// This is the slot's block read through the filter
+    /// (`PlaybackSlot::process_into`). Bit-identical to the ticks it
+    /// replaced, because it does the same arithmetic on the same values in
+    /// the same order per channel:
+    ///
+    /// - The parameters (stretch, pitch, enabled, and the hops and intake
+    ///   rate derived from them) are read **once per block**, where `tick`
+    ///   read its atomics every frame; a control write lands on the next
+    ///   block rather than mid-block.
+    /// - The channels share nothing but the intake debt, whose sequence of
+    ///   values does not depend on the samples. So each channel replays that
+    ///   sequence from the block's starting debt, channel-outer (one vocoder's
+    ///   rings stay hot for the whole block), and pushes and processes exactly
+    ///   the frames `tick` would have pushed it.
+    /// - A lane `c` past the input's width reads lane 0 (`tick`'s fan from
+    ///   channel 0); an output lane past the unit's width is written zero, and
+    ///   a vocoder past the output's width is fed and never drained, as
+    ///   `tick` leaves them.
+    ///
+    /// Allocation-free.
+    pub(crate) fn filter_lanes(
+        &mut self,
+        input: &[Lane],
+        output: &mut [Lane],
+        n: usize,
+        frames: std::ops::Range<usize>,
+    ) {
+        let n = n.min(input.len()).min(output.len());
+        if n == 0 {
+            return;
+        }
+        let stride = self.stride();
+        let n_out = stride.min(n);
+        for lane in &mut output[n_out..n] {
+            lane[frames.clone()].fill(0.0);
+        }
+        if !self.is_processing() {
+            for (c, lane) in output[..n_out].iter_mut().enumerate() {
+                let src = &input[if c < n { c } else { 0 }];
+                lane[frames.clone()].copy_from_slice(&src[frames.clone()]);
+            }
+            return;
+        }
+        let (analysis_hop, synthesis_hop) = self.hops();
+        let rate = self.intake_rate();
+        let start = self.intake_debt;
+        let mut end = start;
+        for (c, v) in self.ch.vocoders.iter_mut().enumerate() {
+            let src = &input[if c < n { c } else { 0 }];
+            let mut debt = start;
+            let mut one = [0.0f32];
+            for i in frames.clone() {
+                debt += rate;
+                while debt >= 1.0 {
+                    debt -= 1.0;
+                    v.input.push(&[src[i]]);
+                    v.process(analysis_hop, synthesis_hop);
+                }
+                if c < n_out {
+                    one[0] = 0.0;
+                    v.output.drain(&mut one);
+                    output[c][i] = one[0];
+                }
+            }
+            end = debt;
+        }
+        self.intake_debt = end;
     }
 }
 
-impl Drop for Unit {
-    /// Release this handle's claim on the shared bank.
+impl Clone for Unit {
+    /// A **fresh** filter: the same width, window and parameters, its own
+    /// vocoders with none of this one's running state, and its own block
+    /// scratch. See "Owned, not shared" on [`Unit`] for who clones, and why
+    /// fresh rather than a copy of the stream.
     ///
-    /// A commit retires the previous generation, and its successor must be able
-    /// to tick the bank it inherited. Without this the claim outlives the handle
-    /// and every post-commit tick trips the guard.
-    ///
-    /// # Dropping a `Unit` is not real-time safe
-    ///
-    /// This body is release-only, but the drop that follows it is not: once it
-    /// returns, `channels: Arc<Bank>` is dropped too, and when that is the last
-    /// reference the vocoders and block scratch (~192 KB at six channels) are
-    /// deallocated right there. Read the *body* as free and the *type* as
-    /// expensive.
-    ///
-    /// That matters because `VoiceCommand::Remove` retires a slot inside
-    /// `drain_commands`, which runs from the audio callback. `VoicePool` hands
-    /// removed slots to a retirement channel so the free lands on the control
-    /// thread — see `VoicePool::retired`. Any other caller dropping a `Unit` on
-    /// the audio thread has the same hazard and needs the same treatment.
-    fn drop(&mut self) {
-        self.channels.release(self.id);
+    /// Allocates (about 100 KB per channel): control thread only.
+    fn clone(&self) -> Self {
+        Self::from_vocoders(
+            self.ch.vocoders.iter().map(Vocoder::clone_fresh).collect(),
+            self.width,
+            self.stretch_factor.load(Ordering::Acquire),
+            self.pitch_cents.load(Ordering::Acquire),
+            self.enabled,
+        )
     }
 }
 
@@ -511,18 +581,14 @@ impl AudioUnit for Unit {
     }
 
     fn reset(&mut self) {
-        // A reset restarts the stream, so it also transfers ticking rights: this
-        // is the legitimate way a successor generation takes over a bank without
-        // tripping the claim.
-        self.channels.reclaim(self.id);
-        for v in self.channels.channels.borrow_mut().iter_mut() {
+        for v in &mut self.ch.vocoders {
             v.reset();
         }
         self.intake_debt = 0.0;
     }
 
     /// Retunes the geometry and **preserves** all running state — the phase
-    /// history, the intake debt, the channel claim. Allocation-free, so a device
+    /// history and the intake debt. Allocation-free, so a device
     /// change mid-stream costs a per-channel geometry rebuild and nothing else.
     ///
     /// The fundsp contract allows either answer (`AudioUnit::set_sample_rate`:
@@ -538,7 +604,7 @@ impl AudioUnit for Unit {
         // their ratio, so none of the vocoder state depends on the rate. Only
         // the rate the geometry reports back does — rebuild it, and leave the
         // running phase history alone.
-        for v in self.channels.channels.borrow_mut().iter_mut() {
+        for v in &mut self.ch.vocoders {
             v.geometry = Self::geometry(sample_rate, FftSize::default());
         }
     }
@@ -569,13 +635,9 @@ impl AudioUnit for Unit {
         // below it, feeds the same one twice (transposing down). The stretch
         // half is the caller's job, already applied to the frames arriving here.
         self.intake_debt += self.intake_rate();
-        // One borrow for the whole call: the cell's contract is one borrow at a
-        // time, and re-borrowing per sample would also cost a debug atomic each.
-        self.channels.claim(self.id);
-        let mut bank = self.channels.channels.borrow_mut();
         while self.intake_debt >= 1.0 {
             self.intake_debt -= 1.0;
-            for (c, v) in bank.iter_mut().enumerate() {
+            for (c, v) in self.ch.vocoders.iter_mut().enumerate() {
                 v.input.push(&[src(c)]);
                 v.process(analysis_hop, synthesis_hop);
             }
@@ -584,7 +646,7 @@ impl AudioUnit for Unit {
         let mut one = [0.0f32];
         for (c, o) in output.iter_mut().enumerate().take(n) {
             one[0] = 0.0;
-            bank[c].output.drain(&mut one);
+            self.ch.vocoders[c].output.drain(&mut one);
             *o = one[0];
         }
     }
@@ -602,30 +664,7 @@ impl AudioUnit for Unit {
         let channels = self.stride();
         let in_ch = input.channels();
 
-        // A clone shares the bank but leaves its scratch for `allocate` to size.
-        // If that never ran, `RtScratch::active` clamps to a zero-length slice
-        // and every loop below iterates zero times — the unit would emit silence
-        // and look like a gain bug, the same failure shape that hid a 60 dB
-        // error here before. Size it here instead: this is the control thread's
-        // job, but a late allocation beats silent silence, and the debug assert
-        // names the real fault. Every RT call on an allocated unit skips it.
-        if !self.channels.scratch_is_ready(channels) {
-            debug_assert!(
-                false,
-                "BUG: stretch::Unit::process before allocate(); the graph must \
-                 call allocate() on a cloned unit before running it"
-            );
-            self.channels.allocate_scratch(channels);
-        }
-
-        // One claim and one borrow-set for the whole call. The scratch lives on
-        // the bank now, so it is covered by the same claim that protects the
-        // vocoders — a second live handle reaching this would be caught rather
-        // than silently sharing working buffers.
-        self.channels.claim(self.id);
-        let mut scratch_in = self.channels.scratch_in.borrow_mut();
-
-        for (c, s) in scratch_in.iter_mut().enumerate() {
+        for (c, s) in self.ch.scratch_in.iter_mut().enumerate() {
             let buf = s.active(size);
             // Fewer input channels than vocoders: mirror `tick`'s
             // fan-from-channel-0 rather than emitting silence.
@@ -639,7 +678,7 @@ impl AudioUnit for Unit {
 
         if !self.is_processing() {
             for c in 0..out_ch {
-                let buf = scratch_in[c].active_ref(size);
+                let buf = self.ch.scratch_in[c].active_ref(size);
                 for (i, &s) in buf.iter().enumerate().take(size) {
                     output.set_f32(c, i, s);
                 }
@@ -655,24 +694,22 @@ impl AudioUnit for Unit {
         // rather than pushing it whole is what keeps `process` and `tick`
         // producing the same audio — they drifted apart once before by writing
         // the two paths separately.
-        let mut bank = self.channels.channels.borrow_mut();
         for i in 0..size {
             self.intake_debt += rate;
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
-                for (c, v) in bank.iter_mut().enumerate() {
-                    let sample = scratch_in[c].active_ref(size)[i];
+                for (c, v) in self.ch.vocoders.iter_mut().enumerate() {
+                    let sample = self.ch.scratch_in[c].active_ref(size)[i];
                     v.input.push(&[sample]);
                     v.process(analysis_hop, synthesis_hop);
                 }
             }
         }
 
-        let mut scratch_out = self.channels.scratch_out.borrow_mut();
         for c in 0..channels {
-            let out = scratch_out[c].active(size);
+            let out = self.ch.scratch_out[c].active(size);
             out.fill(0.0);
-            let count = bank[c].output.drain(out);
+            let count = self.ch.vocoders[c].output.drain(out);
             if c >= out_ch {
                 continue;
             }
@@ -725,54 +762,8 @@ impl AudioUnit for Unit {
         std::mem::size_of::<Self>()
     }
 
-    /// Sever the shared vocoder bank, giving this unit private state.
-    ///
-    /// **This is what makes sharing sound.** `Unit::clone` hands out a refcount
-    /// bump, which is safe only while generations are ticked one at a time. The
-    /// offline region render breaks that: it `clone_isolated`s the live net and
-    /// ticks it on a worker pool while the audio thread plays the original — two
-    /// generations, two threads, concurrently. Sharing the FIFOs and phase
-    /// accumulators there would corrupt both the render and playback.
-    ///
-    /// The render's isolation pass already calls this on every node of the clone
-    /// before it reaches the worker, so the deep copy lands exactly where
-    /// concurrency begins and nowhere else — ~96 KB per channel, on a path that
-    /// is already admission-capped for being expensive.
-    ///
-    /// Fresh state rather than a copy of the running one: an isolated render
-    /// starts its filter clean rather than mid-frame on audio it will not emit.
-    ///
-    /// Control thread only — it allocates.
-    fn isolate(&mut self) {
-        let geometry = self
-            .channels
-            .channels
-            .borrow()
-            .first()
-            .map(|v| v.geometry)
-            .unwrap_or_else(|| Self::geometry(SampleRate(44_100.0), FftSize::default()));
-        let fresh: Vec<Vocoder> = self
-            .channels
-            .channels
-            .borrow()
-            .iter()
-            .map(Vocoder::clone_fresh)
-            .collect();
-        let _ = geometry;
-        self.channels = Bank::new(fresh);
-        self.channels.reclaim(self.id);
-        self.intake_debt = 0.0;
-    }
-
-    /// Size the per-block scratch. Idempotent, and never called from the audio
-    /// thread.
-    ///
-    /// This is what makes [`Unit::clone`] cheap: the clone leaves the scratch
-    /// empty, and the graph calls this before running the unit
-    /// (`Net::commit_inner` → `Net::allocate` → `Vertex::allocate`, and
-    /// `Net::set_unit` for a hot swap). Re-allocating an already-sized unit
-    /// would be a needless 64 KB per channel, so a ready unit returns early.
-    fn allocate(&mut self) {
-        self.channels.allocate_scratch(self.stride());
-    }
+    // No `isolate` and no `allocate`: a unit shares nothing with its clones
+    // (the vocoders, scratch and atomics are each clone's own), so there is
+    // nothing to sever, and its scratch is sized wherever it is built. Both
+    // hooks existed only for the `Arc<Bank>` a `Net` commit's clone shared.
 }

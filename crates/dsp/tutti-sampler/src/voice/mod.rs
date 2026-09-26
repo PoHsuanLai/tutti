@@ -33,6 +33,9 @@ pub mod types;
 // Tests only — they exercise the five modules above in combination and reach
 // private state a sibling module could not see.
 mod voice_pool;
+// Tests only: the block read against the frame read it replaced.
+#[cfg(test)]
+mod block_render;
 
 /// The control-plane protocol and the two handles that send it — one per owner
 /// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].

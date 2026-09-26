@@ -121,28 +121,30 @@ fn time_stretch_process_is_allocation_free() {
     });
 }
 
-/// The same guarantee for a **cloned** unit — the shape a graph commit produces.
+/// The same guarantee for a **cloned** unit — the shape `Legacy::controlled`'s
+/// shadow and a fork of it produce.
 ///
-/// `Unit::clone` leaves the block scratch empty for `allocate` to size, which is
-/// what makes a commit cheap. That splits the RT contract in two, and only this
-/// half runs on the audio thread after a commit:
-///
-/// - allocate() ran  → `process` must not allocate. Asserted here.
-/// - allocate() did NOT run → `process` self-heals with a `debug_assert`, so it
-///   allocates once rather than emitting silence. Deliberately not asserted —
-///   it is the bug path, not the contract.
+/// A clone builds its own vocoders and block scratch (doc 013 item 7), so
+/// there is no `allocate` hook between cloning and running any more: a clone
+/// is ready as built. Under `Net`, whose commit cloned every node, the clone
+/// shared the original's bank and left the scratch for `allocate` to size,
+/// which is why this test used to call it first.
 ///
 /// `time_stretch_process_is_allocation_free` above cannot catch a regression
-/// here: it drives a freshly constructed unit, which never had empty scratch.
+/// here: it drives a freshly constructed unit, not a clone.
+///
+/// Mutation (run): `Unit::process` building its input scratch per block
+/// (`self.scratch_in = … RtScratch::new(MAX_BUFFER_SIZE) …`) → fails. (A
+/// clone that sized its scratch only on first use would slip past: the
+/// warm-up runs that use. `stretch::tests::a_clone_arrives_with_its_block_scratch_sized`
+/// pins that a clone arrives sized.)
 #[test]
-fn cloned_time_stretch_process_is_allocation_free_once_allocated() {
+fn cloned_time_stretch_process_is_allocation_free() {
     let mut original = TimeStretchUnit::new(48_000.0);
     original.set_sample_rate(SampleRate(48_000.0));
     original.set_stretch_factor(StretchFactor::new(1.5));
 
-    // What `Net::commit_inner` does: clone, then allocate before running it.
     let mut node = original.clone();
-    node.allocate();
     assert!(node.is_processing());
 
     let mut input_vec = BufferVec::new(2);
@@ -258,25 +260,22 @@ fn voice_pool_process_steady_state_is_allocation_free() {
     });
 }
 
-/// A **cloned** pool with a stretching voice — the shape a graph commit hands
-/// the audio thread.
+/// A **cloned** pool with a stretching voice — the shape `Legacy::controlled`'s
+/// shadow and a fork of it produce — renders its blocks without allocating.
 ///
-/// Note what this does and does not pin. It covers the pool's own RT contract
-/// across a clone, which nothing else here did: every other pool test drives a
-/// freshly constructed unit, and the two stretch tests never clone a pool.
+/// Every other pool test drives a freshly constructed unit, and the two
+/// stretch tests never clone a pool, so this is the pool's RT contract across
+/// a clone. Since doc 013 item 7 the clone needs no `allocate` first: its
+/// filters build their own scratch, and the pool builds its own block lanes
+/// (the slot reads through `stretch::Unit::filter_lanes` into them). The
+/// `allocate` forwards on `VoicePool` and `VoiceNode`, which this used to say
+/// it could not pin, are gone with the scratch they sized.
 ///
-/// It does **not** pin `VoicePool`/`VoiceNode` forwarding `allocate` to their
-/// resident filters. Verified by sabotage: stubbing `VoicePool::allocate` to a
-/// no-op leaves this green, because the pool drives its filter sample-by-sample
-/// through `stretch::Unit::tick`, and `tick` never touches the block scratch
-/// that `allocate` sizes — only `process` does, and only when the unit sits in
-/// the graph as a node in its own right.
-///
-/// The forwards are kept regardless: they cost nothing, and the alternative is a
-/// latent trap where routing a pool's filter through `process` later would
-/// allocate in the callback with no test objecting.
+/// Mutation (run): the pool building its block lanes in `process` rather
+/// than at construction (`self.scratch = BlockScratch::new()` per block) →
+/// fails.
 #[test]
-fn cloned_voice_pool_with_stretch_is_allocation_free_once_allocated() {
+fn cloned_voice_pool_with_stretch_is_allocation_free() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
@@ -304,10 +303,8 @@ fn cloned_voice_pool_with_stretch_is_allocation_free_once_allocated() {
         },
     );
 
-    // What `Net::commit_inner` does: clone the node, then allocate it before it
-    // is handed to the backend.
+    // The shadow a native graph takes at insert, or a fork of it.
     let mut unit = original.clone();
-    unit.allocate();
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
@@ -745,13 +742,9 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 ///
 /// `VoiceCommand::Remove` is handled by `voices.retain(...)` inside
 /// `drain_commands`, which runs from `tick`/`process` — the audio callback. A
-/// slot dropped there takes its `stretch::Unit` with it, and when that handle
-/// holds the last `Arc<Bank>` reference the vocoders and block scratch (~192 KB
-/// at six channels) are freed inside the callback.
-///
-/// Sole ownership is the *normal* case, not a corner: `VoicePoolHandle::send`
-/// builds a fresh refcount-1 `Unit` on the control thread and the drain moves it
-/// into the slot, so no graph commit need ever have cloned it.
+/// slot dropped there takes its `stretch::Unit` with it, and the unit owns its
+/// vocoders and block scratch (~100 KB per channel), which would be freed
+/// inside the callback.
 ///
 /// `assert_no_alloc` traps deallocation as well as allocation, so this is the
 /// direct guard. It was missing: every other drain test here covers `AddVoice`,

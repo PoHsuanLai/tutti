@@ -15,6 +15,7 @@ use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDE
 use super::memory_source::LoopSetting;
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice, VoiceSource};
+use crate::lanes::BlockScratch;
 // Only `playback_of` names it, and that is a `#[cfg(test)]` helper.
 #[cfg(test)]
 use super::types::Playback;
@@ -57,9 +58,8 @@ pub struct VoicePoolNode(pub tutti_core::dsp::NodeId);
 
 /// Something the drain took ownership of and must **not** free in the callback.
 ///
-/// Both variants exist for the same reason: dropping a [`stretch::Unit`] can free
-/// its vocoder bank (~192 KB at six channels) when the handle holds the last
-/// `Arc` — see that type's `Drop`. Rather than teach two call sites two different
+/// Both variants exist for the same reason: dropping a [`stretch::Unit`] frees
+/// its vocoders (~100 KB per channel), which it owns. Rather than teach two call sites two different
 /// evasions, everything the drain needs to shed goes down one channel and is
 /// freed by [`VoicePoolHandle::collect_retired`] on the control thread.
 ///
@@ -125,17 +125,15 @@ pub struct VoicePool {
     /// drain does not reallocate.
     pub(crate) voices: Vec<PlaybackSlot>,
     /// Commands from the control thread, drained at the top of every block.
-    /// Shared with every clone of this unit — see this type's `Clone`.
+    /// This pool's own: a clone gets a dead one — see this type's `Clone`.
     pub(crate) rx: Receiver<VoiceCommand>,
 
     /// Where removed slots go to be freed, off the audio thread.
     ///
     /// `VoiceCommand::Remove` is handled inside `drain_commands`, which runs
     /// from `tick`/`process` — the audio callback. Dropping the slot there frees
-    /// its `stretch::Unit`'s vocoder bank (~192 KB at six channels) in the
-    /// callback whenever that handle held the last `Arc`, which is the normal
-    /// case: `VoicePoolHandle::send` builds a fresh refcount-1 filter and the
-    /// drain moves it in, so no graph commit need ever have cloned it.
+    /// its `stretch::Unit`'s vocoders (~100 KB per channel), which the unit
+    /// owns, in the callback.
     ///
     /// Pushing to a bounded channel instead is lock-free and allocation-free.
     /// The control thread drains it via [`VoicePoolHandle::collect_retired`];
@@ -180,6 +178,11 @@ pub struct VoicePool {
     /// than reported) and clones by sharing, so fundsp's clone-on-commit does not
     /// restart playback.
     pub(crate) cursor: Option<BeatCursor>,
+
+    /// The lanes every slot's block read renders through, one voice at a
+    /// time (`PlaybackSlot::process_into`). Built with the pool, on the
+    /// control thread.
+    scratch: BlockScratch,
 }
 
 // Hand-rolled: `voices` holds non-`Debug` `PlaybackSlot`s (each wraps a sampler +
@@ -235,6 +238,7 @@ impl VoicePool {
             transport,
             butler,
             channels: nonempty(channels.into()),
+            scratch: BlockScratch::new(),
         }
     }
 
@@ -332,7 +336,7 @@ impl VoicePool {
     /// distinction the MIDI consumers need (their sorted-list cursors
     /// self-correct forward) is not one buffered audio can afford.
     #[inline]
-    fn flush_on_seek(&mut self, block_size: usize) {
+    pub(crate) fn flush_on_seek(&mut self, block_size: usize) {
         let Some(cursor) = &self.cursor else { return };
         let Some((_, sync)) = cursor.advance(block_size) else {
             return;
@@ -365,17 +369,12 @@ impl VoicePool {
     /// command channel — its `rx` is a `bounded(0)` receiver that has no sender
     /// and can never deliver anything.
     ///
-    /// The offline region render clones the *staged frontend* net (fundsp
-    /// `Net::clone`), which clones each live reader and — by necessity, since
-    /// `commit()` relies on full-fidelity cloning — shares the live crossbeam
-    /// `Receiver`. A clone handed to the offline worker must never drain that
-    /// channel (crossbeam delivers each command to exactly one receiver, so an
-    /// offline drain steals commands from the audio thread) and must never
-    /// carry live voice state. Rather than clone-then-sever, the render Prepare
-    /// step *replaces* each reader node with one of these: born empty, born
-    /// channel-less, so it shares zero mutable state with the live graph at any
-    /// instant. Voices are then rebuilt from ECS in the Populate step via
-    /// [`Self::insert_voice`].
+    /// For a render that rebuilds its voices itself rather than fork the live
+    /// pool: born empty, born channel-less, so it shares no mutable state
+    /// with the live graph at any instant. Voices are then built from the
+    /// host's own record via [`Self::insert_voice`]. (A clone is channel-less
+    /// too — see `Clone` — but carries the live pool's voices until
+    /// [`isolate`](AudioUnit::isolate) clears them.)
     pub fn detached(transport: Arc<dyn Timeline>) -> Self {
         let (_tx, rx) = bounded(0);
         // No butler: the offline render never forwards streaming loop ops (it
@@ -671,8 +670,8 @@ impl VoicePool {
                 } => {
                     // Take the surplus out of `set_stretch` and retire it rather
                     // than letting it drop here: this is the audio callback, and
-                    // freeing a `stretch::Unit` that holds the last `Arc` frees its
-                    // vocoder bank. Same treatment as `Remove` above.
+                    // dropping a `stretch::Unit` frees its vocoders. Same
+                    // treatment as `Remove` above.
                     //
                     // `slot_mut` returning `None` (the slot was removed between
                     // send and drain) must retire the filter too — an early
@@ -691,19 +690,18 @@ impl VoicePool {
 }
 
 impl Clone for VoicePool {
+    /// A copy of the voices and settings, with **no command channel** and no
+    /// retirement channel of its own.
+    ///
+    /// The graph renders the pool it was given; nothing commits by clone any
+    /// more (doc 013 item 7). The clones it does take are
+    /// `Legacy::controlled`'s shadow and a fork cloned from it, and neither
+    /// may drain the live handle's commands (crossbeam hands each message to
+    /// exactly one receiver, so a copy draining would steal edits from the
+    /// audio thread). So the `Receiver` stays with the pool that owns it.
+    /// Under `Net`, whose commit rendered from a clone, the clone had to share
+    /// it; the sharing, and `isolate`'s severing of it, went with `Net`.
     fn clone(&self) -> Self {
-        // `AudioUnit: DynClone`, so the graph (fundsp `Net`) clones this unit on
-        // commit (frontend↔backend mem-swap) and may clone it on realloc. The
-        // clone therefore MUST keep receiving the commands the ECS handle's
-        // `Sender` still feeds — hence the *same* `Receiver` rather than a
-        // fresh, dead channel. `crossbeam` delivers each message to
-        // exactly one receiver, and the live graph only ever ticks one instance
-        // at a time, so there is no double-drain.
-        //
-        // The offline region render does NOT rely on this: it replaces each
-        // reader node with a fresh [`Self::detached`] (channel-less) reader in
-        // its Prepare step, so a render clone never shares this `Receiver` while
-        // being ticked on a worker thread.
         Self {
             // Dead, like the command `Receiver` beside it: a clone must not hand
             // slots back to the live pool's control thread. A full `bounded(0)`
@@ -721,7 +719,7 @@ impl Clone for VoicePool {
                     sample_rate: s.sample_rate,
                 }) // Voice (VoiceSource) + resident stretch::Unit clone by value; atomics preserved
                 .collect(),
-            rx: self.rx.clone(),
+            rx: bounded(0).1,
             sample_rate: self.sample_rate,
             // Shares the underlying cursor cell, so a clone-on-commit does not
             // read as a discontinuity and restart playback.
@@ -729,6 +727,7 @@ impl Clone for VoicePool {
             transport: self.transport.clone(),
             butler: self.butler.clone(),
             channels: self.channels,
+            scratch: BlockScratch::new(),
         }
     }
 }
@@ -749,18 +748,14 @@ impl AudioUnit for VoicePool {
         }
     }
 
-    /// Sever the live command channel and clear live voice state so an offline
-    /// clone can be ticked on a worker thread without stealing commands from —
-    /// or sharing voices with — the live reader. Leaves the unit *born empty and
-    /// channel-less* (the [`detached`](Self::detached) state), minus the
-    /// transport: re-pointing at the render's offline transport is the caller's
-    /// separate data-carrying step (via [`replace_transport`](Self::replace_transport)),
+    /// Clear live voice state so an offline copy can be ticked on a worker
+    /// thread without sharing voices with the live reader. Leaves the unit
+    /// *born empty and channel-less* (the [`detached`](Self::detached) state;
+    /// a clone has no command channel already), minus the transport:
+    /// re-pointing at the render's offline transport is the caller's separate
+    /// data-carrying step (via [`replace_transport`](Self::replace_transport)),
     /// per the `isolate` contract.
     fn isolate(&mut self) {
-        // A `bounded(0)` receiver whose sender is dropped can never deliver, so
-        // the worker's drain sees nothing and steals nothing from the live rx.
-        let (_tx, rx) = bounded(0);
-        self.rx = rx;
         self.voices.clear();
         // The offline render rebuilds voices from ECS and never forwards
         // streaming loop ops, so it needs no butler handle.
@@ -838,16 +833,15 @@ impl AudioUnit for VoicePool {
             .min(output.channels())
             .min(MAX_SAMPLER_CHANNELS);
         for c in 0..n {
-            for i in 0..size {
-                output.set_f32(c, i, 0.0);
-            }
+            output.channel_f32_mut(c)[..size].fill(0.0);
         }
 
-        // Each slot accumulates its ONE voice via the shared
-        // `PlaybackSlot::process_into` (the same per-variant `VoiceSource` match a
-        // standalone `VoiceNode` uses).
+        // Each slot renders its ONE voice into the pool's lanes and adds them
+        // in, a block at a time, via the shared `PlaybackSlot::process_into`
+        // (the same per-variant `VoiceSource` match a standalone `VoiceNode`
+        // uses).
         for slot in &mut self.voices {
-            slot.process_into(size, n, output);
+            slot.process_into(size, n, &mut self.scratch, output);
         }
     }
 
@@ -861,21 +855,5 @@ impl AudioUnit for VoicePool {
 
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>() + self.voices.len() * std::mem::size_of::<PlaybackSlot>()
-    }
-
-    /// Size each resident stretch filter's block scratch.
-    ///
-    /// `stretch::Unit::clone` deliberately leaves that scratch empty — it is
-    /// per-block, so copying it per graph commit was pure waste — and this is
-    /// the hook that restores it. Forwarding is **required**, not an
-    /// optimization: without it a cloned pool reaches the audio thread with
-    /// unsized scratch, and `process` has to allocate in the callback to avoid
-    /// rendering silence.
-    fn allocate(&mut self) {
-        for slot in &mut self.voices {
-            if let Some(s) = slot.stretch.as_mut() {
-                s.allocate();
-            }
-        }
     }
 }

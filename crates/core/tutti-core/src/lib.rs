@@ -280,7 +280,7 @@ mod node_id;
 // vocabulary that call sites build ids out of.
 pub use node_id::{assert_unique, mnemonic, PDC_DELAY_ID, TRANSPORT_CLOCK_ID};
 
-// MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the
+// MIDI vocabulary types (MidiEvent, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
 // than through a tutti-core pass-through.
 

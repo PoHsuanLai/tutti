@@ -9,15 +9,14 @@
 //! Zero inputs, two outputs — the unit *is* the source, so it enters a `Net`
 //! with only its output piped.
 //!
-//! Notes arrive through the unit's [`MidiInPort`], reached via
-//! [`midi_sender`](SoundFontUnit::midi_sender) or
-//! [`midi_port`](SoundFontUnit::midi_port), and are applied at their own
-//! `frame_offset` within a block — to an 8-frame resolution, which is
-//! RustySynth's floor rather than this crate's choice; see
-//! [`SoundFontUnit::process`] and [`SYNTH_BLOCK_FRAMES`].
+//! In a graph (the unit is a `tutti_graph::Node`) notes arrive on its event
+//! input; driven by hand, through [`queue_midi`](SoundFontUnit::queue_midi).
+//! Either way each is applied at its own `frame_offset` within a block — to
+//! an 8-frame resolution, which is RustySynth's floor rather than this
+//! crate's choice; see [`SoundFontUnit::process`] and [`SYNTH_BLOCK_FRAMES`].
 //! [`note_on`](SoundFontUnit::note_on) / [`note_off`](SoundFontUnit::note_off)
-//! bypass that inbox and are **not** the intended path — see their own docs and
-//! the README.
+//! bypass that timing and are **not** the intended path — see their own docs
+//! and the README.
 //!
 //! The quick start, the fixed-rate trap, the timing-resolution floor and the
 //! 7-bit resolution boundary are in the crate README, included below.
@@ -38,14 +37,10 @@ pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, Setting, SignalFrame};
-use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 
-/// Capacity of the scratch buffer used to poll MIDI events per audio callback.
-///
-/// `poll_into` takes `&mut [MidiEvent]` and iterates over existing slots, so the
-/// buffer must be fully initialised (not just allocated with `with_capacity`).
+/// Capacity of the block's MIDI scratch, in events: past it a block's events
+/// are dropped. Fully initialised, since events are written into its slots.
 const MIDI_BUFFER_CAPACITY: usize = 256;
 
 /// Frames of de-interleaved render scratch held per channel.
@@ -89,9 +84,10 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 
 /// A stereo `AudioUnit` that renders MIDI through a decoded SoundFont.
 ///
-/// Zero inputs, two outputs. Events arrive through the [`MidiInPort`] returned
-/// by [`Self::midi_port`] and are applied at their own `frame_offset` within a
-/// block, to the 8-frame resolution [`SYNTH_BLOCK_FRAMES`] explains.
+/// Zero inputs, two outputs. Events arrive on its event input in a graph, or
+/// through [`queue_midi`](Self::queue_midi) driven by hand, and are applied at
+/// their own `frame_offset` within a block, to the 8-frame resolution
+/// [`SYNTH_BLOCK_FRAMES`] explains.
 ///
 /// # The sample rate is fixed for the unit's lifetime
 ///
@@ -118,10 +114,13 @@ pub struct SoundFontUnit {
     /// segments split at each pending event's offset.
     left_buffer: Vec<f32>,
     right_buffer: Vec<f32>,
-    /// This unit's MIDI input endpoint (routing address + mailbox + current pull
-    /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
-    midi: MidiInPort,
+    /// The block's MIDI, sorted by offset: its event input's in a graph, or
+    /// what [`queue_midi`](Self::queue_midi) was given when driven by hand
+    /// (the first `pending` entries).
     midi_buffer: Vec<MidiEvent>,
+    /// How many events [`queue_midi`](Self::queue_midi) left for the next
+    /// hand-driven block.
+    pending: usize,
 }
 
 impl SoundFontUnit {
@@ -161,46 +160,21 @@ impl SoundFontUnit {
             sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
             left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
             right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
-            midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+            pending: 0,
         })
     }
 
-    /// This unit's MIDI input endpoint — routing address, push mailbox, and the
-    /// source-install slot, in one borrow.
-    ///
-    /// The whole-port accessor exists so a host can reach all three through a
-    /// single downcast. Resolving a unit's MIDI identity means asking the unit,
-    /// and asking three times for three halves of one endpoint invites a caller
-    /// to cache one of them — which is how an id goes stale across a
-    /// `crossfade` that keeps the graph node but mints a new port.
-    pub fn midi_port(&self) -> &MidiInPort {
-        &self.midi
-    }
-
-    /// Producer handle for this unit's MIDI inbox.
-    pub fn midi_sender(&self) -> MidiSender {
-        self.midi.sender()
-    }
-
-    /// Layer a MIDI source over the live inbox. Used by offline export for a
-    /// [`MidiSnapshotReader`], or by clip playback for a
-    /// [`tutti_midi_runtime::MidiClipSource`]. Both the source and the inbox
-    /// are polled, so clip playback does not silence live input.
-    ///
-    /// The install is visible across fundsp's clone-on-commit (see
-    /// [`MidiInPort`]), so the same source reaches the box the audio thread runs.
-    ///
-    /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitIn>) {
-        self.midi.install(source);
-    }
-
-    /// Removes any layered MIDI source, leaving the live inbox as the only feed.
-    ///
-    /// Detaches the source; it does not flush events already in the inbox.
-    pub fn clear_midi_source(&mut self) {
-        self.midi.clear();
+    /// Give the next hand-driven block (`AudioUnit::process` / `tick`) these
+    /// events, each on its `frame_offset`; returns how many were taken (the
+    /// buffer holds 256 between blocks). In a graph the unit plays its event
+    /// input instead.
+    pub fn queue_midi(&mut self, events: &[MidiEvent]) -> usize {
+        let room = self.midi_buffer.len() - self.pending;
+        let n = events.len().min(room);
+        self.midi_buffer[self.pending..self.pending + n].copy_from_slice(&events[..n]);
+        self.pending += n;
+        n
     }
 
     /// The rate this unit renders at, fixed at construction from
@@ -211,9 +185,8 @@ impl SoundFontUnit {
 
     /// A copy of this unit that renders at `sample_rate`: the same SoundFont
     /// (shared, not reloaded), settings, preset and channel state, no voice
-    /// sounding, and **the same MIDI port** (a clone, sharing its mailbox and
-    /// source cell, as [`Clone`] does). Allocates a new synthesizer's voices
-    /// and effect lines: control thread.
+    /// sounding, and nothing queued. Allocates a new synthesizer's voices and
+    /// effect lines: control thread.
     ///
     /// The way to move a unit to another rate, since
     /// [`AudioUnit::set_sample_rate`] cannot (see "The sample rate is fixed"
@@ -237,26 +210,24 @@ impl SoundFontUnit {
             sample_rate: SampleRate::from(hz.max(0) as u32),
             left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
             right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
-            midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+            pending: 0,
         })
     }
 
-    /// Starts a note directly, bypassing the MIDI inbox.
+    /// Starts a note directly, bypassing MIDI.
     ///
-    /// **Not the intended path.** Notes should reach this unit through
-    /// [`midi_sender`](Self::midi_sender); this pair has none of the inbox's
-    /// properties. There is no `frame_offset`, so a note lands at the start of
-    /// whatever block follows rather than where it was placed; a `MidiBus` cannot
-    /// address it; and `&mut self` puts it out of reach once the unit is in a
-    /// `Net`. The peer crate `tutti-polysynth` exposes no such pair.
+    /// **Not the intended path.** Notes should reach this unit on its event
+    /// input (or [`queue_midi`](Self::queue_midi) driven by hand); this pair
+    /// has no `frame_offset`, so a note lands at the start of whatever block
+    /// follows rather than where it was placed, and `&mut self` puts it out of
+    /// reach once the unit is in a graph. The peer crate `tutti-polysynth`
+    /// exposes no such pair.
     ///
-    /// **Public only because `bevy-tutti` still tests through it.** Roughly ten
-    /// call sites in `bevy_tutti::soundfont`'s test module drive notes this way
-    /// rather than through the inbox, so narrowing this to `pub(crate)` would
-    /// break them. Those tests are what the narrowing waits on: port them to
-    /// `midi_sender` first, and the pair can go crate-private in the same change
-    /// — nothing else outside this crate calls it.
+    /// **Public only because `bevy-tutti` still tests through it.** Its
+    /// `bevy_tutti::soundfont` test module drives notes this way; port those
+    /// tests to `queue_midi` and the pair can go crate-private in the same
+    /// change — nothing else outside this crate calls it.
     ///
     /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
     /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
@@ -265,7 +236,7 @@ impl SoundFontUnit {
         self.synthesizer.note_on(channel, key, velocity);
     }
 
-    /// Releases a note directly, bypassing the MIDI inbox.
+    /// Releases a note directly, bypassing MIDI.
     ///
     /// **Not the intended path** — see [`note_on`](Self::note_on) for why.
     ///
@@ -274,7 +245,7 @@ impl SoundFontUnit {
         self.synthesizer.note_off(channel, key);
     }
 
-    /// Selects the preset a channel plays, bypassing the MIDI inbox.
+    /// Selects the preset a channel plays, bypassing MIDI.
     ///
     /// `channel` is 0..16 and `preset` is the 7-bit program number (0..128)
     /// within the SoundFont's current bank.
@@ -309,16 +280,14 @@ impl SoundFontUnit {
         );
     }
 
-    /// Poll this block's events into `midi_buffer`, sorted by `frame_offset`,
-    /// and return the count. Does **not** dispatch — the caller applies each
-    /// event at its offset (see [`Self::process`]) rather than collapsing every
-    /// event to the block start.
-    fn poll_midi_events_sorted(&mut self, block_size: usize) -> usize {
-        let count = self
-            .midi
-            .poll(block_size, self.sample_rate, &mut self.midi_buffer);
+    /// Take the queued events for a hand-driven block, sorted by
+    /// `frame_offset` (stably), and return the count. Does **not** dispatch —
+    /// the caller applies each event at its offset (see [`Self::process`])
+    /// rather than collapsing every event to the block start.
+    fn take_pending_sorted(&mut self) -> usize {
+        let count = std::mem::take(&mut self.pending);
         if count > 1 {
-            self.midi_buffer[..count].sort_unstable_by_key(|e| e.frame_offset);
+            self.midi_buffer[..count].sort_by_key(|e| e.frame_offset);
         }
         count
     }
@@ -448,16 +417,9 @@ impl AudioUnit for SoundFontUnit {
         });
     }
 
-    /// Sever the live MIDI input this clone shares with the original synth.
-    ///
-    /// Same rationale as `tutti_polysynth::PolySynth::isolate`: an offline render
-    /// ticks this clone on a worker thread while the live synth plays, so a shared
-    /// inbox would let the worker *steal* the live synth's events and a shared
-    /// source cell would let clearing here sever the live clip.
-    /// [`MidiInPort::isolate`] mints a fresh private mailbox + source cell so this
-    /// clone reads nothing.
+    /// Drop what was queued: a fork plays only what reaches it.
     fn isolate(&mut self) {
-        self.midi.isolate();
+        self.pending = 0;
     }
 
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
@@ -467,7 +429,7 @@ impl AudioUnit for SoundFontUnit {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         assert_eq!(output.len(), 2, "SoundFontUnit is stereo (2 outputs)");
         // Single-sample block: every event lands at this one sample.
-        let count = self.poll_midi_events_sorted(1);
+        let count = self.take_pending_sorted();
         for i in 0..count {
             let event = self.midi_buffer[i];
             self.apply_event(&event);
@@ -516,14 +478,13 @@ impl AudioUnit for SoundFontUnit {
     ///    this shape replaces. Every `render_range` call below is preceded by
     ///    the application of every event whose offset is `<=` that segment's
     ///    first frame.
-    /// 2. **Events at the same offset apply in inbox order.**
-    ///    `poll_midi_events_sorted` sorts with `sort_unstable_by_key`,
-    ///    which is not stable, so equal offsets could be reordered against each
-    ///    other. That is tolerable here and nowhere else: the loop applies the
-    ///    whole equal-offset run before rendering a single frame, so no ordering
-    ///    within the run is observable in the output unless the two events
-    ///    contradict each other at the same sample (a note-on and note-off of
-    ///    one key at one offset), which is already an ill-formed stream.
+    /// 2. **Events at the same offset apply in the order they came.** The
+    ///    event input arrives sorted and `take_pending_sorted` sorts stably;
+    ///    and the loop applies the whole equal-offset run before rendering a
+    ///    single frame, so no ordering within the run is observable in the
+    ///    output unless the two events contradict each other at the same
+    ///    sample (a note-on and note-off of one key at one offset), which is
+    ///    already an ill-formed stream.
     ///
     /// An offset at or past `size` is clamped to the last frame rather than
     /// dropped, so a stray late offset still fires within this block.
@@ -537,7 +498,7 @@ impl AudioUnit for SoundFontUnit {
             return;
         }
 
-        let count = self.poll_midi_events_sorted(size);
+        let count = self.take_pending_sorted();
         self.render_events(size, count);
 
         for i in 0..size {
@@ -590,17 +551,9 @@ impl Clone for SoundFontUnit {
             // `process` overwrites the frames it reads back.
             left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
             right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
-            // Shares the mailbox + source cell (fundsp clone-on-commit); see
-            // [`MidiInPort`]. `isolate()` severs it for an offline render.
-            midi: self.midi.clone(),
+            // Queued MIDI stays with the original.
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
+            pending: 0,
         }
-    }
-}
-
-impl SoundFontUnit {
-    /// This unit's MIDI routing address.
-    pub fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi.unit_id()
     }
 }

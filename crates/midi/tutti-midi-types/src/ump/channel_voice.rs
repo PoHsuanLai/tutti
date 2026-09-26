@@ -52,9 +52,10 @@ impl MidiEvent {
     /// [`convert::midi1_velocity_to_midi2`](crate::convert::midi1_velocity_to_midi2))
     /// so `100` doesn't become a near-silent `100/65535`.
     ///
-    /// This builds the *event*. To **deliver** a note to a running unit without
-    /// hand-building one, use `tutti_midi_runtime::MidiSender::note_on` /
-    /// `MidiBus::note_on`, which take a 7-bit velocity and push for you.
+    /// This builds the *event*. To **deliver** a note to a running node without
+    /// hand-building one, use `tutti_midi_runtime::MidiSender::note_on` (a
+    /// `MidiQueueNode`'s controls), which takes a 7-bit velocity and pushes for
+    /// you.
     #[inline]
     pub fn note_on(group: MidiGroup, channel: MidiChannel, note: u8, velocity: u16) -> Self {
         use midi2::channel_voice2::NoteOn;

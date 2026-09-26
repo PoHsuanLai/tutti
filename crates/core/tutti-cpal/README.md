@@ -99,8 +99,6 @@ opening a device.
 `default = []`.
 
 - `capture` — mic capture (`MicIn`). Without it the crate is output-only.
-- `midi` — pre-block MIDI delivery inside the render callback. Off, the callback
-  renders the graph and nothing else.
 
 ## License
 

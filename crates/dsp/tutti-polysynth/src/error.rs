@@ -16,12 +16,4 @@ pub enum Error {
     /// The message names the offending field.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
-
-    /// A fork for an offline render could not carry the MIDI source the
-    /// synth plays: one is installed on its port that cannot be rebound onto
-    /// the render's timeline (`MidiUnitIn::rebind_offline` answered `None`),
-    /// so the render would drop its notes. Refused rather than rendered as
-    /// silence.
-    #[error("the synth plays a MIDI source that cannot be rebound onto an offline render")]
-    MidiSource,
 }

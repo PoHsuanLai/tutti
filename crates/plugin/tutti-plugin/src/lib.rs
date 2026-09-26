@@ -44,7 +44,7 @@ pub mod backend {
     pub use crate::host::handles::capabilities::{
         HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
     };
-    pub use crate::host::node::{Midi, ParameterChangeSink};
+    pub use crate::host::node::ParameterChangeSink;
     pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
     pub use crate::util::node::route_with_latency;
 }

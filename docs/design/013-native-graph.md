@@ -3090,7 +3090,7 @@ vocoder retirement channel for voices the pool removes.
 | 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
-| 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs, the other sources and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
+| 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
@@ -3429,14 +3429,6 @@ under both.
 
 **Not yet (next PRs of item 5).**
 
-- **`MidiClipSource`, the port's installed-source cell and
-  `MidiTargetRegistry`.** Every MIDI node bevy-tutti inserts itself (the
-  SoundFont player, a plugin) is now a graph node, and a synth can be
-  (`spawn_graph_node`); the registry's generic path remains for a host's own
-  `AudioUnit` with a MIDI port (and a synth spawned with
-  `spawn_audio_node`). Deleting it is a breaking change for those hosts:
-  an owner decision, then the synth's and plugin's `rebind_offline_into` go
-  with it.
 - **Parameter automation as an event source: landed** (stacked on the
   plugin MIDI-out PR; owner decision: replace the setters, breaking).
   `PluginControls::automation(params)` makes a `PluginAutomation` node: it
@@ -3494,13 +3486,81 @@ under both.
   reply as well as the audio, within the same budget, and a reply that never
   comes costs its MIDI, never the audio: without the wait, the reference
   plugin's echoed note came out a chunk late in 2 of 3 runs. Live, a reply
-  that loses that race is a chunk late. The routed sink path
-  (`MidiOutSink`, the post-block phase) is unchanged. Pinned by `clap_fork`'s
+  that loses that race is a chunk late. (The routed sink path, `MidiOutSink`
+  and the post-block phase, is deleted since: see "The MIDI shells are
+  deleted" below.) Pinned by `clap_fork`'s
   `a_plugins_midi_out_keeps_its_place_against_its_audio`, against the
   reference plugin's `Notes` mode, which now echoes the notes it receives.
-- **SoundFont, the hardware input (`MidiPreBlock`) and MIDI out** become
-  native nodes; the mailbox, `MidiInPort`, `MidiPostBlock` and
-  `MidiTargetRegistry` are deleted.
+- **The MIDI shells are deleted: landed** (stacked on the harmony PR; owner
+  decision: delete, breaking). MIDI reaches a node over event edges and
+  nothing else. New in tutti-midi-runtime, each mutation-tested
+  (`tests/edge_nodes.rs`, `rt_no_alloc.rs`):
+  - **`MidiInputNode`**: the hardware input (a `MidiIn`, the OS ports'
+    `HardwareMidiInputs`) as a source node. Each block it polls, assembles
+    (N)RPN runs and ingests classic MPE (the mode requested through its
+    controls is adopted once and latched, as the pre-block did), and sends
+    each event out of **its channel's port** — sixteen, plus
+    `CHANNELLESS_PORT` for system, SysEx, Flex and Stream. **Routing is
+    wiring**: a listener on channel `c` takes edges from port `c` and the
+    channelless port, one on every channel from all seventeen
+    (`input_ports`); the routing table, `MidiRoute`, `MidiRoutingSnapshot`
+    and `MAX_TARGETS_PER_ROUTE` are gone, and so is `MidiRouter`. Its fork
+    reads no wire.
+  - **`MidiQueueNode`**: what a control thread sends (a keyboard, a
+    preview), out of one port, each event on its offset clamped into the
+    block. Its controls are the push half of a `MidiMailbox`, which is now
+    just the ring MIDI crosses threads on (no unit id). Its fork is silent.
+  - **`ClockNode`**: the `ClockMaster` ticked per transport segment of each
+    block (`Env::segments`), so a start or a locate inside a block sends its
+    Start or Song Position on its frame; `prepare` gives it the graph's rate
+    (a device restart re-rates it through the re-prepare). `ClockMaster::tick`
+    takes the transport and an emit sink rather than holding a `Timeline`
+    and a sender. Its fork sends nothing. As before, a loop wrap reads as a
+    locate on the next block.
+  - **`MidiOutNode`**: a sink handing its event input's MIDI to a control
+    thread through a ring, each event stamped with its **frame on the
+    graph's clock** (wrapping at 2³²), full-ring drops counted. Its fork
+    discards.
+  Deleted: `MidiInPort`, `MidiBus`, `MidiPreBlock`, `MidiPostBlock`,
+  `MidiOutSink`, `BlockClock`, `MpeModeRequest`, `OfflineRebind`,
+  `MidiClipSource`, `MidiSnapshot`, `MidiSnapshotReader`, `MidiUnitIn`,
+  `MidiUnitId`, and tutti-cpal's `midi` feature (the callback renders the
+  graph and nothing else). The synth and the SoundFont player take MIDI on
+  their event input only; driven by hand as an `AudioUnit`, their next block
+  plays what `queue_midi` was given (owned, not shared across threads).
+  Their forks carry no clip (a graph's fork forks the clip node), so
+  `Error::MidiSource` and `PluginForkError::MidiSource` go. The plugin loses
+  its `Midi` endpoint (`midi_sender`, `set_midi_source`, `set_midi_out`, the
+  capability views `MidiInView`/`MidiOutView`; `takes_midi`/`sends_midi`
+  answer instead), and `PluginHandle::from_backend` its sender. **The
+  in-process VST2 plugin is a graph node now**, not a `Legacy` unit: MIDI on
+  an event input, MIDI out on an event output for a plugin that declared
+  it, still unforkable.
+  bevy-tutti: `MidiTargetRegistry`, `MidiTarget`, `MidiNode`, `MidiBusRes`,
+  `MidiRoutingRes`, `MidiOutSinkRes`, the registration systems, the
+  captured MIDI port and the MIDI fork plumbing (`insert_with`,
+  `replace_with`, the export's MIDI check) are gone. The engine build inserts
+  the input, the clock and a hardware-out node wired to it
+  (`MidiEngineNodes`); `MpeModeRes` is the input's controls; `ClockMasterRes`
+  pairs the master with the hardware out, which the pump drains (anything a
+  host wires to it reaches the wire too), rebasing each drained batch onto
+  its first event before JR stamping. `MidiRouteRule`s compile into
+  `EventFeeds` of the input's ports (`EventFeeds` and `set_event_sources`
+  now name a port, `EventSource`); the fallback takes the ports no armed
+  rule covers. A keyboard is a `LiveMidiInput` on its entity (a queue node
+  wired to it, `LiveMidi` the sender). The sequencer plays only through clip
+  nodes: removing the last install empties the clip (its notes end on their
+  frames) rather than removing it and sending an all-notes-off through a
+  port. `AudioGraphRes::render_frame_at` renders a hand-driven graph under
+  a given transport. Pinned by `midi_routes.rs`, `midi_sequence.rs`,
+  `midi_soundfont.rs` (a hardware note routed to a SoundFont sounds; a
+  keyboard sounds under a clip) and `export_fork`'s synth exports, whose
+  golden digest is unchanged.
+  **Follow-ups recorded:** the in-process VST2 node still takes its
+  transport from a polled reader rather than `Env`, and has no fork;
+  `crossfade_audio_node` takes an `AudioUnit`, so a graph-node synth cannot
+  be crossfaded; JR stamping still works per drained batch rather than per
+  block of the graph's clock.
 - **A clip denser than `CLIP_EVENT_CAPACITY` in one block** has the rest
   refused and counted (`Executor::dropped_events`); with no cursor they are
   not retried. The capacity is sized for any real clip at the largest block;
@@ -3512,8 +3572,8 @@ under both.
   tracks; the plugin drops event-input MIDI past its inline capacity with
   no counter; the sequencer's `EventFeeds` for a target replaces edges a
   host wired on its event input 0 by hand (unlike audio's partial
-  declarations); a synth spawned with `spawn_graph_node` captures its MIDI
-  port but not its modulation targets.
+  declarations); a synth spawned with `spawn_graph_node` does not capture
+  its modulation targets.
 
 #### Item 6 landed: compiler-owned param modulation
 

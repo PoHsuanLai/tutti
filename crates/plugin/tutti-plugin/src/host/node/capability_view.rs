@@ -1,8 +1,7 @@
 //! Per-block input installers, reached only when the plugin can receive them.
 //!
-//! Every per-block producer ([`InputSlot`](super::input_slot::InputSlot), and the
-//! MIDI-out target) is dropped at drain time when the plugin did not advertise
-//! the matching [`Features`] bit. That gate is correct and stays — but it fires
+//! Every per-block input is dropped at drain time when the plugin did not
+//! advertise the matching [`Features`] bit. That gate is correct and stays — but it fires
 //! a block later, on the audio thread, where nothing can be reported. A caller
 //! that installs a meter into a plugin which never asked for transport sees
 //! the install succeed and the data silently vanish.
@@ -42,6 +41,10 @@
 //! `MIDI_OUT` and never emitting is indistinguishable from a working one. The
 //! views close the "I wired it and nothing happened" gap, not the "the plugin
 //! lied" gap.
+//!
+//! MIDI needs no installer: it travels on the node's event ports (doc 013,
+//! rewrite item 5). [`PluginClient::takes_midi`] and
+//! [`PluginClient::sends_midi`] answer whether wiring them means anything.
 
 use std::sync::Arc;
 
@@ -63,36 +66,6 @@ fn declined(client: &PluginClient, f: Features) -> bool {
 /// here is a pure function of what the plugin reported.
 pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -> bool {
     loaded.capability(f) == Some(false)
-}
-
-/// Installs the MIDI-out routing target. Reached via
-/// [`PluginClient::midi_out`].
-pub struct MidiOutView<'a>(&'a PluginClient);
-
-impl MidiOutView<'_> {
-    /// Route this plugin's MIDI-out back into the graph, via the post-block
-    /// phase's sink (see
-    /// [`MidiPostBlock`](tutti_midi_runtime::MidiPostBlock)). Delivery happens
-    /// once, after the graph renders, rather than mid-`process`.
-    pub fn set_target(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
-        self.0.set_midi_out(sink);
-    }
-
-    /// Drop the sink; subsequent blocks discard MIDI-out.
-    pub fn clear(&self) {
-        self.0.clear_midi_out();
-    }
-}
-
-/// Installs a per-block MIDI producer. Reached via [`PluginClient::midi_in`].
-pub struct MidiInView<'a>(&'a mut PluginClient);
-
-impl MidiInView<'_> {
-    /// Install a transport-aware source polled once per block, layered over the
-    /// live mailbox.
-    pub fn set_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) {
-        self.0.set_midi_source(source);
-    }
 }
 
 /// Configures the per-block transport snapshot. Reached via
@@ -118,15 +91,16 @@ impl TransportView<'_> {
 }
 
 impl PluginClient {
-    /// The MIDI-out routing target, or `None` if the plugin declared no MIDI
-    /// output.
-    pub fn midi_out(&self) -> Option<MidiOutView<'_>> {
-        (!declined(self, Features::MIDI_OUT)).then_some(MidiOutView(self))
+    /// Whether the plugin sends MIDI: `false` only if it declared no MIDI
+    /// output. The node has a MIDI event output only when it declared one.
+    pub fn sends_midi(&self) -> bool {
+        !declined(self, Features::MIDI_OUT)
     }
 
-    /// The MIDI input installer, or `None` if the plugin declared no MIDI input.
-    pub fn midi_in(&mut self) -> Option<MidiInView<'_>> {
-        (!declined(self, Features::MIDI_IN)).then_some(MidiInView(self))
+    /// Whether the plugin takes MIDI: `false` only if it declared no MIDI
+    /// input. Wire MIDI to the node's event input.
+    pub fn takes_midi(&self) -> bool {
+        !declined(self, Features::MIDI_IN)
     }
 
     /// Whether the plugin takes chord and scale context: `false` only if it

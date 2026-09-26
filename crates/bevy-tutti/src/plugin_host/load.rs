@@ -220,8 +220,8 @@ type LoadNotStarted = (
 /// Steady-state query rather than `Added<PluginRequest>`: an entity may carry a
 /// request before `PluginsRes` exists (it is inserted lazily) or before the
 /// engine is up, and `Added` fires exactly once. Anything unresolvable on that
-/// one frame would never load at all — the same fire-once trap
-/// `register_midi_senders` and the soundfont trigger both document.
+/// one frame would never load at all — the same fire-once trap the soundfont
+/// trigger documents.
 pub fn plugin_load_start(
     mut commands: Commands,
     plugins: Option<Res<PluginsRes>>,

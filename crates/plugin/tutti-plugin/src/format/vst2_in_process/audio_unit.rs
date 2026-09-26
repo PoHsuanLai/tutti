@@ -16,14 +16,12 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
-use tutti_midi_runtime::MidiSender;
-use tutti_midi_types::MidiUnitId;
+use tutti_midi_types::ump::MidiEvent;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::input_slot::InputSlot;
 use crate::host::node::transport_source::PolledTransport;
-use crate::host::node::Midi;
-use crate::protocol::{Features, TransportInfo};
+use crate::protocol::{Features, MidiEventVec, TransportInfo};
 
 /// Maximum block size the scratch buffers are pre-sized for. Matches fundsp's
 /// `MAX_BUFFER_SIZE` so a single block lands in one `process()` call.
@@ -35,9 +33,9 @@ const BLOCK_SIZE: usize = 64;
 /// samples are staged into owned contiguous `Vec<f32>` arrays and
 /// reborrow them as slice-of-slices each call. The Vecs are sized
 /// once at construction; the ref-vector capacity is also pre-reserved.
-struct ProcessScratch {
-    f32_in: Vec<Vec<f32>>,
-    f32_out: Vec<Vec<f32>>,
+pub(super) struct ProcessScratch {
+    pub(super) f32_in: Vec<Vec<f32>>,
+    pub(super) f32_out: Vec<Vec<f32>>,
     f64_in: Vec<Vec<f64>>,
     f64_out: Vec<Vec<f64>>,
 }
@@ -53,25 +51,28 @@ impl ProcessScratch {
     }
 }
 
-/// fundsp-graph-facing audio node for an in-process VST2 plugin.
+/// An in-process VST2 plugin: a graph node (MIDI in and out on event ports,
+/// see `node.rs`), and an `AudioUnit` to drive by hand.
 pub struct InProcessVst2Client {
-    inner: Arc<Mutex<Vst2Instance>>,
-    metadata: PluginInfo,
-    midi: Midi,
+    pub(super) inner: Arc<Mutex<Vst2Instance>>,
+    pub(super) metadata: PluginInfo,
+    /// The block's MIDI in: what [`queue_midi`](Self::queue_midi) left for a
+    /// hand-driven block, or a graph block's event input.
+    pub(super) midi: MidiEventVec,
     /// Per-block transport snapshot, gated on [`Features::TRANSPORT`]. The
     /// producer cell is shared across fundsp graph-commit clones (see
     /// [`InputSlot`]), so a `set_transport_source` on any clone reaches the one
     /// the audio thread runs.
-    transport: InputSlot<PolledTransport>,
+    pub(super) transport: InputSlot<PolledTransport>,
     /// What the loader reported for this plugin, as the gate `transport` is
     /// drained against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
-    features: Features,
+    pub(super) features: Features,
     /// Per-clone audio scratch handed to `vst::AudioBuffer::from_raw`.
-    scratch: RenderScratch,
+    pub(super) scratch: RenderScratch,
     /// Per-clone f32/f64 staging arrays (pre-allocated, reused).
-    process_scratch: ProcessScratch,
-    sample_rate: f64,
+    pub(super) process_scratch: ProcessScratch,
+    pub(super) sample_rate: f64,
     /// A rate the graph handed this node that the plugin has not been told
     /// about yet, or [`NO_PENDING_RATE`] when there is none.
     ///
@@ -88,7 +89,7 @@ pub struct InProcessVst2Client {
     pending_sample_rate: Arc<AtomicU64>,
     /// Bumped on every audio-thread `try_lock` failure. Shared across
     /// clones so the handle can read the global count.
-    contention_count: Arc<AtomicU64>,
+    pub(super) contention_count: Arc<AtomicU64>,
 }
 
 /// [`InProcessVst2Client::pending_sample_rate`] sentinel: nothing is waiting.
@@ -153,7 +154,7 @@ impl InProcessVst2Client {
         Self {
             inner,
             metadata,
-            midi: Midi::new(),
+            midi: MidiEventVec::new(),
             transport: InputSlot::new(Features::TRANSPORT),
             features,
             scratch,
@@ -164,25 +165,15 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Producer handle for this plugin's MIDI inbox. Cheap to clone.
-    pub fn midi_sender(&self) -> MidiSender {
-        self.midi.sender()
-    }
-
-    /// Layer a transport-aware MIDI source over the live inbox, polled once per
-    /// block. The clip-playback path, where [`midi_sender`](Self::midi_sender)
-    /// is the live one; the port drains both.
-    ///
-    /// Held in an `Arc` so the same source survives the unit-clone fundsp
-    /// performs on each `commit()`.
-    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) {
-        self.midi.set_source(source);
-    }
-
-    /// Drop a previously-installed source override; subsequent blocks poll the
-    /// live `MidiReceiver` again.
-    pub fn clear_midi_source(&mut self) {
-        self.midi.clear_source();
+    /// Give the next hand-driven block (`AudioUnit::process` / `tick`) these
+    /// events, each on its `frame_offset`; returns how many were taken (up to
+    /// 256 between blocks). In a graph the plugin plays its event input
+    /// instead.
+    pub fn queue_midi(&mut self, events: &[MidiEvent]) -> usize {
+        let room = self.midi.inline_size() - self.midi.len().min(self.midi.inline_size());
+        let n = events.len().min(room);
+        self.midi.extend_from_slice(&events[..n]);
+        n
     }
 
     /// Install a transport reader so the plugin receives a live per-block
@@ -227,17 +218,6 @@ impl InProcessVst2Client {
         }
     }
 
-    /// Install the outbound routing target so this plugin's MIDI-out re-enters
-    /// the graph. See [`Midi::set_out`]. Off-RT; call once at wiring time.
-    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
-        self.midi.set_out(sink);
-    }
-
-    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
-    pub fn clear_midi_out(&self) {
-        self.midi.clear_out();
-    }
-
     /// Set the level reported through `audioMasterGetCurrentProcessLevel`.
     ///
     /// Always `true`: VST2 carries this on a host callback the plugin polls, so
@@ -259,8 +239,9 @@ impl InProcessVst2Client {
 
 impl Clone for InProcessVst2Client {
     fn clone(&self) -> Self {
-        // Arc-clone the live plugin; allocate fresh scratch + Midi for
-        // this clone (matches Batcher::clone in the subprocess client).
+        // Arc-clone the live plugin; allocate fresh scratch for this clone
+        // (matches Batcher::clone in the subprocess client). Queued MIDI
+        // stays with the original.
         // Done at clone time, not on the audio thread.
         let scratch = RenderScratch::new(
             self.metadata.num_inputs,
@@ -274,7 +255,7 @@ impl Clone for InProcessVst2Client {
         Self {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
-            midi: self.midi.clone(),
+            midi: MidiEventVec::new(),
             // `InputSlot::clone` shares the producer cell rather than the
             // Option, so an install on any clone reaches the one fundsp runs.
             transport: self.transport.clone(),
@@ -291,7 +272,7 @@ impl Clone for InProcessVst2Client {
 }
 
 impl InProcessVst2Client {
-    fn ensure_scratch_size(&mut self, size: usize) {
+    pub(super) fn ensure_scratch_size(&mut self, size: usize) {
         // If a graph reconfigures to a larger block size, grow once.
         // Steady-state never hits this branch.
         if size > BLOCK_SIZE {
@@ -378,6 +359,7 @@ impl AudioUnit for InProcessVst2Client {
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &mut |_| {},
             &transport,
             &mut self.scratch,
             &mut self.process_scratch,
@@ -417,6 +399,7 @@ impl AudioUnit for InProcessVst2Client {
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &mut |_| {},
             &transport,
             &mut self.scratch,
             &mut self.process_scratch,
@@ -518,6 +501,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &mut |_| {},
             &transport,
             &mut self.scratch,
             &mut self.process_scratch,
@@ -556,6 +540,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &mut |_| {},
             &transport,
             &mut self.scratch,
             &mut self.process_scratch,
@@ -618,13 +603,6 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 }
 
-impl InProcessVst2Client {
-    /// This unit's MIDI routing address.
-    pub fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi.unit_id()
-    }
-}
-
 /// The per-block context handed to `vst2-host`, carrying this block's MIDI and
 /// transport snapshot.
 ///
@@ -637,7 +615,7 @@ impl InProcessVst2Client {
 /// the node builds is observable without a plugin binary on disk: whether
 /// `ctx.transport` is populated at all is precisely what decides if
 /// `audioMasterGetTime` has anything to serve.
-fn block_context<'a>(
+pub(super) fn block_context<'a>(
     sample_rate: f64,
     midi_events: &'a [tutti_vst2_host::MidiEvent],
     transport: &'a TransportInfo,
@@ -650,10 +628,11 @@ fn block_context<'a>(
 /// Reborrow the staging arrays as slice-of-slices and call into
 /// `vst2-host`. A free function so it can take disjoint borrows of the
 /// fields on the caller side without a self-borrow conflict.
-fn drive_f32(
+pub(super) fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
-    midi: &mut Midi,
+    midi: &mut MidiEventVec,
+    midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
     scratch: &mut RenderScratch,
     process_scratch: &mut ProcessScratch,
@@ -662,9 +641,11 @@ fn drive_f32(
     size: usize,
     sample_rate: f64,
 ) -> bool {
-    let midi_events = midi
-        .drain_for_process(size, tutti_core::SampleRate(sample_rate))
-        .clone();
+    // Taken whether or not the plugin runs: a contended block drops its
+    // MIDI rather than play it a block late. Sorted, stably: a queue may hold
+    // it out of order.
+    let mut midi_events = std::mem::take(midi);
+    sort_midi(&mut midi_events);
     match inner.try_lock() {
         Some(mut instance) => {
             // Build slice-of-slices on the stack via scratch arrays we
@@ -694,11 +675,9 @@ fn drive_f32(
                 size,
                 |out_slice| {
                     let ctx = block_context(sample_rate, &midi_events, transport);
-                    let midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
-                    // Re-inject the plugin's MIDI-out into routing (no-op if no
-                    // out-target installed). Emitting here, inside the block,
-                    // keeps each event's frame_offset intact.
-                    midi.emit(midi_out);
+                    let out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
+                    // The plugin's MIDI-out, each on its frame_offset.
+                    midi_out(out);
                 },
             );
             true
@@ -710,10 +689,11 @@ fn drive_f32(
     }
 }
 
-fn drive_f64(
+pub(super) fn drive_f64(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
-    midi: &mut Midi,
+    midi: &mut MidiEventVec,
+    midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
     scratch: &mut RenderScratch,
     process_scratch: &mut ProcessScratch,
@@ -722,9 +702,11 @@ fn drive_f64(
     size: usize,
     sample_rate: f64,
 ) -> bool {
-    let midi_events = midi
-        .drain_for_process(size, tutti_core::SampleRate(sample_rate))
-        .clone();
+    // Taken whether or not the plugin runs: a contended block drops its
+    // MIDI rather than play it a block late. Sorted, stably: a queue may hold
+    // it out of order.
+    let mut midi_events = std::mem::take(midi);
+    sort_midi(&mut midi_events);
     match inner.try_lock() {
         Some(mut instance) => {
             const MAX_CHANNELS: usize = 16;
@@ -747,9 +729,8 @@ fn drive_f64(
                 size,
                 |out_slice| {
                     let ctx = block_context(sample_rate, &midi_events, transport);
-                    let midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
-                    // Re-inject the plugin's MIDI-out into routing (see `drive_f32`).
-                    midi.emit(midi_out);
+                    let out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
+                    midi_out(out);
                 },
             );
             true
@@ -852,6 +833,18 @@ fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(
     ];
     let n = channels.len().min(16);
     recurse(channels, size, &mut acc[..n], 0, f);
+}
+
+/// Sort `events` by frame offset, stably, in place: an insertion sort, for a
+/// short list, nearly sorted. Allocation-free.
+fn sort_midi(events: &mut MidiEventVec) {
+    for i in 1..events.len() {
+        let mut j = i;
+        while j > 0 && events[j - 1].frame_offset > events[j].frame_offset {
+            events.swap(j - 1, j);
+            j -= 1;
+        }
+    }
 }
 
 #[cfg(test)]

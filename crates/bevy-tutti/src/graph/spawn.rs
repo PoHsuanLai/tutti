@@ -130,9 +130,9 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// The capture comes first because it is the last moment the concrete unit is
 /// in hand — see [`capture`](crate::graph::capture).
 fn add_and_bind<U: AudioUnit + 'static>(world: &mut World, entity: Entity, unit: U, caller: &str) {
-    let mut controls = CapturedControls::capture(world, &unit);
+    let controls = CapturedControls::capture(world, &unit);
     let id = match world.get_resource_mut::<AudioGraphRes>() {
-        Some(mut graph) => graph.insert_with(Box::new(unit), &mut controls),
+        Some(mut graph) => graph.insert_boxed(Box::new(unit)),
         None => {
             bevy_log::warn!(
                 "{caller}: AudioGraphRes missing; entity {:?} left without AudioNode",
@@ -263,12 +263,7 @@ impl PendingCrossfades {
 /// parked in [`PendingCrossfades`] with the unit handed back; on `Failed` it is
 /// logged and dropped, and the entity keeps the outgoing unit's controls,
 /// which still drive the unit that is still playing.
-fn apply_crossfade(
-    world: &mut World,
-    entity: Entity,
-    unit: Incoming,
-    mut controls: CapturedControls,
-) {
+fn apply_crossfade(world: &mut World, entity: Entity, unit: Incoming, controls: CapturedControls) {
     let Some(node) = world.get::<AudioNode>(entity).copied() else {
         bevy_log::warn!(
             "crossfade_audio_node: entity {:?} lost its AudioNode; crossfade dropped",
@@ -286,12 +281,14 @@ fn apply_crossfade(
     let fade = tutti_core::Seconds(0.005);
     let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
     let landed = match unit {
-        Incoming::Unit(unit) => graph
-            .replace_with(node, unit, fade, curve, &mut controls)
-            .map_err(|refused| match refused {
-                ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
-                ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
-            }),
+        Incoming::Unit(unit) => {
+            graph
+                .replace(node, unit, fade, curve)
+                .map_err(|refused| match refused {
+                    ReplaceRefused::Busy(unit) => ReplaceRefused::Busy(Incoming::Unit(unit)),
+                    ReplaceRefused::Failed(why) => ReplaceRefused::Failed(why),
+                })
+        }
         #[cfg(feature = "plugin")]
         Incoming::Plugin(client) => {
             graph

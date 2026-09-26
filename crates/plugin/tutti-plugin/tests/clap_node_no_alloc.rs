@@ -45,7 +45,7 @@ const QUANTUM: usize = 512;
 const PASSES: usize = QUANTUM / BLOCK;
 
 /// Steady state: a rolling transport with a tempo change inside every block,
-/// a meter installed, MIDI notes queued on the live inbox and an LFO
+/// a meter installed, MIDI notes queued on a keyboard's queue node and an LFO
 /// automating a parameter (so every payload carries MIDI and parameter
 /// points), the plugin echoing the transport it is sent, and real time
 /// between callbacks so chunks are collected as well as submitted. Shaped as
@@ -79,10 +79,9 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             1.0,
         )),
     }]);
-    let sender = probe.client.midi_sender();
     let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
         .with_quantum(Samples(QUANTUM));
-    let mut rig = Rig::prepared_with(probe.client.bind(), prepare, Some(automation));
+    let (mut rig, sender) = Rig::prepared_with_keys(probe.client.bind(), prepare, Some(automation));
     let meter = Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),

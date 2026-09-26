@@ -44,18 +44,47 @@ impl EventSources {
     }
 }
 
+/// One event output: `node`'s event output `port`. From an [`AudioNode`]
+/// alone, its output 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EventSource {
+    /// The node.
+    pub node: AudioNode,
+    /// Its event output.
+    pub port: u16,
+}
+
+impl EventSource {
+    /// `node`'s event output `port`.
+    pub const fn new(node: AudioNode, port: u16) -> Self {
+        Self { node, port }
+    }
+
+    /// A total order for a set of sources: by node, then port.
+    fn key(&self) -> (u64, u16) {
+        (self.node.0.value(), self.port)
+    }
+}
+
+impl From<AudioNode> for EventSource {
+    fn from(node: AudioNode) -> Self {
+        Self::new(node, 0)
+    }
+}
+
 /// Event sources a plugin of this crate adds for a sink entity, beside what
 /// its [`EventSources`] declares: the MIDI sequencer's clip node for a
-/// target (`MidiSourceInstall`), a hosted plugin's automation node. Keyed by
-/// the sink entity, then by who feeds it, so each feeder replaces only its
-/// own nodes.
+/// target (`MidiSourceInstall`), a hosted plugin's automation node, the
+/// hardware MIDI input's ports a route rule gives it (`MidiRouteRule`).
+/// Keyed by the sink entity, then by who feeds it, so each feeder replaces
+/// only its own.
 #[derive(Resource, Default, Debug)]
-pub struct EventFeeds(HashMap<Entity, std::collections::BTreeMap<&'static str, Vec<AudioNode>>>);
+pub struct EventFeeds(HashMap<Entity, std::collections::BTreeMap<&'static str, Vec<EventSource>>>);
 
 impl EventFeeds {
-    /// `feeder`'s nodes feeding `sink`, replacing what it fed before.
-    pub fn set(&mut self, sink: Entity, feeder: &'static str, nodes: Vec<AudioNode>) {
-        self.0.entry(sink).or_default().insert(feeder, nodes);
+    /// `feeder`'s sources feeding `sink`, replacing what it fed before.
+    pub fn set(&mut self, sink: Entity, feeder: &'static str, sources: Vec<EventSource>) {
+        self.0.entry(sink).or_default().insert(feeder, sources);
     }
 
     /// `feeder` feeds `sink` nothing any more.
@@ -68,8 +97,8 @@ impl EventFeeds {
         }
     }
 
-    /// Every node any feeder feeds `sink`.
-    pub fn nodes(&self, sink: Entity) -> impl Iterator<Item = AudioNode> + '_ {
+    /// Every source any feeder feeds `sink`.
+    pub fn sources(&self, sink: Entity) -> impl Iterator<Item = EventSource> + '_ {
         self.0
             .get(&sink)
             .into_iter()
@@ -84,20 +113,16 @@ impl EventFeeds {
 #[derive(Component)]
 pub struct NodeControls<C: Send + Sync + 'static>(pub C);
 
-/// The SoundFont player as a graph node: as the synth, its port captured.
+/// The SoundFont player as a graph node.
 #[cfg(feature = "soundfont")]
-impl GraphNode for tutti_soundfont::SoundFontUnit {
-    fn captured(&self) -> CapturedControls {
-        CapturedControls::for_midi_port(self.midi_port().clone())
-    }
-}
+impl GraphNode for tutti_soundfont::SoundFontUnit {}
 
 /// A node an entity can be bound to as a graph node, rather than as an
 /// `AudioUnit` wrapped in `Legacy`: it declares its own ports (event ports
 /// included), its controls and its fork.
 ///
 /// [`captured`](Self::captured) is what this crate reads off the node before
-/// it goes in: a synth's MIDI port, so keyboards and routing reach it.
+/// it goes in (nothing, for most).
 pub trait GraphNode: IntoNode + Send + 'static {
     /// The controls to bind to the entity beside the node's own.
     fn captured(&self) -> CapturedControls {
@@ -108,22 +133,11 @@ pub trait GraphNode: IntoNode + Send + 'static {
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}
 
-/// The synth as a graph node: one MIDI event input, and its MIDI port
-/// captured as its `MidiTarget` (with the `midi` feature), so a keyboard,
-/// routing and all-notes-off still reach it.
+/// The synth as a graph node: one MIDI event input. A keyboard reaches it
+/// through a `LiveMidiInput` (with the `midi` feature), routing through a
+/// `MidiRouteRule`.
 #[cfg(feature = "synth")]
-impl GraphNode for tutti_polysynth::PolySynth {
-    fn captured(&self) -> CapturedControls {
-        #[cfg(feature = "midi")]
-        {
-            CapturedControls::for_midi_port(self.midi_port().clone())
-        }
-        #[cfg(not(feature = "midi"))]
-        {
-            CapturedControls::default()
-        }
-    }
-}
+impl GraphNode for tutti_polysynth::PolySynth {}
 
 /// `Commands` extension: add a [`GraphNode`] and spawn an entity bound to it.
 pub trait SpawnGraphNode {
@@ -176,7 +190,7 @@ where
 /// What each sink entity's event input 0 was last set to, so a frame with
 /// no change writes nothing.
 #[derive(Default)]
-pub struct Reconciled(HashMap<Entity, (AudioNode, Vec<AudioNode>)>);
+pub struct Reconciled(HashMap<Entity, (AudioNode, Vec<EventSource>)>);
 
 /// Write every sink's declared event sources ([`EventSources`] plus the
 /// [`EventFeeds`] for it) into the graph, where they differ from what was
@@ -199,15 +213,15 @@ pub fn reconcile(
     let Some(mut graph) = graph else {
         return;
     };
-    let mut want: HashMap<Entity, (AudioNode, Vec<AudioNode>)> = HashMap::new();
+    let mut want: HashMap<Entity, (AudioNode, Vec<EventSource>)> = HashMap::new();
     for (entity, &sink, declared) in &sinks {
-        let mut sources: Vec<AudioNode> = declared
+        let mut sources: Vec<EventSource> = declared
             .into_iter()
             .flat_map(|d| d.0.iter())
-            .filter_map(|e| nodes.get(*e).ok().copied())
+            .filter_map(|e| nodes.get(*e).ok().map(|&n| EventSource::from(n)))
             .collect();
         if let Some(feeds) = feeds.as_ref() {
-            sources.extend(feeds.nodes(entity));
+            sources.extend(feeds.sources(entity));
         }
         if sources.is_empty() && !last.0.contains_key(&entity) {
             continue;
@@ -215,7 +229,7 @@ pub fn reconcile(
         if graph.node_event_inputs(sink) == 0 {
             continue;
         }
-        sources.sort_by_key(|n| n.0.value());
+        sources.sort_by_key(EventSource::key);
         sources.dedup();
         want.insert(entity, (sink, sources));
     }

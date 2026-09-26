@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The MIDI shells are deleted: MIDI is event ports end to end** (design
+  doc 013, "Rewrite order" item 5). **Breaking.** Hardware input, the MIDI
+  clock and MIDI out are graph nodes; a synth, plugin or SoundFont hears
+  exactly what is wired to its MIDI event input, and nothing reaches a unit
+  around the graph any more.
+
+  | Was | Now |
+  |---|---|
+  | `MidiPreBlock` / `MidiPostBlock` run around each block by the device callback (`AudioCallbackState::with_pre_block` / `with_post_block`, tutti-cpal's `midi` feature) | `MidiInputNode` (hardware in, 16 channel ports plus `CHANNELLESS_PORT`, `input_ports(channel)`), `ClockNode` (ticks `ClockMaster` from the graph's transport) and `MidiOutNode` (`MidiOutControls::poll_into` / `receiver()`), inserted like any node. tutti-cpal's `midi` feature is gone |
+  | `MidiBus`, `MidiInPort`, `MidiMailbox` keyed by `MidiUnitId`, `MidiRoutingTable` / `MidiRoute` / `MidiRoutingSnapshot`, `MidiRouter`, `MidiUnitIn`, `MidiUnitId`, `MidiOutSink`, `BlockClock`, `OfflineRebind` | a wire from the source's event output to the sink's event input (event inputs fan in, merged by frame). A control-thread producer uses `MidiQueueNode` (`MidiSender` controls) or `MidiMailbox::pair()` / `with_capacity(n)`, with no unit id |
+  | `MidiClipSource`, `MidiSnapshot`, `MidiSnapshotReader`, `TimedClipEvent` | `MidiClipNode` (item 4); `TimedMidiEvent` stays |
+  | `ClockMaster::new(transport, sample_rate, sender)`; `tick(block)` sent into a mailbox | `ClockMaster::new(sample_rate)`; `tick(&transport, block_size, &mut emit)`. `ClockNode` drives it and re-rates it in `prepare` |
+  | `PolySynth` / `SoundFontUnit`: `set_midi_source` / `clear_midi_source`, `midi_port`, `midi_sender`, `midi_unit_id`; `fork_instance(ForkMode)` and `Error::MidiSource` | the event input in a graph; `queue_midi(&[MidiEvent])` when driven by hand as an `AudioUnit`; `fork_instance()` |
+  | tutti-plugin: `PluginClient::{set_midi_out, clear_midi_out, set_midi_source, clear_midi_source, midi_sender, midi_port, midi_unit_id}`, `PluginHandle::midi_sender`, `MidiInView` / `MidiOutView`, `PluginForkError::MidiSource` | the plugin node's MIDI event input and (for a plugin that sends MIDI) event output; `takes_midi()` / `sends_midi()`. In-process VST2 is a native node (`queue_midi` when driven by hand) |
+  | bevy-tutti: `MidiBusRes`, `MidiRoutingRes`, `MidiTargetRegistry` / `MidiTarget` / `MidiTargetResolver`, `MidiRegistrationPlugin` / `MidiRegistered`, `MidiOutSinkRes`, `InstalledMidiSources`, `AudioGraphRes::{insert_with, replace_with}`, MIDI capture in `capture` | `MidiEngineNodes` (the input, clock and out nodes), `MpeModeRes`, `LiveMidiInput` → `LiveMidi` (a keyboard's queue wired to its entity), route rules compiled into `EventFeeds` of `EventSource { node, port }`, `RoutedTargets`. `AudioGraphRes::set_event_sources(sink, port, &[EventSource])`; `render_frame_at(&transport, out)` |
+  | `ClockMasterRes::new(master, receiver)` | `ClockMasterRes { master, out: MidiOutControls }` |
+
+  A fork of the input, queue or out node is silent (an export hears no
+  hardware or keyboard); a clip node forks with its clip. Tests of the
+  deleted routing (`midi_bus_routing`, `midi_routing_table`,
+  `frame_exact_clip`, `outbound_block_path`, the pre/post-block no-alloc
+  gates, `clip_source_shared`, the export's `host_midi` module) went with
+  it; their properties are pinned on the nodes (`edge_nodes`,
+  `midi_routes`, `rt_no_alloc`, the synths' `a_graph_block_plays_its_event_input`).
+
+  **Fixed with it:** the first block on a cold thread no longer allocates
+  (recorded, not fixed, below). The allocation was arc-swap's per-thread
+  slots on `MidiInPort`'s first load; the port is gone, and
+  tutti-polysynth's `a_first_block_on_a_cold_thread_is_allocation_free` is
+  no longer `#[ignore]`d.
+
 - **Smart types 2: four footguns found in Phase 3/4 review, made
   unwritable** (design doc 013 §5). Each was a rule a doc stated and nothing
   enforced; each is now a type, or a named error where the mistake is made.

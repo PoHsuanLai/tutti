@@ -48,7 +48,7 @@ pub use capture::{CapturedControls, ControlCapture};
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use events::{
-    EventFeeds, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
+    EventFeeds, EventSource, EventSources, EventWiring, GraphEventsPlugin, GraphNode, NodeControls,
     SpawnGraphNode,
 };
 pub use metering::MeteringRes;

@@ -3,36 +3,42 @@
 //! [`MidiClipNode`](tutti_midi_runtime::MidiClipNode), an arpeggiator, a
 //! hardware source — in the same block it was written.
 //!
-//! The synth's own MIDI port ([`PolySynth::midi_port`]) is still read, for
-//! what reaches it outside the graph (a keyboard through its
-//! [`MidiSender`](tutti_midi_runtime::MidiSender), an all-notes-off, a clip a
-//! host installed on it): each block the port's events and the event
-//! input's are merged by offset, the port's first at an equal offset. The
-//! port goes when every sender is an event source (doc 013 item 5).
+//! A keyboard reaches it the same way: through a `MidiQueueNode` wired to
+//! its input. What [`queue_midi`](PolySynth::queue_midi) was given is for a
+//! synth driven by hand, and a graph block drops it.
 
 use tutti_core::{AudioUnit, ChannelLayout};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, SortedEvents, Status};
+use tutti_graph::{
+    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, SortedEvents, Status, Ump,
+};
+use tutti_midi_types::MidiEvent;
 
 use super::PolySynth;
 use crate::fork::SynthFork;
 
-/// The synth's MIDI scratch, in events: [`MAILBOX`] for its port, the rest
-/// for its event input.
+/// The synth's MIDI scratch, in events: a block's event input past it is
+/// dropped.
 pub(super) const MIDI_BUFFER: usize = 512;
 
-/// The most events a block takes from the synth's own MIDI port; the rest
-/// of [`MIDI_BUFFER`] holds the event input's. Past either, a block's events
-/// are dropped (the port's stay queued in its mailbox).
-const MAILBOX: usize = 256;
-
 impl PolySynth {
-    /// Poll the port into the scratch's first [`MAILBOX`] entries, then
-    /// merge `events` in by offset (the port's first at an equal offset).
-    /// Returns how many the scratch holds, sorted by offset.
-    fn gather_events(&mut self, frames: usize, events: SortedEvents<'_>) -> usize {
-        let rate = self.bank.sample_rate();
-        self.midi
-            .gather(frames, rate, &mut self.midi_buffer, MAILBOX, events)
+    /// The block's MIDI from `events` into the scratch, in their (sorted)
+    /// order; returns how many it holds.
+    fn gather_events(&mut self, events: SortedEvents<'_>) -> usize {
+        self.pending = 0;
+        let mut n = 0;
+        for e in events {
+            if n == self.midi_buffer.len() {
+                break;
+            }
+            if let EventKind::Midi(Ump(data)) = e.kind {
+                self.midi_buffer[n] = MidiEvent {
+                    frame_offset: e.offset.get(),
+                    data,
+                };
+                n += 1;
+            }
+        }
+        n
     }
 }
 
@@ -50,8 +56,7 @@ impl Node for PolySynth {
     }
 
     /// Always [`Status::Modified`]: the synth sounds after its input's last
-    /// event (its release), and its port is fed out of band, so the executor
-    /// must never park it.
+    /// event (its release), so the executor must never park it.
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let frames = io.frames();
         if frames == 0 {
@@ -65,7 +70,7 @@ impl Node for PolySynth {
         } else {
             SortedEvents::EMPTY
         };
-        let count = self.gather_events(frames, events);
+        let count = self.gather_events(events);
         let volume = self.master_volume.load().get();
         let (_, mut outputs) = io.split();
         let mut channels = outputs.iter_mut();
@@ -89,7 +94,7 @@ impl Node for PolySynth {
 
 /// The synth, inserted natively: its fork is a native synth too (see the
 /// `fork` module docs for what a fork carries). No controls: the synth's
-/// `Param` handles and MIDI sender are taken from it before it goes in.
+/// `Param` handles are taken from it before it goes in.
 impl IntoNode for PolySynth {
     type Controls = ();
 
@@ -114,36 +119,27 @@ mod tests {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)
     }
 
-    /// **The port's events and the event input's are merged by offset, the
-    /// port's first at an equal offset.** Port notes at 10 and 300, event
-    /// input notes at 5, 10 and 200.
+    /// **A graph block plays its event input, on its offsets, and drops what
+    /// was queued by hand.**
     ///
-    /// Mutation: `>` → `>=` in the merge (the event input first on a tie) →
-    /// notes 61 and 71 swap → fails. Mutation: skip the port's poll → 61 and
-    /// 64 missing → fails.
+    /// Mutation (run): not clearing `pending` → the queued note stays for the
+    /// next hand-driven block → fails.
     #[test]
-    fn the_port_and_the_event_input_merge_by_offset() {
+    fn a_graph_block_plays_its_event_input() {
         let mut synth = PolySynth::new(SynthConfig::default()).expect("builds");
-        let sender = synth.midi_sender();
-        assert_eq!(
-            sender.queue(&[
-                note(61).with_frame_offset(10),
-                note(64).with_frame_offset(300)
-            ]),
-            2
-        );
+        assert_eq!(synth.queue_midi(&[note(61)]), 1);
         let at = |k: usize| Offset::new(k, tutti_core::Samples(512)).expect("inside");
         let events = [
             Event::midi(at(5), note(70).data),
-            Event::midi(at(10), note(71).data),
             Event::midi(at(200), note(72).data),
         ];
         let sorted = SortedEvents::new(&events, 512).expect("sorted");
-        let n = synth.gather_events(512, sorted);
+        let n = synth.gather_events(sorted);
         let got: Vec<(u32, u32)> = synth.midi_buffer[..n]
             .iter()
             .map(|e| (e.frame_offset, (e.data[0] >> 8) & 0x7f))
             .collect();
-        assert_eq!(got, [(5, 70), (10, 61), (10, 71), (200, 72), (300, 64)]);
+        assert_eq!(got, [(5, 70), (200, 72)]);
+        assert_eq!(synth.take_pending_sorted(), 0);
     }
 }

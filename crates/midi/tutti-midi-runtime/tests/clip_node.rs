@@ -339,3 +339,33 @@ fn setting_the_same_events_cuts_nothing() {
     exec.process(64, &rolling(64), &[], &mut []);
     assert_eq!(*seen.lock().unwrap(), vec![(10, word(on(60)))]);
 }
+
+/// **A note lands on its frame where the beat is not a whole number of
+/// frames' worth of float** (doc 013 §6, "the frame is the source of
+/// truth"). At 90 BPM and 48 kHz a beat is 32 000 frames: notes at beats 1
+/// and 3 land on frames 32 000 and 96 000 exactly, in 64-frame blocks whose
+/// transport beat is `frame / 32 000` (not exact in binary).
+///
+/// Carried over from the retired clip-source test, which caught a clip
+/// flooring a beat's offset onto the frame before it.
+///
+/// Mutation (run): place by `((beat - now) * fpb) as usize` in the walk
+/// instead of `Env::due` → beat 3 lands on 95 999 → fails.
+#[test]
+fn a_note_lands_on_its_frame_at_ninety_bpm() {
+    let clip = MidiClipNode::new([
+        TimedMidiEvent::new(Beat(1.0), on(60)),
+        TimedMidiEvent::new(Beat(3.0), on(62)),
+    ]);
+    let (_ed, mut exec, _c, seen) = rig(clip, 64);
+    let mut f = 0u64;
+    while f < 100_000 {
+        let t = Transport::new(true, Bpm(90.0), Beat(f as f64 / 32_000.0), None);
+        exec.process(64, &t, &[], &mut []);
+        f += 64;
+    }
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![(32_000, word(on(60))), (96_000, word(on(62)))]
+    );
+}

@@ -1,9 +1,9 @@
 //! Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
 //!
 //! One type does the work: [`PolySynth`], an `AudioUnit` built from a
-//! [`SynthConfig`] and driven by MIDI. It takes no audio input — notes arrive
-//! through its own lock-free MIDI inbox, reached via
-//! [`midi_sender`](PolySynth::midi_sender) — and renders stereo.
+//! [`SynthConfig`] and driven by MIDI. It takes no audio input — in a graph
+//! notes arrive on its event input; driven by hand, through
+//! [`queue_midi`](PolySynth::queue_midi) — and renders stereo.
 //!
 //! Around it sit the voice engine's parts, all configured through
 //! [`SynthConfig`]: allocation ([`AllocationStrategy`], [`VoiceMode`]), unison

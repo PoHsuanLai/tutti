@@ -253,6 +253,20 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
 
+    // Hold the staged image open for the whole test: the `effCanDo` switch is
+    // a `static` in it, and it only survives while the image stays mapped.
+    // SAFETY: the staged file is the probe cdylib this crate's tests build.
+    let image = unsafe { libloading::Library::new(&staged) }
+        .unwrap_or_else(|e| panic!("opening the staged probe {staged:?} failed: {e}"));
+    // SAFETY: `tutti_vst2_probe_set_can_do` is the probe's `#[no_mangle]`
+    // export, `extern "C" fn(i32, isize)`; `1` is its `Maybe`.
+    unsafe {
+        let set_can_do: libloading::Symbol<extern "C" fn(i32, isize)> = image
+            .get(b"tutti_vst2_probe_set_can_do\0")
+            .expect("the probe exports its effCanDo switch");
+        set_can_do(1, 0);
+    }
+
     clear_probe_env();
     // SAFETY: `PROBE_LOCK` is held, so no other test thread reads the
     // environment concurrently.
@@ -271,18 +285,6 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
 
     drop(handle);
     let _ = std::fs::remove_file(&staged);
-}
-
-#[test]
-fn handle_midi_sender_available() {
-    // PR E migration: midi_sender is on PluginHandle (not just on the
-    // concrete PluginClient), so callers using Plugins::load through
-    // the catalog can still send MIDI events into the plugin.
-    let _lock = lock_probe();
-    let handle = load_handle(&[]);
-    let _sender = handle.midi_sender();
-    // Cloning is cheap and the sender outlives the function — that's
-    // the surface contract we care about.
 }
 
 /// VST2 reports no speaker placement, and the handle says so plainly.
@@ -316,80 +318,70 @@ fn a_vst2_plugin_reports_no_channel_topology() {
     assert_eq!(handle.loaded().total_outputs(), 2);
 }
 
-/// The public `Plugin` façade can *un*route MIDI, not only route it.
+/// **The in-process node carries MIDI on its event ports, as it declared.**
+/// A probe declaring MIDI in and no MIDI out: the façade says it takes MIDI
+/// and sends none, and its node has one event input and no event output.
+/// Declaring MIDI out gives the node an event output.
 ///
-/// `Plugin` is the only host type `tutti-plugin` exports; `PluginClient` is
-/// crate-internal. So a capability the façade does not forward is unreachable
-/// from outside, however complete the layers beneath it are — which is exactly
-/// what happened here: `set_midi_out` / `set_midi_source` were forwarded and
-/// their `clear_*` counterparts were not, leaving a routed plugin permanently
-/// routed. The in-process VST2 backend was missing `clear_midi_source`
-/// outright, one level further down.
+/// The probe answers `effCanDo` with `Maybe` here, so each direction resolves
+/// from its declared pins: its default `Yes` outranks the pins (see
+/// `tutti-vst2-host`'s resolution order) and would make every probe a sender.
 ///
-/// # What this covers, and what it cannot
-///
-/// This is a **reachability** test: it pins that the two `clear_*` methods
-/// exist on the exported type, are callable on a really-loaded plugin, and
-/// leave it in a state that still accepts a re-install. The regression it
-/// guards is the two calls below ceasing to compile.
-///
-/// It deliberately does **not** claim to prove the clear reached the sink slot.
-/// It cannot: nothing on the public surface reports whether a sink is
-/// installed, and `emit` — the one call whose return distinguishes the two — is
-/// on the crate-internal `Midi`. Gutting `Plugin::clear_midi_out` to `{}` still
-/// passes this test; that mutation was run.
-///
-/// The behavioural half is covered one layer down, where it is observable:
-/// `util::node::midi`'s `clear_out` test asserts `emit` returns 0 after a
-/// clear. Splitting it this way keeps each assertion where it can actually
-/// fail, rather than writing one here that reads stronger than it is.
+/// Mutation (run): `sends_midi` asking `MIDI_IN` → the first probe reads as
+/// sending → fails. Mutation (run): the node's event output count not gated
+/// on `MIDI_OUT` → the first probe's node has one → fails.
 #[test]
-fn the_facade_can_unroute_midi_out() {
-    use tutti_midi_runtime::MidiOutSink;
-
+fn the_node_carries_midi_on_its_event_ports() {
     let _lock = lock_probe();
 
     // `Plugin::open` routes on the extension and the probe is built as a plain
     // `.dylib`, so stage it under a `.vst` name — same reason as
-    // `open_routes_a_vst2_to_the_in_process_backend`. `Plugin` is the type
-    // under test here and only `open` produces one; `in_process_vst2` hands
-    // back a bare `(unit, handle)` pair that never reaches the façade.
+    // `open_routes_a_vst2_to_the_in_process_backend`.
     let src = probe_path::probe_path().clone();
-    let staged = std::env::temp_dir().join("tutti-probe-midi-unroute.vst");
+    let staged = std::env::temp_dir().join("tutti-probe-midi-ports.vst");
     std::fs::copy(&src, &staged)
         .unwrap_or_else(|e| panic!("staging {src:?} -> {staged:?} failed: {e}"));
 
-    clear_probe_env();
-    // SAFETY: `PROBE_LOCK` is held, so no other test thread reads the
-    // environment concurrently.
+    // Hold the staged image open for the whole test: the `effCanDo` switch is
+    // a `static` in it, and it only survives while the image stays mapped.
+    // SAFETY: the staged file is the probe cdylib this crate's tests build.
+    let image = unsafe { libloading::Library::new(&staged) }
+        .unwrap_or_else(|e| panic!("opening the staged probe {staged:?} failed: {e}"));
+    // SAFETY: `tutti_vst2_probe_set_can_do` is the probe's `#[no_mangle]`
+    // export, `extern "C" fn(i32, isize)`; `1` is its `Maybe`.
     unsafe {
-        std::env::set_var("TUTTI_VST2_PROBE_MIDI_INPUTS", "1");
-        std::env::set_var("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "1");
+        let set_can_do: libloading::Symbol<extern "C" fn(i32, isize)> = image
+            .get(b"tutti_vst2_probe_set_can_do\0")
+            .expect("the probe exports its effCanDo switch");
+        set_can_do(1, 0);
     }
-    let mut plugin = tutti_plugin::catalog::Plugin::open(&staged, SAMPLE_RATE)
-        .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
-    clear_probe_env();
 
-    let sink = std::sync::Arc::new(MidiOutSink::new());
-    assert!(
-        plugin.set_midi_out(std::sync::Arc::clone(&sink)),
-        "probe declares MIDI out, so the install must be accepted"
-    );
+    let open = |outputs: &str| {
+        clear_probe_env();
+        // SAFETY: `PROBE_LOCK` is held, so no other test thread reads the
+        // environment concurrently.
+        unsafe {
+            std::env::set_var("TUTTI_VST2_PROBE_MIDI_INPUTS", "1");
+            std::env::set_var("TUTTI_VST2_PROBE_MIDI_OUTPUTS", outputs);
+        }
+        let plugin = tutti_plugin::catalog::Plugin::open(&staged, SAMPLE_RATE)
+            .unwrap_or_else(|e| panic!("in-process VST2 load failed for {staged:?}: {e:?}"));
+        clear_probe_env();
+        plugin
+    };
 
-    // The methods under test. Neither existed on `Plugin` before this change,
-    // and `clear_midi_source` did not exist on the in-process VST2 backend
-    // either, so these two lines did not compile.
-    plugin.clear_midi_out();
-    plugin.clear_midi_source();
+    let takes_only = open("0");
+    assert!(takes_only.takes_midi());
+    assert!(!takes_only.sends_midi());
+    let shape = tutti_graph::IntoNode::into_parts(takes_only).node.shape();
+    assert_eq!((shape.event_in, shape.event_out), (1, 0));
 
-    // Re-installing after a clear must still be accepted: `clear` drops the
-    // target, it does not latch the plugin into a refusing state.
-    assert!(
-        plugin.set_midi_out(sink),
-        "clearing must not make a later install fail"
-    );
+    let both = open("1");
+    assert!(both.sends_midi());
+    let shape = tutti_graph::IntoNode::into_parts(both).node.shape();
+    assert_eq!((shape.event_in, shape.event_out), (1, 1));
 
-    drop(plugin);
+    drop(image);
     let _ = std::fs::remove_file(&staged);
 }
 

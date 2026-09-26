@@ -59,14 +59,7 @@
 //!    rebinding: the transport comes from its own graph's `Env` (for an
 //!    offline fork, the render's), and parameter automation, chords and
 //!    scales and MIDI from the graph's event edges, whose nodes fork
-//!    themselves. **Offline only, a clip installed on its MIDI port:** the source installed on the live node's MIDI port (a
-//!    `MidiClipSource`) is copied onto the fork's own port with a fresh
-//!    cursor on the render's timeline (`MidiUnitIn::rebind_offline`), so an
-//!    exported instrument plays its notes (doc 013, PR 12). It is polled at
-//!    the fork's own rate each block, so it follows the fork's `Prepare`. A
-//!    source that cannot be rebound (`rebind_offline` answers `None`) fails
-//!    the fork ([`PluginForkError::MidiSource`]) rather than render the
-//!    notes it feeds as silence.
+//!    themselves: an exported instrument plays the clip node that feeds it.
 //! 5. **Bind it**, and **offline only:** tell it
 //!    [`RenderMode::Offline`](crate::RenderMode), and make its batcher wait for
 //!    each chunk (see `Batcher::set_offline_wait`) — the live pipeline never
@@ -93,10 +86,8 @@
 //!
 //! # What a fork does not have
 //!
-//! - **Live MIDI.** A fresh instance has a fresh MIDI port: no live inbox and
-//!   no MIDI-out routing — the `PolySynth::isolate` rule. Its clip source is
-//!   the live one's rebound offline (step 4) when the fork is offline; a
-//!   [`ForkMode::Live`] fork has none.
+//! - **Live MIDI.** What a keyboard sends reaches the live graph's queue
+//!   node, whose fork is silent.
 //! - **Running state.** Voices, delay lines, a reverb's tail: the state blob
 //!   is what a plugin saves for a project, not a snapshot of its DSP. A fork
 //!   starts silent, as every fork does.
@@ -263,9 +254,6 @@ struct PluginFork {
     id: String,
     /// The live node's controls: its installed sources and its rate.
     controls: PluginControls,
-    /// The live node's MIDI port — a clone sharing its source cell, read at
-    /// fork time for the clip source to rebind; its mailbox is never polled.
-    midi: tutti_midi_runtime::MidiInPort,
 }
 
 impl PluginFork {
@@ -275,7 +263,6 @@ impl PluginFork {
             origin: Arc::clone(&client.origin),
             id: client.descriptor.id.clone(),
             controls: client.controls.clone(),
-            midi: client.midi.port().clone(),
         }
     }
 
@@ -313,19 +300,6 @@ impl PluginFork {
             .map_err(PluginForkError::LoadState)?;
 
         self.controls.rebind_sources_into(&fork.controls);
-        // The clip the live instance plays, onto the fork's own port and the
-        // render's timeline (step 4). Offline only: a live duplicate reading
-        // the live clip would need its own cursor on the live transport, which
-        // no caller has asked for.
-        // A source the live instance plays that cannot be carried is a
-        // failure, not a silent fork: the render would drop its notes.
-        if let ForkMode::Offline(ctx) = mode {
-            if self.midi.rebind_offline_into(fork.midi.port(), ctx)
-                == tutti_midi_runtime::OfflineRebind::NotRebindable
-            {
-                return Err(PluginForkError::MidiSource);
-            }
-        }
         let watch = Arc::new(ForkWatch {
             controls: fork.controls.clone(),
             planned: AtomicUsize::new(usize::MAX),

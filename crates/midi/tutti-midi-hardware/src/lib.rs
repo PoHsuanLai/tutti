@@ -119,7 +119,7 @@ pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
     midi2, midly, normalize, ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiOut,
-    MidiUnitId, NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
+    NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
@@ -152,17 +152,17 @@ pub use tutti_midi_types::sync::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
 };
 
-// --- Runtime delivery (event fan-out + beat-scheduled playback) ---
+// --- Runtime delivery (the graph's MIDI border) ---
 //
-// The lock-free dispatch (`MidiBus`/`MidiSender`/`MidiReceiver`) and the offline
-// snapshot / clip playback live in `tutti-midi-runtime`; surfaced here because
-// delivery is what a port feeds — an inbound event goes straight from a driver
-// into the bus, so a hardware consumer needs both. That is the test a file codec
-// fails: a `.mid` reader needs no port, and no port needs it.
+// The nodes a port feeds and is fed by (`MidiInputNode`, `MidiOutNode`), the
+// ring MIDI crosses threads on (`MidiMailbox`/`MidiSender`/`MidiReceiver`) and
+// clip playback live in `tutti-midi-runtime`; surfaced here because delivery
+// is what a port feeds, so a hardware consumer needs both. That is the test a
+// file codec fails: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
-    MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
-    Sysex7PacketReassembler, TimedClipEvent, TimedMidiEvent,
+    MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, Sysex7PacketReassembler,
+    TimedMidiEvent,
 };
 
 pub use crossbeam_channel;
@@ -181,9 +181,9 @@ pub use crossbeam_channel;
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
 ///
 /// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
-/// - **Delivery** — [`MidiBus`] / [`MidiSender`] / [`MidiReceiver`] (lock-free
-///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
-///   [`TimedMidiEvent`]).
+/// - **Delivery** — [`MidiInputNode`] / [`MidiOutNode`] (the ports as graph
+///   nodes), [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] (the lock-free
+///   ring), and [`TimedMidiEvent`] (a clip's events).
 ///
 /// Deliberately excludes the rarer surfaces — UMP-Stream endpoint negotiation,
 /// the Bevy ECS layer, sync decoders, MPE zone config — which stay explicit
@@ -198,11 +198,9 @@ pub use crossbeam_channel;
 /// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 /// assert!(ev.message().is_note_on());
 ///
-/// // And the delivery types are here too — fan an event to a unit's inbox.
-/// let (tx, rx) = MidiMailbox::pair(MidiUnitId::new(1));
-/// let bus = MidiBus::new();
-/// bus.insert(tx);
-/// bus.queue(MidiUnitId::new(1), &[ev]);
+/// // And the delivery types are here too — hand an event across threads.
+/// let (tx, rx) = MidiMailbox::pair();
+/// tx.queue(&[ev]);
 /// let mut buf = [ev; 4];
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```
@@ -210,8 +208,7 @@ pub mod prelude {
     pub use tutti_midi_types::prelude::*;
 
     pub use crate::{
-        MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
-        TimedMidiEvent,
+        MidiInputNode, MidiMailbox, MidiOutNode, MidiReceiver, MidiSender, TimedMidiEvent,
     };
 
     pub use crate::MidiSession;

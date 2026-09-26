@@ -179,20 +179,14 @@ mod soundfont_spawn {
         );
     }
 
-    /// A promoted soundfont is addressable: the promotion captured its MIDI port
-    /// before the unit went into the graph.
+    /// A promoted soundfont takes MIDI: the promotion inserts it as a graph
+    /// node, whose event input a `MidiSourceInstall`, a route or a keyboard
+    /// is wired to.
     ///
-    /// `TuttiSoundFontPlugin` registers `SoundFontUnit` with the MIDI registry
-    /// for exactly this, and promotion is an insertion path of its own (it adds
-    /// the node directly, not through `spawn_audio_node`), so it has to run the
-    /// capture itself.
-    ///
-    /// Mutation: making `promote_pending_soundfonts` bind
-    /// `CapturedControls::default()` instead of `capture.capture(&unit)` fails
-    /// this — the player gets its node and no port, and every
-    /// `MidiSourceInstall` naming it would resolve to nothing.
+    /// Mutation: promoting it through `Legacy` (`graph.insert(unit)`) → a
+    /// node with no event input → fails.
     #[test]
-    fn a_promoted_soundfont_carries_its_midi_port() {
+    fn a_promoted_soundfont_has_a_midi_event_input() {
         let asset = soundfont_asset();
         let mut app = app();
         let handle = insert_asset(&mut app, asset);
@@ -207,12 +201,13 @@ mod soundfont_spawn {
             .id();
         assert!(run_until_promoted(&mut app, entity));
 
-        let node = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        let target = app
-            .world()
-            .get::<bevy_tutti::midi::MidiTarget>(entity)
-            .expect("the promotion captured the unit's MIDI port");
-        assert_eq!(target.node(), node, "for the node it promoted");
+        let node = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        assert_eq!(
+            app.world()
+                .resource::<bevy_tutti::graph::AudioGraphRes>()
+                .node_event_inputs(node),
+            1
+        );
     }
 }
 
@@ -236,11 +231,10 @@ mod midi_soundfont_audio {
 
     use bevy_app::prelude::*;
     use bevy_ecs::entity::Entity;
+    use bevy_ecs::prelude::Resource;
 
-    use bevy_tutti::graph::{
-        AudioConfig, AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes,
-    };
-    use bevy_tutti::midi::{MidiSourceInstall, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin};
+    use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::midi::{LiveMidi, LiveMidiInput, MidiSourceInstall, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
     use tutti_core::{Beat, BeatDuration, SampleRate};
@@ -307,17 +301,29 @@ mod midi_soundfont_audio {
 
     /// Render `frames` from the graph.
     ///
-    /// Per-sample `tick` rather than a `process` block: `BufferVec` holds one SIMD
-    /// block per channel, capping `process` at 64 frames, and these tests need
-    /// quarter-second spans. The clip source is polled by the unit either way.
+    /// Where the rolling transport is: the beat the next rendered frame is
+    /// on, at 120 BPM.
+    #[derive(Resource, Default)]
+    struct Playhead(f64);
+
+    /// Render `frames` from the graph, one at a time, the transport rolling
+    /// from the [`Playhead`] (and moved past them).
     fn render(app: &mut App, frames: usize) -> Vec<(f32, f32)> {
+        let from = app.world_mut().get_resource_or_init::<Playhead>().0;
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let mut out = Vec::with_capacity(frames);
-        for _ in 0..frames {
+        for i in 0..frames {
+            let t = tutti_graph::Transport::new(
+                true,
+                tutti_core::Bpm(120.0),
+                Beat(from + i as f64 / 24_000.0),
+                None,
+            );
             let mut frame = [0.0f32; 2];
-            graph.render_frame(&mut frame);
+            graph.render_frame_at(&t, &mut frame);
             out.push((frame[0], frame[1]));
         }
+        app.world_mut().resource_mut::<Playhead>().0 = from + frames as f64 / 24_000.0;
         out
     }
 
@@ -332,21 +338,16 @@ mod midi_soundfont_audio {
         // Headless, because the Commit-phase `commit_graph` needs an audio side
         // to publish to. We render the control side directly rather than through
         // that — `render_frame` on this side sees the same units.
-        app.insert_resource(AudioGraphRes::headless(0, 2));
+        let mut graph = AudioGraphRes::headless(0, 2);
+        graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+        app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: SampleRate(SAMPLE_RATE),
             channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
-        app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
-        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
-            SAMPLE_RATE,
-        ));
-        // `engine_ready` claims every resource the engine block inserts is
-        // present, and the route rebuild takes `MidiRoutingRes` as a plain
-        // `ResMut` on that promise. A test asserting readiness supplies it.
-        app.insert_resource(bevy_tutti::midi::test_support::routing_table_for_test().0);
+        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test());
         // `TuttiMidiPlugin` registers the `MidiFileAsset` loader at build time,
         // which panics without an `AssetServer` — a headless app supplies it.
         app.add_plugins((
@@ -354,42 +355,33 @@ mod midi_soundfont_audio {
             bevy_asset::AssetPlugin::default(),
         ));
         app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
-        app.world_mut()
-            .resource_mut::<MidiTargetRegistry>()
-            .register::<SoundFontUnit>();
 
-        // Registered first, then captured from the unit and pushed — the order
-        // every insertion path follows, so the synth carries its MIDI port.
-        let controls = CapturedControls::capture(app.world(), &unit);
+        // Inserted as a graph node, as the promotion does: its event input is
+        // what the clip node and the keyboard wire to.
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(unit);
+            let (node, ()) = graph.insert_node(unit);
             graph.set_outputs_from(node);
             node
         };
-        let mut synth = app.world_mut().spawn_empty();
-        controls.bind(&mut synth, node);
-        let synth = synth.id();
+        let synth = app.world_mut().spawn(node).id();
         (app, synth)
     }
 
-    fn roll(app: &App) {
-        let transport = app.world().resource::<TransportRes>().clone();
-        let _ = transport
-            .motion
-            .try_send(tutti_core::transport::MotionEvent::Play);
-        transport.motion.drain();
+    /// Start the playhead at beat 0.
+    fn roll(app: &mut App) {
+        app.world_mut().insert_resource(Playhead(0.0));
     }
 
     /// A note declared in the ECS makes sound.
     ///
-    /// The end-to-end claim: `MidiSourceInstall` → `rebuild` → resolved port →
-    /// installed clip → engine beat→offset → rustysynth → samples. Silence here
+    /// The end-to-end claim: `MidiSourceInstall` → `rebuild` → clip node →
+    /// event edge → engine beat→offset → rustysynth → samples. Silence here
     /// means a break anywhere along it.
     #[test]
     fn a_declared_note_produces_audio() {
         let (mut app, synth) = app_with_soundfont();
-        roll(&app);
+        roll(&mut app);
 
         app.world_mut().spawn(MidiSourceInstall::new(
             synth,
@@ -412,13 +404,12 @@ mod midi_soundfont_audio {
     /// Without this, "it made noise" would pass equally for a source that ignored
     /// the beat entirely, which is what the old path effectively did.
     ///
-    /// The beat is set by hand: it is normally advanced by a `TransportClock` node
-    /// the engine adds to the graph, and this test builds a minimal graph holding
-    /// only the synth. Setting it is what the audio thread would have done.
+    /// The beat is set by hand: the engine's transport drives it, and this test
+    /// builds a minimal graph holding only the synth.
     #[test]
     fn the_note_waits_for_its_beat() {
         let (mut app, synth) = app_with_soundfont();
-        roll(&app);
+        roll(&mut app);
 
         app.world_mut().spawn(MidiSourceInstall::new(
             synth,
@@ -429,12 +420,8 @@ mod midi_soundfont_audio {
         // Still well before beat 4.
         let before = rms(&render(&mut app, 4_000));
 
-        // Advance onto the note and render again.
-        let transport = app.world().resource::<TransportRes>().clone();
-        transport
-            .clock_links()
-            .expect("the only playhead writer")
-            .set_playhead(tutti_core::Beat(4.0));
+        // Move onto the note and render again.
+        app.world_mut().insert_resource(Playhead(4.0));
         let after = rms(&render(&mut app, 12_000));
 
         assert!(
@@ -447,16 +434,19 @@ mod midi_soundfont_audio {
         );
     }
 
-    /// Live preview still reaches a synth that has a clip installed.
+    /// Live preview still reaches a synth that has a clip installed: the
+    /// keyboard's queue node and the clip node both feed its event input,
+    /// merged by frame.
     ///
-    /// This is what commit `01ad5b006` bought — `MidiInPort::poll` layers the
-    /// installed source over the mailbox rather than replacing it. Before that, a
-    /// synth playing a clip went deaf to the keyboard, and the pushed events sat in
-    /// the mailbox and popped out stale on the next `clear()`.
+    /// Mutation (run): the event wiring keeping one source per sink, the
+    /// first by key (`sources.truncate(1)` after the sort) → the keyboard's
+    /// queue is dropped → fails. Dropping the clip instead is not caught
+    /// here: the clip is silent in this window by construction, and
+    /// `the_note_waits_for_its_beat` covers it.
     #[test]
     fn preview_still_sounds_under_an_installed_clip() {
         let (mut app, synth) = app_with_soundfont();
-        roll(&app);
+        roll(&mut app);
 
         // A clip whose first note is far in the future, so anything audible in the
         // next quarter-second can only be the preview.
@@ -472,19 +462,19 @@ mod midi_soundfont_audio {
             "the clip's note is far away; expected silence"
         );
 
-        // Push a live note straight at the synth's mailbox, as a keyboard would.
-        {
-            let target = app.world().get::<MidiTarget>(synth).unwrap();
-            target
-                .port()
-                .sender()
-                .queue(&[tutti_midi_types::ump::MidiEvent::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    67,
-                    0xFFFF,
-                )]);
-        }
+        // A keyboard on the synth, then a live note, as a keyboard sends it.
+        app.world_mut().entity_mut(synth).insert(LiveMidiInput);
+        app.update();
+        app.world()
+            .get::<LiveMidi>(synth)
+            .expect("the keyboard is attached")
+            .queue(&[tutti_midi_types::ump::MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                67,
+                0xFFFF,
+            )]);
+        app.update();
 
         let previewed = rms(&render(&mut app, 12_000));
         assert!(
@@ -494,43 +484,29 @@ mod midi_soundfont_audio {
     }
 }
 
-/// A crossfaded synth still plays: MIDI sent the way the inbound phase sends it
-/// reaches the **incoming** unit, rendered through the audio-thread backend.
-///
-/// A crossfade replaces the unit — and with it the MIDI port and its id — under
-/// a surviving `NodeId`. Registration used to key on the first port's id and
-/// never revisit it, and the route table rebuilt only on a new `AudioNode`, so
-/// after a crossfade the bus held the outgoing unit's sender, the routes named
-/// the outgoing unit's id, and the synth the listener hears was unreachable.
-///
-/// Rendered through the graph's audio side, which is where the crossfade's
-/// incoming unit plays.
+/// A note from the hardware MIDI input, routed by a rule, sounds: the input
+/// node's channel port is wired to the synth's event input (`MidiRouteRule`
+/// → `EventFeeds` → an event edge), rendered through the graph.
 ///
 /// # Mutation
 ///
-/// - Dropping `Changed<MidiTarget>` from `register_midi_senders`' filter (the
-///   bug as it was) leaves the new id off the bus: the `contains` assertion
-///   fails, and without it the render is silent.
-/// - Dropping the `recaptured` arm from the route `rebuild`'s dirty check
-///   leaves the routes naming the outgoing unit: the route assertion fails.
-mod midi_crossfade {
+/// - (run) A channel rule wired to port 0 rather than its channel's
+///   (`input_ports`) → a note on channel 2 goes nowhere → silent → fails.
+/// - A rule for another channel (the check below) → silent.
+mod midi_route {
     use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use bevy_app::prelude::*;
 
-    use bevy_tutti::graph::{
-        crossfade_audio_node, AudioConfig, AudioGraphRes, AudioSide, GraphReconcilePlugin,
-        MasterSources, SpawnAudioNode, TransportRes,
-    };
-    use bevy_tutti::midi::{
-        MidiBusRes, MidiRouteRule, MidiTarget, MidiTargetRegistry, TuttiMidiPlugin,
-    };
+    use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use bevy_tutti::midi::{MidiEngineNodes, MidiRouteRule, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
     use tutti_core::SampleRate;
+    use tutti_midi_runtime::MidiInputNode;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup, MidiUnitId};
+    use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
     use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -550,35 +526,52 @@ mod midi_crossfade {
         Arc::new(SoundFont::new(&mut file).expect("test soundfont parses"))
     }
 
-    fn unit(sf: &Arc<SoundFont>) -> SoundFontUnit {
-        let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
-        settings.enable_reverb_and_chorus = false;
-        SoundFontUnit::new(Arc::clone(sf), &settings).expect("build the SoundFontUnit")
+    /// A wire that hands out what was pushed onto it, on the next poll.
+    #[derive(Default)]
+    struct Wire(Mutex<Vec<MidiEvent>>);
+
+    impl MidiIn for Wire {
+        fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+            let mut pending = self.0.lock().unwrap();
+            let n = pending.len().min(buffer.len());
+            buffer[..n].copy_from_slice(&pending[..n]);
+            pending.drain(..n);
+            n
+        }
     }
 
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
     }
 
-    /// Render `frames` stereo frames from the backend the audio thread would own.
-    fn render(backend: &mut AudioSide, frames: usize) -> Vec<f32> {
+    /// Render `frames` stereo frames through the graph.
+    fn render(app: &mut App, frames: usize) -> Vec<f32> {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let mut out = Vec::with_capacity(frames * 2);
         for _ in 0..frames {
             let mut frame = [0.0f32; 2];
-            backend.tick(&[], &mut frame);
+            graph.render_frame(&mut frame);
             out.extend_from_slice(&frame);
         }
         out
     }
 
-    #[test]
-    fn a_crossfaded_synth_is_reached_through_the_bus() {
-        let sf = soundfont();
+    /// An app with a SoundFont synth on the master, the hardware input node
+    /// over `wire`, and a rule routing `channel` to the synth. How loud a
+    /// note on channel 2 through the wire comes out.
+    fn routed_level(channel: MidiChannel) -> f32 {
+        let mut app = App::new();
         let mut graph = AudioGraphRes::headless(0, 2);
         graph.set_sample_rate(SampleRate(SAMPLE_RATE));
-        let mut backend = graph.take_audio_side();
-
-        let mut app = App::new();
+        let wire = Arc::new(Wire::default());
+        let (input_node, _) = graph.insert_node(MidiInputNode::new(Some(
+            Arc::clone(&wire) as Arc<dyn MidiIn>
+        )));
+        let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
+        settings.enable_reverb_and_chorus = false;
+        let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
+        let (synth_node, ()) = graph.insert_node(unit);
+        graph.set_outputs_from(synth_node);
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
@@ -586,65 +579,44 @@ mod midi_crossfade {
             channels: tutti_core::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
-        app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
-        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
-            SAMPLE_RATE,
-        ));
-        let (routing, rt_view) = bevy_tutti::midi::test_support::routing_table_for_test();
-        app.insert_resource(routing);
+        app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test());
         app.add_plugins((
             bevy_app::TaskPoolPlugin::default(),
             bevy_asset::AssetPlugin::default(),
         ));
         app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
+        let input = app.world_mut().spawn(input_node).id();
+        let synth = app.world_mut().spawn(synth_node).id();
+        app.insert_resource(MidiEngineNodes {
+            input,
+            input_node,
+            clock: input,
+            hardware_out: input,
+        });
         app.world_mut()
-            .resource_mut::<MidiTargetRegistry>()
-            .register::<SoundFontUnit>();
-
-        let synth = app.world_mut().commands().spawn_audio_node(unit(&sf)).id();
-        app.insert_resource(MasterSources::from(synth));
-        app.world_mut()
-            .spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(synth));
+            .spawn(MidiRouteRule::for_channel(channel).to(synth));
         app.update();
-        let first = app
-            .world()
-            .get::<MidiTarget>(synth)
-            .unwrap()
-            .port()
-            .unit_id();
 
-        crossfade_audio_node(&mut app.world_mut().commands(), synth, Box::new(unit(&sf)));
-        app.update();
-        app.update();
-        let second = app
-            .world()
-            .get::<MidiTarget>(synth)
-            .unwrap()
-            .port()
-            .unit_id();
-        assert_ne!(first, second, "the incoming unit has its own port");
+        wire.0.lock().unwrap().push(MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            60,
+            u16::MAX,
+        ));
+        rms(&render(&mut app, 12_000))
+    }
 
-        let bus = app.world().resource::<MidiBusRes>().clone();
-        assert!(
-            bus.contains(second) && !bus.contains(first),
-            "the bus must carry the incoming unit's sender, not the outgoing one's"
-        );
-
-        // Let the backend take the commit and finish the 5 ms fade.
-        render(&mut backend, 2_048);
-
-        // What the inbound phase does: route by the RT snapshot, queue on the bus.
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, u16::MAX);
-        let targets: Vec<MidiUnitId> = rt_view.read().route(&note).collect();
-        assert_eq!(targets, vec![second], "the routes name the incoming unit");
-        for id in targets {
-            bus.queue(id, &[note]);
-        }
-
-        let level = rms(&render(&mut backend, 12_000));
+    #[test]
+    fn a_routed_hardware_note_sounds() {
+        let level = routed_level(MidiChannel::new(1));
         assert!(
             level > 1e-4,
-            "a note routed to the crossfaded synth must sound, got RMS {level}"
+            "a note routed to the synth must sound, got RMS {level}"
+        );
+        let other = routed_level(MidiChannel::new(5));
+        assert!(
+            other < 1e-6,
+            "a note on an unrouted channel must not, got RMS {other}"
         );
     }
 }

@@ -4,17 +4,16 @@ Polyphonic subtractive and wavetable synthesis for the Tutti audio engine.
 
 ## What this is
 
-One type does the work: `PolySynth`, an `AudioUnit` built from a `SynthConfig`
-and driven by MIDI. It takes no audio input — notes arrive through its own
-lock-free MIDI inbox — and renders stereo. Around it sit the voice engine's
+One type does the work: `PolySynth`, built from a `SynthConfig` and driven by
+MIDI. It takes no audio input and renders stereo. Around it sit the voice engine's
 parts: voice allocation (`AllocationStrategy`, `VoiceMode`), unison, portamento
 and tuning, all configured through `SynthConfig`.
 
-**Notes arrive one way: the MIDI inbox.** `midi_sender()` hands back a producer a
-control thread can push to while the audio thread renders; `midi_port()` is the
-same endpoint as a whole borrow (routing address, mailbox, and the source-install
-slot), for a host that needs all three through one downcast. There is no
-`note_on` scalar entry point on this type.
+**Notes arrive on its MIDI event input.** It is a `tutti_graph::Node` with one
+MIDI event input: a clip node, a keyboard's `MidiQueueNode` or the hardware
+input node (all `tutti-midi-runtime`) wires to it, each event played on its
+frame. Driven by hand as an `AudioUnit`, the next block plays what
+`queue_midi` was given. There is no `note_on` scalar entry point on this type.
 
 ## What it does not own
 
@@ -22,15 +21,15 @@ slot), for a host that needs all three through one downcast. There is no
   [`tutti-soundfont`](../tutti-soundfont)'s, a **peer** crate rather than a
   feature of this one. A sample player shares no voice engine, envelope model or
   filter with a subtractive synth, so the two have nothing in common beyond the
-  `AudioUnit` trait and a MIDI inbox — and those come from `tutti-core` and
-  `tutti-midi-runtime`, not from each other. The old `soundfont` feature flag was
+  node contract and a MIDI event input — and those come from `tutti-graph`, not
+  from each other. The old `soundfont` feature flag was
   a dependency edge wearing a feature's clothes; depend on that crate directly.
 - **Not a clip player.** Playing a recorded `Wave` on a timeline is
   [`tutti-sampler`](../tutti-sampler)'s, which correspondingly has no `note_on`.
 - **No effects.** Filters live per-voice inside the synth; a send, a delay or a
   reverb is a `tutti-nodes` node after it.
 - **No MIDI I/O and no file parsing.** The wire vocabulary is
-  `tutti-midi-types`', the mailbox is `tutti-midi-runtime`'s, ports are
+  `tutti-midi-types`', the MIDI nodes are `tutti-midi-runtime`'s, ports are
   `tutti-midi-hardware`'s.
 
 The other removed feature flag is worth knowing about for the same reason. `midi`
@@ -69,9 +68,9 @@ let mut synth = PolySynth::new(SynthConfig {
     ..Default::default()
 })?;
 
-// Notes arrive through the lock-free inbox, so a control thread may queue
-// them while the audio thread renders.
-synth.midi_sender().queue(&[MidiEvent::note_on(
+// Driven by hand: the next block plays what was queued. (In a graph, MIDI
+// arrives on the synth's event input instead.)
+synth.queue_midi(&[MidiEvent::note_on(
     MidiGroup::FIRST,
     MidiChannel::FIRST,
     69, // A4
@@ -96,7 +95,7 @@ and envelope, so **those three need a new synth to change** — there is no sett
 them, and swapping one means building a `PolySynth` and replacing the node.
 
 What does have a live setter: unison detune, stereo spread and sub-voice count,
-master volume, MPE enablement, and the MIDI source.
+master volume and MPE enablement.
 
 `max_voices` must be at least 1 and has no upper bound. It was capped at 16
 until the per-block finished-voice list stopped being a `SmallVec<[usize; 16]>`

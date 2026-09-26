@@ -68,6 +68,27 @@ impl Rig {
         prepare: Prepare,
         automation: Option<tutti_plugin::handles::PluginAutomation>,
     ) -> Self {
+        Self::build(client, prepare, automation, false).0
+    }
+
+    /// As [`prepared_with`](Self::prepared_with), with a keyboard: a
+    /// `MidiQueueNode` feeding the plugin's event input too, and its sender.
+    #[allow(dead_code)]
+    pub fn prepared_with_keys(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+    ) -> (Self, tutti_midi_runtime::MidiSender) {
+        let (rig, keys) = Self::build(client, prepare, automation, true);
+        (rig, keys.expect("asked for keys"))
+    }
+
+    fn build(
+        client: PluginClient<Bound>,
+        prepare: Prepare,
+        automation: Option<tutti_plugin::handles::PluginAutomation>,
+        keys: bool,
+    ) -> (Self, Option<tutti_midi_runtime::MidiSender>) {
         let (inputs, outputs) = (client.inputs(), client.outputs());
         let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
         let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
@@ -77,14 +98,22 @@ impl Rig {
             let (from, _controls) = g.add_with_controls(automation);
             g.event_connect(from, 0, key, 0);
         }
+        let sender = keys.then(|| {
+            let (from, sender) = g.add_with_controls(tutti_midi_runtime::MidiQueueNode::new());
+            g.event_connect(from, 0, key, 0);
+            sender
+        });
         let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
-        Self {
-            renderer,
-            key,
-            controls,
-            inputs,
-            outputs,
-        }
+        (
+            Self {
+                renderer,
+                key,
+                controls,
+                inputs,
+                outputs,
+            },
+            sender,
+        )
     }
 
     /// The plugin's audio inputs.

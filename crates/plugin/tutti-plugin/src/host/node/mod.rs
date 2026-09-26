@@ -99,14 +99,14 @@ mod real_stall_tests;
 #[cfg(test)]
 mod tests;
 
-// The shared node primitives (MIDI inbox, change sinks) live in
-// `crate::util::node`; re-exported here so the existing
-// `crate::host::node::{Midi, ...}` paths keep resolving.
+// The shared node primitives (change sinks) live in `crate::util::node`;
+// re-exported here so the existing `crate::host::node::...` paths keep
+// resolving.
+pub use crate::util::node::ParameterChangeSink;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
-pub use crate::util::node::{Midi, ParameterChangeSink};
 pub use automation_node::{AutomationControls, PluginAutomation, AUTOMATION_EVENT_CAPACITY};
 pub(crate) use capability_view::is_declined;
-pub use capability_view::{MidiInView, MidiOutView, TransportView};
+pub use capability_view::TransportView;
 pub use controls::PluginControls;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, PluginParamTarget, TimedParam,
@@ -205,7 +205,6 @@ pub struct PluginClient<S = Unbound> {
     invalidate_sink: InvalidateSink,
     /// Subprocess lifetime, shared with `PluginHandle::from_client`.
     process_guard: Arc<ProcessGuard>,
-    midi: Midi,
     /// Where this instance came from, so a fork can load another of it
     /// ([`fork_instance`](Self::fork_instance)). Never written.
     origin: Arc<fork::Origin>,
@@ -351,7 +350,6 @@ impl PluginClient<Unbound> {
             refresh_sink,
             invalidate_sink,
             process_guard,
-            midi: Midi::new(),
             origin,
             fork_watch: None,
             state: Unbound { _private: () },
@@ -382,7 +380,6 @@ impl PluginClient<Unbound> {
             refresh_sink,
             invalidate_sink,
             process_guard,
-            midi,
             origin,
             fork_watch,
             state: Unbound { _private: () },
@@ -400,7 +397,6 @@ impl PluginClient<Unbound> {
             refresh_sink,
             invalidate_sink,
             process_guard,
-            midi,
             origin,
             fork_watch,
             state: Bound {
@@ -430,17 +426,6 @@ impl<S> PluginClient<S> {
     /// Accessor for `PluginHandle::from_client` — not for end users.
     pub(crate) fn process_guard(&self) -> &Arc<ProcessGuard> {
         &self.process_guard
-    }
-
-    /// Install the outbound routing target so this subprocess plugin's MIDI-out
-    /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
-    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
-        self.midi.set_out(sink);
-    }
-
-    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
-    pub fn clear_midi_out(&self) {
-        self.midi.clear_out();
     }
 
     /// The plugin's reported latency, in **frames** — its own figure, without
@@ -555,49 +540,6 @@ impl<S> PluginClient<S> {
     /// queue is full.
     pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
         self.bridge.set_render_mode_rt(mode)
-    }
-
-    /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the
-    /// plugin by pushing through this sender (or by inserting it into a
-    /// [`tutti_midi_runtime::MidiBus`]); clip playback uses [`Self::set_midi_source`].
-    pub fn midi_sender(&self) -> tutti_midi_runtime::MidiSender {
-        self.midi.sender()
-    }
-
-    /// This plugin's MIDI input endpoint — address, mailbox and source-install
-    /// slot together.
-    ///
-    /// A hosted plugin's inbox *is* an ordinary [`MidiInPort`], the same type a
-    /// built-in synth exposes, so a host that resolves MIDI targets by asking a
-    /// node for its port can treat plugins and synths identically instead of
-    /// carrying a second, plugin-shaped path. Take it before the node goes
-    /// into a graph: the port is shared with the node (a clone is another
-    /// handle on the same mailbox and source cell).
-    ///
-    /// [`MidiInPort`]: tutti_midi_runtime::MidiInPort
-    pub fn midi_port(&self) -> &tutti_midi_runtime::MidiInPort {
-        self.midi.port()
-    }
-
-    /// This unit's MIDI routing address.
-    pub fn midi_unit_id(&self) -> tutti_midi_types::MidiUnitId {
-        self.midi.unit_id()
-    }
-
-    /// Install a [`tutti_midi_types::MidiUnitIn`] override (typically
-    /// [`tutti_midi_runtime::MidiClipSource`] from a track's MIDI
-    /// clips) that the plugin polls per chunk instead of its live
-    /// `MidiReceiver`. Mirrors `PolySynth::set_midi_source` so
-    /// MIDI clips drive plugin synths the same way they drive
-    /// built-in synths.
-    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiUnitIn>) {
-        self.midi.set_source(source);
-    }
-
-    /// Drop a previously-installed source override; subsequent chunks poll
-    /// the live `MidiReceiver` again.
-    pub fn clear_midi_source(&mut self) {
-        self.midi.clear_source();
     }
 
     /// Give the plugin the project meter, for the time signature and bar in

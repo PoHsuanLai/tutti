@@ -272,38 +272,8 @@ impl AudioGraphRes {
 
     /// [`insert`](Self::insert) for a unit that is already boxed (a plugin, a
     /// trait-object factory's product).
-    ///
-    /// For a unit a registry captured a MIDI port from, use
-    /// [`insert_with`](Self::insert_with): pushed this way, an export
-    /// holding it is refused (`ExportError::NotForkable`), since its fork
-    /// would not carry its clip.
     pub fn insert_boxed(&mut self, unit: Box<dyn AudioUnit>) -> AudioNode {
-        self.write().insert(unit, None)
-    }
-
-    /// [`insert_boxed`](Self::insert_boxed) for a unit whose controls were
-    /// captured ([`CapturedControls::capture`](crate::graph::CapturedControls::capture)):
-    /// a unit with a captured MIDI port goes in so that a fork of the graph
-    /// (an export) carries the clip installed on that port — through the
-    /// type's own fork source, or the generic fork — and refuses by name
-    /// when it cannot, never renders it as silence
-    /// (`MidiNode::fork_source`, with the `midi` feature).
-    ///
-    /// Every insertion path in this crate goes this way. Then
-    /// [`bind`](crate::graph::CapturedControls::bind) `controls` as ever.
-    pub fn insert_with(
-        &mut self,
-        unit: Box<dyn AudioUnit>,
-        controls: &mut crate::graph::CapturedControls,
-    ) -> AudioNode {
-        #[cfg(feature = "midi")]
-        let fork = controls.take_fork();
-        #[cfg(not(feature = "midi"))]
-        let fork = {
-            let _ = controls;
-            None
-        };
-        self.write().insert(unit, fork)
+        self.write().insert(unit)
     }
 
     /// Insert a node that brings its own [`IntoNode`](tutti_graph::IntoNode)
@@ -318,21 +288,28 @@ impl AudioGraphRes {
     }
 
     /// How many event inputs `node` declares: 0 for a unit inserted as an
-    /// `AudioUnit` (through `Legacy`), which takes MIDI only on its port.
+    /// `AudioUnit` (through `Legacy`).
     pub fn node_event_inputs(&self, node: AudioNode) -> usize {
         self.read().node_event_inputs(node)
     }
 
-    /// Feed `sink`'s event input `port` from exactly `sources` (each node's
-    /// event output 0). Event inputs merge their sources by offset, so any
-    /// number may feed one port. Takes effect with the frame's commit.
+    /// Feed `sink`'s event input `port` from exactly `sources` (each an
+    /// event output: from an `AudioNode` alone, its output 0). Event inputs
+    /// merge their sources by offset, so any number may feed one port. Takes
+    /// effect with the frame's commit.
     /// [`EventSources`](crate::graph::EventSources) is the ECS form.
-    pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[AudioNode]) {
+    pub fn set_event_sources(
+        &mut self,
+        sink: AudioNode,
+        port: u16,
+        sources: &[crate::graph::EventSource],
+    ) {
         self.write().set_event_sources(sink, port, sources);
     }
 
-    /// The nodes feeding `sink`'s event input `port`, as the graph holds them.
-    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<AudioNode> {
+    /// The event outputs feeding `sink`'s event input `port`, as the graph
+    /// holds them.
+    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<crate::graph::EventSource> {
         self.read().event_sources(sink, port)
     }
 
@@ -389,8 +366,7 @@ impl AudioGraphRes {
     /// ([`ReplaceRefused::Busy`], retry after the re-prepare resumes), and for
     /// good on a poisoned graph. Swap the captured controls only on `Ok` —
     /// [`crossfade_audio_node`](crate::graph::crossfade_audio_node) does all
-    /// of this, with the incoming unit's captured controls
-    /// ([`replace_with`](Self::replace_with)).
+    /// of this, with the incoming unit's captured controls.
     pub fn replace(
         &mut self,
         node: AudioNode,
@@ -398,36 +374,7 @@ impl AudioGraphRes {
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<(), ReplaceRefused> {
-        self.write().replace(node, unit, fade, curve, &mut None)
-    }
-
-    /// [`replace`](Self::replace) for a unit whose controls were captured,
-    /// forking as [`insert_with`](Self::insert_with) says. The fork is taken
-    /// from `controls` only when the unit lands, so a refused
-    /// ([`ReplaceRefused::Busy`]) unit keeps it for its retry.
-    pub fn replace_with(
-        &mut self,
-        node: AudioNode,
-        unit: Box<dyn AudioUnit>,
-        fade: Seconds,
-        curve: CrossfadeCurve,
-        controls: &mut crate::graph::CapturedControls,
-    ) -> Result<(), ReplaceRefused> {
-        #[cfg(feature = "midi")]
-        {
-            let mut fork = controls.take_fork();
-            let landed = self.write().replace(node, unit, fade, curve, &mut fork);
-            // Handed back untaken on a refusal: put it back for the retry.
-            if let Some(fork) = fork {
-                controls.put_fork(fork);
-            }
-            landed
-        }
-        #[cfg(not(feature = "midi"))]
-        {
-            let _ = controls;
-            self.write().replace(node, unit, fade, curve, &mut None)
-        }
+        self.write().replace(node, unit, fade, curve)
     }
 
     /// Write `value` to `node`'s scalar param `param`, through the node's own
@@ -679,7 +626,14 @@ impl AudioGraphRes {
     /// [`take_audio_side`](Self::take_audio_side) or the engine: there is no
     /// control-side copy of any node to render instead.
     pub fn render_frame(&mut self, output: &mut [f32]) {
-        self.write().render_frame(output);
+        self.render_frame_at(&tutti_graph::Transport::default(), output);
+    }
+
+    /// [`render_frame`](Self::render_frame) with the transport at
+    /// `transport`: what plays a clip in a graph driven by hand (a test, a
+    /// tool), where no engine clock runs.
+    pub fn render_frame_at(&mut self, transport: &tutti_graph::Transport, output: &mut [f32]) {
+        self.write().render_frame_at(transport, output);
     }
 
     // --- Export ---
@@ -700,17 +654,12 @@ impl AudioGraphRes {
     /// outputs, and `Err(ExportRefused::NoOutputs)` when `node` has no audio
     /// outputs (or is not in the graph); a fork refusal (`NotForkable`, a
     /// plugin whose fresh instance did not load) is the renderer's own error.
-    ///
-    /// `midi` is every node with a captured MIDI port; one the fork holds
-    /// that cannot carry its clip refuses the export
-    /// (`NativeGraph::fork_for_export`).
     #[cfg(feature = "export")]
     pub(crate) fn export(
         &self,
         node: Option<AudioNode>,
         ctx: &OfflineTransport,
         rate: SampleRate,
-        midi: &std::collections::BTreeSet<tutti_types::NodeKey>,
     ) -> Result<tutti_export::RenderGraph, ExportRefused> {
         if self.outputs() == 0 {
             return Err(ExportRefused::GraphHasNoOutputs);
@@ -719,7 +668,7 @@ impl AudioGraphRes {
             None => tutti_graph::ForkTarget::Master,
             Some(node) => tutti_graph::ForkTarget::Node(super::native::key(node)),
         };
-        match self.read().fork_for_export(target, ctx, rate, midi) {
+        match self.read().fork_for_export(target, ctx, rate) {
             Ok(graph) => Ok(graph),
             Err(tutti_export::Error::Fork(
                 tutti_graph::ForkError::NoOutputs { .. }

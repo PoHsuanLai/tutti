@@ -7,7 +7,7 @@
 //! - a per-process `midi_buffer` for sorted events,
 //! - and a `mix_buffer` scalar pair.
 //!
-//! `tick` and `process` both pull MIDI off the inbox, iterate active
+//! `tick` and `process` both take the queued MIDI, iterate active
 //! voices, and mix into the output. A regression that grows `midi_buffer`
 //! at runtime, or that frees the finished-indices buffer on the audio
 //! thread, would land here.
@@ -89,8 +89,7 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
     synth.set_sample_rate(SampleRate(48_000.0));
 
     // Trigger 4 sustained voices before entering the gate.
-    let sender = synth.midi_sender();
-    sender.queue(&[
+    synth.queue_midi(&[
         note_on(0, 60, 100),
         note_on(0, 64, 100),
         note_on(0, 67, 100),
@@ -128,9 +127,7 @@ fn polysynth_tick_with_active_voices_is_allocation_free() {
     .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
 
-    synth
-        .midi_sender()
-        .queue(&[note_on(0, 60, 90), note_on(0, 64, 90), note_on(0, 67, 90)]);
+    synth.queue_midi(&[note_on(0, 60, 90), note_on(0, 64, 90), note_on(0, 67, 90)]);
 
     let mut output = [0.0f32; 2];
     for _ in 0..256 {
@@ -156,13 +153,12 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     })
     .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
-    let sender = synth.midi_sender();
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
 
     // Warm up the voice pool + finished-indices SmallVec at full size.
-    sender.queue(&[
+    synth.queue_midi(&[
         note_on(0, 48, 100),
         note_on(0, 60, 100),
         note_on(0, 72, 100),
@@ -172,7 +168,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
         let mut output = output_vec.buffer_mut();
         synth.process(64, &input, &mut output);
     }
-    sender.queue(&[note_off(0, 48), note_off(0, 60), note_off(0, 72)]);
+    synth.queue_midi(&[note_off(0, 48), note_off(0, 60), note_off(0, 72)]);
     for _ in 0..256 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
@@ -187,9 +183,9 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..200 {
             if i % 2 == 0 {
-                sender.queue(&[on]);
+                synth.queue_midi(&[on]);
             } else {
-                sender.queue(&[off]);
+                synth.queue_midi(&[off]);
             }
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
@@ -238,7 +234,6 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     })
     .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
-    let sender = synth.midi_sender();
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
@@ -253,13 +248,13 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
     // Warm up: run the full on/off cycle once outside the gate so every
     // lazily-sized buffer reaches its steady-state capacity first.
     for _ in 0..4 {
-        sender.queue(&all_on);
+        synth.queue_midi(&all_on);
         for _ in 0..32 {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
             synth.process(64, &input, &mut output);
         }
-        sender.queue(&all_off);
+        synth.queue_midi(&all_off);
         for _ in 0..256 {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
@@ -269,7 +264,7 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..32 {
-            sender.queue(&all_on);
+            synth.queue_midi(&all_on);
             for _ in 0..32 {
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
@@ -278,7 +273,7 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
             // All releases land together, so a single block collects the full
             // `MAX_VOICES` finished indices — the worst case the capacity is
             // sized for.
-            sender.queue(&all_off);
+            synth.queue_midi(&all_off);
             for _ in 0..256 {
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
@@ -331,8 +326,8 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
 
-    // Warm the THREAD only — see `a_first_block_on_a_cold_thread_allocates`
-    // for what this is paying for and why it is not this test's subject.
+    // Warm the THREAD only, so this test measures the instance alone: a cold
+    // thread is `a_first_block_on_a_cold_thread_is_allocation_free`'s subject.
     {
         let mut throwaway = build();
         let input = input_vec.buffer_ref();
@@ -348,9 +343,8 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
     let cloned = pristine.clone();
 
     for (which, mut synth) in [("new", pristine), ("clone", cloned)] {
-        let sender = synth.midi_sender();
         // Queued outside the gate: `queue` is a control-thread call.
-        sender.queue(&notes);
+        synth.queue_midi(&notes);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..32 {
@@ -360,7 +354,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
             }
         });
 
-        sender.queue(&offs);
+        synth.queue_midi(&offs);
         assert_no_alloc::assert_no_alloc(|| {
             // Long enough for every release to land, so the block that
             // collects all 64 finished indices is inside the gate.
@@ -375,38 +369,23 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
     }
 }
 
-/// **A pre-existing defect, recorded rather than fixed here: the first block
-/// on a *cold thread* allocates.**
+/// **The first block on a *cold thread* is allocation-free.**
 ///
-/// `#[ignore]`d because it fails, and it fails on code this change did not
-/// touch — it reproduces identically at the default 8 voices on the commit
-/// before `finished_indices` became a `Vec`. It is filed here because this is
-/// where it was found and this file is where someone will look.
+/// It used not to be, and was `#[ignore]`d as a recorded defect: the first
+/// `process` on a thread went through `MidiInPort::poll`, whose
+/// `ArcSwapOption::load` initialised arc-swap's per-thread slots lazily (128
+/// bytes), so the cost landed on the first callback of every new audio thread
+/// (`CpalDriver::restart` makes one on each device switch). The port is gone
+/// (MIDI arrives on the event input, or through `queue_midi`), and with it the
+/// allocation.
 ///
-/// What was established, by bisection:
+/// The rest of the suite is blind to this: every other test warms the
+/// instance, and so the thread, before opening the gate.
 ///
-/// - A synth that has never been processed, given no MIDI and holding no
-///   active voices, allocates 128 bytes on its first `process`.
-/// - It is **per thread, not per instance**: a brand-new synth on a thread
-///   that has already processed one allocates nothing (that is the
-///   neighbouring test, which passes).
-/// - The first thing `process` calls is `poll_midi_events_sorted` ->
-///   `MidiInPort::poll`, whose first statement after the mailbox drain is
-///   `self.source.load()` on an `ArcSwapOption`. `arc-swap` initialises its
-///   per-thread fast slots lazily, on first use from each thread.
-///
-/// Why it matters rather than being a curiosity: the cost lands on the
-/// **first callback of any new audio thread**, and `CpalDriver::restart`
-/// makes a new one on every device switch. The whole `rt_no_alloc` suite is
-/// blind to it because every other test warms the instance — and therefore
-/// the thread — before opening the gate.
-///
-/// Fixing it belongs in `MidiInPort`, not here: something has to touch the
-/// `ArcSwap` once from the audio thread before the first real block, or the
-/// port has to stop using one on this path.
+/// Mutation (run): a lazily initialised `thread_local!` `Vec` touched in
+/// `take_pending_sorted` → the gate aborts on the cold thread.
 #[test]
-#[ignore = "pre-existing: arc-swap's per-thread slots allocate on first load; see the doc"]
-fn a_first_block_on_a_cold_thread_allocates() {
+fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = PolySynth::new(SynthConfig {
         sample_rate: tutti_core::SampleRate::from(48_000.0),
         max_voices: 8,

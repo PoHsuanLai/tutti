@@ -93,7 +93,7 @@ fn held(cfg: SynthConfig, n: usize) -> PolySynth {
             )
         })
         .collect();
-    synth.midi_sender().queue(&events);
+    synth.queue_midi(&events);
 
     // Run past the attack so the benchmark measures sustain.
     let input = BufferVec::new(2);

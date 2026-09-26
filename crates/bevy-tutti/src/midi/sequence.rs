@@ -1,19 +1,16 @@
 //! Beat-scheduled MIDI playback, declared in the ECS and clocked by the engine.
 //!
 //! A [`MidiSourceInstall`] names a target entity and the events to play at it.
-//! [`rebuild`] compiles those into a clip the audio thread plays, converting
-//! beats to sample offsets where the block being rendered is known:
-//!
-//! - **A target with a MIDI event input** (a synth or plugin inserted as a
-//!   graph node, [`spawn_graph_node`](crate::graph::SpawnGraphNode)) is fed by
-//!   a [`MidiClipNode`] of its own, wired to that input
-//!   ([`EventFeeds`]). The clip reads the block's
-//!   `Env`, so its notes land on their frames through seeks and loop wraps,
-//!   in the same block, and an export forks it with the target (doc 013
-//!   item 5). An edit replaces its events in place; it ends the notes the old
-//!   events left sounding.
-//! - **A target inserted as an `AudioUnit`** (through `Legacy`) has no event
-//!   input: a [`MidiClipSource`] is installed on its port, as before.
+//! [`rebuild`] compiles those into a [`MidiClipNode`] of the target's own,
+//! wired to its MIDI event input ([`EventFeeds`]): a synth, a SoundFont
+//! player or a plugin inserted as a graph node
+//! ([`spawn_graph_node`](crate::graph::SpawnGraphNode), a plugin load). The
+//! clip reads the block's `Env`, so its notes land on their frames through
+//! seeks and loop wraps, in the same block, and an export forks it with the
+//! target (doc 013 item 5). An edit replaces its events in place, ending the
+//! notes the old events left sounding; so does removing the last install
+//! naming the target. A target with no event input (an `AudioUnit` inserted
+//! through `Legacy`) takes no MIDI, and is skipped.
 //!
 //! # Why the ECS cannot do the scheduling
 //!
@@ -50,32 +47,25 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
-use tutti_midi_runtime::{MidiClipControls, MidiClipNode, MidiClipSource, TimedMidiEvent};
-use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
 
-use super::endpoint::target::MidiTargetResolver;
 use crate::graph::{
     engine_ready, AudioGraphRes, EventFeeds, EventWiring, GraphDirty, GraphReconcileSystems,
-    TransportRes,
 };
 use tutti_core::AudioNode;
-use tutti_midi_types::cc;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// "Play these events at that entity's synth."
 ///
 /// The events are absolute-beat positioned; the engine decides where in a block
-/// each lands. Add or edit this component and [`rebuild`] reinstalls the source.
+/// each lands. Add or edit this component and [`rebuild`] replaces the clip's
+/// events.
 ///
-/// Several installs may name one target — they are merged, because a port holds
-/// one installed source and a second `install` would replace the first.
+/// Several installs may name one target — they are merged into its one clip.
 #[derive(Component, Debug, Clone)]
 pub struct MidiSourceInstall {
-    /// The entity whose synth plays this. Resolved through
-    /// [`MidiTargetRegistry`](super::endpoint::target::MidiTargetRegistry), so it must carry an
-    /// `AudioNode` of a registered type.
+    /// The entity whose synth plays this: its `AudioNode` must have a MIDI
+    /// event input (a node inserted with `spawn_graph_node`, a plugin).
     pub target: Entity,
     /// Absolute-beat positioned events, in any order — the engine sorts them.
     pub events: Vec<TimedMidiEvent>,
@@ -91,18 +81,10 @@ impl MidiSourceInstall {
 /// The sequencer's name among a target's [`EventFeeds`].
 const SEQUENCER: &str = "sequencer";
 
-/// The targets [`rebuild`] currently has a source installed on.
-///
-/// Kept because the removal of a `MidiSourceInstall` says nothing about *which*
-/// target lost it — the component is gone by the time the rebuild runs, and its
-/// `target` field with it. This record is what lets a target be cleared when the
-/// last install naming it goes away.
-#[derive(Resource, Default)]
-pub struct InstalledMidiSources(HashSet<Entity>);
-
 /// The clip node playing each target that has an event input: its node and
-/// its controls. The node is the sequencer's, not an entity's; it goes when
-/// the last install naming its target does.
+/// its controls. The node is the sequencer's, not an entity's: emptied when
+/// the last install naming its target goes (which ends its notes), removed
+/// when the target loses its node.
 #[derive(Resource, Default)]
 pub struct SequencedClips(HashMap<Entity, (AudioNode, MidiClipControls)>);
 
@@ -113,52 +95,39 @@ impl SequencedClips {
     }
 }
 
-/// Recompile every changed install into a clip source and install it.
+/// Recompile every changed install into its target's clip node.
 ///
-/// Runs only when an install changed or went away. **Not** when the device's
-/// rate moves (a restart, `restart_device`): a clip source holds no rate — its
-/// unit hands it the rate it runs at on every poll — so a clip installed at
-/// 48 kHz places its events at 96 kHz frames once its synth is re-rated, with
-/// nothing to rebuild. Rebuilding is not free: a
-/// fresh [`MidiClipSource`] carries a fresh cursor, so it restarts at the
-/// transport's current beat — and a rebuild landing between a note-on and its
-/// note-off would drop the note-off and leave the note sounding. Hence the
-/// all-notes-off below, and hence not rebuilding every frame.
+/// Runs only when an install changed or went away, or a node was rebound. **Not**
+/// when the device's rate moves (a restart, `restart_device`): a clip node
+/// reads its block's `Env`, rate included.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     installs: Query<&MidiSourceInstall>,
     changed: Query<Entity, Changed<MidiSourceInstall>>,
-    // A crossfade replaces the target's port, and the clip installed on the
-    // outgoing port plays into a unit nothing renders. A changed capture is a
-    // port that needs its install again.
-    recaptured: Query<(), Changed<super::MidiTarget>>,
+    // A target rebound to a new node (a crossfade, a respawn) keeps its clip:
+    // the event wiring re-derives its edge. One rebound to a node with no
+    // event input (a `Legacy` unit) loses its clip here.
+    rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<MidiSourceInstall>,
-    mut installed: ResMut<InstalledMidiSources>,
     mut clips: ResMut<SequencedClips>,
     mut feeds: ResMut<EventFeeds>,
     mut graph_dirty: ResMut<GraphDirty>,
     graph: Option<ResMut<AudioGraphRes>>,
     nodes: Query<&AudioNode>,
-    resolver: MidiTargetResolver,
-    // `engine::build_into`'s, and `engine_ready` does not cover it — it reads
-    // `AudioEngineState`, which a host can insert alone. No sample rate: a
-    // clip is handed its unit's rate on every poll.
-    transport: Option<Res<TransportRes>>,
 ) {
-    let dirty = !changed.is_empty() || !removed.is_empty() || !recaptured.is_empty();
+    let dirty = !changed.is_empty() || !removed.is_empty() || !rebound.is_empty();
     // Draining is what marks this frame's removals as seen, so it happens
     // whether or not a rebuild follows.
     removed.clear();
     if !dirty {
         return;
     }
-    // After the drain, so a frame with no engine still marks removals seen.
-    let Some(transport) = transport else {
+    let Some(mut graph) = graph else {
         return;
     };
 
-    // Group by target first: a port holds *one* installed source, so two
-    // installs on one synth have to become one merged clip. Installing each in
-    // turn would silently leave only the last.
+    // Group by target first: one clip node plays a target, so two installs
+    // on one synth become one merged clip.
     let mut by_target: HashMap<Entity, Vec<TimedMidiEvent>> = HashMap::new();
     for install in installs.iter() {
         by_target
@@ -167,14 +136,10 @@ pub fn rebuild(
             .extend(install.events.iter().copied());
     }
 
-    let Some(mut graph) = graph else {
-        return;
-    };
-
-    // Which targets play through a clip node: those whose node has an event
-    // input. The rest (no node yet, or a `Legacy` unit) get a port source.
-    let through_clip: HashSet<Entity> = by_target
+    // Which targets can play a clip: those whose node has an event input.
+    let playable: HashSet<Entity> = by_target
         .keys()
+        .chain(clips.0.keys())
         .copied()
         .filter(|t| {
             nodes
@@ -183,15 +148,13 @@ pub fn rebuild(
         })
         .collect();
 
-    // Clip nodes no longer wanted: no install names their target, or it now
-    // takes the port path (it lost its node, or was rebound to a `Legacy`
-    // one). Removing a node sends nothing, so the notes it left sounding are
-    // ended through the target's port, as the port path's clear does.
+    // A clip whose target lost its event input (no node, or a `Legacy` one):
+    // its node goes, and there is nothing left for it to silence.
     let gone: Vec<Entity> = clips
         .0
         .keys()
         .copied()
-        .filter(|t| !through_clip.contains(t))
+        .filter(|t| !playable.contains(t))
         .collect();
     for target in gone {
         if let Some((node, _)) = clips.0.remove(&target) {
@@ -199,89 +162,37 @@ pub fn rebuild(
             graph_dirty.0 = true;
         }
         feeds.remove(target, SEQUENCER);
-        if let Some(port) = resolver.port(target) {
-            all_notes_off(port);
-        }
     }
 
-    by_target.retain(|&target, events| {
-        if !through_clip.contains(&target) {
-            return true;
+    // A clip no install names any more plays nothing from the next block,
+    // ending the notes it left sounding (as new events end the old ones').
+    for (target, (_, controls)) in &clips.0 {
+        if !by_target.contains_key(target) {
+            controls.clear();
         }
-        match clips.0.get(&target) {
-            Some((_, controls)) => controls.set_events(events.iter().copied()),
-            None => {
-                let (clip, controls) = graph.insert_node(MidiClipNode::new(events.iter().copied()));
-                clips.0.insert(target, (clip, controls));
-                feeds.set(target, SEQUENCER, vec![clip]);
-                graph_dirty.0 = true;
-            }
-        }
-        false
-    });
-
-    // Targets that had a source but no longer have any install naming them
-    // on their port (or now play through a clip node).
-    let orphaned: Vec<Entity> = installed
-        .0
-        .iter()
-        .copied()
-        .filter(|t| !by_target.contains_key(t))
-        .collect();
-    for target in orphaned {
-        if let Some(port) = resolver.port(target) {
-            all_notes_off(port);
-            port.clear();
-        }
-        installed.0.remove(&target);
     }
 
     for (target, events) in by_target {
-        let Some(port) = resolver.port(target) else {
-            // No node yet, or its type was never registered — retried next
-            // rebuild, same as any unresolvable target.
+        if !playable.contains(&target) {
             continue;
-        };
-
-        // Silence anything the outgoing source had sounding: its note-offs are
-        // about to be replaced by a clip whose cursor starts at the current
-        // beat, so they would never be delivered.
-        all_notes_off(port);
-
-        // `timeline()` rather than a hand-rolled `Arc::new(transport.0.clone())`:
-        // the accessor is where the per-frame/per-block seam is named, and where
-        // "the clone shares state, it is not a snapshot" is written down.
-        port.install(Arc::new(MidiClipSource::new(
-            port.unit_id(),
-            events,
-            transport.timeline(),
-        )));
-        installed.0.insert(target);
+        }
+        match clips.0.get(&target) {
+            Some((_, controls)) => controls.set_events(events),
+            None => {
+                let (clip, controls) = graph.insert_node(MidiClipNode::new(events));
+                clips.0.insert(target, (clip, controls));
+                feeds.set(target, SEQUENCER, vec![clip.into()]);
+                graph_dirty.0 = true;
+            }
+        }
     }
 }
 
-/// Send an all-notes-off on every channel to a port's own mailbox.
-///
-/// CC 123 rather than 128 individual note-offs: it is one message per channel,
-/// and every synth that receives MIDI honours it.
-fn all_notes_off(port: &tutti_midi_runtime::MidiInPort) {
-    let sender = port.sender();
-    for channel in 0..16u8 {
-        sender.queue(&[MidiEvent::cc(
-            MidiGroup::FIRST,
-            MidiChannel::new(channel),
-            cc::ALL_NOTES_OFF,
-            0,
-        )]);
-    }
-}
-
-/// Compiles [`MidiSourceInstall`]s into installed clip sources.
+/// Compiles [`MidiSourceInstall`]s into clip nodes.
 pub struct MidiSequencePlugin;
 
 impl Plugin for MidiSequencePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<InstalledMidiSources>();
         app.init_resource::<SequencedClips>();
         app.init_resource::<EventFeeds>();
         app.add_systems(
@@ -289,10 +200,8 @@ impl Plugin for MidiSequencePlugin {
             rebuild
                 // After `Spawn` so a target added this frame is resolvable, and
                 // before `Commit` so the install reaches the audio thread with
-                // the node it belongs to. After registration, because a target
-                // resolves through the same registry that populates the bus.
+                // the node it belongs to.
                 .after(GraphReconcileSystems::Spawn)
-                .after(super::endpoint::registration::register_midi_senders)
                 // Before the event wiring, so a new clip node is wired to its
                 // target on the frame it is made.
                 .before(EventWiring)

@@ -205,56 +205,18 @@ pub(crate) mod test_utils {
     /// LoadPlugin` (rather than calling `ClapInstance::load` directly) need a
     /// path that ends in `.clap`.
     ///
-    /// Creates a symlink beside the artifact on first use. A symlink rather
-    /// than a copy so it cannot go stale against a rebuilt plugin — the
-    /// staleness hazard `clap_probe_path` already guards against by taking the
-    /// newest candidate.
-    ///
-    /// **Published by atomic rename, because the link path is shared between
-    /// processes.** `OnceLock` serializes this within one process, which is all
-    /// `cargo test` needs — one binary, one process. Under a per-test-process
-    /// runner (`cargo nextest`) every test process runs this against the *same*
-    /// absolute path, since the candidate list is baked in at build time. The
-    /// previous `remove_file` + `symlink` pair raced there: one process unlinked
-    /// while another had already created, and the loser died with `EEXIST` —
-    /// or worse, a third saw the path briefly absent. Failures moved around the
-    /// suite run to run, which is what a shared-path race looks like from the
-    /// outside.
-    ///
-    /// `rename` over an existing path is atomic on POSIX and replaces silently,
-    /// so a concurrent reader sees either the old link or the new one and never
-    /// a gap. The unique staging name keeps two creators from colliding on the
-    /// temp file itself. This still recreates unconditionally, so the freshness
-    /// guarantee above is unchanged.
+    /// A symlink beside the artifact rather than a copy, so it cannot go
+    /// stale against a rebuilt plugin. The link path is shared by every test
+    /// process; `tutti_fixture_resolve::publish_with_extension` says how it is
+    /// published without a reader ever missing it.
     #[cfg(feature = "clap")]
     pub fn clap_probe_path_dot_clap() -> &'static str {
         static LINKED: OnceLock<String> = OnceLock::new();
         LINKED
             .get_or_init(|| {
-                let real = Path::new(clap_probe_path());
-                let link = real.with_extension("clap");
-
-                // Stage under a name no other process can pick, then swap it in.
-                let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-                let _ = std::fs::remove_file(&staging);
-
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(real, &staging)
-                    .expect("stage the reference plugin symlink");
-                #[cfg(windows)]
-                std::fs::copy(real, &staging).expect("stage the reference plugin copy");
-
-                if let Err(e) = std::fs::rename(&staging, &link) {
-                    // Losing the swap is not a failure: whoever won published a
-                    // link to the same artifact. Only a missing result is fatal.
-                    let _ = std::fs::remove_file(&staging);
-                    assert!(
-                        link.exists(),
-                        "publish the reference plugin at {}: {e}",
-                        link.display()
-                    );
-                }
-                link.to_string_lossy().into_owned()
+                tutti_fixture_resolve::publish_with_extension(Path::new(clap_probe_path()), "clap")
+                    .to_string_lossy()
+                    .into_owned()
             })
             .as_str()
     }

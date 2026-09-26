@@ -93,6 +93,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module) are replaced by those; bevy-tutti's modulation tests keep their
   properties, asserted on the graph value and on what renders.
 
+- **A hosted out-of-process plugin is a native graph node, bound by
+  typestate** (design doc 013, rewrite-order item 4, the plugin half).
+  `PluginClient` is no longer a fundsp `AudioUnit` (neither `<F32>` nor
+  `<F64>`) and runs through no `Legacy` adapter: a loaded client is
+  `PluginClient<Unbound>`, `bind()` makes it `PluginClient<Bound>`, and only
+  that is an `IntoNode` — inserting it hands back its `PluginControls` and a
+  fork source (a fork by state transfer), so an unbound plugin cannot be
+  inserted or processed (a `compile_fail` doctest pins it). Its transport is
+  a pure function of the block's `Env` and the meter: nothing polls a
+  timeline, so a plugin has the right transport from its first block, live
+  and in an export's fork. Its latency is declared in its `Shape`
+  (`PluginControls::declared_latency`: the plugin's figure plus the pipeline's
+  chunk); a runtime change reaches PDC at the next commit through
+  `Editor::set_latency`. The in-process VST2 client is unchanged (still an
+  `AudioUnit`, still polls its transport). What changes for a caller:
+
+  | Was | Now |
+  |---|---|
+  | `PluginClient` as a `Box<dyn AudioUnit>` (`Net::push`, `Legacy::new`, `GraphBuilder::add_unit`) | `editor.insert(key, kind, client.bind())` (or `GraphBuilder::add_with_controls(client.bind())`), which returns its `PluginControls` |
+  | `IntoNode for PluginClient` (`Controls = ()`, through `Legacy`) | `IntoNode for PluginClient<Bound>` (`Controls = PluginControls`, with its fork source), and `PluginClient<Bound>` is itself the `Node` (`Unforkable(client)` would insert it without either, so do not); `PluginClient<Unbound>` is neither |
+  | `PluginClient: Clone` | not `Clone`: a node exists once, in the graph. Keep `PluginControls` / `PluginHandle` (shared handles) instead |
+  | `Plugin::into_unit()` / `Plugin::into_parts()` (a `Box<dyn AudioUnit>`) | `Plugin` is itself an `IntoNode` (`Controls = Option<PluginControls>`, `None` for in-process VST2): `editor.insert(key, kind, plugin)`. Clone `plugin.handle()` first to keep it. `into_client()` still returns the (unbound) `PluginClient`, or the VST2 node boxed |
+  | `PluginClient::set_transport_source(reader, meter)`, `clear_transport_source`, `PluginControls::{set_transport_source, has_transport_source, clear_transport_source}`, `TransportView::{set_source, clear}` | the transport needs no install. Give the meter: `PluginClient::set_meter`, `PluginControls::{set_meter, clear_meter, has_meter}`, `TransportView::{set_meter, clear_meter}`. `Plugin::set_transport_source(reader, meter)` stays; the subprocess backend takes only the meter |
+  | the declared latency was `AudioUnit::latency()` (`route`) | `PluginControls::declared_latency()`, what the node's `Shape` declares; `PluginClient::latency()` is still the plugin's own figure |
+  | offline, the transport snapshot's loop was reported off | the loop is the render's. The continuous-sample counter is a per-node monotonic count of rendered frames (it does not jump on a re-prepare) |
+  | `PluginRenderFault` had `Crashed` and `TimedOut` | also `LatencyChanged { planned, now }`: a fork whose plugin moved its latency after the fork's graph was compiled reports it (`ForkFaultKind::Failed`) rather than exporting misaligned. A fork's `prepare` first waits for a latency its rate or render-mode change caused (`PluginBridge::settle`, new), so the plan holds it |
+  | `PluginHandle::from_client(&PluginClient)` | generic over the state: `from_client(&PluginClient<S>)` |
+  | `tutti_plugin::backend::route_with_latency` from `host::node` | the same function, re-exported from `util::node` (only the in-process VST2 node still uses it) |
+  | tutti-graph: `Transport` had no recording flag | `Transport::recording()` and `with_recording` (additive; the field is private, like the position); tutti-core's engine sets it from the transport settings, and `Env::transport_at` keeps it |
+  | bevy-tutti: `plugin_bind_transport`, `PluginTransportBound` | `plugin_bind_meter`, `PluginMeterBound` (installs `MetronomeRes`'s meter; the transport is the graph's) |
+  | bevy-tutti: `CompensatedLatency` | removed: the latency poll compares the plugin's `declared_latency` with the editor's own figure (`AudioGraphRes::node_latency`), which is the record of what PDC was planned against |
+  | bevy-tutti: a plugin captured by `CapturedControls::capture(&dyn AudioUnit)` (downcast), `PluginClient` registered with `MidiTargetRegistry` | `CapturedControls::for_plugin(&client)`: the shadow and the MIDI target, typed; `register_plugin_node_types` is removed |
+  | bevy-tutti: `crossfade_audio_node(.., Box::new(plugin_client))` | `crossfade_plugin_node(commands, entity, client)`; `AudioGraphRes::{insert_plugin, replace_plugin}` are public, and `ReplaceRefused` is generic over what it hands back (`ReplaceRefused<U = Box<dyn AudioUnit>>`) |
+  | bevy-tutti: `AudioGraphRes::inspect` on a plugin node read its `Legacy` shadow | `None`: a plugin node has no shadow; its controls are the entity's `PluginShadow` |
+
+  **A live plugin's latency is now one device block** (plus its own), which
+  is how DAWs host out-of-process plugins. The IPC pipeline ships one device
+  callback per chunk, so the plugin-server has a whole device period to
+  answer. Doc 013's decision 8 had kept a fixed 64-frame chunk; that left
+  the server microseconds for every chunk after a callback's first, and live
+  plugin audio was 93–99% silent blocks at 441-, 480- and 1024-frame
+  callbacks (0% now). The chunk is `Prepare::quantum` when the host knows
+  its callback size, else `MaxBlock`, at most 4096 frames; tick mode and
+  `TickStorage` are gone from the batcher.
+
+  | Was | Now |
+  |---|---|
+  | a plugin declared its latency + 64 | + one device callback (live), + the graph's `MaxBlock` (a render, or a host that does not know its callback) |
+  | tutti-graph: `Prepare` carried rate and `MaxBlock` | also an optional device quantum: `Prepare::with_quantum`, `Prepare::quantum` (additive) |
+  | tutti-cpal opened every stream with the backend's default buffer | a device reporting a buffer range is opened with a fixed 512-frame buffer (`PREFERRED_QUANTUM`, clamped into the range), reported as `OutputSpec::quantum` (new field, `OutputSpec::with_quantum`); a device reporting none keeps its default buffer and `quantum: None` |
+  | bevy-tutti prepared the graph for rate and `MaxBlock` | also the opened stream's quantum, at build and again on a device restart (`AudioGraphRes::prepared` reads it) |
+  | the plugin-server's shared slab held 64 frames per channel | `MAX_CHUNK` (4096) or the host's smaller `max_buffer_size` |
+  | parameter automation sampled a point every 8 frames | every 8 frames up to 10 points a block, wider for a longer block, so a device-callback block never spills a queue to the heap on the audio thread |
+
+  **Fixed: ragged blocks corrupted plugin audio** (also on main before this).
+  Each call was submitted as its own chunk and collected into the next
+  call's frames, so wherever consecutive lengths differed (an export's
+  100-frame blocks; a 441- or 480-frame device quantum rendered in 64-frame
+  passes plus a remainder) frames were dropped or zero-padded: 2 303 of
+  3 399 samples wrong at 100-frame blocks. The batcher now fills a FIFO and
+  ships only whole chunks, reading output from a ring, so a plugin's output
+  is its input delayed by exactly the declared latency however the blocks
+  are cut. The plugin's MIDI, parameter automation, harmony and
+  note expression still arrive through `InputSlot`s (event ports come
+  later), so the node still declares `Shape::legacy` and a graph holding it
+  is still rendered in 64-frame blocks.
+
 - **tutti-graph: events as ports, the graph side** (design doc 013,
   "Rewrite order" item 5; no MIDI node is ported yet, and `Legacy` MIDI
   through `MidiInPort` mailboxes is unchanged). What changes for a caller:

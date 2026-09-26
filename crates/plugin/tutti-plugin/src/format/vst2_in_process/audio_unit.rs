@@ -21,7 +21,7 @@ use tutti_midi_types::MidiUnitId;
 use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
-use crate::host::node::transport_source::TransportSource;
+use crate::host::node::transport_source::PolledTransport;
 use crate::host::node::Midi;
 use crate::protocol::{Features, TransportInfo};
 
@@ -62,7 +62,7 @@ pub struct InProcessVst2Client {
     /// producer cell is shared across fundsp graph-commit clones (see
     /// [`InputSlot`]), so a `set_transport_source` on any clone reaches the one
     /// the audio thread runs.
-    transport: InputSlot<TransportSource>,
+    transport: InputSlot<PolledTransport>,
     /// What the loader reported for this plugin, as the gate `transport` is
     /// drained against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
@@ -189,7 +189,7 @@ impl InProcessVst2Client {
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
     /// host turns into the `audioMasterGetTime` snapshot the plugin polls.
     ///
-    /// Wrapped in a `TransportSource` stamped with the current sample rate
+    /// Wrapped in a `PolledTransport` stamped with the current sample rate
     /// (updated live on a device change). The snapshot only reaches plugins
     /// advertising [`Features::TRANSPORT`]; others always drain a default.
     ///
@@ -202,7 +202,7 @@ impl InProcessVst2Client {
         reader: tutti_core::transport::Transport,
         meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
     ) {
-        self.transport.install(Arc::new(TransportSource::new(
+        self.transport.install(Arc::new(PolledTransport::new(
             Arc::new(reader),
             meter,
             self.sample_rate,
@@ -460,7 +460,7 @@ impl AudioUnit for InProcessVst2Client {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::host::node::route_with_latency(
+        crate::util::node::route_with_latency(
             self.metadata.num_inputs.count() as usize,
             self.metadata.num_outputs.count() as usize,
             self.metadata.latency_samples.get() as f64,
@@ -603,7 +603,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::host::node::route_with_latency(
+        crate::util::node::route_with_latency(
             self.metadata.num_inputs.count() as usize,
             self.metadata.num_outputs.count() as usize,
             self.metadata.latency_samples.get() as f64,
@@ -873,17 +873,17 @@ mod transport_tests {
     /// the whole node needs a live `Vst2Instance` (a real plugin binary on
     /// disk), so the transport rail is exercised on its own — it is the piece
     /// that was missing, and it is a pure function of the declared features.
-    fn slot() -> InputSlot<TransportSource> {
+    fn slot() -> InputSlot<PolledTransport> {
         InputSlot::new(Features::TRANSPORT)
     }
 
     /// A rolling transport at `tempo`, plus the source the node installs for it.
-    fn rolling(tempo: f64, rate: f64) -> (Transport, Arc<TransportSource>) {
+    fn rolling(tempo: f64, rate: f64) -> (Transport, Arc<PolledTransport>) {
         let t = Transport::new(rate);
         t.settings.set_tempo(tempo);
         let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
         t.motion.drain();
-        let source = Arc::new(TransportSource::new(
+        let source = Arc::new(PolledTransport::new(
             Arc::new(t.clone()),
             Arc::new(RtPublish::new(MeterMap::default())),
             rate,

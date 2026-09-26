@@ -2,25 +2,28 @@
 //!
 //! # Why this type exists
 //!
-//! Loading returns one owned type rather than a `(Box<dyn AudioUnit>,
-//! PluginHandle)` pair. Two reasons, the first of which is why the boxing:
+//! Loading returns one owned type rather than a `(node, PluginHandle)` pair.
+//! Two reasons, the first of which is why the boxing:
 //!
 //! **The process boundary leaked.** VST2 runs in the host process (its `AEffect`
 //! fuses editor and audio processor into one instance, so the two cannot be
 //! split across processes); every other format runs in a subprocess. Those are
-//! different concrete types, so the only thing a single return could name was
-//! their shared `AudioUnit` supertrait. Whether a plugin was in-process is an
-//! implementation detail, and it decided the caller's API surface.
+//! different concrete types — a native graph node (`PluginClient<Bound>`)
+//! and an `AudioUnit` run through `tutti_graph::Legacy` — so the only thing
+//! a single return could name was a boxed node. Whether a plugin was
+//! in-process is an implementation detail, and it decided the caller's API
+//! surface.
 //!
-//! **`AudioUnit` misdescribes a plugin.** It says "a compute unit with N audio
-//! inputs". But a plugin also consumes per-block MIDI, transport, chord/scale
-//! context and note-expression through side-channels fundsp cannot express — so
-//! a synth reports `inputs() == 0` while consuming a MIDI stream every block.
+//! **A node misdescribes a plugin.** It says "a compute unit with N audio
+//! inputs". But a plugin also consumes per-block MIDI, chord/scale context and
+//! note-expression through side-channels the graph does not carry yet — so a
+//! synth has no audio inputs while consuming a MIDI stream every block.
 //! Handing back the node as the plugin's identity discards everything else it
 //! is.
 //!
-//! `Plugin` owns the node privately and exposes it through
-//! [`into_unit`](Plugin::into_unit) as one deliberate step. The per-block
+//! `Plugin` owns the node privately and gives it up as one deliberate step:
+//! it is itself an [`IntoNode`](tutti_graph::IntoNode), so inserting it into
+//! a graph is `editor.insert(key, kind, plugin)`. The per-block
 //! streams are reached through capability accessors that answer `None` when the
 //! plugin declined them, so the check is the shape of the call rather than
 //! something to remember.
@@ -35,8 +38,10 @@
 //! Where the two genuinely differ, the difference is a *format* capability and
 //! not a process-boundary one:
 //!
-//! - MIDI and transport unify exactly — both backends own the same `Midi`, and
-//!   both drain the same gated transport slot.
+//! - MIDI and transport unify — both backends own the same `Midi`, and both
+//!   map the transport through the same function (`transport_source`); the
+//!   subprocess node reads it from the graph's `Env`, the in-process VST2 node
+//!   (an `AudioUnit` until it is ported) from a polled reader.
 //! - Harmony, note-expression and param automation are subprocess-only, and
 //!   VST2 has no such concepts to begin with, so declining them is the honest
 //!   answer for the format rather than an artifact of where it runs.
@@ -318,11 +323,15 @@ impl Plugin {
         }
     }
 
-    /// Install a live transport reader. `false` if the plugin declared it does
-    /// not want a transport snapshot.
+    /// Give the plugin the project transport and meter. `false` if the plugin
+    /// declared it does not want a transport snapshot.
     ///
-    /// Both backends deliver this — the in-process VST2 node drains the same
-    /// gated slot into the `TimeInfo` its `audioMasterGetTime` callback serves.
+    /// Both backends deliver it, from different places. The subprocess node
+    /// reads the transport from each block's `Env` once it is in a graph, so
+    /// it takes only `meter` and `reader` is not used; the in-process VST2 node
+    /// has no `Env` (it is an `AudioUnit` until it is ported, doc 013) and
+    /// polls `reader` into the `TimeInfo` its `audioMasterGetTime` callback
+    /// serves.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,
@@ -333,7 +342,10 @@ impl Plugin {
             return false;
         }
         match &mut self.backend {
-            Backend::Subprocess(c) => c.set_transport_source(reader, meter),
+            Backend::Subprocess(c) => {
+                let _ = reader;
+                c.set_meter(meter);
+            }
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(c) => c.set_transport_source(reader, meter),
         }
@@ -403,49 +415,21 @@ impl Plugin {
 
     // ---- The graph node ---------------------------------------------------
 
-    /// Take the audio node for insertion into a fundsp graph.
+    /// The node as the concrete out-of-process [`PluginClient`], unbound, for
+    /// a host that wants the typed client: its
+    /// [`controls`](PluginClient::controls) before insertion, or its own
+    /// insertion path ([`bind`](PluginClient::bind) then `Editor::insert`,
+    /// which hands back its controls and the fork source that forks it by
+    /// state transfer).
     ///
-    /// Consuming and explicit: a plugin *has* a node, it is not one. Wire the
-    /// per-block inputs above before calling this — they are installed on the
-    /// node's shared cells, so an install after the box is in the graph still
-    /// reaches it, but keeping the order obvious is the point of the API.
-    ///
-    /// The [`PluginHandle`] survives independently; clone it from
+    /// `Err` carries the node for a plugin that is not a `PluginClient` — an
+    /// in-process VST2 instance, an `AudioUnit` that goes in through
+    /// `tutti_graph::Legacy` and has no fork source yet; a fork of a graph
+    /// holding it is refused as not forkable. Clone the
     /// [`handle`](Self::handle) first if the control surface is needed after
-    /// the node moves into the graph.
-    pub fn into_unit(self) -> Box<dyn tutti_core::AudioUnit> {
-        match self.backend {
-            Backend::Subprocess(c) => c,
-            #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c,
-        }
-    }
-
-    /// Split into the node and the control handle.
+    /// this.
     ///
-    /// [`into_unit`](Self::into_unit) plus the handle, for a caller that wants
-    /// both and would otherwise clone the handle before consuming the plugin.
-    pub fn into_parts(self) -> (Box<dyn tutti_core::AudioUnit>, PluginHandle) {
-        let handle = self.handle.clone();
-        (self.into_unit(), handle)
-    }
-
-    /// The node as the concrete out-of-process [`PluginClient`], for a host
-    /// inserting it into a native graph: a `PluginClient` hands the editor
-    /// the fork source that forks it by state transfer
-    /// ([`IntoNode`](tutti_graph::IntoNode), or
-    /// [`PluginClient::fork_source`]), so an export can fork a graph holding
-    /// it. [`into_unit`](Self::into_unit)'s `Box<dyn AudioUnit>` cannot: a
-    /// boxed unit forks only by clone-and-`isolate`, which a plugin refuses
-    /// (`forkable() == false`).
-    ///
-    /// `Err` carries the node as [`into_unit`](Self::into_unit) would hand it
-    /// over, for a plugin that is not a `PluginClient` — an in-process VST2
-    /// instance, which has no fork source yet; a fork of a graph holding it
-    /// is refused as not forkable. Clone the [`handle`](Self::handle) first
-    /// if the control surface is needed after this.
-    ///
-    /// Boxed, like the backend holding it: a `PluginClient` is ~15 KiB.
+    /// Boxed, like the backend holding it: a `PluginClient` is several KiB.
     pub fn into_client(
         self,
     ) -> std::result::Result<Box<PluginClient>, Box<dyn tutti_core::AudioUnit>> {
@@ -453,6 +437,54 @@ impl Plugin {
             Backend::Subprocess(c) => Ok(c),
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(c) => Err(c),
+        }
+    }
+}
+
+/// A loaded plugin as a graph node, whichever backend it landed in:
+/// `editor.insert(key, kind, plugin)`.
+///
+/// Consuming and explicit: a plugin *has* a node, it is not one. Wire the
+/// per-block inputs before inserting — they are installed on shared cells, so
+/// an install afterwards through the returned controls still reaches the
+/// node, but keeping the order obvious is the point of the API. The
+/// [`PluginHandle`] survives independently; clone it from
+/// [`handle`](Plugin::handle) first if the control surface is needed after
+/// the node moves into the graph.
+///
+/// The controls are the subprocess node's [`PluginControls`]; `None` for an
+/// in-process VST2 plugin, whose per-block inputs are installed through
+/// `Plugin` before insertion. A subprocess plugin hands the editor its fork
+/// source (a fork by state transfer); an in-process VST2 one has none.
+///
+/// [`PluginControls`]: crate::host::node::PluginControls
+impl tutti_graph::IntoNode for Plugin {
+    type Controls = Option<crate::host::node::PluginControls>;
+
+    fn into_node(self) -> (Box<dyn tutti_graph::Node>, Self::Controls) {
+        let tutti_graph::NodeParts { node, controls, .. } = self.into_parts();
+        (node, controls)
+    }
+
+    fn into_parts(self) -> tutti_graph::NodeParts<Self::Controls> {
+        match self.backend {
+            Backend::Subprocess(c) => {
+                let parts = tutti_graph::IntoNode::into_parts(c.bind());
+                tutti_graph::NodeParts {
+                    node: parts.node,
+                    controls: Some(parts.controls),
+                    fork: parts.fork,
+                }
+            }
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => {
+                let parts = tutti_graph::IntoNode::into_parts(tutti_graph::Legacy::new(*c));
+                tutti_graph::NodeParts {
+                    node: parts.node,
+                    controls: None,
+                    fork: parts.fork,
+                }
+            }
         }
     }
 }

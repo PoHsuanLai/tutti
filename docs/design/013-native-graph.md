@@ -5,7 +5,9 @@ Phases 1 and 2) has landed, and `Engine` renders it
 ([Phase 2](#phase-2--runtime-behind-the-engine), 2b) and nothing else
 (Phase 3 PR 15); the Bevy adapter runs on it alone (PR 13; PR 11 had put it
 beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
-renders only it (PR 14). **Phase 3 is done**; Phases 4–6 are next. Work that does not need the graph has
+renders only it (PR 14). **Phase 3 is done**; Phases 4–6 are next, and
+rewrite-order item 4's plugin half has landed (the plugin node is native and
+bound by typestate; see [below](#item-4s-plugin-half-landed)). Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -262,14 +264,13 @@ the race. Every type below exists because the audit found the bug it prevents.
 
 **Smart types 2: follow-ups.**
 
-- **#51 (`feat/plugin-typestate`) can drop `PluginNode`.** It wrapped the
-  plugin client only because the blanket `impl<N: Node> IntoNode for N`
-  held the impl slot a `Node` type needs to hand the editor its own fork
-  source. With the blanket gone, the plugin node can be a `Node` and
-  implement `IntoNode` itself (`into_parts` with `PluginFork`). #51 also
-  meets the typed `ForkMode::Offline` (its `Rebind::of` has no downcast and
-  no `Sever` case) and the required `Timeline::segment_generation` on its
-  timeline impls.
+- **#51 (`feat/plugin-typestate`) dropped `PluginNode`** (done, in #51). It
+  wrapped the plugin client only because the blanket `impl<N: Node>
+  IntoNode for N` held the impl slot a `Node` type needs to hand the editor
+  its own fork source. With the blanket gone, `PluginClient<Bound>` is the
+  `Node` and implements `IntoNode` itself (`into_parts` with `PluginFork`).
+  #51 also meets the typed `ForkMode::Offline` (its `Rebind::of` has no
+  downcast and no `Sever` case).
 - **#48 (`fix/live-disk-loop`)**: the seat is keyed here for the memory
   tier and the forked (offline) disk voice, which both seat through
   `Seat::next`; that reads the generation itself, and #48's `live_loop.rs`
@@ -3032,10 +3033,10 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar` kernel in `tutti-types` |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The executor advances the transport once per block and publishes `Env { frame, beat_window, tempo, rate, transport_epoch }`. Nodes keep `last_epoch: u64`. The arithmetic in `beat_window.rs` is kept, and all 8 `rebind_offline` impls go |
-| `TransportSource` (plugin) | A pure function of `Env` plus the meter |
+| `TransportSource` (plugin) | **Done (item 4, plugin half).** A pure function of `Env` plus the meter (`transport_source::from_env`) |
 | Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass |
 | `MidiInPort`, `MidiPostBlock`/`MidiOutSink`, bevy `MidiTargetRegistry` | Events ports. Event edges join the one topological order, so arp → synth delivers **in the same block**. The uniform `MIDI_OUT_LATENCY_BLOCKS = 1` is paid only on actual `Feedback` edges. Addressing becomes `(NodeKey, InPort::Events(n))` |
-| `plugin_host/bind.rs` and `latency.rs` (the 3 production `node_as_mut` sites, the latency poll, the `CompensatedLatency` shadow) | Binding is a typestate transition at insert. A latency change is a `Shape` change in the next `Delta` |
+| `plugin_host/bind.rs` and `latency.rs` (the 3 production `node_as_mut` sites, the latency poll, the `CompensatedLatency` shadow) | **Done (item 4, plugin half).** Binding is a typestate transition at insert. A latency change is a `Shape` change in the next `Delta` (the poll that feeds `Editor::set_latency` stays, reading the plugin's controls) |
 
 **Rewrite natively (the DSP core is kept; the shape changes):**
 
@@ -3045,8 +3046,8 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | **Done (item 7).** **Sampler `PlaybackSlot`** | Render each voice **a block at a time** into a planar scratch lane, then do one vectorized accumulate. Today every voice goes through `set_f32(at_f32 + s)` per sample, and calls `stretch::Unit::tick` and the disk reader's `tick` per sample. Vertical SIMD along time is where the gain is; cross-voice SoA helps less here, because each voice reads a different wave at a different fractional position (gather-bound; this is a judgement) |
 | **Done (item 7).** **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
 | `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide". **Deferred by item 7** to the voice's native port: not clean behind `Legacy` ("Item 7 landed") |
-| `PluginClient` (the shell; IPC/bridge/shm stay) | `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>: Node`. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go. Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
-| `Batcher` | Delete tick mode and `TickStorage::{F32,F64}`. The slab and `PIPELINE_LATENCY_FRAMES` come from `prepare(max_block)`. **Open:** at device-quantum blocks the pipeline latency grows from 64 frames to one device block per out-of-process plugin. Whether to keep an internal 64-frame pipeline is a latency-vs-robustness call |
+| `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
+| `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
 | `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports |
 | `MidiPreBlock` | A hardware-input source node with an events out port. `MidiRoutingSnapshot` compiles into router ops. `BlockClock` (clock/MTC out) becomes a sink node that reads `Env` |
 | `Svf` + "Stereo" `Svf` | One width-generic node. (The "Stereo" types are already N-wide, so the name is left over from the extraction.) `Controls` makes the filter type switchable live. Coefficients recompute every k samples, or ramp `g`/`k` within a block, instead of a per-sample `tan`. SoA over channels |
@@ -3088,12 +3089,122 @@ vocoder retirement channel for voices the pool removes.
 | 1 | **Latency defects D1–D3, plus D5, D7, D8** | These are bugs, and small | No |
 | 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
-| 4 | **`Env` + plugin typestate** (Phase 2/3) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
+| 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); porting the MIDI nodes and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
 | 9 | Remaining mechanical ports, then delete `Legacy` | | Yes |
+
+#### Item 4's plugin half landed
+
+**What landed.**
+
+- **Typestate.** `PluginClient<Unbound>` (as loaded) → `bind()` →
+  `PluginClient<Bound>`, which owns the audio path (the IPC batcher and its
+  scratch). Only `Bound` goes into a graph: its `IntoNode` hands back its
+  `PluginControls` (the typed control surface §2 describes) and a fork source
+  (the state-transfer fork, #14/#38). An unbound plugin can be neither
+  inserted nor boxed as a node, pinned by `compile_fail` doctests in
+  `tutti-plugin`'s `host::node`. The bound client is itself the `Node` the
+  executor owns: it first sat in a private newtype (`PluginNode`), because
+  `tutti-graph`'s blanket `impl<N: Node> IntoNode for N` would have been its
+  `IntoNode`, with `Controls = ()` and no fork source. Smart types 2 (#53)
+  removed the blanket impl, and the wrapper went with it.
+- **Latency in `Shape`.** The node declares the plugin's figure plus the
+  pipeline's chunk (`PluginControls::declared_latency`, one function for both
+  readers). A runtime change reaches PDC at the next commit through
+  `Editor::set_latency`; bevy-tutti's poll hands the controls' figure to the
+  editor when it differs from the editor's own, so `CompensatedLatency` and
+  the shadow re-probe (`Legacy::controlled` for a plugin) are gone.
+  `bind.rs`'s transport binding is gone too; what is left is the meter
+  (`plugin_bind_meter`) and parameter automation.
+- **Transport from `Env`.** `transport_source::from_env` maps
+  `Env::transport_at` of each chunk's first frame, plus the meter, onto the
+  ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
+  an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
+  `recording` flag (additive; tutti-core's engine sets it) because the ABIs
+  carry it. The continuous-sample counter is `Env`'s frame.
+- **`AudioUnit<F64>` and tick mode deleted.** One `f32` node; the wire's
+  `f64` conversion stays in the batcher. The chunk (and so the declared
+  pipeline latency) is the device's callback (`Prepare::quantum`, which
+  tutti-cpal reports and bevy-tutti prepares the graph with, again on a
+  device restart), else `MaxBlock`, capped by the slab's `MAX_CHUNK` (4096),
+  settled in `prepare`. See decision 8 for why it is not 64 frames.
+- **Whole chunks through a FIFO.** The batcher fills a FIFO and ships only
+  whole chunks, reading output from a ring, so the output is exactly one
+  chunk late however the blocks are cut (a review found ragged blocks
+  corrupting audio before: 2 303 of 3 399 samples wrong at 100-frame
+  blocks; pinned by `clap_ragged`).
+- **A chunk's inputs are gathered when it begins (found in review).** The
+  MIDI clip, automation and harmony inputs read their window from the
+  transport's position when drained. Drained at submission, a chunk longer
+  than a `Legacy` pass read its window from its *last* pass, and every event
+  reached the plugin `chunk - 64` frames early (an export's notes 960 frames
+  early, since its chunk is the 1024-frame export block). The node now drains
+  them in `Chunks::begin`, for `at + chunk` frames from the pass holding the
+  chunk's first frame, and re-bases the offsets by `at`. Pinned by
+  `clap_fork`'s `a_clip_note_reaches_an_exported_plugin_on_its_frame` and
+  `a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame`. The
+  event-port conversion replaces the mechanism.
+- **A fork's crash is latched where the wait sees it (found in review).**
+  The offline wait ended on `bridge.is_crashed()` without telling the fork's
+  watch, whose health probe holds the bridge weakly; a render that finished
+  inside one process poll dropped the bridge with the executor before
+  `fork_health` asked, and a crashed fork read as healthy (reproduced on a
+  fast machine; CI's runners were slow enough to poll first). The wait now
+  latches the crash (`ForkWatch::latch_crash`).
+
+**Deferred, and why.**
+
+- **Event ports.** MIDI, parameter automation, harmony and note expression
+  still arrive through their `InputSlot`s and the MIDI port, each polling a
+  timeline of its own per call. tutti-graph's event ports have landed (#50);
+  converting the plugin's inputs to them is the next PR. The seam is `PluginInputs`
+  (`host/node/controls.rs`) and the payload build in `graph_node.rs`: each
+  slot's `drain` becomes a read of the node's event port. Because they still
+  read time out of band, **the node declares `Shape::legacy`**, and a plan
+  holding a plugin is still rendered in `LEGACY_CHUNK` blocks; the flag goes
+  with the slots.
+- **Arrival latency.** The node reads the transport at its chunk's own frame,
+  not `Cx::arrival` earlier: `Env` cannot answer for frames before its block.
+  A plugin behind a latent path therefore sees the uncompensated playhead, as
+  it did under `Legacy`.
+- **In-process VST2.** Still an `AudioUnit` through `Legacy`, polling its
+  transport (`PolledTransport`, sharing the snapshot mapping); it ports with
+  the "Port mechanically" group.
+- **A device whose callback is not known, or varies.** The chunk is the
+  device's callback only when the host knows it: tutti-cpal opens a device
+  that reports a buffer range with a fixed 512-frame buffer
+  (`PREFERRED_QUANTUM`, clamped into the range), and reports the size as
+  `OutputSpec::quantum`; a device reporting no range is opened with its
+  default buffer, its quantum unknown, and the chunk falls back to
+  `MaxBlock`, which need not line up with its callbacks — the output is
+  still exactly one chunk late, but a chunk completed mid-callback is
+  collected before the server can answer. The same holds past `MAX_CHUNK`
+  and for a backend whose callbacks vary in size. Measuring the first
+  callbacks and re-preparing is the fix if such a device shows up.
+  Two more gaps on this path, from #51's review: a device that reports a
+  range but refuses the fixed size fails to open (no retry with the default
+  buffer, which would also have to clear the reported quantum), and the
+  quantum is the size requested, never checked against the callbacks
+  delivered.
+- **The reply timeout at large chunks.** `MAX_PROCESS_TIMEOUT` (50 ms) is
+  shorter than a chunk's period past about 2 400 frames at 48 kHz; a chunk
+  that large only arises from a device whose smallest buffer exceeds
+  `PREFERRED_QUANTUM`. Derive the cap from the chunk when one does.
+- **A controls-less insert.** With the wrapper gone, `Unforkable(client)` or
+  a hand-built `NodeParts` boxes the bound client with no `PluginControls`
+  and no fork source. It is explicit opt-in, and the host then never hands
+  the editor a latency change; the typed insert remains the only path the
+  hosts use.
+- **A fork's latency.** A fork's `prepare` waits for the latency change a
+  rate or render-mode switch causes (`PluginBridge::settle`: two round trips
+  on the command queue, after which the latency cell holds what the server
+  sent), then records the figure its plan compiles; a later move is a fork
+  fault (`PluginRenderFault::LatencyChanged`), never a silently misaligned
+  export. Pinned by `an_export_is_aligned_when_the_plugin_latency_moves_offline`
+  (the reference plugin adds 24 frames in offline mode).
 
 #### Item 3 landed (#10)
 
@@ -3554,7 +3665,8 @@ width tests (`a_pool_wider_than_the_sampler_reads_is_refused`,
 The owner delegated these on 2026-09-24. The migration uses the proposed
 option in each case: 1 new crate; 2 yes; 3 no; 4 ports; 6 fan-in on event
 ports only; 7 linear ramps first; 8 keep the internal 64-frame pipeline for
-now. Item 5 was decided when Phase 0 ran: `tutti-io`.
+now (**reversed** 2026-09-26, see 8). Item 5 was decided when Phase 0 ran:
+`tutti-io`.
 
 1. **Crate placement**: new `tutti-graph` (proposed) vs growing `tutti-core`.
 2. **`f32` only in the graph?** Proposed yes; nothing reaches `AudioUnit<F64>`
@@ -3609,3 +3721,22 @@ now. Item 5 was decided when Phase 0 ran: `tutti-io`.
 8. **Out-of-process plugin pipeline.** Either keep an internal 64-frame
    pipeline (a fixed 64-frame latency), or follow the device block (the latency
    grows with the buffer size).
+   - **First decided (item 4): keep the internal 64-frame pipeline.**
+   - **Reversed (2026-09-26, the same PR): follow the device block.** The
+     64-frame pipeline was not a latency trade-off but silence. A chunk is
+     answered by the server while the host renders on, and inside one device
+     callback the host renders its 64-frame chunks back to back: every chunk
+     but the first in a callback is collected microseconds after it was
+     submitted, and the server has not answered it. Measured through the
+     real `plugin-server` at real-time pacing (`tests/clap_live.rs`, 200
+     blocks after warm-up): with 64-frame chunks, **186 of 200** blocks
+     silent at 480-frame callbacks, **198 of 200** at 441, **187 of 200** at
+     1024; with the callback as the chunk, **0 of 200** at each, and every
+     block is the input delayed by exactly the declared latency.
+   - **The rule now:** a live plugin's chunk is the engine's callback block
+     (`Prepare::quantum`, from tutti-cpal's opened stream; re-prepared on a
+     device restart), so the server has a whole device period to answer. Its
+     latency is its own plus one device block, which is how DAWs host
+     out-of-process plugins. Without a known quantum the chunk is the graph's
+     `MaxBlock`. An offline fork waits for every chunk, so its chunk is its
+     `MaxBlock` and its declared latency says so.

@@ -26,7 +26,7 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use tutti_core::{ChannelLayout, SampleRate};
+use tutti_core::{ChannelLayout, SampleRate, Samples};
 
 use crate::block::OutputBlock;
 use crate::error::{Error, Result};
@@ -46,7 +46,19 @@ pub struct OutputSpec {
     pub sample_rate: SampleRate,
     pub channels: ChannelLayout,
     pub sample_format: cpal::SampleFormat,
+    /// The frames every callback carries, when the stream is opened with a
+    /// fixed buffer size (`None`: the backend's default, whose size is not
+    /// known until it calls back). A graph is prepared with it
+    /// (`tutti_graph::Prepare::with_quantum`), so a node that keeps work in
+    /// step with the device — a hosted out-of-process plugin, which ships one
+    /// callback's worth to its server per callback — can.
+    pub quantum: Option<Samples>,
 }
+
+/// The callback size asked of a device that offers a range: 512 frames
+/// (10.7 ms at 48 kHz), a common DAW default, clamped into what the device
+/// supports.
+pub const PREFERRED_QUANTUM: Samples = Samples(512);
 
 impl OutputSpec {
     /// A spec with no device behind it — what a test constructs.
@@ -59,7 +71,15 @@ impl OutputSpec {
             sample_rate,
             channels,
             sample_format,
+            quantum: None,
         }
+    }
+
+    /// This spec, opening the stream with a fixed `quantum`-frame buffer.
+    #[must_use]
+    pub fn with_quantum(mut self, quantum: Samples) -> Self {
+        self.quantum = Some(quantum);
+        self
     }
 
     pub(crate) fn from_supported(c: &cpal::SupportedStreamConfig) -> Self {
@@ -67,6 +87,7 @@ impl OutputSpec {
             sample_rate: SampleRate::from(c.sample_rate().0),
             channels: ChannelLayout::from(usize::from(c.channels()).max(1)),
             sample_format: c.sample_format(),
+            quantum: quantum_for(c.buffer_size()),
         }
     }
 
@@ -74,8 +95,26 @@ impl OutputSpec {
         cpal::StreamConfig {
             channels: self.channels.count(),
             sample_rate: cpal::SampleRate(self.sample_rate.get().round() as u32),
-            buffer_size: cpal::BufferSize::Default,
+            buffer_size: match self.quantum {
+                // `u32` at the cpal boundary; a quantum is at most `MAX_FRAMES`.
+                Some(q) => cpal::BufferSize::Fixed(u32::try_from(q.get()).unwrap_or(u32::MAX)),
+                None => cpal::BufferSize::Default,
+            },
         }
+    }
+}
+
+/// The fixed callback size to open a device with: [`PREFERRED_QUANTUM`]
+/// clamped into the range it reports, and never past [`MAX_FRAMES`] (the
+/// callback's own buffers). `None` for a device that reports no range, which
+/// is opened with its default buffer.
+fn quantum_for(range: &cpal::SupportedBufferSize) -> Option<Samples> {
+    match *range {
+        cpal::SupportedBufferSize::Range { min, max } => {
+            let (min, max) = (min as usize, (max as usize).min(MAX_FRAMES));
+            (min <= max).then(|| Samples(PREFERRED_QUANTUM.get().clamp(min.max(1), max)))
+        }
+        cpal::SupportedBufferSize::Unknown => None,
     }
 }
 
@@ -336,5 +375,57 @@ impl StreamDriver for ManualStreamDriver {
         *self.faults.lock().unwrap_or_else(|p| p.into_inner()) = Some(faults);
         *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(block);
         Ok(ManualRunning { slot: self.slot })
+    }
+}
+
+#[cfg(test)]
+mod quantum_tests {
+    use super::*;
+
+    /// A device reporting a buffer range is opened with a fixed callback size:
+    /// the preferred 512 when it fits, clamped to the range when not, and
+    /// never past the callback's own buffers; a device reporting none gets
+    /// its default buffer, and the spec says the size is unknown.
+    ///
+    /// Mutation: return `None` for a range → the opened stream's size is
+    /// unknown and no graph can keep in step with it → fails.
+    #[test]
+    fn a_device_range_gives_a_fixed_quantum() {
+        use cpal::SupportedBufferSize::{Range, Unknown};
+        assert_eq!(
+            quantum_for(&Range { min: 64, max: 4096 }),
+            Some(Samples(512))
+        );
+        assert_eq!(
+            quantum_for(&Range {
+                min: 1024,
+                max: 4096
+            }),
+            Some(Samples(1024))
+        );
+        assert_eq!(
+            quantum_for(&Range { min: 16, max: 256 }),
+            Some(Samples(256))
+        );
+        assert_eq!(quantum_for(&Unknown), None);
+        let spec = OutputSpec::new(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            cpal::SampleFormat::F32,
+        )
+        .with_quantum(Samples(480));
+        assert!(matches!(
+            spec.stream_config().buffer_size,
+            cpal::BufferSize::Fixed(480)
+        ));
+        let spec = OutputSpec::new(
+            SampleRate(48_000.0),
+            ChannelLayout::STEREO,
+            cpal::SampleFormat::F32,
+        );
+        assert!(matches!(
+            spec.stream_config().buffer_size,
+            cpal::BufferSize::Default
+        ));
     }
 }

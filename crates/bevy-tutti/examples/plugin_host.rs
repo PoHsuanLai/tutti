@@ -8,7 +8,8 @@
 //!
 //! With no path it runs the parts that need no plugin binary — the request
 //! lifecycle, the catalog, and the failure path — and says what it skipped. With
-//! one, it loads that plugin for real: binds the transport, declares a param
+//! one, it loads that plugin for real: gives it the meter (its transport is the
+//! graph's own, read each block), declares a param
 //! modulatable, opens and closes the editor, and prints what each step produced.
 //!
 //! # What this is checking
@@ -18,7 +19,7 @@
 //! wants a private field or a second lookup, the design is wrong.
 //!
 //! Note what is *absent*: no `plugins.load(..)` on the frame thread, no manual
-//! `set_transport_source`, no `param_target` bookkeeping, no
+//! `set_meter`, no `param_target` bookkeeping, no
 //! `MidiTargetRegistry::register`. Those are the adapter's job, and a host that
 //! had to do them would be doing the work this crate exists to do.
 //!
@@ -56,8 +57,8 @@ use tutti_types::ParamAddr;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The project tempo. Deliberately not 120: a plugin that reports 120 here is
-/// reading a default rather than this session, which is the bug the transport
-/// binding exists to prevent.
+/// reading a default rather than this session, which reading the transport
+/// from the graph's `Env` prevents.
 const TEMPO: f64 = 90.0;
 /// Long enough for a load to finish (subprocess launch is ~0.5s at best) plus
 /// the frames the editor open takes to attach.
@@ -66,9 +67,9 @@ const TICKS: usize = 600;
 const BLOCK: f64 = 512.0;
 /// Frames pulled through the graph at the end, to prove audio moves.
 ///
-/// Well past the two blocks of warm-up: `tick` buffers 64 samples before
-/// shipping, then the pipeline lags one more block. Anything ≤128 measures only
-/// the dead zone and reads as broken audio.
+/// Well past the warm-up: the out-of-process pipeline lags one 64-frame chunk,
+/// and a plugin that renders its own latency lags more. Anything ≤128 measures
+/// only the dead zone and reads as broken audio.
 const RENDER_FRAMES: usize = 1024;
 /// DC level fed into the plugin's input, so an *effect* plugin has something to
 /// transform. A generator ignores it; a passthrough or gain reveals itself.

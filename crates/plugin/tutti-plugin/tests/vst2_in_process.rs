@@ -62,7 +62,7 @@ fn clear_probe_env() {
 }
 
 /// Load the probe through the in-process VST2 path, keeping only the handle —
-/// which is what a real host is left holding after `into_parts`.
+/// which is what a real host is left holding once the node is in a graph.
 fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
     let path: PathBuf = probe_path::probe_path().clone();
     clear_probe_env();
@@ -260,7 +260,8 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     let plugin = tutti_plugin::catalog::Plugin::open(&staged, SAMPLE_RATE)
         .expect("Plugin::open should load a .vst in-process");
     clear_probe_env();
-    let (_unit, handle) = plugin.into_parts();
+    let handle = plugin.handle().clone();
+    drop(plugin);
 
     assert!(!handle.is_crashed());
     assert!(

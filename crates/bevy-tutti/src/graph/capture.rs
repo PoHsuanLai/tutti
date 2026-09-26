@@ -18,7 +18,7 @@
 //! |---|---|---|
 //! | `MidiTarget` (`midi`) | `MidiTargetRegistry` | MIDI registration, routing, sequencing |
 //! | `ModParamsHandle` (`modulation`) | `ModTargetRegistry` | the modulation resolver |
-//! | `PluginShadow` (`plugin`) | a `PluginClient` unit | plugin bind and latency poll |
+//! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`) | plugin meter bind and latency poll |
 //!
 //! Every one holds only state the node shares with its clones (see each type),
 //! so the component reaches the running node without the graph. Each also
@@ -113,15 +113,36 @@ impl CapturedControls {
             fork: fork.map(std::sync::Mutex::new),
             #[cfg(feature = "modulation")]
             params: mods.and_then(|r| r.capture(unit)),
-            // Not a registry: `PluginClient` is this crate's own dependency, so
-            // there is nothing for a host to register. An in-process plugin
-            // node (VST2) is another type and captures nothing, as before —
-            // binding never reached it.
+            // A hosted out-of-process plugin is not an `AudioUnit` (it is a
+            // native graph node), so no unit is one:
+            // [`for_plugin`](Self::for_plugin) captures it. An in-process
+            // plugin node (VST2) is an `AudioUnit` of another type and
+            // captures nothing, as before — binding never reached it.
             #[cfg(feature = "plugin")]
-            plugin: unit
-                .as_any()
-                .downcast_ref::<tutti_plugin::handles::PluginClient>()
-                .map(|client| client.controls()),
+            plugin: None,
+        }
+    }
+
+    /// The controls of a loaded out-of-process plugin, captured from the
+    /// unbound client before it is bound and inserted
+    /// ([`AudioGraphRes::insert_plugin`](crate::graph::AudioGraphRes::insert_plugin)):
+    /// its [`PluginControls`](tutti_plugin::handles::PluginControls) as the
+    /// entity's `PluginShadow`, and its MIDI port as its `MidiTarget` — a
+    /// hosted plugin's inbox is an ordinary `MidiInPort`, so MIDI routing
+    /// finds it like any synth's. No fork hook: the plugin's own fork source
+    /// carries its clip (`PluginClient::fork_source`).
+    ///
+    /// Typed, where [`capture`](Self::capture) asks registries of an
+    /// `AudioUnit`: the plugin load holds the concrete client, so there is
+    /// nothing to downcast.
+    #[cfg(feature = "plugin")]
+    pub fn for_plugin(client: &tutti_plugin::handles::PluginClient) -> Self {
+        Self {
+            midi: Some(client.midi_port().clone()),
+            fork: None,
+            #[cfg(feature = "modulation")]
+            params: None,
+            plugin: Some(client.controls()),
         }
     }
 
@@ -159,22 +180,16 @@ impl CapturedControls {
     /// A control this unit does not have is **removed**: the old unit's port or
     /// params would otherwise stay reachable under the new unit's node id.
     ///
-    /// The plugin binding latches are cleared too. `PluginTransportBound` and
-    /// `PluginParamsBound` say "*this* plugin has its transport and automation
+    /// The plugin binding latches are cleared too. `PluginMeterBound` and
+    /// `PluginParamsBound` say "*this* plugin has its meter and automation
     /// installed", and the incoming `PluginClient` has neither: left in place
     /// they would stop the binding systems from ever installing them.
-    /// `CompensatedLatency` records what PDC was last planned against for the
-    /// outgoing node; clearing it makes the latency poll re-plan for the
-    /// incoming one on its next pass.
     pub(crate) fn replace(self, entity: &mut EntityWorldMut, node: AudioNode) {
         let node: NodeId = node.0;
         let _ = (&entity, node);
         #[cfg(feature = "plugin")]
         {
-            entity.remove::<(
-                crate::plugin_host::PluginTransportBound,
-                crate::plugin_host::CompensatedLatency,
-            )>();
+            entity.remove::<crate::plugin_host::PluginMeterBound>();
             #[cfg(feature = "modulation")]
             entity.remove::<crate::plugin_host::PluginParamsBound>();
         }

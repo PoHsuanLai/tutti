@@ -6,150 +6,91 @@
 //! into an oversampling mode, a look-ahead limiter given a longer window. Every
 //! format signals it (VST3 `restartComponent(kLatencyChanged)`, CLAP
 //! `clap_host_latency.changed`, AU a `kAudioUnitProperty_Latency` property
-//! change), and the engine carries all three to `PluginClient`'s latency atomic.
+//! change), and the engine carries all three to the plugin's latency cell.
 //!
-//! It stops there. Updating what `AudioUnit::latency()` reports does not re-run
-//! PDC on its own, so without this system every compensation delay in the graph
-//! keeps the figure it was planned against. The result is a plugin whose own
-//! latency is right and whose *alignment against every other path* is wrong —
-//! audible as a track drifting out of time with the rest of the mix, and
-//! self-correcting the next time an unrelated graph edit happens to occur.
+//! The graph does not read that cell. A node declares its latency in its
+//! `Shape`, which the editor reads at insert; after that the editor's figure
+//! is the one PDC compiles against until something hands it another
+//! (`Editor::set_latency`). Doc 013: a latency change is a `Shape` change in
+//! the next commit. Without this system every compensation delay keeps the
+//! figure it was planned against — a plugin whose own latency is right and
+//! whose *alignment against every other path* is wrong, audible as a track
+//! drifting out of time with the rest of the mix.
+//!
+//! # One number, compared where it lives
+//!
+//! The poll compares the figure the plugin's node declares now
+//! (`PluginControls::declared_latency`: its own latency plus the chunk its
+//! pipeline holds, the same sum its `Shape` reports) with the one the editor
+//! holds (`AudioGraphRes::node_latency`), and hands the first to the second
+//! when they differ. There is no record of "what compensation was last planned
+//! against" beside the editor's own figure, because the editor's figure *is*
+//! that record.
 //!
 //! # Why polling rather than the invalidation callback
 //!
 //! `PluginHandle::on_invalidate` exists and fires `PluginInvalidation::Latency`
-//! from the bridge thread. It is not used here, for two reasons.
-//!
-//! The callback is documented as emitted **only by the out-of-process backend**,
-//! so a subscriber would fix latency re-planning for subprocess-hosted plugins
-//! and silently not for in-process ones. The latency atomic is written on both
-//! paths.
-//!
-//! And a callback cannot touch the `World` — it would need a channel and a
-//! drain system, which is a second route for a value the graph already holds.
-//! Polling reads the one owner. This is the same shape as
-//! [`plugin_health_poll`](super::health::plugin_health_poll), which polls the
+//! from the bridge thread. A callback cannot touch the `World` — it would need a
+//! channel and a drain system, which is a second route for a value the plugin's
+//! controls already hold. Polling reads the one owner. This is the same shape
+//! as [`plugin_health_poll`](super::health::plugin_health_poll), which polls the
 //! crash flag rather than subscribing to a death notification.
-//!
-//! # What `CompensatedLatency` owns
-//!
-//! Not a copy of the plugin's latency — that would be a second owner of a value
-//! the plugin's shared latency cell already holds, needing invalidation this
-//! could not see. It
-//! records *what the last compensation pass was planned against*, which is
-//! distinct state: the plugin answers "what is my latency now", this answers
-//! "what did the graph last align for". A difference between them is exactly
-//! the condition that makes the graph stale, and neither value alone expresses
-//! it.
 //!
 //! # What the tests here do not cover
 //!
-//! `PluginClient::new` launches a plugin-server subprocess, so no unit test can
-//! put a real plugin in a graph. The tests below cover the decision rule
-//! (`needs_recompensation`) and the two guards that must *not* fire — a
-//! non-plugin node and a missing graph. Nothing here observes the flag actually
-//! being raised for a live plugin whose latency changed; that needs an
-//! integration test loading a real binary, and no such harness exists in this
-//! crate yet. Stated rather than implied, because the negative tests pass
-//! whether or not the system does anything at all.
-//!
-//! What *is* pinned elsewhere is the half this poll depends on: that the latency
-//! cell a [`PluginShadow`] holds is the node's own, shared with every clone
-//! (`tutti-plugin`'s `latency_and_tail_are_shared_between_handles`).
+//! `PluginClient::new` launches a plugin-server subprocess, so no unit test
+//! here can put a real plugin in a graph. The tests below cover the two guards
+//! that must *not* fire — a non-plugin node and a missing graph.
+//! `tests/plugin_capture.rs` puts a real plugin behind the poll and watches a
+//! latency change reach the graph.
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::{AudioNode, Samples};
+use tutti_core::AudioNode;
 
 use crate::graph::{AudioGraphRes, GraphDirty};
 use crate::plugin_host::PluginShadow;
 
-/// The latency the last compensation pass was planned against.
+/// Hands the graph a plugin's latency when the figure its node declares no
+/// longer matches the one the editor holds.
 ///
-/// Inserted by [`plugin_latency_poll`] on first observation, so a plugin that
-/// never changes its latency never grows the component. Absence means "not yet
-/// compensated for", which is why the first poll marks the graph dirty: the
-/// load-time figure was published before any compensation ran.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompensatedLatency(
-    /// In [`Samples`], as the plugin's node reports it — *not* the plugin's
-    /// current latency, which lives in its shared latency cell.
-    pub Samples,
-);
-
-/// Marks the graph dirty when a plugin's reported latency no longer matches
-/// what compensation was planned against.
+/// `AudioGraphRes::refresh_node_latency` feeds `Editor::set_latency`, and
+/// `GraphDirty` is set, so the next commit moves PDC to the new figure without
+/// touching the plugin — which is why this must run before the `Commit` phase
+/// to be seen in the same frame. Pinned to the main thread
+/// ([`NonSendMarker`](bevy_ecs::system::NonSendMarker)) for the reason
+/// `commit_graph` is: `Editor::set_latency` collects what the audio thread
+/// retired, which can be a plugin node whose drop tears down an editor window.
 ///
-/// Two things: the graph is told to look again
-/// (`AudioGraphRes::refresh_node_latency`, which feeds
-/// `Editor::set_latency`), and `GraphDirty` is set. The editor holds the
-/// latency it probed at insert, so it re-probes the node's shadow (the
-/// plugin's figure plus its pipeline block, which only the unit knows) and the
-/// next commit moves PDC to it without touching the plugin. The flag makes
-/// that frame commit, and `commit_graph` publishes the new plan's figures
-/// with it — so this must run before the `Commit` phase to be seen in the
-/// same frame.
-/// Pinned to the main thread ([`NonSendMarker`](bevy_ecs::system::NonSendMarker))
-/// for the reason `commit_graph` is: `Editor::set_latency` collects what the
-/// audio thread retired, which can be a plugin node whose drop tears down an
-/// editor window.
+/// Runs over [`PluginShadow`], because the latency cell belongs to the node
+/// and not to the handle. An entity with no shadow — a node that is not a
+/// hosted plugin — is skipped, and so is one whose shadow was captured for a
+/// node it no longer carries: the same guard `plugin_host::bind` uses.
 ///
-/// Runs over [`PluginShadow`] rather than over `PluginEmitter`, because the
-/// latency cell belongs to the node and not to the handle. An entity with no
-/// shadow — a node that is not a `PluginClient` — is skipped, and so is one
-/// whose shadow was captured for a node it no longer carries: the same guard
-/// `plugin_host::bind` uses, since a node can lose its plugin identity between
-/// frames.
+/// Reads the graph before writing it, so a frame on which no plugin's latency
+/// moved leaves `AudioGraphRes` unchanged.
 pub fn plugin_latency_poll(
     _main: bevy_ecs::system::NonSendMarker,
-    mut commands: Commands,
     dirty: Option<ResMut<GraphDirty>>,
-    mut graph: Option<ResMut<AudioGraphRes>>,
-    plugins: Query<(
-        Entity,
-        &AudioNode,
-        &PluginShadow,
-        Option<&CompensatedLatency>,
-    )>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    plugins: Query<(&AudioNode, &PluginShadow)>,
 ) {
-    let Some(mut dirty) = dirty else {
+    let (Some(mut dirty), Some(mut graph)) = (dirty, graph) else {
         return;
     };
 
-    for (entity, node, shadow, compensated) in plugins.iter() {
+    for (node, shadow) in plugins.iter() {
         let Some(controls) = shadow.controls_for(node) else {
             continue;
         };
-        let current = controls.latency();
-
-        if !needs_recompensation(compensated.map(|c| c.0), current) {
+        let declared = crate::graph::clamp_latency(controls.declared_latency());
+        if graph.node_latency(*node) == declared.samples() {
             continue;
         }
-
-        if let Some(graph) = graph.as_mut() {
-            graph.refresh_node_latency(*node);
+        if graph.refresh_node_latency(*node, declared) {
+            dirty.0 = true;
         }
-        commands.entity(entity).insert(CompensatedLatency(current));
-        dirty.0 = true;
     }
-}
-
-/// Whether a plugin reporting `current` needs the graph re-compensated, given
-/// what was last planned against.
-///
-/// Split out because it is the only part of [`plugin_latency_poll`] reachable
-/// without a live plugin: `PluginClient::new` launches a subprocess, so a unit
-/// test cannot put one in a graph. Keeping the decision here means the rule can
-/// be pinned even though the system around it can only be covered by an
-/// integration test that loads a real plugin.
-///
-/// `None` counts as needing a pass. Nothing has been compensated for this
-/// plugin yet, and a plugin that *loads* reporting a non-zero latency needs one
-/// exactly as much as a plugin that changes later — treating absence as "no
-/// change" would leave every load-time latency uncompensated until the plugin
-/// happened to change it.
-fn needs_recompensation(compensated: Option<Samples>, current: Samples) -> bool {
-    compensated != Some(current)
 }
 
 #[cfg(test)]
@@ -159,8 +100,8 @@ mod tests {
     use crate::AudioEngineState;
     use bevy_app::prelude::*;
 
-    /// The poll writes `CompensatedLatency` and raises `GraphDirty`; nothing
-    /// else in this app does, so both observations are attributable.
+    /// The poll raises `GraphDirty`; nothing else in this app does, so the
+    /// observation is attributable.
     fn test_app() -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes::headless(0, 2));
@@ -170,9 +111,9 @@ mod tests {
         app
     }
 
-    /// An entity whose `AudioNode` is not a `PluginClient` must not raise the
+    /// An entity whose `AudioNode` is not a hosted plugin must not raise the
     /// flag — every node in the graph carries `AudioNode`, so a poll that did
-    /// not check the type would mark the graph dirty every frame forever and
+    /// not require a shadow would mark the graph dirty every frame forever and
     /// re-run compensation on a graph nothing had changed.
     #[test]
     fn a_non_plugin_node_never_marks_the_graph_dirty() {
@@ -181,65 +122,14 @@ mod tests {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.insert(tutti_nodes::testing::Const::mono(0.0))
         };
-        let entity = app.world_mut().spawn(node).id();
+        app.world_mut().spawn(node);
 
         app.update();
 
         assert!(
             !app.world().resource::<GraphDirty>().0,
-            "a dc node is not a PluginClient and has no latency to compensate"
+            "a dc node is not a plugin and has no latency to compensate"
         );
-        assert!(
-            app.world().get::<CompensatedLatency>(entity).is_none(),
-            "nothing should record a compensated latency for a non-plugin node"
-        );
-    }
-
-    /// The decision table for `needs_recompensation(compensated, current)`.
-    ///
-    /// One table rather than three functions: every row is the same two-argument
-    /// call against a bool, and the interesting content was always the *reasons*,
-    /// which the rows now carry directly.
-    ///
-    /// - The two `false` rows are what keep the system from marking the graph
-    ///   dirty every frame: with no comparison, compensation would re-run
-    ///   forever and `commit_graph` would republish to the audio thread on every
-    ///   tick.
-    /// - Both change directions are pinned, because a plugin leaving an
-    ///   oversampling mode *shortens* its latency, and a compensation planned
-    ///   against the longer figure is as misaligned as one against a shorter.
-    /// - The `None` rows are the first pass. The load-time figure is published
-    ///   before any compensation runs, so absence cannot be read as "already
-    ///   aligned" — and `None` vs `Some(Samples(0))` is exactly the conflation
-    ///   that would skip the first pass for plugins reporting latency late.
-    #[test]
-    fn needs_recompensation_fires_on_any_difference_and_on_the_first_pass() {
-        let cases = [
-            (
-                Some(Samples(512)),
-                Samples(512),
-                false,
-                "unchanged: re-running would dirty the graph every frame",
-            ),
-            (Some(Samples(0)), Samples(0), false, "unchanged at zero"),
-            (Some(Samples(512)), Samples(1024), true, "latency grew"),
-            (Some(Samples(1024)), Samples(512), true, "latency shrank"),
-            (None, Samples(512), true, "never compensated for"),
-            (
-                None,
-                Samples(0),
-                true,
-                "absence is not the same as a recorded zero",
-            ),
-        ];
-
-        for (compensated, current, expected, why) in cases {
-            assert_eq!(
-                needs_recompensation(compensated, current),
-                expected,
-                "needs_recompensation({compensated:?}, {current:?}): {why}"
-            );
-        }
     }
 
     /// With no graph resource the system is inert rather than panicking.

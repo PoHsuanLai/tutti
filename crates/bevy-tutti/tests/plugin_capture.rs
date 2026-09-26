@@ -2,30 +2,28 @@
 //! the shadow captured at load — never through the graph.
 //!
 //! `plugin_host::bind` and `plugin_host::latency` reach a plugin through its
-//! [`PluginShadow`]: the node's `PluginControls`, taken from the unit in
-//! `plugin_load_promote` before the unit moves into the graph. This file puts a
-//! real plugin behind that path — the reference CLAP plugin, loaded by a real
-//! `plugin-server` subprocess — and checks each consumer of the shadow did its
-//! job:
+//! [`PluginShadow`]: the node's `PluginControls`, taken from the loaded client
+//! in `plugin_load_promote` (`CapturedControls::for_plugin`) before it is bound
+//! and moves into the graph. This file puts a real plugin behind that path —
+//! the reference CLAP plugin, loaded by a real `plugin-server` subprocess — and
+//! checks each consumer of the shadow did its job:
 //!
 //! - the shadow is there, bound to the entity's node;
-//! - the transport binding ran (`PluginTransportBound`), which it only does
-//!   through the shadow;
-//! - the latency poll recorded the plugin's declared latency
-//!   (`CompensatedLatency`), which it reads only through the shadow — the first
-//!   test in this crate to watch that poll see a live plugin, which
-//!   `plugin_host::latency`'s module docs record as missing;
-//! - the MIDI target was captured too, since `PluginClient` is registered with
-//!   the MIDI registry by the hosting plugin.
+//! - the meter binding ran (`PluginMeterBound`), which it only does through
+//!   the shadow;
+//! - the graph plans PDC against the node's declared latency, and a latency
+//!   the plugin changes reaches it through the poll, which reads only the
+//!   shadow;
+//! - the MIDI target was captured too, from the plugin's own port.
 //!
 //! # Mutation
 //!
-//! Replacing `capture.capture(unit.as_ref())` in `plugin_load_promote` with
-//! `CapturedControls::default()` fails with every observation empty: no MIDI
-//! target, no shadow, so no transport bind and no latency record. Dropping only
-//! the `plugin` arm of `CapturedControls::from_registries` (always `None`)
-//! fails with the MIDI target still present and the other three empty, which
-//! is how the test tells the two captures apart.
+//! Replacing `CapturedControls::for_plugin(&client)` in `plugin_load_promote`
+//! with `CapturedControls::default()` fails with every observation empty: no
+//! MIDI target, no shadow, so no meter bind, and the latency change never
+//! reaches the graph. Dropping only the `plugin` field of `for_plugin`
+//! (`plugin: None`) fails with the MIDI target still present and the others
+//! empty, which is how the test tells the two captures apart.
 //!
 //! # The two artifacts
 //!
@@ -44,14 +42,15 @@ use common::plugin::{clap_probe, plugin_server};
 use std::time::{Duration, Instant};
 
 use bevy_app::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+    AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
+    MetronomeRes, TransportRes,
 };
 use bevy_tutti::midi::MidiTarget;
 use bevy_tutti::plugin_host::{
-    CompensatedLatency, PluginLoadTerminated, PluginRequest, PluginShadow, PluginTransportBound,
-    TuttiHostingPlugin,
+    PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::transport::{ClickState, Transport};
@@ -59,6 +58,10 @@ use tutti_core::{AudioNode, SampleRate, Samples};
 use tutti_plugin::catalog::PluginId;
 
 const SAMPLE_RATE: f64 = 48_000.0;
+/// The plugin's pipeline chunk here: one device callback when the graph knows
+/// the device's (doc 013, decision 8 reversed); this headless graph knows none,
+/// so the chunk is its `MaxBlock` (bevy-tutti's `NATIVE_MAX_BLOCK`).
+const CHUNK: usize = 1024;
 
 fn app() -> App {
     // SAFETY: nextest runs this test in its own process, and nothing else in it
@@ -70,7 +73,9 @@ fn app() -> App {
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioEngineState::Running);
-    // Both are what `plugin_bind_transport` installs; it waits without them.
+    // The meter is what `plugin_bind_meter` installs; it waits without it.
+    // (The transport is the graph's `Env`, which needs nothing installed; the
+    // modulation half binds params against `TransportRes`.)
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(MetronomeRes(std::sync::Arc::new(ClickState::new())));
     app.add_plugins((GraphReconcilePlugin, TuttiHostingPlugin));
@@ -118,8 +123,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     let observed = Observed {
         midi_target_node: world.get::<MidiTarget>(entity).map(MidiTarget::node),
         shadow_node: world.get::<PluginShadow>(entity).map(PluginShadow::node),
-        transport_bound: world.get::<PluginTransportBound>(entity).is_some(),
-        compensated_latency: world.get::<CompensatedLatency>(entity).map(|c| c.0),
+        meter_bound: world.get::<PluginMeterBound>(entity).is_some(),
     };
     assert_eq!(
         observed,
@@ -130,31 +134,50 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
             // The shadow is captured at load, for this node.
             shadow_node: Some(node),
             // Installed through the shadow; no shadow, no binding.
-            transport_bound: true,
-            // Read off the shadow's latency cell: the plugin's own figure.
-            compensated_latency: Some(Samples(
-                tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize
-            )),
+            meter_bound: true,
         },
     );
     // And the graph plans PDC against the node's whole latency: the plugin's
-    // figure plus the one block its out-of-process pipeline holds
-    // (`tutti-plugin`'s `PIPELINE_LATENCY_FRAMES`, its 64-frame batch, which
-    // the unit adds in `route`). Read off the shape the editor holds, which
-    // the latency poll re-probes from the node's shadow. (Handing the editor the plugin's own figure instead —
-    // what the poll reads — drops the pipeline block, and fails here.)
+    // figure plus the one chunk its out-of-process pipeline holds
+    // ([`CHUNK`]), as the node's `Shape` declares it. Read off the shape the
+    // editor holds. (Handing the editor the plugin's own figure instead —
+    // `PluginControls::latency` — drops the pipeline chunk, and fails here.)
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
-        Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + 64),
+        Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + CHUNK),
         "the graph plans PDC against the node's latency"
     );
 
+    // Idle frames after the load leave the graph clean: the poll compares
+    // the plugin's declared latency with the editor's own figure, and while
+    // the two agree it raises nothing, so nothing is recompiled or
+    // republished frame after frame. Observed between the poll and the
+    // commit (which clears the flag), by a probe system (`record_dirty`).
+    //
+    // Mutation (run): raise `GraphDirty` in the poll whether or not the
+    // figure moved → the probe sees it set → fails.
+    app.init_resource::<DirtySeen>();
+    app.add_systems(
+        Update,
+        record_dirty
+            .after(bevy_tutti::plugin_host::plugin_latency_poll)
+            .before(GraphReconcileSystems::Commit),
+    );
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<DirtySeen>().0,
+        0,
+        "an unchanged plugin latency marked the graph dirty"
+    );
+
     // A latency change after load — what a plugin's `latency.changed`
-    // delivers into its cell — reaches the graph through the poll. That is
-    // the one path: the editor probed the plugin at insert and holds that
-    // figure until told.
+    // delivers into its cell — reaches the graph through the poll: a `Shape`
+    // change at the next commit. That is the one path: the editor read the
+    // node's shape at insert and holds that figure until told.
     //
     // Mutation (run): the poll not calling `refresh_node_latency` → the graph
     // keeps planning against the load-time figure, and this fails.
@@ -168,7 +191,7 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
         app.world()
             .resource::<AudioGraphRes>()
             .node_latency(AudioNode(node)),
-        Samples(300 + 64),
+        Samples(300 + CHUNK),
         "a changed plugin latency reaches the graph"
     );
 
@@ -176,8 +199,8 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     // refuses one past `MAX_NODE_LATENCY` outright, and the poll would not
     // ask again until the plugin's figure moved.
     //
-    // Mutation (run): dropping the clamp in `refresh_node_latency` → the
-    // graph keeps 364 and this fails.
+    // Mutation (run): dropping the clamp in `clamp_latency` → the editor
+    // refuses the figure, the graph keeps 364 and this fails.
     app.world()
         .get::<PluginShadow>(entity)
         .and_then(|s| s.controls_for(&AudioNode(node)))
@@ -193,13 +216,26 @@ fn a_loaded_plugin_is_bound_and_polled_through_its_shadow() {
     );
 }
 
+/// Frames on which `GraphDirty` was set between the latency poll and the
+/// commit.
+#[derive(bevy_ecs::prelude::Resource, Default)]
+struct DirtySeen(usize);
+
+fn record_dirty(
+    dirty: bevy_ecs::prelude::Res<GraphDirty>,
+    mut seen: bevy_ecs::prelude::ResMut<DirtySeen>,
+) {
+    if dirty.0 {
+        seen.0 += 1;
+    }
+}
+
 /// What the capture's consumers left on the entity.
 #[derive(Debug, PartialEq)]
 struct Observed {
     midi_target_node: Option<tutti_core::dsp::NodeId>,
     shadow_node: Option<tutti_core::dsp::NodeId>,
-    transport_bound: bool,
-    compensated_latency: Option<Samples>,
+    meter_bound: bool,
 }
 
 /// Spawn a request for the probe on the master and run frames until it loads.
@@ -227,22 +263,22 @@ fn load_probe_entity(app: &mut App) -> bevy_ecs::entity::Entity {
 }
 
 /// A crossfaded plugin is bound again: the incoming `PluginClient` gets the
-/// transport (and, with modulation, its param automation) installed, and the
-/// latency poll records the incoming plugin's figure.
+/// meter (and, with modulation, its param automation) installed, and the
+/// latency poll follows the incoming plugin's figure.
 ///
-/// The binding systems latch on `PluginTransportBound` / `PluginParamsBound`,
+/// The binding systems latch on `PluginMeterBound` / `PluginParamsBound`,
 /// which describe the *outgoing* client. A crossfade keeps the entity and its
 /// markers, so unless the re-capture clears them the incoming client never has
-/// anything installed — a plugin that plays with a stopped default transport
-/// and no automation, and nothing logs.
+/// anything installed — a plugin told 4/4 from bar 0 with no automation, and
+/// nothing logs.
 ///
 /// # Mutation
 ///
 /// Deleting the marker-clearing block at the top of
-/// `CapturedControls::replace` fails the transport (and params) assertion: the
+/// `CapturedControls::replace` fails the meter (and params) assertion: the
 /// incoming client's slots stay empty. Not replacing the shadow at all
 /// (dropping the `plugin` arm of `replace`) fails the latency assertion too,
-/// since the poll keeps reading the outgoing client's 137.
+/// since the poll keeps reading the outgoing client's cell.
 #[test]
 fn a_crossfaded_plugin_is_bound_again() {
     let mut app = app();
@@ -260,7 +296,7 @@ fn a_crossfaded_plugin_is_bound_again() {
     );
     app.update();
     assert!(
-        app.world().get::<PluginTransportBound>(entity).is_some(),
+        app.world().get::<PluginMeterBound>(entity).is_some(),
         "precondition: the outgoing plugin was bound"
     );
 
@@ -275,26 +311,32 @@ fn a_crossfaded_plugin_is_bound_again() {
     const INCOMING_LATENCY: usize = 211;
     incoming.set_latency(Samples(INCOMING_LATENCY));
     let controls = incoming.controls();
-    bevy_tutti::graph::crossfade_audio_node(
-        &mut app.world_mut().commands(),
-        entity,
-        Box::new(incoming),
-    );
+    bevy_tutti::graph::crossfade_plugin_node(&mut app.world_mut().commands(), entity, incoming);
     app.update();
     app.update();
 
     assert!(
-        controls.has_transport_source(),
-        "the incoming plugin must get the transport installed"
+        controls.has_meter(),
+        "the incoming plugin must get the meter installed"
     );
     #[cfg(feature = "modulation")]
     assert!(
         controls.has_param_automation_source(),
         "and its param automation"
     );
+    let node = *app.world().get::<AudioNode>(entity).expect("still bound");
     assert_eq!(
-        app.world().get::<CompensatedLatency>(entity).map(|c| c.0),
-        Some(Samples(INCOMING_LATENCY)),
+        app.world().resource::<AudioGraphRes>().node_latency(node),
+        Samples(INCOMING_LATENCY + CHUNK),
+        "the graph plans against the incoming plugin's declared latency"
+    );
+    // And a later change of the incoming plugin's latency is the one the
+    // poll hands the graph: it reads the incoming plugin's shadow.
+    controls.set_latency(Samples(INCOMING_LATENCY + 7));
+    app.update();
+    assert_eq!(
+        app.world().resource::<AudioGraphRes>().node_latency(node),
+        Samples(INCOMING_LATENCY + 7 + CHUNK),
         "the latency poll must read the incoming plugin"
     );
 

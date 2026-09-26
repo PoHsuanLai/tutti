@@ -17,7 +17,7 @@
 //! | `compensate` | compiles the spec, reads `Plan::compensation` / `total_latency`; inserts nothing |
 //! | `commit` | `Editor::commit`, which collects first |
 //! | `set_node_latency` | `Editor::set_latency` |
-//! | `insert_plugin` | `Legacy::controlled`, handed to the editor with the plugin's own fork source |
+//! | `insert_plugin`, `replace_plugin` | the bound `PluginClient` itself, a native node with its own fork source |
 //! | `export` | `Editor::fork` in `ForkMode::Offline`, through `tutti_export::RenderGraph::fork` |
 //!
 //! # Every unit is `controlled`, none `pure`
@@ -83,6 +83,10 @@ pub(crate) const NATIVE_MAX_BLOCK: Samples = Samples(1024);
 /// it (the same reason `topology::ENTITY_NODE_KIND` exists); it names the
 /// layer in a debugger.
 const UNIT_KIND: &str = "bevy-tutti:unit";
+
+/// The spec `kind` of a hosted plugin, a native node.
+#[cfg(feature = "plugin")]
+const PLUGIN_KIND: &str = "bevy-tutti:plugin";
 
 /// The spec `kind` of the engine's beat generator.
 const ENV_CLOCK_KIND: &str = "bevy-tutti:env-clock";
@@ -170,20 +174,21 @@ impl AudioUnit for Boxed {
 }
 
 /// Why [`AudioGraphRes::replace`](super::AudioGraphRes::replace) did not
-/// take a unit.
-pub enum ReplaceRefused {
+/// take a unit — or, as `ReplaceRefused<Box<PluginClient>>`,
+/// `AudioGraphRes::replace_plugin` a plugin.
+pub enum ReplaceRefused<U = Box<dyn AudioUnit>> {
     /// Not now: the graph is re-preparing (a sample-rate or block-size change
     /// between its two commits). The unit is handed back, untouched; retry
     /// once the re-prepare has resumed —
     /// [`crossfade_audio_node`](super::crossfade_audio_node) keeps it pending
     /// and does.
-    Busy(Box<dyn AudioUnit>),
+    Busy(U),
     /// Never: the graph is poisoned (a re-prepare failed with its units out),
     /// or the node is not in it. The unit was dropped.
     Failed(String),
 }
 
-impl std::fmt::Debug for ReplaceRefused {
+impl<U> std::fmt::Debug for ReplaceRefused<U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy(_) => f.write_str("Busy(..)"),
@@ -260,6 +265,41 @@ fn declared_latency(unit: &mut dyn AudioUnit) -> Latency {
     ))
 }
 
+/// The graph's `Prepare`: `rate`, `max_block`, and the device's callback
+/// `quantum` when the host knows it (`tutti_cpal::OutputSpec::quantum`). A
+/// hosted out-of-process plugin ships one quantum per callback to its server
+/// (doc 013, decision 8 reversed), so the quantum is what keeps its pipeline
+/// in step with the device.
+pub(crate) fn prepare_for(
+    rate: SampleRate,
+    max_block: Samples,
+    quantum: Option<Samples>,
+) -> Prepare {
+    let p = Prepare::new(rate, max_block);
+    match quantum {
+        Some(q) => p.with_quantum(q),
+        None => p,
+    }
+}
+
+/// The graph's current `Prepare`.
+impl NativeGraph {
+    pub(crate) fn prepared(&self) -> Prepare {
+        *self.editor.prepare()
+    }
+}
+
+/// `latency` clamped to what PDC compensates, as the editor clamps a latency
+/// it probes at insert.
+#[cfg(feature = "plugin")]
+pub(crate) fn clamp_latency(latency: Latency) -> Latency {
+    Latency::new(
+        latency
+            .samples()
+            .min(tutti_types::latency::MAX_NODE_LATENCY),
+    )
+}
+
 /// How a unit's fork carries the MIDI clip on its live port, as the MIDI
 /// registry captured it (`CapturedControls`). Without the `midi` feature no
 /// unit has a captured port, and every unit forks from its shadow.
@@ -298,9 +338,15 @@ fn controlled(
 
 impl NativeGraph {
     /// An empty graph with `inputs` global inputs and `outputs` global
-    /// outputs, prepared for `rate`, its executor local.
-    pub(crate) fn new(inputs: usize, outputs: usize, rate: SampleRate) -> Self {
-        let (mut editor, exec) = Editor::new(Prepare::new(rate, NATIVE_MAX_BLOCK));
+    /// outputs, prepared for `rate` and the device's callback `quantum` (when
+    /// known: see [`prepare_for`]), its executor local.
+    pub(crate) fn new(
+        inputs: usize,
+        outputs: usize,
+        rate: SampleRate,
+        quantum: Option<Samples>,
+    ) -> Self {
+        let (mut editor, exec) = Editor::new(prepare_for(rate, NATIVE_MAX_BLOCK, quantum));
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = ChannelLayout::from_count(inputs as u16);
         topology.outputs = vec![Source::Zero; outputs];
@@ -336,9 +382,11 @@ impl NativeGraph {
     /// of the re-prepare run here, now; with it taken, the second half lands
     /// on a later `collect` (and commits are `Retry` until it does).
     pub(crate) fn set_sample_rate(&mut self, rate: SampleRate) {
-        if let Err(e) = self.editor.reprepare(Prepare::new(
+        let current = *self.editor.prepare();
+        if let Err(e) = self.editor.reprepare(prepare_for(
             rate,
-            self.editor.prepare().max_block().samples(),
+            current.max_block().samples(),
+            current.quantum(),
         )) {
             bevy_log::error!("native graph: re-prepare at {} Hz refused: {e}", rate.get());
             return;
@@ -376,18 +424,24 @@ impl NativeGraph {
         }
     }
 
-    /// Re-prepare every node for `rate` and, if given, `max_block` (else the
-    /// block it has): the first half of `Editor::reprepare`, sent. The
-    /// executor checks its units out on its next block, and a later
-    /// `collect` sends them back re-prepared (every frame's `commit_graph`
-    /// does it). A no-op when neither moves.
+    /// Re-prepare every node for `rate`, the device's callback `quantum`
+    /// (the new device's: `None` when it does not say) and, if given,
+    /// `max_block` (else the block it has): the first half of
+    /// `Editor::reprepare`, sent. The executor checks its units out on its
+    /// next block, and a later `collect` sends them back re-prepared (every
+    /// frame's `commit_graph` does it). A no-op when nothing moves.
     pub(crate) fn reprepare(
         &mut self,
         rate: SampleRate,
         max_block: Option<Samples>,
+        quantum: Option<Samples>,
     ) -> Result<(), CommitError> {
         let current = *self.editor.prepare();
-        let prepare = Prepare::new(rate, max_block.unwrap_or(current.max_block().samples()));
+        let prepare = prepare_for(
+            rate,
+            max_block.unwrap_or(current.max_block().samples()),
+            quantum,
+        );
         if prepare == current {
             return Ok(());
         }
@@ -433,46 +487,29 @@ impl NativeGraph {
         node
     }
 
-    /// Insert a hosted plugin so that a fork of the graph (an export) can
-    /// fork it: `Legacy::controlled`'s node, settings ring and shadow, as
-    /// [`insert`](Self::insert) gives every unit, handed to the editor with
-    /// the plugin's own [`ForkSource`](tutti_graph::ForkSource) (a fork by
-    /// state transfer, `PluginClient::fork_source`).
+    /// Insert a hosted plugin: bound (`PluginClient::bind`, the typestate
+    /// transition doc 013 §2 describes) and inserted as the native node it
+    /// then is, which hands the editor its own
+    /// [`ForkSource`](tutti_graph::ForkSource) (a fork by state transfer) and
+    /// declares its latency in its `Shape`.
     ///
-    /// Not through `insert`: a boxed plugin in a `Legacy` has no fork source
-    /// (its `AudioUnit::forkable` is `false` — its clones share the one
-    /// plugin process), so a fork of any graph holding it would be refused
-    /// as not forkable. Nor through `IntoNode for PluginClient`, which has
-    /// no settings ring and no shadow, and the latency re-probe
-    /// ([`refresh_node_latency`](Self::refresh_node_latency)) and
-    /// [`inspect`](Self::inspect) read the shadow.
+    /// No settings ring and no shadow: a plugin takes no `Setting`s, and the
+    /// host drives it through the `PluginControls` it captured before
+    /// inserting (`CapturedControls::for_plugin`) — so [`inspect`](Self::inspect)
+    /// answers `None` for it, and a latency change reaches the editor as the
+    /// figure those controls declare ([`refresh_node_latency`](Self::refresh_node_latency)).
     #[cfg(feature = "plugin")]
     pub(crate) fn insert_plugin(
         &mut self,
         client: Box<tutti_plugin::handles::PluginClient>,
     ) -> AudioNode {
         let node = AudioNode(NodeId::new());
-        let fork = client.fork_source();
-        let (legacy, controls) = Legacy::controlled(&mut self.editor, Boxed(client));
-        let parts = tutti_graph::IntoNode::into_parts(legacy);
-        debug_assert!(
-            parts.fork.is_none(),
-            "a plugin forks by state transfer, never by clone"
-        );
-        self.editor.insert(
-            key(node),
-            UNIT_KIND,
-            tutti_graph::NodeParts {
-                node: parts.node,
-                controls: (),
-                fork: Some(fork),
-            },
-        );
+        let _controls = self.editor.insert(key(node), PLUGIN_KIND, client.bind());
         self.nodes.insert(
             key(node),
             Entry {
                 node,
-                controls: Some(controls),
+                controls: None,
                 // Its fork source carries the clip itself
                 // (`PluginClient::fork_source`).
                 carries_midi: true,
@@ -480,6 +517,71 @@ impl NativeGraph {
         );
         self.edited = true;
         node
+    }
+
+    /// Swap the plugin at `node` for `client`, crossfading when the running
+    /// node is a plugin of the same shape, as [`replace`](Self::replace) does
+    /// for a unit; otherwise a plain swap at the same key. Refused, handing
+    /// `client` back, while a re-prepare is between its two commits.
+    #[cfg(feature = "plugin")]
+    pub(crate) fn replace_plugin(
+        &mut self,
+        node: AudioNode,
+        client: Box<tutti_plugin::handles::PluginClient>,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<(), ReplaceRefused<Box<tutti_plugin::handles::PluginClient>>> {
+        if let Some(cause) = self.editor.poisoned() {
+            return Err(ReplaceRefused::Failed(format!(
+                "the graph is poisoned ({cause}); build a new one"
+            )));
+        }
+        if self.editor.is_repreparing() {
+            return Err(ReplaceRefused::Busy(client));
+        }
+        let k = key(node);
+        if !self.nodes.contains_key(&k) {
+            return Err(ReplaceRefused::Failed(format!(
+                "{node:?} is not in the graph"
+            )));
+        }
+        let rate = self.editor.prepare().sample_rate();
+        let incoming = client.controls().declared_latency();
+        let running = self
+            .editor
+            .base()
+            .and_then(|plan| plan.unit(k))
+            .map(|u| u.shape)
+            .filter(|_| self.editor.spec().topology.nodes.contains_key(&k));
+        // A plugin fades only from a plugin: the same ports and latency, and
+        // the plugin node's own in-place and resolution declarations
+        // (`Editor::replace` checks the shape, and consumes what it refuses).
+        let fits = running.is_some_and(|s| {
+            s.audio_in.count() as usize == client.inputs()
+                && s.audio_out.count() as usize == client.outputs()
+                && s.event_in == 0
+                && s.event_out == 0
+                && !s.in_place
+                && s.event_resolution == Resolution::Sample
+                && s.legacy
+                && s.latency == incoming
+        });
+        let bound = client.bind();
+        if fits {
+            let fade = Fade::seconds(fade, rate, curve);
+            if let Err(e) = self.editor.replace(k, bound, fade) {
+                debug_assert!(false, "a checked replace was refused: {e}");
+                return Err(ReplaceRefused::Failed(e.to_string()));
+            }
+        } else {
+            let _controls = self.editor.insert(k, PLUGIN_KIND, bound);
+        }
+        if let Some(entry) = self.nodes.get_mut(&k) {
+            entry.controls = None;
+            entry.carries_midi = true;
+        }
+        self.edited = true;
+        Ok(())
     }
 
     /// A copy of `target` for an offline render at `rate`, sharing no state
@@ -953,39 +1055,37 @@ impl NativeGraph {
         Some((plan.compensation().to_vec(), plan.total_latency().samples()))
     }
 
-    /// A node's latency may have moved at runtime (a plugin's latency cell):
-    /// ask its shadow again, and if the answer differs, move the editor's
-    /// figure (`Editor::set_latency`) so the next commit moves PDC to it,
-    /// without touching the running unit.
+    /// A node's latency moved at runtime (a plugin's latency cell): hand
+    /// `latency` — the figure the node's `Shape` declares now, which for a
+    /// plugin is `PluginControls::declared_latency` (its own figure **plus**
+    /// the chunk its pipeline holds) — to the editor (`Editor::set_latency`),
+    /// so the next commit moves PDC to it without touching the running node.
+    /// Doc 013: a latency change is a `Shape` change in the next commit.
     ///
-    /// Asked of the shadow — a clone of the unit — rather than handed a figure,
-    /// because the node's latency is the *unit's* declaration: a hosted
-    /// plugin's is its own latency cell **plus** the block its pipeline holds
-    /// (`tutti-plugin`'s `route`), and only the unit knows the second term.
-    /// That is how `Net` read it too (a clone sharing the cell). It holds
-    /// while the unit's `isolate` leaves the latency cell shared with the
-    /// shadow, which `PluginClient`'s does (it isolates nothing: its clones
-    /// share the plugin); `tests/plugin_capture.rs` pins the figure.
+    /// Returns whether the editor's figure moved. `tests/plugin_capture.rs`
+    /// pins the path.
     #[cfg(feature = "plugin")]
-    pub(crate) fn refresh_node_latency(&mut self, node: AudioNode) {
-        let Some(controls) = self.nodes.get(&key(node)).and_then(|e| e.controls.as_ref()) else {
-            return;
-        };
+    pub(crate) fn refresh_node_latency(&mut self, node: AudioNode, latency: Latency) -> bool {
+        if !self.nodes.contains_key(&key(node)) {
+            return false;
+        }
         // Clamped to what PDC compensates, as the editor clamps a latency it
         // probes at insert: `set_latency` refuses a figure past it, and a
         // refused one would never be retried (the poll only fires again when
         // the plugin's figure moves).
-        let latency = Latency::new(
-            declared_latency(&mut *controls.shadow())
-                .samples()
-                .min(tutti_types::latency::MAX_NODE_LATENCY),
-        );
+        let latency = clamp_latency(latency);
         if self.node_latency(node) == latency.samples() {
-            return;
+            return false;
         }
         match self.editor.set_latency(key(node), latency) {
-            Ok(()) => self.edited = true,
-            Err(e) => bevy_log::error!("native graph: latency of {node:?} refused: {e}"),
+            Ok(()) => {
+                self.edited = true;
+                true
+            }
+            Err(e) => {
+                bevy_log::error!("native graph: latency of {node:?} refused: {e}");
+                false
+            }
         }
     }
 

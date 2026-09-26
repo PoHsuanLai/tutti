@@ -17,15 +17,18 @@
 //!
 //! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
 //! launch on a worker, and promotes the result to an `AudioNode` carrying a
-//! [`PluginEmitter`]. [`bind`] then installs the transport, registers the plugin
-//! with the shared MIDI resolver, and builds accumulators for whichever params
-//! the host declared modulatable. [`health`] polls liveness from there on, and
-//! removes `AudioNode` — the one handle everything else keys on — when a plugin
-//! is finally written off.
+//! [`PluginEmitter`]: the plugin is bound into the graph as a native node
+//! (reading its transport from each block's `Env`), and its controls and MIDI
+//! port are captured on the way. [`bind`] then gives it the project meter and
+//! builds accumulators for whichever params the host declared modulatable;
+//! [`latency`] hands the graph a latency the plugin changes. [`health`] polls
+//! liveness from there on, and removes `AudioNode` — the one handle everything
+//! else keys on — when a plugin is finally written off.
 //!
 //! Sub-modules:
 //! - [`load`] — off-thread loading: request → pending → promoted.
-//! - [`bind`] — transport, MIDI and parameter binding once loaded.
+//! - [`bind`] — meter and parameter binding once loaded.
+//! - [`latency`] — a plugin's runtime latency change, onto the graph.
 //! - [`health`] — debounced liveness, state snapshots, unwiring the dead.
 //! - [`editor`] — the GUI window's lifecycle, driven by [`SetEditorVisible`].
 //! - [`scan`] — catalog scanning with per-plugin progress.
@@ -62,9 +65,9 @@ pub mod live_resize;
 #[cfg(target_os = "macos")]
 pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
+pub use bind::{plugin_bind_meter, PluginMeterBound, PluginShadow};
 #[cfg(feature = "modulation")]
 pub use bind::{plugin_bind_params, PluginParamsBound};
-pub use bind::{plugin_bind_transport, PluginShadow, PluginTransportBound};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
     editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
@@ -73,7 +76,7 @@ pub use editor::{
     PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen, SetEditorVisible, Visibility,
 };
 pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginLiveness};
-pub use latency::{plugin_latency_poll, CompensatedLatency};
+pub use latency::plugin_latency_poll;
 pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
@@ -315,18 +318,12 @@ impl Plugin for TuttiHostingPlugin {
                 .in_set(GraphReconcileSystems::Spawn),
         );
 
-        // `PluginClient` is only reachable through the shared MIDI resolver if
-        // its type is registered — an unregistered node type is invisible to
-        // `register_midi_senders`, so without this a hosted plugin receives no
-        // MIDI however it is wired.
-        bind::register_plugin_node_types(app);
-
         // Binding sits between spawn and commit, alongside MIDI registration and
         // route rebuilding: it needs the node to exist, and the graph edits it
         // stages must reach the same frame's commit.
         app.add_systems(
             Update,
-            plugin_bind_transport
+            plugin_bind_meter
                 .after(GraphReconcileSystems::Spawn)
                 .before(GraphReconcileSystems::Commit)
                 .run_if(crate::graph::engine_ready),
@@ -334,8 +331,8 @@ impl Plugin for TuttiHostingPlugin {
 
         // Param accumulators are modulation vocabulary (`ModParamRange`,
         // `ModTargetRegistry`), so this half only exists when that feature does.
-        // A `plugin` build without `modulation` still loads, binds transport and
-        // receives MIDI — it just has no route to modulate a param with.
+        // A `plugin` build without `modulation` still loads, follows the
+        // transport and receives MIDI — it just has no route to modulate a param with.
         #[cfg(feature = "modulation")]
         app.add_systems(
             Update,

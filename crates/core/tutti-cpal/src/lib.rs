@@ -15,7 +15,7 @@ pub use block::OutputBlock;
 pub use driver::{DeviceInfo, Stopped, TuttiDriver};
 pub use driver_seam::{
     CpalDriver, CpalStream, ManualRunning, ManualStream, ManualStreamDriver, OutputSpec,
-    RunningStream, StreamDriver,
+    RunningStream, StreamDriver, PREFERRED_QUANTUM,
 };
 pub use error::{Error, Result};
 pub use faults::{StreamFault, StreamFaultKind, StreamFaults};

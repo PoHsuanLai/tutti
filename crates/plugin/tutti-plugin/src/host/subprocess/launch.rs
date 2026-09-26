@@ -4,7 +4,7 @@
 
 use super::locate::ServerLocator;
 use crate::error::{BridgeError, Result};
-use crate::host::node::BATCH_SIZE;
+use crate::host::node::MAX_CHUNK;
 use crate::protocol::{
     BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
     SampleFormat,
@@ -248,19 +248,15 @@ fn slab_layout_for(
     let outputs = default_if_empty(&loaded.outputs);
 
     SlabLayout {
-        // Sized to the largest block that can actually arrive, NOT to
-        // `config.max_buffer_size`. The two are different quantities that were
-        // being conflated: `max_buffer_size` (8192 by default) is what the
-        // *plugin* is told to size its own buffers for on `LoadPlugin`, whereas
-        // this is what crosses the shared region per block — and fundsp never
-        // hands a node more than `BATCH_SIZE` at a time (see the constant's
-        // docs; `BigBlockAdapter` chunks anything larger upstream).
-        //
-        // At the default that is a 128x over-allocation: 64 KiB of untouched
-        // mapped pages per stereo plugin instead of 512 B. `min` rather than a
-        // bare `BATCH_SIZE` so a host that deliberately configures a *smaller*
-        // buffer still gets a slab it cannot overrun.
-        samples_per_channel: max_buffer_size.min(BATCH_SIZE),
+        // Sized to the largest chunk the node ships (`MAX_CHUNK`: one device
+        // callback, see the batcher), NOT to `config.max_buffer_size`. The two
+        // are different quantities: `max_buffer_size` (8192 by default) is
+        // what the *plugin* is told to size its own buffers for on
+        // `LoadPlugin`, whereas this is what crosses the shared region per
+        // chunk. `min` rather than a bare `MAX_CHUNK` so a host that
+        // deliberately configures a *smaller* buffer still gets a slab it
+        // cannot overrun (the node's chunk is capped at the same figure).
+        samples_per_channel: max_buffer_size.min(MAX_CHUNK),
         format,
         slots: RING_SLOTS as u32,
         inputs,
@@ -599,34 +595,24 @@ mod tests {
         }
     }
 
-    /// The slab is sized to the block that can actually arrive, not to
-    /// `max_buffer_size`. At the shipped default that is a 128x difference —
-    /// enough that it more than pays for the ring this change introduces.
+    /// The slab is sized to the largest chunk the node ships — one device
+    /// callback, at most `MAX_CHUNK` — not to `max_buffer_size`, which is the
+    /// plugin's own buffer bound. (Until doc 013 reversed its decision 8 the
+    /// chunk was 64 frames and the slab 128× smaller than the default
+    /// `max_buffer_size`; a live plugin now gets a whole device callback per
+    /// chunk, and the slab holds the largest one.)
+    ///
+    /// Mutation: size the slab to `max_buffer_size` → 8192 ≠ 4096 → fails.
     #[test]
-    fn slab_is_sized_to_the_real_block_not_the_configured_maximum() {
+    fn slab_is_sized_to_the_largest_chunk_not_the_configured_maximum() {
         let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let layout = slab_layout_for(&l, SampleFormat::Float32, DEFAULT_MAX_BUFFER);
-
-        assert_eq!(layout.samples_per_channel, BATCH_SIZE);
-        assert_eq!(
-            DEFAULT_MAX_BUFFER / BATCH_SIZE,
-            128,
-            "if this ratio changes the comment in `slab_layout_for` is stale"
-        );
-
-        // The headline claim of step 1: even with a 2-slot ring in BOTH
-        // directions, right-sizing leaves the mapping smaller than the old
-        // single-buffer, single-direction slab.
-        let old_bytes = 2 * DEFAULT_MAX_BUFFER * 4;
-        assert!(
-            layout.byte_size_with_header(0) < old_bytes,
-            "ringed layout ({} B) should still beat the old oversized one ({old_bytes} B)",
-            layout.byte_size_with_header(0)
-        );
+        assert_eq!(layout.samples_per_channel, MAX_CHUNK);
+        const { assert!(MAX_CHUNK < DEFAULT_MAX_BUFFER) };
     }
 
-    /// A host configured *below* the batch size gets a slab it cannot overrun —
-    /// the reason this is a `min` and not a bare `BATCH_SIZE`.
+    /// A host configured *below* the chunk ceiling gets a slab it cannot overrun —
+    /// the reason this is a `min` and not a bare `MAX_CHUNK`.
     #[test]
     fn a_smaller_configured_buffer_wins() {
         let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);

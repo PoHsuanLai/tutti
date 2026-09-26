@@ -437,6 +437,59 @@ impl Node for DcLog {
     fn reset(&mut self) {}
 }
 
+/// Logs `Env`'s recording flag once per block, at the block's first frame
+/// and at its last (through `transport_at`).
+struct RecLog(Arc<Mutex<Vec<(bool, bool)>>>);
+
+impl Node for RecLog {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, _: Io<'_>) -> Status {
+        let env = *cx.env;
+        let last = env.offsets().last().expect("a block has a frame");
+        self.0.lock().expect("log").push((
+            env.transport.recording(),
+            env.transport_at(last).recording(),
+        ));
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// The engine hands a graph node the session's recording state in its `Env`
+/// (`Transport::recording`), read once per block: what a hosted plugin's
+/// transport snapshot reports as recording, now that it is a function of
+/// `Env`.
+///
+/// Mutation: drop `.with_recording(control.recording)` in
+/// `TransportClock::begin` → every block reads not recording → fails.
+/// Mutation: read `recording: false` in `Control::read` → fails.
+#[test]
+fn the_recording_flag_reaches_a_nodes_env() {
+    let transport = Transport::new(SR);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let (engine, _ed) = graph_engine(&transport, 256, Unforkable(RecLog(Arc::clone(&log))), 1);
+    transport.motion.try_send(MotionEvent::Play).expect("room");
+    render(&engine, ChannelLayout::MONO, &[256; 2]);
+    transport.settings.set_recording(true);
+    render(&engine, ChannelLayout::MONO, &[256; 2]);
+    transport.settings.set_recording(false);
+    render(&engine, ChannelLayout::MONO, &[256]);
+    let log = log.lock().expect("log").clone();
+    assert_eq!(
+        log,
+        vec![
+            (false, false),
+            (false, false),
+            (true, true),
+            (true, true),
+            (false, false)
+        ]
+    );
+}
+
 /// The largest frame-to-frame gain change in `out` (a DC source's output),
 /// skipping the step into each frame in `except`.
 fn max_step(out: &[f32], except: &[usize]) -> f32 {

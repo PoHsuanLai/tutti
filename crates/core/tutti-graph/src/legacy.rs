@@ -43,7 +43,7 @@
 //!
 //! An `AudioUnit` receives no `Env`. One that follows the transport (a
 //! sampler voice, and so every clip reader; a MIDI clip source feeding a
-//! synth; a plugin's transport source) polls a shared timeline, an
+//! synth; the in-process VST2 plugin's transport) polls a shared timeline, an
 //! `Arc<dyn Timeline>` in tutti-core, on every `process` call, and takes what
 //! it reads as the position of that call's first frame. `Net` rendered every
 //! node 64 frames at a time and moved its clock between chunks, so the poll
@@ -152,7 +152,8 @@
 //! unit's promise that its `isolate` severs all its shared mutable state.
 //! The fork trusts that promise and nothing else. A unit that cannot keep it
 //! answers `false` — `MicMonitorNode` (its clone shares the ring consumer),
-//! `PluginClient` and `InProcessVst2Client` (clones share the plugin) — and
+//! `InProcessVst2Client` (clones share the plugin; an out-of-process
+//! `PluginClient` is a native node, not an `AudioUnit`) — and
 //! so does any unit holding one (`Net` asks its vertices); the node is then
 //! inserted without a fork source, and a fork that needs it is
 //! [`ForkError::NotForkable`](crate::ForkError::NotForkable).

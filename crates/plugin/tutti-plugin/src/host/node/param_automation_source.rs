@@ -363,12 +363,27 @@ impl Curve for PluginParamTarget {
     }
 }
 
-/// How many samples between successive automation points within one block. A
-/// block is at most `fundsp::MAX_BUFFER_SIZE` (64) samples, so a stride of 8
-/// yields up to 8 points per parameter per block — dense enough for smooth
-/// ramps, cheap enough to stay allocation-light. The block boundaries
-/// themselves are always sampled (offset 0 and the last sample).
+/// The densest spacing of automation points within one block: every 8
+/// samples. The block boundaries themselves are always sampled (offset 0 and
+/// the last sample).
 const SAMPLE_STRIDE: usize = 8;
+
+/// The most points one parameter gets per block: a `ParameterQueue`'s inline
+/// capacity, so a queue never spills to the heap on the audio thread.
+const MAX_POINTS: usize = 10;
+
+/// The spacing of automation points in a `block_size`-frame block: every
+/// [`SAMPLE_STRIDE`] samples, widened for a long block so the points (the
+/// strides, plus the final sample) never exceed [`MAX_POINTS`]. A plugin's
+/// block is its host's device callback (doc 013, decision 8 reversed: up to
+/// thousands of frames), where a fixed stride of 8 would put 64 points in a
+/// 512-frame block and allocate. The plugin interpolates between points, so a
+/// wider spacing over a longer block is a coarser ramp, not a lost value: the
+/// block's end is still exact.
+fn stride_for(block_size: usize) -> usize {
+    let last = block_size.saturating_sub(1);
+    SAMPLE_STRIDE.max(last.div_ceil(MAX_POINTS - 1))
+}
 
 /// Beat-scheduled parameter-automation producer. Cheap to clone (envelopes
 /// shared via `Arc`, transport shared via `Arc`) so the fundsp graph-commit
@@ -447,7 +462,7 @@ impl ParamAutomationSource {
     }
 
     /// The rate `refill` is currently dividing by.
-    fn rate(&self) -> SampleRate {
+    pub(super) fn rate(&self) -> SampleRate {
         SampleRate::from(self.sample_rate.load(Ordering::Acquire))
     }
 
@@ -494,6 +509,7 @@ impl ParamAutomationSource {
         let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
         let loop_range = self.transport.loop_range();
         let last = block_size - 1;
+        let stride = stride_for(block_size);
 
         // Ensure `out.queues` has exactly one slot per parameter, reusing the
         // slots (and their inline point storage) that already exist. Growing
@@ -527,7 +543,7 @@ impl ParamAutomationSource {
                 if offset == last {
                     break;
                 }
-                offset = (offset + SAMPLE_STRIDE).min(last);
+                offset = (offset + stride).min(last);
             }
         }
         // Drop any stale trailing queues from a previous, larger param set
@@ -1029,6 +1045,41 @@ mod tests {
         assert!(
             !q.points.spilled(),
             "a full block's points must stay inline (no heap spill)"
+        );
+    }
+
+    /// A device-callback block (512, 1024, 4096 frames) keeps every queue
+    /// inline: the stride widens with the block so a parameter gets at most
+    /// `MAX_POINTS` points, the first at offset 0 and the last on the block's
+    /// final frame. A 64-frame block keeps the stride of 8.
+    ///
+    /// Mutation: always stride `SAMPLE_STRIDE` → 65 points in a 512-frame
+    /// block, spilled to the heap → fails.
+    #[test]
+    fn a_long_block_stays_inline() {
+        let transport = Arc::new(TestTransport::new(120.0));
+        let src = ParamAutomationSource::new(
+            vec![ramp(7)],
+            Arc::clone(&transport) as Arc<dyn TransportState>,
+            44100.0,
+        );
+        for block in [64, 480, 512, 1024, 4096] {
+            let mut out = ParameterChanges::new();
+            src.refill(block, &mut out);
+            let q = &out.queues[0];
+            assert!(!q.points.spilled(), "{block}-frame block spilled");
+            assert!(q.points.len() <= MAX_POINTS, "{block}: {}", q.points.len());
+            assert_eq!(q.points.first().map(|p| p.sample_offset), Some(0));
+            assert_eq!(
+                q.points.last().map(|p| p.sample_offset),
+                Some(block as i32 - 1),
+                "{block}: the block's end is exact"
+            );
+        }
+        assert_eq!(
+            stride_for(64),
+            SAMPLE_STRIDE,
+            "a 64-frame block is unchanged"
         );
     }
 

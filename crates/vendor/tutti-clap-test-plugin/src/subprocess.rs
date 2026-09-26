@@ -66,6 +66,9 @@ static RELEASE_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Whether `render_output` scales its result by the probe's fixed gain.
 static APPLY_GAIN: AtomicBool = AtomicBool::new(false);
+/// Frames the plugin adds to its latency while rendering offline (`0`: the
+/// same latency in both modes). See [`offline_extra_latency`].
+static OFFLINE_EXTRA_LATENCY: AtomicU32 = AtomicU32::new(0);
 
 /// Whether the plain `clap.state` save refuses (returns `false`).
 ///
@@ -129,6 +132,9 @@ pub(crate) fn configure() {
         // would let a release that arrives first be lost.
         BLOCKED.store(n > 0, Ordering::SeqCst);
     }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY") {
+        OFFLINE_EXTRA_LATENCY.store(n, Ordering::SeqCst);
+    }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_APPLY_GAIN") {
         APPLY_GAIN.store(n != 0, Ordering::SeqCst);
     }
@@ -161,6 +167,13 @@ pub fn switches() -> Switches {
 }
 
 /// Whether the render path should scale by the `Gain` parameter.
+/// The frames the plugin adds to its latency (and its `Latency`-mode delay)
+/// while rendering offline, as real plugins with a higher-quality offline mode
+/// do: `TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY`.
+pub(crate) fn offline_extra_latency() -> u32 {
+    OFFLINE_EXTRA_LATENCY.load(Ordering::SeqCst)
+}
+
 pub(crate) fn apply_gain() -> bool {
     APPLY_GAIN.load(Ordering::SeqCst)
 }

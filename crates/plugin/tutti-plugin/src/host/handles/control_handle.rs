@@ -170,9 +170,9 @@ pub struct PluginHandle {
 
 impl PluginHandle {
     /// Construct from a `PluginClient` (out-of-process backend). Call
-    /// this before moving the client into the fundsp graph. The subprocess
+    /// this before moving the client into a graph. The subprocess
     /// backend honors every capability, including the editor.
-    pub fn from_client(client: &crate::host::node::PluginClient) -> Self {
+    pub fn from_client<S>(client: &crate::host::node::PluginClient<S>) -> Self {
         let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
             client.bridge(),
             Arc::clone(client.process_guard()),

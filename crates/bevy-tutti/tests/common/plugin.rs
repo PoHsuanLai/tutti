@@ -51,9 +51,8 @@ pub fn plugin_server() -> PathBuf {
 /// The reference CLAP cdylib, published under a `.clap` name — the server picks
 /// the loader by extension, and reads a bare `.so` as VST2.
 ///
-/// Published by atomic rename because `tutti-plugin`'s suites publish the same
-/// link from their own processes; see their `clap_probe_path` for the race a
-/// remove-then-link pair loses.
+/// `tutti-plugin`'s suites publish the same link from their own processes;
+/// `tutti_fixture_resolve::publish_with_extension` says how it is shared.
 pub fn clap_probe() -> PathBuf {
     let lib = tutti_fixture_resolve::lib_filename("tutti_clap_test_plugin");
     let real = beside_this_binary(&lib).unwrap_or_else(|| {
@@ -63,20 +62,5 @@ pub fn clap_probe() -> PathBuf {
             profile_dir().display()
         )
     });
-    let link = real.with_extension("clap");
-    let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-    let _ = std::fs::remove_file(&staging);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&real, &staging).expect("stage the reference plugin symlink");
-    #[cfg(windows)]
-    std::fs::copy(&real, &staging).expect("stage the reference plugin copy");
-    if std::fs::rename(&staging, &link).is_err() {
-        let _ = std::fs::remove_file(&staging);
-        assert!(
-            link.exists(),
-            "publish the reference plugin at {}",
-            link.display()
-        );
-    }
-    link
+    tutti_fixture_resolve::publish_with_extension(&real, "clap")
 }

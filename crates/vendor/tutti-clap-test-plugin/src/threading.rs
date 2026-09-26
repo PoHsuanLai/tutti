@@ -473,7 +473,7 @@ pub fn log_lines() -> [(i32, &'static CStr); 7] {
 /// # Safety
 /// `host` must be null or valid, and `T` must be the vtable type CLAP defines
 /// for `id`.
-unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Option<&'a T> {
+pub(crate) unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Option<&'a T> {
     if host.is_null() {
         return None;
     }

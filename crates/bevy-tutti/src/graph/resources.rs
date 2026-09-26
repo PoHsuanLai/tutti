@@ -152,7 +152,25 @@ impl AudioGraphRes {
     /// A graph with every node run at `rate`: what the engine builder makes,
     /// at the device's rate.
     pub(crate) fn with_rate(inputs: usize, outputs: usize, rate: SampleRate) -> Self {
-        Self(Mutex::new(NativeGraph::new(inputs, outputs, rate)))
+        Self::for_device(inputs, outputs, rate, None)
+    }
+
+    /// A graph with every node run at `rate`, prepared for a device calling
+    /// back with `quantum` frames (when known): what the engine builder makes,
+    /// from the opened stream's spec.
+    pub(crate) fn for_device(
+        inputs: usize,
+        outputs: usize,
+        rate: SampleRate,
+        quantum: Option<Samples>,
+    ) -> Self {
+        Self(Mutex::new(NativeGraph::new(inputs, outputs, rate, quantum)))
+    }
+
+    /// What every node is prepared for: the rate, the largest block, and the
+    /// device's callback size when the engine knows it.
+    pub fn prepared(&self) -> tutti_graph::Prepare {
+        self.read().prepared()
     }
 
     /// The audio thread's half, for a test that renders what a device would
@@ -203,8 +221,9 @@ impl AudioGraphRes {
         &mut self,
         rate: SampleRate,
         max_block: Option<Samples>,
+        quantum: Option<Samples>,
     ) -> Result<(), tutti_graph::CommitError> {
-        self.write().reprepare(rate, max_block)
+        self.write().reprepare(rate, max_block, quantum)
     }
 
     /// Whether a re-prepare is between its two commits.
@@ -287,16 +306,30 @@ impl AudioGraphRes {
         self.write().insert(unit, fork)
     }
 
-    /// [`insert_boxed`](Self::insert_boxed) for a hosted plugin, keeping the
-    /// concrete `PluginClient` so the editor is handed its fork source (a fork
-    /// by state transfer): an export of a graph holding a plugin inserted as
-    /// a boxed unit is refused as not forkable.
+    /// Insert a hosted plugin: bound (`PluginClient::bind`) and inserted as
+    /// the native node it then is, handing the editor its fork source (a fork
+    /// by state transfer) and its latency (its `Shape`). Capture its controls
+    /// first ([`CapturedControls::for_plugin`](crate::graph::CapturedControls::for_plugin)):
+    /// the plugin is out of reach once inserted.
     #[cfg(feature = "plugin")]
-    pub(crate) fn insert_plugin(
-        &mut self,
-        client: Box<tutti_plugin::handles::PluginClient>,
-    ) -> AudioNode {
+    pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> AudioNode {
         self.write().insert_plugin(client)
+    }
+
+    /// [`replace`](Self::replace) for a hosted plugin: swap the plugin behind
+    /// `node` for `client`, fading when the running node is a plugin of the
+    /// same ports and latency, a plain swap otherwise.
+    /// [`crossfade_plugin_node`](crate::graph::crossfade_plugin_node) does
+    /// this with the incoming plugin's captured controls.
+    #[cfg(feature = "plugin")]
+    pub fn replace_plugin(
+        &mut self,
+        node: AudioNode,
+        client: Box<tutti_plugin::handles::PluginClient>,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<(), ReplaceRefused<Box<tutti_plugin::handles::PluginClient>>> {
+        self.write().replace_plugin(node, client, fade, curve)
     }
 
     /// Take `node` out of the graph. Every edge to and from it reads silence
@@ -566,14 +599,19 @@ impl AudioGraphRes {
         self.write().set_param_snapshot(node, param, value);
     }
 
-    /// `node`'s latency may have moved at runtime — a hosted plugin's latency
-    /// cell changed. The editor holds the latency it probed at insert, so
-    /// this probes the node's shadow again and, if the figure moved, hands it
-    /// to `Editor::set_latency`, which moves PDC on the next commit without
-    /// touching the unit.
+    /// `node`'s latency moved at runtime — a hosted plugin's latency cell
+    /// changed. The editor holds the latency the node's `Shape` declared at
+    /// insert, so this hands it `latency` (for a plugin,
+    /// `PluginControls::declared_latency`), clamped to what PDC compensates,
+    /// and `Editor::set_latency` moves PDC on the next commit without
+    /// touching the node. Returns whether the figure moved.
     #[cfg(feature = "plugin")]
-    pub(crate) fn refresh_node_latency(&mut self, node: AudioNode) {
-        self.write().refresh_node_latency(node);
+    pub(crate) fn refresh_node_latency(
+        &mut self,
+        node: AudioNode,
+        latency: tutti_types::Latency,
+    ) -> bool {
+        self.write().refresh_node_latency(node, latency)
     }
 
     // --- Publishing and rendering ---

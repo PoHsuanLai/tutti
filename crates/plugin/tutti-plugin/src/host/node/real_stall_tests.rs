@@ -34,7 +34,8 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_core::{AudioUnit, BufferVec, F32};
+use tutti_graph::{GraphBuilder, Prepare, Renderer};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::handles::{PluginClient, PluginHandle};
 use crate::util::config::BridgeConfig;
@@ -142,8 +143,8 @@ fn plugin_server_path() -> &'static str {
 ///
 /// The extension is load-bearing: the server dispatches format by file
 /// extension, and cargo's `libtutti_clap_test_plugin.so` reads as **VST2** in
-/// that table, so the CLAP loader is never reached. Published by atomic rename
-/// because the path is shared between test processes.
+/// that table, so the CLAP loader is never reached. The path is shared between
+/// test processes (`tutti_fixture_resolve::publish_with_extension`).
 fn clap_probe_path() -> &'static std::path::Path {
     static LINKED: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     LINKED.get_or_init(|| {
@@ -151,18 +152,7 @@ fn clap_probe_path() -> &'static std::path::Path {
             env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES"),
             "tutti-clap-test-plugin",
         ));
-        let link = real.with_extension("clap");
-        let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-        let _ = std::fs::remove_file(&staging);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &staging).expect("stage the probe symlink");
-        #[cfg(windows)]
-        std::fs::copy(&real, &staging).expect("stage the probe copy");
-        if std::fs::rename(&staging, &link).is_err() {
-            let _ = std::fs::remove_file(&staging);
-            assert!(link.exists(), "publish the probe at {}", link.display());
-        }
-        link
+        tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }
 
@@ -205,28 +195,29 @@ fn load_probe(env: &mut ProbeEnv, render_mode: u32) -> (PluginClient, PluginHand
     (client, handle)
 }
 
+/// `client`, bound, as the only node of a native graph rendering `BLOCK`-frame
+/// blocks: the global inputs feed its inputs, its outputs the global outputs.
+fn graph_of(client: PluginClient) -> Renderer {
+    let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
+    let mut g = GraphBuilder::new(layout(client.inputs()), layout(client.outputs()));
+    let (key, _controls) = g.add_with_controls(client.bind());
+    g.pipe_input(key).pipe_output(key);
+    g.renderer(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)))
+        .expect("a one-plugin graph compiles")
+}
+
 /// Drive one block of DC and return output channel 0.
-fn drive_block(unit: &mut PluginClient, midi_out: &mut crate::protocol::MidiEventVec) -> Vec<f32> {
-    // `PluginClient` implements `AudioUnit` for both f32 and f64, so the scalar
-    // has to be named. f32 is what the rest of this suite reads back.
-    let inputs = <PluginClient as AudioUnit<F32>>::inputs(unit);
-    let outputs = <PluginClient as AudioUnit<F32>>::outputs(unit);
-    let mut input = BufferVec::<F32>::new(inputs.max(1));
-    let mut output = BufferVec::<F32>::new(outputs.max(1));
-    for ch in 0..inputs {
-        for i in 0..BLOCK {
-            input.set_scalar(ch, i, INPUT_DC);
-        }
-    }
-    output.clear();
+fn drive_block(unit: &mut Renderer, midi_out: &mut crate::protocol::MidiEventVec) -> Vec<f32> {
     let _ = midi_out;
-    <PluginClient as AudioUnit<F32>>::process(
-        unit,
-        BLOCK,
-        &input.buffer_ref(),
-        &mut output.buffer_mut(),
-    );
-    (0..BLOCK).map(|i| output.at_f32(0, i)).collect()
+    let dc = [INPUT_DC; BLOCK];
+    let inputs = unit.editor().spec().topology.inputs.count() as usize;
+    let chans: Vec<&[f32]> = (0..inputs).map(|_| &dc[..]).collect();
+    let out = if inputs == 0 {
+        unit.render(BLOCK)
+    } else {
+        unit.render_input(&chans)
+    };
+    out.into_iter().next().expect("the probe has outputs")
 }
 
 // ---------------------------------------------------------------------------
@@ -247,8 +238,9 @@ fn a_real_plugin_that_stops_answering_is_abandoned_and_later_drained() {
 
     // `RenderMode::TagPassthrough` (1): every output sample is input + tag, so a
     // correct block is a known constant and silence is unmistakable.
-    let (mut client, handle) = load_probe(&mut env, 1);
+    let (client, handle) = load_probe(&mut env, 1);
     let bridge = client.bridge();
+    let mut client = graph_of(client);
     let mut midi_out = crate::protocol::MidiEventVec::new();
 
     // --- Steady state before the park.
@@ -368,8 +360,9 @@ fn a_plugin_that_never_parks_settles_nothing() {
     let mut env = ProbeEnv::new();
     // No `BLOCK_FROM`: the plugin answers every block on time.
 
-    let (mut client, handle) = load_probe(&mut env, 1);
+    let (client, handle) = load_probe(&mut env, 1);
     let bridge = client.bridge();
+    let mut client = graph_of(client);
     let mut midi_out = crate::protocol::MidiEventVec::new();
 
     for _ in 0..12 {

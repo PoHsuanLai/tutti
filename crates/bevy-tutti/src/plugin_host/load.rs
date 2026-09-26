@@ -37,7 +37,7 @@ use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
 
-use crate::graph::{AudioGraphRes, ControlCapture, GraphDirty};
+use crate::graph::{AudioGraphRes, CapturedControls, ControlCapture, GraphDirty};
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
@@ -302,18 +302,19 @@ pub fn plugin_load_promote(
                     }
                 }
                 let name = handle.name().to_string();
-                // Before the unit moves into the graph: this is the last point
+                // Before the plugin moves into the graph: this is the last point
                 // the concrete `PluginClient` is in hand, and the shadow the
                 // binding systems drive (and the MIDI target) come from it.
                 //
-                // Inserted as the concrete `PluginClient` where it is one, so
-                // the native graph can fork it for an export (by state
-                // transfer; doc 013, PR 12). An in-process VST2 plugin has no
-                // fork source yet: it goes in boxed, and an export of a
+                // An out-of-process plugin is bound as it goes in
+                // (`PluginClient::bind`): a native node, with its own fork
+                // source so an export can fork it (by state transfer; doc
+                // 013, PR 12). An in-process VST2 plugin is an `AudioUnit` with
+                // no fork source yet: it goes in boxed, and an export of a
                 // native graph holding it is refused, naming it.
                 let (id, controls) = match plugin.into_client() {
                     Ok(client) => {
-                        let controls = capture.capture(client.as_ref());
+                        let controls = CapturedControls::for_plugin(&client);
                         (graph.insert_plugin(client), controls)
                     }
                     Err(unit) => {

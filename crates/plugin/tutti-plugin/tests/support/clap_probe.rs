@@ -32,8 +32,85 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use tutti_plugin::handles::{PluginClient, PluginHandle};
+use tutti_graph::{GraphBuilder, Prepare, Renderer};
+use tutti_plugin::handles::{Bound, PluginClient, PluginControls, PluginHandle};
 use tutti_plugin::BridgeConfig;
+use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+
+/// A bound plugin as the only node of a native graph: the global inputs feed
+/// its inputs in order, its outputs feed the global outputs. What a test
+/// drives where it once drove the client as an `AudioUnit` — the executor
+/// hands the node its `Env` and its whole block, as the engine does.
+pub struct Rig {
+    renderer: Renderer,
+    key: NodeKey,
+    /// What inserting the plugin handed back.
+    pub controls: PluginControls,
+    inputs: usize,
+    outputs: usize,
+}
+
+impl Rig {
+    /// `client` in a graph prepared for `rate` and blocks of `block` frames.
+    pub fn new(client: PluginClient<Bound>, rate: f64, block: usize) -> Self {
+        Self::prepared(client, Prepare::new(SampleRate(rate), Samples(block)))
+    }
+
+    /// `client` in a graph prepared with `prepare` (a device quantum, say).
+    pub fn prepared(client: PluginClient<Bound>, prepare: Prepare) -> Self {
+        let (inputs, outputs) = (client.inputs(), client.outputs());
+        let layout = |n: usize| ChannelLayout::from_count(u16::try_from(n).expect("a few ports"));
+        let mut g = GraphBuilder::new(layout(inputs), layout(outputs));
+        let (key, controls) = g.add_with_controls(client);
+        g.pipe_input(key).pipe_output(key);
+        let renderer = g.renderer(prepare).expect("a one-plugin graph compiles");
+        Self {
+            renderer,
+            key,
+            controls,
+            inputs,
+            outputs,
+        }
+    }
+
+    /// The plugin's audio inputs.
+    pub fn inputs(&self) -> usize {
+        self.inputs
+    }
+
+    /// The plugin's audio outputs.
+    pub fn outputs(&self) -> usize {
+        self.outputs
+    }
+
+    /// Render `frames`, input channel `c` frame `i` being `input(c, i)`; one
+    /// `Vec` per output channel.
+    pub fn run(&mut self, frames: usize, input: impl Fn(usize, usize) -> f32) -> Vec<Vec<f32>> {
+        if self.inputs == 0 {
+            return self.renderer.render(frames);
+        }
+        let chans: Vec<Vec<f32>> = (0..self.inputs)
+            .map(|c| (0..frames).map(|i| input(c, i)).collect())
+            .collect();
+        let refs: Vec<&[f32]> = chans.iter().map(Vec::as_slice).collect();
+        self.renderer.render_input(&refs)
+    }
+
+    /// The node's latency as the graph compiles it: its declared `Shape`.
+    pub fn latency(&self) -> Samples {
+        self.renderer.editor().spec().topology.nodes[&self.key].latency
+    }
+
+    /// The renderer, to set the transport or edit the graph.
+    pub fn renderer(&mut self) -> &mut Renderer {
+        &mut self.renderer
+    }
+
+    /// The plugin's key in the graph.
+    pub fn key(&self) -> NodeKey {
+        self.key
+    }
+}
 
 /// `;`-separated candidate paths for the reference CLAP cdylib, from `build.rs`.
 const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
@@ -150,15 +227,10 @@ pub fn exclusive() -> cross_process_lock::Guard {
 /// table reads as **VST2**, so the CLAP loader is never reached and the load
 /// fails with `NotAPlugin`.
 ///
-/// Published by **atomic rename**, because the link path is shared between test
-/// processes. `OnceLock` serializes within one process; under `cargo nextest`
-/// every test process runs this against the same absolute path, since the
-/// candidate list is baked in at build time. A `remove_file` + `symlink` pair
-/// races there — one process unlinks while another has already created, and the
-/// loser dies with `EEXIST`. `rename` over an existing path is atomic on POSIX,
-/// so a concurrent reader sees the old link or the new one and never a gap.
-///
-/// A symlink rather than a copy so it cannot go stale against a rebuilt plugin.
+/// The link path is shared by every test process of every suite;
+/// `tutti_fixture_resolve::publish_with_extension` says how it is published
+/// without a reader ever missing it. A symlink rather than a copy so it cannot
+/// go stale against a rebuilt plugin.
 ///
 /// # Panics
 ///
@@ -171,28 +243,7 @@ pub fn clap_probe_path() -> &'static Path {
             CLAP_PROBE_CANDIDATES,
             "tutti-clap-test-plugin",
         ));
-        let link = real.with_extension("clap");
-
-        // Stage under a name no other process can pick, then swap it in.
-        let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-        let _ = std::fs::remove_file(&staging);
-
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &staging).expect("stage the reference plugin symlink");
-        #[cfg(windows)]
-        std::fs::copy(&real, &staging).expect("stage the reference plugin copy");
-
-        if let Err(e) = std::fs::rename(&staging, &link) {
-            // Losing the swap is not a failure: whoever won published a link to
-            // the same artifact. Only a missing result is fatal.
-            let _ = std::fs::remove_file(&staging);
-            assert!(
-                link.exists(),
-                "publish the reference plugin at {}: {e}",
-                link.display()
-            );
-        }
-        link
+        tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }
 
@@ -242,6 +293,8 @@ pub mod render {
     pub const TAG_PASSTHROUGH: u32 = 1;
     pub const TAG_ONLY: u32 = 2;
     pub const LATENCY: u32 = 3;
+    pub const NOTES: u32 = 4;
+    pub const TRANSPORT: u32 = 5;
 }
 
 /// Environment the probe reads **in the subprocess**, on load.
@@ -294,6 +347,13 @@ impl ProbeEnv {
             "TUTTI_CLAP_PROBE_REFUSE_STATE_SAVE",
             u8::from(on).to_string(),
         );
+        self
+    }
+
+    /// Add `frames` to the plugin's latency (and its `Latency`-mode delay)
+    /// while it renders offline, telling the host through `clap.latency`.
+    pub fn offline_extra_latency(mut self, frames: u32) -> Self {
+        self.set("TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY", frames.to_string());
         self
     }
 

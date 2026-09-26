@@ -88,6 +88,12 @@
 //! A node added this way is **unwired** and renders nothing. What feeds it, and
 //! what reaches the speakers, is declared — see [`graph::spawn`] for the shape.
 
+/// The reference plugin and `plugin-server` paths, shared with the
+/// integration suites, for unit tests that host a real plugin.
+#[cfg(all(test, feature = "plugin"))]
+#[path = "../tests/common/plugin.rs"]
+mod test_plugin_paths;
+
 mod plugin;
 
 pub mod graph;

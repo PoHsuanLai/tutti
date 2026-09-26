@@ -33,13 +33,14 @@ use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value,
     clap_event_transport, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_IS_LOOP_ACTIVE, CLAP_TRANSPORT_IS_PLAYING,
+    CLAP_TRANSPORT_IS_RECORDING,
 };
 use clap_sys::ext::audio_ports::{
     clap_audio_port_info, clap_plugin_audio_ports, CLAP_AUDIO_PORT_IS_MAIN, CLAP_EXT_AUDIO_PORTS,
     CLAP_PORT_MONO, CLAP_PORT_STEREO,
 };
-use clap_sys::ext::latency::{clap_plugin_latency, CLAP_EXT_LATENCY};
+use clap_sys::ext::latency::{clap_host_latency, clap_plugin_latency, CLAP_EXT_LATENCY};
 use clap_sys::ext::note_ports::{
     clap_note_port_info, clap_plugin_note_ports, CLAP_EXT_NOTE_PORTS, CLAP_NOTE_DIALECT_CLAP,
     CLAP_NOTE_DIALECT_MIDI,
@@ -49,6 +50,7 @@ use clap_sys::ext::render::{
 };
 use clap_sys::ext::tail::{clap_plugin_tail, CLAP_EXT_TAIL};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
+use clap_sys::fixedpoint::CLAP_BEATTIME_FACTOR;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::{clap_process, clap_process_status, CLAP_PROCESS_CONTINUE};
@@ -1005,8 +1007,9 @@ pub enum RenderMode {
     /// says whether the input side or the output side is at fault.
     TagOnly = 2,
     /// `out[port][ch][i] = in[port][ch][i]`, delayed by exactly
-    /// [`REPORTED_LATENCY_SAMPLES`], with the plugin also reporting that
-    /// latency through `clap.latency`.
+    /// [`REPORTED_LATENCY_SAMPLES`] (plus the offline extra, while rendering
+    /// offline with `TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY` set), with the
+    /// plugin also reporting that latency through `clap.latency`.
     ///
     /// The delay line is per-`(port, channel)` and persists across blocks, so
     /// an impulse fed in block 0 emerges at a known absolute sample index.
@@ -1021,7 +1024,24 @@ pub enum RenderMode {
     /// plugin. Reads CLAP note events and MIDI-1 note messages alike, so it
     /// holds whichever dialect the host negotiated.
     Notes = 4,
+    /// The transport oracle: every output channel carries the block's
+    /// `clap_event_transport` in its first [`TRANSPORT_ECHO_FRAMES`] frames,
+    /// and zero after. Input is ignored. Frame by frame:
+    ///
+    /// 0. `song_pos_beats`, in beats;
+    /// 1. `tempo`;
+    /// 2. the flags this host sets from its own state, as a sum: `1.0`
+    ///    playing, `2.0` recording, `4.0` loop active;
+    /// 3. `loop_start_beats`, in beats;
+    /// 4. `loop_end_beats`, in beats.
+    ///
+    /// All zero when the host passes no transport. What an out-of-process host
+    /// told the plugin, read back through the audio it returns.
+    Transport = 5,
 }
+
+/// Frames [`RenderMode::Transport`] writes per block.
+pub const TRANSPORT_ECHO_FRAMES: usize = 5;
 
 impl RenderMode {
     fn from_u32(v: u32) -> Self {
@@ -1030,6 +1050,7 @@ impl RenderMode {
             2 => Self::TagOnly,
             3 => Self::Latency,
             4 => Self::Notes,
+            5 => Self::Transport,
             _ => Self::Inert,
         }
     }
@@ -1052,12 +1073,12 @@ pub unsafe extern "C" fn tutti_test_plugin_set_render_mode(mode: u32) {
 /// (2 ports x 2 channels).
 const MAX_DELAY_SLOTS: usize = 4;
 struct DelayState {
-    lines: [[f32; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS],
+    lines: [[f32; MAX_DELAY_LEN]; MAX_DELAY_SLOTS],
     cursor: usize,
 }
 
 static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
-    lines: [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS],
+    lines: [[0.0; MAX_DELAY_LEN]; MAX_DELAY_SLOTS],
     cursor: 0,
 });
 
@@ -1152,7 +1173,7 @@ unsafe fn note_event(p: &clap_process, index: usize) -> Option<(u32, NoteChange)
 /// `plugin_reset`, which is the plugin honouring CLAP's `reset()` contract.
 fn clear_delay_lines() {
     let mut d = DELAY.lock().unwrap_or_else(|p| p.into_inner());
-    d.lines = [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS];
+    d.lines = [[0.0; MAX_DELAY_LEN]; MAX_DELAY_SLOTS];
     d.cursor = 0;
 }
 
@@ -1240,6 +1261,21 @@ unsafe fn render_output(p: &clap_process) {
                         dst[i] = src.map(|s| s[i]).unwrap_or(0.0) + tag;
                     }
                 }
+                RenderMode::Transport => {
+                    dst.fill(0.0);
+                    if !p.transport.is_null() && frames >= TRANSPORT_ECHO_FRAMES {
+                        let t: &clap_event_transport = &*p.transport;
+                        let beats = |b: i64| (b as f64 / CLAP_BEATTIME_FACTOR as f64) as f32;
+                        let flag = |bit: u32, v: f32| if t.flags & bit != 0 { v } else { 0.0 };
+                        dst[0] = beats(t.song_pos_beats);
+                        dst[1] = t.tempo as f32;
+                        dst[2] = flag(CLAP_TRANSPORT_IS_PLAYING, 1.0)
+                            + flag(CLAP_TRANSPORT_IS_RECORDING, 2.0)
+                            + flag(CLAP_TRANSPORT_IS_LOOP_ACTIVE, 4.0);
+                        dst[3] = beats(t.loop_start_beats);
+                        dst[4] = beats(t.loop_end_beats);
+                    }
+                }
                 RenderMode::Notes => {
                     // Every channel replays the block's events from the gate
                     // as it stood at the block's start, so each writes the
@@ -1268,8 +1304,8 @@ unsafe fn render_output(p: &clap_process) {
                     if slot_index >= MAX_DELAY_SLOTS {
                         continue;
                     }
-                    let line = &mut d.lines[slot_index];
-                    let len = line.len();
+                    let len = current_latency() as usize;
+                    let line = &mut d.lines[slot_index][..len];
                     for i in 0..frames {
                         let at = (cursor_start + i) % len;
                         // Read the sample written `len` frames ago, then
@@ -1283,7 +1319,7 @@ unsafe fn render_output(p: &clap_process) {
     }
 
     if let Some(d) = delay.as_mut() {
-        let len = d.lines[0].len();
+        let len = current_latency() as usize;
         d.cursor = (cursor_start + frames) % len;
     }
     if mode == RenderMode::Notes {
@@ -1424,7 +1460,25 @@ static LATENCY: clap_plugin_latency = clap_plugin_latency {
 };
 
 unsafe extern "C" fn latency_get(_plugin: *const clap_plugin) -> u32 {
-    REPORTED_LATENCY_SAMPLES
+    current_latency()
+}
+
+/// The longest delay line `Latency` mode keeps: room for
+/// [`REPORTED_LATENCY_SAMPLES`] plus an offline extra
+/// (`TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY`, clamped to fit).
+const MAX_DELAY_LEN: usize = 512;
+
+/// The latency the plugin reports, and delays by in `Latency` mode:
+/// [`REPORTED_LATENCY_SAMPLES`], plus the offline extra while the host has it
+/// rendering offline.
+fn current_latency() -> u32 {
+    let offline = RENDER_MODE_SET.load(Ordering::SeqCst) == CLAP_RENDER_OFFLINE as u32;
+    let extra = if offline {
+        subprocess::offline_extra_latency()
+    } else {
+        0
+    };
+    (REPORTED_LATENCY_SAMPLES + extra).min(MAX_DELAY_LEN as u32)
 }
 
 static TAIL: clap_plugin_tail = clap_plugin_tail {
@@ -1452,15 +1506,26 @@ unsafe extern "C" fn render_has_hard_realtime_requirement(_plugin: *const clap_p
 /// reporting a bug, and returning `false` is how the plugin says so.
 static RENDER_MODE_SET: AtomicU32 = AtomicU32::new(u32::MAX);
 
-unsafe extern "C" fn render_set(
-    _plugin: *const clap_plugin,
-    mode: clap_plugin_render_mode,
-) -> bool {
+unsafe extern "C" fn render_set(plugin: *const clap_plugin, mode: clap_plugin_render_mode) -> bool {
     // CLAP_RENDER_REALTIME == 0, CLAP_RENDER_OFFLINE == 1.
     if mode != 0 && mode != CLAP_RENDER_OFFLINE {
         return false;
     }
+    let before = current_latency();
     RENDER_MODE_SET.store(mode as u32, Ordering::SeqCst);
+    if current_latency() != before {
+        // A new latency: the delay lines start over at the new length, and
+        // the host is told, as `clap.latency` asks of a plugin whose latency
+        // moved.
+        clear_delay_lines();
+        if let Some(ext) =
+            threading::host_ext::<clap_host_latency>(plugin_host(plugin), CLAP_EXT_LATENCY)
+        {
+            if let Some(changed) = ext.changed {
+                changed(plugin_host(plugin));
+            }
+        }
+    }
     true
 }
 

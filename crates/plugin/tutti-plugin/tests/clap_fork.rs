@@ -20,14 +20,14 @@
 
 #[path = "support/clap_probe.rs"]
 mod clap_probe;
-use clap_probe::{exclusive, load_probe, load_probe_with, render, ProbeEnv};
+use clap_probe::{exclusive, load_probe, load_probe_with, render, ProbeEnv, Rig};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{AudioUnit, BufferVec, SampleRate, Samples, F32};
+use tutti_core::{SampleRate, Samples};
 use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
 };
@@ -81,24 +81,14 @@ fn expected(b: usize, db: f64) -> Vec<f32> {
 }
 
 /// Drive block `b` through `unit` and return output channel 0.
-fn drive(unit: &mut dyn AudioUnit, b: usize) -> Vec<f32> {
-    let ins = unit.inputs();
-    let outs = unit.outputs();
-    let mut inp = BufferVec::<F32>::new(ins.max(1));
-    let mut out = BufferVec::<F32>::new(outs.max(1));
-    for ch in 0..ins {
-        for i in 0..BLOCK {
-            inp.set_scalar(ch, i, input(b, i));
-        }
-    }
-    out.clear();
-    unit.process(BLOCK, &inp.buffer_ref(), &mut out.buffer_mut());
-    (0..BLOCK).map(|i| out.at_f32(0, i)).collect()
+fn drive(unit: &mut Rig, b: usize) -> Vec<f32> {
+    let out = unit.run(BLOCK, |_, i| input(b, i));
+    out.into_iter().next().expect("the probe has outputs")
 }
 
 /// Drive `blocks` paced blocks through the live unit; return each block's
 /// channel 0, silent (`None`) where the pipeline had nothing to collect.
-fn drive_live(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<Option<Vec<f32>>> {
+fn drive_live(unit: &mut Rig, blocks: usize) -> Vec<Option<Vec<f32>>> {
     (0..blocks)
         .map(|b| {
             let out = drive(unit, b);
@@ -109,7 +99,7 @@ fn drive_live(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<Option<Vec<f32>>> 
 }
 
 /// Drive `blocks` unpaced blocks through a fork.
-fn drive_fork(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<Vec<f32>> {
+fn drive_fork(unit: &mut Rig, blocks: usize) -> Vec<Vec<f32>> {
     (0..blocks).map(|b| drive(unit, b)).collect()
 }
 
@@ -137,11 +127,10 @@ fn env() -> ProbeEnv {
 ///
 /// Mutation: drop the `load_state` call in `PluginFork::instance` → the fork
 /// renders at 0 dB → fails. Mutation: drop `set_offline_wait` → unpaced blocks
-/// read silence → fails. Mutation: return a clone of the live client as the
-/// "fork" → the fork's run is the live instance's run, and the live blocks
-/// driven after it no longer line up with a fresh instance's → fails. (The two
-/// run one after the other here; `a_fork_and_the_live_instance_do_not_reach_each_other`
-/// runs them overlapped.)
+/// read silence → fails. (A client is not `Clone` any more, so "return the
+/// live client as the fork" is no longer a mutation the code can express;
+/// `a_fork_and_the_live_instance_do_not_reach_each_other` runs the two
+/// overlapped.)
 #[test]
 fn a_fork_renders_like_the_live_instance_from_its_state() {
     let _lock = exclusive();
@@ -157,15 +146,15 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
     assert_eq!(fork.descriptor().id, probe.client.descriptor().id);
 
     const BLOCKS: usize = 40;
-    let mut fork: Box<dyn AudioUnit> = Box::new(fork);
-    let forked = drive_fork(fork.as_mut(), BLOCKS);
+    let mut fork = Rig::new(fork, SAMPLE_RATE, BLOCK);
+    let forked = drive_fork(&mut fork, BLOCKS);
     assert!(forked[0].iter().all(|&s| s == 0.0), "one block of latency");
     for (b, block) in forked.iter().enumerate().skip(1) {
         assert_eq!(block, &expected(b, -6.0), "fork block {b}");
     }
 
-    let mut live: Box<dyn AudioUnit> = Box::new(probe.client.clone());
-    let lived = drive_live(live.as_mut(), BLOCKS);
+    let mut live = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
+    let lived = drive_live(&mut live, BLOCKS);
     let collected: Vec<_> = lived
         .iter()
         .enumerate()
@@ -191,10 +180,11 @@ fn a_fork_renders_like_the_live_instance_from_its_state() {
 /// the fork keeps rendering until the live run is done, and the test asserts
 /// the fork rendered blocks while the live run was still going.
 ///
-/// Mutation: return a clone of the live client from `fork_instance` → the fork
-/// thread's blocks land in the live instance, and the live gain change reaches
-/// the "fork" → fails on both halves. Mutation: mark the live run done before
-/// it starts → the fork renders nothing while it runs → the overlap check fails.
+/// Mutation: have `PluginFork::instance` skip the fresh launch and return a
+/// client on the live bridge (`PluginBridge` shared) → the fork thread's
+/// blocks land in the live instance, and the live gain change reaches the
+/// "fork" → fails on both halves. Mutation: mark the live run done before it
+/// starts → the fork renders nothing while it runs → the overlap check fails.
 #[test]
 fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     let _lock = exclusive();
@@ -219,22 +209,22 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     let fork_thread = {
         let (start, live_done) = (Arc::clone(&start), Arc::clone(&live_done));
         std::thread::spawn(move || {
-            let mut fork: Box<dyn AudioUnit> = Box::new(fork);
+            let mut fork = Rig::new(fork, SAMPLE_RATE, BLOCK);
             start.wait();
             let (mut blocks, mut during_live) = (Vec::new(), 0usize);
             while blocks.len() < MIN_FORK_BLOCKS || !live_done.load(Ordering::SeqCst) {
                 if !live_done.load(Ordering::SeqCst) {
                     during_live += 1;
                 }
-                blocks.push(drive(fork.as_mut(), blocks.len()));
+                blocks.push(drive(&mut fork, blocks.len()));
             }
             (blocks, during_live)
         })
     };
 
-    let mut live: Box<dyn AudioUnit> = Box::new(probe.client.clone());
+    let mut live = Rig::new(probe.client.bind(), SAMPLE_RATE, BLOCK);
     start.wait();
-    let lived = drive_live(live.as_mut(), 40);
+    let lived = drive_live(&mut live, 40);
     live_done.store(true, Ordering::SeqCst);
     let (forked, during_live) = fork_thread.join().expect("the fork thread renders");
     assert!(
@@ -259,8 +249,9 @@ fn a_fork_and_the_live_instance_do_not_reach_each_other() {
     }
 
     // The live state moved only by its own parameter change: put the gain
-    // back and it is byte for byte what it was at the fork.
-    probe.client.set_parameter(GAIN, gain_at(-6.0));
+    // back and it is byte for byte what it was at the fork. Through the
+    // handle, the path a host has once the node is in a graph.
+    handle.params().set_parameter_value(GAIN, gain_at(-6.0));
     assert_eq!(
         handle.state().save_state().expect("the probe saves"),
         state_at_fork,
@@ -289,8 +280,7 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let err = probe
         .client
         .fork_instance(ForkMode::Offline(&offline))
-        .err()
-        .expect("the fresh instance refuses the state");
+        .expect_err("the fresh instance refuses the state");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),
         "expected LoadState, got {err:?}"
@@ -299,7 +289,7 @@ fn a_state_the_fresh_instance_refuses_is_a_named_fork_error() {
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(7);
-    editor.insert(key, "plugin", probe.client.clone());
+    let _controls = editor.insert(key, "plugin", probe.client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
     match editor.fork(ForkTarget::Node(key), ForkMode::Offline(&offline), prepare) {
         Err(ForkError::Source { key: at, cause }) => {
@@ -329,20 +319,19 @@ fn a_plugin_that_cannot_save_its_state_is_a_named_fork_error() {
     let err = probe
         .client
         .fork_instance(ForkMode::Live)
-        .err()
-        .expect("the live instance refuses to save");
+        .expect_err("the live instance refuses to save");
     assert!(
         matches!(err, PluginForkError::SaveState(_)),
         "expected SaveState, got {err:?}"
     );
 }
 
-/// **Through the graph**: a `PluginClient` inserted into an editor is
+/// **Through the graph**: a bound `PluginClient` inserted into an editor is
 /// forkable, and the forked graph renders the plugin at the live instance's
 /// gain on the offline timeline — the path an export takes (doc 013 PR 12).
 /// With its inputs unwired the probe renders its tag, scaled.
 ///
-/// Mutation: hand no fork source from `IntoNode for PluginClient`
+/// Mutation: hand no fork source from `IntoNode for PluginClient<Bound>`
 /// (`fork: None`) → `ForkError::NotForkable` → fails.
 #[test]
 fn a_graph_holding_a_plugin_forks_and_renders_offline() {
@@ -354,7 +343,7 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(1);
-    editor.insert(key, "plugin", probe.client.clone());
+    let _controls = editor.insert(key, "plugin", probe.client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
 
     let offline = offline();
@@ -372,16 +361,16 @@ fn a_graph_holding_a_plugin_forks_and_renders_offline() {
         "every later frame is the tag at -6 dB ({want}); got {:?}",
         &out[0][BLOCK..BLOCK + 4]
     );
-    let _keep: &PluginClient = &probe.client;
+    drop(probe.handle);
 }
 
 /// Render `blocks` blocks of the offline fork of the plugin through the
 /// graph; return the forked editor (to ask its health) and how long it took.
-fn render_fork_of(probe: &clap_probe::LoadedProbe, blocks: usize) -> (Editor, Duration) {
+fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let (mut editor, _exec) = Editor::new(prepare);
     let key = NodeKey(3);
-    editor.insert(key, "plugin", probe.client.clone());
+    let _controls = editor.insert(key, "plugin", client.bind());
     editor.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
     let offline = offline();
     let (fork_ed, fork_exec) = editor
@@ -405,7 +394,10 @@ fn render_fork_of(probe: &clap_probe::LoadedProbe, blocks: usize) -> (Editor, Du
 /// Mutation: hand no health probe from `PluginFork::fork` → `fork_health` is
 /// `Ok` → fails. Mutation: never ask the process (`server_died`) in the
 /// batcher's wait → the bridge, sent nothing, never notices the death, and the
-/// block waits out its 5 s budget → the time bound fails.
+/// block waits out its 5 s budget → the time bound fails. Mutation: drop the
+/// wait's `latch_crash` → on a machine that renders the 40 blocks inside one
+/// process poll, the bridge noticed the death but the executor holding it is
+/// dropped before `fork_health` asks → `Ok` → fails.
 #[test]
 fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
     let _lock = exclusive();
@@ -413,7 +405,7 @@ fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
     let probe = load_probe(SAMPLE_RATE);
     let _crash = ProbeEnv::new().crash_on_block(8);
 
-    let (fork_ed, took) = render_fork_of(&probe, 40);
+    let (fork_ed, took) = render_fork_of(probe.client, 40);
     let fault = fork_ed.fork_health().expect_err("the fork crashed");
     assert_eq!(fault.key, NodeKey(3));
     assert_eq!(fault.kind, ForkFaultKind::Crashed, "{fault}");
@@ -446,7 +438,7 @@ fn a_fork_whose_server_hangs_is_a_timed_out_fault_after_one_budget() {
     let probe = load_probe_with(config, SAMPLE_RATE);
     let _hang = ProbeEnv::new().block_from(5);
 
-    let (fork_ed, took) = render_fork_of(&probe, 30);
+    let (fork_ed, took) = render_fork_of(probe.client, 30);
     let fault = fork_ed.fork_health().expect_err("the fork hung");
     assert_eq!(fault.kind, ForkFaultKind::TimedOut, "{fault}");
     assert!(
@@ -471,10 +463,11 @@ fn a_fork_of_a_dropped_plugin_is_live_gone() {
     let _lock = exclusive();
     let _env = env();
     let probe = load_probe(SAMPLE_RATE);
-    let parts = probe.client.clone().into_parts();
+    let parts = probe.client.bind().into_parts();
     let source = parts.fork.expect("a plugin node is forkable");
     drop(parts.node);
-    drop(probe);
+    drop(parts.controls);
+    drop(probe.handle);
 
     let started = Instant::now();
     let cause = match source.fork(ForkMode::Live) {
@@ -570,20 +563,23 @@ fn a_failed_forks_server_is_reaped() {
     assert_eq!(children(), baseline, "a failed fork's server is reaped");
 }
 
+/// A live graph holding the plugin at key 9 on the master, to export from.
+fn live_graph(client: PluginClient) -> (Editor, tutti_graph::Executor) {
+    let (mut live, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK)));
+    let key = NodeKey(9);
+    let _controls = live.insert(key, "plugin", client.bind());
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    (live, exec)
+}
+
 /// Export the plugin through `tutti_export` exactly as an export does: fork
 /// the live graph offline with `RenderGraph::fork`, render half a second to
 /// buffers.
-fn export_through_a_fork(
-    probe: &clap_probe::LoadedProbe,
-) -> tutti_export::Result<tutti_export::Rendered> {
+fn export_through_a_fork(live: &Editor) -> tutti_export::Result<tutti_export::Rendered> {
     let rate = SampleRate(SAMPLE_RATE);
-    let (mut live, _exec) = Editor::new(Prepare::new(rate, Samples(BLOCK)));
-    let key = NodeKey(9);
-    live.insert(key, "plugin", probe.client.clone());
-    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
     let offline = offline();
     let graph = tutti_export::RenderGraph::fork(
-        &live,
+        live,
         ForkTarget::Master,
         ForkMode::Offline(&offline),
         rate,
@@ -622,13 +618,14 @@ fn an_export_through_a_failing_fork_fails_by_name() {
     };
     let probe = load_probe_with(config, SAMPLE_RATE);
     probe.client.set_parameter(GAIN, gain_at(-6.0));
+    let (live, _exec) = live_graph(probe.client);
 
-    let healthy = export_through_a_fork(&probe).expect("a healthy fork exports");
+    let healthy = export_through_a_fork(&live).expect("a healthy fork exports");
     assert!(healthy.planes[0].iter().any(|&s| s != 0.0), "audible");
 
     let failed = |kind: ForkFaultKind| {
         let started = Instant::now();
-        match export_through_a_fork(&probe) {
+        match export_through_a_fork(&live) {
             Err(tutti_export::Error::ForkFailed {
                 key,
                 kind: got,
@@ -649,4 +646,254 @@ fn an_export_through_a_failing_fork_fails_by_name() {
     }
     let _hang = ProbeEnv::new().block_from(5);
     failed(ForkFaultKind::TimedOut);
+}
+
+/// **A clip's note reaches an exported plugin on its frame**, however long
+/// the pipeline's chunk. The export's fork is prepared at the export block
+/// (1024 frames), so its chunk is 1024; the plan holds a `Legacy`-flagged
+/// node, so it renders in 64-frame passes and the timeline moves between
+/// them. The probe's `Notes` gate turns the note-on into its first non-zero
+/// frame, which lands at the note's frame plus the pipeline's one chunk. The note is at frame 6000, on neither a 64- nor a 1024-frame
+/// boundary.
+///
+/// Mutation: gather the chunk's payload at its submission (the last 64-frame
+/// pass of the chunk) instead of at its start → the clip's window is read
+/// 960 frames late and the note sounds 960 frames early → fails.
+/// (The other mutation of the fix, dropping `rebase`, needs a chunk that
+/// begins inside a pass: `a_clip_note_in_a_chunk_that_begins_mid_pass_…`.)
+#[test]
+fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    // 120 BPM at 48 kHz: a beat is 24 000 frames, so beat 0.25 is frame 6000.
+    const NOTE_FRAME: usize = 6_000;
+    install_note(&probe.client, NOTE_FRAME);
+    let (live, _exec) = live_graph(probe.client);
+
+    // The export's own timeline, rolling from beat 0, and its clock.
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(timeline.clone());
+    let graph = tutti_export::RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&offline),
+        SampleRate(SAMPLE_RATE),
+    )
+    .expect("a graph holding a plugin forks");
+    // The pipeline holds one chunk, the export block. (The probe reports a
+    // latency of its own in every mode but delays audio only in `Latency`.)
+    let chunk = tutti_export::GRAPH_MAX_BLOCK;
+    let config = tutti_export::ExportConfig {
+        render: tutti_export::RenderConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            duration_seconds: 0.25,
+            ..Default::default()
+        },
+        encode: tutti_export::EncodeConfig {
+            channels: tutti_export::ChannelLayout::MONO,
+            ..Default::default()
+        },
+        dither: tutti_export::Dither::Off,
+        ..Default::default()
+    };
+    let rendered = tutti_export::render_to_buffers(graph, &config, timeline.as_ref())
+        .expect("the fork exports");
+    let onset = rendered.planes[0].iter().position(|&s| s != 0.0);
+    assert_eq!(
+        onset,
+        Some(NOTE_FRAME + chunk.get()),
+        "the note sounds on its frame, one chunk late"
+    );
+}
+
+/// Install on `client`'s MIDI port a clip holding one note-on at frame
+/// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (the live clip a fork
+/// rebinds onto its render's timeline).
+fn install_note(client: &PluginClient, frame: usize) {
+    use tutti_midi_runtime::{MidiClipSource, TimedClipEvent};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_types::{Beat, Timeline};
+
+    let live_timeline: Arc<dyn Timeline> = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    client.midi_port().install(Arc::new(MidiClipSource::new(
+        client.midi_unit_id(),
+        vec![TimedClipEvent {
+            // 24 000 frames a beat.
+            beat: Beat(frame as f64 / 24_000.0),
+            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        }],
+        live_timeline,
+    )));
+}
+
+/// **A chunk that begins inside a render pass still places its notes on
+/// their frames.** A fork prepared at 480 frames ships 480-frame chunks; the
+/// render hands it 400-frame blocks, which its clock cuts into 64-frame passes
+/// from each block's start (the plan holds a `Legacy`-flagged node). The chunk
+/// from frame 6240 then begins 48 frames into the pass from 6192 (block 6000,
+/// pass 192). The note at 6300 is in that chunk, and the probe's gate opens
+/// one chunk after it.
+///
+/// Mutation: drop `rebase` → the window read from the pass's first frame is
+/// sent as the chunk's → the note sounds 48 frames late → fails.
+/// Mutation: gather at submission → the window starts at the chunk's last
+/// pass → hundreds of frames early → fails.
+#[test]
+fn a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    const CHUNK: usize = 480;
+    const BLOCK: usize = 400;
+    const NOTE_FRAME: usize = 6_300;
+    install_note(&probe.client, NOTE_FRAME);
+
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+    let (mut live, _exec) = Editor::new(prepare);
+    let key = NodeKey(9);
+    let _controls = live.insert(key, "plugin", probe.client.bind());
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(timeline.clone());
+    let (_fork_ed, mut fork_exec) = live
+        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .expect("forks");
+
+    let mut out = Vec::new();
+    let mut block = vec![0.0f32; BLOCK];
+    while out.len() < NOTE_FRAME + 2 * CHUNK {
+        timeline.render_graph(&mut fork_exec, BLOCK, &[], &mut [&mut block[..]]);
+        out.extend_from_slice(&block);
+    }
+    assert_eq!(
+        out.iter().position(|&s| s != 0.0),
+        Some(NOTE_FRAME + CHUNK),
+        "the note sounds on its frame, one chunk late"
+    );
+}
+
+/// A ramp source reading its block's `Env`: frame `t` is [`ramp`]`(t)`. Forks
+/// by clone (it holds nothing), so an export of a graph it feeds forks it.
+#[derive(Clone)]
+struct RampSource;
+
+/// Input frame `t` of the alignment test: distinct, never zero, exact in f32.
+fn ramp(t: u64) -> f32 {
+    ((t % 997) + 1) as f32 / 1024.0
+}
+
+impl tutti_graph::Node for RampSource {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
+        )
+        .with_tail(tutti_types::Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let first = cx.env.frame.get();
+        for (i, s) in io.output(0).iter_mut().enumerate() {
+            *s = ramp(first + i as u64);
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **An export is aligned when the plugin's latency moves in offline mode.**
+/// The probe adds 24 frames to its latency (and its delay) once it is told to
+/// render offline, as a plugin with a higher-quality offline mode does. The
+/// fork is told so asynchronously; its `prepare` waits for the change to land
+/// (`PluginBridge::settle`) before the fork's graph is compiled, so the
+/// export's plan carries 137 + 24 + the render's chunk (its `MaxBlock`,
+/// `GRAPH_MAX_BLOCK`: an export has no device) and trims exactly that: the render is
+/// the ramp from frame 0, sample for sample, and the fork reports no fault.
+///
+/// Mutation: drop the `settle()` from the node's `prepare` → the plan is
+/// compiled against the realtime 201 while the plugin delays 225 → the
+/// render is 24 frames late, and (the backstop) the fork's health reports
+/// `Failed` with `PluginRenderFault::LatencyChanged` → fails.
+#[test]
+fn an_export_is_aligned_when_the_plugin_latency_moves_offline() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new()
+        .render_mode(render::LATENCY)
+        .offline_extra_latency(24);
+    let probe = load_probe(SAMPLE_RATE);
+    let inputs = probe.client.inputs();
+
+    let rate = SampleRate(SAMPLE_RATE);
+    let (mut live, _exec) = Editor::new(Prepare::new(rate, Samples(BLOCK)));
+    let (src, key) = (NodeKey(1), NodeKey(2));
+    live.insert(src, "ramp", tutti_graph::ForkByClone(RampSource));
+    let _controls = live.insert(key, "plugin", probe.client.bind());
+    for port in 0..inputs {
+        live.spec_mut().topology.edges.insert(
+            tutti_types::graph::InPort {
+                node: key,
+                port: port as u16,
+            },
+            tutti_types::graph::Edge::Direct(Source::Node(OutPort { node: src, port: 0 })),
+        );
+    }
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+
+    let offline = offline();
+    let graph = tutti_export::RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&offline),
+        rate,
+    )
+    .expect("the graph forks");
+    let latency = graph.reported_latency();
+    assert_eq!(
+        latency,
+        Samples(137 + 24 + tutti_export::GRAPH_MAX_BLOCK.get()),
+        "the plan carries the offline latency"
+    );
+    let config = tutti_export::ExportConfig {
+        render: tutti_export::RenderConfig {
+            sample_rate: rate,
+            duration_seconds: 0.1,
+            latency,
+            ..Default::default()
+        },
+        encode: tutti_export::EncodeConfig {
+            channels: tutti_export::ChannelLayout::MONO,
+            ..Default::default()
+        },
+        dither: tutti_export::Dither::Off,
+        ..Default::default()
+    };
+    let rendered = tutti_export::render_to_buffers(graph, &config, &tutti_export::FrozenClock)
+        .expect("a fork whose latency settled exports without a fault");
+    let plane = &rendered.planes[0];
+    assert!(!plane.is_empty());
+    let wrong = plane
+        .iter()
+        .enumerate()
+        .filter(|&(j, &s)| s != ramp(j as u64))
+        .count();
+    assert_eq!(
+        wrong,
+        0,
+        "{wrong} of {} samples are not the ramp: the export is misaligned",
+        plane.len()
+    );
 }

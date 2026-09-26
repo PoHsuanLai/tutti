@@ -930,9 +930,10 @@ mod plugin {
     /// neighbouring frame's value everywhere. (A constant input could not
     /// tell a trim of 64 from one of 201.)
     ///
-    /// Mutation (run): `plugin_load_promote` inserting the plugin boxed
-    /// (`insert_boxed(plugin.into_unit())`, the path before PR 12) → the
-    /// export is refused as not forkable, naming "Probe". Mutation (run):
+    /// Mutation: hand the editor no fork source from `IntoNode for
+    /// PluginClient<Bound>` (`fork: None`; before PR 12 the same came of
+    /// inserting the plugin boxed) → the export is refused as not forkable,
+    /// naming "Probe". Mutation (run):
     /// trimming one frame less than the plan's latency
     /// (`reported_latency() - 1` in `start_exports`) → every frame reads its
     /// predecessor.
@@ -1053,7 +1054,7 @@ mod plugin {
     /// installed on its port) is rebound onto the fork's port and the render's
     /// timeline. A note from beat 1 to beat 2 holds the probe's gate open
     /// from beat 1 to beat 2 of the render's timeline, heard one pipeline
-    /// block (64 frames) later, and nowhere else.
+    /// chunk (the export's 1024-frame block) later, and nowhere else.
     ///
     /// At 90 BPM and 48 kHz a beat is 32 000 frames, a per-frame step binary
     /// cannot hold, and the edges are asserted to the frame: 32 000 and
@@ -1076,7 +1077,12 @@ mod plugin {
     /// tutti-plugin's `PluginFork::instance` → the fork renders silence, at
     /// both rates. The plugin polling its MIDI port at a fixed 48 kHz instead
     /// of its own rate (`build_block_payload`) → at 96 kHz the notes land
-    /// where 48 kHz puts them.
+    /// where 48 kHz puts them. Gathering a chunk's MIDI at its submission
+    /// rather than its start (tutti-plugin's `PluginChunks::begin`) → the
+    /// clip's window is read from the chunk's last 64-frame pass and the
+    /// notes land 960 frames early, 64 frames after their beat (this test
+    /// asserted exactly that while the chunk was 64 frames, so the early
+    /// placement hid behind the pipeline's delay).
     #[test]
     fn an_exported_plugin_instrument_plays_its_clip() {
         for rate in [RATE, 2.0 * RATE] {
@@ -1134,9 +1140,10 @@ mod plugin {
             !open.is_empty(),
             "{rate} Hz: the instrument rendered no notes"
         );
-        // The plugin's batcher holds one block: what it is sent in block `k`
-        // it returns in block `k + 1`.
-        const PIPELINE: usize = 64;
+        // The plugin's batcher holds one chunk: what it is sent in chunk `k`
+        // it returns in chunk `k + 1`. A fork has no device, so its chunk is
+        // the export's block.
+        const PIPELINE: usize = tutti_export::GRAPH_MAX_BLOCK.get();
         let beat = 32_000 * (rate / RATE) as usize;
         let (on, off) = (open[0], *open.last().unwrap() + 1);
         assert_eq!(

@@ -153,10 +153,6 @@ tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }
 # its rlib — the plugin is loaded by a `plugin-server` subprocess, so the only
 # thing this crate needs is the file on disk.
 tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
-# `dyn_clone::clone_box`, to probe a node's latency the way `LatencyGraph for
-# Net` does. Reached through the same re-export fundsp uses, so the test clones
-# exactly as the planner will.
-dyn-clone = "1"
 
 # `kill(pid, 0)`, so `real_plugin_pressure`'s leak check asks about the exact
 # `plugin-server` pids it launched rather than spawning `pgrep` to scan the

@@ -71,7 +71,125 @@ mod clap_probe;
 #[cfg(not(feature = "clap"))]
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tutti_core::{AudioUnit, BufferVec, F32};
+use tutti_core::{BufferMut, BufferRef, BufferVec, F32};
+
+/// A loaded plugin as the only node of a native graph, driven with the
+/// buffer types this suite fills and measures (`fill_sine`, `peak`).
+///
+/// The plugin node is a `tutti_graph` node now, not an `AudioUnit`: a block
+/// reaches it through the executor, with the `Env` the engine would give it.
+/// The global inputs feed its inputs, its outputs feed the global outputs.
+struct GraphUnit {
+    renderer: tutti_graph::Renderer,
+    key: tutti_types::NodeKey,
+    inputs: usize,
+    outputs: usize,
+    ins: Vec<Vec<f32>>,
+    outs: Vec<Vec<f32>>,
+}
+
+impl GraphUnit {
+    fn new<N: tutti_graph::IntoNode>(node: N, inputs: usize, outputs: usize) -> Self {
+        assert!(
+            inputs <= 16 && outputs <= 16,
+            "`run` holds 16 ports on the stack"
+        );
+        let layout =
+            |n: usize| tutti_types::ChannelLayout::from_count(u16::try_from(n).expect("ports"));
+        let mut g = tutti_graph::GraphBuilder::new(layout(inputs), layout(outputs));
+        let (key, _controls) = g.add_with_controls(node);
+        g.pipe_input(key).pipe_output(key);
+        let renderer = g
+            .renderer(tutti_graph::Prepare::new(
+                tutti_types::SampleRate(SAMPLE_RATE),
+                tutti_types::Samples(BLOCK),
+            ))
+            .expect("a one-plugin graph compiles");
+        Self {
+            renderer,
+            key,
+            inputs,
+            outputs,
+            ins: vec![vec![0.0; BLOCK]; inputs],
+            outs: vec![vec![0.0; BLOCK]; outputs],
+        }
+    }
+
+    /// A loaded plugin, whichever backend it landed in.
+    fn from_plugin(plugin: tutti_plugin::catalog::Plugin) -> Self {
+        let (inputs, outputs) = (
+            plugin.loaded().total_inputs(),
+            plugin.loaded().total_outputs(),
+        );
+        Self::new(plugin, inputs, outputs)
+    }
+
+    fn inputs(&self) -> usize {
+        self.inputs
+    }
+
+    fn outputs(&self) -> usize {
+        self.outputs
+    }
+
+    /// The node's latency as the graph compiles it: its declared `Shape`.
+    fn latency(&self) -> Option<f64> {
+        let l = self.renderer.editor().spec().topology.nodes[&self.key].latency;
+        Some(l.get() as f64)
+    }
+
+    /// One block: `input`'s first `inputs` channels in, the plugin's outputs
+    /// into `output`'s first `outputs` channels. [`stage`](Self::stage),
+    /// [`run`](Self::run) and [`read`](Self::read) in one, for the untimed
+    /// callers.
+    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        self.stage(size, input);
+        self.run(size);
+        self.read(size, output);
+    }
+
+    /// Copy `input` into this unit's planar input buffers. Not the plugin
+    /// path: outside a timed region.
+    fn stage(&mut self, size: usize, input: &BufferRef) {
+        for (c, ch) in self.ins.iter_mut().enumerate() {
+            for (i, s) in ch[..size].iter_mut().enumerate() {
+                *s = input.at_f32(c, i);
+            }
+        }
+    }
+
+    /// The plugin path, and nothing else: one executor block over the staged
+    /// buffers, the port tables on the stack. What a timed region measures.
+    fn run(&mut self, size: usize) {
+        const MAX: usize = 16;
+        let mut ins: [&[f32]; MAX] = [&[]; MAX];
+        for (slot, c) in ins.iter_mut().zip(&self.ins) {
+            *slot = &c[..size];
+        }
+        let mut outs: [&mut [f32]; MAX] = std::array::from_fn(|_| Default::default());
+        for (slot, c) in outs.iter_mut().zip(self.outs.iter_mut()) {
+            *slot = &mut c[..size];
+        }
+        let transport = tutti_graph::Transport::default();
+        self.renderer.executor_mut().process(
+            size,
+            &transport,
+            &ins[..self.inputs],
+            &mut outs[..self.outputs],
+        );
+    }
+
+    /// Copy the last block's output out, and drain what the executor sent
+    /// back. Outside a timed region.
+    fn read(&mut self, size: usize, output: &mut BufferMut) {
+        self.renderer.editor_mut().collect();
+        for (c, ch) in self.outs.iter().enumerate() {
+            for (i, &s) in ch[..size].iter().enumerate() {
+                output.set_f32(c, i, s);
+            }
+        }
+    }
+}
 
 /// Take the machine, **across processes**.
 ///
@@ -166,10 +284,7 @@ fn available_effects() -> Vec<&'static str> {
 #[cfg(feature = "clap")]
 fn load_n_from_probe(
     count: usize,
-) -> Option<(
-    Vec<Box<dyn AudioUnit>>,
-    Vec<tutti_plugin::handles::PluginHandle>,
-)> {
+) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
     eprintln!(
         "no third-party effect plugins installed — driving {count} instance(s) \
          of the reference CLAP probe instead"
@@ -187,11 +302,12 @@ fn load_n_from_probe(
     // own copy.
     let _env = clap_probe::ProbeEnv::new().render_mode(clap_probe::render::TAG_PASSTHROUGH);
 
-    let mut units: Vec<Box<dyn AudioUnit>> = Vec::with_capacity(count);
+    let mut units: Vec<GraphUnit> = Vec::with_capacity(count);
     let mut handles = Vec::with_capacity(count);
     for _ in 0..count {
         let probe = clap_probe::load_probe(SAMPLE_RATE);
-        units.push(Box::new(probe.client));
+        let (ins, outs) = (probe.client.inputs(), probe.client.outputs());
+        units.push(GraphUnit::new(probe.client.bind(), ins, outs));
         handles.push(probe.handle);
     }
     Some((units, handles))
@@ -204,10 +320,7 @@ fn load_n_from_probe(
 #[cfg(all(not(feature = "clap"), feature = "vst3"))]
 fn load_n_from_probe(
     _count: usize,
-) -> Option<(
-    Vec<Box<dyn AudioUnit>>,
-    Vec<tutti_plugin::handles::PluginHandle>,
-)> {
+) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
     eprintln!("no effect plugins installed and no `clap` feature to fall back on — skipping");
     None
 }
@@ -222,12 +335,7 @@ fn load_n_from_probe(
 /// from. The delay-compensation tests do not go through here — they load one named
 /// plugin via [`load_passthrough`], which is why `au` alone is a valid build.
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn load_n(
-    count: usize,
-) -> Option<(
-    Vec<Box<dyn AudioUnit>>,
-    Vec<tutti_plugin::handles::PluginHandle>,
-)> {
+fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::PluginHandle>)> {
     let paths = available_effects();
     if paths.is_empty() {
         return load_n_from_probe(count);
@@ -242,8 +350,10 @@ fn load_n(
         // dispatches on the extension itself. `available_effects` has already
         // filtered to what is installed, and the whole function is cfg'd on the
         // formats `EFFECTS` can name.
-        let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE)
-            .map(|plugin| plugin.into_parts());
+        let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
+            let handle = plugin.handle().clone();
+            (GraphUnit::from_plugin(plugin), handle)
+        });
         match built {
             Ok((unit, handle)) => {
                 units.push(unit);
@@ -290,7 +400,7 @@ fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
 /// return the per-block wall time spent *inside* processing (excluding the
 /// pacing sleep).
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn drive_series(units: &mut [Box<dyn AudioUnit>], blocks: usize) -> (Vec<Duration>, usize) {
+fn drive_series(units: &mut [GraphUnit], blocks: usize) -> (Vec<Duration>, usize) {
     let mut costs = Vec::with_capacity(blocks);
     let mut non_silent = 0usize;
 
@@ -317,13 +427,22 @@ fn drive_series(units: &mut [Box<dyn AudioUnit>], blocks: usize) -> (Vec<Duratio
         // a chain that carries almost nothing while the timing numbers look
         // fine — timing empty work. Same input to each keeps every stage
         // genuinely processing audio, so the costs measured are real.
+        // Only the plugin path is timed: the copies into and out of each
+        // unit's planar buffers, and the editor's collect, are the harness's
+        // and happen outside the region.
+        for unit in units.iter_mut() {
+            unit.stage(BLOCK, &input.buffer_ref());
+        }
         let start = Instant::now();
         for unit in units.iter_mut() {
-            output.clear();
-            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+            unit.run(BLOCK);
         }
         let cost = start.elapsed();
         costs.push(cost);
+        for unit in units.iter_mut() {
+            output.clear();
+            unit.read(BLOCK, &mut output.buffer_mut());
+        }
 
         if peak(&output, max_ch) > 0.0 {
             non_silent += 1;
@@ -349,7 +468,7 @@ fn drive_series(units: &mut [Box<dyn AudioUnit>], blocks: usize) -> (Vec<Duratio
 /// both. Returns `false` if audio never appears, so callers can fail with that
 /// as the diagnosis rather than reporting meaningless timings.
 #[cfg(any(feature = "clap", feature = "vst3"))]
-fn warm_up(units: &mut [Box<dyn AudioUnit>], deadline: Duration) -> bool {
+fn warm_up(units: &mut [GraphUnit], deadline: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < deadline {
         // Short bursts: enough to make progress, short enough to re-check.
@@ -766,22 +885,22 @@ fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// `Plugin::open` picks the host from the path itself, so this does not
 /// dispatch on the extension.
 #[cfg(any(feature = "vst3", feature = "au"))]
-fn load_passthrough(
-    path: &str,
-) -> Option<(Box<dyn AudioUnit>, tutti_plugin::handles::PluginHandle)> {
+fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::PluginHandle)> {
     if !std::path::Path::new(path).exists() {
         eprintln!("{path} not installed — skipping");
         return None;
     }
-    let built =
-        tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| plugin.into_parts());
+    let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
+        let handle = plugin.handle().clone();
+        (GraphUnit::from_plugin(plugin), handle)
+    });
     Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
 }
 
 /// Drive `unit` and require its output to null against the input delayed by the
 /// latency it declares.
 #[cfg(any(feature = "vst3", feature = "au"))]
-fn assert_nulls_at_declared_latency(mut unit: Box<dyn AudioUnit>, path: &str) {
+fn assert_nulls_at_declared_latency(mut unit: GraphUnit, path: &str) {
     let unit = &mut unit;
     // Wide enough for *both* directions: fundsp indexes one buffer by channel for
     // whichever side is wider, so sizing to the narrower one panics.

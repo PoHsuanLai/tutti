@@ -171,6 +171,56 @@ pub fn resolve_or_panic(candidate_list: &str, what: &str) -> String {
     }
 }
 
+/// Publish `real` under its own name with `extension` (`.clap`, say) beside
+/// it, and return that path.
+///
+/// The extension is load-bearing for a host that dispatches on it: cargo's
+/// `libtutti_clap_test_plugin.so` reads as VST2 there. The link path is shared
+/// by every test process of every suite (the candidate list is baked in at
+/// build time), so it is published by atomic rename from a per-process
+/// staging name: a `remove_file` + `symlink` pair once left it briefly absent.
+///
+/// **On Unix a link that already points at `real` is left alone.** On a macOS
+/// runner a process loading the link while other processes renamed fresh
+/// links over it read it as absent, and the load failed with "Plugin not
+/// found" (twice in a row, once more suites came to publish the link; APFS
+/// does not promise a concurrent lookup never misses a path being renamed
+/// over). Every test process used to republish; now only the first does, or
+/// one that finds the link naming something else. Nothing goes stale by
+/// skipping: a symlink is resolved at each open, so one naming `real` is as
+/// fresh as `real`. A Windows copy can go stale, so it is still republished.
+///
+/// # Panics
+///
+/// If the link cannot be staged, or is absent after a lost rename.
+pub fn publish_with_extension(real: &Path, extension: &str) -> PathBuf {
+    let link = real.with_extension(extension);
+    #[cfg(unix)]
+    if std::fs::read_link(&link).is_ok_and(|to| to == real) {
+        return link;
+    }
+
+    // Stage under a name no other process can pick, then swap it in.
+    let staging = link.with_extension(format!("{extension}.tmp{}", std::process::id()));
+    let _ = std::fs::remove_file(&staging);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(real, &staging).expect("stage the reference plugin symlink");
+    #[cfg(windows)]
+    std::fs::copy(real, &staging).expect("stage the reference plugin copy");
+
+    if let Err(e) = std::fs::rename(&staging, &link) {
+        // Losing the swap is not a failure: whoever won published a link to
+        // the same artifact. Only a missing result is fatal.
+        let _ = std::fs::remove_file(&staging);
+        assert!(
+            link.exists(),
+            "publish the reference plugin at {}: {e}",
+            link.display()
+        );
+    }
+    link
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +284,40 @@ mod tests {
             "unexpected cdylib name: {name}"
         );
         assert!(name.contains("some_plugin"));
+    }
+
+    /// **A link already naming the artifact is not republished.** The
+    /// link's own inode is the witness: a republish renames a fresh symlink
+    /// over it, which a second call must not do.
+    ///
+    /// Mutation: drop the `read_link` early return -> the second call renames
+    /// a new link in -> the inode changes -> fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_published_link_is_left_alone() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("tfr-link-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let real = dir.join("libplugin.so");
+        std::fs::File::create(&real)
+            .unwrap()
+            .write_all(b"x")
+            .unwrap();
+        let link = publish_with_extension(&real, "clap");
+        assert_eq!(link, dir.join("libplugin.clap"));
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+        let first = std::fs::symlink_metadata(&link).unwrap().ino();
+        assert_eq!(publish_with_extension(&real, "clap"), link);
+        let second = std::fs::symlink_metadata(&link).unwrap().ino();
+        assert_eq!(first, second, "the second publish replaced the link");
+
+        // A link naming something else is replaced.
+        let other = dir.join("other.so");
+        std::fs::File::create(&other).unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&other, &link).unwrap();
+        publish_with_extension(&real, "clap");
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

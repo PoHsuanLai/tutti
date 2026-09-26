@@ -49,7 +49,7 @@ cargo run -p tutti-plugin --example wire_all_inputs -- <path-to-plugin>
 
 It opens the plugin with `Plugin::open`, offers it every per-block input
 (MIDI, transport, chord/scale), reports which the plugin accepted, and hands
-the audio node over with `into_unit`.
+the audio node over as a graph node (`Plugin` is a `tutti_graph::IntoNode`).
 
 To go through a catalog instead — scanning directories, and honouring the
 blacklist a crashed scan recorded — use `Plugins::find` to get a path and

@@ -5,9 +5,9 @@ Out-of-process VST2, VST3, CLAP and AU plugin hosting.
 ## What this is
 
 Loads audio plugins in isolated subprocesses, bridges audio + MIDI over shared
-memory, and exposes each plugin as a fundsp [`AudioUnit`] node. A crash inside a
-plugin stays contained to its subprocess — the host keeps running and reports the
-error.
+memory, and exposes each plugin as a node of tutti's native graph
+(`tutti_graph`). A crash inside a plugin stays contained to its subprocess — the
+host keeps running and reports the error.
 
 ## What it does not own
 
@@ -32,25 +32,26 @@ Load a plugin and put its node into a tutti graph. `no_run`: the load spawns a
 subprocess against a real `.vst3` / `.clap` on disk.
 
 ```rust,no_run
-use tutti_core::{dsp::Net, SampleRate};
+use tutti_core::SampleRate;
+use tutti_graph::{Editor, Prepare};
 use tutti_plugin::catalog::Plugin;
+use tutti_types::{NodeKey, Samples};
 
 // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 // unit type, not a bare rate that could be a block size.
 let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
 println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 
-// Two handles, one subprocess. `into_parts` hands back both, because
-// `into_unit` alone consumes the `Plugin` and the control surface is still
-// wanted afterwards — the plugin dies when the last of either drops.
-let (unit, handle) = plugin.into_parts();
+// Two handles, one subprocess: keep the control surface before the node goes
+// into the graph — the plugin dies when the last of either drops.
+let handle = plugin.handle().clone();
 println!("reported latency: {:?}", handle.loaded().latency());
 
-// The node is a fundsp `AudioUnit`, so it enters `Net` like any other.
-let mut net = Net::new(0, 2);
-let id = net.push(unit);
-net.pipe_output(id);
-net.commit();
+// A `Plugin` is an `IntoNode`: inserting it hands back its controls (a
+// subprocess plugin's `PluginControls`), and a fork source so an export can
+// render it.
+let (mut editor, _executor) = Editor::new(Prepare::new(SampleRate::new(48_000.0), Samples(512)));
+let _controls = editor.insert(NodeKey(1), "plugin", plugin);
 # Ok::<(), tutti_plugin::BridgeError>(())
 ```
 
@@ -77,8 +78,9 @@ for anything editor-related.
 
 Loading a plugin returns two values:
 
-- [`handles::PluginClient`] — the audio-graph node. Owns the audio path; fundsp
-  clones and routes it.
+- [`handles::PluginClient`] — the audio-graph node. Loaded `Unbound`;
+  `bind()` makes it a `PluginClient<Bound>`, which owns the audio path and is
+  what a graph inserts (and the only state that can be inserted).
 - [`handles::PluginHandle`] — the main-thread control surface. Editor,
   parameters, state. Cheap to clone (`Arc`-shared).
 
@@ -100,10 +102,11 @@ The rules this crate obeys; new formats and per-block inputs should follow them.
    cannot be downcast. (Mirrors cpal / wgpu-hal: one fat trait plus runtime
    capability queries, not a trait per capability.)
 3. **Share the slot, not the value.** Host-installed per-block sources (MIDI,
-   harmony, transport, automation) live in a shared `Arc<ArcSwapOption<…>>`, not
-   a per-clone `Option`, because fundsp runs a different clone than the setter
-   mutates — a per-clone field is a silent no-op that never reaches the audio
-   thread. See [`handles::PluginClient`] and the `input_slot` module.
+   harmony, automation, the meter) live in a shared `Arc<ArcSwapOption<…>>`,
+   because the node is owned by the graph once inserted and a host reaches it
+   only through the handles it kept (`PluginControls`). The transport is not a
+   source at all: the node reads it from each block's `Env`. See
+   [`handles::PluginClient`] and the `input_slot` module.
 4. **Unify by mechanism, separate by trigger.** Collapse same-mechanism code (the
    per-block producers became one `InputSlot`); keep systems that react to
    different `Changed<T>` triggers separate — merging them would couple unrelated
@@ -325,5 +328,4 @@ implementing the [`backend`] traits over its own loader.
 
 MIT OR Apache-2.0
 
-[`AudioUnit`]: tutti_core::AudioUnit
 [`Features`]: crate::Features

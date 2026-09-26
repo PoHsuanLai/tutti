@@ -681,7 +681,8 @@ mod tests {
     use super::*;
 
     /// Every production block size / rate combination the engine can present.
-    /// `BATCH_SIZE` is 64 today, but the timeout must hold if that changes.
+    /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout
+    /// must hold at every size.
     const RATES: [f64; 4] = [44_100.0, 48_000.0, 96_000.0, 192_000.0];
     const BLOCKS: [usize; 4] = [64, 128, 256, 512];
 

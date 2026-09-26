@@ -1,39 +1,72 @@
-//! [`Batcher`] — buffers one `BATCH_SIZE` block of per-channel audio
-//! between the caller and the plugin-server bridge.
+//! [`Batcher`] — the pipeline between the plugin node and the plugin-server
+//! bridge: every chunk it ships is exactly [`chunk`](Batcher::chunk) frames,
+//! and the output is exactly one chunk late.
 //!
-//! `write()` accumulates one input sample per channel per call. Once
-//! `should_flush()` is true, `flush()` ships the whole block across the
-//! bridge, stages the server's reply into output storage, and resets
-//! cursors so `read()` can replay the outputs sample-by-sample. `process()`
-//! is the block-in/block-out variant that bypasses tick storage entirely.
+//! [`process`](Batcher::process) takes a call's input into a FIFO and writes
+//! the call's output from a ring. When the FIFO fills, the chunk is staged
+//! into the shared-memory slab and submitted; when the ring's first frame is
+//! next needed, the chunk submitted last is collected into it.
 //!
 //! # Pipelined, never waiting
 //!
-//! Both paths **submit block N and consume block N−1's output**, never waiting
+//! The batcher **submits chunk N and plays chunk N−1's output**, never waiting
 //! for a reply. This replaced a synchronous version that spun on the audio
 //! thread, where each node's wait was individually reasonable — half its own
-//! block period — but the budgets *summed*: fundsp runs nodes serially in one
-//! callback (`for &node_index in self.order`), so three stalled plugins spent
-//! 3 × 667 µs against a 1333 µs deadline. Parallelising fundsp would not have
-//! helped; plugins in series are a dependency chain. The defect was the waiting.
+//! block period — but the budgets *summed*: the graph runs nodes serially in
+//! one callback, so three stalled plugins spent 3 × 667 µs against a 1333 µs
+//! deadline. Parallelising the graph would not have helped; plugins in series
+//! are a dependency chain. The defect was the waiting.
 //!
 //! Not waiting makes a stalled plugin cost zero, however many there are and
-//! whatever the graph's shape. The price is one block of latency per
-//! out-of-process plugin — 64 samples, 1.33 ms at 48 kHz — *declared to PDC*
-//! (see [`PIPELINE_LATENCY_SAMPLES`]) and so compensated rather than heard. This
-//! is what JACK, PipeWire and AUv3 all do.
+//! whatever the graph's shape. The price is one chunk of latency per
+//! out-of-process plugin — *declared to PDC* (the node's `Shape::latency`,
+//! through `PluginControls::declared_latency`) and so compensated rather than
+//! heard. This is what JACK, PipeWire, AUv3 and every DAW that hosts plugins
+//! out of process do.
+//!
+//! # A FIFO, so every chunk is whole
+//!
+//! The calls the node is handed need not line up with chunks: the engine
+//! renders a device callback in 64-frame passes while a `Legacy`-flagged node
+//! is in the graph, and an export may render 100-frame blocks. Shipping each
+//! call as it came (a 36-frame submission, then a 64-frame one collecting it)
+//! dropped or zero-padded frames wherever consecutive lengths differed. So a
+//! call's input only ever fills the FIFO, a submission is always one whole
+//! chunk, and the output is read from the ring at the same position the input
+//! is written: output frame `t` is the plugin's output for input frame
+//! `t - chunk`, for any cut of the calls.
+//!
+//! # One device callback per chunk
+//!
+//! The chunk is settled by [`prepare`](Batcher::prepare): the host's device
+//! quantum (`Prepare::quantum`) when it knows one, else the graph's
+//! `MaxBlock`, never past the slab's [`MAX_CHUNK`]. Live, that makes a chunk
+//! complete on a callback's last frame and its output first needed on the
+//! next callback's first — so the server has a whole device period to answer,
+//! and the plugin's latency is one device block, as a DAW hosting plugins out
+//! of process has it.
+//!
+//! Doc 013 had decided the opposite first (decision 8: a fixed 64-frame
+//! pipeline, for the lower latency), and reversed it on measurement: with a
+//! 64-frame chunk inside a 480-frame callback, every chunk but the first is
+//! collected microseconds after it was submitted, and 186 of 200 blocks
+//! rendered silent (441: 198; 1024: 187); with the callback as the chunk, 0
+//! of 200 (`tests/clap_live.rs`). A chunk that is not the callback — a host
+//! that does not know its quantum, a device calling back with more than
+//! `MAX_CHUNK` frames, or one whose callbacks vary — still delays exactly
+//! `chunk` frames, but may collect chunks the server had no time to answer.
+//! An offline fork waits for every chunk, so it is exact whatever its chunk.
 //!
 //! Whether N−1's output is really there is decided by the slab's per-slot
 //! sequence numbers, not by a reply arriving: a mismatch yields silence. See
 //! `util::transport::shm::header`.
 //!
-//! Dual f32/f64 support: fundsp drives a `PluginClient` through either
-//! `AudioUnit<F32>` or `AudioUnit<F64>` (runtime choice). The wire format
-//! is the one the plugin negotiated (independent of fundsp's choice), so
-//! the tick scalar and wire scalar can differ — cross-format conversion
-//! happens in the wire scratch. Each of `tick` and `wire` is a
-//! format-tagged enum; only one variant exists per `Batcher` instance at
-//! runtime.
+//! # `f32` in the graph, the plugin's format on the wire
+//!
+//! The graph hands every node planar `f32` (doc 013, owner decision 2). The
+//! wire carries whatever the plugin negotiated at load, so a plugin that
+//! processes in double is converted here, in the wire scratch, and nowhere
+//! else: the `f64` stays inside the node.
 
 use super::fork::ForkWatch;
 use crate::error::Result;
@@ -42,226 +75,217 @@ use crate::host::node::BlockPayload;
 use crate::protocol::{MidiEventVec, SampleFormat};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, Samples, F32, F64};
+use tutti_core::Samples;
+use tutti_graph::Prepare;
 
-/// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
-/// fundsp's natural unit and what the plugin server is sized for.
+/// The largest chunk that crosses the process edge: the largest device
+/// callback a live plugin keeps in step with, and so the ceiling on the
+/// pipeline's declared latency (85 ms at 48 kHz).
 ///
-/// This is a hard ceiling on the per-block sample count, not just a preference:
-/// `AudioUnit::process` is documented "process up to 64 samples" and every
-/// fundsp entry point `debug_assert!(size <= MAX_BUFFER_SIZE)`, with
-/// `BigBlockAdapter` chunking anything larger before it reaches a node. So the
-/// shared-memory slab is sized to this rather than to `config.max_buffer_size`
-/// — see `subprocess::launch::setup_shm`, the other consumer of this constant.
-pub(crate) const BATCH_SIZE: usize = 64;
+/// The shared-memory slab is sized to this at launch (`subprocess::launch`,
+/// the other consumer of this constant; or to the host's smaller
+/// `max_buffer_size`), before the node is prepared — so [`Batcher::prepare`]
+/// can only narrow the chunk, never widen it, and the slab and the batcher
+/// agree on the per-chunk ceiling by construction. A device calling back
+/// with more frames than this gets a chunk of this many, which no longer
+/// lines up with its callbacks (module docs).
+pub(crate) const MAX_CHUNK: usize = 4096;
 
-/// `count` per-channel buffers, each `size` samples of zeroed `T`.
-fn zero_channels<T: Copy + Default>(count: usize, size: usize) -> Vec<Vec<T>> {
-    (0..count).map(|_| vec![T::default(); size]).collect()
-}
-
-/// Sealed dispatch over `f32`/`f64` scalars. Every method stages through
-/// `Batcher`'s pre-sized wire scratch, so the audio thread never allocates.
-pub(super) trait Scalar: Copy + Default + private::Seal {
-    /// fundsp's format marker (`F32`/`F64`) for block-mode buffer types.
-    type Marker: FundspSample<Scalar = Self>;
-
-    fn write_in(batcher: &mut Batcher, ch: usize, pos: usize, value: Self);
-    fn read_out(batcher: &Batcher, ch: usize, pos: usize) -> Self;
-
-    /// Zero-fill tick output up to `size` samples for every channel.
-    fn silence_tick(batcher: &mut Batcher, size: usize, outputs: usize);
-
-    /// Copy one channel of tick storage into block `seq`'s input slot. Staging
-    /// only — the caller publishes once, after the last channel.
-    fn stage_tick(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-    ) -> Result<()>;
-    /// Copy one channel of block `seq`'s output slot into tick storage.
-    /// Zero-pads if the slab holds fewer than `size` samples.
-    ///
-    /// Only call this for a `seq` the slab has confirmed (see
-    /// `Batcher::collectable`): the copy count proves nothing about who wrote
-    /// the bytes.
-    fn recv_tick(batcher: &mut Batcher, bridge: &PluginBridge, seq: u64, ch: usize, size: usize);
-
-    /// Block-mode counterpart of [`stage_tick`](Self::stage_tick).
-    fn stage_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        input: &BufferRef<'_, Self::Marker>,
-    ) -> Result<()>;
-    /// Block-mode counterpart of [`recv_tick`](Self::recv_tick), with the same
-    /// confirmed-`seq` precondition.
-    fn recv_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        output: &mut BufferMut<'_, Self::Marker>,
-    );
-
-    /// Zero-fill the block-mode output buffer.
-    fn silence_block(output: &mut BufferMut<'_, Self::Marker>, size: usize, outputs: usize);
-}
-
-mod private {
-    pub trait Seal {}
-    impl Seal for f32 {}
-    impl Seal for f64 {}
-}
-
-/// Per-channel tick scratch, keyed by whichever fundsp scalar type is
-/// driving this `Batcher`. `Unset` until the first `write` / `flush` /
-/// `process` locks in the scalar; the `Scalar::ensure_*_mut` helpers
-/// allocate on demand.
-pub(super) enum TickStorage {
-    Unset,
-    F32 {
-        input: Vec<Vec<f32>>,
-        output: Vec<Vec<f32>>,
-    },
-    F64 {
-        input: Vec<Vec<f64>>,
-        output: Vec<Vec<f64>>,
-    },
-}
-
-/// Single-block wire scratch in the plugin-negotiated format. Allocated
-/// at `Batcher::new` because the wire format is known up-front.
-pub(super) enum WireStorage {
+/// Single-chunk wire scratch in the plugin-negotiated format. Allocated at
+/// [`Batcher::new`] for the chunk ceiling, because the wire format is known
+/// up-front and no chunk is ever longer.
+enum WireStorage {
     F32 { input: Vec<f32>, output: Vec<f32> },
     F64 { input: Vec<f64>, output: Vec<f64> },
 }
 
 impl WireStorage {
-    fn new(format: SampleFormat, max_block: usize) -> Self {
+    fn new(format: SampleFormat, ceiling: usize) -> Self {
         match format {
             SampleFormat::Float32 => Self::F32 {
-                input: vec![0.0; max_block],
-                output: vec![0.0; max_block],
+                input: vec![0.0; ceiling],
+                output: vec![0.0; ceiling],
             },
             SampleFormat::Float64 => Self::F64 {
-                input: vec![0.0; max_block],
-                output: vec![0.0; max_block],
+                input: vec![0.0; ceiling],
+                output: vec![0.0; ceiling],
             },
         }
     }
+
+    /// Stage `samples` as channel `ch` of chunk `seq`, converting to the
+    /// wire's format. Staging only — the caller publishes once, after the
+    /// last channel.
+    fn stage(&mut self, bridge: &PluginBridge, seq: u64, ch: usize, samples: &[f32]) -> Result<()> {
+        let n = samples.len();
+        match self {
+            Self::F32 { input, .. } => {
+                let wire = &mut input[..n];
+                wire.copy_from_slice(samples);
+                bridge.audio_buffer().write_input(seq, ch, wire)
+            }
+            Self::F64 { input, .. } => {
+                let wire = &mut input[..n];
+                for (d, &s) in wire.iter_mut().zip(samples) {
+                    *d = f64::from(s);
+                }
+                bridge.audio_buffer().write_input(seq, ch, wire)
+            }
+        }
+    }
+
+    /// Copy channel `ch` of chunk `seq`'s output into `out`, converting from
+    /// the wire's format, and zero-pad past what the slab holds.
+    ///
+    /// Only call this for a `seq` the slab has confirmed (see
+    /// [`Batcher::collectable`]): the copy count proves nothing about who
+    /// wrote the bytes.
+    fn recv(&mut self, bridge: &PluginBridge, seq: u64, ch: usize, out: &mut [f32]) {
+        let size = out.len();
+        let n = match self {
+            Self::F32 { output, .. } => {
+                let wire = &mut output[..size];
+                let n = bridge
+                    .audio_buffer()
+                    .read_output_into(seq, ch, wire)
+                    .unwrap_or(0);
+                out[..n].copy_from_slice(&wire[..n]);
+                n
+            }
+            Self::F64 { output, .. } => {
+                let wire = &mut output[..size];
+                let n = bridge
+                    .audio_buffer()
+                    .read_output_into(seq, ch, wire)
+                    .unwrap_or(0);
+                for (o, &v) in out[..n].iter_mut().zip(&wire[..n]) {
+                    // The narrowing is the point: the graph is `f32`.
+                    *o = v as f32;
+                }
+                n
+            }
+        };
+        out[n..].fill(0.0);
+    }
 }
 
-/// Extra latency, in samples, that pipelining introduces: exactly one block.
+/// What the plugin node gives the batcher per chunk: the chunk's payload, and
+/// where its MIDI-out goes.
 ///
-/// Declared to PDC through `AudioUnit::route`, so the graph compensates for it
-/// instead of the user hearing it. Three deliberate choices:
-///
-/// - **`BATCH_SIZE`, not the per-block `size`.** `route()` is never told the
-///   block size, and a *varying* declared latency would be uncompensable anyway
-///   — PDC sizes a fixed delay ring once, at plan time.
-/// - **Not `config.max_buffer_size`.** That is 8192 by default: 171 ms of
-///   declared latency for a 1.33 ms pipeline. Catastrophically wrong in the
-///   direction that sounds broken.
-/// - **An upper bound, deliberately.** Exact for a full 64-sample block,
-///   pessimistic by `64 - size` for a partial one. Over-declaring keeps every
-///   path aligned with every other; under-declaring would not.
-pub(super) const PIPELINE_LATENCY_FRAMES: Samples = Samples(BATCH_SIZE);
+/// A trait rather than arguments because a chunk and a call are not the same
+/// span (module docs, "A FIFO, so every chunk is whole"): the node is told
+/// where each chunk **begins** in the call that begins it, and is asked for
+/// its payload when the chunk is **submitted**, possibly a call later.
+pub(super) trait Chunks {
+    /// A chunk of `chunk` frames begins at frame `at` of this call (its first
+    /// frame is the next input frame the batcher takes).
+    fn begin(&mut self, at: usize, chunk: usize);
+    /// The payload of the chunk being submitted now, `frames` long: what
+    /// [`begin`](Self::begin) gathered for it.
+    fn payload(&mut self, frames: usize) -> BlockPayload;
+    /// The plugin's MIDI-out drained with this submission, belonging to the
+    /// chunk submitted before it (`chunk` frames long).
+    fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize);
+}
 
-/// One block of audio between fundsp callers and the plugin-server bridge.
+/// The pipeline between the plugin node and the plugin-server bridge: an
+/// input FIFO that ships a chunk when full, and an output ring the previous
+/// chunk's output is read from.
 pub(crate) struct Batcher {
-    /// Total input ports (main + sidechain/aux input buses). Each port `ch` is
-    /// written to input-region channel `ch` (bus-ordered), so a fundsp
-    /// `connect(src, 0, target, 1)` feeds the plugin's sidechain bus.
-    pub(super) inputs: usize,
-    pub(super) outputs: usize,
-    format: SampleFormat,
-
-    tick: TickStorage,
     wire: WireStorage,
 
-    // Shared across both tick paths — only one is ever live per instance.
-    write_pos: usize,
-    read_pos: usize,
-    filled: usize,
+    /// The slab's per-chunk size: the most [`chunk`](Self::chunk) can be.
+    ceiling: usize,
+    /// The chunk [`prepare`](Self::prepare) settled on: the frames every
+    /// submission carries, and so the pipeline's latency.
+    chunk: usize,
 
-    max_block: usize,
+    /// Input frames not shipped yet, one row per input port (main plus
+    /// sidechain/aux buses, bus-ordered: row `ch` is the slab's input-region
+    /// channel `ch`, so a graph edge into the node's port 2 feeds the plugin's
+    /// sidechain bus), `ceiling` long.
+    fifo: Vec<Vec<f32>>,
+    /// The output of the chunk collected last, one row per output port.
+    ring: Vec<Vec<f32>>,
+    /// Frames of the current chunk taken so far (`0..chunk`): where the next
+    /// input frame goes, and which ring frame the next output reads.
+    pos: usize,
 
-    /// The sequence number the next submitted block will carry. Starts at 1
+    /// The sequence number the next submitted chunk will carry. Starts at 1
     /// because 0 means "nothing published" in a freshly zeroed slab.
     next_seq: u64,
-    /// The block whose output is expected on the *next* call, or `None`
-    /// when nothing is in flight (start-up, and after a reset).
+    /// The chunk submitted and not collected yet, or `None` when nothing is
+    /// in flight (start-up, after a reset, after a failed submission).
     expect_seq: Option<u64>,
     /// `Some` only on an **offline fork** (`host::node::fork`): before
-    /// collecting block N−1, wait up to this long for the server to publish
-    /// it. See [`await_output`](Self::await_output).
+    /// collecting a chunk, wait up to this long for the server to publish it.
+    /// See [`await_output`](Self::await_output).
     offline_wait: Option<OfflineWait>,
+    /// Per-submission scratch the plugin's MIDI-out is drained into. Its
+    /// steady-state capacity makes the drain alloc-free.
+    midi_out: MidiEventVec,
 }
 
 /// An offline fork's wait: its [`ForkWatch`] holds the per-block budget and
 /// the latches.
-#[derive(Clone)]
 struct OfflineWait {
     watch: Arc<ForkWatch>,
 }
 
-impl Clone for Batcher {
-    fn clone(&self) -> Self {
-        // Fresh buffers, reset cursors. Safe because fundsp clones on
-        // graph commit before processing starts — no in-flight samples.
-        let mut cloned = Self::new(self.inputs, self.outputs, self.format, self.max_block);
-        // Carry the sequence forward rather than restarting at 1. A commit can
-        // land during playback (PDC re-plans), and a clone that restarted would
-        // accept a *pre-commit* block's late publish as its own block 1. The
-        // in-flight block itself is deliberately dropped — `expect_seq` stays
-        // `None` — because the clone is a different object and the old one may
-        // still collect it.
-        cloned.next_seq = self.next_seq;
-        cloned.offline_wait = self.offline_wait.clone();
-        cloned
-    }
-}
-
 impl Batcher {
-    pub(super) fn new(
-        inputs: usize,
-        outputs: usize,
-        format: SampleFormat,
-        max_block: usize,
-    ) -> Self {
+    /// A batcher for a plugin with these widths and wire format, over a slab
+    /// whose chunks hold `ceiling` frames. Control thread: allocates the wire
+    /// scratch, the FIFO and the ring. The chunk starts at the ceiling;
+    /// [`prepare`](Self::prepare) narrows it to the graph's `MaxBlock`.
+    pub(super) fn new(inputs: usize, outputs: usize, format: SampleFormat, ceiling: usize) -> Self {
         Self {
-            inputs,
-            outputs,
-            format,
-            tick: TickStorage::Unset,
-            wire: WireStorage::new(format, max_block),
-            write_pos: 0,
-            read_pos: 0,
-            filled: 0,
-            max_block,
+            wire: WireStorage::new(format, ceiling),
+            ceiling,
+            chunk: ceiling,
+            fifo: vec![vec![0.0; ceiling]; inputs],
+            ring: vec![vec![0.0; ceiling]; outputs],
+            pos: 0,
             next_seq: 1,
             expect_seq: None,
             offline_wait: None,
+            midi_out: MidiEventVec::new(),
         }
     }
 
-    /// Make every collect wait for its block, up to `budget` per block: the
+    /// Settle the chunk for `p`: the host's device quantum when it knows one
+    /// (live: one chunk per device callback, so the server has a whole
+    /// device period to answer), else the graph's `MaxBlock` (an offline
+    /// render, or a host that does not know its callback), never past the
+    /// slab's ceiling (module docs, "One device callback per chunk"). Starts
+    /// the pipeline over, as a re-prepare starts the node over.
+    pub(super) fn prepare(&mut self, p: &Prepare) {
+        let want = p.quantum().map_or(p.max_block().get(), Samples::get);
+        self.chunk = self.ceiling.min(want).max(1);
+        self.reset();
+    }
+
+    /// The frames every submission carries.
+    pub(super) fn chunk(&self) -> usize {
+        self.chunk
+    }
+
+    /// [`chunk`](Self::chunk) as the latency it adds: exactly one chunk,
+    /// whatever the blocks (module docs).
+    pub(super) fn pipeline_latency(&self) -> Samples {
+        Samples(self.chunk)
+    }
+
+    /// Make every collect wait for its chunk, up to `budget` per chunk: the
     /// offline mode of a forked instance.
     ///
     /// The pipeline never waits because it runs on the audio thread, where a
     /// wait is a dropout (module docs). An offline fork runs on a render
     /// worker with no deadline, as fast as the plugin answers — so there the
     /// same rule is the defect: a render loop outpaces the subprocess, every
-    /// block it has not published yet reads as silence, and the export is
-    /// mostly silent with no error. Waiting keeps the pipelined shape (submit
-    /// N, collect N−1) and so the declared one-block latency, and makes the
-    /// output a function of the input rather than of scheduling.
+    /// chunk it has not published yet reads as silence, and the export is
+    /// mostly silent with no error. Waiting keeps the pipelined shape and so
+    /// the declared one-chunk latency, and makes the output a function of the
+    /// input rather than of scheduling.
     ///
     /// The budget and the latches are the fork's [`ForkWatch`]: it records a
     /// miss or a dead server there, and its health probe reports them.
@@ -270,14 +294,14 @@ impl Batcher {
     }
 
     /// With [`set_offline_wait`](Self::set_offline_wait): block until the
-    /// block this call collects is published, the bridge crashes, or the
+    /// chunk this call collects is published, the bridge crashes, or the
     /// budget runs out. A no-op otherwise, and when nothing is in flight.
     ///
-    /// **The first miss is the last wait.** A block still missing at the
+    /// **The first miss is the last wait.** A chunk still missing at the
     /// budget is collected as silence, as the live path would, and the wait
-    /// latches `gave_up`: from then on every block is collected at once
+    /// latches `gave_up`: from then on every chunk is collected at once
     /// (silence, unless the server catches up), so a hung server costs one
-    /// budget per render, not one per block — an hour-long export through a
+    /// budget per render, not one per chunk — an hour-long export through a
     /// wedged plugin would otherwise take days to report its failure. The
     /// fork's health probe turns the latch into `ForkFaultKind::TimedOut`,
     /// which the renderer reports.
@@ -320,86 +344,37 @@ impl Batcher {
             // the core more than this loop does.
             std::thread::sleep(Duration::from_micros(50));
         }
+        // Latch what the bridge saw into the watch: the health probe holds the
+        // bridge weakly, and a render that ends before the next process poll
+        // drops it (with the executor) before anyone asks, which read as a
+        // healthy fork.
+        if bridge.is_crashed() {
+            watch.latch_crash(bridge.crash_cause());
+        }
     }
 
-    /// Drop the in-flight block and start collecting fresh.
+    /// Drop the chunk in flight, the frames taken towards the next one and
+    /// the output not yet played, and start collecting fresh.
     ///
     /// **`next_seq` is deliberately not reset.** This is the load-bearing
-    /// subtlety of the whole pipeline: if the count restarted at 1, a block
+    /// subtlety of the whole pipeline: if the count restarted at 1, a chunk
     /// submitted before a seek could be published after it and accepted as the
-    /// new block 1 — the seek would replay a fragment of pre-seek audio. Keeping
+    /// new chunk 1 — the seek would replay a fragment of pre-seek audio. Keeping
     /// the sequence monotonic makes a late publish structurally unmatchable.
-    /// (A `u64` at ~750 blocks/s takes on the order of 780,000 years to wrap.)
+    /// (A `u64` at ~750 chunks/s takes on the order of 780,000 years to wrap.)
     ///
     /// The server's own `Reset` is a no-op for this purpose, so clearing
     /// `expect_seq` here is the *entire* mechanism by which a seek stops old
     /// audio from arriving.
     pub(super) fn reset(&mut self) {
-        self.write_pos = 0;
-        self.read_pos = 0;
-        self.filled = 0;
         self.expect_seq = None;
-    }
-
-    /// True when the input column has accumulated a full batch.
-    pub(super) fn should_flush(&self) -> bool {
-        self.write_pos >= BATCH_SIZE
-    }
-
-    /// Append one input sample per channel at the current write cursor.
-    pub(super) fn write<T: Scalar>(&mut self, input: &[T]) {
-        let pos = self.write_pos;
-        let n = input.len().min(self.inputs);
-        for (ch, &sample) in input.iter().enumerate().take(n) {
-            T::write_in(self, ch, pos, sample);
+        self.pos = 0;
+        for row in self.fifo.iter_mut().chain(self.ring.iter_mut()) {
+            row.fill(0.0);
         }
-        self.write_pos += 1;
     }
 
-    /// Read one output sample per channel at the current read cursor.
-    /// Silent during pre-roll (before the first flush).
-    pub(super) fn read<T: Scalar>(&mut self, output: &mut [T]) {
-        let pos = self.read_pos;
-        if pos < self.filled {
-            let n = output.len().min(self.outputs);
-            for (ch, slot) in output.iter_mut().enumerate().take(n) {
-                *slot = T::read_out(self, ch, pos);
-            }
-            for slot in output.iter_mut().skip(n) {
-                *slot = T::default();
-            }
-        } else {
-            for slot in output.iter_mut() {
-                *slot = T::default();
-            }
-        }
-        self.read_pos += 1;
-    }
-
-    /// Unpack a [`BlockPayload`] into the positional `bridge.submit` call. The
-    /// one place the host-side aggregate meets the IPC boundary; `midi_out` is
-    /// the caller-owned sink the plugin's MIDI-out is drained into.
-    fn dispatch(
-        &self,
-        bridge: &PluginBridge,
-        seq: u64,
-        size: usize,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) -> bool {
-        bridge.submit(
-            seq,
-            size,
-            payload.midi,
-            payload.params,
-            payload.note_expression,
-            payload.harmony,
-            payload.transport,
-            midi_out,
-        )
-    }
-
-    /// Whether block `expect_seq`'s output is really available to read.
+    /// Whether chunk `expect_seq`'s output is really available to read.
     ///
     /// Two independent conditions, and the crash check is first on purpose. A
     /// crashed bridge never publishes, so the sequence would mismatch anyway and
@@ -414,483 +389,113 @@ impl Batcher {
         bridge.audio_buffer().has_output(seq).then_some(seq)
     }
 
-    /// Finish submitting block `seq`: publish the input slot and hand the block
-    /// to the bridge. Split from the per-channel staging above it only because
-    /// the two paths stage differently (tick storage vs. a fundsp buffer) but
-    /// submit identically.
+    /// Fill the ring with the output of the chunk in flight: the one submitted
+    /// last, whose input the ring's frames were played against a chunk ago.
+    /// Silence when nothing is collectable (start-up, a reset, a crashed
+    /// bridge, a chunk the server never answered).
     ///
-    /// The publish happens **exactly once, after the last channel**. A
-    /// per-channel publish would let the server observe the slot as valid while
-    /// later channels are still being copied, and half of this block spliced
-    /// onto half of the previous one sounds almost right — far worse than
-    /// silence.
-    ///
-    /// `payload` bundles this block's host-produced inputs (see
-    /// `crate::host::node::BlockPayload`). `note_expression` is default (empty):
-    /// a live, spec-native channel the loaders DO consume (native
-    /// `note_id`-addressed note-expression), but per-note expression currently
-    /// reaches plugins via the MIDI-2 UMP stream converted at the format
-    /// boundary — the field awaits a producer.
-    fn submit(
-        &mut self,
-        bridge: &PluginBridge,
-        seq: u64,
-        size: usize,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) -> bool {
-        bridge.audio_buffer().publish_input(seq);
-        if !self.dispatch(bridge, seq, size, payload, midi_out) {
-            return false;
+    /// Called when the ring's first frame is needed and not before, so a chunk
+    /// submitted at the end of one call has until the next call's output to
+    /// be answered — the time the pipeline exists to give the plugin.
+    fn collect(&mut self, bridge: &PluginBridge) {
+        self.await_output(bridge);
+        let chunk = self.chunk;
+        match self.collectable(bridge) {
+            Some(seq) => {
+                for (ch, row) in self.ring.iter_mut().enumerate() {
+                    self.wire.recv(bridge, seq, ch, &mut row[..chunk]);
+                }
+            }
+            None => {
+                for row in &mut self.ring {
+                    row[..chunk].fill(0.0);
+                }
+            }
         }
-        self.next_seq += 1;
-        self.expect_seq = Some(seq);
-        true
+        self.expect_seq = None;
     }
 
-    pub(super) fn flush<T: Scalar>(
-        &mut self,
-        bridge: &PluginBridge,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
-    ) {
-        let size = self.write_pos;
-        if size == 0 {
+    /// Ship the full FIFO as the next chunk: stage every input port, publish
+    /// the input slot **exactly once, after the last channel** (a per-channel
+    /// publish would let the server observe the slot as valid while later
+    /// channels are still being copied, and half of this chunk spliced onto
+    /// half of the previous one sounds almost right — far worse than
+    /// silence), and hand the chunk and its payload to the bridge.
+    fn submit(&mut self, bridge: &PluginBridge, host: &mut impl Chunks) {
+        let chunk = self.chunk;
+        let seq = self.next_seq;
+        let mut staged = true;
+        for (ch, row) in self.fifo.iter().enumerate() {
+            if self.wire.stage(bridge, seq, ch, &row[..chunk]).is_err() {
+                staged = false;
+                break;
+            }
+        }
+        if !staged {
+            // The chunk will never be collectable; its output plays as silence.
+            self.expect_seq = None;
             return;
         }
-
-        // Decide what is collectable BEFORE overwriting the input ring with this
-        // block — at ring depth 2, block N's input slot is the one block N-2
-        // used.
-        self.await_output(bridge);
-        let collected = self.collectable(bridge);
-
-        let seq = self.next_seq;
-        let mut staged = true;
-        for ch in 0..self.inputs {
-            if T::stage_tick(self, bridge, seq, ch, size).is_err() {
-                staged = false;
-                break;
-            }
-        }
-        let submitted = staged && self.submit(bridge, seq, size, payload, midi_out);
-
-        match collected {
-            Some(seq) => {
-                for ch in 0..self.outputs {
-                    T::recv_tick(self, bridge, seq, ch, size);
-                }
-            }
-            // Nothing to collect: start-up, after a reset, a crashed bridge, or
-            // a block the server never answered. All four are silence.
-            None => T::silence_tick(self, size, self.outputs),
-        }
-
-        if !submitted {
-            // The block we just failed to submit will never be collectable.
+        bridge.audio_buffer().publish_input(seq);
+        let p = host.payload(chunk);
+        let submitted = bridge.submit(
+            seq,
+            chunk,
+            p.midi,
+            p.params,
+            p.note_expression,
+            p.harmony,
+            p.transport,
+            &mut self.midi_out,
+        );
+        if submitted {
+            self.next_seq += 1;
+            self.expect_seq = Some(seq);
+        } else {
             self.expect_seq = None;
         }
-        self.drain_to(size);
+        host.midi_out(&mut self.midi_out, chunk);
     }
 
-    /// Block-mode counterpart of [`Self::flush`]. Bypasses tick storage —
-    /// reads directly from `input`, writes directly to `output`.
-    pub(super) fn process<T: Scalar>(
+    /// Take `frames` frames of `input` (one slice per input port) and write
+    /// `frames` frames of `output` (one slice per output port): output frame
+    /// `t` is the plugin's output for input frame `t - chunk`, exactly, however
+    /// the calls are cut.
+    ///
+    /// An input port past `input.len()` is taken as silence; an output port
+    /// past `output.len()` is not written.
+    pub(super) fn process(
         &mut self,
         bridge: &PluginBridge,
-        size: usize,
-        input: &BufferRef<'_, T::Marker>,
-        output: &mut BufferMut<'_, T::Marker>,
-        payload: BlockPayload,
-        midi_out: &mut MidiEventVec,
+        frames: usize,
+        input: &[&[f32]],
+        output: &mut [&mut [f32]],
+        host: &mut impl Chunks,
     ) {
-        self.await_output(bridge);
-        let collected = self.collectable(bridge);
-
-        let seq = self.next_seq;
-        let mut staged = true;
-        for ch in 0..self.inputs {
-            if T::stage_block(self, bridge, seq, ch, size, input).is_err() {
-                staged = false;
-                break;
+        let chunk = self.chunk;
+        let mut i = 0;
+        while i < frames {
+            if self.pos == 0 {
+                // A new chunk: its output-side frames need the chunk before it.
+                self.collect(bridge);
+                host.begin(i, chunk);
             }
-        }
-        let submitted = staged && self.submit(bridge, seq, size, payload, midi_out);
-
-        match collected {
-            Some(collect_seq) => {
-                for ch in 0..self.outputs {
-                    T::recv_block(self, bridge, collect_seq, ch, size, output);
+            let n = (chunk - self.pos).min(frames - i);
+            let (at, to) = (self.pos, self.pos + n);
+            for (row, out) in self.ring.iter().zip(output.iter_mut()) {
+                out[i..i + n].copy_from_slice(&row[at..to]);
+            }
+            for (ch, row) in self.fifo.iter_mut().enumerate() {
+                match input.get(ch) {
+                    Some(inp) => row[at..to].copy_from_slice(&inp[i..i + n]),
+                    None => row[at..to].fill(0.0),
                 }
             }
-            None => T::silence_block(output, size, self.outputs),
-        }
-
-        if !submitted {
-            self.expect_seq = None;
-        }
-    }
-
-    fn drain_to(&mut self, size: usize) {
-        self.filled = size;
-        self.write_pos = 0;
-        self.read_pos = 0;
-    }
-
-    /// Lock the tick storage to f32 on first call; panic in debug if it
-    /// was already locked to f64 (fundsp doesn't switch scalar types
-    /// mid-session on one Batcher instance).
-    fn ensure_tick_f32(&mut self) {
-        if !matches!(self.tick, TickStorage::F32 { .. }) {
-            debug_assert!(
-                matches!(self.tick, TickStorage::Unset),
-                "fundsp scalar type switched mid-session on one Batcher"
-            );
-            self.tick = TickStorage::F32 {
-                input: zero_channels(self.inputs, BATCH_SIZE),
-                output: zero_channels(self.outputs, BATCH_SIZE),
-            };
-        }
-    }
-
-    fn ensure_tick_f64(&mut self) {
-        if !matches!(self.tick, TickStorage::F64 { .. }) {
-            debug_assert!(
-                matches!(self.tick, TickStorage::Unset),
-                "fundsp scalar type switched mid-session on one Batcher"
-            );
-            self.tick = TickStorage::F64 {
-                input: zero_channels(self.inputs, BATCH_SIZE),
-                output: zero_channels(self.outputs, BATCH_SIZE),
-            };
-        }
-    }
-
-    /// Borrow `tick` and `wire` disjointly, after ensuring `tick` is f32.
-    fn tick_f32_and_wire(&mut self) -> (&mut Vec<Vec<f32>>, &mut Vec<Vec<f32>>, &mut WireStorage) {
-        self.ensure_tick_f32();
-        let TickStorage::F32 { input, output } = &mut self.tick else {
-            unreachable!()
-        };
-        (input, output, &mut self.wire)
-    }
-
-    fn tick_f64_and_wire(&mut self) -> (&mut Vec<Vec<f64>>, &mut Vec<Vec<f64>>, &mut WireStorage) {
-        self.ensure_tick_f64();
-        let TickStorage::F64 { input, output } = &mut self.tick else {
-            unreachable!()
-        };
-        (input, output, &mut self.wire)
-    }
-}
-
-impl Scalar for f32 {
-    type Marker = F32;
-
-    fn write_in(batcher: &mut Batcher, ch: usize, pos: usize, value: Self) {
-        batcher.ensure_tick_f32();
-        let TickStorage::F32 { input, .. } = &mut batcher.tick else {
-            unreachable!()
-        };
-        input[ch][pos] = value;
-    }
-    fn read_out(batcher: &Batcher, ch: usize, pos: usize) -> Self {
-        match &batcher.tick {
-            TickStorage::F32 { output, .. } => output[ch][pos],
-            _ => 0.0,
-        }
-    }
-
-    fn silence_tick(batcher: &mut Batcher, size: usize, outputs: usize) {
-        batcher.ensure_tick_f32();
-        let TickStorage::F32 { output, .. } = &mut batcher.tick else {
-            unreachable!()
-        };
-        for buf in output.iter_mut().take(outputs) {
-            let end = size.min(buf.len());
-            buf[..end].fill(0.0);
-        }
-    }
-
-    fn stage_tick(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-    ) -> Result<()> {
-        let (input, _, wire) = batcher.tick_f32_and_wire();
-        match wire {
-            WireStorage::F32 { input: wire_in, .. } => {
-                wire_in[..size].copy_from_slice(&input[ch][..size]);
-                bridge.audio_buffer().write_input(seq, ch, &wire_in[..size])
-            }
-            WireStorage::F64 { input: wire_in, .. } => {
-                for (d, &s) in wire_in[..size].iter_mut().zip(&input[ch][..size]) {
-                    *d = s as f64;
-                }
-                bridge.audio_buffer().write_input(seq, ch, &wire_in[..size])
-            }
-        }
-    }
-
-    fn recv_tick(batcher: &mut Batcher, bridge: &PluginBridge, seq: u64, ch: usize, size: usize) {
-        let (_, output, wire) = batcher.tick_f32_and_wire();
-        let tick = &mut output[ch];
-        match wire {
-            WireStorage::F32 {
-                output: wire_out, ..
-            } => {
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, &mut wire_out[..size])
-                    .unwrap_or(0);
-                tick[..n].copy_from_slice(&wire_out[..n]);
-                tick[n..size].fill(0.0);
-            }
-            WireStorage::F64 {
-                output: wire_out, ..
-            } => {
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, &mut wire_out[..size])
-                    .unwrap_or(0);
-                for (o, &v) in tick[..n].iter_mut().zip(&wire_out[..n]) {
-                    *o = v as f32;
-                }
-                tick[n..size].fill(0.0);
-            }
-        }
-    }
-
-    fn stage_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        input: &BufferRef<'_, F32>,
-    ) -> Result<()> {
-        match &mut batcher.wire {
-            WireStorage::F32 { input: wire_in, .. } => {
-                let wire = &mut wire_in[..size];
-                for (i, slot) in wire.iter_mut().enumerate() {
-                    *slot = input.at_f32(ch, i);
-                }
-                bridge.audio_buffer().write_input(seq, ch, wire)
-            }
-            WireStorage::F64 { input: wire_in, .. } => {
-                let wire = &mut wire_in[..size];
-                for (i, slot) in wire.iter_mut().enumerate() {
-                    *slot = input.at_f32(ch, i) as f64;
-                }
-                bridge.audio_buffer().write_input(seq, ch, wire)
-            }
-        }
-    }
-
-    fn recv_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        output: &mut BufferMut<'_, F32>,
-    ) {
-        match &mut batcher.wire {
-            WireStorage::F32 {
-                output: wire_out, ..
-            } => {
-                let wire = &mut wire_out[..size];
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, wire)
-                    .unwrap_or(0);
-                for (i, &v) in wire[..n].iter().enumerate() {
-                    output.set_f32(ch, i, v);
-                }
-                for i in n..size {
-                    output.set_f32(ch, i, 0.0);
-                }
-            }
-            WireStorage::F64 {
-                output: wire_out, ..
-            } => {
-                let wire = &mut wire_out[..size];
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, wire)
-                    .unwrap_or(0);
-                for (i, &v) in wire[..n].iter().enumerate() {
-                    output.set_f32(ch, i, v as f32);
-                }
-                for i in n..size {
-                    output.set_f32(ch, i, 0.0);
-                }
-            }
-        }
-    }
-
-    fn silence_block(output: &mut BufferMut<'_, F32>, size: usize, outputs: usize) {
-        for ch in 0..outputs {
-            for i in 0..size {
-                output.set_f32(ch, i, 0.0);
-            }
-        }
-    }
-}
-
-impl Scalar for f64 {
-    type Marker = F64;
-
-    fn write_in(batcher: &mut Batcher, ch: usize, pos: usize, value: Self) {
-        batcher.ensure_tick_f64();
-        let TickStorage::F64 { input, .. } = &mut batcher.tick else {
-            unreachable!()
-        };
-        input[ch][pos] = value;
-    }
-    fn read_out(batcher: &Batcher, ch: usize, pos: usize) -> Self {
-        match &batcher.tick {
-            TickStorage::F64 { output, .. } => output[ch][pos],
-            _ => 0.0,
-        }
-    }
-
-    fn silence_tick(batcher: &mut Batcher, size: usize, outputs: usize) {
-        batcher.ensure_tick_f64();
-        let TickStorage::F64 { output, .. } = &mut batcher.tick else {
-            unreachable!()
-        };
-        for buf in output.iter_mut().take(outputs) {
-            let end = size.min(buf.len());
-            buf[..end].fill(0.0);
-        }
-    }
-
-    fn stage_tick(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-    ) -> Result<()> {
-        let (input, _, wire) = batcher.tick_f64_and_wire();
-        match wire {
-            WireStorage::F64 { input: wire_in, .. } => {
-                wire_in[..size].copy_from_slice(&input[ch][..size]);
-                bridge.audio_buffer().write_input(seq, ch, &wire_in[..size])
-            }
-            WireStorage::F32 { input: wire_in, .. } => {
-                for (d, &s) in wire_in[..size].iter_mut().zip(&input[ch][..size]) {
-                    *d = s as f32;
-                }
-                bridge.audio_buffer().write_input(seq, ch, &wire_in[..size])
-            }
-        }
-    }
-
-    fn recv_tick(batcher: &mut Batcher, bridge: &PluginBridge, seq: u64, ch: usize, size: usize) {
-        let (_, output, wire) = batcher.tick_f64_and_wire();
-        let tick = &mut output[ch];
-        match wire {
-            WireStorage::F64 {
-                output: wire_out, ..
-            } => {
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, &mut wire_out[..size])
-                    .unwrap_or(0);
-                tick[..n].copy_from_slice(&wire_out[..n]);
-                tick[n..size].fill(0.0);
-            }
-            WireStorage::F32 {
-                output: wire_out, ..
-            } => {
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, &mut wire_out[..size])
-                    .unwrap_or(0);
-                for (o, &v) in tick[..n].iter_mut().zip(&wire_out[..n]) {
-                    *o = v as f64;
-                }
-                tick[n..size].fill(0.0);
-            }
-        }
-    }
-
-    fn stage_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        input: &BufferRef<'_, F64>,
-    ) -> Result<()> {
-        match &mut batcher.wire {
-            WireStorage::F64 { input: wire_in, .. } => {
-                let wire = &mut wire_in[..size];
-                for (i, slot) in wire.iter_mut().enumerate() {
-                    *slot = input.at_scalar(ch, i);
-                }
-                bridge.audio_buffer().write_input(seq, ch, wire)
-            }
-            WireStorage::F32 { input: wire_in, .. } => {
-                let wire = &mut wire_in[..size];
-                for (i, slot) in wire.iter_mut().enumerate() {
-                    *slot = input.at_scalar(ch, i) as f32;
-                }
-                bridge.audio_buffer().write_input(seq, ch, wire)
-            }
-        }
-    }
-
-    fn recv_block(
-        batcher: &mut Batcher,
-        bridge: &PluginBridge,
-        seq: u64,
-        ch: usize,
-        size: usize,
-        output: &mut BufferMut<'_, F64>,
-    ) {
-        match &mut batcher.wire {
-            WireStorage::F64 {
-                output: wire_out, ..
-            } => {
-                let wire = &mut wire_out[..size];
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, wire)
-                    .unwrap_or(0);
-                for (i, &v) in wire[..n].iter().enumerate() {
-                    output.set_scalar(ch, i, v);
-                }
-                for i in n..size {
-                    output.set_scalar(ch, i, 0.0);
-                }
-            }
-            WireStorage::F32 {
-                output: wire_out, ..
-            } => {
-                let wire = &mut wire_out[..size];
-                let n = bridge
-                    .audio_buffer()
-                    .read_output_into(seq, ch, wire)
-                    .unwrap_or(0);
-                for (i, &v) in wire[..n].iter().enumerate() {
-                    output.set_scalar(ch, i, v as f64);
-                }
-                for i in n..size {
-                    output.set_scalar(ch, i, 0.0);
-                }
-            }
-        }
-    }
-
-    fn silence_block(output: &mut BufferMut<'_, F64>, size: usize, outputs: usize) {
-        for ch in 0..outputs {
-            for i in 0..size {
-                output.set_scalar(ch, i, 0.0);
+            self.pos = to;
+            i += n;
+            if self.pos == chunk {
+                self.submit(bridge, host);
+                self.pos = 0;
             }
         }
     }
@@ -899,64 +504,24 @@ impl Scalar for f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_core::SampleRate;
 
-    /// Stage-4 input-port accounting: a 3-input-channel batcher (stereo main +
-    /// mono sidechain) accepts writes on all three ports and stages them into
-    /// tick storage. Port 2 is the sidechain — it must not be dropped, so a
-    /// fundsp `connect(src, 0, target, 2)` reaches the plugin.
-    #[test]
-    fn write_accepts_sidechain_port() {
-        let mut b = Batcher::new(3, 2, SampleFormat::Float32, 64);
-        // One frame: distinct value per input port.
-        b.write::<f32>(&[1.0, 2.0, 3.0]);
-        match &b.tick {
-            TickStorage::F32 { input, .. } => {
-                assert_eq!(input.len(), 3, "all three input ports are stored");
-                assert_eq!(input[0][0], 1.0);
-                assert_eq!(input[1][0], 2.0);
-                assert_eq!(input[2][0], 3.0, "sidechain port survived");
-            }
-            _ => panic!("expected f32 tick storage"),
-        }
-    }
-
-    /// A fresh batcher has nothing in flight, so its first block must be silence
+    /// A fresh batcher has nothing in flight, so its first chunk must be silence
     /// rather than whatever the output slot happens to contain.
     #[test]
     fn a_fresh_batcher_expects_nothing() {
-        let b = Batcher::new(2, 2, SampleFormat::Float32, 64);
+        let b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
         assert_eq!(b.expect_seq, None);
         assert_eq!(b.next_seq, 1, "0 means 'never published' in the slab");
     }
 
-    /// The graph-commit clone carries the sequence forward rather than
-    /// restarting.
-    ///
-    /// Restarting would be the subtle bug: a commit can land mid-playback (PDC
-    /// re-plans), and a clone that began again at 1 would accept a *pre-commit*
-    /// block's late publish as its own block 1. The in-flight block is dropped
-    /// on purpose — the clone is a different object, and the original may still
-    /// collect it.
-    #[test]
-    fn clone_preserves_the_pipeline_sequence() {
-        let mut b = Batcher::new(3, 2, SampleFormat::Float32, 64);
-        b.next_seq = 42;
-        b.expect_seq = Some(41);
-
-        let c = b.clone();
-        assert_eq!(c.inputs, 3);
-        assert_eq!(c.outputs, 2);
-        assert_eq!(c.next_seq, 42, "a clone must not reuse a spent sequence");
-        assert_eq!(c.expect_seq, None, "the in-flight block is not inherited");
-    }
-
-    /// `reset` (a seek) drops the in-flight block but must NOT rewind the
-    /// sequence. Rewinding would let a block submitted before the seek be
-    /// published after it and accepted as the new block 1, replaying a fragment
-    /// of pre-seek audio.
+    /// `reset` (a seek) drops the in-flight chunk but must NOT rewind the
+    /// sequence. Rewinding would let a chunk submitted before the seek be
+    /// published after it and accepted as the new chunk 1, replaying a
+    /// fragment of pre-seek audio.
     #[test]
     fn reset_drops_the_in_flight_block_without_rewinding() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, 64);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
         b.next_seq = 100;
         b.expect_seq = Some(99);
 
@@ -988,7 +553,7 @@ mod tests {
     /// would have been pinning the artifact.
     #[test]
     fn no_post_seek_sequence_can_collide_with_a_pre_seek_one() {
-        let mut b = Batcher::new(2, 2, SampleFormat::Float32, 64);
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
 
         let mut pre_seek = Vec::new();
         for _ in 0..5 {
@@ -1021,31 +586,51 @@ mod tests {
         );
     }
 
-    /// A change detector on the declared pipeline latency, and named as one.
+    /// The pipeline's chunk — and so the latency it declares — comes from
+    /// `prepare`: the host's device quantum when it has one (one chunk per
+    /// callback: doc 013 reversed decision 8, a live plugin now keeps in step
+    /// with the device rather than a 64-frame grid), else the graph's
+    /// `MaxBlock`, capped by the slab's ceiling either way.
     ///
-    /// It compares two constants in this file, so it cannot fail unless someone
-    /// edits one of them — it does not observe `route()` and proves nothing
-    /// about what PDC receives. Constructing a `PluginClient` to check that
-    /// needs a live subprocess, which is the integration suite's job, not this
-    /// one's. An earlier comment here implied more coverage than that.
-    ///
-    /// It is kept because the two ways of getting this wrong are both silent
-    /// and both a one-word edit away: the per-block `size` (unavailable to
-    /// `route()`, and varying, so uncompensable) and `config.max_buffer_size`
-    /// (8192 — 171 ms declared for a 1.33 ms pipeline). The bound below is the
-    /// part that would catch the second one.
+    /// Mutation: `self.chunk = self.ceiling.min(64)` in `prepare` (the
+    /// reversed 64-frame pipeline) → the 480-frame quantum ships 64 → fails.
+    /// Mutation: ignore `quantum()` → 1024 instead of 480 → fails. Mutation:
+    /// drop the `ceiling.min` → the small slab's chunk is 1024 → fails.
     #[test]
-    // Constant by construction — that is the point, per the note above. Clippy
-    // reads a const assertion as a mistake; here it is the change detector.
-    #[allow(clippy::assertions_on_constants)]
-    fn declared_pipeline_latency_still_matches_the_block_size() {
-        assert_eq!(PIPELINE_LATENCY_FRAMES, Samples(BATCH_SIZE));
-        // The failure mode worth naming: a max-buffer-sized declaration. Any
-        // plausible block size is far below this; 8192 is far above it.
-        assert!(
-            PIPELINE_LATENCY_FRAMES <= Samples(1024),
-            "a declared latency this large means `config.max_buffer_size` \
-             (8192 = 171 ms at 48 kHz) reached PDC in place of the block size"
+    fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
+        let prepare = |max: usize| Prepare::new(SampleRate(48_000.0), Samples(max));
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        b.prepare(&prepare(1024).with_quantum(Samples(480)));
+        assert_eq!(b.pipeline_latency(), Samples(480));
+        b.prepare(&prepare(64).with_quantum(Samples(2048)));
+        assert_eq!(
+            b.pipeline_latency(),
+            Samples(2048),
+            "the quantum, not MaxBlock"
         );
+        b.prepare(&prepare(1024));
+        assert_eq!(b.pipeline_latency(), Samples(1024), "no quantum: MaxBlock");
+        b.prepare(&prepare(32));
+        assert_eq!(b.pipeline_latency(), Samples(32));
+
+        let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16);
+        small_slab.prepare(&prepare(1024));
+        assert_eq!(small_slab.pipeline_latency(), Samples(16));
+    }
+
+    /// A re-prepare starts the pipeline over: the chunk in flight was
+    /// submitted under the old chunk size and must not be collected into the
+    /// new one — without advancing the sequence, as for a seek.
+    ///
+    /// Mutation: drop the `reset()` from `prepare` → `expect_seq` survives →
+    /// fails.
+    #[test]
+    fn prepare_drops_the_chunk_in_flight() {
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK);
+        b.next_seq = 7;
+        b.expect_seq = Some(6);
+        b.prepare(&Prepare::new(SampleRate(48_000.0), Samples(128)));
+        assert_eq!(b.expect_seq, None);
+        assert_eq!(b.next_seq, 7);
     }
 }

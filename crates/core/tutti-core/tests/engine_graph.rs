@@ -449,10 +449,10 @@ impl Node for RecLog {
     fn process(&mut self, cx: &Cx<'_>, _: Io<'_>) -> Status {
         let env = *cx.env;
         let last = env.offsets().last().expect("a block has a frame");
-        self.0
-            .lock()
-            .expect("log")
-            .push((env.transport.recording, env.transport_at(last).recording));
+        self.0.lock().expect("log").push((
+            env.transport.recording(),
+            env.transport_at(last).recording(),
+        ));
         Status::Modified
     }
     fn reset(&mut self) {}

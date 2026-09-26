@@ -521,8 +521,10 @@ pub struct Transport {
     /// it (VST2 `kVstTransportRecording`, VST3 `kRecording`, CLAP
     /// `IS_RECORDING`) and that snapshot is a function of this `Env`.
     /// `false` from every constructor; set it with
-    /// [`with_recording`](Self::with_recording).
-    pub recording: bool,
+    /// [`with_recording`](Self::with_recording), read it with
+    /// [`recording`](Self::recording). Private, like the position, so a
+    /// transport is only ever built through its constructors.
+    recording: bool,
     /// Where the block's first frame is: a bare beat, or a frame count on the
     /// host's segment. Private, so the beat and the frame count it is derived
     /// from cannot disagree: [`beat`](Self::beat) *computes* the beat of a
@@ -583,6 +585,13 @@ impl Transport {
     #[must_use]
     pub const fn with_recording(self, recording: bool) -> Self {
         Self { recording, ..self }
+    }
+
+    /// Whether the host is recording: session state rather than motion. A
+    /// hosted plugin's transport snapshot carries it (VST2
+    /// `kVstTransportRecording`, VST3 `kRecording`, CLAP `IS_RECORDING`).
+    pub const fn recording(&self) -> bool {
+        self.recording
     }
 
     /// This transport, at `beat` instead (the block's first frame its own

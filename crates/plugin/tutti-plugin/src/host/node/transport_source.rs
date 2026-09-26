@@ -50,7 +50,7 @@ impl Snapshot {
         let t = env.transport_at(offset);
         Self {
             playing: t.playing,
-            recording: t.recording,
+            recording: t.recording(),
             tempo: t.tempo,
             beat: t.beat(),
             looping: t.looping.map(|l| (l.start, l.end)),

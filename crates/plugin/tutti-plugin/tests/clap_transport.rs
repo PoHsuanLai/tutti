@@ -39,7 +39,7 @@ const ECHO: usize = 5;
 /// 2 recording, 4 loop), loop start, loop end.
 fn echo_of(t: &Transport) -> [f64; ECHO] {
     let flags = f64::from(u8::from(t.playing))
-        + 2.0 * f64::from(u8::from(t.recording))
+        + 2.0 * f64::from(u8::from(t.recording()))
         + 4.0 * f64::from(u8::from(t.looping.is_some()));
     let (start, end) = t
         .looping

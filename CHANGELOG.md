@@ -120,7 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | offline, the transport snapshot's continuous-sample counter was 0 and the loop was reported off | it is the render's frame, and the loop is the render's |
   | `PluginHandle::from_client(&PluginClient)` | generic over the state: `from_client(&PluginClient<S>)` |
   | `tutti_plugin::backend::route_with_latency` from `host::node` | the same function, re-exported from `util::node` (only the in-process VST2 node still uses it) |
-  | tutti-graph: `Transport` had no recording flag | `Transport::recording` and `with_recording` (additive); tutti-core's engine sets it from the transport settings, and `Env::transport_at` keeps it |
+  | tutti-graph: `Transport` had no recording flag | `Transport::recording()` and `with_recording` (additive; the field is private, like the position); tutti-core's engine sets it from the transport settings, and `Env::transport_at` keeps it |
   | bevy-tutti: `plugin_bind_transport`, `PluginTransportBound` | `plugin_bind_meter`, `PluginMeterBound` (installs `MetronomeRes`'s meter; the transport is the graph's) |
   | bevy-tutti: `CompensatedLatency` | removed: the latency poll compares the plugin's `declared_latency` with the editor's own figure (`AudioGraphRes::node_latency`), which is the record of what PDC was planned against |
   | bevy-tutti: a plugin captured by `CapturedControls::capture(&dyn AudioUnit)` (downcast), `PluginClient` registered with `MidiTargetRegistry` | `CapturedControls::for_plugin(&client)`: the shadow and the MIDI target, typed; `register_plugin_node_types` is removed |

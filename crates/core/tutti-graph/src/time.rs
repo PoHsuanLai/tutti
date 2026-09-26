@@ -353,7 +353,7 @@ impl Env {
             .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
         clock.advance(Samples(offset.index() - start), region);
         Transport::counted(t.playing, t.tempo, clock.origin(), t.looping)
-            .with_recording(t.recording)
+            .with_recording(t.recording())
     }
 
     /// Whether this block, with its tempo changing to `next_tempo` at some
@@ -872,7 +872,7 @@ mod tests {
     /// state, and a frame later in a rolling block is recording as much as
     /// the first.
     ///
-    /// Mutation: drop `.with_recording(t.recording)` in `transport_at` → the
+    /// Mutation: drop `.with_recording(t.recording())` in `transport_at` → the
     /// rolling frame reads not recording → fails.
     #[test]
     fn transport_at_keeps_recording() {
@@ -881,14 +881,14 @@ mod tests {
             512,
             Transport::new(true, Bpm(120.0), Beat(2.0), None).with_recording(true),
         );
-        assert!(e.transport_at(at(0)).recording);
-        assert!(e.transport_at(at(200)).recording);
+        assert!(e.transport_at(at(0)).recording());
+        assert!(e.transport_at(at(200)).recording());
         e.changes
             .push(at(300), Transport::new(true, Bpm(90.0), Beat(8.0), None))
             .expect("inside");
-        assert!(!e.transport_at(at(400)).recording);
-        assert!(Transport::default().with_recording(true).recording);
-        assert!(!Transport::default().recording);
+        assert!(!e.transport_at(at(400)).recording());
+        assert!(Transport::default().with_recording(true).recording());
+        assert!(!Transport::default().recording());
     }
 
     /// `segments` cuts at each change; `transport_at` reads the change in

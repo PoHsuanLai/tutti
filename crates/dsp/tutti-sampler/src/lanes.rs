@@ -15,23 +15,25 @@
 //! answer whether they run four at a time or one.
 
 use crate::MAX_SAMPLER_CHANNELS;
+use tutti_core::SamplePosition;
 
-/// Frames one lane holds: a block longer than this is read in pieces this
-/// long.
+/// Frames one lane holds: the longest block a voice is rendered in.
 ///
-/// 256, not the 64 `AudioUnit::process` is ever called with, so that a
-/// disk voice's piece boundaries fall where its own block read's do
-/// (`disk_voice::BLOCK_FRAMES`, one ring claim per piece): a longer block
-/// renders exactly what a direct `DiskVoice::process` renders.
-pub(crate) const LANE_FRAMES: usize = 256;
+/// `tutti_core::MAX_BUFFER_SIZE` (64): `AudioUnit::process` is never handed
+/// more (its buffers are that long, and `Legacy` calls a unit in chunks of
+/// that), so a block is one lane and nothing is split. Lanes 4x longer cost
+/// every voice a memset of scratch it could never use. When the sampler's
+/// nodes port natively (doc 013 items 4 and 9) the node sizes its scratch
+/// from `Prepare::max_block` instead, where blocks may grow past 64.
+pub(crate) const LANE_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
 
 /// One channel of a block, planar.
 pub(crate) type Lane = [f32; LANE_FRAMES];
 
-/// A block of planar scratch, [`MAX_SAMPLER_CHANNELS`] lanes wide (8 KiB).
+/// A block of planar scratch, [`MAX_SAMPLER_CHANNELS`] lanes wide (2 KiB at 64 frames).
 ///
 /// Owned by the node that renders through it, built once on the control
-/// thread (boxed, so a node that moves does not move 8 KiB with it). Carries
+/// thread (boxed, so a node that moves does not move it all). Carries
 /// nothing between blocks: every read writes each frame it hands on.
 pub(crate) struct Lanes(Box<[Lane; MAX_SAMPLER_CHANNELS]>);
 
@@ -76,9 +78,11 @@ impl std::fmt::Debug for Lanes {
     }
 }
 
-/// What a voice's block read renders through: the lanes it hands on, and the
-/// lanes its stretch filter reads from. One per rendering node (a pool reads
-/// every slot through its one), 16 KiB, built on the control thread.
+/// What a voice's block read renders through: the lanes it hands on, the
+/// lanes its stretch filter reads from, and the block's positions and taps.
+/// One per rendering node (a pool reads every slot through its one), about
+/// 7 KiB at 64 frames, built on the control thread, so a voice's block read touches no
+/// stack arrays of its own.
 #[derive(Debug)]
 pub(crate) struct BlockScratch {
     /// The voice's output for the block, before the mix.
@@ -86,6 +90,10 @@ pub(crate) struct BlockScratch {
     /// The source's frames, when a stretch filter sits between them and
     /// `out`.
     pub(crate) raw: Lanes,
+    /// Where each frame of the block reads (`None`: silence).
+    pub(crate) positions: Box<[Option<SamplePosition>; LANE_FRAMES]>,
+    /// The memory tier's along-time read (`MemorySource::read_placed_lanes`).
+    pub(crate) gather: Box<Gather>,
 }
 
 impl BlockScratch {
@@ -94,8 +102,27 @@ impl BlockScratch {
         Self {
             out: Lanes::new(),
             raw: Lanes::new(),
+            positions: Box::new([None; LANE_FRAMES]),
+            gather: Box::new(Gather {
+                taps: [[0; 4]; LANE_FRAMES],
+                frac: [0.0; LANE_FRAMES],
+                live: [false; LANE_FRAMES],
+                y: [[0.0; LANE_FRAMES]; 4],
+            }),
         }
     }
+}
+
+/// Each frame's four taps and fraction, and the taps gathered into four
+/// lanes, for the cubic along time. Written in full for the frames a block
+/// reads before any is used.
+#[derive(Debug)]
+pub(crate) struct Gather {
+    pub(crate) taps: [[usize; 4]; LANE_FRAMES],
+    pub(crate) frac: [f32; LANE_FRAMES],
+    /// Whether frame `i` has a sample (a position inside the file).
+    pub(crate) live: [bool; LANE_FRAMES],
+    pub(crate) y: [Lane; 4],
 }
 
 /// `dst[i] += src[i]` over the shorter of the two: the one mix a block read

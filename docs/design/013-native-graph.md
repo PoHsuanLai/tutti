@@ -3393,8 +3393,9 @@ fail on, by name.
 #### Item 7 landed: sampler block render and ownership
 
 **Block render.** A voice renders a block at a time into planar scratch
-lanes (`tutti-sampler`'s `lanes`: `Lanes`, 256 frames × `MAX_SAMPLER_CHANNELS`,
-owned by the rendering node and built on the control thread), and its owner
+lanes (`tutti-sampler`'s `lanes`: `Lanes`, `MAX_BUFFER_SIZE` (64) frames ×
+`MAX_SAMPLER_CHANNELS`, owned by the rendering node with the block's
+positions and gathered taps, built on the control thread), and its owner
 adds each lane into its output channel with one `accumulate`
 (`PlaybackSlot::process_into` → `render_lanes`). What moved out of the
 per-sample loop:
@@ -3439,17 +3440,21 @@ the whole file, before → after):
 
 | case | before | after | |
 |---|---:|---:|---:|
-| `pool64/memory/1` | 1.61 µs | 0.84 µs | −47% |
-| `pool64/memory/64` | 91.4 µs | 45.8 µs | −50% |
-| `pool64/memory-varispeed/64` | 92.7 µs | 47.9 µs | −49% |
-| `pool64/memory-stretch/64` | 930 µs | 816 µs | −10% |
-| `pool64/disk/1` | 6.01 µs | 1.82 µs | −70% |
+| `pool64/memory/1` | 1.61 µs | 0.73 µs | −54% |
+| `pool64/memory/64` | 91.4 µs | 37.8 µs | −59% |
+| `pool64/memory-varispeed/64` | 92.7 µs | 42.8 µs | −54% |
+| `pool64/memory-stretch/64` | 930 µs | 808 µs | −12% |
+| `pool64/disk/1` | 6.01 µs | 1.85 µs | −69% |
 | `pool64/disk/64` | 375 µs | 108 µs | −71% |
-| `pool64/disk-varispeed/64` | 379 µs | 110 µs | −71% |
-| `pool64/disk-stretch/64` | 1.12 ms | 0.86 ms | −25% |
-| `voices/plain/1` | 862 ns | 445 ns | −49% |
-| `voices/stretch/0.5x` (8 voices) | 94.2 µs | 89.0 µs | −4% |
+| `pool64/disk-varispeed/64` | 379 µs | 107 µs | −72% |
+| `pool64/disk-stretch/64` | 1.12 ms | 0.85 ms | −24% |
+| `voices/plain/1` | 862 ns | 324 ns | −63% |
+| `voices/plain/64` | 47.8 µs | 15.7 µs | −67% |
+| `voices/stretch/0.5x` (8 voices) | 94.2 µs | 84.4 µs | −11% |
 
+(After the review's fixes: lanes sized to the 64-frame block and the
+block's arrays owned by the node, rather than 256-frame lanes and per-voice
+stack arrays, took the memory tier from −50% to −59%.)
 (The older `voices/*` groups hold their clock at beat 0, so a placed voice
 seats once and, after ~3 000 blocks, reads past its wave's end: they mostly
 measure the silent path. `pool64`'s clock advances a block per iteration
@@ -3501,6 +3506,20 @@ after insert. Gain already arrives through the settings ring
 It lands with a native `Node` impl for the voice (`IntoNode::Controls`, a
 real `Fork`, the transport from `Env`): items 4 and 9.
 
+**Found by the review, fixed.** `VoiceCommand::AddVoice` carried its filter
+as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
+`Box<Voice>` — two frees on the audio thread — and dropped a slot an add
+replaced in place. The filter is unboxed now (a `Unit` moves as a pointer),
+the slot holds the voice boxed so the command's box moves in, and a replaced
+slot goes to the retirement channel (`tests/rt_no_free.rs` counts the
+drain's frees). The lanes are one block long: `AudioUnit::process` is never
+handed more than 64 frames, so 256-frame lanes were a split nothing reached
+and a memset nothing used; a native port sizes them from
+`Prepare::max_block`. A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
+refused (`PoolTooWide`) rather than declaring outputs it never writes, and a
+`VoiceNode` that wide (its constructor is infallible) clears the channels
+past it.
+
 **Also kept:** `BeatCursor` still clones by sharing its cells (the pool's
 and the node's `isolate` drop it); it goes with `Env` (item 4). The
 `profile_stretch_clone` example is now a record of the `Net` era (its
@@ -3526,7 +3545,9 @@ a voice), not a `Net` commit's clone. `disk_voice::tests::a_gain_change_reaches_
 reader, renders silence; `a_severed_copy_holds_no_live_reader` isolates in
 place. `rt_no_alloc`'s two clone tests lost their `allocate` call and
 `_once_allocated` suffix. New: `block_render_is_the_frame_read`,
-`filter_lanes_is_tick_per_frame`, `lanes::tests`.
+`filter_lanes_is_tick_per_frame`, `lanes::tests`, `rt_no_free`, and the two
+width tests (`a_pool_wider_than_the_sampler_reads_is_refused`,
+`a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels`).
 
 ## Decisions for the owner
 

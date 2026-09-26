@@ -47,7 +47,12 @@ pub(crate) struct PlaybackSlot {
     /// it. Which tier is live is the [`VoiceSource`] arm; the read below forks
     /// on that enum at each call site rather than through a trait, so a
     /// tier-conditional difference stays visible.
-    pub(crate) voice: Voice,
+    ///
+    /// Boxed as `VoiceCommand::AddVoice` carries it, so the pool's drain moves
+    /// the box in rather than moving the `Voice` out of it — which would free
+    /// the box on the audio thread. A slot leaves the pool through the
+    /// retirement channel, box and all.
+    pub(crate) voice: Box<Voice>,
     /// The time-stretch processor is **always resident**: it is built once (one
     /// phase-vocoder construction + two `RtScratch` buffers *per channel*) when
     /// the slot is created, and thereafter the audio thread only flips the
@@ -133,7 +138,7 @@ impl PlaybackSlot {
     /// a pitch error proportional to the device's real rate, with nothing logged.
     pub(crate) fn with_channels(
         id: SlotId,
-        voice: Voice,
+        voice: Box<Voice>,
         sample_rate: SampleRate,
         channels: impl Into<ChannelLayout>,
     ) -> Self {
@@ -335,17 +340,14 @@ impl PlaybackSlot {
         output: &mut BufferMut,
     ) {
         let n = width.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
-        let mut start = 0;
-        while start < size {
-            let frames = (size - start).min(LANE_FRAMES);
-            self.render_lanes(frames, n, scratch);
-            for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
-                accumulate(
-                    &mut output.channel_f32_mut(c)[start..start + frames],
-                    &lane[..frames],
-                );
-            }
-            start += frames;
+        // A block is one lane: `process` is never handed more than
+        // `MAX_BUFFER_SIZE` frames (see `LANE_FRAMES`), and the output's own
+        // channels are no longer.
+        debug_assert!(size <= LANE_FRAMES, "a {size}-frame block, past the lanes");
+        let frames = size.min(LANE_FRAMES);
+        self.render_lanes(frames, n, scratch);
+        for (c, lane) in scratch.out.lanes().iter().enumerate().take(n) {
+            accumulate(&mut output.channel_f32_mut(c)[..frames], &lane[..frames]);
         }
     }
 
@@ -362,8 +364,12 @@ impl PlaybackSlot {
         // Route through the filter only when the intent asks for it AND a unit
         // is resident; a missing unit reads dry rather than silent.
         let stretching = self.needs_stretch() && self.stretch.is_some();
-        let BlockScratch { out, raw } = scratch;
-        let mut positions = [None; LANE_FRAMES];
+        let BlockScratch {
+            out,
+            raw,
+            positions,
+            gather,
+        } = scratch;
         let positions = &mut positions[..frames];
         match (&mut self.voice.source, self.stretch.as_mut()) {
             (VoiceSource::Memory(sampler), Some(unit)) if stretching => {
@@ -390,7 +396,7 @@ impl PlaybackSlot {
                 let stretch_rate = unit.input_rate();
                 sampler.seated_positions(stretch_rate, positions);
                 // Gain before the filter, as the frame read fed it.
-                sampler.read_placed_lanes(positions, direction, raw, n);
+                sampler.read_placed_lanes(positions, direction, raw, n, gather);
                 for lane in raw.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }
@@ -429,7 +435,7 @@ impl PlaybackSlot {
                 // rate read a 24 kHz file on a 48 kHz clock one file frame per
                 // output frame, then jumped back at every block.
                 sampler.seated_positions(ReadRate::UNITY, positions);
-                sampler.read_placed_lanes(positions, direction, out, n);
+                sampler.read_placed_lanes(positions, direction, out, n, gather);
                 for lane in out.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }

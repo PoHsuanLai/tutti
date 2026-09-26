@@ -34,9 +34,7 @@ use tutti_core::{FaultLatch, RenderFault};
 
 /// Frames a block's positions are computed for at a time: `process` renders a
 /// longer block in pieces this long, so the positions live in a fixed array.
-/// The slot's lane length, so a voice read through a slot claims the ring at
-/// the same piece boundaries as one read directly.
-const BLOCK_FRAMES: usize = crate::lanes::LANE_FRAMES;
+const BLOCK_FRAMES: usize = 256;
 
 /// Disk streaming sampler, free-running: the streaming tier's bare reader.
 ///
@@ -638,7 +636,7 @@ impl DiskVoice {
         )
     }
 
-    /// Render the next `frames` frames (at most [`BLOCK_FRAMES`]) into frame
+    /// Render the next `frames` frames (at most one lane) into frame
     /// `i` of the first `n` lanes, every frame written: the voice's own
     /// channels, then silence on any lane past them. What `frames` calls of
     /// `tick`, each handed a zeroed `n`-wide frame, write — the live read as

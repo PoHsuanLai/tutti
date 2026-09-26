@@ -103,6 +103,18 @@ pub(crate) enum Retired {
     Stretch(stretch::Unit),
 }
 
+/// A [`VoicePool`] asked for more channels than the sampler reads
+/// ([`MAX_SAMPLER_CHANNELS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "a voice pool {} channels wide: the sampler reads at most {MAX_SAMPLER_CHANNELS}",
+    channels.count()
+)]
+pub struct PoolTooWide {
+    /// The width asked for.
+    pub channels: ChannelLayout,
+}
+
 // ---------------------------------------------------------------------------
 // VoicePool — the AudioUnit.
 // ---------------------------------------------------------------------------
@@ -296,11 +308,21 @@ impl VoicePool {
     ///
     /// Each slot's stretch unit is built at this width too, so a wide voice is
     /// not truncated on the stretch path.
+    ///
+    /// # Errors
+    ///
+    /// [`PoolTooWide`] past [`MAX_SAMPLER_CHANNELS`]: the pool's read stacks
+    /// and lanes are that wide, so a wider pool would declare outputs it never
+    /// writes (a caller reading them sees whatever the buffer held).
     pub fn with_channels(
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
         channels: impl Into<ChannelLayout>,
-    ) -> (Self, VoicePoolHandle) {
+    ) -> Result<(Self, VoicePoolHandle), PoolTooWide> {
+        let channels = channels.into();
+        if channels.count() as usize > MAX_SAMPLER_CHANNELS {
+            return Err(PoolTooWide { channels });
+        }
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
         let mut unit = Self::from_parts_with_channels(rx, transport, butler, channels);
@@ -313,7 +335,7 @@ impl VoicePool {
             channels: unit.channels,
             sample_rate: unit.sample_rate,
         };
-        (unit, handle)
+        Ok((unit, handle))
     }
 
     /// Flush every slot's buffered audio if the playhead moved discontinuously.
@@ -468,20 +490,20 @@ impl VoicePool {
     }
 
     /// As [`insert_voice`](Self::insert_voice), taking a stretch filter the
-    /// caller already built.
+    /// caller already built. `None` leaves the slot without a filter, which is
+    /// correct both for a voice that does not stretch and (transiently) for
+    /// one whose filter has not arrived yet — the hot paths then read the
+    /// source dry rather than silencing it.
     ///
-    /// **The audio-thread-safe form**: the drain uses it so the callback only
-    /// MOVES a filter rather than constructing one. `None` leaves the slot
-    /// without a filter, which is correct both for a voice that does not stretch
-    /// and (transiently) for one whose filter has not arrived yet — the hot paths
-    /// then read the source dry rather than silencing it.
+    /// Boxes the voice (the slot holds it boxed), so control thread only; the
+    /// audio-thread drain hands the box it received straight to the slot.
     pub fn insert_voice_with_stretch(
         &mut self,
         id: SlotId,
         voice: Voice,
         stretch: Option<stretch::Unit>,
     ) {
-        self.insert_voice_inner(id, voice, stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch);
     }
 
     /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
@@ -507,10 +529,10 @@ impl VoicePool {
     ///
     /// # Thread
     ///
-    /// **Allocates when the voice stretches** — control-thread callers only. The
-    /// audio-thread drain goes through
-    /// [`insert_voice_with_stretch`](Self::insert_voice_with_stretch) instead,
-    /// where the filter arrives pre-built. Either way the work sits on the COLD
+    /// **Allocates** (the filter, when the voice stretches, and the slot's box)
+    /// — control-thread callers only. The audio-thread drain moves in the
+    /// box and the filter the command carries instead, both built by the
+    /// sender. Either way the work sits on the COLD
     /// command drain, above the per-sample loop, so the loop's butler send never
     /// touches the hot path.
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
@@ -520,11 +542,24 @@ impl VoicePool {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        self.insert_voice_inner(id, voice, stretch);
+        self.insert_voice_inner(id, Box::new(voice), stretch);
     }
 
-    fn insert_voice_inner(&mut self, id: SlotId, voice: Voice, stretch: Option<stretch::Unit>) {
-        self.voices.retain(|s| s.id != id);
+    /// Allocation-free and free-free, so the drain can run it: the voice
+    /// arrives boxed and the box moves into the slot, and a slot this one
+    /// replaces goes to the retirement channel rather than being dropped here.
+    fn insert_voice_inner(
+        &mut self,
+        id: SlotId,
+        voice: Box<Voice>,
+        stretch: Option<stretch::Unit>,
+    ) {
+        if let Some(i) = self.voices.iter().position(|s| s.id == id) {
+            let old = self.voices.swap_remove(i);
+            // A full or disconnected channel drops it here instead: only the
+            // thread that pays for the free changes.
+            let _ = self.retired.try_send(Retired::Slot(old));
+        }
         // Split the loop out: `apply_loop` needs the slot present to look it up,
         // and `Playback` moves into the `Voice`. Take the rest by copy first.
         let loop_ = voice.play.loop_;
@@ -560,7 +595,7 @@ impl VoicePool {
                 VoiceCommand::AddVoice { id, voice, stretch } => {
                     // The filter arrives prebuilt from `send` (control thread);
                     // this only moves it into the slot.
-                    self.insert_voice_with_stretch(id, *voice, stretch.map(|b| *b));
+                    self.insert_voice_inner(id, voice, stretch);
                 }
                 VoiceCommand::Remove(id) => {
                     // `retain` would DROP the slot here, on the audio thread,

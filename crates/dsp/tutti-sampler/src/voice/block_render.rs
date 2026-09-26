@@ -8,6 +8,18 @@
 //! a time. Two pools are given the same voices; one renders through the block
 //! read, one through the oracle, on one clock, and every output sample must
 //! have the same bits.
+//!
+//! **What it isolates is the block machinery, not the kernels.** The two
+//! sides share the interpolation (`cubic_hermite`, `tap_indices`, the loop's
+//! taps), the vocoder, and the seat's rules: the oracle's memory arm seats
+//! with `Seat::next` per frame, and its disk arm reads through
+//! `DiskVoice::tick`, a one-frame `live_render`, whose `Seat::run` over one
+//! frame is exactly one `Seat::next` (and one ring claim per frame). So this
+//! pins the lanes, the per-block seating and claiming, `hermite_lanes`,
+//! `filter_lanes`, the gain and the mix against a per-frame composition of
+//! the same kernels; a bug inside a shared kernel shows on both sides and is
+//! the kernel's own tests' (`interp`, `loop_span`, `stretch`, the tier
+//! tables) to catch.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -152,7 +164,7 @@ fn play(f: impl FnOnce(&mut Playback)) -> Playback {
 /// **The block read is the frame read, bit for bit**, summed over a pool of
 /// voices covering every arm the read forks on: in memory at unity, at 1.37x
 /// varispeed and half gain, reversed, on a crossfaded loop, stretched 0.5x,
-/// pitched +700 cents, stretched and pitched, a mono wave fanned out, a
+/// pitched +700 cents, stretched and pitched at half gain, a mono wave fanned out, a
 /// 24 kHz wave on a 48 kHz clock, a six-channel wave folded to stereo, a
 /// window that opens mid-render (plain, and stretched); from disk live at
 /// unity, at 0.75x, and stretched 1.5x; and a disk voice forked offline.
@@ -160,13 +172,16 @@ fn play(f: impl FnOnce(&mut Playback)) -> Playback {
 /// stop and restart.
 ///
 /// Every mutation below was run and fails this test: the lane read one frame
-/// off (`&lane[1..frames + 1]` in `process_into`'s accumulate); the pool's
-/// accumulate skipping its last voice; the memory arm's gain not applied;
-/// `Seat::run` stepping `k / 2 * 2` frames; `hermite_lanes` at `t / 2`; the
-/// disk stretch arm publishing unity; the disk lanes written one frame late;
-/// a forked disk voice's frame cut to one channel; the stretched memory arm
-/// feeding the filter a block outside its window; the mono fan left silent;
-/// the reverse mirror one frame off.
+/// off (`&lane[1..frames]` into `[..frames - 1]` in `process_into`'s
+/// accumulate); the pool's accumulate skipping its last voice; the memory
+/// arm's gain not applied; the stretched arm's gain not applied before the
+/// filter (`scale(raw, 1.0)`); `Seat::run` stepping `k / 2 * 2` frames;
+/// `hermite_lanes` at `t / 2`; a frame with no sample keeping the last
+/// block's `live` flag in the node-owned gather; the disk stretch arm
+/// publishing unity; the disk lanes written one frame late; a forked disk
+/// voice's frame cut to one channel; the stretched memory arm feeding the
+/// filter a block outside its window; the mono fan left silent; the reverse
+/// mirror one frame off.
 #[test]
 fn block_render_is_the_frame_read() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -214,7 +229,8 @@ fn block_render_is_the_frame_read() {
             Some(Arc::clone(&clock) as Arc<dyn Timeline>),
             None,
             ChannelLayout::STEREO,
-        );
+        )
+        .expect("a width the sampler reads");
         pool.set_sample_rate(SampleRate(SR));
         let mut forked = disk(first_disk + 3);
         forked.isolate();
@@ -258,6 +274,8 @@ fn block_render_is_the_frame_read() {
                 play(|p| {
                     p.stretch = StretchFactor::new(1.5);
                     p.pitch = Cents::new(-300.0);
+                    // The stretched arm applies the gain before the filter.
+                    p.gain = Amplitude::new(0.5);
                 }),
             ),
             (memory(&mono, &clock, 0.0), Playback::default()),

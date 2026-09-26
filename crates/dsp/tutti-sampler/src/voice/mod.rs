@@ -52,7 +52,7 @@ pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWind
 /// One voice as a standalone graph node. Documented on [`node`].
 pub use node::VoiceNode;
 /// The per-track multi-voice mixer. Documented on [`pool`].
-pub use pool::VoicePool;
+pub use pool::{PoolTooWide, VoicePool};
 /// ECS components that seat a pool on a track entity. Documented on [`pool`].
 #[cfg(feature = "bevy")]
 pub use pool::{VoicePoolNode, VoicePoolRef};

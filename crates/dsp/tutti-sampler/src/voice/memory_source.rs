@@ -18,7 +18,7 @@ use tutti_io::Wave;
 use super::interp::{hermite_lanes, read_looped_frame, tap_indices, Seat};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
-use crate::lanes::{Lanes, LANE_FRAMES};
+use crate::lanes::{Gather, Lanes};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -917,6 +917,7 @@ impl MemorySource {
         direction: Direction,
         lanes: &mut Lanes,
         n: usize,
+        gather: &mut Gather,
     ) {
         let frames = positions.len();
         let len = self.wave.len();
@@ -935,29 +936,37 @@ impl MemorySource {
             return;
         }
         // Each frame's taps and fraction, as `read_placed_into` →
-        // `get_sample_raw_into` → `read_frame` derive them. A frame with no
-        // sample keeps taps 0 and a zero weight mask.
-        let mut taps = [[0usize; 4]; LANE_FRAMES];
-        let mut frac = [0.0f32; LANE_FRAMES];
-        let mut live = [false; LANE_FRAMES];
+        // `get_sample_raw_into` → `read_frame` derive them, written for every
+        // frame: one with no sample reads taps 0 at `t` = 0, weighted out.
+        let Gather {
+            taps,
+            frac,
+            live,
+            y,
+        } = gather;
         let flen = len as f64;
         for (i, pos) in positions.iter().enumerate() {
-            let Some(pos) = pos else { continue };
-            let p = pos.get();
-            // The reversed mirror, and the forward end: `read_placed_into`.
-            let at = match direction {
-                Direction::Reverse if p >= flen => continue,
-                Direction::Reverse => (flen - 1.0 - p).max(0.0),
-                Direction::Forward if p >= flen => continue,
-                Direction::Forward => p,
+            let at = pos.and_then(|pos| {
+                let p = pos.get();
+                // The reversed mirror, and the forward end: `read_placed_into`.
+                match direction {
+                    Direction::Reverse if p >= flen => None,
+                    Direction::Reverse => Some((flen - 1.0 - p).max(0.0)),
+                    Direction::Forward if p >= flen => None,
+                    Direction::Forward => Some(p),
+                }
+            });
+            (taps[i], frac[i], live[i]) = match at {
+                Some(at) => {
+                    let (t, f) = tap_indices(len, at);
+                    (t, f, true)
+                }
+                None => ([0; 4], 0.0, false),
             };
-            (taps[i], frac[i]) = tap_indices(len, at);
-            live[i] = true;
         }
         let (taps, frac, live) = (&taps[..frames], &frac[..frames], &live[..frames]);
         // Mono fans one interpolated lane to every channel.
         let reads = if src_ch == 1 { 1 } else { n };
-        let mut y = [[0.0f32; LANE_FRAMES]; 4];
         for c in 0..reads {
             let wave = self.wave.channel(c);
             for (t, lane) in y.iter_mut().enumerate() {
@@ -965,7 +974,7 @@ impl MemorySource {
                     *s = if on { wave[tap[t]] } else { 0.0 };
                 }
             }
-            let [y0, y1, y2, y3] = &y;
+            let [y0, y1, y2, y3] = &*y;
             let out = &mut lanes.lanes_mut()[c][..frames];
             hermite_lanes(
                 out,

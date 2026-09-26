@@ -247,6 +247,10 @@ impl Unit {
     /// [`set_stretch_factor`](Self::set_stretch_factor) applies, so a caller
     /// using it owns keeping the value inside
     /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
+    ///
+    /// A block read (`filter_lanes`, the voice pool's path) reads the cell
+    /// once per block, so a write that lands mid-block takes effect at the
+    /// next block, not at the next frame.
     pub fn stretch_factor_arc(&self) -> Arc<AtomicF32> {
         Arc::clone(&self.stretch_factor)
     }

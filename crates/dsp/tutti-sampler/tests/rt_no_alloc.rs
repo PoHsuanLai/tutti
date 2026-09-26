@@ -581,7 +581,8 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+        .expect("a width the sampler reads");
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
     let sampler = MemorySource::with_config(
@@ -683,7 +684,8 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 fn add_voice_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+        .expect("a width the sampler reads");
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -753,7 +755,8 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 fn remove_voice_drain_does_not_free_on_the_audio_thread() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+        .expect("a width the sampler reads");
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -819,7 +822,8 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
 fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+        .expect("a width the sampler reads");
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -886,7 +890,8 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 fn update_loop_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+        .expect("a width the sampler reads");
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let sampler = MemorySource::with_config(

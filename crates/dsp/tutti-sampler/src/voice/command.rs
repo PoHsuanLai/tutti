@@ -68,7 +68,10 @@ pub enum VoiceCommand {
         /// Boxed: a [`Voice`] carries a whole `MemorySource`/`DiskVoice`,
         /// far larger than the other command variants — boxing keeps the bounded
         /// command channel's per-slot footprint small. Cold path (drained off the
-        /// per-sample loop), so the indirection costs nothing audible.
+        /// per-sample loop), so the indirection costs nothing audible. The box
+        /// itself moves into the pool's slot — the drain never unboxes it, so
+        /// it frees nothing — and leaves through the retirement channel with
+        /// the slot.
         voice: Box<Voice>,
         /// A stretch filter built by the SENDER, on the control thread, when
         /// `voice.play` asks for stretching.
@@ -80,7 +83,11 @@ pub enum VoiceCommand {
         ///
         /// `None` when the voice does not stretch, which is the common case and
         /// costs nothing.
-        stretch: Option<Box<stretch::Unit>>,
+        ///
+        /// Unboxed, as `UpdateStretch`'s is: moving a `Unit` out of a `Box`
+        /// frees the box, a deallocation on the audio thread. A `Unit` moves as
+        /// a pointer anyway (its state is boxed inside it).
+        stretch: Option<stretch::Unit>,
     },
     /// Retire the slot with this id, filter and all.
     ///
@@ -552,7 +559,7 @@ impl VoicePoolHandle {
                 VoiceCommand::AddVoice {
                     id,
                     voice,
-                    stretch: Some(Box::new(unit)),
+                    stretch: Some(unit),
                 }
             }
             // Same materialisation for an update that turns stretching ON.

@@ -631,7 +631,7 @@ fn a_clone_renders_identically() {
 #[test]
 fn filter_lanes_is_tick_per_frame() {
     use crate::lanes::{Lane, LANE_FRAMES};
-    let src = sine(440.0, 44_100.0, 40 * LANE_FRAMES);
+    let src = sine(440.0, 44_100.0, 160 * LANE_FRAMES);
     // (unit width, caller width, stretch, cents)
     let rows: &[(usize, usize, f32, f32)] = &[
         (2, 2, 2.0, 0.0),
@@ -654,14 +654,15 @@ fn filter_lanes_is_tick_per_frame() {
         let mut input = vec![[0.0f32; LANE_FRAMES]; n];
         let mut output: Vec<Lane> = vec![[9.0f32; LANE_FRAMES]; n];
         let mut heard = false;
-        for block in 0..40 {
+        // 10 240 frames: past every row's fill-up.
+        for block in 0..160 {
             for (c, lane) in input.iter_mut().enumerate() {
                 for (i, s) in lane.iter_mut().enumerate() {
                     *s = src[block * LANE_FRAMES + i] * (c + 1) as f32;
                 }
             }
             // Runs of the block, as a window edge splits one.
-            let cuts = [0, 17, 64, 65, 200, LANE_FRAMES];
+            let cuts = [0, 17, 40, 41, LANE_FRAMES];
             for run in cuts.windows(2) {
                 by_lanes.filter_lanes(&input, &mut output, n, run[0]..run[1]);
             }

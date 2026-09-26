@@ -95,7 +95,8 @@ impl VoiceNode {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        let mut slot = PlaybackSlot::with_channels(SlotId(0), voice, sample_rate, channels);
+        let mut slot =
+            PlaybackSlot::with_channels(SlotId(0), Box::new(voice), sample_rate, channels);
         slot.stretch = stretch;
         let cursor = slot
             .voice
@@ -323,10 +324,12 @@ impl AudioUnit for VoiceNode {
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         self.drain_commands();
         // Stride derived once per block, above the loops.
-        let n = (self.channels.count() as usize)
-            .min(output.channels())
-            .min(MAX_SAMPLER_CHANNELS);
-        for c in 0..n {
+        let outs = (self.channels.count() as usize).min(output.channels());
+        let n = outs.min(MAX_SAMPLER_CHANNELS);
+        // Every output this node declares, not only the `n` the read writes:
+        // a node wider than `MAX_SAMPLER_CHANNELS` leaves the rest silent
+        // rather than holding whatever the buffer held.
+        for c in 0..outs {
             output.channel_f32_mut(c)[..size].fill(0.0);
         }
         self.flush_on_seek(size.max(1));

@@ -91,6 +91,9 @@ impl Timeline for Clock {
     fn is_rolling(&self) -> bool {
         true
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// Drive a unit for `blocks` blocks, returning channel 0.

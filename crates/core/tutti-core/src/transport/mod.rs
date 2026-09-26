@@ -30,11 +30,11 @@ pub use clock::TransportClock;
 pub use env_clock::EnvClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
-pub use offline::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{
-    beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,
-    BEAT_PORTS,
+    beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, PlayheadClaimed,
+    SeekSlot, BEAT_PORTS,
 };
 pub(crate) use timed::{Schedule, Scheduled};
 pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
@@ -42,43 +42,11 @@ pub use timed::{ScheduleFull, TransportCommand, SCHEDULE_CAPACITY};
 // The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
 // host adapter, `bevy_tutti::graph`, not to this crate.
 
-/// A musical timeline: the position, the tempo, and whether it is moving.
-///
-/// Implemented by the live [`Transport`] and by [`OfflineTimeline`], so a
-/// beat-driven source can be handed either one and not care which.
-///
-/// # When to use this instead of a beat edge
-///
-/// Pure DSP nodes should **not** implement against this trait. A node that is a
-/// function of musical time takes the beat as a signal on its input ports (see
-/// [`BEAT_PORTS`]) — that is per-sample accurate, works unchanged offline, and
-/// makes the timeline→node relationship a visible graph edge.
-///
-/// What legitimately remains here is what a beat signal cannot express:
-///
-/// - **Boolean gating** — `is_rolling` drives early returns with state-reset
-///   side effects. "Emit nothing" is not the same as "emit a level", and a
-///   paused timeline still has a valid beat, so rolling-ness is not
-///   recoverable from the beat.
-/// - **Nodes with no ports** — the MIDI sources implement `poll_into` and have
-///   no `BufferRef` to read a beat from.
-///
-/// # What is deliberately NOT here
-///
-/// Recording, looping, and preroll are live-session facts, not timeline facts:
-/// an offline render either answers `false`/`None` forever or handles them by
-/// direct field access, never through this trait. They live on the
-/// [`TransportState`] supertrait (record + loop) and on [`TransportSettings`]
-/// (preroll), read only where a genuinely live transport is required.
-pub trait Timeline: Send + Sync {
-    /// The playhead, as a [`Beat`](crate::Beat) position. May be
-    /// negative during a count-in.
-    fn beat(&self) -> crate::Beat;
-    /// The tempo in force, in [`Bpm`](crate::Bpm).
-    fn tempo(&self) -> crate::Bpm;
-    /// Whether time is advancing. An offline render is always rolling.
-    fn is_rolling(&self) -> bool;
-}
+// `Timeline` and `OfflineTransport` live in tutti-types, so tutti-graph can
+// name the offline context its forks hand every unit (`ForkMode::Offline`)
+// instead of passing it as `&dyn Any`. Re-exported here, where every
+// transport-aware crate already imports them from.
+pub use tutti_types::{OfflineClock, OfflineTransport, Timeline};
 
 /// A clock an offline render drives, one block at a time.
 ///

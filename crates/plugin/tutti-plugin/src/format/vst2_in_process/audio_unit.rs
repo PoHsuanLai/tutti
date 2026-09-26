@@ -930,7 +930,10 @@ mod transport_tests {
     fn the_block_context_carries_a_transport_snapshot() {
         let mut slot = slot();
         let (transport, source) = rolling(132.0, 48_000.0);
-        transport.settings.set_beat(4.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(4.0);
         slot.install(source);
         let snapshot = *slot.drain(BlockCtx { block_size: 64 }, loader_features());
 
@@ -962,7 +965,10 @@ mod transport_tests {
     fn a_node_declaring_transport_is_handed_the_live_snapshot() {
         let mut slot = slot();
         let (transport, source) = rolling(132.0, 48_000.0);
-        transport.settings.set_beat(4.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(4.0);
         slot.install(source);
 
         let snapshot = slot.drain(BlockCtx { block_size: 64 }, loader_features());
@@ -987,7 +993,10 @@ mod transport_tests {
     fn a_node_not_declaring_transport_drains_the_default() {
         let mut slot = slot();
         let (transport, source) = rolling(132.0, 48_000.0);
-        transport.settings.set_beat(4.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(4.0);
         slot.install(source);
 
         let snapshot = slot.drain(BlockCtx { block_size: 64 }, Features::empty());
@@ -1019,7 +1028,10 @@ mod transport_tests {
         let original = slot();
         let mut running = original.clone();
         let (transport, source) = rolling(90.0, 44_100.0);
-        transport.settings.set_beat(1.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(1.0);
 
         original.install(source);
 
@@ -1045,7 +1057,10 @@ mod transport_tests {
 
         let mut slot = slot();
         let (transport, source) = rolling(96.0, 48_000.0);
-        transport.settings.set_beat(2.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(2.0);
         slot.install(source);
         let snapshot = *slot.drain(BlockCtx { block_size: 64 }, declared);
 

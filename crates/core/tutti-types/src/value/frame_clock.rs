@@ -139,6 +139,10 @@ pub struct FrameClock {
     /// Frames rolled since the clock started, the segment's frame zero
     /// being wherever it started.
     at: Frame,
+    /// Discontinuities since the clock was built: every segment restart,
+    /// and every [`mark_play_start`](Self::mark_play_start). See
+    /// [`generation`](Self::generation).
+    generation: u64,
 }
 
 impl FrameClock {
@@ -147,6 +151,7 @@ impl FrameClock {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, beat, tempo, sample_rate),
             at: Frame::ZERO,
+            generation: 0,
         }
     }
 
@@ -158,6 +163,7 @@ impl FrameClock {
         Self {
             segment: TimelineSegment::new(Frame::ZERO, origin.beat, tempo, origin.sample_rate),
             at: origin.frame,
+            generation: 0,
         }
     }
 
@@ -214,10 +220,40 @@ impl FrameClock {
         }
     }
 
+    /// Which stretch of straight-line time the beat is on: a count that
+    /// moves on at every discontinuity — a [`seat`](Self::seat) (a seek,
+    /// even to the beat already there), a tempo or rate change that starts
+    /// a segment, a loop wrap inside [`advance`](Self::advance), and a
+    /// [`mark_play_start`](Self::mark_play_start) — and at nothing else.
+    ///
+    /// What a timeline publishes as its
+    /// [`Timeline::segment_generation`](crate::Timeline::segment_generation),
+    /// so a reader that caches a position computed at one beat can tell a
+    /// jump that lands on the same beat from no jump at all: comparing
+    /// beats cannot (a seek to where the playhead stands, a loop exactly one
+    /// block long).
+    ///
+    /// Not part of the beat's arithmetic: a clock rebuilt from its
+    /// [`origin`](Self::origin) starts again at 0 and derives the same
+    /// beats.
+    #[inline]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The transport started rolling from here: a discontinuity for a
+    /// reader (it was not reading a moving playhead a moment ago) though
+    /// not for the arithmetic, so the generation moves on and the segment
+    /// does not restart.
+    pub fn mark_play_start(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     /// Start a new segment at `beat` on the current frame.
     fn restart(&mut self, beat: Beat) {
         self.segment.origin_frame = self.at;
         self.segment.origin_beat = beat;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Roll `frames` forward, wrapping at `looping`.
@@ -532,5 +568,45 @@ mod tests {
         again.advance(Samples(777), None);
         c.advance(Samples(777), None);
         assert_eq!(again.beat().get().to_bits(), c.beat().get().to_bits());
+    }
+
+    /// The generation moves on at every discontinuity a reader cannot see
+    /// in the beat — a seek to the beat already there, a loop wrap that
+    /// lands on the beat it left — and at each other kind, and never while
+    /// the clock only rolls or is told what it already runs at.
+    ///
+    /// Mutations (run): `restart` not bumping → the seek to the same beat
+    /// keeps generation 0 → fails; `set_tempo` restarting on an unchanged
+    /// tempo → the "unchanged" arm moves it → fails; `mark_play_start` a
+    /// no-op → fails.
+    #[test]
+    fn every_discontinuity_and_nothing_else_moves_the_generation() {
+        let mut c = FrameClock::new(Beat(2.0), Bpm(120.0), SR);
+        let g = |c: &FrameClock| c.generation();
+        assert_eq!(g(&c), 0);
+        c.advance(Samples(4_800), None);
+        c.set_tempo(Bpm(120.0));
+        c.set_sample_rate(SR);
+        assert_eq!(g(&c), 0, "rolling, and unchanged settings, are one line");
+
+        let at = c.beat();
+        c.seat(at);
+        assert_eq!(c.beat(), at, "the same beat...");
+        assert_eq!(g(&c), 1, "...on a new segment");
+
+        c.set_tempo(Bpm(90.0));
+        assert_eq!(g(&c), 2);
+        c.set_sample_rate(SampleRate(44_100.0));
+        assert_eq!(g(&c), 3);
+        c.mark_play_start();
+        assert_eq!(g(&c), 4);
+
+        // A loop one beat long, rolled exactly one beat: it wraps and lands
+        // on the beat it left.
+        let mut l = FrameClock::new(Beat(4.0), Bpm(120.0), SR);
+        let one_beat = Samples(24_000);
+        l.advance(one_beat, LoopRange::new(4.0, 5.0));
+        assert_eq!(l.beat(), Beat(4.0), "the wrap lands where it left");
+        assert_eq!(l.generation(), 1, "but it jumped");
     }
 }

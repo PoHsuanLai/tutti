@@ -309,7 +309,10 @@ fn removing_the_last_install_clears_the_source() {
 
     // Move the transport onto the note and poll: a cleared port yields nothing.
     let transport = app.world().resource::<TransportRes>().clone();
-    transport.settings.set_beat(tutti_core::Beat(4.0));
+    transport
+        .clock_links()
+        .expect("the only playhead writer")
+        .set_playhead(tutti_core::Beat(4.0));
     let events = poll(&app, synth, 512);
     assert!(
         !events.iter().any(|e| e.is_note_on()),

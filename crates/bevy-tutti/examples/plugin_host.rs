@@ -275,10 +275,16 @@ fn narrate_editor(
 /// The unit types are why this reads as arithmetic on beats rather than on
 /// floats: a `Beat` plus a raw `f64` does not compile, which is what stops a
 /// seconds-shaped quantity being added to a beat-shaped one.
+///
+/// There is no engine here to drive the playhead, so this is its one writer
+/// (`clock_links`): with an engine running, taking it would be refused.
 fn drive_transport(transport: Res<TransportRes>) {
     let beat = transport.settings.beat();
     let per_tick = tutti_core::BeatDuration(TEMPO / 60.0 / SAMPLE_RATE * BLOCK);
-    transport.settings.set_beat(beat + per_tick);
+    transport
+        .clock_links()
+        .expect("the only playhead writer")
+        .set_playhead(beat + per_tick);
 }
 
 fn report(world: &mut World) {

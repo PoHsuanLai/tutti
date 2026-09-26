@@ -23,6 +23,7 @@ use tutti_graph::contract::{
 };
 use tutti_graph::{
     contract_tests, Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Ump,
+    Unforkable,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
 
@@ -353,9 +354,12 @@ fn a_fan_in_tie_goes_by_source_order() {
         let at = Frame(512 + k as u64);
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-        let sink = g.add(Tags(Arc::clone(&log)));
+        let sink = g.add(Unforkable(Tags(Arc::clone(&log))));
         for tag in [3u32, 1, 2] {
-            let e = g.add(Emitter::new(at, EventKind::Midi(Ump([tag, 0, 0, 0]))));
+            let e = g.add(Unforkable(Emitter::new(
+                at,
+                EventKind::Midi(Ump([tag, 0, 0, 0])),
+            )));
             g.event_connect(e, 0, sink, 0);
         }
         g.connect_output(sink, 0, 0);

@@ -213,9 +213,8 @@ mod tests {
         )));
 
         let timeline = offline();
-        // The context is the `OfflineTransport` itself, the type a clip
-        // downcasts (`ForkMode::Offline`'s docs).
-        let ctx: OfflineTransport = timeline.clone();
+        // The render's timeline, the type `ForkMode::Offline` carries.
+        let ctx: OfflineTransport = OfflineTransport::new(timeline.clone());
         let mut fork = source
             .synth(ForkMode::Offline(&ctx))
             .expect("the synth forks");
@@ -260,7 +259,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }
@@ -276,7 +275,7 @@ mod tests {
     fn an_unrebindable_source_is_a_named_fork_error() {
         let live = saw();
         live.midi_port().install(Arc::new(Unrebindable));
-        let ctx: OfflineTransport = offline();
+        let ctx: OfflineTransport = OfflineTransport::new(offline());
         assert!(matches!(
             live.fork_instance(ForkMode::Offline(&ctx)),
             Err(Error::MidiSource)

@@ -176,8 +176,7 @@ impl RenderGraph {
     /// spec and the nodes' fork sources, and sends nothing).
     ///
     /// `mode` is normally `ForkMode::Offline(&transport)`, with `transport`
-    /// the render's `OfflineTransport` (tutti-core) — the value itself; see
-    /// `ForkMode::Offline` for what a wrong type does (nothing, silently).
+    /// the render's `OfflineTransport`: typed, so nothing else compiles.
     ///
     /// # Errors
     ///

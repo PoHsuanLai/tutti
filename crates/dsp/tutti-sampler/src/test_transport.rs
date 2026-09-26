@@ -70,6 +70,10 @@ impl MockTransport {
     }
 }
 
+// A test clock stands in for a render's timeline as readily as for the
+// live transport.
+impl tutti_core::transport::OfflineClock for MockTransport {}
+
 impl Timeline for MockTransport {
     fn beat(&self) -> Beat {
         Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
@@ -81,6 +85,9 @@ impl Timeline for MockTransport {
 
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
+    }
+    fn segment_generation(&self) -> u64 {
+        0
     }
 }
 

@@ -213,7 +213,7 @@ pub use exec::{Executor, DEFAULT_EVENT_CAPACITY, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
     ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource,
-    ForkTarget, Forked,
+    ForkTarget, Forked, Unforkable,
 };
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use legacy::{

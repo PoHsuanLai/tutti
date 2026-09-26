@@ -134,7 +134,8 @@ impl GraphBuilder {
     }
 
     /// Add a node, unwired. Its kind (the [`NodeSpec::kind`] diagnostics
-    /// print) is its type name.
+    /// print) is its type name ([`IntoNode::kind`]: the wrapped node's, for
+    /// a fork wrapper).
     ///
     /// For a node with controls use
     /// [`add_with_controls`](Self::add_with_controls), so the handles are
@@ -155,7 +156,7 @@ impl GraphBuilder {
             controls: (),
             fork,
         };
-        (self.insert(std::any::type_name::<N>(), unit), controls)
+        (self.insert(N::kind(), unit), controls)
     }
 
     /// Add a fundsp `AudioUnit`, unwired, running through [`Legacy`] — the
@@ -443,7 +444,7 @@ impl GraphBuilder {
     /// taking output source `c % outputs`. Either way the node then feeds
     /// every global output ([`pipe_output`](Self::pipe_output)).
     pub fn chain<N: IntoNode<Controls = ()>>(&mut self, node: N) -> NodeKey {
-        let key = self.insert(std::any::type_name::<N>(), node.into_parts());
+        let key = self.insert(N::kind(), node.into_parts());
         self.link(key);
         key
     }

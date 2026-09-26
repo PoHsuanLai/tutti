@@ -232,7 +232,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }

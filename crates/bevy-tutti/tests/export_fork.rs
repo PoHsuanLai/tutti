@@ -973,7 +973,7 @@ mod plugin {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }
@@ -1381,7 +1381,8 @@ mod synths {
             .expect("still captured")
             .port()
             .clone();
-        let ctx: tutti_core::transport::OfflineTransport = timeline(RATE);
+        let ctx: tutti_core::transport::OfflineTransport =
+            tutti_core::transport::OfflineTransport::new(timeline(RATE));
         assert_eq!(
             port.rebind_offline_into(&tutti_midi_runtime::MidiInPort::new(), &ctx),
             OfflineRebind::Rebound,
@@ -1390,7 +1391,10 @@ mod synths {
         let transport = app.world().resource::<TransportRes>().clone();
         let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
-        transport.settings.set_beat(Beat(1.0));
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(Beat(1.0));
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let mut heard = false;
         for _ in 0..4_096 {
@@ -1535,7 +1539,7 @@ mod synths {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }
@@ -1851,7 +1855,7 @@ mod host_midi {
         fn rebind_offline(
             &self,
             _unit: tutti_midi_types::MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
             None
         }

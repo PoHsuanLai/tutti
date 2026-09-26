@@ -76,6 +76,9 @@ impl Timeline for Logged {
     fn is_rolling(&self) -> bool {
         self.inner.is_rolling()
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 fn logged(inner: Arc<dyn Timeline>) -> Arc<Logged> {

@@ -751,6 +751,9 @@ mod tests {
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
         }
+        fn segment_generation(&self) -> u64 {
+            0
+        }
     }
     impl TransportState for TestTransport {
         fn is_recording(&self) -> bool {

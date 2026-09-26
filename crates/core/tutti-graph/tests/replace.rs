@@ -11,7 +11,7 @@ use std::sync::Arc;
 use common::{prepare, Kind, TestNode};
 use tutti_graph::{
     compile, CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node,
-    Prepare, Shape, Status, Transport, Ump,
+    Prepare, Shape, Status, Transport, Ump, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{At, AudioThread, ChannelLayout, NodeKey, Samples};
@@ -27,7 +27,7 @@ fn gain(g: f32) -> TestNode {
 fn gain_graph(g: f32) -> (Editor, Executor) {
     let (mut ed, mut exec) = Editor::new(prepare(128));
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    ed.insert(NODE, "gain", gain(g));
+    ed.insert(NODE, "gain", Unforkable(gain(g)));
     ed.spec_mut().topology.edges.insert(
         InPort {
             node: NODE,
@@ -76,7 +76,7 @@ fn a_fade_has_no_step_at_either_end() {
         let len = 100;
         let (mut ed, mut exec) = gain_graph(1.0);
         let mut out = dc(&mut exec, 40);
-        ed.replace(NODE, gain(3.0), Fade::new(Samples(len), curve))
+        ed.replace(NODE, Unforkable(gain(3.0)), Fade::new(Samples(len), curve))
             .expect("same shape");
         ed.commit().expect("commits");
         for &n in RAGGED.iter().cycle().take(12) {
@@ -115,7 +115,7 @@ fn the_fade_is_exactly_its_length() {
     let start = out.len();
     ed.replace(
         NODE,
-        gain(3.0),
+        Unforkable(gain(3.0)),
         Fade::new(Samples(len), CrossfadeCurve::EqualAmplitude),
     )
     .expect("same shape");
@@ -181,10 +181,10 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
     ed.insert(
         NODE,
         "gain",
-        DropProbe {
+        Unforkable(DropProbe {
             inner: gain(1.0),
             dropped: Arc::clone(&dropped),
-        },
+        }),
     );
     ed.spec_mut().topology.edges.insert(
         InPort {
@@ -203,7 +203,7 @@ fn the_outgoing_unit_retires_on_the_control_thread() {
 
     ed.replace(
         NODE,
-        gain(2.0),
+        Unforkable(gain(2.0)),
         Fade::new(Samples(100), CrossfadeCurve::EqualPower),
     )
     .expect("same shape");
@@ -240,13 +240,13 @@ fn long_fades_do_not_block_commits() {
     let (mut ed, mut exec) = Editor::new(prepare(128));
     let keys: Vec<NodeKey> = (1..=10).map(NodeKey).collect();
     for &k in &keys {
-        ed.insert(k, "gain", gain(1.0));
+        ed.insert(k, "gain", Unforkable(gain(1.0)));
     }
     ed.commit().expect("commits");
     exec.process(64, &Transport::default(), &[], &mut []);
     let second = Fade::new(Samples(48_000), CrossfadeCurve::EqualAmplitude);
     for &k in &keys {
-        ed.replace(k, gain(2.0), second).expect("fits");
+        ed.replace(k, Unforkable(gain(2.0)), second).expect("fits");
         ed.commit().expect("a running fade blocks nothing");
         exec.process(64, &Transport::default(), &[], &mut []);
     }
@@ -263,13 +263,13 @@ fn long_fades_do_not_block_commits() {
 fn a_remove_beside_a_fade_retires_at_once() {
     let (mut ed, mut exec) = gain_graph(1.0);
     let other = NodeKey(2);
-    ed.insert(other, "gain", gain(1.0));
+    ed.insert(other, "gain", Unforkable(gain(1.0)));
     ed.commit().expect("commits");
     dc(&mut exec, 16);
     ed.collect();
     ed.replace(
         NODE,
-        gain(2.0),
+        Unforkable(gain(2.0)),
         Fade::new(Samples(48_000), CrossfadeCurve::EqualAmplitude),
     )
     .expect("fits");
@@ -299,16 +299,16 @@ fn a_shape_mismatch_is_refused() {
         width: 2,
     });
     assert_eq!(
-        ed.replace(NODE, wider, fade),
+        ed.replace(NODE, Unforkable(wider), fade),
         Err(CommitError::FadeShape { node: NODE })
     );
     let not_in_place = TestNode::new(Kind::Thru { width: 1 });
     assert_eq!(
-        ed.replace(NODE, not_in_place, fade),
+        ed.replace(NODE, Unforkable(not_in_place), fade),
         Err(CommitError::FadeShape { node: NODE })
     );
     assert_eq!(
-        ed.replace(NodeKey(9), gain(1.0), fade),
+        ed.replace(NodeKey(9), Unforkable(gain(1.0)), fade),
         Err(CommitError::NotRunning { node: NodeKey(9) })
     );
     ed.commit().expect("nothing changed");
@@ -319,7 +319,11 @@ fn a_shape_mismatch_is_refused() {
 
     // Latency.
     let lagged = NodeKey(2);
-    ed.insert(lagged, "lag", TestNode::new(Kind::Lag { latency: 3 }));
+    ed.insert(
+        lagged,
+        "lag",
+        Unforkable(TestNode::new(Kind::Lag { latency: 3 })),
+    );
     ed.spec_mut().topology.outputs.push(Source::Node(OutPort {
         node: lagged,
         port: 0,
@@ -328,11 +332,19 @@ fn a_shape_mismatch_is_refused() {
     exec.apply_pending();
     ed.collect();
     assert_eq!(
-        ed.replace(lagged, TestNode::new(Kind::Lag { latency: 5 }), fade),
+        ed.replace(
+            lagged,
+            Unforkable(TestNode::new(Kind::Lag { latency: 5 })),
+            fade
+        ),
         Err(CommitError::FadeShape { node: lagged })
     );
-    ed.replace(lagged, TestNode::new(Kind::Lag { latency: 3 }), fade)
-        .expect("the same latency fades");
+    ed.replace(
+        lagged,
+        Unforkable(TestNode::new(Kind::Lag { latency: 3 })),
+        fade,
+    )
+    .expect("the same latency fades");
 
     // Declared event capacity: the plan sizes the port's buffers from it.
     let burst = |cap| {
@@ -344,20 +356,24 @@ fn a_shape_mismatch_is_refused() {
         })
     };
     let bursting = NodeKey(3);
-    ed.insert(bursting, "burst", burst(2));
+    ed.insert(bursting, "burst", Unforkable(burst(2)));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
     assert_eq!(
-        ed.replace(bursting, burst(3), fade),
+        ed.replace(bursting, Unforkable(burst(3)), fade),
         Err(CommitError::FadeShape { node: bursting })
     );
-    ed.replace(bursting, burst(2), fade)
+    ed.replace(bursting, Unforkable(burst(2)), fade)
         .expect("the same capacity fades");
 
     // The verifier, on a delta built by hand: a fade across a latency change.
     let (mut ed, mut exec) = Editor::new(prepare(128));
-    ed.insert(lagged, "lag", TestNode::new(Kind::Lag { latency: 3 }));
+    ed.insert(
+        lagged,
+        "lag",
+        Unforkable(TestNode::new(Kind::Lag { latency: 3 })),
+    );
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
         node: lagged,
         port: 0,
@@ -407,7 +423,8 @@ fn a_shape_mismatch_is_refused() {
 fn a_replace_during_a_fade_waits_for_it() {
     let (mut ed, mut exec) = gain_graph(1.0);
     let fade = |len| Fade::new(Samples(len), CrossfadeCurve::EqualAmplitude);
-    ed.replace(NODE, gain(2.0), fade(100)).expect("fits");
+    ed.replace(NODE, Unforkable(gain(2.0)), fade(100))
+        .expect("fits");
     ed.commit().expect("commits");
     let mut out = dc(&mut exec, 25);
 
@@ -419,10 +436,12 @@ fn a_replace_during_a_fade_waits_for_it() {
         },
         Arc::clone(&never),
     );
-    ed.replace(NODE, waiting, fade(50)).expect("fits");
+    ed.replace(NODE, Unforkable(waiting), fade(50))
+        .expect("fits");
     ed.commit().expect("commits");
     out.extend(dc(&mut exec, 25));
-    ed.replace(NODE, gain(8.0), fade(50)).expect("fits");
+    ed.replace(NODE, Unforkable(gain(8.0)), fade(50))
+        .expect("fits");
     ed.commit().expect("commits");
     for _ in 0..8 {
         out.extend(dc(&mut exec, 25));
@@ -488,12 +507,12 @@ fn events_go_to_the_incoming_unit_only() {
     ed.insert(
         emitter,
         "emit",
-        TestNode::new(Kind::Emitter {
+        Unforkable(TestNode::new(Kind::Emitter {
             period: 16,
             phase: 0,
-        }),
+        })),
     );
-    ed.insert(NODE, "count", EventCount(Arc::clone(&old)));
+    ed.insert(NODE, "count", Unforkable(EventCount(Arc::clone(&old))));
     let to = EventIn {
         node: NODE,
         port: 0,
@@ -521,7 +540,7 @@ fn events_go_to_the_incoming_unit_only() {
 
     ed.replace(
         NODE,
-        EventCount(Arc::clone(&new)),
+        Unforkable(EventCount(Arc::clone(&new))),
         Fade::new(Samples(200), CrossfadeCurve::EqualPower),
     )
     .expect("same shape");
@@ -555,10 +574,10 @@ fn a_hard_edit_cuts_a_fade() {
     let fade = Fade::new(Samples(1000), CrossfadeCurve::EqualAmplitude);
     for cut in ["remove", "insert"] {
         let (mut ed, mut exec) = gain_graph(1.0);
-        ed.replace(NODE, gain(2.0), fade).expect("fits");
+        ed.replace(NODE, Unforkable(gain(2.0)), fade).expect("fits");
         ed.commit().expect("commits");
         dc(&mut exec, 64);
-        ed.replace(NODE, gain(4.0), fade).expect("fits");
+        ed.replace(NODE, Unforkable(gain(4.0)), fade).expect("fits");
         ed.commit().expect("commits");
         dc(&mut exec, 64);
         assert_eq!(ed.fades_in_flight(), 2, "one running, one waiting");
@@ -567,7 +586,7 @@ fn a_hard_edit_cuts_a_fade() {
                 ed.remove(NODE);
             }
             _ => {
-                ed.insert(NODE, "gain", gain(8.0));
+                ed.insert(NODE, "gain", Unforkable(gain(8.0)));
             }
         }
         ed.commit().expect("commits");
@@ -581,10 +600,10 @@ fn a_hard_edit_cuts_a_fade() {
     }
 
     let (mut ed, mut exec) = gain_graph(1.0);
-    ed.replace(NODE, gain(2.0), fade).expect("fits");
+    ed.replace(NODE, Unforkable(gain(2.0)), fade).expect("fits");
     ed.commit().expect("commits");
     dc(&mut exec, 64);
-    ed.replace(NODE, gain(4.0), fade).expect("fits");
+    ed.replace(NODE, Unforkable(gain(4.0)), fade).expect("fits");
     ed.commit().expect("commits");
     dc(&mut exec, 64);
     ed.reprepare(prepare(64)).expect("re-prepares");
@@ -620,10 +639,10 @@ fn a_hard_edit_cuts_a_fade() {
 fn set_latency_cuts_a_fade() {
     let fade = Fade::new(Samples(1000), CrossfadeCurve::EqualAmplitude);
     let (mut ed, mut exec) = gain_graph(1.0);
-    ed.replace(NODE, gain(2.0), fade).expect("fits");
+    ed.replace(NODE, Unforkable(gain(2.0)), fade).expect("fits");
     ed.commit().expect("commits");
     dc(&mut exec, 64);
-    ed.replace(NODE, gain(4.0), fade).expect("fits");
+    ed.replace(NODE, Unforkable(gain(4.0)), fade).expect("fits");
     ed.commit().expect("commits");
     dc(&mut exec, 64);
     assert!(ed.collect().is_empty());

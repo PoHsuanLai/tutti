@@ -176,32 +176,28 @@ impl PluginControls {
     pub(super) fn rebind_sources_into(&self, fork: &PluginControls, bind: &super::fork::Rebind) {
         let rate = fork.sample_rate();
         if let Some(src) = self.inputs.transport.source_ref().load_full() {
-            if let Some(reader) = bind.state(src.reader()) {
-                fork.inputs
-                    .transport
-                    .install(Arc::new(src.rebound(reader, rate)));
-            }
+            let reader = bind.state(src.reader());
+            fork.inputs
+                .transport
+                .install(Arc::new(src.rebound(reader, rate)));
         }
         if let Some(src) = self.inputs.params.source_ref().load_full() {
-            if let Some(transport) = bind.state(src.transport()) {
-                fork.inputs
-                    .params
-                    .install(Arc::new(src.rebound(transport, rate)));
-            }
+            let transport = bind.state(src.transport());
+            fork.inputs
+                .params
+                .install(Arc::new(src.rebound(transport, rate)));
         }
         if let Some(src) = self.inputs.harmony.source_ref().load_full() {
-            if let Some(timeline) = bind.timeline(src.timeline()) {
-                fork.inputs
-                    .harmony
-                    .install(Arc::new(src.rebound(timeline, rate)));
-            }
+            let timeline = bind.timeline(src.timeline());
+            fork.inputs
+                .harmony
+                .install(Arc::new(src.rebound(timeline, rate)));
         }
         if let Some(src) = self.inputs.note_expression.source_ref().load_full() {
-            if let Some(timeline) = bind.timeline(src.timeline()) {
-                fork.inputs
-                    .note_expression
-                    .install(Arc::new(NoteExpressionSource::new(timeline, rate)));
-            }
+            let timeline = bind.timeline(src.timeline());
+            fork.inputs
+                .note_expression
+                .install(Arc::new(NoteExpressionSource::new(timeline, rate)));
         }
     }
 
@@ -364,16 +360,16 @@ mod tests {
     }
 
     /// A fork's transport source reads **the transport its mode names**: the
-    /// offline timeline for an offline fork (never the live playhead), the
-    /// live transport for a live one, and nothing for an offline context that
-    /// is not an `OfflineTransport`. Its rate is the fork's own, and a later
-    /// rate change on the live node does not reach it.
+    /// offline timeline for an offline fork (never the live playhead), and
+    /// the live transport for a live one. (An offline context that was not
+    /// an `OfflineTransport` used to fill nothing; `ForkMode::Offline` is
+    /// typed now, so there is no such context.) Its rate is the fork's own,
+    /// and a later rate change on the live node does not reach it.
     ///
     /// Mutation: make `Rebind::state` return the live reader for `Offline` →
-    /// the offline fork reports the live beat 2.0 → fails. Mutation: return
-    /// it for `Sever` → the severed fork's slot is filled → fails. Mutation:
-    /// share the live source's rate cell in `TransportSource::rebound` → the
-    /// live restamp reaches the fork → fails.
+    /// the offline fork reports the live beat 2.0 → fails. Mutation: share
+    /// the live source's rate cell in `TransportSource::rebound` → the live
+    /// restamp reaches the fork → fails.
     #[test]
     fn a_fork_reads_the_transport_its_mode_names() {
         use super::super::fork::Rebind;
@@ -382,14 +378,18 @@ mod tests {
 
         let live = controls();
         let transport = Transport::new(44_100.0);
-        transport.settings.set_beat(2.0);
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(2.0);
         let meter = Arc::new(tutti_core::RtPublish::new(MeterMap::default()));
         live.set_transport_source(transport, meter);
 
-        let offline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: Beat(8.0),
-            ..Default::default()
-        }));
+        let offline: OfflineTransport =
+            OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                start_beat: Beat(8.0),
+                ..Default::default()
+            })));
         let beat_of = |bind: Rebind| {
             let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
             live.rebind_sources_into(&fork, &bind);
@@ -401,9 +401,8 @@ mod tests {
                 out.position.beats
             })
         };
-        assert_eq!(beat_of(Rebind::Offline(Arc::clone(&offline))), Some(8.0));
+        assert_eq!(beat_of(Rebind::Offline(offline.clone())), Some(8.0));
         assert_eq!(beat_of(Rebind::Live), Some(2.0));
-        assert_eq!(beat_of(Rebind::Sever), None);
     }
 
     /// Latency and tail written through one handle are read through another.

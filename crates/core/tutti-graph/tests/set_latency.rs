@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use common::{prepare, Kind, TestNode};
-use tutti_graph::{CommitError, Editor, Executor, IntoNode, Legacy, Node, Reference, Transport};
+use tutti_graph::{
+    CommitError, Editor, Executor, IntoNode, Legacy, Node, Reference, Transport, Unforkable,
+};
 use tutti_node::AudioUnit;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
@@ -108,10 +110,10 @@ fn graph(plugin: Plugin) -> (Editor, Executor) {
     ed.insert(
         DRY,
         "gain",
-        TestNode::new(Kind::Gain {
+        Unforkable(TestNode::new(Kind::Gain {
             gain: 1.0,
             width: 1,
-        }),
+        })),
     );
     let t = &mut ed.spec_mut().topology;
     for k in [PLUGIN, DRY] {

@@ -1183,14 +1183,11 @@ impl AudioUnit for DiskVoice {
     ///
     /// Takes the stream record's lock, so control thread only, as every
     /// rebind is.
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
-            return;
-        };
+    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
         if self.offline.is_none() {
             self.isolate();
         }
-        self.timeline = transport.clone();
+        self.timeline = transport.timeline();
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
         let file = self.origin.take().map(|origin| origin.describe());
@@ -1525,7 +1522,8 @@ mod tests {
                 loop_range: None,
             },
         ));
-        let ctx: tutti_core::transport::OfflineTransport = render.clone();
+        let ctx: tutti_core::transport::OfflineTransport =
+            tutti_core::transport::OfflineTransport::new(render.clone());
         let mut copy = voice.clone();
         copy.isolate();
         copy.rebind_offline(&ctx);
@@ -1600,7 +1598,8 @@ mod tests {
                 loop_range: None,
             },
         ));
-        let ctx: tutti_core::transport::OfflineTransport = render;
+        let ctx: tutti_core::transport::OfflineTransport =
+            tutti_core::transport::OfflineTransport::new(render);
 
         for via_tick in [false, true] {
             let mut copy = voice.clone();
@@ -1662,7 +1661,10 @@ mod tests {
         );
 
         let render: tutti_core::transport::OfflineTransport =
-            MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+            tutti_core::transport::OfflineTransport::new(MockTransport::rolling(
+                Beat::new(1.0),
+                Bpm::new(120.0),
+            ));
         let mut isolated = live.clone();
         isolated.isolate();
         isolated.rebind_offline(&render);

@@ -93,14 +93,13 @@
 //! it is what the export this replaces rendered, and a test pins it against
 //! `Net` itself. The fork keeps the live graph's global input width.
 
-use std::any::Any;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
-use tutti_types::NodeKey;
+use tutti_types::{NodeKey, OfflineTransport};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
@@ -264,21 +263,40 @@ impl fmt::Display for ForkCause {
 }
 
 /// What a fork is for.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub enum ForkMode<'a> {
     /// A live duplicate: isolated and reset, still bound to whatever
     /// transport the node was bound to.
     Live,
-    /// An offline render: isolated, then rebound onto `ctx`, then reset.
+    /// An offline render: isolated, then rebound onto the render's
+    /// timeline, then reset.
     ///
-    /// `ctx` is opaque here and downcast by each unit that needs it, as
-    /// `AudioUnit::rebind_offline` has always taken it. It must be **the
-    /// exact type the units downcast** — today a `&OfflineTransport`
-    /// (tutti-core), the value itself, not a reference to a reference or
-    /// the timeline inside it. A context of any other type is not an
-    /// error: every rebind silently does nothing, and transport-aware units
-    /// render against a playhead nothing advances.
-    Offline(&'a dyn Any),
+    /// Typed: the timeline is the one shape every unit's
+    /// `AudioUnit::rebind_offline` takes, [`OfflineTransport`]. It was a
+    /// `&dyn Any` each unit downcast, and a context of any other type (a
+    /// reference to a reference, the timeline inside it) silently rebound
+    /// nothing; it is now a compile error:
+    ///
+    /// ```compile_fail,E0308
+    /// let wrong = 0.5_f64;
+    /// let _ = tutti_graph::ForkMode::Offline(&wrong);
+    /// ```
+    Offline(&'a OfflineTransport),
+}
+
+impl fmt::Debug for ForkMode<'_> {
+    /// A timeline is not `Debug`; its position is what tells two renders
+    /// apart.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Live => f.write_str("Live"),
+            Self::Offline(t) => f
+                .debug_struct("Offline")
+                .field("beat", &t.beat())
+                .field("tempo", &t.tempo())
+                .finish(),
+        }
+    }
 }
 
 /// What [`Editor::fork`] copies.
@@ -298,8 +316,8 @@ pub enum ForkTarget {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForkError {
     /// A node the fork needs has no [`ForkSource`] for the unit now at its
-    /// key: it was inserted as something that did not hand one over (a
-    /// native node, a boxed `dyn Node`, a `Legacy` built
+    /// key: it was inserted as something that did not hand one over (an
+    /// [`Unforkable`] node, a `Legacy` built
     /// [`unforkable`](crate::Legacy::unforkable) or whose unit says
     /// `AudioUnit::forkable() == false` — a mic monitor, a plugin), or its
     /// generation moved on without a new source. The first such key, in
@@ -370,8 +388,10 @@ impl Error for ForkError {
 /// For a node whose `Clone` shares nothing with the original — no `Arc` cell,
 /// no channel end, no handle onto live state — so a clone *is* a fork. The
 /// wrapper is the caller's promise of that, as `AudioUnit::forkable` is a
-/// `Legacy` unit's: the blanket `IntoNode for N: Node` hands no fork source,
-/// because a `Clone` bound alone says nothing about sharing. A generator that
+/// `Legacy` unit's: a `Clone` bound alone says nothing about sharing, so no
+/// node is forkable by clone unless inserted this way (a bare [`Node`] is not
+/// an [`IntoNode`] at all; see [`Unforkable`] for the other answer). A
+/// generator that
 /// reads only its block's [`Env`](crate::Env) (tutti-core's `EnvClock`)
 /// needs no rebinding offline: the fork's renderer hands it the render's
 /// transport.
@@ -417,12 +437,84 @@ impl<N: Node + Clone + Send + 'static> IntoNode for ForkByClone<N> {
         (Box::new(self.0), ())
     }
 
+    fn kind() -> &'static str {
+        std::any::type_name::<N>()
+    }
+
     fn into_parts(self) -> NodeParts<()> {
         let fork = CloneFork(self.0.clone());
         NodeParts {
             node: Box::new(self.0),
             controls: (),
             fork: Some(Box::new(fork)),
+        }
+    }
+}
+
+/// A native [`Node`] inserted **refusing every fork**: its [`IntoNode`] hands
+/// the editor no [`ForkSource`], so a fork that needs it is
+/// [`ForkError::NotForkable`] naming its key, never a copy that shares its
+/// state.
+///
+/// The explicit spelling of "this node cannot be forked" — a node on a live
+/// device ring, a unit too large to keep a second copy of, a test node that
+/// never forks — now that a bare [`Node`] has no `IntoNode` of its own and
+/// cannot be inserted without saying ([`IntoNode`]'s docs). The other
+/// answer is [`ForkByClone`]. Also takes an already boxed `Box<dyn Node>`.
+///
+/// ```
+/// use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget, Prepare, Unforkable};
+/// # use tutti_graph::{Cx, Io, Node, Shape, Status};
+/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// # struct Silence;
+/// # impl Node for Silence {
+/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn prepare(&mut self, _: &Prepare) {}
+/// #     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
+/// #     fn reset(&mut self) {}
+/// # }
+/// let prepare = Prepare::new(SampleRate(48_000.0), Samples(256));
+/// let (mut editor, _exec) = Editor::new(prepare);
+/// editor.insert(NodeKey(1), "silence", Unforkable(Silence));
+/// editor.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
+///     tutti_types::graph::OutPort { node: NodeKey(1), port: 0 },
+/// )];
+/// assert_eq!(
+///     editor.fork(ForkTarget::Master, ForkMode::Live, prepare).err(),
+///     Some(ForkError::NotForkable { key: NodeKey(1) }),
+/// );
+/// ```
+#[derive(Clone, Debug)]
+pub struct Unforkable<N>(pub N);
+
+impl<N: Node> IntoNode for Unforkable<N> {
+    type Controls = ();
+
+    fn kind() -> &'static str {
+        std::any::type_name::<N>()
+    }
+
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: Box::new(self.0),
+            controls: (),
+            fork: None,
+        }
+    }
+}
+
+impl IntoNode for Unforkable<Box<dyn Node>> {
+    type Controls = ();
+
+    fn kind() -> &'static str {
+        std::any::type_name::<Box<dyn Node>>()
+    }
+
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: self.0,
+            controls: (),
+            fork: None,
         }
     }
 }
@@ -510,7 +602,8 @@ impl Editor {
             let forked = source
                 .fork(mode)
                 .map_err(|cause| ForkError::Source { key, cause })?;
-            editor.insert(key, kind, forked.node);
+            // Not forkable itself (module docs: a fork is not a fork source).
+            editor.insert(key, kind, Unforkable(forked.node));
             if let Some(health) = forked.health {
                 editor.watch_fork(key, health);
             }

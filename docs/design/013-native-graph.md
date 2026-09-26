@@ -255,6 +255,33 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **`MaxBlock`**, obtainable only from `Prepare`; node scratch is built from it; `Io` is guaranteed to be at most that long | Five separate 64-frame assumptions: the polysynth clamp, SoundFont, the batcher, VST2, the disk-voice reserve | D4: silent truncation or audio-thread reallocation when the block grows |
 | **`SortedEvents<'a>`**, constructible only sorted by offset with every offset below the block length | A raw `&[Event]` that every sub-chunking node must trust or re-check | Events out of order, or past the block |
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
+| **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them; `AudioUnit::rebind_offline`, `MidiUnitIn::rebind_offline` and `MidiInPort::rebind_offline_into` take the same type | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
+| **`Timeline::segment_generation() -> u64`**, required; `FrameClock::generation` moves on at every segment restart (seek, tempo or rate change, loop wrap) and at a play start, published by the engine's clock before the beat | A playhead read as a bare beat, with no way to tell a jump that lands on the same beat from no jump | The sampler's seat running on through a seek to the beat it stood on, or a one-block transport loop, instead of re-seating (`interp.rs` `Seat`, both tiers) |
+| **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
+| **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)` (new), `Legacy`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | #38's B1 (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
+
+**Smart types 2: follow-ups.**
+
+- **#51 (`feat/plugin-typestate`) can drop `PluginNode`.** It wrapped the
+  plugin client only because the blanket `impl<N: Node> IntoNode for N`
+  held the impl slot a `Node` type needs to hand the editor its own fork
+  source. With the blanket gone, the plugin node can be a `Node` and
+  implement `IntoNode` itself (`into_parts` with `PluginFork`). #51 also
+  meets the typed `ForkMode::Offline` (its `Rebind::of` has no downcast and
+  no `Sever` case) and the required `Timeline::segment_generation` on its
+  timeline impls.
+- **#48 (`fix/live-disk-loop`)**: the seat is keyed here for the memory
+  tier and the forked (offline) disk voice, which both seat through
+  `Seat::next`; that reads the generation itself, and #48's `live_loop.rs`
+  still calls it, so it inherits the key. **Done in #48:** the **live** disk
+  read (`voice/live_read.rs`) keys a jump on the segment too — the block's
+  first seat's generation for a placed voice, the relayed seek's epoch for a
+  free-running source — so a seek that lands exactly on the continuation (to
+  the beat the clock stands on) is a jump, crossfaded like any other, not
+  read on (`live_loop::a_seek_to_where_the_clock_stands_is_a_jump`). A
+  one-block transport loop lands off the continuation, so its position
+  already told. The crate's test clock (`MockTransport::seek`) moves its
+  generation.
 
 **Deleted, once the native graph lands.** Each existed to work around fundsp:
 
@@ -2754,6 +2781,9 @@ store between pieces. Decisions:
   probe records a shape, not an id), so enforcement would be new plumbing
   through `Legacy` and `Limits` for one id; the docs now say "must not" and
   why (two clocks both consume a seek and both write the playhead).
+  *Superseded (smart types 2):* the claim is on the transport, not the
+  graph — `Transport::clock_links` hands the writer out once, and a second
+  engine is `GraphEngineError::PlayheadClaimed` (§5).
 - **`TransportClock` stays**: it is the engine's own clock
   (`GraphRender::clock`, driven by `begin`/`advance`). Its `AudioUnit` half
   (the beat on ports inside a `Net`) now runs only in its own tests and a

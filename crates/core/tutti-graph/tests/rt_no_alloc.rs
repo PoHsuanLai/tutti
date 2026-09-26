@@ -21,7 +21,8 @@ use common::{prepare, Kind, TestNode};
 use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{
     CrossfadeCurve, Cx, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io,
-    Legacy, Node, ParamRamp, Prepare, Shape, Status, Transport, Ump, LEGACY_SETTINGS_CAPACITY,
+    Legacy, Node, ParamRamp, Prepare, Shape, Status, Transport, Ump, Unforkable,
+    LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::Setting;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
@@ -58,32 +59,44 @@ fn process_is_allocation_free_in_steady_state() {
     ed.insert(
         NodeKey(1),
         "emit",
-        TestNode::new(Kind::Emitter {
+        Unforkable(TestNode::new(Kind::Emitter {
             period: 5,
             phase: 0,
-        }),
+        })),
     );
     ed.insert(
         NodeKey(2),
         "emit",
-        TestNode::new(Kind::Emitter {
+        Unforkable(TestNode::new(Kind::Emitter {
             period: 7,
             phase: 3,
-        }),
+        })),
     );
     ed.insert(
         NodeKey(3),
         "evlag",
-        TestNode::new(Kind::EventLag { latency: 11 }),
+        Unforkable(TestNode::new(Kind::EventLag { latency: 11 })),
     );
     ed.insert(
         NodeKey(4),
         "consume",
-        TestNode::new(Kind::Consumer { inputs: 2 }),
+        Unforkable(TestNode::new(Kind::Consumer { inputs: 2 })),
     );
-    ed.insert(NodeKey(5), "lag", TestNode::new(Kind::Lag { latency: 40 }));
-    ed.insert(NodeKey(6), "smooth", TestNode::new(Kind::Smooth));
-    ed.insert(NodeKey(7), "sum", TestNode::new(Kind::Sum { inputs: 3 }));
+    ed.insert(
+        NodeKey(5),
+        "lag",
+        Unforkable(TestNode::new(Kind::Lag { latency: 40 })),
+    );
+    ed.insert(
+        NodeKey(6),
+        "smooth",
+        Unforkable(TestNode::new(Kind::Smooth)),
+    );
+    ed.insert(
+        NodeKey(7),
+        "sum",
+        Unforkable(TestNode::new(Kind::Sum { inputs: 3 })),
+    );
     // Controlled, so the gate drains a settings ring; pure, so it runs the
     // silence scan too.
     let (lowpass, mut settings) = Legacy::controlled(&mut ed, lowpass_hz(800.0, 0.7));
@@ -91,10 +104,10 @@ fn process_is_allocation_free_in_steady_state() {
     ed.insert(
         NodeKey(9),
         "gain",
-        TestNode::new(Kind::Gain {
+        Unforkable(TestNode::new(Kind::Gain {
             gain: 0.5,
             width: 1,
-        }),
+        })),
     );
 
     let spec = ed.spec_mut();
@@ -254,19 +267,19 @@ fn crossfades_are_allocation_free() {
     let (mut ed, mut exec) = Editor::new(prepare(256));
     ed.spec_mut().topology.inputs = ChannelLayout::STEREO;
     let gain = |g| TestNode::new(Kind::Gain { gain: g, width: 2 });
-    ed.insert(NodeKey(1), "gain", gain(1.0));
+    ed.insert(NodeKey(1), "gain", Unforkable(gain(1.0)));
     ed.insert(
         NodeKey(2),
         "emit",
-        TestNode::new(Kind::Emitter {
+        Unforkable(TestNode::new(Kind::Emitter {
             period: 9,
             phase: 0,
-        }),
+        })),
     );
     ed.insert(
         NodeKey(3),
         "consume",
-        TestNode::new(Kind::Consumer { inputs: 1 }),
+        Unforkable(TestNode::new(Kind::Consumer { inputs: 1 })),
     );
     let consumer = EventIn {
         node: NodeKey(3),
@@ -311,15 +324,15 @@ fn crossfades_are_allocation_free() {
 
     // A long fade, one queued behind it, and one on the event node.
     let fade = |n| Fade::new(Samples(n), CrossfadeCurve::EqualPower);
-    ed.replace(NodeKey(1), gain(2.0), fade(3_000))
+    ed.replace(NodeKey(1), Unforkable(gain(2.0)), fade(3_000))
         .expect("fits");
     ed.commit().expect("commits");
     block(&mut exec, 64);
-    ed.replace(NodeKey(1), gain(4.0), fade(2_000))
+    ed.replace(NodeKey(1), Unforkable(gain(4.0)), fade(2_000))
         .expect("fits");
     ed.replace(
         NodeKey(3),
-        TestNode::new(Kind::Consumer { inputs: 1 }),
+        Unforkable(TestNode::new(Kind::Consumer { inputs: 1 })),
         fade(500),
     )
     .expect("fits");
@@ -431,15 +444,15 @@ fn declared_event_capacities_are_allocation_free() {
         ed.insert(
             NodeKey(k),
             "spray",
-            Spray {
+            Unforkable(Spray {
                 cap: 4,
                 burst: 6,
                 refused: Arc::clone(&refused),
-            },
+            }),
         );
     }
-    ed.insert(NodeKey(3), "late", LateEvents);
-    ed.insert(NodeKey(4), "tally", Tally(seen.clone()));
+    ed.insert(NodeKey(3), "late", Unforkable(LateEvents));
+    ed.insert(NodeKey(4), "tally", Unforkable(Tally(seen.clone())));
     let ev = |node| EventOut {
         node: NodeKey(node),
         port: 0,
@@ -550,17 +563,21 @@ fn modulated_params_are_allocation_free() {
     use tutti_graph::{ParamFrom, ParamIn, ParamShaping, ShapeLut};
     let (mut ed, mut exec) = Editor::new(prepare(256));
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
-    ed.insert(NodeKey(1), "sink", ParamSink);
-    ed.insert(NodeKey(2), "lag", TestNode::new(Kind::Lag { latency: 31 }));
+    ed.insert(NodeKey(1), "sink", Unforkable(ParamSink));
+    ed.insert(
+        NodeKey(2),
+        "lag",
+        Unforkable(TestNode::new(Kind::Lag { latency: 31 })),
+    );
     ed.insert(
         NodeKey(3),
         "gain",
-        TestNode::new(Kind::Gain {
+        Unforkable(TestNode::new(Kind::Gain {
             gain: 0.5,
             width: 1,
-        }),
+        })),
     );
-    ed.insert(NodeKey(4), "ramps", RampEvery);
+    ed.insert(NodeKey(4), "ramps", Unforkable(RampEvery));
     {
         let t = &mut ed.spec_mut().topology;
         t.edges.insert(at(2, 0), Edge::Direct(Source::Global(0)));

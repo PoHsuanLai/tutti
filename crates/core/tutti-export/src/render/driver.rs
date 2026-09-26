@@ -509,7 +509,7 @@ mod tests {
 
         // A graph that emits the clock's two beat ports as its output.
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let clock = g.add(tutti_core::EnvClock::new());
+        let clock = g.add(tutti_graph::Unforkable(tutti_core::EnvClock::new()));
         g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
         let mut graph = RenderGraph::new(editor, executor).expect("built together");

@@ -1110,11 +1110,8 @@ impl AudioUnit for MemorySource {
     /// `AudioUnit` — directly as a node. A rebind that knows only the wrappers
     /// leaves a bare memory source rendering against the live playhead.
     /// Declaring it here covers both routes, and any future one.
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
-            return;
-        };
-        self.replace_transport(transport.clone());
+    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
+        self.replace_transport(transport.timeline());
     }
 
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {

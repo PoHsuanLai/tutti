@@ -5,39 +5,11 @@
 //! reproducible timeline without a real CPAL callback (golden tests,
 //! automation scrubbing) can use it.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::state::LoopRange;
-use crate::{AtomicF64, Ordering};
+use crate::{AtomicF64, AtomicU64, Ordering};
 use crate::{Beat, BeatDuration, Bpm, FrameClock, SampleRate, Samples};
-
-/// The timeline an offline render advances, one block at a time.
-///
-/// Handed to every node as `&dyn Any` by
-/// `PendingClone::isolate_for_offline` (`fundsp-tutti`),
-/// so this alias is the agreed shape on both sides of that cast — recover it
-/// with `ctx.downcast_ref::<OfflineTransport>()`. It is an alias rather than a
-/// named type because `fundsp-tutti` cannot name [`Timeline`](super::Timeline),
-/// not because the indirection buys anything.
-///
-/// # What a node does on rebind
-///
-/// Nodes holding a transport re-point at this. Nodes carrying their own internal
-/// clock re-seat it from [`Timeline::beat`](super::Timeline::beat) and
-/// [`Timeline::tempo`](super::Timeline::tempo): `isolate()` severs the live
-/// links but leaves the clock at whatever beat the *live* playhead held, so
-/// without this every beat-driven node (LFO, automation) renders from an
-/// arbitrary position and the output depends on *when* the render started.
-/// Read at rebind time, before the renderer has advanced anything, so these are
-/// the seeded start values rather than a moving position.
-///
-/// # No scalars beside the timeline
-///
-/// It carries **no** `start_beat` or `tempo` of its own. Both are things a
-/// timeline already answers, and a copy beside it can disagree — one rebind path
-/// reading the scalar while another follows the timeline renders half the graph
-/// at one tempo and half at another, silently.
-pub type OfflineTransport = Arc<dyn super::Timeline>;
 
 /// Configuration for constructing an [`OfflineTimeline`].
 #[derive(Debug, Clone)]
@@ -120,6 +92,11 @@ pub struct OfflineTimeline {
     /// The beat `clock` derives, published on every move: what readers
     /// read.
     current_beat: AtomicF64,
+    /// The generation of `clock`'s segment, published with the beat
+    /// (before it, as [`Timeline::segment_generation`](super::Timeline::segment_generation)
+    /// asks): a seek, even to the beat already there, and a loop wrap move
+    /// it on.
+    current_generation: AtomicU64,
     /// The playhead: the only writer-side state, moved under its lock.
     clock: Mutex<FrameClock>,
     tempo: Bpm,
@@ -137,6 +114,7 @@ impl OfflineTimeline {
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
             current_beat: AtomicF64::new(config.start_beat.get()),
+            current_generation: AtomicU64::new(0),
             clock: Mutex::new(FrameClock::new(
                 config.start_beat,
                 config.tempo,
@@ -173,8 +151,13 @@ impl OfflineTimeline {
         self.clock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Publish `clock`'s beat to readers. Called with the lock held.
+    /// Publish `clock`'s beat, and its segment's generation, to readers.
+    /// Called with the lock held. The generation first: a reader that reads
+    /// the beat, then the generation, never pairs this beat with an older
+    /// generation (the order `Timeline::segment_generation` documents).
     fn publish(&self, clock: &FrameClock) {
+        self.current_generation
+            .store(clock.generation(), Ordering::Release);
         self.current_beat
             .store(clock.beat().get(), Ordering::Release);
     }
@@ -303,7 +286,30 @@ impl super::Timeline for OfflineTimeline {
         // pause it.
         true
     }
+
+    fn segment_generation(&self) -> u64 {
+        self.current_generation.load(Ordering::Acquire)
+    }
 }
+
+/// Only a render advances it: the offline context a fork is handed
+/// ([`OfflineTransport::new`](super::OfflineTransport::new)).
+///
+/// The live transport is not one, so it cannot be passed as that context:
+///
+/// ```compile_fail,E0277
+/// use std::sync::Arc;
+/// use tutti_core::transport::{OfflineTransport, Transport};
+/// let live = Arc::new(Transport::new(48_000.0));
+/// let ctx = OfflineTransport::new(live); // the live playhead as a render's: refused
+/// ```
+///
+/// ```
+/// use std::sync::Arc;
+/// use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
+/// let ctx = OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig::default())));
+/// ```
+impl super::OfflineClock for OfflineTimeline {}
 
 impl super::RenderClock for OfflineTimeline {
     fn advance(&self, frames: tutti_types::Samples) {
@@ -521,6 +527,7 @@ mod tests {
         use crate::transport::TransportClock;
         use crate::{AtomicBool, AtomicF64, AudioUnit, BufferRef};
         use fundsp::prelude::{BufferArray, U2};
+        use std::sync::Arc;
 
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {

@@ -58,7 +58,7 @@ use tutti_export::{
     BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock, Normalize,
     RenderConfig, RenderGraph, Rendered, Resample, GRAPH_MAX_BLOCK,
 };
-use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare};
+use tutti_graph::{ForkMode, ForkTarget, GraphBuilder, Legacy, Prepare, Unforkable};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::{Db, Samples};
 
@@ -132,10 +132,11 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// fresh one glides there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
-    let timeline: OfflineTransport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        sample_rate: RATE,
-        ..Default::default()
-    }));
+    let timeline: OfflineTransport =
+        OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            sample_rate: RATE,
+            ..Default::default()
+        })));
     RenderGraph::fork(
         &live,
         ForkTarget::Master,
@@ -716,7 +717,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     let bps = timeline.beats_per_sample().get();
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let clock = g.add(tutti_core::EnvClock::new());
+    let clock = g.add(Unforkable(tutti_core::EnvClock::new()));
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let out = render_to_buffers(
         built(g),
@@ -953,7 +954,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     g.pipe_output(k);
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     let graph_clock = timeline();
-    let rebind: OfflineTransport = graph_clock.clone();
+    let rebind: OfflineTransport = OfflineTransport::new(graph_clock.clone());
     let forked = RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline(&rebind), RATE)
         .expect("a memory source is forkable");
     let b = render_under(forked, &graph_clock, ChannelLayout::MONO);

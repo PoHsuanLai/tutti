@@ -528,6 +528,9 @@ mod tests {
         fn tempo(&self) -> Bpm {
             self.tempo
         }
+        fn segment_generation(&self) -> u64 {
+            0
+        }
     }
 
     fn master(

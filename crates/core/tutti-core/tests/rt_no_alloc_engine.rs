@@ -85,7 +85,7 @@ impl tutti_graph::Node for TransportTone {
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump};
+    use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump, Unforkable};
     use tutti_types::graph::{OutPort, Source};
     use tutti_types::NodeKey;
 
@@ -95,7 +95,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         SampleRate(sample_rate),
         tutti_core::Samples(512),
     ));
-    ed.insert(NodeKey(1), "tone", TransportTone);
+    ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.outputs = (0..2)
         .map(|port| {
             Source::Node(OutPort {
@@ -175,7 +175,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     use tutti_core::{At, Beat, Bpm, EnvClock, Frame, MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, Legacy, Prepare};
+    use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
     use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::NodeKey;
 
@@ -191,7 +191,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
         tutti_core::Samples(512),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
-    ed.insert(clock, "clock", EnvClock::new());
+    ed.insert(clock, "clock", Unforkable(EnvClock::new()));
     ed.insert(sink, "click", Legacy::new(click));
     let topology = &mut ed.spec_mut().topology;
     for port in 0..2 {

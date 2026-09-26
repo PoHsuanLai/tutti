@@ -66,6 +66,9 @@ impl Timeline for FixedTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(120.0)
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 /// A wave whose every frame is 1.0, so "is it inside its window" reads as

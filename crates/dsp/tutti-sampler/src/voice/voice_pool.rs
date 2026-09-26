@@ -214,10 +214,13 @@ mod tests {
         );
 
         let offline: tutti_core::transport::OfflineTransport =
-            MockTransport::rolling(Beat::new(8.0), Bpm::new(90.0));
+            tutti_core::transport::OfflineTransport::new(MockTransport::rolling(
+                Beat::new(8.0),
+                Bpm::new(90.0),
+            ));
         fork.rebind_offline(&offline);
         let cursor = fork.cursor.as_ref().expect("rebound to the render");
-        assert!(Arc::ptr_eq(cursor.timeline(), &offline));
+        assert!(Arc::ptr_eq(cursor.timeline(), &offline.timeline()));
         assert_eq!(cursor.sample_rate(), SampleRate(96_000.0));
     }
 

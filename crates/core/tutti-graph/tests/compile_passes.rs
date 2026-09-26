@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use common::{bits, input_signal, Kind, Pair, SpecBehaviour};
 use tutti_graph::{
     compile, verify, CompileError, CycleEdge, DelayKey, EventEdge, EventIn, EventOut, GraphInvalid,
-    GraphSpec, Op, PortKind, Shape, Shapes,
+    GraphSpec, Op, PortKind, Shape, Shapes, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
 use tutti_types::latency::{self, DelayInsertion, LatencyGraph};
@@ -1027,15 +1027,15 @@ fn removing_a_node_removes_its_resolution_marks() {
     ed.insert(
         A,
         "emit",
-        common::TestNode::new(Kind::Emitter {
+        Unforkable(common::TestNode::new(Kind::Emitter {
             period: 4,
             phase: 0,
-        }),
+        })),
     );
     ed.insert(
         B,
         "consume",
-        common::TestNode::new(Kind::Consumer { inputs: 1 }),
+        Unforkable(common::TestNode::new(Kind::Consumer { inputs: 1 })),
     );
     let (from, at) = (EventOut { node: A, port: 0 }, EventIn { node: B, port: 0 });
     ed.spec_mut().connect_events(at, EventEdge::Direct(from));
@@ -1061,15 +1061,15 @@ fn disconnecting_an_edge_drops_its_resolution_mark() {
     ed.insert(
         A,
         "emit",
-        common::TestNode::new(Kind::Emitter {
+        Unforkable(common::TestNode::new(Kind::Emitter {
             period: 4,
             phase: 0,
-        }),
+        })),
     );
     ed.insert(
         B,
         "consume",
-        common::TestNode::new(Kind::Consumer { inputs: 1 }),
+        Unforkable(common::TestNode::new(Kind::Consumer { inputs: 1 })),
     );
     let (from, at) = (EventOut { node: A, port: 0 }, EventIn { node: B, port: 0 });
     ed.spec_mut().connect_events(at, EventEdge::Direct(from));

@@ -367,7 +367,7 @@ impl AudioUnit for FeedbackUnit {
         self.x.isolate();
     }
 
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_types::OfflineTransport) {
         self.x.rebind_offline(ctx);
     }
 

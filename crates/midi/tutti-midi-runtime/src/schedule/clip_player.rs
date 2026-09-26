@@ -218,12 +218,11 @@ impl MidiUnitIn for MidiClipSource {
     fn rebind_offline(
         &self,
         unit: MidiUnitId,
-        ctx: &dyn std::any::Any,
+        timeline: &tutti_core::transport::OfflineTransport,
     ) -> Option<Arc<dyn MidiUnitIn>> {
-        let timeline = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>()?;
         Some(Arc::new(Self {
             events: Arc::clone(&self.events),
-            beats: BeatCursor::unrated(Arc::clone(timeline)),
+            beats: BeatCursor::unrated(timeline.timeline()),
             cursor: Arc::new(AtomicU64::new(0)),
             target_unit: unit,
             out_tap: None,
@@ -274,6 +273,9 @@ mod tests {
         }
         fn tempo(&self) -> Bpm {
             self.tempo
+        }
+        fn segment_generation(&self) -> u64 {
+            0
         }
     }
 
@@ -565,12 +567,14 @@ mod tests {
             .with_out_tap(Arc::new(tap.sender())),
         ));
         let offline: tutti_core::transport::OfflineTransport =
-            Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                start_beat: Beat(0.0),
-                tempo: Bpm(90.0),
-                sample_rate: SampleRate(48_000.0),
-                loop_range: None,
-            }));
+            tutti_core::transport::OfflineTransport::new(Arc::new(OfflineTimeline::new(
+                &OfflineTimelineConfig {
+                    start_beat: Beat(0.0),
+                    tempo: Bpm(90.0),
+                    sample_rate: SampleRate(48_000.0),
+                    loop_range: None,
+                },
+            )));
         (live, tap, offline)
     }
 
@@ -578,9 +582,11 @@ mod tests {
     /// the render's timeline, and leaves the live clip alone.** Beat 1 at
     /// 90 BPM and 48 kHz is frame 32 000 (at the live 120 BPM it would be
     /// 24 000); the live source's cursor is untouched by the fork's poll;
-    /// the fork does not fire the live source's hardware tap; a context that
-    /// is not an `OfflineTransport` installs nothing and says so; and a port
-    /// with no source says that instead.
+    /// the fork does not fire the live source's hardware tap; and a port
+    /// with no source says so. (A context that is not an `OfflineTransport`
+    /// used to install nothing and answer `NotRebindable`; it is now a
+    /// compile error, pinned by `MidiInPort::rebind_offline_into`'s
+    /// `compile_fail` doctest.)
     ///
     /// Mutation (run): the rebound source keeping the live timeline → the
     /// note lands at 24 000; sharing the live `cursor` → the live poll after
@@ -593,10 +599,6 @@ mod tests {
         use crate::OfflineRebind;
         let (live, tap, offline) = live_and_offline();
         let fork = crate::MidiInPort::new();
-        assert_eq!(
-            live.rebind_offline_into(&fork, &"not a transport"),
-            OfflineRebind::NotRebindable
-        );
         assert_eq!(
             crate::MidiInPort::new().rebind_offline_into(&fork, &offline),
             OfflineRebind::NoSource

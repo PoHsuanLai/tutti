@@ -139,19 +139,21 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// playhead and renders silence. Implementors holding a transport (or their
     /// own clock) re-seat it here.
     ///
-    /// # Why the context is `&dyn Any`
+    /// # The context is typed
     ///
-    /// The offline context names a timeline, and this crate cannot name one —
-    /// `Timeline` lives in `tutti-core`, which depends on *this* crate. Passing
-    /// it opaquely keeps the hook where every node already is (beside `isolate`,
-    /// reached through `Net` without a type switch) while letting the transport
-    /// vocabulary stay downstream. Implementors downcast it once:
+    /// It is the render's [`OfflineTransport`](tutti_types::OfflineTransport),
+    /// named here rather than passed as `&dyn Any`: `Timeline` lives in
+    /// `tutti-types` beside it, which this crate and every renderer depend
+    /// on. As `&dyn Any` a context of the wrong type (a reference to a
+    /// reference, the timeline inside it) was not an error — every unit's
+    /// downcast failed and every rebind silently did nothing. Now it does
+    /// not compile:
     ///
-    /// ```ignore
-    /// fn rebind_offline(&mut self, ctx: &dyn Any) {
-    ///     let Some(transport) = ctx.downcast_ref::<OfflineTransport>() else { return };
-    ///     self.transport = transport.clone();
-    /// }
+    /// ```compile_fail,E0308
+    /// # use tutti_node::AudioUnit;
+    /// # fn f(unit: &mut dyn AudioUnit) {
+    /// unit.rebind_offline(&42u32);
+    /// # }
     /// ```
     ///
     /// **A transport-aware unit that does not implement this renders against
@@ -162,7 +164,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// would skip anything it had not been taught to name. Pure-DSP units are
     /// unaffected by time-of-render and correctly do nothing.
     #[allow(unused_variables)]
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, transport: &tutti_types::OfflineTransport) {
         // The default implementation does nothing.
     }
 

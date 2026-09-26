@@ -448,7 +448,6 @@ mod tests {
         let sample_rate = 44100.0;
         let (transport, state) = build_callback_state(sample_rate);
 
-        transport.settings.set_beat(0.0);
         transport.settings.set_tempo(120.0);
         let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();

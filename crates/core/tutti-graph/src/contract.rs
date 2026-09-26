@@ -82,6 +82,7 @@ use crate::builder::GraphBuilder;
 use crate::editor::Editor;
 use crate::event::{Event, EventKind};
 use crate::exec::Executor;
+use crate::fork::Unforkable;
 use crate::io::Io;
 use crate::legacy::Legacy;
 use crate::node::{
@@ -796,7 +797,7 @@ impl Row {
             ChannelLayout::EMPTY
         };
         let mut g = GraphBuilder::new(ins, ChannelLayout::MONO);
-        let n = g.add(node);
+        let n = g.add(Unforkable(node));
         let mut feeder = None;
         let p = port as usize;
         if audio {
@@ -805,8 +806,10 @@ impl Row {
                     g.connect_input(0, n, p);
                 }
                 Topo::Pdc => {
-                    let lat = g.add(Latent::new(Latency::new(Samples(SIBLING_LATENCY))));
-                    let sum = g.add(Sum);
+                    let lat = g.add(Unforkable(Latent::new(Latency::new(Samples(
+                        SIBLING_LATENCY,
+                    )))));
+                    let sum = g.add(Unforkable(Sum));
                     g.connect(lat, 0, sum, 0).connect_input(0, sum, 1);
                     g.connect(sum, 0, n, p);
                     feeder = Some((sum, FeederKind::Sum));
@@ -815,18 +818,20 @@ impl Row {
         } else {
             let kind = self.event_kind();
             if topo == Topo::Pdc {
-                let lat = g.add(Latent::new(Latency::new(Samples(SIBLING_LATENCY))));
+                let lat = g.add(Unforkable(Latent::new(Latency::new(Samples(
+                    SIBLING_LATENCY,
+                )))));
                 g.event_connect(lat, 0, n, p);
             }
             match feed {
                 Feed::Source => {
-                    let e = g.add(Emitter::new(Frame(f), kind));
+                    let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
                     g.event_connect(e, 0, n, p);
                     feeder = Some((e, FeederKind::Emitter(Frame(f), kind)));
                 }
                 Feed::FanIn => {
-                    let late = g.add(Emitter::new(Frame(f + gap), kind));
-                    let e = g.add(Emitter::new(Frame(f), kind));
+                    let late = g.add(Unforkable(Emitter::new(Frame(f + gap), kind)));
+                    let e = g.add(Unforkable(Emitter::new(Frame(f), kind)));
                     g.event_connect(late, 0, n, p).event_connect(e, 0, n, p);
                 }
                 Feed::AtFrame | Feed::AtBeat => {}
@@ -867,8 +872,8 @@ impl Row {
             self.name
         );
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-        let n = g.add(node);
-        let sum = g.add(Sum);
+        let n = g.add(Unforkable(node));
+        let sum = g.add(Unforkable(Sum));
         g.connect_input(0, sum, 1);
         if topo == Topo::Pdc {
             assert!(
@@ -876,7 +881,9 @@ impl Row {
                 "{}: behind PDC the latent sibling feeds audio input 0",
                 self.name
             );
-            let lat = g.add(Latent::new(Latency::new(Samples(SIBLING_LATENCY))));
+            let lat = g.add(Unforkable(Latent::new(Latency::new(Samples(
+                SIBLING_LATENCY,
+            )))));
             g.connect(lat, 0, n, 0);
         }
         g.spec_mut().connect_param(
@@ -943,7 +950,7 @@ impl Rig {
                 self.ed.insert(
                     UNRELATED,
                     "unrelated",
-                    Latent::new(Latency::new(Samples(7))),
+                    Unforkable(Latent::new(Latency::new(Samples(7)))),
                 );
             }
             Edit::Regenerate => {
@@ -952,12 +959,13 @@ impl Rig {
                     .unwrap_or_else(|| panic!("{}: no upstream node to regenerate", row.name));
                 match kind {
                     FeederKind::Sum => {
-                        self.ed.insert(key, "sum", Sum);
+                        self.ed.insert(key, "sum", Unforkable(Sum));
                     }
                     // Armed for a frame already past, so it sends nothing
                     // more: the one event in flight is the old unit's.
                     FeederKind::Emitter(at, kind) => {
-                        self.ed.insert(key, "emitter", Emitter::new(at, kind));
+                        self.ed
+                            .insert(key, "emitter", Unforkable(Emitter::new(at, kind)));
                     }
                 }
             }

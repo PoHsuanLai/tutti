@@ -114,10 +114,10 @@ fn drive_fork(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<Vec<f32>> {
 }
 
 fn offline() -> OfflineTransport {
-    Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+    OfflineTransport::new(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
         ..Default::default()
-    }))
+    })))
 }
 
 fn env() -> ProbeEnv {

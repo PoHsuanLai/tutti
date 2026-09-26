@@ -431,7 +431,10 @@ mod midi_soundfont_audio {
 
         // Advance onto the note and render again.
         let transport = app.world().resource::<TransportRes>().clone();
-        transport.settings.set_beat(tutti_core::Beat(4.0));
+        transport
+            .clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(tutti_core::Beat(4.0));
         let after = rms(&render(&mut app, 12_000));
 
         assert!(

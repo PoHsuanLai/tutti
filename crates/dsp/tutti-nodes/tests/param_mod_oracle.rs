@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use tutti_graph::{
     Cx, Editor, Io, Node, ParamFrom, ParamIn, ParamInput, ParamRange, Prepare, Shape, Status,
-    Transport, PARAM_DECLICK,
+    Transport, Unforkable, PARAM_DECLICK,
 };
 use tutti_mod::{CurveType, Polarity};
 use tutti_nodes::ParamModShaping;
@@ -188,9 +188,9 @@ fn the_graph_sums_and_clamps_as_the_old_chain_did() {
     ed.insert(
         NodeKey(1),
         "echo",
-        Echo {
+        Unforkable(Echo {
             base: Arc::clone(&cell),
-        },
+        }),
     );
     let at = ParamIn {
         node: NodeKey(1),
@@ -199,7 +199,7 @@ fn the_graph_sums_and_clamps_as_the_old_chain_did() {
     // Keys 2, 3, 4: source order is the seeds' order.
     for (i, (&seed, s)) in SEEDS.iter().zip(&shapings).enumerate() {
         let key = NodeKey(2 + i as u64);
-        ed.insert(key, "wave", Wave(seed));
+        ed.insert(key, "wave", Unforkable(Wave(seed)));
         ed.spec_mut().connect_param(
             at,
             ParamFrom::Audio(OutPort { node: key, port: 0 }),

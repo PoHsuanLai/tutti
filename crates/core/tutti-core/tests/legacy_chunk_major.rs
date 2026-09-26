@@ -26,7 +26,8 @@ use tutti_core::{
     SampleRate, Samples, Signal, SignalFrame, Tail, Timeline, Transport,
 };
 use tutti_graph::{
-    CrossfadeCurve, Cx, Editor, Env, Fade, Io, Legacy, Node, Prepare, Shape, Status, LEGACY_CHUNK,
+    CrossfadeCurve, Cx, Editor, Env, Fade, Io, Legacy, Node, Prepare, Shape, Status, Unforkable,
+    LEGACY_CHUNK,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
@@ -152,7 +153,11 @@ fn shared_cursors_see_no_jump_and_the_playhead_never_goes_backwards() {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
     ed.insert(NodeKey(1), "clip a", Legacy::new(probe.clone()));
     ed.insert(NodeKey(2), "clip b", Legacy::new(probe.clone()));
-    ed.insert(NodeKey(3), "blocks", BlockLog(Arc::clone(&blocks)));
+    ed.insert(
+        NodeKey(3),
+        "blocks",
+        Unforkable(BlockLog(Arc::clone(&blocks))),
+    );
     outputs(&mut ed, &[1, 2, 3]);
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
@@ -253,7 +258,11 @@ fn a_graph_without_legacy_renders_whole_blocks() {
     let transport = Transport::new(SR);
     let blocks = Arc::new(Mutex::new(Vec::new()));
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
-    ed.insert(NodeKey(3), "blocks", BlockLog(Arc::clone(&blocks)));
+    ed.insert(
+        NodeKey(3),
+        "blocks",
+        Unforkable(BlockLog(Arc::clone(&blocks))),
+    );
     let probe = CursorProbe {
         cursor: BeatCursor::new(Arc::new(transport.clone()) as Arc<dyn Timeline>, SR),
         jumps: Arc::default(),
@@ -321,7 +330,11 @@ fn an_offline_render_is_chunk_major_while_a_legacy_unit_is_present() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
     ed.insert(NodeKey(1), "clip a", Legacy::new(probe.clone()));
     ed.insert(NodeKey(2), "clip b", Legacy::new(probe));
-    ed.insert(NodeKey(3), "blocks", BlockLog(Arc::clone(&blocks)));
+    ed.insert(
+        NodeKey(3),
+        "blocks",
+        Unforkable(BlockLog(Arc::clone(&blocks))),
+    );
     outputs(&mut ed, &[1, 2, 3]);
     ed.commit().expect("commits");
 

@@ -11,7 +11,11 @@
 //! # Discontinuities: 0 frames, no drift, no step
 //!
 //! A position that jumps (a seek, a transport loop, a varispeed change, a PDC
-//! change) is read at its new place; a loop or direction edit switches what
+//! change) is read at its new place — a jump being a position off the last
+//! one's continuation, **or a new segment** (the clock's
+//! `segment_generation`, a free-running source's seek epoch): a seek that
+//! lands exactly on the continuation is a jump too, as it is to the seat
+//! (`interp::Seat`); a loop or direction edit switches what
 //! the ring holds at a position the butler publishes (`loops::RingMap`). The
 //! memory tier cuts at either. The live reader crossfades, over the ring's
 //! fade length, from the **continuation of what it was playing**, rendered
@@ -120,6 +124,8 @@ struct State {
     applied_epoch: u64,
     /// The straight position of the last frame read, `None` after silence.
     last: Option<f64>,
+    /// The segment the last block read in.
+    segment: u64,
     /// Frames sounded since the last underrun, while ramping back in.
     recover: Option<usize>,
     /// The highest straight position read (tests observe consumption).
@@ -156,6 +162,7 @@ impl LiveRead {
                 // A switch already published is crossed like any other.
                 applied_epoch: u64::MAX,
                 last: None,
+                segment: 0,
                 recover: None,
                 #[cfg(test)]
                 read_to: 0.0,
@@ -178,6 +185,12 @@ impl LiveRead {
     #[cfg(test)]
     pub(crate) fn forgot(&self) -> bool {
         self.st.last.is_none() && self.st.fade.is_none()
+    }
+
+    /// Whether a crossfade is in progress (tests).
+    #[cfg(test)]
+    pub(crate) fn fading(&self) -> bool {
+        self.st.fade.is_some()
     }
 
     /// Forget where the last frame was: the next is an entry, not a jump.
@@ -204,12 +217,15 @@ impl LiveRead {
     }
 
     /// Render a block: frame `i` plays straight position `positions[i]`
-    /// (`None`: silence), read at `rate` file frames per output frame, scaled
-    /// by `gain`, handed to `emit(i, frame)` (`width` samples). Frames the ring
-    /// cannot supply are counted as underruns on `state`.
+    /// (`None`: silence), in `segment` (a new one is a jump wherever it
+    /// lands), read at `rate` file frames per output frame, scaled by `gain`,
+    /// handed to `emit(i, frame)` (`width` samples). Frames the ring cannot
+    /// supply are counted as underruns on `state`.
+    #[allow(clippy::too_many_arguments)] // one block's read, and where it goes
     pub(crate) fn render(
         &mut self,
         positions: &[Option<f64>],
+        segment: u64,
         rate: f64,
         gain: f32,
         state: &RtState,
@@ -242,10 +258,12 @@ impl LiveRead {
             reader.idle();
             return;
         };
+        let moved = st.segment != segment;
+        st.segment = segment;
         let jump = st
             .last
             .map(|last| last + rate)
-            .filter(|expected| (first - expected).abs() > JUMP_FRAMES);
+            .filter(|expected| moved || (first - expected).abs() > JUMP_FRAMES);
         // The old continuation's positions, for the claim.
         let old_range = jump.map_or((0, 0), |expected| {
             let a = (expected.max(0.0).floor() as u64).saturating_sub(3);

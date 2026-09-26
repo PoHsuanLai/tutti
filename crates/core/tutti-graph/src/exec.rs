@@ -2139,12 +2139,12 @@ mod tests {
         let prepare = Prepare::new(SampleRate(48_000.0), Samples(64));
         let (mut ed, mut exec) = crate::Editor::new(prepare);
         let seen = Arc::new(AtomicUsize::new(0));
-        ed.insert(NodeKey(1), "a", Count(Arc::clone(&seen)));
+        ed.insert(NodeKey(1), "a", crate::Unforkable(Count(Arc::clone(&seen))));
         ed.commit().expect("commits");
         exec.apply_pending();
         ed.collect();
 
-        ed.insert(NodeKey(2), "b", Count(Arc::clone(&seen)));
+        ed.insert(NodeKey(2), "b", crate::Unforkable(Count(Arc::clone(&seen))));
         ed.commit().expect("queued, not applied");
         let to = crate::EventIn {
             node: NodeKey(2),

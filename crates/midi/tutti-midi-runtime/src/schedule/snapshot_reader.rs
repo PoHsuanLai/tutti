@@ -124,7 +124,7 @@ impl tutti_midi_types::MidiUnitIn for MidiSnapshotReader {
     fn rebind_offline(
         &self,
         _unit: MidiUnitId,
-        _ctx: &dyn std::any::Any,
+        _ctx: &tutti_core::transport::OfflineTransport,
     ) -> Option<Arc<dyn tutti_midi_types::MidiUnitIn>> {
         None
     }

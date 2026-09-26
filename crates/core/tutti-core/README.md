@@ -62,7 +62,7 @@ use tutti_core::{
     Beat, Bpm, ChannelLayout, Engine, EnvClock, InterleavedMut, MotionEvent, NodeKey,
     SampleRate, Samples, Timeline, Transport,
 };
-use tutti_graph::{Editor, Prepare};
+use tutti_graph::{Editor, ForkByClone, Prepare};
 
 let transport = Transport::new(48_000.0);
 
@@ -73,9 +73,10 @@ let (mut editor, executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samp
 // A node reads the transport from each block's `Env`; `EnvClock` puts the beat
 // on two ports (whole beats, then the fraction), for a node that wants it as
 // a signal. Tone generators and filters are `tutti-nodes`', a crate above
-// this one.
+// this one. Every insert says whether the node forks (for an export): the
+// clock reads only its block's `Env`, so a clone of it is a fork.
 let clock = NodeKey(1);
-editor.insert(clock, "clock", EnvClock::new());
+editor.insert(clock, "clock", ForkByClone(EnvClock::new()));
 editor.spec_mut().topology.outputs = (0..2)
     .map(|port| Source::Node(OutPort { node: clock, port }))
     .collect();

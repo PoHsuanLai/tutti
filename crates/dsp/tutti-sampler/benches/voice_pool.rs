@@ -65,6 +65,9 @@ impl Timeline for Clock {
     fn is_rolling(&self) -> bool {
         true
     }
+    fn segment_generation(&self) -> u64 {
+        0
+    }
 }
 
 fn tone(freq: f32, frames: usize) -> Arc<Wave> {

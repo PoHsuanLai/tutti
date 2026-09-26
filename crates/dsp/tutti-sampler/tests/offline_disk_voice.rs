@@ -11,7 +11,6 @@
 //! Each render moves its clock per 64-frame chunk, after the chunk, as the
 //! engine's chunk-major `Legacy` renders do (doc 013's per-chunk timeline).
 
-use std::any::Any;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -91,7 +90,7 @@ fn config(start: f64) -> OfflineTimelineConfig {
 fn fork<U: AudioUnit + Clone>(unit: &U, clock: &OfflineTransport, rate: f64) -> U {
     let mut copy = unit.clone();
     copy.isolate();
-    copy.rebind_offline(clock as &dyn Any);
+    copy.rebind_offline(clock);
     copy.reset();
     copy.set_sample_rate(SampleRate(rate));
     copy
@@ -123,7 +122,7 @@ fn clock_at(rate: f64) -> (Arc<OfflineTimeline>, OfflineTransport) {
         sample_rate: SampleRate(rate),
         ..config(0.0)
     }));
-    let ctx: OfflineTransport = clock.clone();
+    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
     (clock, ctx)
 }
 
@@ -166,7 +165,7 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
         let (clock, ctx) = clock_at(SR);
         let mut copy: Box<dyn AudioUnit> = {
             unit.isolate();
-            unit.rebind_offline(&ctx as &dyn Any);
+            unit.rebind_offline(&ctx);
             unit.reset();
             unit.set_sample_rate(SampleRate(SR));
             unit
@@ -526,7 +525,7 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
     let (clock, ctx) = clock_at(SR);
     let mut copy = voice.clone();
     copy.isolate();
-    copy.rebind_offline(&ctx as &dyn Any);
+    copy.rebind_offline(&ctx);
     copy.reset();
     let [l, _] = render(&mut copy, &clock, 256);
     assert!(l.iter().all(|&s| s == 0.0));
@@ -637,7 +636,7 @@ fn a_fork_follows_a_looping_render_timeline() {
         loop_range: tutti_core::LoopRange::new(Beat(0.0), Beat(1.0)),
         ..config(0.0)
     }));
-    let ctx: OfflineTransport = clock.clone();
+    let ctx: OfflineTransport = OfflineTransport::new(clock.clone());
     let mut copy = fork(&voice, &ctx, SR);
     let [l, _] = render(&mut copy, &clock, 60_000);
     for (k, &got) in l.iter().enumerate() {
@@ -819,7 +818,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         let (clock, ctx) = clock_at(SR);
         let mut source = tutti_sampler::MemorySource::with_transport(
             Arc::new(wave),
-            ctx.clone(),
+            ctx.timeline(),
             Beat(1.0),
             None,
         );

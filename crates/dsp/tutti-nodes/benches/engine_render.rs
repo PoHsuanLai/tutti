@@ -53,7 +53,7 @@ use tutti_core::graph::{Edge, InPort, OutPort, Source};
 use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
 use tutti_core::{Db, Hz, Q};
 use tutti_core::{Samples, Transport};
-use tutti_graph::{Editor, Legacy, Prepare};
+use tutti_graph::{Editor, Legacy, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 
@@ -330,7 +330,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
             dt: 0.0,
         })
     };
-    ed.insert(NodeKey(0), "sine", src);
+    ed.insert(NodeKey(0), "sine", Unforkable(src));
     let mut last = NodeKey(0);
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
@@ -344,7 +344,7 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
                 Box::new(NativeLowpass::new(cutoff, 0.7))
             };
         let k = NodeKey(1 + i as u64);
-        ed.insert(k, "lowpass", f);
+        ed.insert(k, "lowpass", Unforkable(f));
         ed.spec_mut().topology.edges.insert(
             InPort { node: k, port: 0 },
             Edge::Direct(Source::Node(OutPort {

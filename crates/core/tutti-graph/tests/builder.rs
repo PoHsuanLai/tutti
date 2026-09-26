@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use common::{prepare, Kind, TestNode};
 use fundsp::net::{Net, NodeId, Source as NetSource};
 use fundsp::prelude32::{lowpass_hz, mul, pass};
-use tutti_graph::{Editor, EventEdge, EventIn, EventOut, GraphBuilder, Renderer, Transport};
+use tutti_graph::{
+    Editor, EventEdge, EventIn, EventOut, GraphBuilder, Renderer, Transport, Unforkable,
+};
 use tutti_node::buffer::BufferVec;
 use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
@@ -176,11 +178,11 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
     let mix = g.add_unit(Box::new(pass() + mul(0.5)));
     let lp = g.add_unit(Box::new(lowpass_hz(1_200.0, 0.9)));
-    let emit = g.add(TestNode::new(Kind::Emitter {
+    let emit = g.add(Unforkable(TestNode::new(Kind::Emitter {
         period: 50,
         phase: 7,
-    }));
-    let fold = g.add(TestNode::new(Kind::Consumer { inputs: 1 }));
+    })));
+    let fold = g.add(Unforkable(TestNode::new(Kind::Consumer { inputs: 1 })));
     g.connect_input(0, mix, 0)
         .feedback(lp, 0, mix, 1, fb_delay)
         .connect(mix, 0, lp, 0)
@@ -209,15 +211,15 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     ed.insert(
         NodeKey(2),
         test_node,
-        TestNode::new(Kind::Emitter {
+        Unforkable(TestNode::new(Kind::Emitter {
             period: 50,
             phase: 7,
-        }),
+        })),
     );
     ed.insert(
         NodeKey(3),
         test_node,
-        TestNode::new(Kind::Consumer { inputs: 1 }),
+        Unforkable(TestNode::new(Kind::Consumer { inputs: 1 })),
     );
     let spec = ed.spec_mut();
     spec.topology.inputs = ChannelLayout::MONO;
@@ -418,21 +420,22 @@ fn chain_and_add_take_native_nodes() {
     struct Tagged;
     impl tutti_graph::IntoNode for Tagged {
         type Controls = u32;
-        fn into_node(self) -> (Box<dyn tutti_graph::Node>, u32) {
-            (
-                Box::new(TestNode::new(Kind::Gain {
+        fn into_parts(self) -> tutti_graph::NodeParts<u32> {
+            tutti_graph::NodeParts {
+                node: Box::new(TestNode::new(Kind::Gain {
                     gain: 2.0,
                     width: 1,
                 })),
-                7,
-            )
+                controls: 7,
+                fork: None,
+            }
         }
     }
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let first = g.chain(TestNode::new(Kind::Gain {
+    let first = g.chain(Unforkable(TestNode::new(Kind::Gain {
         gain: 3.0,
         width: 1,
-    }));
+    })));
     let (second, controls) = g.add_with_controls(Tagged);
     g.pipe(first, second).pipe_output(second);
     assert_eq!((first, second, controls), (NodeKey(0), NodeKey(1), 7));

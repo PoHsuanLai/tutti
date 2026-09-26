@@ -22,7 +22,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, PlaybackRate, SamplePosition, SampleRate};
+use tutti_core::{
+    AudioUnit, Beat, Bpm, BufferVec, PlaybackRate, SamplePosition, SampleRate, Timeline,
+};
 
 use super::DiskVoice;
 use crate::test_transport::MockTransport;
@@ -766,7 +768,7 @@ fn a_fork_after_a_loop_edit_renders_the_edited_loop() {
     got.extend(live.render(150));
 
     let clock = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    let render: tutti_core::transport::OfflineTransport = clock.clone();
+    let render = tutti_core::transport::OfflineTransport::new(clock.clone());
     let mut fork = live.voice.clone();
     fork.isolate();
     fork.rebind_offline(&render);
@@ -982,6 +984,51 @@ fn a_seek_does_not_move_a_placed_voices_window() {
     want.extend(memory.render(100));
     assert_eq!(live.underruns(), 0, "the window was dragged away");
     assert_same_outside("across a relayed seek", &got, &want, &[]);
+}
+
+/// **A seek to the beat the clock stands on is a jump** (doc 013's follow-up
+/// for #48, after smart types 2): the seat re-seats on the clock's new
+/// `segment_generation`, and the live read keys its jump on it too, not only
+/// on a position off the continuation — here the position is exactly the
+/// continuation, so only the generation tells. The reader crossfades, and
+/// since both sides are the same frames the output is the memory tier's:
+/// bit for bit outside the fade, within an ulp's rounding of the blend inside
+/// it, nothing unread.
+///
+/// Mutation (run): the live read ignoring the segment (`moved` always
+/// false) → no fade starts at the seek → fails.
+#[test]
+fn a_seek_to_where_the_clock_stands_is_a_jump() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LEN);
+    let mut live = Live::new(&path, LoopSetting::Off, 1.0);
+    let mut memory = Memory::new(ramp_wave(SR as u32, LEN), LoopSetting::Off, 1.0, 0.0);
+    let mut got = live.render(10);
+    let mut want = memory.render(10);
+    assert!(!live.voice.inner.read.fading(), "a fade before any seek");
+    let at = got.len();
+    live.clock.seek(Timeline::beat(&*live.clock));
+    memory.clock.seek(Timeline::beat(&*memory.clock));
+    got.extend(live.block());
+    want.extend(memory.block());
+    assert!(
+        live.voice.inner.read.fading(),
+        "read on through a seek to where it stood"
+    );
+    got.extend(live.render(30));
+    want.extend(memory.render(30));
+    assert_eq!(live.underruns(), 0, "a frame went unread");
+    let fade = (at, at + FADE + BLOCK);
+    assert_same_outside("across a seek in place", &got, &want, &[fade]);
+    for k in fade.0..fade.1 {
+        assert!(
+            (got[k] - want[k]).abs() <= 1e-6,
+            "frame {k}: live {} memory {}",
+            got[k],
+            want[k]
+        );
+    }
 }
 
 /// **A paused source holds no refill back** (the review of `PosRing`, S2).

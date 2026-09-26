@@ -15,7 +15,7 @@ use tutti_core::{
     Transport,
 };
 use tutti_graph::contract::{Latent, Pulse};
-use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Ump};
+use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Ump, Unforkable};
 use tutti_types::{Latency, NodeKey};
 
 const SR: f64 = 48_000.0;
@@ -33,9 +33,9 @@ fn engine(
     max_block: usize,
 ) -> (Engine, tutti_graph::Editor, NodeKey, NodeKey) {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let direct = g.add(Pulse::new(Latency::ZERO));
-    let pdc = g.add(Pulse::new(Latency::ZERO));
-    let sibling = g.add(Latent::new(Latency::new(Samples(D))));
+    let direct = g.add(Unforkable(Pulse::new(Latency::ZERO)));
+    let pdc = g.add(Unforkable(Pulse::new(Latency::ZERO)));
+    let sibling = g.add(Unforkable(Latent::new(Latency::new(Samples(D)))));
     g.event_connect(sibling, 0, pdc, 0);
     g.connect_output(pdc, 0, 0).connect_output(direct, 0, 1);
     let (mut ed, exec) = g

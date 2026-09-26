@@ -284,13 +284,13 @@ impl PendingClone {
     /// The two halves of preparing an offline clone, in the order they must
     /// happen: [`AudioUnit::isolate`] drops shared live inputs, then
     /// [`AudioUnit::rebind_offline`] re-seats whatever transport the severed
-    /// node still points at. `ctx` is opaque here and downcast by each
-    /// implementor — see `rebind_offline`'s docs for why.
+    /// node still points at. `ctx` is the render's typed timeline, handed to each
+    /// implementor.
     ///
     /// Prefer this over `isolate()` for anything that will be *rendered*.
     /// `isolate()` alone leaves transport-aware nodes aiming at the live
     /// playhead, which nothing advances offline, so they render silence.
-    pub fn isolate_for_offline(mut self, ctx: &dyn core::any::Any) -> Net {
+    pub fn isolate_for_offline(mut self, ctx: &tutti_types::OfflineTransport) -> Net {
         let ids: Vec<NodeId> = self.0.ids().copied().collect();
         for id in ids {
             let node = self.0.node_mut(id);
@@ -1774,7 +1774,7 @@ impl AudioUnit for Net {
     /// A transport-aware node inside a sub-network would otherwise keep the live
     /// transport and render against a playhead nothing advances — silence, with
     /// nothing to compare and no error to raise.
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_types::OfflineTransport) {
         for vertex in &mut self.vertex {
             vertex.unit.rebind_offline(ctx);
             vertex.changed = self.revision;

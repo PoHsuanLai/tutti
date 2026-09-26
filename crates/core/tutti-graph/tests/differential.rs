@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::{bits, input_signal, Kind, Pair};
 use proptest::prelude::*;
-use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec};
+use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
 
@@ -1502,7 +1502,7 @@ impl EditorPair {
         let (mut editor, mut exec) =
             tutti_graph::Editor::with_event_capacity(prepare, common::EVENT_CAPACITY);
         for (&k, kind) in &desc.kinds {
-            editor.insert(k, "test", common::TestNode::new(kind.clone()));
+            editor.insert(k, "test", Unforkable(common::TestNode::new(kind.clone())));
         }
         let spec = editor.spec_mut();
         spec.topology.edges = desc.spec.topology.edges.clone();

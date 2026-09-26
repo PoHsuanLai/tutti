@@ -104,7 +104,7 @@ impl AudioUnit for Boxed {
     fn isolate(&mut self) {
         self.0.isolate();
     }
-    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+    fn rebind_offline(&mut self, ctx: &tutti_core::transport::OfflineTransport) {
         self.0.rebind_offline(ctx);
     }
     fn forkable(&self) -> bool {
@@ -485,10 +485,8 @@ impl NativeGraph {
     /// A copy of `target` for an offline render at `rate`, sharing no state
     /// with this graph: `Editor::fork` with `ForkMode::Offline(ctx)`, through
     /// tutti-export (`RenderGraph::fork`, which prepares it at the render's
-    /// rate and `GRAPH_MAX_BLOCK`). `ctx` is handed over as the
-    /// `&OfflineTransport` itself — the exact type every unit's
-    /// `rebind_offline` downcasts; anything else would rebind nothing,
-    /// silently (`ForkMode::Offline`'s docs).
+    /// rate and `GRAPH_MAX_BLOCK`). `ctx` is the render's timeline, the one
+    /// type `ForkMode::Offline` and every unit's `rebind_offline` take.
     ///
     /// `midi` is every node with a captured MIDI port (its entity's
     /// `MidiTarget`). One the fork holds that went in **without** the fork

@@ -292,7 +292,7 @@ mod tests {
 
         for rate in [LIVE, SampleRate(96_000.0)] {
             let timeline = offline(rate);
-            let ctx: OfflineTransport = timeline.clone();
+            let ctx: OfflineTransport = OfflineTransport::new(timeline.clone());
             let held = Arc::strong_count(&font);
             let mut fork = source
                 .unit(ForkMode::Offline(&ctx))
@@ -325,7 +325,7 @@ mod tests {
         }
         assert_eq!(
             live.midi_port()
-                .rebind_offline_into(&MidiInPort::new(), &(offline(LIVE) as OfflineTransport)),
+                .rebind_offline_into(&MidiInPort::new(), &OfflineTransport::new(offline(LIVE))),
             OfflineRebind::Rebound,
             "the live unit still holds its clip"
         );
@@ -348,7 +348,7 @@ mod tests {
         fn rebind_offline(
             &self,
             _unit: MidiUnitId,
-            _ctx: &dyn std::any::Any,
+            _ctx: &tutti_core::transport::OfflineTransport,
         ) -> Option<Arc<dyn MidiUnitIn>> {
             None
         }
@@ -363,7 +363,7 @@ mod tests {
     fn an_unrebindable_source_is_a_named_fork_error() {
         let live = unit(&soundfont(), LIVE, 0);
         live.midi_port().install(Arc::new(Unrebindable));
-        let ctx: OfflineTransport = offline(LIVE);
+        let ctx: OfflineTransport = OfflineTransport::new(offline(LIVE));
         assert!(matches!(
             live.fork_instance(ForkMode::Offline(&ctx)),
             Err(Error::MidiSource)

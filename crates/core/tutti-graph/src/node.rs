@@ -837,47 +837,84 @@ pub trait Node: Send + 'static {
 ///
 /// The replacement for `node_as::<T>` (doc 013 §2): the *type* of the control
 /// surface is fixed at insertion, so nothing downcasts to find a node's
-/// parameters later. A plain node has no controls; a node with live
-/// parameters implements this on a builder type and returns its `Param<U>`
-/// handles.
+/// parameters later. A node with live parameters implements this on a
+/// builder type and returns its `Param<U>` handles.
 ///
-/// # Forking
+/// # Every node says whether it forks
 ///
 /// A node that can be copied into a graph of its own — an offline export, a
 /// live duplicate ([`Editor::fork`](crate::Editor::fork)) — says so here, in
 /// [`into_parts`](Self::into_parts), by handing the editor a
 /// [`ForkSource`](crate::ForkSource) beside the node. It is the only chance:
 /// once inserted, the unit belongs to the executor and nothing on the control
-/// side can reach it again. The default hands none, so a node is **not
-/// forkable unless it says it is**, and a fork of a graph containing it is
-/// [`ForkError::NotForkable`](crate::ForkError::NotForkable) naming its key
-/// rather than a copy that shares state with the live one. [`Legacy`](crate::Legacy)
-/// implements it for every `AudioUnit` whose `forkable()` is true.
+/// side can reach it again.
+///
+/// So `into_parts` is **required**, and there is no blanket impl for a bare
+/// [`Node`]: every insert states its fork-ability, and a node inserted
+/// without saying cannot be written. There was one (`impl<N: Node> IntoNode
+/// for N`, no controls and no fork source), and it let an unforkable
+/// beat clock into every graph silently, until the first export refused it
+/// (#38's B1); it also took the impl slot a node type needs to hand over its
+/// own fork source, which is why a hosted plugin needed a wrapper type (#51).
+/// A bare node is inserted as one of:
+///
+/// - [`ForkByClone`](crate::ForkByClone)`(node)` — forkable, by a clone
+///   taken at insert (the node's `Clone` shares nothing with the original);
+/// - [`Unforkable`](crate::Unforkable)`(node)` — refuses every fork that
+///   needs it, by name ([`ForkError::NotForkable`](crate::ForkError::NotForkable));
+/// - [`Legacy`](crate::Legacy) for an `AudioUnit`, forkable when its
+///   `forkable()` is true;
+/// - its own `IntoNode`, for a node with controls or a fork of its own.
+///
+/// ```compile_fail,E0277
+/// # use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status};
+/// # use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+/// struct Silence;
+/// impl Node for Silence {
+///     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status { Status::Modified }
+///     fn reset(&mut self) {}
+/// }
+/// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// // Forkable or not? Unsaid, so refused: `Silence: IntoNode` is not satisfied.
+/// editor.insert(NodeKey(1), "silence", Silence);
+/// ```
 pub trait IntoNode {
     /// What the caller keeps: `Param<U>` handles, `RtPublish` cells, or `()`.
     type Controls;
 
-    /// Split into the unit the executor will own and the handles the caller
-    /// keeps.
+    /// Split into the unit the executor will own, the handles the caller
+    /// keeps, and where a fork of the unit comes from
+    /// ([`NodeParts::fork`]: `None` for a node that cannot be forked). What
+    /// [`Editor::insert`](crate::Editor::insert) calls.
     ///
-    /// This drops any fork source. A type that wraps another `IntoNode`
-    /// must forward [`into_parts`](Self::into_parts) too, not only this, or
-    /// the node it wraps silently stops being forkable.
-    fn into_node(self) -> (Box<dyn Node>, Self::Controls);
+    /// Required, so an implementor always writes the `fork` field: a type
+    /// that wraps another `IntoNode` forwards the inner one's parts rather
+    /// than dropping its source by default.
+    fn into_parts(self) -> NodeParts<Self::Controls>;
 
-    /// [`into_node`](Self::into_node), plus the node's
-    /// [`ForkSource`](crate::ForkSource) if it has one. What
-    /// [`Editor::insert`](crate::Editor::insert) calls. The default has none.
-    fn into_parts(self) -> NodeParts<Self::Controls>
+    /// [`into_parts`](Self::into_parts) without the fork source: the unit
+    /// and its controls, for a caller that runs the unit outside an editor
+    /// (a bench, a fork source building its fork's unit).
+    fn into_node(self) -> (Box<dyn Node>, Self::Controls)
     where
         Self: Sized,
     {
-        let (node, controls) = self.into_node();
-        NodeParts {
-            node,
-            controls,
-            fork: None,
-        }
+        let NodeParts { node, controls, .. } = self.into_parts();
+        (node, controls)
+    }
+
+    /// The kind [`GraphBuilder::add`](crate::GraphBuilder::add) records for
+    /// this node (what diagnostics print): its type name. A wrapper that
+    /// only says how the node forks ([`ForkByClone`](crate::ForkByClone),
+    /// [`Unforkable`](crate::Unforkable)) names the node it wraps, so the
+    /// answer to "does it fork" does not rename it.
+    fn kind() -> &'static str
+    where
+        Self: Sized,
+    {
+        std::any::type_name::<Self>()
     }
 }
 
@@ -898,28 +935,8 @@ pub struct NodeParts<C> {
 impl<C> IntoNode for NodeParts<C> {
     type Controls = C;
 
-    fn into_node(self) -> (Box<dyn Node>, C) {
-        (self.node, self.controls)
-    }
-
     fn into_parts(self) -> NodeParts<C> {
         self
-    }
-}
-
-impl<N: Node> IntoNode for N {
-    type Controls = ();
-
-    fn into_node(self) -> (Box<dyn Node>, ()) {
-        (Box::new(self), ())
-    }
-}
-
-impl IntoNode for Box<dyn Node> {
-    type Controls = ();
-
-    fn into_node(self) -> (Box<dyn Node>, ()) {
-        (self, ())
     }
 }
 

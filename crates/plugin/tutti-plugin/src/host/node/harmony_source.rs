@@ -274,6 +274,9 @@ mod tests {
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
         }
+        fn segment_generation(&self) -> u64 {
+            0
+        }
     }
 
     fn chord(beat: f64, root: i16, name: &str) -> TimedChord {

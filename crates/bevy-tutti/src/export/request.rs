@@ -143,7 +143,7 @@ impl ExportRequest {
     /// request already built.
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
-        T: RenderClock + tutti_core::Timeline + 'static,
+        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
     {
         self.clock = ExportClock::timeline(timeline);
         self
@@ -199,7 +199,7 @@ impl ExportRequest {
 ///   onto a timeline stopped at beat 0 too: a clip reader plays nothing
 ///   rather than replay its first block.
 /// - [`timeline`](Self::timeline): an `OfflineTimeline` (or any clock that
-///   is also a `Timeline`), seeded at the tempo and beat to render from, at
+///   is also an `OfflineClock`: never the live transport), seeded at the tempo and beat to render from, at
 ///   the render's rate. The renderer advances it; the nodes read it.
 #[derive(Clone)]
 pub struct ExportClock(Clock);
@@ -224,11 +224,11 @@ impl ExportClock {
     /// are the same object — the only configuration that is ever correct.
     pub fn timeline<T>(timeline: Arc<T>) -> Self
     where
-        T: RenderClock + tutti_core::Timeline + 'static,
+        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
     {
         Self(Clock::Timeline {
             clock: timeline.clone() as Arc<dyn RenderClock>,
-            timeline: timeline as OfflineTransport,
+            timeline: OfflineTransport::new(timeline),
         })
     }
 
@@ -243,8 +243,8 @@ impl ExportClock {
     /// What the nodes are rebound onto.
     pub(crate) fn offline(&self) -> OfflineTransport {
         match &self.0 {
-            Clock::Frozen => Arc::new(Stopped),
-            Clock::Timeline { timeline, .. } => Arc::clone(timeline),
+            Clock::Frozen => OfflineTransport::new(Arc::new(Stopped)),
+            Clock::Timeline { timeline, .. } => timeline.clone(),
         }
     }
 }
@@ -270,6 +270,9 @@ impl std::fmt::Debug for ExportClock {
 /// transport's consumers; 120 BPM is the engine's default.
 struct Stopped;
 
+/// The frozen render's timeline: only the render reads it.
+impl tutti_core::transport::OfflineClock for Stopped {}
+
 impl tutti_core::Timeline for Stopped {
     fn beat(&self) -> tutti_core::Beat {
         tutti_core::Beat(0.0)
@@ -279,6 +282,10 @@ impl tutti_core::Timeline for Stopped {
     }
     fn is_rolling(&self) -> bool {
         false
+    }
+    fn segment_generation(&self) -> u64 {
+        // Never moves, so never jumps.
+        0
     }
 }
 

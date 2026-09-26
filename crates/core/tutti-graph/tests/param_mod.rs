@@ -38,7 +38,7 @@ use proptest::prelude::*;
 use tutti_graph::{
     CommitError, Cx, Editor, Event, EventOut, Executor, ForkByClone, ForkMode, ForkTarget,
     GraphInvalid, Io, Node, ParamFrom, ParamIn, ParamInput, ParamRamp, ParamRange, ParamShaping,
-    Prepare, Reference, Shape, ShapeLut, Status, Transport, PARAM_DECLICK,
+    Prepare, Reference, Shape, ShapeLut, Status, Transport, Unforkable, PARAM_DECLICK,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{
@@ -264,7 +264,7 @@ const PROBE: u64 = 10;
 /// An editor with a `Probe` at [`PROBE`] whose three outputs are the graph's.
 fn probe_graph(max: usize, cutoff: &Cell, q: &Cell) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(prepare(max));
-    ed.insert(NodeKey(PROBE), "probe", Probe::new(cutoff, q));
+    ed.insert(NodeKey(PROBE), "probe", Unforkable(Probe::new(cutoff, q)));
     ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
     (ed, exec)
 }
@@ -326,8 +326,8 @@ fn an_unconnected_param_reads_its_base_never_zero() {
 fn modulators_sum_on_the_base_then_clamp() {
     let (cutoff, q) = (Cell::new(100.0), Cell::new(1.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "sig", Signal { seed: 7 });
-    ed.insert(NodeKey(2), "sig", Signal { seed: 11 });
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 7 }));
+    ed.insert(NodeKey(2), "sig", Unforkable(Signal { seed: 11 }));
     let cube = ShapeLut::from_fn(|x| 0.5 * x * x * x);
     {
         let s = ed.spec_mut();
@@ -383,10 +383,10 @@ fn a_base_move_under_modulation_ramps_across_the_block() {
     ed.insert(
         NodeKey(1),
         "zero",
-        Step {
+        Unforkable(Step {
             at: u64::MAX,
             height: 0.0,
-        },
+        }),
     );
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
@@ -419,7 +419,7 @@ fn a_base_move_under_modulation_ramps_across_the_block() {
 fn connecting_and_disconnecting_at_runtime_does_not_click() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.commit().expect("commits");
     let mut all = render(&mut exec, &mut ed, 128, 64)[0].clone();
 
@@ -466,13 +466,13 @@ fn a_modulation_step_lands_on_its_frame() {
         for k in [300u64, 301, 383, 384, 400] {
             let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
             let (mut ed, mut exec) = probe_graph(128, &cutoff, &q);
-            ed.insert(NodeKey(1), "step", Step { at: k, height: 2.0 });
+            ed.insert(NodeKey(1), "step", Unforkable(Step { at: k, height: 2.0 }));
             ed.insert(
                 NodeKey(2),
                 "ramps",
-                Ramps {
+                Unforkable(Ramps {
                     plan: vec![(k, UnitParam::Q, 3.0, 0), (k + 20, UnitParam::Q, 5.0, 8)],
-                },
+                }),
             );
             {
                 let s = ed.spec_mut();
@@ -521,9 +521,9 @@ fn a_node_without_a_base_is_never_modulated() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
     let mut probe = Probe::new(&cutoff, &q);
     probe.answers = false;
-    ed.insert(NodeKey(PROBE), "probe", probe);
+    ed.insert(NodeKey(PROBE), "probe", Unforkable(probe));
     ed.spec_mut().topology.outputs = (0..3).map(|c| Source::Node(port(PROBE, c))).collect();
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -541,7 +541,7 @@ fn a_node_without_a_base_is_never_modulated() {
 fn undeclared_params_and_missing_sources_are_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "sig", Signal { seed: 1 });
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 1 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Drive),
         ParamFrom::Audio(port(1, 0)),
@@ -570,8 +570,8 @@ fn undeclared_params_and_missing_sources_are_refused() {
 fn removing_a_node_drops_its_param_edges() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "a", Signal { seed: 3 });
-    ed.insert(NodeKey(2), "b", Signal { seed: 5 });
+    ed.insert(NodeKey(1), "a", Unforkable(Signal { seed: 3 }));
+    ed.insert(NodeKey(2), "b", Unforkable(Signal { seed: 5 }));
     for k in [1, 2] {
         ed.spec_mut().connect_param(
             param(PROBE, UnitParam::Cutoff),
@@ -620,7 +620,7 @@ fn a_fade_keeps_the_params_it_declares() {
 
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -632,13 +632,13 @@ fn a_fade_keeps_the_params_it_declares() {
     let fade = tutti_graph::Fade::new(Samples(128), tutti_graph::CrossfadeCurve::EqualAmplitude);
     assert!(
         matches!(
-            ed.replace(NodeKey(PROBE), CutoffOnly, fade),
+            ed.replace(NodeKey(PROBE), Unforkable(CutoffOnly), fade),
             Err(tutti_graph::CommitError::FadeShape { .. })
         ),
         "a unit declaring other params cannot fade in"
     );
     let (c2, q2) = (Cell::new(0.0), Cell::new(0.0));
-    ed.replace(NodeKey(PROBE), Probe::new(&c2, &q2), fade)
+    ed.replace(NodeKey(PROBE), Unforkable(Probe::new(&c2, &q2)), fade)
         .expect("the same params fade");
     ed.commit().expect("commits");
     let out = render(&mut exec, &mut ed, 256, 64);
@@ -660,7 +660,7 @@ fn a_fade_keeps_the_params_it_declares() {
 fn a_units_first_block_is_not_declicked() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -674,7 +674,7 @@ fn a_units_first_block_is_not_declicked() {
         &out[0][..4]
     );
     // A new generation at the key: a new unit, so a first block again.
-    ed.insert(NodeKey(PROBE), "probe", Probe::new(&cutoff, &q));
+    ed.insert(NodeKey(PROBE), "probe", Unforkable(Probe::new(&cutoff, &q)));
     ed.commit().expect("replaces");
     let out = render(&mut exec, &mut ed, 128, 64);
     assert!(out[0].iter().all(|&x| x == 1.0), "{:?}", &out[0][..4]);
@@ -695,17 +695,17 @@ fn an_event_sources_held_value_survives_another_source_joining() {
     ed.insert(
         NodeKey(2),
         "ramps",
-        Ramps {
+        Unforkable(Ramps {
             plan: vec![(10, UnitParam::Cutoff, 500.0, 0)],
-        },
+        }),
     );
     ed.insert(
         NodeKey(1),
         "zero",
-        Step {
+        Unforkable(Step {
             at: u64::MAX,
             height: 0.0,
-        },
+        }),
     );
     let at = param(PROBE, UnitParam::Cutoff);
     let events = ParamFrom::Events(EventOut {
@@ -755,7 +755,7 @@ fn an_event_sources_held_value_survives_another_source_joining() {
 fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -765,7 +765,7 @@ fn a_delay_appearing_on_a_param_source_holds_its_last_value() {
     let _ = render(&mut exec, &mut ed, 256, 64);
 
     for lag in [100, 150] {
-        ed.insert(NodeKey(3), "lag", Lag::new(lag));
+        ed.insert(NodeKey(3), "lag", Unforkable(Lag::new(lag)));
         ed.spec_mut().topology.edges.insert(
             InPort {
                 node: NodeKey(3),
@@ -867,7 +867,7 @@ fn a_fork_carries_its_event_sources_ramps() {
 fn a_nan_range_is_refused() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, _exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "sig", Signal { seed: 1 });
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 1 }));
     let at = param(PROBE, UnitParam::Cutoff);
     ed.spec_mut()
         .connect_param(at, ParamFrom::Audio(port(1, 0)), ParamShaping::Identity);
@@ -905,7 +905,7 @@ fn a_nan_range_is_refused() {
 fn removing_a_modulated_target_leaves_the_graph_committable() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "sig", Signal { seed: 3 });
+    ed.insert(NodeKey(1), "sig", Unforkable(Signal { seed: 3 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -923,7 +923,7 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
     );
     ed.commit().expect("the graph without the target commits");
     let _ = render(&mut exec, &mut ed, 64, 64);
-    ed.insert(NodeKey(2), "sig", Signal { seed: 4 });
+    ed.insert(NodeKey(2), "sig", Unforkable(Signal { seed: 4 }));
     ed.commit().expect("and so does the next edit");
 }
 
@@ -938,7 +938,7 @@ fn removing_a_modulated_target_leaves_the_graph_committable() {
 fn a_reprepare_hands_param_state_back() {
     let (cutoff, q) = (Cell::new(0.0), Cell::new(0.0));
     let (mut ed, mut exec) = probe_graph(64, &cutoff, &q);
-    ed.insert(NodeKey(1), "one", Step { at: 0, height: 1.0 });
+    ed.insert(NodeKey(1), "one", Unforkable(Step { at: 0, height: 1.0 }));
     ed.spec_mut().connect_param(
         param(PROBE, UnitParam::Cutoff),
         ParamFrom::Audio(port(1, 0)),
@@ -1088,17 +1088,17 @@ fn run_differential(g: &Gen) {
     let mut outputs = Vec::new();
     for (i, &seed) in g.signals.iter().enumerate() {
         let k = NodeKey(100 + i as u64);
-        ed.insert(k, "sig", Signal { seed });
+        ed.insert(k, "sig", Unforkable(Signal { seed }));
         fresh.insert(k, Box::new(Signal { seed }));
     }
     for (i, plan) in g.ramps.iter().enumerate() {
         let k = NodeKey(200 + i as u64);
-        ed.insert(k, "ramps", Ramps { plan: plan.clone() });
+        ed.insert(k, "ramps", Unforkable(Ramps { plan: plan.clone() }));
         fresh.insert(k, Box::new(Ramps { plan: plan.clone() }));
     }
     for (i, &lag) in g.probes.iter().enumerate() {
         let k = NodeKey(300 + i as u64);
-        ed.insert(k, "probe", probe(i, 0));
+        ed.insert(k, "probe", Unforkable(probe(i, 0)));
         fresh.insert(k, Box::new(probe(i, 1)));
         for c in 0..3 {
             outputs.push(Source::Node(OutPort { node: k, port: c }));
@@ -1107,7 +1107,7 @@ fn run_differential(g: &Gen) {
         // later latency change has a node to re-insert.
         {
             let s = NodeKey(400 + i as u64);
-            ed.insert(s, "lag", Lag::new(lag));
+            ed.insert(s, "lag", Unforkable(Lag::new(lag)));
             fresh.insert(s, Box::new(Lag::new(lag)));
             // Fed by the first signal, so the sibling carries something.
             ed.spec_mut().topology.edges.insert(
@@ -1165,7 +1165,7 @@ fn run_differential(g: &Gen) {
         for &(s, p, lag) in &g.lags {
             if s == step && step > 0 {
                 let k = NodeKey(400 + p as u64);
-                ed.insert(k, "lag", Lag::new(lag));
+                ed.insert(k, "lag", Unforkable(Lag::new(lag)));
                 fresh.insert(k, Box::new(Lag::new(lag)));
             }
         }
@@ -1173,7 +1173,7 @@ fn run_differential(g: &Gen) {
             if s == step && step > 0 {
                 // `insert` at a key is a new generation.
                 let k = NodeKey(300 + p as u64);
-                ed.insert(k, "probe", probe(p, 0));
+                ed.insert(k, "probe", Unforkable(probe(p, 0)));
                 fresh.insert(k, Box::new(probe(p, 1)));
             }
         }

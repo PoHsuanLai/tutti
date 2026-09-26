@@ -7,7 +7,7 @@ use common::prepare;
 use fundsp::net::Net;
 use fundsp::prelude32::{limiter, lowpass_hz};
 use tutti_graph::{
-    Delivery, Editor, GraphBuilder, IntoNode, Legacy, LegacyControls, Transport,
+    Delivery, Editor, GraphBuilder, IntoNode, Legacy, LegacyControls, Transport, Unforkable,
     LEGACY_SETTINGS_CAPACITY,
 };
 use tutti_node::buffer::BufferVec;
@@ -769,7 +769,7 @@ fn a_legacy_unit_marks_its_plan() {
     assert_eq!(
         ed.replace(
             NodeKey(1),
-            NativeLookalike,
+            Unforkable(NativeLookalike),
             tutti_graph::Fade::new(Samples(64), tutti_graph::CrossfadeCurve::EqualAmplitude),
         )
         .map(|_| ()),
@@ -777,7 +777,7 @@ fn a_legacy_unit_marks_its_plan() {
     );
 
     ed.remove(NodeKey(1));
-    ed.insert(NodeKey(2), "native", NativeLookalike);
+    ed.insert(NodeKey(2), "native", Unforkable(NativeLookalike));
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
         node: NodeKey(2),
         port: 0,

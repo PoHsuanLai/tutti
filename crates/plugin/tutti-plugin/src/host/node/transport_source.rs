@@ -191,7 +191,9 @@ mod tests {
     #[test]
     fn snapshot_reflects_transport() {
         let (t, src) = source(120.0, 44100.0);
-        t.settings.set_beat(2.0);
+        t.clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(2.0);
         let mut out = TransportInfo::default();
         src.refill(CTX, &mut out);
         assert!((out.timing.tempo - 120.0).abs() < 1e-9);
@@ -225,7 +227,9 @@ mod tests {
         );
 
         // Bar 2 of 7/8 starts at 3.5 quarter notes, not 7.
-        t.settings.set_beat(3.5);
+        t.clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(3.5);
         let mut out = TransportInfo::default();
         src.refill(CTX, &mut out);
 
@@ -244,7 +248,9 @@ mod tests {
     #[test]
     fn meter_change_is_live() {
         let (t, src, meter) = source_with_meter(120.0, 44100.0, MeterMap::default());
-        t.settings.set_beat(0.0);
+        t.clock_links()
+            .expect("the only playhead writer")
+            .set_playhead(0.0);
 
         let mut out = TransportInfo::default();
         src.refill(CTX, &mut out);

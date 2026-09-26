@@ -67,7 +67,9 @@ pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
 pub use bind::{plugin_bind_meter, PluginMeterBound, PluginShadow};
 #[cfg(feature = "modulation")]
-pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use bind::{
+    plugin_bind_params, remove_plugin_automation, PluginAutomationNode, PluginParamsBound,
+};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
     editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
@@ -138,8 +140,8 @@ impl PluginsRes {
 // Hosted-plugin parameters have no ECS reconcile and no `AudioParam`-style
 // component. They are runtime-discovered `u32` ids with per-instance ranges,
 // which `AudioParam<U, P>` (const-generic over a closed `UnitParam` enum)
-// cannot express. Automation reaches them sample-accurately over the per-block
-// `ParamAutomationSource` path instead — see the `bind` module.
+// cannot express. Automation reaches them sample-accurately through an
+// automation node on the plugin's event input instead — see the `bind` module.
 
 /// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
 /// catalog scanning.
@@ -334,13 +336,20 @@ impl Plugin for TuttiHostingPlugin {
         // A `plugin` build without `modulation` still loads, follows the
         // transport and receives MIDI — it just has no route to modulate a param with.
         #[cfg(feature = "modulation")]
-        app.add_systems(
-            Update,
-            plugin_bind_params
-                .after(GraphReconcileSystems::Spawn)
-                .before(GraphReconcileSystems::Commit)
-                .run_if(crate::graph::engine_ready),
-        );
+        {
+            app.init_resource::<crate::graph::EventFeeds>();
+            app.add_observer(remove_plugin_automation);
+            app.add_systems(
+                Update,
+                plugin_bind_params
+                    .after(GraphReconcileSystems::Spawn)
+                    // Before the event wiring, so a new automation node is
+                    // wired to its plugin on the frame it is made.
+                    .before(crate::graph::EventWiring)
+                    .before(GraphReconcileSystems::Commit)
+                    .run_if(crate::graph::engine_ready),
+            );
+        }
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
         // without going through `set_editor_visible_observer` — chiefly

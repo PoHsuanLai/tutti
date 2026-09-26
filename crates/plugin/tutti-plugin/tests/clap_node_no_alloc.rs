@@ -2,8 +2,8 @@
 //! graph's executor, does not allocate on the audio thread in steady state —
 //! the FIFO and ring, the transport snapshot from `Env` (with a meter
 //! installed), the per-chunk payload (MIDI from the live inbox, parameter
-//! automation from an LFO), the IPC submit and collect, and the executor
-//! around them.
+//! automation from an LFO through an automation node on the plugin's event
+//! input), the IPC submit and collect, and the executor around them.
 //!
 //! What this can cover is the calling thread's code path; the audio thread
 //! is this test's thread. The bridge thread and the `plugin-server` process
@@ -35,8 +35,9 @@ use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedPara
 use tutti_types::{Beat, Bpm, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
-/// The graph's `MaxBlock`: the engine's pass while a `Legacy`-flagged node
-/// (the plugin, still) is in the graph.
+/// The graph's `MaxBlock`: blocks of 64, as the engine renders in passes
+/// while a `Legacy`-flagged node is in the graph (the plugin itself is not
+/// one), so a chunk collects eight blocks of automation points.
 const BLOCK: usize = 64;
 /// The device callback, and so the plugin's chunk: eight passes of 64.
 const QUANTUM: usize = 512;
@@ -58,37 +59,30 @@ const PASSES: usize = QUANTUM / BLOCK;
 /// `MeterMap::default()` per block in place of the prebuilt
 /// `Bound::default_meter` → it allocates → aborts. Mutation: collect each
 /// payload's MIDI into a `Vec` before cloning it into the payload → aborts.
-/// Mutation: space the automation's points at a fixed 8 samples
-/// (`stride_for` returning `SAMPLE_STRIDE`) → 65 points a chunk spill the
-/// queue to the heap → aborts.
+/// Mutation: let a chunk's parameter queue grow past its budget
+/// (`automation_node::add_point` pushing without replacing the last point) →
+/// eight blocks of points spill the queue to the heap → aborts.
 #[test]
 fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::TRANSPORT);
-    let mut probe = load_probe(SAMPLE_RATE);
-    let transport = tutti_core::transport::Transport::new(SAMPLE_RATE);
-    transport.settings.set_tempo(120.0);
-    let _ = transport.motion.try_send(tutti_core::MotionEvent::Play);
-    transport.motion.drain();
-    probe.client.set_param_automation_source(
-        [TimedParam {
-            param_id: ParamAddress::Opaque(ParamId::new(77)),
-            curve: Arc::new(LfoCurve::new(
-                LfoShape::Sine,
-                BeatDuration(0.25),
-                Depth(1.0),
-                PhaseIncrement(0.0),
-                0.5,
-                0.0,
-                1.0,
-            )),
-        }],
-        transport.clone(),
-    );
+    let probe = load_probe(SAMPLE_RATE);
+    let automation = probe.client.automation([TimedParam {
+        param_id: ParamAddress::Opaque(ParamId::new(77)),
+        curve: Arc::new(LfoCurve::new(
+            LfoShape::Sine,
+            BeatDuration(0.25),
+            Depth(1.0),
+            PhaseIncrement(0.0),
+            0.5,
+            0.0,
+            1.0,
+        )),
+    }]);
     let sender = probe.client.midi_sender();
     let prepare = tutti_graph::Prepare::new(tutti_types::SampleRate(SAMPLE_RATE), Samples(BLOCK))
         .with_quantum(Samples(QUANTUM));
-    let mut rig = Rig::prepared(probe.client.bind(), prepare);
+    let mut rig = Rig::prepared_with(probe.client.bind(), prepare, Some(automation));
     let meter = Arc::new(RtPublish::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),

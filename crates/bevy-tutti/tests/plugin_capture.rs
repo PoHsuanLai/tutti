@@ -319,12 +319,25 @@ fn a_crossfaded_plugin_is_bound_again() {
         controls.has_meter(),
         "the incoming plugin must get the meter installed"
     );
-    #[cfg(feature = "modulation")]
-    assert!(
-        controls.has_param_automation_source(),
-        "and its param automation"
-    );
     let node = *app.world().get::<AudioNode>(entity).expect("still bound");
+    // The entity's automation node feeds whichever plugin it is bound to:
+    // the incoming one now. Mutation: `plugin_bind_params` not feeding the
+    // node (`feeds.set` dropped) → no event source → fails.
+    #[cfg(feature = "modulation")]
+    {
+        let automation = app
+            .world()
+            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
+            .expect("the entity has an automation node")
+            .node;
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .event_sources(node, 0),
+            vec![automation],
+            "and its param automation"
+        );
+    }
     assert_eq!(
         app.world().resource::<AudioGraphRes>().node_latency(node),
         Samples(INCOMING_LATENCY + CHUNK),
@@ -347,4 +360,18 @@ fn a_crossfaded_plugin_is_bound_again() {
     app.world_mut().entity_mut(entity).remove::<AudioNode>();
     app.update();
     assert!(app.world().get::<PluginShadow>(entity).is_none());
+
+    // And the entity's automation node leaves the graph with the entity.
+    // Mutation: drop the observer's `graph.remove` → it stays → fails.
+    #[cfg(feature = "modulation")]
+    {
+        let automation = app
+            .world()
+            .get::<bevy_tutti::plugin_host::PluginAutomationNode>(entity)
+            .expect("kept while the entity lives")
+            .node;
+        app.world_mut().despawn(entity);
+        app.update();
+        assert!(!app.world().resource::<AudioGraphRes>().contains(automation));
+    }
 }

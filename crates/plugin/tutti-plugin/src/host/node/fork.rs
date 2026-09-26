@@ -55,8 +55,9 @@
 //!    it**. Parameters come with it: the state is the format's own
 //!    save/load (CLAP `clap.state`, VST3 `getState`/`setState`, AU class
 //!    info), which is what a project save restores parameters from.
-//! 4. **Rebind its per-block sources** (parameter automation, harmony, note
-//!    expression): each installed live source is copied onto the fork reading
+//! 4. **Rebind its per-block sources** (harmony, note expression; parameter
+//!    automation is a node of its own, `PluginAutomation`, which forks
+//!    itself): each installed live source is copied onto the fork reading
 //!    the offline timeline ([`ForkMode::Offline`] with an `OfflineTransport`),
 //!    or the live transport ([`ForkMode::Live`]). An offline context of any
 //!    other type binds nothing: the fork's slots stay empty rather than read
@@ -115,8 +116,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use tutti_core::transport::{LoopRange, OfflineTransport, Timeline, TransportState};
-use tutti_core::{Beat, Bpm, Samples};
+use tutti_core::transport::{OfflineTransport, Timeline};
+use tutti_core::Samples;
 use tutti_graph::{
     ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node, NodeParts,
 };
@@ -153,62 +154,12 @@ impl Rebind {
         }
     }
 
-    /// The transport state a copy of a source reading `live` reads.
-    pub(super) fn state(&self, live: &Arc<dyn TransportState>) -> Arc<dyn TransportState> {
-        match self {
-            Self::Live => Arc::clone(live),
-            Self::Offline(timeline) => Arc::new(OfflineState(timeline.clone())),
-        }
-    }
-
     /// The timeline a copy of a source reading `live` reads.
     pub(super) fn timeline(&self, live: &Arc<dyn Timeline>) -> Arc<dyn Timeline> {
         match self {
             Self::Live => Arc::clone(live),
             Self::Offline(timeline) => timeline.timeline(),
         }
-    }
-}
-
-/// An offline timeline as the [`TransportState`] the parameter-automation
-/// source reads.
-///
-/// The answers are the ones `TransportState` documents for an offline render:
-/// not recording, no loop region (an `OfflineTimeline` folds its loop into its
-/// own `advance`, so the beat it reports is already wrapped), and no
-/// free-running sample counter (`0`, which the plugin ABIs read as exactly
-/// that).
-struct OfflineState(OfflineTransport);
-
-impl Timeline for OfflineState {
-    fn beat(&self) -> Beat {
-        self.0.beat()
-    }
-
-    fn tempo(&self) -> Bpm {
-        self.0.tempo()
-    }
-
-    fn is_rolling(&self) -> bool {
-        self.0.is_rolling()
-    }
-
-    fn segment_generation(&self) -> u64 {
-        self.0.segment_generation()
-    }
-}
-
-impl TransportState for OfflineState {
-    fn is_recording(&self) -> bool {
-        false
-    }
-
-    fn loop_range(&self) -> Option<LoopRange> {
-        None
-    }
-
-    fn steady_time(&self) -> i64 {
-        0
     }
 }
 
@@ -537,8 +488,12 @@ mod tests {
     /// the pipeline chunk) → the unmoved plan reads as moved → fails.
     #[test]
     fn a_latency_moved_after_the_plan_is_a_fault() {
-        let controls =
-            PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
+        let controls = PluginControls::new(
+            Samples(137),
+            PluginTail::default(),
+            SampleRate(48_000.0),
+            false,
+        );
         let watch = ForkWatch {
             controls: controls.clone(),
             planned: AtomicUsize::new(usize::MAX),

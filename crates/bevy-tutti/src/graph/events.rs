@@ -46,9 +46,36 @@ impl EventSources {
 
 /// Event sources a plugin of this crate adds for a sink entity, beside what
 /// its [`EventSources`] declares: the MIDI sequencer's clip node for a
-/// target (`MidiSourceInstall`). Keyed by the sink entity.
+/// target (`MidiSourceInstall`), a hosted plugin's automation node. Keyed by
+/// the sink entity, then by who feeds it, so each feeder replaces only its
+/// own nodes.
 #[derive(Resource, Default, Debug)]
-pub struct EventFeeds(pub HashMap<Entity, Vec<AudioNode>>);
+pub struct EventFeeds(HashMap<Entity, std::collections::BTreeMap<&'static str, Vec<AudioNode>>>);
+
+impl EventFeeds {
+    /// `feeder`'s nodes feeding `sink`, replacing what it fed before.
+    pub fn set(&mut self, sink: Entity, feeder: &'static str, nodes: Vec<AudioNode>) {
+        self.0.entry(sink).or_default().insert(feeder, nodes);
+    }
+
+    /// `feeder` feeds `sink` nothing any more.
+    pub fn remove(&mut self, sink: Entity, feeder: &'static str) {
+        if let Some(feeds) = self.0.get_mut(&sink) {
+            feeds.remove(feeder);
+            if feeds.is_empty() {
+                self.0.remove(&sink);
+            }
+        }
+    }
+
+    /// Every node any feeder feeds `sink`.
+    pub fn nodes(&self, sink: Entity) -> impl Iterator<Item = AudioNode> + '_ {
+        self.0
+            .get(&sink)
+            .into_iter()
+            .flat_map(|f| f.values().flatten().copied())
+    }
+}
 
 /// The controls a node inserted with
 /// [`spawn_graph_node`](SpawnGraphNode::spawn_graph_node) handed back
@@ -179,8 +206,8 @@ pub fn reconcile(
             .flat_map(|d| d.0.iter())
             .filter_map(|e| nodes.get(*e).ok().copied())
             .collect();
-        if let Some(fed) = feeds.as_ref().and_then(|f| f.0.get(&entity)) {
-            sources.extend(fed.iter().copied());
+        if let Some(feeds) = feeds.as_ref() {
+            sources.extend(feeds.nodes(entity));
         }
         if sources.is_empty() && !last.0.contains_key(&entity) {
             continue;

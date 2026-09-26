@@ -394,22 +394,21 @@ impl Plugin {
         }
     }
 
-    /// Install sample-accurate parameter automation — one curve per parameter id.
+    /// Sample-accurate parameter automation, one curve per parameter: an
+    /// event source node to insert and wire to this plugin node's event input
+    /// ([`PluginControls::automation`](crate::host::node::PluginControls::automation)).
     ///
-    /// Returns `()`, not `bool`, and takes no capability gate: every format
-    /// carries parameter automation, so `PluginInputs` leaves this slot
-    /// ungated. There is no "declined" answer to report.
-    pub fn set_param_automation_source(
-        &mut self,
+    /// No capability gate: every format carries parameter automation. `None`
+    /// for the in-process VST2 node, which has no event input (its parameters
+    /// are driven through the handle instead).
+    pub fn automation(
+        &self,
         params: impl IntoIterator<Item = crate::host::node::TimedParam>,
-        transport: impl tutti_core::transport::TransportState + 'static,
-    ) {
-        match &mut self.backend {
-            Backend::Subprocess(c) => c.set_param_automation_source(params, transport),
-            // The in-process VST2 node has no automation slot; its parameters
-            // are driven through the handle instead.
+    ) -> Option<crate::host::node::PluginAutomation> {
+        match &self.backend {
+            Backend::Subprocess(c) => Some(c.automation(params)),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(_) => {}
+            Backend::InProcessVst2(_) => None,
         }
     }
 

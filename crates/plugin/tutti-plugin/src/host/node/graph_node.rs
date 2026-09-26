@@ -15,11 +15,11 @@ use tutti_core::meter::MeterMap;
 use tutti_graph::{
     Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, SortedEvents, Status, MAX_PORTS,
 };
-use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{ChannelLayout, ParamAddr, Samples};
 
 use super::batcher::{sort_by_offset, Chunks};
 use super::transport_source::{self, SteadyTime};
-use super::{BlockPayload, Bound, PluginClient};
+use super::{automation_node, BlockPayload, Bound, PluginClient};
 use crate::host::node::input_slot::BlockCtx;
 use crate::protocol::{Features, MidiEvent, MidiEventVec, TransportInfo};
 use crate::util::node::Midi;
@@ -131,6 +131,7 @@ impl Node for PluginClient<Bound> {
         } else {
             SortedEvents::EMPTY
         };
+        let indexed = c.controls.indexed();
         let mut host = PluginChunks {
             env: cx.env,
             events,
@@ -142,6 +143,7 @@ impl Node for PluginClient<Bound> {
             inputs: &mut c.controls.inputs,
             pending,
             out_events,
+            indexed,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -215,6 +217,9 @@ struct PluginChunks<'a> {
     pending: &'a mut BlockPayload,
     /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
     out_events: &'a mut MidiEventVec,
+    /// Whether the plugin addresses parameters by VST2 index: how a ramp's
+    /// number is read.
+    indexed: bool,
 }
 
 impl Chunks for PluginChunks<'_> {
@@ -234,7 +239,9 @@ impl Chunks for PluginChunks<'_> {
         // (`clap_node_no_alloc` drives MIDI and automation through here).
         *self.pending = BlockPayload {
             midi: self.midi.drain_for_process(span, rate).clone(),
-            params: self.inputs.params.drain(ctx, self.features).clone(),
+            // Filled from the event input as the chunk's frames come in
+            // (`take`): automation is a node's ramps, not a slot's drain.
+            params: Default::default(),
             harmony: self.inputs.harmony.drain(ctx, self.features).clone(),
             note_expression: self
                 .inputs
@@ -246,9 +253,11 @@ impl Chunks for PluginChunks<'_> {
         rebase(self.pending, at);
     }
 
-    /// The event input's events on these frames join the chunk's MIDI, at
-    /// the chunk's frames. Past the MIDI list's inline capacity they are
-    /// dropped rather than spill (allocate) on the audio thread.
+    /// The event input's events on these frames join the chunk at the
+    /// chunk's frames: MIDI to its MIDI, a parameter ramp (from a
+    /// [`PluginAutomation`](super::PluginAutomation) node) to its parameter
+    /// points, in this plugin's address model. Past the inline capacities they
+    /// are dropped rather than spill (allocate) on the audio thread.
     fn take(&mut self, from: usize, n: usize, at: usize) {
         let events = self.events.as_slice();
         let first = events.partition_point(|e| e.offset.index() < from);
@@ -257,12 +266,27 @@ impl Chunks for PluginChunks<'_> {
             if o >= from + n {
                 break;
             }
-            let EventKind::Midi(ump) = e.kind else {
-                continue;
-            };
-            let midi = &mut self.pending.midi;
-            if midi.len() < midi.inline_size() {
-                midi.push(MidiEvent::from_ump((at + o - from) as u32, &ump.0));
+            let frame = at + o - from;
+            match e.kind {
+                EventKind::Midi(ump) => {
+                    let midi = &mut self.pending.midi;
+                    if midi.len() < midi.inline_size() {
+                        midi.push(MidiEvent::from_ump(frame as u32, &ump.0));
+                    }
+                }
+                EventKind::Ramp(ramp) => {
+                    let ParamAddr::Id(id) = ramp.addr() else {
+                        continue;
+                    };
+                    let (Some(address), Some(value)) = (
+                        automation_node::address(id, self.indexed),
+                        ramp.foreign_target(id),
+                    ) else {
+                        continue;
+                    };
+                    let offset = i32::try_from(frame).unwrap_or(i32::MAX);
+                    automation_node::add_point(&mut self.pending.params, address, offset, value);
+                }
             }
         }
     }

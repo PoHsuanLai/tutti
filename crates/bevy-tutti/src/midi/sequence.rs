@@ -168,12 +168,27 @@ pub fn rebuild(
         return;
     };
 
-    // Clip nodes whose target no install names any more.
+    // Which targets play through a clip node: those whose node has an event
+    // input. The rest (no node yet, or a `Legacy` unit) get a port source.
+    let through_clip: HashSet<Entity> = by_target
+        .keys()
+        .copied()
+        .filter(|t| {
+            nodes
+                .get(*t)
+                .is_ok_and(|&node| graph.node_event_inputs(node) > 0)
+        })
+        .collect();
+
+    // Clip nodes no longer wanted: no install names their target, or it now
+    // takes the port path (it lost its node, or was rebound to a `Legacy`
+    // one). Removing a node sends nothing, so the notes it left sounding are
+    // ended through the target's port, as the port path's clear does.
     let gone: Vec<Entity> = clips
         .0
         .keys()
         .copied()
-        .filter(|t| !by_target.contains_key(t))
+        .filter(|t| !through_clip.contains(t))
         .collect();
     for target in gone {
         if let Some((node, _)) = clips.0.remove(&target) {
@@ -181,14 +196,13 @@ pub fn rebuild(
             graph_dirty.0 = true;
         }
         feeds.0.remove(&target);
+        if let Some(port) = resolver.port(target) {
+            all_notes_off(port);
+        }
     }
 
-    // Targets with an event input get a clip node; the rest a port source.
     by_target.retain(|&target, events| {
-        let Some(&node) = nodes.get(target).ok() else {
-            return true;
-        };
-        if graph.node_event_inputs(node) == 0 {
+        if !through_clip.contains(&target) {
             return true;
         }
         match clips.0.get(&target) {

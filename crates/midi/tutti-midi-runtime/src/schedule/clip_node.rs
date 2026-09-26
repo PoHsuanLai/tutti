@@ -74,9 +74,13 @@ impl Shared {
 }
 
 /// `events` sorted by beat, stably (events on one beat keep their order: a
-/// note-off before a note-on of the same note stays first), a NaN beat last.
+/// note-off before a note-on of the same note stays first). A beat that is not
+/// finite has no frame, and is dropped.
 fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[TimedMidiEvent]> {
-    let mut v: Vec<TimedMidiEvent> = events.into_iter().collect();
+    let mut v: Vec<TimedMidiEvent> = events
+        .into_iter()
+        .filter(|e| e.beat.get().is_finite())
+        .collect();
     v.sort_by(|a, b| a.beat.get().total_cmp(&b.beat.get()));
     v.into_boxed_slice()
 }
@@ -90,18 +94,20 @@ pub struct MidiClipControls {
 
 impl MidiClipControls {
     /// Play `events` from the next block on. The node ends every note the
-    /// previous clip left sounding, on that block's first frame.
+    /// previous clip left sounding, on that block's first frame. Events equal
+    /// to the clip's (in beat order) change nothing: no note is cut.
     pub fn set_events(&self, events: impl IntoIterator<Item = TimedMidiEvent>) {
-        let generation = self.shared.next_generation.fetch_add(1, Ordering::Relaxed);
-        let clip = Arc::new(ClipEvents {
-            generation,
-            events: sorted(events),
-        });
+        let events = sorted(events);
         let mut current = self
             .shared
             .current
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        if current.events == events {
+            return;
+        }
+        let generation = self.shared.next_generation.fetch_add(1, Ordering::Relaxed);
+        let clip = Arc::new(ClipEvents { generation, events });
         *current = Arc::clone(&clip);
         self.shared.cell.publish(clip);
     }
@@ -205,10 +211,15 @@ impl Play {
         let looping = t
             .looping
             .filter(|l| l.start.get() < l.end.get() && now < l.end.get());
-        let wrap = looping.map_or(len, |l| {
+        let reach = looping.map(|l| {
             let k = tutti_core::first_frame_at_or_after((l.end.get() - now) * fpb).max(0);
-            usize::try_from(k).map_or(len, |k| k.min(len))
+            usize::try_from(k).unwrap_or(usize::MAX)
         });
+        let wrap = reach.map_or(len, |k| k.min(len));
+        // The loop wraps exactly at this segment's end: the next segment
+        // starts on the loop's start, which reads as continuous, so the
+        // release a wrap owes is made there (`expected` forgotten below).
+        let wraps_at_end = reach == Some(len);
 
         // Up to the wrap: a beat less than a frame behind the playhead falls
         // on the first frame (`Env::due`), so the range starts a frame back.
@@ -230,7 +241,7 @@ impl Play {
                 next = l.start.get() + (next - l.end.get());
             }
         }
-        self.expected = Some(next);
+        self.expected = (!wraps_at_end).then_some(next);
     }
 
     /// Write every event with a beat in `[lo, hi)` that playback reaches in
@@ -287,6 +298,11 @@ impl Node for MidiClipNode {
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let clip = self.shared.cell.read();
         let out = io.event_out(0);
+        if self.play.held.owed {
+            if let Some(o) = cx.env.offset(0) {
+                self.play.held.release(out, o);
+            }
+        }
         if clip.generation != self.generation {
             self.generation = clip.generation;
             if let Some(o) = cx.env.offset(0) {
@@ -350,6 +366,9 @@ struct HeldNotes {
     /// `bits[group * 16 + channel]`, bit `note`.
     bits: Box<[u128; 256]>,
     count: usize,
+    /// A release the port refused part of: the rest goes out at the next
+    /// block's first frame, and every block's after, until none is held.
+    owed: bool,
 }
 
 /// A MIDI channel-voice note message's `(group, channel, note)` and whether
@@ -377,6 +396,7 @@ impl HeldNotes {
         Self {
             bits: Box::new([0; 256]),
             count: 0,
+            owed: false,
         }
     }
 
@@ -402,6 +422,7 @@ impl HeldNotes {
     /// and goes out the next time.
     fn release(&mut self, out: &mut EventWriter<'_>, at: Offset) {
         if self.count == 0 {
+            self.owed = false;
             return;
         }
         for (i, slot) in self.bits.iter_mut().enumerate() {
@@ -414,16 +435,19 @@ impl HeldNotes {
                     0,
                 );
                 if out.push(Event::midi(at, off.data)).is_err() {
+                    self.owed = true;
                     return;
                 }
                 *slot &= !(1u128 << n);
                 self.count -= 1;
             }
         }
+        self.owed = false;
     }
 
     fn clear(&mut self) {
         self.bits.fill(0);
         self.count = 0;
+        self.owed = false;
     }
 }

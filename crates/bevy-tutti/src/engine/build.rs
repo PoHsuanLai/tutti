@@ -623,22 +623,17 @@ mod engine_tests {
         (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin()
     }
 
-    /// One sampler voice on a second of the tone, placed at beat 0 on
-    /// `transport` and pitched by `cents`.
+    /// One sampler voice on a second of the tone, placed at beat 0 and
+    /// pitched by `cents`. It reads the transport from its blocks' `Env`.
     #[cfg(feature = "sampler")]
-    fn voice(transport: &Transport, cents: f32) -> tutti_sampler::VoicePool {
+    fn voice(cents: f32) -> tutti_sampler::VoicePool {
         use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
         let mut wave = tutti_io::Wave::new(1, RATE);
         for i in 0..RATE as usize {
             wave.push_frame(&[tone_at(i)]);
         }
-        let source = MemorySource::with_transport(
-            Arc::new(wave),
-            Arc::new(transport.clone()) as Arc<dyn tutti_core::Timeline>,
-            tutti_core::Beat(0.0),
-            None,
-        );
-        let (mut pool, _handle) = VoicePool::new();
+        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
+        let mut pool = VoicePool::new();
         pool.insert_voice(
             SlotId(1),
             Voice {
@@ -657,12 +652,12 @@ mod engine_tests {
     /// global outputs, the transport rolling from the first block. `frames`
     /// stereo frames in `block`-frame device blocks.
     ///
-    /// The voice is a clip reader: it polls the transport (its
-    /// `Arc<dyn Timeline>`) on every 64-frame call. That call is `Legacy`'s,
-    /// and it reads the right beat because the engine renders a plan holding
-    /// a `Legacy` unit chunk-major, 64 frames across every node with the
-    /// playhead published after each (doc 013, "chunk-major `Legacy`
-    /// compatibility mode").
+    /// The voice is a clip reader, a native node: it reads the playhead from
+    /// each block's `Env`, per frame, seating its read on the first frame of
+    /// each 64-frame piece it renders. (Until the sampler's nodes ported it
+    /// polled the transport out of band from a `Legacy` call, and read the
+    /// right beat only because the engine rendered a plan holding one
+    /// chunk-major.)
     #[cfg(feature = "sampler")]
     fn render_voice(cents: f32, frames: usize, block: usize) -> Vec<f32> {
         let transport = Transport::new(SampleRate(RATE));
@@ -670,7 +665,7 @@ mod engine_tests {
         let Assembled {
             mut graph, engine, ..
         } = assemble(SampleRate(RATE), None, 0, 2, &transport, &settings).expect("builds");
-        let voice = graph.insert(voice(&transport, cents));
+        let (voice, _handle) = graph.insert_node(voice(cents));
         for port in 0..2 {
             graph.set_output_source(port, GraphSource::Node(voice, port));
         }
@@ -712,28 +707,27 @@ mod engine_tests {
     /// **A sampler voice plays in time through the builder's engine**, at
     /// `block`-frame device blocks with a rolling transport: the dry voice is
     /// the tone it plays, to the bit, on both channels; the voice a fifth up
-    /// renders the same bits as at 64-frame blocks (chunk-major, a device
-    /// block that is a multiple of 64 frames is the same 64-frame chunks),
-    /// and (Linux/glibc) the `Net`-era engine's.
+    /// renders the same bits as at 64-frame blocks, and (Linux/glibc) the
+    /// `Net`-era engine's.
     ///
     /// `scene_render.rs` renders under a stopped transport, where a clip
     /// reader sounds nothing; this is the adapter's path with the clock
     /// moving (doc 013, the #32 follow-up). Until doc 013 PR 15 both voices
     /// were compared, bit for bit, with the `Net`-era engine (`net_era`).
     ///
-    /// Mutations (run): the engine publishing its playhead in the walk,
-    /// before the render (`TransportClock::advance` writing back) → the voice
-    /// reads a chunk ahead and the dry render leaves the tone, at both block
-    /// sizes; `Cents::to_pitch_ratio` dividing by 1 100 cents to the octave
-    /// → the pitched voice is not a fifth up, on every target.
+    /// Mutation (run): `Cents::to_pitch_ratio` dividing by 1 100 cents to
+    /// the octave → the pitched voice is not a fifth up, on every target.
     ///
-    /// Not caught here: the engine rendering whole device blocks with a
-    /// `Legacy` unit present (`GraphRender::settle` ignoring `has_legacy`).
-    /// A voice placed at beat 0 enters on frame 0 and then reads its own
-    /// cursor, so it renders the same bits (measured, both voices). The note
-    /// here used to say otherwise; tutti-sampler's `graph_engine_clock.rs`
-    /// and `frame_exact_entry.rs`, and tutti-core's `legacy_chunk_major.rs`,
-    /// catch that mode.
+    /// Not caught here: the voice seating each 64-frame piece at its block's
+    /// first beat (`interp::place` reading `run.beat_at(0)`; run: passes).
+    /// The assembled graph still holds `Legacy` units (the click), so the
+    /// engine renders it chunk-major, 64 frames a block, and every piece is
+    /// a block's first. The voice's own read at longer blocks is pinned by
+    /// tutti-sampler's `block_render.rs` and tutti-export's `graph_source.rs`
+    /// and `sampler_to_export.rs`, which that mutation fails. (The `Net`-era
+    /// mutation here, the engine publishing its playhead before the render,
+    /// has no counterpart: the voice reads the playhead from its `Env`, not
+    /// the published position.)
     #[cfg(feature = "sampler")]
     fn a_voice_plays_in_time(block: usize) {
         let frames = 24_000;

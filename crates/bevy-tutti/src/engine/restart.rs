@@ -620,6 +620,7 @@ mod tests {
     #[cfg(feature = "sampler")]
     #[test]
     fn a_restart_re_rates_a_disk_streamed_clip() {
+        use crate::graph::SpawnGraphNode;
         use crate::sampler::DiskStreamerRes;
         use tutti_core::{Beat, SamplePosition};
         use tutti_sampler::{Command, DiskStreamer};
@@ -656,13 +657,12 @@ mod tests {
             streamer.step_until_settled(1_000) < 1_000,
             "the ring primes"
         );
-        let timeline = app.world().resource::<TransportRes>().timeline();
         let voice = streamer
             .status()
-            .take_disk_voice(0, timeline, Beat(0.0), None)
+            .take_disk_voice(0, Beat(0.0), None)
             .expect("the link is installed");
         app.world_mut().insert_resource(DiskStreamerRes(streamer));
-        let clip = app.world_mut().commands().spawn_audio_node(voice).id();
+        let clip = app.world_mut().commands().spawn_graph_node(voice).id();
         // The master shrinks to the clip alone: channel 1, which carried the
         // limiter, is released while the limiter stays in the graph — the
         // shrink `topology::build` makes the value as wide as the root for.

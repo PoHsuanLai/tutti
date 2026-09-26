@@ -28,7 +28,11 @@ bevy = ["dep:bevy_ecs"]
 # 3 ms healthy, so such a test is racing a producer it cannot see. Off by
 # default: a host has no use for it, and the assertions it adds are about a
 # constraint only a hand driver can violate.
-test-support = []
+#
+# Also exposes `testing`: a transport a test moves between blocks, and the
+# block driver that hands a node its `Env` (which needs `tutti-graph`'s
+# `contract` harness).
+test-support = ["tutti-graph/contract"]
 
 # Audio format support - cascade to tutti-io, which owns the decoder.
 wav = ["tutti-io/wav"]
@@ -49,6 +53,12 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # `Wave::probe_metadata`, `FileIn`). No cycle: `tutti-io` names nothing above
 # `tutti-core`.
 tutti-io = { path = "../../core/tutti-io" }
+
+# The native graph (doc 013): every node here is a `tutti_graph::Node`, reads
+# the transport from its block's `Env`, and hands its controls and its fork
+# source over through `IntoNode`. No cycle: `tutti-graph` names only
+# `tutti-types` and `tutti-node`.
+tutti-graph = { path = "../../core/tutti-graph" }
 
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
@@ -102,10 +112,7 @@ tutti-sampler = { path = ".", features = ["test-support"] }
 # Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
 # nothing above `tutti-core`.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# The native graph, to run a voice through `Legacy::controlled`'s settings
-# ring (doc 013 Phase 3). No cycle: `tutti-graph` names only `tutti-types`
-# and `tutti-node`.
-# `contract` for `IsolateRow`, the fork-snapshot harness.
+# `contract` for the node harnesses (`drive_in`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
 
 tracing-subscriber = "0.3"

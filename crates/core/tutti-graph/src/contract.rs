@@ -1527,14 +1527,16 @@ pub fn drive_in(
 ) -> Driven {
     let shape = node.shape();
     let frames = env.block_len.get();
+    assert!(frames > 0, "a node is never called with zero frames");
     assert_eq!(
         inputs.len(),
         usize::from(shape.audio_in.count()),
         "one slice per audio input"
     );
     assert!(
-        inputs.iter().all(|c| c.len() == frames),
-        "every input is the block long"
+        inputs.iter().all(|c| c.len() == frames)
+            && params.iter().flatten().all(|p| p.len() == frames),
+        "every input and param slice is the block long"
     );
     let mut out = vec![vec![0.0f32; frames]; usize::from(shape.audio_out.count())];
     let mut refs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
@@ -1730,6 +1732,12 @@ impl BlockRig {
 
     /// One block, transport stopped. Allocation-free.
     pub fn block(&mut self) {
+        self.block_in(&Transport::default());
+    }
+
+    /// One block under `transport` (a rolling one, for a node that reads
+    /// the transport from its `Env`). Allocation-free.
+    pub fn block_in(&mut self, transport: &Transport) {
         let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
         for (slot, c) in ins.iter_mut().zip(&self.inputs) {
             *slot = c;
@@ -1738,12 +1746,8 @@ impl BlockRig {
         let mut outs = self.outputs.iter_mut();
         let mut out_refs: [&mut [f32]; RIG_MAX_CHANNELS] =
             core::array::from_fn(|_| outs.next().map_or(&mut [][..], |c| &mut c[..]));
-        self.exec.process(
-            self.frames,
-            &Transport::default(),
-            &ins[..n_in],
-            &mut out_refs[..n_out],
-        );
+        self.exec
+            .process(self.frames, transport, &ins[..n_in], &mut out_refs[..n_out]);
     }
 }
 
@@ -1875,8 +1879,41 @@ impl<N: Node> Direct<N> {
         &self.outputs[c][..self.len]
     }
 
-    /// One block. Allocation-free.
+    /// The output channels, to fill before a block: a node must write every
+    /// frame of every output it declares, and what it leaves shows.
+    pub fn outputs_mut(&mut self) -> &mut [Vec<f32>] {
+        &mut self.outputs
+    }
+
+    /// One block: at the driver's frame (advanced block to block), under
+    /// its transport ([`set_transport`](Self::set_transport)), its block
+    /// length ([`set_block_len`](Self::set_block_len)). Allocation-free.
     pub fn block(&mut self) -> Status {
+        let env = Env {
+            frame: self.frame,
+            sample_rate: self.rate,
+            block_len: Samples(self.len),
+            transport: self.transport,
+            changes: TransportChanges::NONE,
+        };
+        let status = self.block_in(&env);
+        self.frame = Frame(self.frame.0 + self.len as u64);
+        status
+    }
+
+    /// One block under `env` exactly — its frame, rate, length, transport
+    /// and the transport's changes inside the block — for a node that reads
+    /// the transport from its `Env` (a clip reader crossing a start or a
+    /// seek). The driver's own frame is not advanced; the block's length
+    /// becomes the driver's ([`output`](Self::output) reads that many).
+    /// Allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// If `env.block_len` is zero or past the frames the driver was built
+    /// for.
+    pub fn block_in(&mut self, env: &Env) -> Status {
+        self.set_block_len(env.block_len.get());
         let len = self.len;
         let mut ins: [&[f32]; RIG_MAX_CHANNELS] = [&[]; RIG_MAX_CHANNELS];
         for (slot, c) in ins.iter_mut().zip(&self.inputs) {
@@ -1905,15 +1942,8 @@ impl<N: Node> Direct<N> {
                 EventWriter::new(b, HAND_EVENT_CAPACITY, len as u32, &dropped)
             })
         });
-        let env = Env {
-            frame: self.frame,
-            sample_rate: self.rate,
-            block_len: Samples(len),
-            transport: self.transport,
-            changes: TransportChanges::NONE,
-        };
         let cx = Cx {
-            env: &env,
+            env,
             arrival: Latency::ZERO,
         };
         let max = Prepare::new(self.rate, Samples(self.frames)).max_block();
@@ -1933,7 +1963,6 @@ impl<N: Node> Direct<N> {
         for list in &mut self.events_in {
             list.clear();
         }
-        self.frame = Frame(self.frame.0 + len as u64);
         status
     }
 }

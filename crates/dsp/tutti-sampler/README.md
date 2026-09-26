@@ -43,19 +43,22 @@ through `PlaybackRate::read_rate`, and the varispeed range lives in one shared
 bounded constructor that every user-input path goes through — a bound that sits
 in one tier's setter is a bound the other tier silently ignores.
 
-A voice bound to a transport derives its read position from the playhead every
-frame rather than carrying a cursor, matching `tutti-core`'s transport: one clock
-advances, everything else reads.
+A voice placed on the transport derives its read position from the playhead
+every frame rather than carrying a cursor, matching `tutti-core`'s transport:
+one clock advances, everything else reads. The playhead reaches a node through
+its block's `Env` (the sampler's nodes are native `tutti_graph` nodes), so a
+clip enters, exits, wraps and follows a seek on its frame, wherever that falls
+in a block.
 
 ## Quick start
 
 An in-memory voice needs no butler and no file, so it is a plain graph node:
-build the `Wave`, wrap it, push it into a `Net` and render.
+build the `Wave`, wrap it, put it in a graph and render.
 
 ```rust
 use std::sync::Arc;
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
+use tutti_core::{SampleRate, Samples};
+use tutti_graph::{Prepare, Solo};
 use tutti_io::Wave;
 use tutti_sampler::MemorySource;
 
@@ -65,17 +68,16 @@ for _ in 0..100 {
     wave.push_frame(&[0.5, 0.5]);
 }
 
+// Free-running (not placed on the transport), so it plays once started.
 let source = MemorySource::new(Arc::new(wave));
 source.play();
 
-// No audio input: the voice *is* the source. Stereo out.
-let mut net = Net::new(0, 2);
-let voice = net.push(Box::new(source));
-net.pipe_output(voice);
-net.check();
-
-let mut out = [0.0f32; 2];
-net.tick(&[], &mut out);
+// No audio input: the voice *is* the source. Stereo out; its controls are
+// its params by address (the gain, `UnitParam::Volume`).
+let mut graph = Solo::new(source, Prepare::new(SampleRate(44_100.0), Samples(64)));
+let out = graph.render(64);
+assert_eq!(out.len(), 2);
+assert!(out[0].iter().all(|&s| s != 0.0));
 ```
 
 Streaming is the other tier and cannot run here — it needs a real file on disk.

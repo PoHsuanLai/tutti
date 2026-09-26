@@ -327,12 +327,12 @@ and you insert only the ones you drive.
 
 ```rust
 // DSP nodes come from `tutti-nodes`, spawned like any other node: a native
-// graph node (the filters, the dynamics, the distortion, the strip) through
-// `spawn_graph_node`, an `AudioUnit` through `spawn_audio_node`. There are no
+// graph node (the filters, the dynamics, the distortion, the strip, the
+// delays, the LFO, the convolver) through `spawn_graph_node`. There are no
 // marker components and no per-node ECS wrappers.
-use tutti_nodes::{CompressorNode, GateNode, LfoNode};
+use tutti_nodes::{CompressorNode, GateNode, LfoNode, LfoShape};
 
-commands.spawn_audio_node(LfoNode::new(Hz(2.0)));
+commands.spawn_graph_node(LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0)));
 
 // A param is an `AudioParam` on the entity, addressed by `UnitParam`; it
 // writes through the node's `ParamSet`.

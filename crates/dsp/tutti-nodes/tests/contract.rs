@@ -31,8 +31,11 @@
 //!   and `blocks_random`, and pass `blocks_64` and `blocks_max`.
 //! - In `ConvolverNode::blend_channel`, blend the undelayed input again (D3)
 //!   → `convolver_dry` and `convolver_half` fail every path.
-//! - Restore a `.delay(..)` of the echo time in `DelayLineNode::route` (D1)
-//!   → `delay_line` fails every path.
+//! - Declare the echo time as latency in `DelayLineNode::shape` (D1) →
+//!   `delay_line` fails every path.
+//!
+//! The delay and the convolver are native nodes (`Row::new`); the limiter
+//! still runs through `Legacy` (`Row::legacy`).
 
 use tutti_core::{ChannelLayout, Db, Samples};
 use tutti_graph::contract::{Detect, Excite, Row};
@@ -77,14 +80,14 @@ fn stereo_limiter_row() -> Row {
 }
 
 /// A 500 ms echo at mix 0.5: the dry half is the response, on the
-/// excitation's own frame.
+/// excitation's own frame. A native node, so the row runs it as itself.
 fn delay_line_row() -> Row {
-    Row::legacy(
+    Row::new(
         "DelayLineNode (500 ms echo, mix 0.5)",
         || {
             let node = DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32);
             node.set_mix(0.5_f32);
-            node
+            Box::new(node)
         },
         impulse(0),
         Detect::Threshold(0.0),
@@ -104,14 +107,14 @@ mod convolution {
     /// A unit-impulse IR, so the wet path is a pure delay of the block; at
     /// `mix` the dry and wet shares leave on one frame. The FFT leaves noise
     /// far under the threshold; the response is `0.25` (dry + wet shares of
-    /// the impulse).
+    /// the impulse). A native node, so the row runs it as itself.
     fn convolver_row(mix: f32) -> Row {
-        Row::legacy(
+        Row::new(
             &format!("ConvolverNode (256-frame block, mix {mix})"),
             move || {
                 let node = ConvolverNode::new(&[1.0], 256);
                 node.set_mix(mix);
-                node
+                Box::new(node)
             },
             impulse(0),
             Detect::Threshold(1e-3),

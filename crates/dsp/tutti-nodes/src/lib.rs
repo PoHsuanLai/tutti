@@ -59,11 +59,13 @@
 //! outside their no-alloc gate rather than inside it.
 //!
 //! **Native nodes are exempt**: [`SvfFilterNode`], [`EqBandNode`],
-//! [`LadderFilterNode`], [`CompressorNode`], [`GateNode`], [`LimiterNode`] and
-//! [`BrickwallLimiterNode`] are graph nodes (`tutti_graph::Node`), and the
-//! graph calls their `prepare` with the device rate before their first block
-//! — there is no path on which they run at the placeholder. A test drives one
-//! prepared (`tutti_graph::contract::prepared`, or a `tutti_graph::Solo`).
+//! [`LadderFilterNode`], [`CompressorNode`], [`GateNode`], [`LimiterNode`],
+//! [`BrickwallLimiterNode`], [`DelayLineNode`], [`ModDelayNode`],
+//! [`PhaserNode`], [`LfoNode`], the automation lane and (with `convolution`)
+//! the convolver are graph nodes (`tutti_graph::Node`), and the graph calls
+//! their `prepare` with the device rate before their first block — there is
+//! no path on which they run at the placeholder. A test drives one prepared
+//! (`tutti_graph::contract::prepared`, or a `tutti_graph::Solo`).
 //!
 //! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
 //! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`], all native too —
@@ -178,7 +180,7 @@ mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
     generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
-    ConvolverNode, IrChannelConfig, WetDry,
+    ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

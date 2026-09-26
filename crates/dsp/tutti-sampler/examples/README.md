@@ -42,8 +42,8 @@ in both drive paths (`voice/slot.rs`), and all six `stretch_*` cases pass.
   `window_rate()` alone (varispeed) and never called `input_rate` — the vocoder
   got one source sample per output sample, so the stretch factor moved pitch
   instead of duration. `input_rate` is now read in all four places that drive a
-  stretched voice (`voice/slot.rs`), memory and disk tiers, `tick` and `process`
-  alike, and the judge measures `stretch_half` at 439.9 Hz — unshifted, which is
+  stretched voice (`voice/slot.rs`), memory and disk tiers, per frame and per
+  block alike, and the judge measures `stretch_half` at 439.9 Hz — unshifted, which is
   what separates a real time-stretch from the varispeed it used to be.
 - **0%-overlap exemption** — `pitch_down_two_octaves` and
   `stretch_half_pitch_down` reach an effective factor of 0.25, where the analysis
@@ -60,9 +60,10 @@ from the playhead, which advances once per block. `process` walked the block
 with an offset; `tick` had none, so 64 calls against one transport reading
 emitted the same sample 64 times — a staircase that resamples the source
 downward. The first draft drove `tick` and every case failed, *including*
-`dry`. A placed read now seats on the clock and steps through a block through
-either entry point (`MemorySource::seated_position`); the harness still drives
-`process`, as a host does.
+`dry`. The sampler's nodes are native now, with one entry point: each block's
+`Env` carries the playhead, and a placed read seats on it and steps through
+the block. The harness drives blocks, under a transport it moves after each,
+as a host does.
 
 **Keep an unprocessed control.** `dry` is what distinguishes "the engine is
 broken" from "the harness is broken". Both times this harness was wrong, `dry`

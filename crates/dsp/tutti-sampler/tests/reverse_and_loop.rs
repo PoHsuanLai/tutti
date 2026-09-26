@@ -22,8 +22,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline};
+use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples};
+use tutti_graph::{contract, Env, Node, TransportChanges};
 use tutti_io::Wave;
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,
@@ -52,12 +52,13 @@ fn index_of(value: f32, len: usize) -> f64 {
     value as f64 * len as f64
 }
 
-/// A rolling transport advanced by hand, once per block.
+/// A rolling transport advanced by hand, once per block, handed to each
+/// block in its `Env`.
 ///
 /// Needed because reverse only reaches its code path on a **placed** voice:
 /// `PlaybackSlot` derives the read position from the playhead
-/// (`MemorySource::seated_position`), which is `None` without a timeline, and
-/// the slot then emits silence. A free-running
+/// (`MemorySource::placed_positions`), which gives none for a free-running
+/// source, and the slot then emits silence. A free-running
 /// voice never reaches `read_clip_sample_into` at all — which is how the first
 /// draft of this file measured index 0 for every reversed read and looked like
 /// an engine bug.
@@ -81,32 +82,31 @@ impl Clock {
     }
 }
 
-impl Timeline for Clock {
+impl Clock {
     fn beat(&self) -> Beat {
         Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
     }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
+
+    /// One block of `node` under this clock (not moved); planar.
+    fn block(&self, node: &mut dyn Node) -> Vec<Vec<f32>> {
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(SR),
+            block_len: Samples(BLOCK),
+            transport: tutti_graph::Transport::new(true, Bpm::new(self.tempo), self.beat(), None),
+            changes: TransportChanges::NONE,
+        };
+        contract::drive_in(node, &env, &[], &[])
     }
 }
 
-/// Drive a unit for `blocks` blocks, returning channel 0.
-fn render(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<f32> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
+/// Drive a free-running node for `blocks` blocks (no transport moves it),
+/// returning channel 0.
+fn render(node: &mut dyn Node, blocks: usize) -> Vec<f32> {
+    let clock = Clock::new();
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
-        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push(b.at_f32(0, i));
-        }
+        out.extend(clock.block(node).swap_remove(0));
     }
     out
 }
@@ -130,12 +130,12 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
         wave,
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            timeline: Some(clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             ..Default::default()
         },
     );
 
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -153,15 +153,9 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
 
 /// Render a placed pool, advancing its clock once per block.
 fn render_placed(pool: &mut VoicePool, clock: &Clock, blocks: usize) -> Vec<f32> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
-        pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push(b.at_f32(0, i));
-        }
+        out.extend(clock.block(pool).swap_remove(0));
         clock.advance(BLOCK);
     }
     out
@@ -400,7 +394,7 @@ fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
             sine(len),
             MemorySourceConfig {
                 channels: ChannelLayout::STEREO,
-                timeline: Some(clock.clone() as Arc<dyn Timeline>),
+                placed: true,
                 ..Default::default()
             },
         );
@@ -409,13 +403,9 @@ fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
             end: SamplePosition(end),
             crossfade_frames: fade,
         });
-        let input = BufferVec::new(2);
-        let mut output = BufferVec::new(2);
         let mut out = Vec::new();
         for _ in 0..150 {
-            source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-            let b = output.buffer_ref();
-            out.extend((0..BLOCK).map(|i| b.at_f32(0, i)));
+            out.extend(clock.block(&mut source).swap_remove(0));
             clock.advance(BLOCK);
         }
         out
@@ -608,7 +598,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
         ramp(LEN),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            timeline: Some(clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             ..Default::default()
         },
     );
@@ -618,7 +608,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
         crossfade_frames: 0,
     });
 
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -708,13 +698,9 @@ fn reverse_and_loop_work_at_mono_width() {
     source.trigger_at(SamplePosition(200.0));
     source.play();
 
-    let input = BufferVec::new(1);
-    let mut output = BufferVec::new(1);
+    let clock = Clock::new();
     for _ in 0..50 {
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            let s = b.at_f32(0, i);
+        for s in clock.block(&mut source).swap_remove(0) {
             assert!(s.is_finite(), "mono looping produced {s}");
         }
     }

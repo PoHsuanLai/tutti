@@ -9,11 +9,12 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, SampleRate, StretchFactor, Timeline};
+use tutti_core::{Beat, Bpm, SampleRate, StretchFactor};
+use tutti_graph::contract::Direct;
 use tutti_io::Wave;
+use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
 thread_local! {
@@ -50,26 +51,6 @@ fn frees_during(f: impl FnOnce()) -> usize {
     FREES.with(|c| c.get())
 }
 
-struct Clock {
-    beat: AtomicU64,
-    rolling: AtomicBool,
-}
-
-impl Timeline for Clock {
-    fn beat(&self) -> Beat {
-        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(120.0)
-    }
-    fn is_rolling(&self) -> bool {
-        self.rolling.load(Ordering::Relaxed)
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
-
 /// **Adding voices, and replacing one, frees nothing in the drain.** Three
 /// `AddVoice`s — two stretched (their filters built by the sender), then a
 /// second add at the first one's id, which replaces that slot — are drained
@@ -83,19 +64,15 @@ impl Timeline for Clock {
 /// box are freed in the drain → fails.
 #[test]
 fn the_add_voice_drain_frees_nothing() {
-    let clock = Arc::new(Clock {
-        beat: AtomicU64::new(0f64.to_bits()),
-        rolling: AtomicBool::new(true),
-    });
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
     let wave = Arc::new(Wave::from_samples(48_000.0, &vec![0.5f32; 48_000]));
-    let (mut pool, handle) =
-        VoicePool::with_transport(Arc::clone(&clock) as Arc<dyn Timeline>, None);
-    pool.set_sample_rate(SampleRate(48_000.0));
+    let (pool, handle) = VoicePool::new().with_handle();
+    let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);
+    let env = t.env(64, SampleRate(48_000.0));
     let voice = || {
         Box::new(Voice {
-            source: VoiceSource::Memory(MemorySource::with_transport(
+            source: VoiceSource::Memory(MemorySource::placed(
                 Arc::clone(&wave),
-                Arc::clone(&clock) as Arc<dyn Timeline>,
                 Beat::new(0.0),
                 None,
             )),
@@ -115,12 +92,14 @@ fn the_add_voice_drain_frees_nothing() {
             })
             .expect("the command queue has room");
     }
-    let input = BufferVec::new(0);
-    let mut output = BufferVec::new(2);
     let frees = frees_during(|| {
-        pool.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        rig.block_in(&env);
     });
-    assert_eq!(pool.voice_count(), 2, "the third add replaced the first");
+    assert_eq!(
+        rig.node.voice_count(),
+        2,
+        "the third add replaced the first"
+    );
     assert_eq!(
         frees, 0,
         "the drain freed {frees} time(s) on the audio thread; a box or a \

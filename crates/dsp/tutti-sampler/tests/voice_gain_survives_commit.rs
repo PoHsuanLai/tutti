@@ -1,307 +1,195 @@
-//! **A voice's gain is addressable by `Net::set`, and survives a commit.**
+//! **A voice's gain reaches the node that renders, lands on the next block
+//! whole, survives a commit, and is what a fork of the node starts from.**
 //!
-//! `tutti-nodes`' `live_controls_reach_the_node` (once
-//! `live_value_survives_commit`, pinned on `Net`) pins the *rule* — a live control
-//! value lives in shared storage or the next commit discards the write. This
-//! pins the sampler's compliance with it, through the door a host actually uses.
+//! `tutti-nodes`' `live_controls_reach_the_node` pins the *rule* — a live
+//! control value lives in shared storage, reached through the controls the
+//! node was inserted with; a `&mut self` setter can only reach a node that
+//! is not running. This pins the sampler's compliance with it, through the
+//! door a host actually uses.
 //!
-//! # What is actually being asserted
+//! # What replaced what
 //!
-//! 1. **`VoiceNode` implements `set` at all.** `AudioUnit::set` has an empty
-//!    default body, so a unit that does not implement it swallows every setting
-//!    in silence. Before this, `Net::set` could not address a voice, and the
-//!    sampler grew a parallel setter vocabulary (`apply_gain` and its siblings,
-//!    all `pub(crate)`) that a host outside the crate could not reach at all.
-//!
-//! 2. **The setting reaches the copy that renders**, across a `commit`.
-//!
-//! # What is NOT being asserted, though an earlier draft claimed it was
-//!
-//! That the *shared gain cell* is what makes this work. It is not, on this path,
-//! and the correction is worth recording because the claim is plausible and
-//! wrong:
-//!
-//! Reverting `MemorySource::gain` to an unshared clone leaves **every test in
-//! this file passing** — measured, not assumed. A `VoiceNode` renders through
-//! `slot.voice.play.gain` (see `PlaybackSlot::tick_frame_into`), a plain `Copy`
-//! field on the `Playback` record, and never consults the source's own cell
-//! here. And `Net::set` with a backend attached *enqueues* to the audio thread
-//! rather than mutating the frontend, so the frontend-clone hazard the
-//! live-value rule is about does not arise on this path at all.
-//!
-//! The shared cell still matters — for `node_as_mut` writes, for a `VoicePool`
-//! slot, and for the offline render — it is simply not what these tests
-//! discriminate. `tutti-nodes`' former `live_value_survives_commit` and this crate's
-//! `a_gain_change_reaches_a_cloned_source` are where that property is pinned.
-//!
-//! Sabotages that DO fail this file: deleting the `UnitParam::Volume` arm, and
-//! writing only the source without `play.gain`. Both were run.
+//! Under `Net` the door was `Net::set(Setting)` → `VoiceNode::set`, which
+//! wrote `slot.voice.play.gain` (a plain `Copy` field) on the copy the backend
+//! rendered; under the native graph's first cut it was `Legacy::controlled`'s
+//! settings ring into the same `set`, with a shadow copy for forks
+//! (`voice_gain_through_legacy_settings.rs`). Both went with `AudioUnit` (doc
+//! 013 items 8 and 9): a `VoiceNode` is a native node whose `IntoNode` hands
+//! back a `VoiceNodeHandle` — its gain a `Param<Amplitude>` cell, addressable
+//! as `UnitParam::Volume` through the handle's `ParamSet` — and the node reads
+//! the cell once per block into its `Playback` record and its source. A fork
+//! starts from the value last **set** (the authored value), with no shadow.
 //!
 //! # Why the assertion is on rendered audio
 //!
-//! Reading back through `node_as` would report every write as landed — it reads
-//! `self.vertex`, the **frontend**, which is the copy being written. The
-//! frontend and backend differ only in what they render. `live_value_survives_commit`
-//! records that this exact mistake produced a passing test that measured
-//! nothing.
-//!
-//! A voice generates its own signal (0 inputs), so the sibling trap in that file
-//! — a fixture with no input rendering silence — does not apply here. The
-//! `a_voice_at_unity_renders_its_wave` guard below is what proves the probe can
-//! see anything at all, so a regression to silence fails loudly rather than
-//! passing every comparison.
+//! Once inserted the node belongs to the executor; the handle's cell is
+//! written on the control side, and a test that read the cell back would
+//! prove only that the write happened somewhere. What renders is the only
+//! vantage point. A voice generates its own signal (no inputs), and the
+//! `a_voice_at_unity_renders_its_wave` guard proves the probe can see anything
+//! at all, so a regression to silence fails loudly rather than passing every
+//! comparison.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::{Amplitude, Beat, Bpm, Timeline, UnitParam};
+use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples, UnitParam};
+use tutti_graph::{ForkMode, ForkTarget, Prepare, Solo, Transport};
 use tutti_io::Wave;
-use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 
-/// A transport that is always rolling at beat 0.
-///
-/// A `MemorySource` reads through `window_position`, which answers `None`
-/// without a timeline — so a voice with no clock renders **silence**, and every
-/// gain comparison in this file would compare 0.0 against 0.0. That is not
-/// hypothetical: the first version of this fixture had no timeline and all four
-/// tests failed on the guard below, which is exactly what it is for.
-struct RollingTransport {
-    playing: AtomicBool,
-    beat: AtomicU64,
-    tempo: AtomicU64,
-}
-
-impl RollingTransport {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            playing: AtomicBool::new(true),
-            beat: AtomicU64::new(0.0f64.to_bits()),
-            tempo: AtomicU64::new(120.0f64.to_bits()),
-        })
-    }
-}
-
-impl Timeline for RollingTransport {
-    fn is_rolling(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-    fn beat(&self) -> Beat {
-        Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
+const RATE: SampleRate = SampleRate(48_000.0);
+const BLOCK: usize = 256;
 
 /// A wave whose every frame is 1.0, so a rendered sample *is* the gain.
 ///
-/// Deliberately flat rather than a ramp: the test compares a rendered peak
+/// Deliberately flat rather than a ramp: the test compares rendered samples
 /// against an expected gain directly, and a ramp would make that comparison
 /// depend on which frame the read landed on.
 fn flat_wave(len: usize) -> Arc<Wave> {
-    let samples: Vec<f32> = vec![1.0; len];
-    Arc::new(Wave::from_samples(48_000.0, &samples))
+    Arc::new(Wave::from_samples(48_000.0, &vec![1.0f32; len]))
 }
 
-/// A net holding one playing voice node, with a **live backend**.
-///
-/// `Net::new` alone has no backend and applies settings in place, which would
-/// make every assertion here pass for the wrong reason — the hazard is entirely
-/// about what happens to a *frontend* clone.
-fn net_with_voice() -> (Net, Box<dyn AudioUnit>, tutti_core::dsp::NodeId) {
-    let mut source = MemorySource::new(flat_wave(4_096));
-    // The clock is mandatory, not decoration — see `RollingTransport`. The
-    // default window starts at beat 0 and runs to the end of the source, so a
-    // rolling transport at beat 0 is inside it.
-    source.replace_transport(RollingTransport::new());
-    source.play();
+/// Rolling at 120 BPM from beat 0, as a host counting frames reports it.
+fn rolling(frame: Frame) -> Transport {
+    Transport::new(true, Bpm(120.0), Beat(frame.0 as f64 / 24_000.0), None)
+}
 
+/// One voice over a flat 1.0 wave, placed from beat 0, alone in a graph on a
+/// rolling transport.
+///
+/// The transport is mandatory, not decoration: a placed voice on a stopped
+/// transport renders **silence**, and every gain comparison in this file would
+/// compare 0.0 against 0.0. The first version of the `Net` file had no clock
+/// and all its tests failed on the guard below, which is what it is for.
+fn solo_voice() -> Solo<VoiceNodeHandle> {
     let voice = Voice {
-        source: VoiceSource::Memory(source),
+        source: VoiceSource::Memory(MemorySource::placed(flat_wave(48_000), Beat(0.0), None)),
         play: Playback::default(),
         channel_index: None,
     };
-    let mut net = Net::new(0, 1);
-    let node = net.push(Box::new(VoiceNode::with_channels(
-        voice,
-        tutti_core::ChannelLayout::MONO,
-    )));
-    net.pipe_output(node);
-    net.check();
-
-    // **Hold** the backend. `Net::with_backend` drops it, and a dropped backend
-    // never renders — so `migrate` would never run and the whole point of the
-    // test would be lost.
-    let backend = Box::new(net.backend()) as Box<dyn AudioUnit>;
-    (net, backend, node)
+    let mut solo = Solo::new(
+        VoiceNode::with_channels(voice, ChannelLayout::MONO),
+        Prepare::new(RATE, Samples(BLOCK)),
+    );
+    solo.renderer_mut().set_transport_fn(rolling);
+    solo
 }
 
-/// Peak output over a short block — the only vantage point from which the
-/// frontend's copy and the rendering copy differ.
-fn render_peak(backend: &mut Box<dyn AudioUnit>) -> f32 {
-    let mut peak = 0.0f32;
-    let mut out = [0.0f32; 1];
-    for _ in 0..64 {
-        backend.tick(&[], &mut out);
-        peak = peak.max(out[0].abs());
-    }
-    peak
+/// Every sample of the next block.
+fn block(solo: &mut Solo<VoiceNodeHandle>) -> Vec<f32> {
+    solo.render(BLOCK).swap_remove(0)
+}
+
+fn all_at(samples: &[f32], gain: f32) -> bool {
+    samples.iter().all(|&x| (x - gain).abs() < 1e-4)
 }
 
 /// **The probe can see the wave at all.**
 ///
-/// The guard against the whole file passing for the wrong reason. If a fixture
-/// change ever leaves the voice gated, seeking or otherwise silent, every gain
-/// comparison below would hold trivially — `0.0` is within tolerance of nothing
-/// in particular, but a test asserting "the gain is 0.25" against silence would
-/// still fail, whereas one asserting "it changed" would not. This makes the
-/// baseline explicit.
+/// The guard against the whole file passing for the wrong reason: if a
+/// fixture change ever leaves the voice gated or silent, a test asserting
+/// "the gain is 0.25" would still fail, but one asserting "it did not change"
+/// would not. This makes the baseline explicit.
 #[test]
 fn a_voice_at_unity_renders_its_wave() {
-    let (_net, mut backend, _node) = net_with_voice();
-    let peak = render_peak(&mut backend);
+    let mut s = solo_voice();
+    let out = block(&mut s);
     assert!(
-        (peak - 1.0).abs() < 1e-4,
+        all_at(&out, 1.0),
         "the fixture must render its flat 1.0 wave at unity before any gain \
-         assertion means anything; got {peak}. Silence here means the voice is \
-         gated or not playing, and every other test in this file is vacuous."
+         assertion means anything; got {:?}. Silence here means the voice is \
+         gated, and every other test in this file is vacuous.",
+        &out[..4]
     );
 }
 
-/// **`Net::set` reaches a live voice's gain, and the value survives the commit.**
+/// **A gain set through the node's controls lands on the next block, whole,
+/// and survives a commit.** Addressed as a host addresses any node's param —
+/// `UnitParam::Volume` through its `ParamSet` — with no knowledge that it is
+/// a sampler voice; and through the typed door, `set_gain`.
 ///
-/// The claim this file exists to make, through the production path: a host
-/// addresses a node by `NodeId` + `UnitParam`, exactly as it does a filter or a
-/// mixer strip, with no knowledge that the node is a sampler voice.
+/// Mutation (run): `VoiceNode::drain_commands` not reading the gain cell
+/// (the `if gain != play.gain` block removed) → the block stays at 1.0 →
+/// fails. Mutation (run): `VoiceNode::param_set` built over a detached copy
+/// of the cell (`Param::new(self.gain.load()).as_atomic()`) → fails.
 #[test]
-fn a_setting_reaches_a_live_voices_gain() {
-    let (mut net, mut backend, node) = net_with_voice();
-
-    // Establish the baseline through the *backend*, so a failure below cannot
-    // be blamed on the voice never having sounded.
+fn a_gain_set_through_the_controls_reaches_the_running_voice() {
+    let mut s = solo_voice();
+    assert!(all_at(&block(&mut s), 1.0), "unity before the edit");
+    assert!(s.controls().params().set(UnitParam::Volume, 0.25));
+    let after = block(&mut s);
     assert!(
-        (render_peak(&mut backend) - 1.0).abs() < 1e-4,
-        "unity before the edit"
+        all_at(&after, 0.25),
+        "every sample of the next block at the new gain; got {:?}",
+        &after[..4]
     );
-
-    net.set(tutti_core::unit_param::node_setting(
-        node,
-        UnitParam::Volume,
-        0.25,
-    ));
-    net.commit();
-
-    // A few blocks: `commit` only *sends* the new net; `migrate` runs when the
-    // backend next processes, and the setting queue drains there too.
-    let peak = render_peak(&mut backend);
-
+    s.renderer_mut()
+        .editor_mut()
+        .commit()
+        .expect("an unrelated commit");
     assert!(
-        (peak - 0.25).abs() < 1e-3,
-        "a Volume setting must reach the voice that renders; expected ~0.25, \
-         got {peak}. A value near 1.0 means either `VoiceNode` has no \
-         `UnitParam::Volume` arm (the setting was swallowed by `AudioUnit::set`'s \
-         empty default) or the gain is stored by value and the write landed on a \
-         discarded clone."
+        all_at(&block(&mut s), 0.25),
+        "the value did not survive the commit"
     );
+    s.controls().set_gain(Amplitude::new(0.5));
+    assert!(all_at(&block(&mut s), 0.5), "the typed door");
+    assert_eq!(s.controls().gain(), Amplitude::new(0.5));
 }
 
-/// **The `Playback` record moves with the source.**
+/// **A fork of the node starts from the gain last set** — what `Playback`'s
+/// gain record and `Legacy::controlled`'s shadow were for: an export renders
+/// the fader the user set. And the fork shares nothing: a live move after the
+/// fork does not reach it.
 ///
-/// Not redundant with the render assertion, and the reason is a bug this
-/// codebase already fixed once. `Playback` is the control-*intent* record that
-/// the offline render and the pool read back; the source holds what the DSP
-/// reads. Writing only the source leaves two copies disagreeing, and a rebind
-/// then restores the stale one — which is exactly the hazard
-/// `Playback.placement` was **deleted** for, recorded in `voice/types.rs`:
-///
-/// > *Two clocks kept in sync by hand, one of them never consulted, is a rebind
-/// > that can silently reach the wrong one.*
-///
-/// Gain cannot be deleted the same way (the record is what a spawn reads), so
-/// the two are written together instead.
-///
-/// # Why this one uses a net with NO backend
-///
-/// Every other test here needs a backend, because the hazard they pin is what
-/// happens to a frontend *clone*. This one needs the opposite, and the reason is
-/// worth stating because it looks like an inconsistency:
-///
-/// **`Net::set` never touches the frontend when a backend is attached.** It
-/// enqueues the setting to the audio thread (`net.rs`'s `if let Some((sender,
-/// _)) = &mut self.front`), so the write is applied on the backend's copy and
-/// the frontend's `Playback` stays at its old value forever. Reading the
-/// frontend after a backend-attached `set` therefore observes nothing — which
-/// is what the first version of this test did, and it failed against working
-/// code.
-///
-/// Without a backend, `set` takes the `else` branch and applies in place, so
-/// both halves of the write are visible on the one copy that exists. That is the
-/// only vantage point from which "did `set` write *both*?" is answerable at all.
+/// Mutation (run): `VoiceNodeFork::fork` leaving the copy's `play.gain` as
+/// inserted (the `voice.play.gain = gain` write removed) → the fork renders
+/// at unity → fails. Mutation (run): the fork reading the live cell rather
+/// than the authored value, with a modulation composite left in it → the
+/// fork renders at 0.9 → fails.
 #[test]
-fn a_setting_updates_the_playback_record_too() {
-    let mut source = MemorySource::new(flat_wave(4_096));
-    source.replace_transport(RollingTransport::new());
-    source.play();
-    let voice = Voice {
-        source: VoiceSource::Memory(source),
-        play: Playback::default(),
-        channel_index: None,
-    };
-
-    // No backend: `set` applies in place — see the doc above.
-    let mut net = Net::new(0, 1);
-    let node = net.push(Box::new(VoiceNode::with_channels(
-        voice,
-        tutti_core::ChannelLayout::MONO,
-    )));
-    net.pipe_output(node);
-    net.check();
-
-    net.set(tutti_core::unit_param::node_setting(
-        node,
-        UnitParam::Volume,
-        0.25,
-    ));
-
-    let gain = net
-        .node_as::<VoiceNode>(node)
-        .expect("still a VoiceNode")
-        .voice()
-        .play
-        .gain;
-    assert_eq!(
-        gain,
-        Amplitude(0.25),
-        "the Playback record must follow the source, or a rebind restores the \
-         old gain"
+fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
+    let mut s = solo_voice();
+    s.controls().params().set(UnitParam::Volume, 0.25);
+    // A modulation driver's composite, left in the live cell.
+    s.controls()
+        .params()
+        .cell(UnitParam::Volume)
+        .expect("the voice has a gain")
+        .store(0.9, std::sync::atomic::Ordering::Release);
+    let (fork_editor, fork_exec) = s
+        .renderer_mut()
+        .editor()
+        .fork(
+            ForkTarget::Master,
+            ForkMode::Live,
+            Prepare::new(RATE, Samples(BLOCK)),
+        )
+        .expect("a memory voice forks");
+    s.controls().params().set(UnitParam::Volume, 0.75);
+    let mut fork = tutti_graph::Renderer::new(fork_editor, fork_exec);
+    fork.set_transport_fn(rolling);
+    let out = fork.render(BLOCK).swap_remove(0);
+    assert!(
+        all_at(&out, 0.25),
+        "the fork renders the gain last set, and no live move after it; got {:?}",
+        &out[..4]
     );
 }
 
-/// **A param the voice does not own is ignored, not misapplied.**
+/// **A param the voice does not own is refused, not misapplied.**
 ///
-/// The convention that lets a host push a setting without dispatching on node
-/// type. Worth pinning here because the failure mode is silent in the other
-/// direction too: an arm added for a control that is still stored *by value*
-/// would look like this test passing while changing nothing on a live node.
+/// The convention that lets a host push a param without dispatching on node
+/// type: `ParamSet::set` answers `false` and writes nothing, and the voice
+/// renders as before.
+///
+/// Mutation (run): `VoiceNode::param_set` also addressing `Pan`, at the gain
+/// cell → the write lands on the gain → fails.
 #[test]
 fn an_unowned_param_is_ignored() {
-    let (mut net, mut backend, node) = net_with_voice();
-
-    net.set(tutti_core::unit_param::node_setting(
-        node,
-        UnitParam::Pan,
-        0.0,
-    ));
-    net.commit();
-
-    let peak = render_peak(&mut backend);
+    let mut s = solo_voice();
+    assert!(!s.controls().params().set(UnitParam::Pan, 0.0));
     assert!(
-        (peak - 1.0).abs() < 1e-4,
-        "a Pan setting must leave a voice's gain alone; got {peak}"
+        all_at(&block(&mut s), 1.0),
+        "a Pan write must leave a voice's gain alone"
     );
 }

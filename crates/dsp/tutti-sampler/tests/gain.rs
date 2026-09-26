@@ -31,8 +31,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::BufferVec;
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline};
+use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples};
+use tutti_graph::{contract, Env, Node, TransportChanges};
 use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
@@ -43,11 +43,12 @@ const BLOCK: usize = 64;
 /// The constant every source below carries, on both channels.
 const LEVEL: f32 = 0.5;
 
-/// A rolling transport advanced by hand, once per block.
+/// A rolling transport advanced by hand, once per block, handed to each
+/// block in its `Env`.
 ///
 /// Gain reaches the memory tier through `PlaybackSlot`, which only reads a
-/// **placed** voice — `window_position()` is `None` without a timeline and the
-/// slot emits silence. Same reason `reverse_and_loop.rs` needs one.
+/// **placed** voice — on a stopped transport the gate gives no position and
+/// the slot emits silence. Same reason `reverse_and_loop.rs` needs one.
 struct Clock {
     beat: AtomicU64,
     tempo: f64,
@@ -68,18 +69,21 @@ impl Clock {
     }
 }
 
-impl Timeline for Clock {
+impl Clock {
     fn beat(&self) -> Beat {
         Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
     }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(self.tempo)
-    }
-    fn is_rolling(&self) -> bool {
-        true
-    }
-    fn segment_generation(&self) -> u64 {
-        0
+
+    /// One block of `node` under this clock (not moved); planar.
+    fn block(&self, node: &mut dyn Node) -> Vec<Vec<f32>> {
+        let env = Env {
+            frame: Frame(0),
+            sample_rate: SampleRate(SR),
+            block_len: Samples(BLOCK),
+            transport: tutti_graph::Transport::new(true, Bpm::new(self.tempo), self.beat(), None),
+            changes: TransportChanges::NONE,
+        };
+        contract::drive_in(node, &env, &[], &[])
     }
 }
 
@@ -99,12 +103,12 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            timeline: Some(clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             ..Default::default()
         },
     );
 
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -121,15 +125,9 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
 
 /// Render a placed pool, advancing its clock once per block. Returns channel 0.
 fn render_placed(pool: &mut VoicePool, clock: &Clock, blocks: usize) -> Vec<f32> {
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
     let mut out = Vec::with_capacity(blocks * BLOCK);
     for _ in 0..blocks {
-        pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            out.push(b.at_f32(0, i));
-        }
+        out.extend(clock.block(pool).swap_remove(0));
         clock.advance(BLOCK);
     }
     out
@@ -187,14 +185,14 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            timeline: Some(clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             // Deliberately NOT 1.0 and NOT equal to the playback gain below.
             gain: Amplitude::new(0.25),
             ..Default::default()
         },
     );
 
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -281,11 +279,11 @@ fn gain_scales_every_channel_equally() {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            timeline: Some(clock.clone() as Arc<dyn Timeline>),
+            placed: true,
             ..Default::default()
         },
     );
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
         Voice {
@@ -298,18 +296,15 @@ fn gain_scales_every_channel_equally() {
         },
     );
 
-    let input = BufferVec::new(2);
-    let mut output = BufferVec::new(2);
     let want = (LEVEL * 0.4) as f64;
 
     // Skip one block, then check both channels of every frame.
-    pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    clock.block(&mut pool);
     clock.advance(BLOCK);
     for _ in 0..4 {
-        pool.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-        let b = output.buffer_ref();
-        for i in 0..BLOCK {
-            let (l, r) = (b.at_f32(0, i) as f64, b.at_f32(1, i) as f64);
+        let b = clock.block(&mut pool);
+        for (i, (&l, &r)) in b[0].iter().zip(&b[1]).enumerate() {
+            let (l, r) = (l as f64, r as f64);
             assert!(
                 (l - want).abs() < 1e-4 && (r - want).abs() < 1e-4,
                 "frame {i}: L {l:.6} R {r:.6}, both expected {want:.6}"
@@ -339,12 +334,8 @@ fn a_bare_memory_source_applies_its_own_gain() {
         source.trigger_at(SamplePosition(0.0));
         source.play();
 
-        let input = BufferVec::new(2);
-        let mut output = BufferVec::new(2);
-        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
-
-        let b = output.buffer_ref();
-        let got = b.at_f32(0, 10) as f64;
+        let b = Clock::new().block(&mut source);
+        let got = b[0][10] as f64;
         let want = (LEVEL * g) as f64;
         assert!(
             (got - want).abs() < 1e-4,
@@ -363,14 +354,14 @@ fn a_bare_memory_source_applies_its_own_gain() {
 #[test]
 fn two_half_gain_voices_sum_to_one_full_gain_voice() {
     let clock = Clock::new();
-    let (mut pool, _handle) = VoicePool::new();
+    let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
 
     for id in [1u128, 2] {
         let source = MemorySource::with_config(
             dc_wave(SR as usize),
             MemorySourceConfig {
                 channels: ChannelLayout::STEREO,
-                timeline: Some(clock.clone() as Arc<dyn Timeline>),
+                placed: true,
                 ..Default::default()
             },
         );

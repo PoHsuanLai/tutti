@@ -1,77 +1,48 @@
 //! **A standalone voice can be told to move, and the telling reaches the node
 //! the graph renders.**
 //!
-//! Placement is the one control that cannot ride `AudioUnit::set`: `Setting`
-//! carries a single `f32`, and a window is a [`Beat`] (`f64`) plus an optional
-//! duration. Truncating a beat position to `f32` re-introduces the ~2²⁴ cliff
-//! that `Sample.loop_start` was moved to `SamplePosition` (f64) to escape — so
-//! it takes the tier this crate reserves for multi-field state: a command queue.
+//! Placement is not a scalar param: a window is a [`Beat`] (`f64`) plus an
+//! optional duration, and truncating a beat position to `f32` re-introduces
+//! the ~2²⁴ cliff that `Sample.loop_start` was moved to `SamplePosition` (f64)
+//! to escape — so it takes the tier this crate reserves for multi-field state:
+//! a command queue the node owns and drains at the top of each block, whose
+//! sending end is in the `VoiceNodeHandle` its `IntoNode` hands back.
 //!
 //! `VoicePool` carries such a queue, and `VoiceNode` needs its own for the same
 //! reason: without one, moving a sample clip on a timeline cannot reach a
 //! playing standalone voice at all.
 //!
-//! # The two hazards this file exists to pin
+//! # The three hazards this file exists to pin
 //!
-//! Both are silent, and both are the reason the channel is more than a field.
+//! All are silent, and all are the reason the channel is more than a field.
 //!
 //! 1. **The node the graph renders must hold the receiver.** The native graph
 //!    renders the unit it was given, across commits and re-prepares (units
 //!    move, they are not cloned), so the receiver is the node's own.
 //!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
-//!    stops hearing its handle. (Under `Net`, which rendered a clone after a
-//!    commit, `Clone` had to share the receiver; doc 013 item 7 removed that.)
+//!    stops hearing its handle.
 //!
-//! 2. **A copy must not drain it.** Crossbeam delivers each message to
+//! 2. **A fork must not drain it.** Crossbeam delivers each message to
 //!    exactly one receiver, so a fork sharing the live channel would *steal*
 //!    the user's edits from the audio thread — the live voice then misses a
-//!    move with nothing logged anywhere. A clone gets a dead channel, and
-//!    `isolate` severs one held in place.
-//!    [`a_render_clone_steals_no_commands`] fails if that regresses.
+//!    move with nothing logged anywhere. [`a_fork_steals_no_commands`] fails
+//!    if that regresses.
 //!
-//! `VoicePool` reaches the same two conclusions and states them in its own
-//! `Clone`; this is the single-voice half of the same rule.
+//! 3. **A fork must still play where the clip was last moved to**, though it
+//!    never drains the queue: the handle records each placement it queues,
+//!    and the node's fork source applies the latest.
+//!    [`a_placement_sent_after_the_insert_reaches_a_fork`] pins it.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::AudioUnit;
-use tutti_core::{Beat, BeatDuration, Bpm, Timeline};
+use tutti_core::graph::{OutPort, Source};
+use tutti_core::{Beat, BeatDuration, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_graph::{Editor, Executor, ForkMode, ForkTarget, Prepare, Transport, Unforkable};
 use tutti_io::Wave;
-use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
+use tutti_sampler::testing::{block, MockTransport};
+use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
 
-/// A transport parked at a beat the test controls.
-struct FixedTransport {
-    playing: AtomicBool,
-    beat: AtomicU64,
-}
-
-impl FixedTransport {
-    fn at(beat: f64) -> Arc<Self> {
-        Arc::new(Self {
-            playing: AtomicBool::new(true),
-            beat: AtomicU64::new(beat.to_bits()),
-        })
-    }
-    fn seek(&self, beat: f64) {
-        self.beat.store(beat.to_bits(), Ordering::Relaxed);
-    }
-}
-
-impl Timeline for FixedTransport {
-    fn is_rolling(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-    fn beat(&self) -> Beat {
-        Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-    }
-    fn tempo(&self) -> Bpm {
-        Bpm::new(120.0)
-    }
-    fn segment_generation(&self) -> u64 {
-        0
-    }
-}
+const RATE: SampleRate = SampleRate(48_000.0);
 
 /// A wave whose every frame is 1.0, so "is it inside its window" reads as
 /// audible-or-silent with no waveform to reason about.
@@ -79,14 +50,10 @@ fn flat_wave(len: usize) -> Arc<Wave> {
     Arc::new(Wave::from_samples(48_000.0, &vec![1.0; len]))
 }
 
-fn voice_at(transport: Arc<FixedTransport>, start: f64) -> Voice {
-    let mut source = MemorySource::new(flat_wave(48_000));
-    source.replace_transport(transport);
-    source.set_window(tutti_sampler::VoiceWindow {
-        start: Beat(start),
-        duration: Some(BeatDuration(1.0)),
-    });
-    source.play();
+/// A voice placed on the transport at `[start, start + 1)`.
+fn voice_at(start: f64) -> Voice {
+    let source = MemorySource::new(flat_wave(48_000))
+        .placed_at(VoiceWindow::span(Beat(start), BeatDuration(1.0)));
     Voice {
         source: VoiceSource::Memory(source),
         play: Playback::default(),
@@ -94,16 +61,40 @@ fn voice_at(transport: Arc<FixedTransport>, start: f64) -> Voice {
     }
 }
 
-/// Peak over a short block — the only vantage point from which a frontend clone
-/// and the copy that renders differ.
-fn peak(unit: &mut dyn AudioUnit, frames: usize) -> f32 {
-    let mut out = [0.0f32; 1];
-    let mut peak = 0.0f32;
-    for _ in 0..frames {
-        unit.tick(&[], &mut out);
-        peak = peak.max(out[0].abs());
-    }
-    peak
+fn node_at(start: f64) -> VoiceNode {
+    VoiceNode::with_channels(voice_at(start), ChannelLayout::MONO)
+}
+
+/// Peak over a 64-frame block of `node` under a transport rolling at `beat`
+/// (not moved) — what renders is the only vantage point.
+fn peak(node: &mut dyn tutti_graph::Node, beat: f64) -> f32 {
+    let t = MockTransport::rolling(Beat(beat), Bpm(120.0));
+    block(node, &t, RATE, 64)[0]
+        .iter()
+        .fold(0.0f32, |a, s| a.max(s.abs()))
+}
+
+/// A graph holding `node` at key 1 on output 0, committed; its controls.
+fn graph_with(node: VoiceNode) -> (Editor, Executor, tutti_sampler::VoiceNodeHandle) {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(RATE, Samples(256)));
+    let handle = ed.insert(NodeKey(1), "voice", node);
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    (ed, exec, handle)
+}
+
+/// Peak of one 256-frame block of `exec`'s graph under a transport rolling
+/// at `beat`.
+fn render_peak(exec: &mut Executor, beat: f64) -> f32 {
+    let mut out = vec![0.0f32; 256];
+    let t = Transport::new(true, Bpm(120.0), Beat(beat), None);
+    exec.process(256, &t, &[], &mut [&mut out[..]]);
+    out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
 }
 
 /// **The guard: the fixture can tell inside-the-window from outside.**
@@ -114,40 +105,31 @@ fn peak(unit: &mut dyn AudioUnit, frames: usize) -> f32 {
 /// rather than the real tests passing because 0.0 never changed.
 #[test]
 fn the_probe_can_tell_inside_from_outside_a_window() {
-    let transport = FixedTransport::at(0.0);
-    let mut node = VoiceNode::with_channels(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
-    );
-
+    let mut node = node_at(0.0);
     assert!(
-        peak(&mut node, 64) > 0.5,
+        peak(&mut node, 0.0) > 0.5,
         "a voice whose window contains the playhead must sound"
     );
-
-    transport.seek(10.0);
-    node.reset();
     assert!(
-        peak(&mut node, 64) < 1e-6,
+        peak(&mut node, 10.0) < 1e-6,
         "and must be silent once the playhead leaves it — without this contrast \
          every placement assertion in this file is vacuous"
     );
 }
 
-/// **A queued placement reaches the voice.**
+/// **A queued placement reaches the voice**, on its next block.
 ///
 /// The claim the channel exists to make, at its simplest: the window starts
 /// where the playhead is not, a command moves it, and the voice starts sounding.
+///
+/// Mutation (run): `VoiceNode::drain_commands` ignoring `UpdatePlacement`
+/// (the `apply_placement` call removed) → silent after the move → fails.
 #[test]
 fn a_queued_placement_moves_a_live_voice() {
-    let transport = FixedTransport::at(10.0);
     // Window at beat 0, playhead at 10: silent.
-    let (mut node, handle) = VoiceNode::with_commands(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
-    );
+    let (mut node, handle) = node_at(0.0).with_handle();
     assert!(
-        peak(&mut node, 64) < 1e-6,
+        peak(&mut node, 10.0) < 1e-6,
         "silent before the move — the playhead is outside the window"
     );
 
@@ -156,65 +138,37 @@ fn a_queued_placement_moves_a_live_voice() {
         .expect("the queue is empty and the node is alive");
 
     assert!(
-        peak(&mut node, 64) > 0.5,
+        peak(&mut node, 10.0) > 0.5,
         "moving the window onto the playhead must make the voice sound — a \
          command that never arrived leaves it silent"
     );
 }
 
-/// **A command reaches a node across a native commit and a re-prepare.**
+/// **A command reaches a node across a commit and a re-prepare.**
 ///
-/// Re-pinned with the ownership change (doc 013 item 7). Under `Net` this
-/// asserted that a *clone* kept hearing the handle: `Net::commit` swapped the
-/// frontend's clones over the backend, so the unit rendering after a commit
-/// (with a sample-rate change marking the vertex changed) was a clone, and
-/// `VoiceNode::clone` had to share the `Receiver`. The native graph renders
-/// the unit it was given: a commit that adds a node leaves it in place, and
-/// a re-prepare (the rate change, again) checks the unit out, prepares it and
-/// sends it back — moved, never cloned. So the receiver is the node's own
-/// (a clone gets a dead one), and what this pins is the native path: the
-/// node built by `with_commands`, inserted as `bevy-tutti` inserts it
-/// (`Legacy::controlled`), hears a placement sent after both.
+/// The native graph renders the unit it was given: a commit that adds a node
+/// leaves it in place, and a re-prepare (a rate change) checks the unit out,
+/// prepares it and sends it back — moved, never cloned. So the receiver is
+/// the node's own, and what this pins is that the node inserted through its
+/// `IntoNode` (as `bevy-tutti` inserts it) hears a placement sent after both,
+/// through the handle the insert handed back.
 ///
-/// Mutation (run): `VoiceNode::process` not draining its commands → the
-/// voice never moves → fails. Mutation (run): `Legacy`'s adapter rendering a
-/// clone of the unit taken at insert (`Legacy::controlled` handing the node
-/// `unit.clone()` instead of `unit`) → the rendering copy's channel is dead
-/// → fails.
+/// Mutation (run): `VoiceNode::process` not draining its commands → the voice
+/// never moves → fails. Mutation (run): `into_parts` making the queue after
+/// the node is boxed (the handle's sender paired with a receiver the node
+/// never holds) → fails. (The `AudioUnit` era's `Legacy` mutation — the
+/// adapter rendering a clone taken at insert — has no counterpart: nothing
+/// clones a native node.)
 #[test]
 fn a_command_reaches_a_node_across_a_commit() {
-    use tutti_core::graph::{OutPort, Source};
-    use tutti_core::{NodeKey, SampleRate, Samples};
-    use tutti_graph::{Editor, Legacy, Prepare, Transport};
-
-    let transport = FixedTransport::at(10.0);
-    let (node, handle) = VoiceNode::with_commands(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
+    let (mut ed, mut exec, handle) = graph_with(node_at(0.0));
+    assert!(
+        render_peak(&mut exec, 10.0) < 1e-6,
+        "silent before the move"
     );
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    let (legacy, _controls) = Legacy::controlled(&mut ed, node);
-    ed.insert(NodeKey(1), "voice", legacy);
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
-        node: NodeKey(1),
-        port: 0,
-    })];
-    ed.commit().expect("commits");
-    exec.apply_pending();
-    ed.collect();
-    let render = |exec: &mut tutti_graph::Executor| {
-        let mut out = vec![0.0f32; 256];
-        exec.process(256, &Transport::default(), &[], &mut [&mut out[..]]);
-        out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
-    };
-    assert!(render(&mut exec) < 1e-6, "silent before the move");
 
     // A graph edit: another node, committed.
-    let (other, _) = VoiceNode::with_commands(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
-    );
-    ed.insert(NodeKey(2), "other", Legacy::new(other));
+    ed.insert(NodeKey(2), "other", Unforkable(node_at(0.0)));
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
@@ -225,119 +179,113 @@ fn a_command_reaches_a_node_across_a_commit() {
     ed.collect();
     exec.apply_pending();
     ed.collect();
-    assert!(render(&mut exec) < 1e-6, "still silent: nothing was sent");
+    assert!(
+        render_peak(&mut exec, 10.0) < 1e-6,
+        "still silent: nothing was sent"
+    );
 
     handle
         .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
         .expect("send");
 
     assert!(
-        render(&mut exec) > 0.5,
+        render_peak(&mut exec, 10.0) > 0.5,
         "a command must reach the node the graph renders. Silence means the \
-         unit rendering is not the one `with_commands` built (a clone, whose \
-         channel is dead), or it no longer drains its channel."
+         unit rendering does not hold the receiver the handle sends to, or it \
+         no longer drains its channel."
     );
 }
 
-/// **A render clone steals nothing from the live node.**
+/// **A fork steals nothing from the live node.**
 ///
-/// The second hazard. A fork renders on a worker *while the audio thread plays
-/// the original*. Crossbeam delivers each message to exactly one receiver, so
-/// a copy that drained the live channel would consume the user's edits and the
-/// live voice would silently miss them.
+/// A fork renders on a worker *while the audio thread plays the original*.
+/// Crossbeam delivers each message to exactly one receiver, so a fork that
+/// drained the live channel would consume the user's edits and the live voice
+/// would silently miss them. The fork's node is built by the fork source with
+/// a dead channel of its own; this asserts it drains nothing, rendering first.
 ///
-/// A clone gets a dead channel of its own (`VoiceNode::clone`), and
-/// `AudioUnit::isolate` severs one held in place; this asserts the copy a
-/// render takes (clone, then isolate) drains nothing. Mutation (run):
-/// `VoiceNode::clone` sharing the receiver and `isolate` not severing it →
-/// the render drains the move → fails. The engine's own
-/// `an_isolated_pool_steals_no_commands_from_the_live_one` makes the identical
-/// claim for `VoicePool`.
+/// Mutation (run): `VoiceNodeFork` building the fork's node over the live
+/// receiver (a clone of it kept in the fork source and handed to the fork's
+/// node) → the fork drains the move → fails. The pool's
+/// `a_pools_fork_shares_nothing_with_the_live_pool` makes the same claim
+/// for `VoicePool`.
 #[test]
-fn a_render_clone_steals_no_commands() {
-    let transport = FixedTransport::at(10.0);
-    let (mut live, handle) = VoiceNode::with_commands(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
-    );
-
-    // Clone + isolate, exactly as a render does.
-    let mut render = live.clone();
-    render.isolate();
+fn a_fork_steals_no_commands() {
+    let (ed, mut exec, handle) = graph_with(node_at(0.0));
+    let (_fork_ed, mut fork) = ed
+        .fork(
+            ForkTarget::Master,
+            ForkMode::Live,
+            Prepare::new(RATE, Samples(256)),
+        )
+        .expect("a memory voice forks");
+    fork.apply_pending();
 
     handle
         .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
         .expect("send");
 
-    // The render drains first, and must take nothing.
-    let _ = peak(&mut render, 64);
+    // The fork renders first, and must take nothing.
+    let _ = render_peak(&mut fork, 10.0);
 
     assert!(
-        peak(&mut live, 64) > 0.5,
-        "the live node must still receive its command after a render clone has \
-         ticked. Silence means the clone drained the queue — the edit reached \
+        render_peak(&mut exec, 10.0) > 0.5,
+        "the live node must still receive its command after a fork has \
+         rendered. Silence means the fork drained the queue — the edit reached \
          an offline worker instead of the audio thread, with nothing logged."
     );
 }
 
-/// **A node built without a channel still works.**
+/// **A node no handle was taken for still works.**
 ///
-/// The compatibility half: `with_channels` and `new` predate this and have a
-/// dozen call sites (resynth, the offline rebind tests, `bevy-tutti`'s
-/// `insert_voice`). They get a dead `bounded(0)` receiver rather than an
-/// `Option`, so the drain is one `try_recv` that answers `Empty` — no branch on
-/// the block path, and no signature churn.
+/// A node driven by hand (`with_channels`, never inserted, `with_handle`
+/// never called) has a dead `bounded(0)` receiver rather than an `Option`, so
+/// the drain is one `try_recv` that answers `Empty` — no branch on the block
+/// path.
 #[test]
-fn a_channel_less_node_renders_normally() {
-    let transport = FixedTransport::at(0.0);
-    let mut node =
-        VoiceNode::with_channels(voice_at(transport, 0.0), tutti_core::ChannelLayout::MONO);
+fn a_node_with_no_handle_renders_normally() {
+    let mut node = node_at(0.0);
     assert!(
-        peak(&mut node, 64) > 0.5,
+        peak(&mut node, 0.0) > 0.5,
         "a node with no command channel must render exactly as before"
     );
 }
 
 /// **A clip moved after the node was inserted reaches a fork of it.**
 ///
-/// A native graph (doc 013) keeps a never-processed snapshot of each node,
-/// taken when it is inserted — `Legacy::controlled` clones the unit and
-/// `isolate`s the clone — and forks (an export) by cloning that snapshot and
-/// `isolate`-ing again. Neither copy drains the command queue (`isolate`
-/// severs it, per `a_render_clone_steals_no_commands`), so a placement sent
-/// after the insert would never reach them: the fork would export the clip at
-/// its old position. The handle records each placement it queues, and
-/// `isolate` applies the latest.
+/// The node's fork source keeps a copy of the voice as it was inserted and
+/// never drains the command queue (see `a_fork_steals_no_commands`), so a
+/// placement sent after the insert would never reach a fork: it would export
+/// the clip at its old position. The handle records each placement it queues,
+/// and the fork source applies the latest.
 ///
-/// Mutation (run): `VoiceNode::isolate` not applying the recorded placement →
-/// the fork keeps the window at beat 0, is silent at beat 10, and this fails.
+/// Mutation (run): `VoiceNodeFork::fork` not applying the recorded placement
+/// → the fork keeps the window at beat 0, is silent at beat 10, and this
+/// fails.
 #[test]
-fn a_placement_sent_after_the_snapshot_reaches_a_fork() {
-    let transport = FixedTransport::at(10.0);
-    let (live, handle) = VoiceNode::with_commands(
-        voice_at(transport.clone(), 0.0),
-        tutti_core::ChannelLayout::MONO,
-    );
-    // The snapshot a native graph takes at insert.
-    let mut snapshot = live.clone();
-    snapshot.isolate();
+fn a_placement_sent_after_the_insert_reaches_a_fork() {
+    let (ed, _exec, handle) = graph_with(node_at(0.0));
+    let prepare = Prepare::new(RATE, Samples(256));
+    // A fork taken before the move: not vacuous, it is still at beat 0.
+    let (_before_ed, mut before) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare)
+        .expect("forks");
+    before.apply_pending();
 
     handle
         .set_placement(Beat(10.0), Some(BeatDuration(1.0)))
         .expect("send");
 
-    // The fork: a clone of the snapshot, isolated.
-    let mut fork = snapshot.clone();
-    fork.isolate();
+    let (_after_ed, mut after) = ed
+        .fork(ForkTarget::Master, ForkMode::Live, prepare)
+        .expect("forks");
+    after.apply_pending();
     assert!(
-        peak(&mut fork, 64) > 0.5,
+        render_peak(&mut after, 10.0) > 0.5,
         "the fork must play the clip where it was moved to (beat 10)"
     );
-
-    // Not vacuous: the snapshot itself was taken before the move and was
-    // never told, so it is still at beat 0.
     assert!(
-        peak(&mut snapshot, 64) < 1e-6,
-        "the pre-move snapshot is silent at beat 10"
+        render_peak(&mut before, 10.0) < 1e-6,
+        "a fork taken before the move is silent at beat 10"
     );
 }

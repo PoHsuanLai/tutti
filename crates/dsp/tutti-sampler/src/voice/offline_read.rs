@@ -23,7 +23,8 @@
 //!
 //! A file that cannot be opened, sought or decoded renders silence from that
 //! point, and the first such failure is latched ([`FaultLatch`]): the fork
-//! hands the latch to the graph (`AudioUnit::render_fault`), and the export
+//! hands the latch to the graph (its `Forked` carries it as the fork's
+//! `ForkHealth`), and the export
 //! fails naming the node and the path rather than writing the silence as a
 //! success.
 //!
@@ -127,8 +128,8 @@ impl OfflineRead {
         }
     }
 
-    /// This reader, closed, latching into `fault` from now on: what a copy
-    /// isolated again keeps, with the new copy's latch.
+    /// This reader, closed, latching into `fault` from now on: what a fork
+    /// of a fork keeps, with the new fork's latch.
     pub(crate) fn relatched(mut self, fault: Arc<FaultLatch>) -> Self {
         self.open = None;
         self.failed = false;

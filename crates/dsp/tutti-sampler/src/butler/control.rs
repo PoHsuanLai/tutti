@@ -164,7 +164,7 @@ impl StreamRecord {
 ///
 /// Nothing reachable through it can drive a stream. It exists so a fork of a
 /// disk voice can play the same material without the live butler (see
-/// `DiskVoice::rebind_offline`). The description is read when it is asked
+/// `DiskVoice::fork_copy`). The description is read when it is asked
 /// for rather than copied into the voice when the voice is built: a loop is
 /// set on the stream later (`Command::Loop`), and a copy would miss it.
 #[derive(Clone)]

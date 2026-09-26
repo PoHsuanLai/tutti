@@ -1300,10 +1300,18 @@ impl AudioSide {
         );
     }
 
+    /// The transport every block from here on renders under, as a device's
+    /// engine hands its graph the playhead: a node that reads the transport
+    /// from its `Env` (a placed sampler voice) plays on it. Stopped at beat
+    /// zero until set.
+    pub fn set_transport(&mut self, transport: Transport) {
+        self.transport = transport;
+    }
+
     /// Render `frames` frames with no global input into `output`, planar,
     /// one slice per global output, in the blocks a device would hand over:
-    /// executor blocks of up to `block` frames. The transport is stopped at
-    /// beat zero.
+    /// executor blocks of up to `block` frames, each under the transport
+    /// last [set](Self::set_transport) (stopped at beat zero until one is).
     ///
     /// # Panics
     ///

@@ -6,19 +6,23 @@
 //! placement gate (`super::interp`) so the same file cannot sound different
 //! depending on which tier loaded it.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
-    ChannelLayout, Param, PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame,
-    SrcRatio, Timeline,
+    Amplitude, AtomicSamplePosition, Beat, BeatDuration, ChannelLayout, Param, PlaybackRate,
+    ReadRate, SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
+};
+use tutti_graph::{
+    param_parts, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_io::Wave;
 
-use super::interp::{hermite_lanes, read_looped_frame, tap_indices, Seat};
+use super::clock::{BlockClock, Clock};
+use super::interp::{hermite_lanes, place, read_looped_frame, tap_indices, Gate};
 use super::loop_span::LoopSpan;
 use super::types::Direction;
-use crate::lanes::{Gather, Lanes};
+use crate::lanes::{Gather, Lanes, LANE_FRAMES};
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: the public loop *intent* is
@@ -120,16 +124,9 @@ pub enum LoopSetting {
 /// The span of timeline a voice occupies: where it starts, and how long it
 /// lasts.
 ///
-/// **Pure geometry — no clock.** A window and a clock are different kinds of
-/// thing: the window is a value a voice owns, while the clock is a shared
-/// dependency many voices read. Bundling the `Arc<dyn Timeline>` in here would
-/// make every offline rebind reach inside each source to swap one field of a
-/// value, and the gate kernel takes the two apart again at every call site
-/// anyway.
-///
-/// Keeping the clock out is what makes this `Copy`: passing a window around
-/// clones no `Arc`, and there is no hand-written `Clone`/`Debug` to keep in
-/// sync.
+/// **Pure geometry — no clock.** A window is a value a voice owns; the
+/// clock is the block's (`tutti_graph::Env`), read where the window is
+/// gated. So this is `Copy`, and a fork of a voice needs nothing rebound.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceWindow {
     /// Start position in beats on the timeline.
@@ -171,13 +168,10 @@ impl Default for VoiceWindow {
 /// convention (`PolySynth::new(SynthConfig)`, `OfflineTimeline::new(..)`).
 ///
 /// `Default` yields the same audible baseline as [`MemorySource::new`]: unity
-/// gain, normal speed, one-shot, no transport binding. It is hand-written (not
+/// gain, normal speed, one-shot, free-running. It is hand-written (not
 /// derived) because the newtypes default to zero — a derived default would ship
 /// silent (`gain = 0`) and frozen (`speed = 0`).
-// Hand-rolled `Debug`: `timeline` is an `Arc<dyn Timeline>`, which is not
-// `Debug`. Report whether a clock is bound rather than trying to print it — the
-// same treatment `MemorySource` itself gets.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MemorySourceConfig {
     /// Linear output gain, applied as one scalar to every channel.
     /// `Amplitude::new(1.0)` is unity — the `Default` value, and not the
@@ -192,28 +186,17 @@ pub struct MemorySourceConfig {
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`MemorySource::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
-    /// Transport clock. `Some` binds this source to a timeline; `None` leaves it
-    /// free-running (audition / one-shot).
-    pub timeline: Option<Arc<dyn Timeline>>,
-    /// Span of timeline the voice occupies. Only consulted when `timeline` is
-    /// `Some` — a window without a clock has nothing to be a window *of*.
+    /// Whether the source is **placed** on the transport: it plays
+    /// [`window`](Self::window) of the timeline, reading the transport from
+    /// each block's `Env`. `false` leaves it free-running (audition /
+    /// one-shot).
+    pub placed: bool,
+    /// Span of timeline the voice occupies. Only consulted when `placed` —
+    /// a window off the transport has nothing to be a window *of*.
     pub window: VoiceWindow,
     /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
     pub channels: ChannelLayout,
-}
-
-impl std::fmt::Debug for MemorySourceConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemorySourceConfig")
-            .field("gain", &self.gain)
-            .field("speed", &self.speed)
-            .field("loop_setting", &self.loop_setting)
-            .field("placed", &self.timeline.is_some())
-            .field("window", &self.window)
-            .field("channels", &self.channels)
-            .finish()
-    }
 }
 
 impl Default for MemorySourceConfig {
@@ -222,7 +205,7 @@ impl Default for MemorySourceConfig {
             gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
-            timeline: None,
+            placed: false,
             window: VoiceWindow::default(),
             channels: ChannelLayout::STEREO,
         }
@@ -239,12 +222,21 @@ impl Default for MemorySourceConfig {
 ///
 /// # Two position models
 ///
-/// A **placed** voice (one with a [`timeline`](Self::timeline)) derives its
-/// position from the playhead every frame and cannot drift from the transport; a
-/// **free-running** one advances its own cursor by
+/// A **placed** voice ([`is_placed`](Self::is_placed)) derives its position
+/// from the playhead every frame, read from its block's `Env`, and cannot drift
+/// from the transport; a **free-running** one advances its own cursor by
 /// [`read_rate`](Self::read_rate). Which applies decides whether
 /// [`position`](Self::position) or [`window_position`](Self::window_position) is
 /// the meaningful reading, and which rate the caller must step by.
+///
+/// # As a graph node
+///
+/// A native [`Node`]: no inputs, [`channels`](Self::channels) outputs. It is
+/// a [`ParamNode`] whose one param is its gain ([`UnitParam::Volume`]), so it
+/// goes in through [`param_parts`]: its controls are that [`ParamSet`], and a
+/// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
+/// gain cell at the authored value — and plays on its render's `Env`, with
+/// nothing to rebind.
 ///
 /// # Real-time
 ///
@@ -260,15 +252,9 @@ pub struct MemorySource {
     playing: AtomicBool,
 
     /// Linear output gain — **shared across clones**, unlike every other
-    /// control field here.
-    ///
-    /// `Param<Amplitude>` rather than a plain `Amplitude` for the reason
-    /// `tutti_nodes`' crate docs give: `Net`'s frontend holds clones, so a
-    /// control stored by value is written on one copy and rendered from
-    /// another. A clip's fader did nothing once its voice existed.
-    ///
-    /// Sharing it is what makes [`isolate`](Self::isolate) load-bearing on this
-    /// tier — see that method.
+    /// control field here: the cell the node's [`ParamSet`] addresses, so a
+    /// host's write reaches the node the graph renders. A fork detaches it
+    /// ([`fork_fresh`](ParamNode::fork_fresh)).
     gain: Param<Amplitude>,
 
     /// Varispeed — user intent, bounded by the type. Composes with
@@ -287,15 +273,14 @@ pub struct MemorySource {
     /// range and carries the optional crossfade.
     loop_mode: LoopMode,
 
-    /// Transport clock, or `None` for a free-running source.
+    /// Whether the source plays its window of the transport (placed) or
+    /// its own cursor (free-running).
     ///
-    /// Separate from `window` — see [`VoiceWindow`]. `Option` on the CLOCK is
-    /// what distinguishes placed from free-running playback; the window is always
-    /// present because "from beat 0, whole source" is a meaningful default and
-    /// `None` there would mean the same thing twice.
-    timeline: Option<Arc<dyn Timeline>>,
+    /// Separate from `window` — see [`VoiceWindow`]. The window is always
+    /// present because "from beat 0, whole source" is a meaningful default.
+    placed: bool,
 
-    /// Span of timeline this voice occupies. Meaningless without `timeline`.
+    /// Span of timeline this voice occupies. Meaningless unless `placed`.
     window: VoiceWindow,
 
     /// Whether the free-running cursor has been round its loop: then the frame
@@ -304,23 +289,22 @@ pub struct MemorySource {
     /// through `&self`.
     looped: AtomicBool,
 
-    /// Where a placed read last seated on the clock, and how far it has run
-    /// since. See [`seated_position`](Self::seated_position).
-    seat: Option<Seat>,
+    /// The transport as this source reads it when it is a graph node of
+    /// its own (a voice in a pool or a `VoiceNode` reads its owner's).
+    clock: Clock,
 
-    /// Output width — this unit's `outputs()`, fixed at construction.
+    /// Output width — the node's audio outputs, fixed at construction.
     ///
     /// Deliberately **not** derived from `wave.channels()`: a node whose arity
     /// followed its content would re-arity itself in the graph the moment a
-    /// wider file was loaded, and `Net` edges are built against `outputs()`.
+    /// wider file was loaded, and edges are wired against its shape.
     /// The wave's own width is reconciled against this one by
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
     channels: ChannelLayout,
 }
 
-// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `timeline` holds an
-// `Arc<dyn Timeline>`. Print the wave length + scalar params; never
-// borrow the `Wave` samples.
+// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>`. Print the wave length +
+// scalar params; never borrow the `Wave` samples.
 impl std::fmt::Debug for MemorySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemorySource")
@@ -332,7 +316,7 @@ impl std::fmt::Debug for MemorySource {
             .field("sample_rate", &self.sample_rate)
             .field("src_ratio", &self.src_ratio)
             .field("loop_mode", &self.loop_mode)
-            .field("placed", &self.timeline.is_some())
+            .field("placed", &self.placed)
             .field("window", &self.window)
             .finish_non_exhaustive()
     }
@@ -349,11 +333,11 @@ impl Clone for MemorySource {
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
             loop_mode: self.loop_mode,
-            timeline: self.timeline.clone(),
+            placed: self.placed,
             window: self.window,
             looped: AtomicBool::new(self.looped.load(Ordering::Relaxed)),
-            // A copy seats itself from its own clock, which a fork rebinds.
-            seat: None,
+            // A copy reads its own blocks' transport.
+            clock: Clock::new(),
             channels: self.channels,
         }
     }
@@ -375,10 +359,10 @@ impl MemorySource {
             sample_rate,
             src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
-            timeline: None,
+            placed: false,
             window: VoiceWindow::default(),
             looped: AtomicBool::new(false),
-            seat: None,
+            clock: Clock::new(),
             channels: ChannelLayout::STEREO,
         }
     }
@@ -395,7 +379,7 @@ impl MemorySource {
         }
     }
 
-    /// Output width — this unit's `outputs()`.
+    /// Output width — the node's audio outputs.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
@@ -410,7 +394,7 @@ impl MemorySource {
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
-            timeline: config.timeline,
+            placed: config.placed,
             window: config.window,
             channels: nonempty(config.channels),
             ..Self::new(wave)
@@ -426,24 +410,20 @@ impl MemorySource {
         unit
     }
 
-    /// Convenience constructor for the common transport-bound voice: bind a
-    /// clock at `start_beat` for `duration_beats`, everything else default.
+    /// Convenience constructor for the common placed voice: on the
+    /// transport at `start_beat` for `duration_beats`, everything else
+    /// default.
     ///
-    /// Equivalent to `with_config(wave, MemorySourceConfig { timeline: Some(..),
+    /// Equivalent to `with_config(wave, MemorySourceConfig { placed: true,
     /// window, ..Default::default() })`, and it exists because it reads better
     /// at the timeline call sites — the same reason tutti-polysynth keeps
     /// convenience constructors alongside its config one. `duration_beats` of
     /// `None` plays the whole source.
-    pub fn with_transport(
-        wave: Arc<Wave>,
-        transport: Arc<dyn Timeline>,
-        start_beat: Beat,
-        duration_beats: Option<BeatDuration>,
-    ) -> Self {
+    pub fn placed(wave: Arc<Wave>, start_beat: Beat, duration_beats: Option<BeatDuration>) -> Self {
         Self::with_config(
             wave,
             MemorySourceConfig {
-                timeline: Some(transport),
+                placed: true,
                 window: VoiceWindow {
                     start: start_beat,
                     duration: duration_beats,
@@ -453,23 +433,20 @@ impl MemorySource {
         )
     }
 
-    /// Move the window. Independent of whether a clock is bound — a window is
-    /// just geometry, so there is no "only if placed" branch to get wrong.
+    /// Move the window. Independent of whether the source is placed — a
+    /// window is just geometry, so there is no "only if placed" branch to get
+    /// wrong. The next frame reads at the new window.
     pub fn set_window(&mut self, window: VoiceWindow) {
         self.window = window;
-        // The seat's origin was the old window's; the next frame re-seats.
-        self.seat = None;
     }
 
-    /// Swap the transport clock, used by export to inject the offline timeline.
-    ///
-    /// The window is untouched, because it is not part of the same value — see
-    /// [`VoiceWindow`]. A swap that also had to reconstruct start/duration would
-    /// silently rewrite geometry on the unbound path; keeping the two apart
-    /// makes this swap a swap.
-    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        self.timeline = Some(transport);
-        self.seat = None;
+    /// Place this source on the transport at `window` (see
+    /// [`is_placed`](Self::is_placed)).
+    #[must_use]
+    pub fn placed_at(mut self, window: VoiceWindow) -> Self {
+        self.placed = true;
+        self.window = window;
+        self
     }
 
     /// Rewind to sample 0 and start playing. Two relaxed atomic stores, so this
@@ -543,9 +520,10 @@ impl MemorySource {
         self.position.load(Ordering::Relaxed)
     }
 
-    /// The transport clock this source reads, or `None` if free-running.
-    pub fn timeline(&self) -> Option<Arc<dyn Timeline>> {
-        self.timeline.clone()
+    /// Whether this source plays its window of the transport, read from its
+    /// block's `Env` (`false`: free-running on its own cursor).
+    pub fn is_placed(&self) -> bool {
+        self.placed
     }
 
     /// The voice's window on the timeline. Always meaningful — see
@@ -596,16 +574,14 @@ impl MemorySource {
 
     /// Stop sharing the gain cell with whoever this was cloned from.
     ///
-    /// The offline render clones the live net and ticks it on a worker thread
-    /// **while the original keeps playing**, so a shared control cell would let
-    /// the two fight: a fader move during an export would change the exported
-    /// audio. `AudioUnit::isolate` exists to sever exactly this, and sharing the
-    /// gain is what gives this tier something to sever — `VoiceSource::isolate`'s
-    /// `Memory` arm does nothing else.
+    /// A fork renders on a worker thread **while the original keeps
+    /// playing**, so a shared control cell would let the two fight: a fader
+    /// move during an export would change the exported audio. Sharing the
+    /// gain is what gives this tier something to sever on a fork.
     ///
     /// Keeps the *current* value: the render must sound like what it was
-    /// isolated at, not snap to unity.
-    pub(crate) fn isolate_gain(&mut self) {
+    /// forked at, not snap to unity.
+    pub(crate) fn detach_gain(&mut self) {
         self.gain.detach();
     }
 
@@ -634,7 +610,7 @@ impl MemorySource {
     ///
     /// **The step, on both paths.** A free-running cursor advances by it once
     /// per output sample, and a placed read steps by it from the origin the gate
-    /// gives (see `seated_position`): an output frame is
+    /// gives (see `placed_positions`): an output frame is
     /// `1 / session_rate` seconds, which is `file_rate / session_rate` file
     /// frames at unit speed. The placement gate's *origin* must NOT use this —
     /// see [`window_rate`](Self::window_rate).
@@ -668,7 +644,6 @@ impl MemorySource {
         self.position
             .store(SamplePosition::new(0.0), Ordering::Release);
         self.looped.store(false, Ordering::Relaxed);
-        self.seat = None;
     }
 
     /// Re-derive the sample-rate conversion ratio for a new session rate.
@@ -789,7 +764,7 @@ impl MemorySource {
     }
 
     /// Read one un-gained frame of a **placed** voice at `pos`, the position
-    /// the gate and the step give (see [`seated_position`](Self::seated_position)),
+    /// the gate and the step give (see [`placed_positions`](Self::placed_positions)),
     /// into `out`, writing every element.
     ///
     /// - **Forward**, on a loop: a position at or past the loop's end plays
@@ -840,58 +815,48 @@ impl MemorySource {
         read_looped_frame(&self.wave, span, p, looped, out);
     }
 
-    /// The position a placed read plays this frame, or `None` outside its
-    /// window (or unplaced).
-    ///
-    /// **Seated from the clock, stepped by the read rate.** The clock moves
-    /// between calls (per block, or per 64-frame chunk), not per frame, and a
-    /// voice may be read a frame at a time through `tick`. So the read seats
-    /// where the gate puts the playhead whenever the clock reads a beat it did
-    /// not read last time, and steps from there: frame `n` of a seat is
-    /// `origin + read_rate × stretch_rate × n`. The origin comes from
-    /// [`stretched_window_position`](Self::stretched_window_position) (varispeed
-    /// and the stretch, measured in this wave's frames), the step from
-    /// [`read_rate`](Self::read_rate) (varispeed and the conversion) — the one
-    /// model the offline disk reader seats by too, so the tiers read the same
-    /// positions, frame for frame.
-    ///
-    /// `process` and `tick` both come through here, once per output frame: a
-    /// `tick` against a clock that moves once per block steps through the block
-    /// as `process` does, rather than repeat one frame. Pass
-    /// [`ReadRate::UNITY`] when nothing stretches.
+    /// The gate a placed read seats at, for a read stepping at
+    /// `stretch_rate` as well (a stretcher consuming it): its window, this
+    /// wave's rate, and varispeed with the stretch — see
+    /// [`stretched_window_position`](Self::stretched_window_position).
     #[inline]
-    pub(crate) fn seated_position(&mut self, stretch_rate: ReadRate) -> Option<SamplePosition> {
-        let timeline = self.timeline.as_ref()?;
-        let rate = self.read_rate().then(stretch_rate);
-        let seat = Seat::next(self.seat, timeline.as_ref(), rate, || {
-            self.stretched_window_position(stretch_rate)
-        });
-        self.seat = seat;
-        seat.map(|seat| seat.position())
+    pub(crate) fn gate(&self, stretch_rate: ReadRate) -> Gate {
+        Gate {
+            window: self.window,
+            source_rate: self.wave.sample_rate(),
+            rate: self.window_rate().then(stretch_rate),
+        }
     }
 
-    /// [`seated_position`](Self::seated_position) for each of the next
-    /// `out.len()` frames, reading the clock once (`Seat::run`): the block
-    /// read's positions. `None`s when unplaced.
+    /// The positions a placed read plays over block frames `range`, one per
+    /// frame into `out`; `None`s outside its window, on a standing
+    /// transport, or when unplaced.
+    ///
+    /// **Gated per frame, seated from the clock, stepped by the read rate**
+    /// (`interp::place`): the read enters and leaves its window on the
+    /// frames the transport reaches its edges, and in between seats where
+    /// the gate puts the playhead and steps by
+    /// `read_rate × stretch_rate` per frame. The origin comes from the gate
+    /// ([`stretched_window_position`](Self::stretched_window_position):
+    /// varispeed and the stretch, measured in this wave's frames), the step
+    /// from [`read_rate`](Self::read_rate) (varispeed and the conversion) —
+    /// the one model the offline disk reader seats by too, so the tiers read
+    /// the same positions, frame for frame. Pass [`ReadRate::UNITY`] when
+    /// nothing stretches.
     #[inline]
-    pub(crate) fn seated_positions(
-        &mut self,
+    pub(crate) fn placed_positions(
+        &self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
         stretch_rate: ReadRate,
         out: &mut [Option<SamplePosition>],
     ) {
-        let Some(timeline) = self.timeline.as_ref() else {
+        if !self.placed {
             out.fill(None);
             return;
-        };
-        let rate = self.read_rate().then(stretch_rate);
-        let seat = Seat::run(
-            self.seat,
-            timeline.as_ref(),
-            rate,
-            || self.stretched_window_position(stretch_rate),
-            out,
-        );
-        self.seat = seat;
+        }
+        let step = self.read_rate().then(stretch_rate);
+        place(clock, range, self.gate(stretch_rate), step, out);
     }
 
     /// [`read_placed_into`](Self::read_placed_into) for a block: frame `i`
@@ -1002,8 +967,8 @@ impl MemorySource {
         }
     }
 
-    /// Where the playhead sits in this source's samples, or `None` when outside
-    /// the window / unplaced. See [`window_position`](super::interp::window_position).
+    /// Where a playhead at `transport` sits in this source's samples, or
+    /// `None` when outside the window / unplaced. See [`window_position`](super::interp::window_position).
     ///
     /// # Varispeed alone, never [`read_rate`](Self::read_rate)
     ///
@@ -1017,7 +982,7 @@ impl MemorySource {
     /// Passing it here multiplies the derived position by `src_ratio` a second
     /// time: a 48 kHz file in a 44.1 kHz session reads 104,490 samples in at the
     /// two-second mark instead of 96,000 — 8.8% deep, drifting further the longer
-    /// the voice plays. `set_sample_rate` seeds `src_ratio` from the live graph,
+    /// the voice plays. `prepare` seeds `src_ratio` from the live graph,
     /// so that reaches every placed voice whose file rate differs from the
     /// session's, and stays invisible at matched rates where `src_ratio` is
     /// `UNITY` and the extra factor is exactly 1.0.
@@ -1026,10 +991,12 @@ impl MemorySource {
     /// splits, one product — `both_tier_splits_agree_on_the_same_position` pins
     /// the agreement.
     #[inline]
-    pub fn window_position(&self) -> Option<SamplePosition> {
-        let timeline = self.timeline.as_ref()?;
+    pub fn window_position(&self, transport: &tutti_graph::Transport) -> Option<SamplePosition> {
+        if !self.placed {
+            return None;
+        }
         super::interp::window_position(
-            timeline.as_ref(),
+            transport,
             self.window.start,
             self.window.duration,
             self.wave.sample_rate(),
@@ -1060,10 +1027,16 @@ impl MemorySource {
     /// unstretched memory path, both of which still call it. Two named methods,
     /// each with one meaning.
     #[inline]
-    pub fn stretched_window_position(&self, stretch_rate: ReadRate) -> Option<SamplePosition> {
-        let timeline = self.timeline.as_ref()?;
+    pub fn stretched_window_position(
+        &self,
+        transport: &tutti_graph::Transport,
+        stretch_rate: ReadRate,
+    ) -> Option<SamplePosition> {
+        if !self.placed {
+            return None;
+        }
         super::interp::window_position(
-            timeline.as_ref(),
+            transport,
             self.window.start,
             self.window.duration,
             self.wave.sample_rate(),
@@ -1071,48 +1044,16 @@ impl MemorySource {
         )
     }
 
-    /// Produce one output frame and advance whatever state that entails.
-    ///
-    /// # One algorithm, two entry points
-    ///
-    /// The single playback algorithm. `tick` calls it once, `process` calls it
-    /// per sample — the same relationship `TransportClock::tick`/`process` have
-    /// in `tutti-core`. Writing the two entry points out separately is what lets
-    /// them drift: a `tick` that dropped `speed` on the placed path while
-    /// `process` applied it made the same unit produce different audio depending
-    /// on which one the graph happened to call.
-    ///
-    /// # Two position models
-    ///
-    /// The split is deliberate:
-    ///
-    /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
-    ///   so the voice cannot drift from the transport: seated where the gate
-    ///   puts the playhead and stepped by the read rate until the clock moves
-    ///   ([`seated_position`](Self::seated_position)). A transport advances
-    ///   once per *block*, not per sample — the offline driver calls
-    ///   `advance(block_size)` after `process` returns, and `TransportClock` is
-    ///   emit-then-advance — so re-deriving from `beat()` alone would emit one
-    ///   constant frame all block long.
-    /// - **Free-running** (no transport) — nothing else owns this voice's time,
-    ///   so it advances its own cursor by `read_rate`.
+    /// One **free-running** output frame into `out`, advancing the cursor:
+    /// nothing else owns this voice's time, so it steps its own cursor by
+    /// `read_rate`. (A placed voice's frames come from
+    /// [`placed_positions`](Self::placed_positions) instead.)
     ///
     /// Writes every element of `out` on every path, so a caller never pre-zeros
     /// and a partial write can never leave a stale channel from the previous
     /// block in a trailing slot.
     #[inline]
-    fn next_frame_into(&mut self, out: &mut [f32]) {
-        if self.timeline.is_some() {
-            match self.seated_position(ReadRate::UNITY) {
-                None => out.fill(0.0),
-                Some(pos) => {
-                    self.read_placed_into(pos, Direction::Forward, out);
-                    self.apply_gain(out);
-                }
-            }
-            return;
-        }
-
+    fn free_frame_into(&mut self, out: &mut [f32]) {
         if !self.playing.load(Ordering::Relaxed) {
             out.fill(0.0);
             return;
@@ -1166,6 +1107,50 @@ impl MemorySource {
         }
     }
 
+    /// Render block frames `range` (at most [`LANE_FRAMES`](crate::lanes::LANE_FRAMES))
+    /// into frame `i - range.start` of each of `out`'s channels: the node's
+    /// own read, gained by its own gain.
+    ///
+    /// **One algorithm per position model.** Placed: the positions
+    /// [`placed_positions`](Self::placed_positions) gives, each read forward
+    /// ([`read_placed_into`](Self::read_placed_into)) and gained, silence
+    /// outside the window. Free-running: [`free_frame_into`](Self::free_frame_into)
+    /// per frame.
+    fn render_range(
+        &mut self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        positions: &mut [Option<SamplePosition>],
+        out: &mut [&mut [f32]],
+    ) {
+        let n = out.len().min(MAX_SAMPLER_CHANNELS);
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+        let base = range.start;
+        if self.placed {
+            let positions = &mut positions[..range.len()];
+            self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
+            for (k, pos) in positions.iter().enumerate() {
+                match pos {
+                    None => frame[..n].fill(0.0),
+                    Some(pos) => {
+                        self.read_placed_into(*pos, Direction::Forward, &mut frame[..n]);
+                        self.apply_gain(&mut frame[..n]);
+                    }
+                }
+                for (c, &s) in frame[..n].iter().enumerate() {
+                    out[c][base + k] = s;
+                }
+            }
+            return;
+        }
+        for i in range {
+            self.free_frame_into(&mut frame[..n]);
+            for (c, &s) in frame[..n].iter().enumerate() {
+                out[c][i] = s;
+            }
+        }
+    }
+
     /// Scale a frame by this unit's gain.
     #[inline]
     fn apply_gain(&self, out: &mut [f32]) {
@@ -1196,94 +1181,101 @@ pub(crate) fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
     loop_start + (pos - loop_start).rem_euclid(len)
 }
 
-impl AudioUnit for MemorySource {
-    /// Stop sharing the gain cell with whoever this was cloned from.
-    ///
-    /// Implemented here rather than only in `VoiceSource::isolate` so the
-    /// severing happens wherever a unit is isolated — the offline render's
-    /// isolation pass walks *every node of the cloned net*, and a source
-    /// reached that way would otherwise keep following the live fader.
-    fn isolate(&mut self) {
-        self.isolate_gain();
-    }
-
-    fn inputs(&self) -> usize {
-        0
-    }
-
-    fn outputs(&self) -> usize {
-        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
-        self.channels.count() as usize
-    }
-
-    fn reset(&mut self) {
-        self.position
-            .store(SamplePosition::new(0.0), Ordering::Relaxed);
-        self.playing.store(false, Ordering::Relaxed);
-        self.looped.store(false, Ordering::Relaxed);
-        self.seat = None;
-    }
-
-    /// Re-point this source's own read clock at the render's transport.
-    ///
-    /// A `MemorySource` reaches the graph two ways: wrapped in a `VoicePool` /
-    /// `VoiceNode` (which cascade into it), and — since it is itself an
-    /// `AudioUnit` — directly as a node. A rebind that knows only the wrappers
-    /// leaves a bare memory source rendering against the live playhead.
-    /// Declaring it here covers both routes, and any future one.
-    fn rebind_offline(&mut self, transport: &tutti_core::transport::OfflineTransport) {
-        self.replace_transport(transport.timeline());
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+impl MemorySource {
+    /// Run at `sample_rate`: the conversion from the wave's rate is derived
+    /// from it. What [`Node::prepare`] does; allocation-free.
+    pub(crate) fn set_render_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         self.set_session_sample_rate(sample_rate.get());
     }
 
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        // The caller's slice IS the frame — no intermediate storage needed.
-        // Stride derived once — `next_frame_into` is the loop.
-        let n = (self.channels.count() as usize).min(output.len());
-        self.next_frame_into(&mut output[..n]);
+    /// Rewind the free-running cursor to the start and stop it; forget the
+    /// transport. What [`Node::reset`] does.
+    fn rewind(&mut self) {
+        self.position
+            .store(SamplePosition::new(0.0), Ordering::Relaxed);
+        self.playing.store(false, Ordering::Relaxed);
+        self.looped.store(false, Ordering::Relaxed);
+        self.clock.reset();
+    }
+}
+
+impl Node for MemorySource {
+    /// No inputs, [`channels`](Self::channels) outputs; a generator, never
+    /// skipped.
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, self.channels).with_tail(Tail::Unbounded)
     }
 
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        // `BufferMut` is planar `(channel, index)` with no frame-shaped
-        // accessor, so unlike `tick` this one genuinely needs a frame to
-        // scatter from. Stack-allocated at the fixed ceiling and used as a
-        // prefix — the house pattern (see `tutti-export`'s `fold_graph_frame` and
-        // the plugin hosts), and the only way to stay alloc-free at a runtime
-        // width.
-        // Stride derived once per block, above the loops.
-        let n = (self.channels.count() as usize)
-            .min(output.channels())
-            .min(MAX_SAMPLER_CHANNELS);
-        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
-        for i in 0..size {
-            self.next_frame_into(&mut frame[..n]);
-            for (c, &s) in frame.iter().enumerate().take(n) {
-                output.set_f32(c, i, s);
-            }
+    /// The session rate: the conversion from the wave's rate is derived from
+    /// it ([`set_session_sample_rate`](Self::set_session_sample_rate)).
+    fn prepare(&mut self, p: &Prepare) {
+        self.set_render_rate(p.sample_rate());
+    }
+
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let clock = self.clock.observe(cx.env);
+        let frames = io.frames();
+        let (_, mut outs) = io.split();
+        let width = outs.len();
+        let n = width.min(MAX_SAMPLER_CHANNELS);
+        // A node wider than the sampler reads leaves the rest silent.
+        for c in n..width {
+            outs.get(c).fill(0.0);
         }
+        let mut refs: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (slot, ch) in refs.iter_mut().zip(outs.iter_mut()) {
+            *slot = ch;
+        }
+        let mut positions = [None; LANE_FRAMES];
+        let mut from = 0;
+        while from < frames {
+            let to = (from + LANE_FRAMES).min(frames);
+            self.render_range(&clock, from..to, &mut positions, &mut refs[..n]);
+            from = to;
+        }
+        Status::Modified
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::SAMPLER_NODE_ID);
+    /// The free-running cursor rewound and stopped, the transport forgotten,
+    /// as `AudioUnit::reset` had it.
+    fn reset(&mut self) {
+        self.rewind();
+    }
+}
 
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        // Boundary: `SignalFrame::new` is a fundsp signature.
-        SignalFrame::new(self.channels.count() as usize)
+impl ParamNode for MemorySource {
+    /// Its gain, as [`UnitParam::Volume`].
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Volume, self.gain.as_atomic())
+            .build()
     }
 
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    /// A copy that shares nothing: its own gain cell (at the value this
+    /// one's holds), rewound. The wave is shared read-only.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.detach_gain();
+        fork.rewind();
+        fork
+    }
+}
+
+impl IntoNode for MemorySource {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        param_parts(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{Bpm, BufferVec};
+    use crate::testing::MockTransport;
+    use tutti_core::Bpm;
 
     fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
         let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -1299,86 +1291,103 @@ mod tests {
         Arc::new(wave)
     }
 
-    use crate::test_transport::MockTransport;
+    /// The rate the tests' blocks run at (the transport's frames).
+    const SR: f64 = 44_100.0;
 
-    // --- tick/process equivalence ---
+    /// One block of `n` frames of `unit` under `t` (a stopped transport when
+    /// `None`: a free-running source reads none), at [`SR`]; the transport
+    /// is not moved. Every output channel, planar.
+    fn planes(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<Vec<f32>> {
+        let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+        crate::testing::block(unit, t.unwrap_or(&stopped), SR, n)
+    }
+
+    /// [`planes`]' first two channels, as `(left, right)` frames (a mono
+    /// node's one channel twice).
+    fn block(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<(f32, f32)> {
+        let p = planes(unit, t, n);
+        let r = p.len().min(2) - 1;
+        (0..n).map(|i| (p[0][i], p[r][i])).collect()
+    }
+
+    /// `n` one-frame blocks, the transport **not** moved between them.
+    fn frames(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<(f32, f32)> {
+        (0..n).map(|_| block(unit, t, 1)[0]).collect()
+    }
+
+    /// One one-frame block into `out` (its channels, as many as `out` holds).
+    fn frame_into(unit: &mut MemorySource, t: Option<&MockTransport>, out: &mut [f32]) {
+        let p = planes(unit, t, 1);
+        for (o, c) in out.iter_mut().zip(p) {
+            *o = c[0];
+        }
+    }
+
+    // --- block-size equivalence ---
     //
-    // `tick` and `process` are two entry points into one algorithm, so N ticks
-    // must equal one process(N) sample-for-sample. Modelled on tutti-core's
-    // `advance_wraps_once_per_block_not_once_per_sample`.
+    // A node is handed blocks of any length, so N one-frame blocks — the
+    // transport moved a frame between each, as a host moves it — must equal
+    // one N-frame block sample for sample. (The `AudioUnit` era asked this of
+    // `tick` against `process`; the native node has one entry point, and
+    // the question is now its block length.)
     //
     // KNOWN LIMIT: these are CONSISTENCY checks, not correctness ones. Both
-    // paths call `next_frame`, so a change moves them together — an injected
-    // off-by-one in the placed branch still passes here, because advancing the
-    // mock one sample per tick compensates it exactly. What catches that class
-    // of bug is `placed_clip_reads_across_a_block_not_dc`
-    // and `placed_clip_block_step_follows_playback_rate`, which assert the
-    // shape of the output *within* one block. Keep these as regression guards
-    // against the two paths being rewritten apart again; do not read a pass
-    // here as proof the placed branch is right.
+    // run the same read, so a change moves them together. What catches a
+    // wrong placed read is `placed_clip_reads_across_a_block_not_dc` and
+    // `placed_clip_block_step_follows_playback_rate`, which assert the shape
+    // of the output *within* one block.
 
-    fn collect_ticks(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
-        (0..n)
-            .map(|_| {
-                let mut out = [0.0f32; 2];
-                unit.tick(&[], &mut out);
-                (out[0], out[1])
-            })
-            .collect()
-    }
-
-    fn collect_process(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(2);
-        output.resize(n);
-        unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
-        (0..n)
-            .map(|i| (output.at_f32(0, i), output.at_f32(1, i)))
-            .collect()
-    }
-
-    /// `tick` is one sample per call and a transport advances once per *block*,
-    /// so the equivalent of `process(n)` is n single-sample blocks with the
-    /// playhead moving a sample's worth between each. `transport` must be the
-    /// clock both units are bound to; pass `None` for free-running units.
+    /// `n` one-frame blocks with the playhead moving a frame between each
+    /// must equal one `n`-frame block. `transport` is the clock both units
+    /// play under; `None` for free-running units.
     ///
     /// Advancing matters: with a frozen playhead every placed frame derives the
     /// same position, both paths emit the same constant, and the assertion holds
-    /// no matter what the code does.
-    fn assert_tick_matches_process(
+    /// no matter what the code does. So does a render that is silent (a
+    /// playhead past the wave's end), which is why the frames must vary.
+    ///
+    /// Mutation (run): `render_range` reading every placed frame at the
+    /// piece's first position (`positions[0]`) → the `n`-frame block is DC
+    /// → "placed @0.5x" fails. (Until the render had to vary, that case
+    /// stood at beat 1 — 22 050 frames into a 4 096-frame wave — and passed
+    /// on silence under this mutation.)
+    fn assert_blocks_match_frames(
         mut a: MemorySource,
         mut b: MemorySource,
         n: usize,
         transport: Option<&Arc<MockTransport>>,
         case: &str,
     ) {
-        let ticked: Vec<(f32, f32)> = (0..n)
+        let single: Vec<(f32, f32)> = (0..n)
             .map(|_| {
-                let mut out = [0.0f32; 2];
-                a.tick(&[], &mut out);
+                let f = block(&mut a, transport.map(|t| &**t), 1)[0];
                 if let Some(t) = transport {
-                    t.advance(1, 44100.0);
+                    t.advance(1, SR);
                 }
-                (out[0], out[1])
+                f
             })
             .collect();
 
-        // Rewind so `process` sees the same span the ticks just walked.
+        // Rewind so the block sees the same span the frames just walked.
         if let Some(t) = transport {
-            t.advance(-(n as i64), 44100.0);
+            t.advance(-(n as i64), SR);
         }
-        let processed = collect_process(&mut b, n);
+        let whole = block(&mut b, transport.map(|t| &**t), n);
 
+        assert!(
+            single.windows(2).any(|w| w[0] != w[1]),
+            "{case}: the frames do not vary, so the comparison proves nothing"
+        );
         assert_eq!(
-            ticked, processed,
-            "{case}: tick x{n} diverged from process({n})"
+            single, whole,
+            "{case}: {n} one-frame blocks diverged from one {n}-frame block"
         );
     }
 
     #[test]
-    fn tick_matches_process_free_running() {
+    fn one_block_matches_single_frames_free_running() {
         let wave = ramp_wave(64, 44100.0);
-        assert_tick_matches_process(
+        assert_blocks_match_frames(
             MemorySource::new(Arc::clone(&wave)),
             MemorySource::new(wave),
             16,
@@ -1388,38 +1397,37 @@ mod tests {
     }
 
     #[test]
-    fn tick_matches_process_at_non_unity_speed() {
+    fn one_block_matches_single_frames_at_non_unity_speed() {
         let wave = ramp_wave(256, 44100.0);
         let build = || {
             let mut u = MemorySource::new(Arc::clone(&wave));
             u.set_speed(PlaybackRate::new(1.5));
             u
         };
-        assert_tick_matches_process(build(), build(), 32, None, "free-running @1.5x");
+        assert_blocks_match_frames(build(), build(), 32, None, "free-running @1.5x");
     }
 
     #[test]
-    fn tick_matches_process_when_placed() {
+    fn one_block_matches_single_frames_when_placed() {
         // The case that was actually broken: a placed voice at non-unity speed.
         let wave = ramp_wave(4096, 44100.0);
-        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        // Beat 0.1: 2 205 frames in, read at 0.5x, inside the wave.
+        let transport = MockTransport::rolling(Beat::new(0.1), Bpm::new(120.0));
         let build = || {
-            let mut u = MemorySource::with_config(
+            MemorySource::with_config(
                 Arc::clone(&wave),
                 MemorySourceConfig {
                     speed: PlaybackRate::new(0.5),
-                    timeline: Some(transport.clone()),
+                    placed: true,
                     ..Default::default()
                 },
-            );
-            u.set_speed(PlaybackRate::new(0.5));
-            u
+            )
         };
-        assert_tick_matches_process(build(), build(), 32, Some(&transport), "placed @0.5x");
+        assert_blocks_match_frames(build(), build(), 32, Some(&transport), "placed @0.5x");
     }
 
     #[test]
-    fn tick_matches_process_across_a_loop_wrap() {
+    fn one_block_matches_single_frames_across_a_loop_wrap() {
         // Span the loop boundary so the wrap arithmetic runs inside the block.
         let wave = ramp_wave(64, 44100.0);
         let build = || {
@@ -1435,30 +1443,30 @@ mod tests {
                 },
             )
         };
-        assert_tick_matches_process(build(), build(), 32, None, "loop wrap");
+        assert_blocks_match_frames(build(), build(), 32, None, "loop wrap");
     }
 
     // --- varispeed actually reaches a placed voice ---
     //
     // The equivalence tests above cannot catch this class on their own: both
-    // entry points call `next_frame`, so any change affects them identically.
+    // lengths run the same read, so any change affects them identically.
     // These pin the *behaviour* instead — that speed reaches the placed path at
-    // all. A `tick` deriving position without the rate plays a placed voice at
+    // all. A read deriving position without the rate plays a placed voice at
     // 1x no matter what speed was set, and the equivalence pair stays green.
 
-    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> MemorySource {
+    fn placed_unit(wave: &Arc<Wave>, rate: f32) -> MemorySource {
         MemorySource::with_config(
             Arc::clone(wave),
             MemorySourceConfig {
                 speed: PlaybackRate::new(rate),
-                timeline: Some(transport.clone()),
+                placed: true,
                 ..Default::default()
             },
         )
     }
 
     #[test]
-    fn placed_clip_honours_speed_in_tick() {
+    fn placed_clip_honours_speed_in_one_frame() {
         // A ramp wave encodes position in its amplitude, so the sample value at
         // a fixed playhead names which source frame was read.
         // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
@@ -1466,11 +1474,11 @@ mod tests {
         let wave = ramp_wave(16_384, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
-        let mut unity = placed_unit(&wave, &transport, 1.0);
-        let mut half = placed_unit(&wave, &transport, 0.5);
+        let mut unity = placed_unit(&wave, 1.0);
+        let mut half = placed_unit(&wave, 0.5);
 
-        let a = collect_ticks(&mut unity, 1)[0].0;
-        let b = collect_ticks(&mut half, 1)[0].0;
+        let a = block(&mut unity, Some(&transport), 1)[0].0;
+        let b = block(&mut half, Some(&transport), 1)[0].0;
 
         assert!(a > 0.0 && b > 0.0, "both should be sounding: {a}, {b}");
         assert!(
@@ -1481,36 +1489,36 @@ mod tests {
     }
 
     #[test]
-    fn placed_clip_honours_speed_in_process() {
-        // The same assertion through the block path — this one always held, and
-        // is here so the pair documents that the two agree for the right reason.
+    fn placed_clip_honours_speed_in_a_block() {
+        // The same assertion through a longer block, so the pair documents
+        // that the two agree for the right reason.
         let wave = ramp_wave(16_384, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
-        let mut unity = placed_unit(&wave, &transport, 1.0);
-        let mut half = placed_unit(&wave, &transport, 0.5);
+        let mut unity = placed_unit(&wave, 1.0);
+        let mut half = placed_unit(&wave, 0.5);
 
-        let a = collect_process(&mut unity, 4)[0].0;
-        let b = collect_process(&mut half, 4)[0].0;
+        let a = block(&mut unity, Some(&transport), 4)[0].0;
+        let b = block(&mut half, Some(&transport), 4)[0].0;
 
         assert!((b - a / 2.0).abs() < 2.0, "expected ~{}, got {b}", a / 2.0);
     }
 
     /// A placed voice must read ACROSS a block, not emit one frozen frame.
     ///
-    /// A transport advances once per block — the offline driver calls
-    /// `advance(block_size)` after `process` returns — so deriving position from
-    /// `beat()` alone gives every sample in the block the same value. The result
-    /// is constant DC where the material should be moving. Caught only by
-    /// asserting *within* one `process` call: the tick/process equivalence tests
-    /// cannot see it, because a frozen transport freezes both paths identically.
+    /// A block's `Env` carries the transport at its first frame, so deriving
+    /// position from that beat alone gives every sample in the block the same
+    /// value. The result is constant DC where the material should be moving.
+    /// Caught only by asserting *within* one block: the block-length
+    /// equivalence tests cannot see it, because a frozen transport freezes
+    /// both paths identically.
     #[test]
     fn placed_clip_reads_across_a_block_not_dc() {
         let wave = ramp_wave(16_384, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
-        let mut u = placed_unit(&wave, &transport, 1.0);
+        let mut u = placed_unit(&wave, 1.0);
 
-        let block = collect_process(&mut u, 8);
+        let block = block(&mut u, Some(&transport), 8);
         let first = block[0].0;
         let last = block[7].0;
 
@@ -1534,9 +1542,9 @@ mod tests {
     fn placed_clip_block_step_follows_playback_rate() {
         let wave = ramp_wave(16_384, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
-        let mut u = placed_unit(&wave, &transport, 0.5);
+        let mut u = placed_unit(&wave, 0.5);
 
-        let block = collect_process(&mut u, 8);
+        let block = block(&mut u, Some(&transport), 8);
         let step = (block[7].0 - block[0].0) / 7.0;
         assert!(
             (step - 0.5).abs() < 0.01,
@@ -1545,43 +1553,31 @@ mod tests {
     }
 
     /// **A placed wave at another rate than the clock's steps by the
-    /// conversion**, across block boundaries, through `process` and through
-    /// `tick`: a 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on
-    /// output frame `n`, a monotone read half a frame per frame, with no jump
-    /// where a block starts.
+    /// conversion**, across block boundaries, in 64-frame blocks and in
+    /// one-frame ones: a 24 kHz ramp on a 48 kHz clock reads file frame
+    /// `n / 2` on output frame `n`, a monotone read half a frame per frame,
+    /// with no jump where a block starts.
     ///
     /// Stepping by the gate's rate (`window_rate`, varispeed alone) read one
     /// file frame per output frame within a block and re-seated half a block
-    /// back at the next (frames 60…63, then 32). `tick` against a clock that
-    /// moves once per block read one frame all block long.
+    /// back at the next (frames 60…63, then 32).
     ///
-    /// Mutation (run): `seated_position`'s step `read_rate` → `window_rate` →
-    /// output frame 1 reads file frame 1 → fails (both paths). Mutation (run):
-    /// `Seat::next` re-seating on every call (never running on) → `tick`
-    /// repeats one frame per block → fails; `process` too, as both come
-    /// through the seat.
+    /// Mutation (run): `placed_positions`' step `read_rate` → `window_rate`
+    /// → output frame 1 reads file frame 1 → fails (64-frame blocks).
     #[test]
     fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
         let wave = ramp_wave(4_096, 24_000.0);
-        for via_tick in [false, true] {
+        for len in [64usize, 1] {
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-            let mut u = placed_unit(&wave, &transport, 1.0);
-            u.set_sample_rate(SampleRate::new(48_000.0));
-            let mut out = Vec::new();
-            for _ in 0..8 {
-                if via_tick {
-                    out.extend(collect_ticks(&mut u, 64));
-                } else {
-                    out.extend(collect_process(&mut u, 64));
-                }
-                transport.advance(64, 48_000.0);
-            }
+            let mut u = placed_unit(&wave, 1.0);
+            u.set_render_rate(SampleRate::new(48_000.0));
+            let out = crate::testing::play(&mut u, &transport, 48_000.0, 512, len);
             // From frame 4: the first frames' taps clamp at the file's start.
-            for (n, &(l, _)) in out.iter().enumerate().skip(4) {
+            for (n, &l) in out[0].iter().enumerate().skip(4) {
                 let want = n as f32 / 2.0 + 1.0;
                 assert!(
                     (l - want).abs() < 1e-3,
-                    "tick {via_tick}: output frame {n} read {l}, want file frame {} ({want})",
+                    "{len}-frame blocks: output frame {n} read {l}, want file frame {} ({want})",
                     n as f32 / 2.0
                 );
             }
@@ -1604,16 +1600,22 @@ mod tests {
     ///
     /// Mutation (run): the step `read_rate` → `window_rate` → half a frame per
     /// frame → fails. Mutation (run): the seat by `window_position` (no
-    /// stretch) → each block seats at 32 → fails.
+    /// stretch: `gate` without `stretch_rate`) → each block seats at 32 →
+    /// fails.
     #[test]
     fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
         let wave = ramp_wave(4_096, 24_000.0);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let mut u = placed_unit(&wave, &transport, 1.0);
-        u.set_sample_rate(SampleRate::new(48_000.0));
+        let mut u = placed_unit(&wave, 1.0);
+        u.set_render_rate(SampleRate::new(48_000.0));
+        let mut clock = Clock::new();
         for block in 0..4 {
-            for i in 0..64 {
-                let pos = u.seated_position(ReadRate(0.5)).expect("inside the window");
+            let env = transport.env(64, 48_000.0);
+            let bc = clock.observe(&env);
+            let mut out = [None; 64];
+            u.placed_positions(&bc, 0..64, ReadRate(0.5), &mut out);
+            for (i, pos) in out.iter().enumerate() {
+                let pos = pos.expect("inside the window");
                 let want = (block * 64 + i) as f64 * 0.25;
                 assert!(
                     (pos.get() - want).abs() < 1e-9,
@@ -1644,7 +1646,7 @@ mod tests {
         u.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(20.0), 0);
         u.set_speed(PlaybackRate::new(0.5));
         u.trigger_at(SamplePosition::new(19.5));
-        let ticks = collect_ticks(&mut u, 3);
+        let ticks = frames(&mut u, None, 3);
         let v = |frame: usize| (frame + 1) as f32;
         assert_eq!(
             ticks[0].0,
@@ -1660,30 +1662,40 @@ mod tests {
         );
     }
 
-    /// **A rate change between two clock moves continues from where the read
-    /// stands**: 16 frames at 1×, then 2× on the same clock reading, steps 2
-    /// from the last frame read — the seat re-anchors, rather than rescale the
-    /// frames it has already stepped (which jumped the read 17 frames).
+    /// **A rate change lands on the next block, at the position the new
+    /// speed gives**: 16 frames at 1×, then 2× on the next block, and the
+    /// read is seated where the gate puts the playhead at 2× (elapsed time at
+    /// the new speed — what a varispeed change on a placed voice means) and
+    /// steps 2 from there.
     ///
-    /// Mutation (run): `Seat::next` keeping the seat on a rate change (stepping
-    /// `origin + new_rate × frames`) → frame 16 reads 16 frames on → fails.
+    /// (The `AudioUnit` era also pinned a rate change *between two frames of
+    /// one clock reading*, reachable only by `tick`; a block reads its rates
+    /// once, so there is no such moment.)
+    ///
+    /// Mutation (run): `placed_positions` stepping by `read_rate` without
+    /// the speed (`SrcRatio` alone) → the second block steps 1 → fails.
     #[test]
-    fn a_rate_change_mid_seat_continues_where_the_read_stands() {
+    fn a_rate_change_lands_on_the_next_block() {
         let wave = ramp_wave(16_384, 44_100.0);
         let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
-        let mut u = placed_unit(&wave, &transport, 1.0);
-        let mut out = collect_process(&mut u, 16);
+        let mut u = placed_unit(&wave, 1.0);
+        let first = block(&mut u, Some(&transport), 16);
+        transport.advance(16, SR);
         u.set_speed(PlaybackRate::new(2.0));
-        out.extend(collect_process(&mut u, 16));
-        for (n, w) in out.windows(2).enumerate() {
-            let want = if n < 15 { 1.0 } else { 2.0 };
-            assert!(
-                (w[1].0 - w[0].0 - want).abs() < 1e-3,
-                "frame {} steps {} from frame {n}, want {want}",
-                n + 1,
-                w[1].0 - w[0].0
-            );
+        let second = block(&mut u, Some(&transport), 16);
+        for w in first.windows(2) {
+            assert!((w[1].0 - w[0].0 - 1.0).abs() < 1e-3, "1x steps 1");
         }
+        for w in second.windows(2) {
+            assert!((w[1].0 - w[0].0 - 2.0).abs() < 1e-3, "2x steps 2");
+        }
+        // Beat 0.25 + 16 frames, at 2x: twice the elapsed frames in.
+        let elapsed = 0.25 * 60.0 / 120.0 * SR + 16.0;
+        assert!(
+            (second[0].0 - (2.0 * elapsed + 1.0) as f32).abs() < 1e-2,
+            "seated at the gate at 2x: {}",
+            second[0].0
+        );
     }
 
     /// **A crossfaded loop plays the hand-computed frames** — the memory
@@ -1710,7 +1722,7 @@ mod tests {
                 SamplePosition::new(30.0),
                 4,
             );
-            let got: Vec<f32> = collect_ticks(&mut u, 30 + 2 * (30 - resume))
+            let got: Vec<f32> = frames(&mut u, None, 30 + 2 * (30 - resume))
                 .iter()
                 .map(|f| f.0)
                 .collect();
@@ -1731,36 +1743,69 @@ mod tests {
         }
     }
 
-    /// **A stopped clock silences a placed read mid-clip**, through `process`
-    /// and through `tick`: the clock stops where it stands (its beat does not
-    /// move), and the read must not run on from its seat as if it still
+    /// **A stopped clock silences a placed read mid-clip**, in a 64-frame
+    /// block and in one-frame ones: the clock stops where it stands (its
+    /// beat does not move), and the read must not run on as if it still
     /// rolled.
     ///
-    /// Mutation (run): the `is_rolling` guard removed from `Seat::next` → the
-    /// seat runs on through the stop → fails.
+    /// Mutation (run): `place` ignoring `run.rolling()` → the read plays on
+    /// through the stop → fails.
     #[test]
     fn a_stopped_clock_silences_a_placed_read() {
         let wave = ramp_wave(16_384, 44_100.0);
-        for via_tick in [false, true] {
+        for single in [false, true] {
             let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
-            let mut u = placed_unit(&wave, &transport, 1.0);
-            let block = |u: &mut MemorySource| {
-                if via_tick {
-                    collect_ticks(u, 64)
+            let mut u = placed_unit(&wave, 1.0);
+            let blk = |u: &mut MemorySource| {
+                if single {
+                    frames(u, Some(&transport), 64)
                 } else {
-                    collect_process(u, 64)
+                    block(u, Some(&transport), 64)
                 }
             };
             assert!(
-                block(&mut u).iter().all(|&(l, _)| l > 0.0),
-                "tick {via_tick}: rolling, the clip plays"
+                blk(&mut u).iter().all(|&(l, _)| l > 0.0),
+                "single frames {single}: rolling, the clip plays"
             );
             transport.set_rolling(false);
             assert!(
-                block(&mut u).iter().all(|&(l, r)| l == 0.0 && r == 0.0),
-                "tick {via_tick}: stopped, the read plays on"
+                blk(&mut u).iter().all(|&(l, r)| l == 0.0 && r == 0.0),
+                "single frames {single}: stopped, the read plays on"
             );
         }
+    }
+
+    /// **A stop inside a block silences the read on its frame** (doc 013
+    /// §6): the block's `Env` carries the stop as a change at frame 40, and
+    /// the clip plays frames 0..40 and not one more.
+    ///
+    /// Mutation (run): `place` reading the block's first transport for every
+    /// frame (ignoring `Env::changes`) → frames 40.. play on → fails.
+    #[test]
+    fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
+        use tutti_graph::{Offset, TransportChanges};
+        let wave = ramp_wave(16_384, 44_100.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+        let mut u = placed_unit(&wave, 1.0);
+        let mut env = transport.env(64, SR);
+        let mut changes = TransportChanges::NONE;
+        let stop_beat = Beat::new(0.25 + 40.0 * 2.0 / SR);
+        changes
+            .push(
+                Offset::new(40, Samples(64)).unwrap(),
+                tutti_graph::Transport::new(false, Bpm::new(120.0), stop_beat, None),
+            )
+            .unwrap();
+        env.changes = changes;
+        let out = tutti_graph::contract::drive_in(&mut u, &env, &[], &[]);
+        assert!(
+            out[0][..40].iter().all(|&s| s > 0.0),
+            "plays up to the stop"
+        );
+        assert!(
+            out[0][40..].iter().all(|&s| s == 0.0),
+            "silent from the stop"
+        );
     }
 
     /// **A loop moved under a cursor that has been round the old one reads
@@ -1784,7 +1829,7 @@ mod tests {
                 0,
             );
             u.trigger_at(SamplePosition::new(2_999.0));
-            collect_ticks(&mut u, 501);
+            frames(&mut u, None, 501);
             assert_eq!(u.position().get(), 1_500.0, "wrapped once, to 1500");
             if toggle {
                 u.set_looping(false);
@@ -1794,7 +1839,7 @@ mod tests {
                 SamplePosition::new(4_000.0),
                 0,
             );
-            let got: Vec<f32> = collect_ticks(&mut u, 3).iter().map(|f| f.0).collect();
+            let got: Vec<f32> = frames(&mut u, None, 3).iter().map(|f| f.0).collect();
             assert_eq!(got, [1_501.0, 1_502.0, 1_503.0], "toggled {toggle}");
         }
     }
@@ -1838,7 +1883,7 @@ mod tests {
         sampler.stop();
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, None, &mut output);
 
         assert_eq!(output[0], 0.0);
         assert_eq!(output[1], 0.0);
@@ -1855,11 +1900,11 @@ mod tests {
 
         for _ in 0..75 {
             let mut output = [0.0f32; 2];
-            sampler.tick(&[], &mut output);
+            frame_into(&mut sampler, None, &mut output);
         }
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, None, &mut output);
 
         assert!(sampler.is_playing());
     }
@@ -1897,7 +1942,7 @@ mod tests {
         // Advance position
         let mut output = [0.0f32; 2];
         for _ in 0..10 {
-            sampler.tick(&[], &mut output);
+            frame_into(&mut sampler, None, &mut output);
         }
         assert!(sampler.position().get() > 0.0);
         assert!(sampler.is_playing());
@@ -1913,7 +1958,7 @@ mod tests {
         let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, None, &mut output);
 
         assert_eq!(output[0], output[1]);
         assert!(output[0] > 0.0);
@@ -1925,7 +1970,7 @@ mod tests {
         let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, None, &mut output);
 
         assert!(output[0] > 0.0);
         assert!(output[1] < 0.0);
@@ -1942,8 +1987,8 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         for _ in 0..10 {
-            normal.tick(&[], &mut out);
-            fast.tick(&[], &mut out);
+            frame_into(&mut normal, None, &mut out);
+            frame_into(&mut fast, None, &mut out);
         }
 
         let normal_pos = normal.position().get();
@@ -1973,8 +2018,8 @@ mod tests {
         // A 48 kHz wave in a 44.1 kHz session.
         let wave = ramp_wave(200_000, 48_000.0);
         let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
-        sampler.set_sample_rate(SampleRate::new(44_100.0));
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
+        sampler.set_render_rate(SampleRate::new(44_100.0));
         assert!(
             (sampler.src_ratio().get() - (48_000.0 / 44_100.0)).abs() < 1e-4,
             "setup: the session rate must produce a non-unity src_ratio, else \
@@ -1983,7 +2028,9 @@ mod tests {
 
         // Beat 4 at 120 BPM is two seconds; two seconds of a 48 kHz file is
         // 96,000 file samples.
-        let pos = sampler.window_position().expect("inside the window");
+        let pos = sampler
+            .window_position(&transport.transport())
+            .expect("inside the window");
         let expected = 2.0 * 48_000.0;
         let doubled = expected * (48_000.0 / 44_100.0);
         assert!(
@@ -1994,30 +2041,34 @@ mod tests {
         );
     }
 
-    /// A window is geometry: it does not need a clock to exist, and setting one
-    /// before the transport is bound must stick.
+    /// A window is geometry: it does not need the source to be placed to
+    /// exist, and setting one before the source is placed must stick.
     ///
-    /// Binding order is not fixed, so a setter guarded on "only if placed" loses
+    /// Order is not fixed, so a setter guarded on "only if placed" loses
     /// the window silently, and the voice plays from beat 0 for its whole
     /// length.
     #[test]
-    fn the_window_can_be_set_before_a_clock_is_bound() {
+    fn the_window_can_be_set_before_the_source_is_placed() {
         let wave = ramp_wave(100, 44_100.0);
         let mut sampler = MemorySource::new(wave);
         assert_eq!(sampler.window(), VoiceWindow::default());
 
-        // No clock yet — a placement-guarded setter would drop this silently.
+        // Not placed yet — a placement-guarded setter would drop this silently.
         sampler.set_window(VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0)));
         assert_eq!(sampler.start_beat(), Beat::new(8.0));
         assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
 
-        // Binding a clock afterwards must not disturb the window...
-        sampler.replace_transport(MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)));
+        // Placing it afterwards (at its own window) must not disturb it...
+        let window = sampler.window();
+        let sampler = sampler.placed_at(window);
         assert_eq!(sampler.start_beat(), Beat::new(8.0));
         assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
 
-        // ...and the gate now honours it: beat 0 is before the beat-8 start.
-        assert!(sampler.window_position().is_none());
+        // ...and the gate now honours it: beat 0 is before the beat-8 start,
+        // beat 9 inside.
+        let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::new(120.0)).transport();
+        assert!(sampler.window_position(&at(0.0)).is_none());
+        assert!(sampler.window_position(&at(9.0)).is_some());
     }
 
     /// The block-stepping rate must be the SAME rate the gate used, or a block
@@ -2028,7 +2079,7 @@ mod tests {
         let wave = ramp_wave(200_000, 48_000.0);
         let mut sampler = MemorySource::new(wave);
         sampler.set_speed(PlaybackRate::new(2.0));
-        sampler.set_sample_rate(SampleRate::new(44_100.0));
+        sampler.set_render_rate(SampleRate::new(44_100.0));
 
         // Varispeed alone: the gate already resolved the file rate.
         assert!((sampler.window_rate().get() - 2.0).abs() < 1e-6);
@@ -2059,7 +2110,7 @@ mod tests {
             sampler.set_session_sample_rate(session_hz);
 
             let mut out = [0.0f32; 2];
-            sampler.tick(&[], &mut out);
+            frame_into(&mut sampler, None, &mut out);
 
             let pos = sampler.position().get();
             assert!(
@@ -2077,7 +2128,7 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         for _ in 0..20 {
-            sampler.tick(&[], &mut out);
+            frame_into(&mut sampler, None, &mut out);
         }
 
         assert!(!sampler.is_playing());
@@ -2092,7 +2143,7 @@ mod tests {
         let mut out = [0.0f32; 2];
         // Tick exactly 10 times → position reaches 10.0, wraps to 0.0
         for _ in 0..10 {
-            sampler.tick(&[], &mut out);
+            frame_into(&mut sampler, None, &mut out);
         }
         assert!(sampler.is_playing());
         let pos = sampler.position().get();
@@ -2103,7 +2154,7 @@ mod tests {
 
         // One more tick reads sample[0] (pos=0.0 after wrap) = 1.0,
         // then advances position to 1.0.
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         assert!(
             (out[0] - 1.0).abs() < 1e-6,
             "after wrap to 0.0, should read sample[0] = 1.0, got {}",
@@ -2127,7 +2178,7 @@ mod tests {
         // 5 ticks at speed=2 → position advances 0,2,4,6,8 → after tick 5
         // position = 10.0, wraps to 0.0
         for _ in 0..5 {
-            sampler.tick(&[], &mut out);
+            frame_into(&mut sampler, None, &mut out);
         }
         assert!(sampler.is_playing());
         let pos = sampler.position().get();
@@ -2137,7 +2188,7 @@ mod tests {
         );
 
         // 6th tick reads sample[0] = 1.0, advances to 2.0
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         assert!(
             (out[0] - 1.0).abs() < 1e-6,
             "after wrap, sample[0] should be 1.0, got {}",
@@ -2150,17 +2201,12 @@ mod tests {
         let wave = ramp_wave(100, 44100.0);
         let mut sampler = MemorySource::new(wave);
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
+        let output = planes(&mut sampler, None, 4);
 
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        sampler.process(4, &input, &mut output);
-
-        assert!((output.at_f32(0, 0) - 1.0).abs() < 1e-6);
-        assert!((output.at_f32(0, 1) - 2.0).abs() < 1e-6);
-        assert!((output.at_f32(0, 2) - 3.0).abs() < 1e-6);
-        assert!((output.at_f32(0, 3) - 4.0).abs() < 1e-6);
+        assert!((output[0][0] - 1.0).abs() < 1e-6);
+        assert!((output[0][1] - 2.0).abs() < 1e-6);
+        assert!((output[0][2] - 3.0).abs() < 1e-6);
+        assert!((output[0][3] - 4.0).abs() < 1e-6);
     }
 
     #[test]
@@ -2169,16 +2215,11 @@ mod tests {
         let mut sampler = MemorySource::new(wave);
         sampler.stop();
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
+        let output = planes(&mut sampler, None, 4);
 
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        sampler.process(4, &input, &mut output);
-
-        for i in 0..4 {
-            assert_eq!(output.at_f32(0, i), 0.0);
-            assert_eq!(output.at_f32(1, i), 0.0);
+        for ch in &output[..2] {
+            assert_eq!(ch.len(), 4);
+            assert!(ch.iter().all(|&s| s == 0.0));
         }
     }
 
@@ -2187,18 +2228,13 @@ mod tests {
         let wave = ramp_wave(3, 44100.0);
         let mut sampler = MemorySource::new(wave);
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        sampler.process(8, &input, &mut output);
+        let output = planes(&mut sampler, None, 8);
 
         assert!(!sampler.is_playing());
-        assert!((output.at_f32(0, 0) - 1.0).abs() < 1e-6);
-        assert!((output.at_f32(0, 1) - 2.0).abs() < 1e-6);
-        assert!((output.at_f32(0, 2) - 3.0).abs() < 1e-6);
-        assert_eq!(output.at_f32(0, 4), 0.0);
+        assert!((output[0][0] - 1.0).abs() < 1e-6);
+        assert!((output[0][1] - 2.0).abs() < 1e-6);
+        assert!((output[0][2] - 3.0).abs() < 1e-6);
+        assert_eq!(output[0][4], 0.0);
     }
 
     // --- Transport-driven playback ---
@@ -2209,10 +2245,10 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, Some(&transport), &mut output);
 
         let expected_sample_idx = 22050.0; // 1 beat * 60/120 * 44100
         let expected_value = expected_sample_idx + 1.0; // ramp offset
@@ -2227,10 +2263,10 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, Some(&transport), &mut output);
 
         assert_eq!(output[0], 0.0);
         assert_eq!(output[1], 0.0);
@@ -2240,10 +2276,10 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(4.0), None);
+        let mut sampler = MemorySource::placed(wave, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, Some(&transport), &mut output);
 
         assert_eq!(output[0], 0.0, "beat 1.0 < start_beat 4.0 → silence");
     }
@@ -2252,15 +2288,10 @@ mod tests {
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(10.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(
-            wave,
-            transport,
-            Beat::new(0.0),
-            Some(BeatDuration::new(4.0)),
-        );
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), Some(BeatDuration::new(4.0)));
 
         let mut output = [0.0f32; 2];
-        sampler.tick(&[], &mut output);
+        frame_into(&mut sampler, Some(&transport), &mut output);
 
         assert_eq!(output[0], 0.0, "beat 10.0 past duration 4.0 → silence");
     }
@@ -2269,35 +2300,23 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        sampler.process(4, &input, &mut output);
+        let output = planes(&mut sampler, Some(&transport), 4);
 
-        assert!(
-            (output.at_f32(0, 0) - 1.0).abs() < 1e-6,
-            "beat 0 → sample 0"
-        );
+        assert!((output[0][0] - 1.0).abs() < 1e-6, "beat 0 → sample 0");
     }
 
     #[test]
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
-        let input_vec = BufferVec::new(0);
-        let mut output_vec = BufferVec::new(2);
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        sampler.process(4, &input, &mut output);
+        let output = planes(&mut sampler, Some(&transport), 4);
 
-        for i in 0..4 {
-            assert_eq!(output.at_f32(0, i), 0.0);
-        }
+        assert_eq!(output[0].len(), 4);
+        assert!(output[0].iter().all(|&s| s == 0.0));
     }
 
     // --- Clone ---
@@ -2343,17 +2362,17 @@ mod tests {
         assert_eq!(sampler.duration_samples(), 50);
     }
 
-    // --- set_sample_rate (AudioUnit trait) ---
+    // --- prepare (the node's rate) ---
 
     #[test]
-    fn set_sample_rate_updates_src_ratio() {
+    fn prepare_updates_src_ratio() {
         let wave = ramp_wave(100, 48000.0);
         let mut sampler = MemorySource::new(wave);
 
-        sampler.set_sample_rate(SampleRate(24000.0));
+        sampler.prepare(&Prepare::new(SampleRate(24000.0), Samples(64)));
 
         let mut out = [0.0f32; 2];
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         let pos = sampler.position().get();
         assert!((pos - 2.0).abs() < 1e-6, "48k/24k = 2x advance");
     }
@@ -2366,13 +2385,13 @@ mod tests {
         let mut sampler = MemorySource::new(wave);
 
         let mut out = [0.0f32; 2];
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         assert!((out[0] - 1.0).abs() < 1e-6);
 
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         assert!((out[0] - 2.0).abs() < 1e-6);
 
-        sampler.tick(&[], &mut out);
+        frame_into(&mut sampler, None, &mut out);
         assert!((out[0] - 3.0).abs() < 1e-6);
     }
 
@@ -2387,7 +2406,7 @@ mod tests {
         let mut outputs = Vec::new();
         let mut out = [0.0f32; 2];
         for _ in 0..6 {
-            sampler.tick(&[], &mut out);
+            frame_into(&mut sampler, None, &mut out);
             outputs.push(out[0]);
         }
 
@@ -2412,69 +2431,61 @@ mod tests {
 
     /// Declared width, not inferred: a 6-channel wave through `new` still yields
     /// a stereo node. A node that re-arity'd itself from its content would break
-    /// `Net` edges already wired against `outputs()`.
+    /// edges already wired against its shape.
     #[test]
     fn new_stays_stereo_even_for_a_wide_wave() {
         let u = MemorySource::new(indexed_wave(6, 32));
         assert_eq!(u.channels(), ChannelLayout::STEREO);
-        assert_eq!(u.outputs(), 2);
+        assert_eq!(u.shape().audio_out, ChannelLayout::STEREO);
     }
 
     #[test]
     fn with_channels_declares_the_width() {
         let u = MemorySource::with_channels(indexed_wave(6, 32), 6usize);
         assert_eq!(u.channels(), ChannelLayout::from(6u16));
-        assert_eq!(u.outputs(), 6);
+        assert_eq!(u.shape().audio_out.count(), 6);
         assert_eq!(
             MemorySource::with_channels(indexed_wave(2, 32), 0usize).channels(),
             ChannelLayout::MONO
         );
     }
 
-    /// `route`'s width must track `outputs()` or fundsp mis-plans this node's
-    /// latency — silent except as PDC drift.
+    /// The node's shape is its declared width, a generator's: no inputs, no
+    /// latency, never skipped (its tail is unbounded).
+    ///
+    /// Mutation (run): `shape` declaring stereo whatever the node was built
+    /// at → fails at width 1.
     #[test]
-    fn route_width_tracks_outputs() {
+    fn the_shape_is_the_declared_width() {
         for w in [1usize, 2, 6, 8] {
-            let mut u = MemorySource::with_channels(indexed_wave(2, 32), w);
-            let out = u.route(&SignalFrame::new(0), 44_100.0);
-            assert_eq!(
-                out.len(),
-                u.outputs(),
-                "route/outputs disagree at width {w}"
-            );
+            let u = MemorySource::with_channels(indexed_wave(2, 32), w);
+            let shape = u.shape();
+            assert_eq!(shape.audio_out.count() as usize, w, "width {w}");
+            assert_eq!(shape.audio_in.count(), 0);
+            assert_eq!(shape.latency.samples(), Samples(0));
+            assert_eq!(shape.tail, Tail::Unbounded);
         }
     }
 
-    /// All six channels must reach all six outputs, through BOTH entry points.
-    /// `tick` writes the caller's slice directly while `process` scatters from a
-    /// stack frame into a planar buffer — different code, so both are checked.
+    /// All six channels must reach all six outputs, free-running and placed
+    /// (two reads, each scattering into the node's planar outputs).
     #[test]
     fn six_channel_wave_reaches_all_six_outputs() {
         let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
-
-        let mut out = [0.0f32; 6];
-        u.tick(&[], &mut out);
-        for (c, &got) in out.iter().enumerate() {
-            assert!(
-                (got - (c + 1) as f32).abs() < 1e-4,
-                "tick: channel {c} should carry {}, got {got} ({out:?})",
-                c + 1
-            );
-        }
-
-        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
-        let input = BufferVec::new(0);
-        let mut output = BufferVec::new(6);
-        u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
-        let buf = output.buffer_ref();
-        for c in 0..6 {
-            let got = buf.at_f32(c, 0);
-            assert!(
-                (got - (c + 1) as f32).abs() < 1e-4,
-                "process: channel {c} should carry {}, got {got}",
-                c + 1
-            );
+        let out = planes(&mut u, None, 8);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut placed = MemorySource::with_channels(indexed_wave(6, 64), 6usize)
+            .placed_at(VoiceWindow::default());
+        let placed = planes(&mut placed, Some(&transport), 8);
+        for (what, out) in [("free-running", out), ("placed", placed)] {
+            for (c, ch) in out.iter().enumerate() {
+                assert!(
+                    (ch[0] - (c + 1) as f32).abs() < 1e-4,
+                    "{what}: channel {c} should carry {}, got {}",
+                    c + 1,
+                    ch[0]
+                );
+            }
         }
     }
 
@@ -2485,7 +2496,7 @@ mod tests {
         let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
         u.set_gain(Amplitude::new(0.5));
         let mut out = [0.0f32; 6];
-        u.tick(&[], &mut out);
+        frame_into(&mut u, None, &mut out);
         for (c, &got) in out.iter().enumerate() {
             let want = (c + 1) as f32 * 0.5;
             assert!(
@@ -2505,7 +2516,7 @@ mod tests {
         let mut out = [0.0f32; 6];
         // Drive past the loop point so the crossfade engages at least once.
         for _ in 0..40 {
-            u.tick(&[], &mut out);
+            frame_into(&mut u, None, &mut out);
             for (c, &s) in out.iter().enumerate() {
                 assert!(
                     s.is_finite(),
@@ -2515,90 +2526,63 @@ mod tests {
         }
     }
 
-    /// **A gain change must reach a voice that is already rendering.**
+    /// **A gain change reaches the node the graph renders.**
     ///
-    /// The memory tier's half of the live-value rule (`tutti_nodes`' crate docs
-    /// state it). `Net`'s frontend holds clones, so a gain stored **by value**
-    /// is written on one copy and rendered from another — a clip's fader stops
-    /// having any effect once its voice exists, silently.
+    /// The memory tier's half of the live-value rule: a control a host writes
+    /// through the node's controls (its [`ParamSet`], or a clone of the
+    /// source sharing its cell) must be seen by the node that renders, which
+    /// the executor owns and nothing else can reach. Asserted through the
+    /// graph: the node inserted with `param_parts`, its gain set through the
+    /// controls `IntoNode` handed back.
     ///
-    /// Asserted through a **clone**, which is the only vantage point where the
-    /// two storage conventions differ: a by-value field looks perfect until
-    /// something clones the unit, and `Net::commit` clones every node on every
-    /// graph edit.
+    /// Mutation (run): `param_set` building its `ParamSet` over a detached
+    /// copy of the gain (`Param::new(self.gain.load())`) → the render stays
+    /// at unity → fails.
     #[test]
-    fn a_gain_change_reaches_a_cloned_source() {
+    fn a_gain_change_reaches_the_rendering_node() {
+        use tutti_graph::Solo;
         let wave = ramp_wave(64, 44_100.0);
-        let unit = MemorySource::new(wave);
-        unit.play();
-
-        // The clone stands in for the copy the audio thread renders; the
-        // original stands in for the frontend the app writes to.
-        let mut rendering = unit.clone();
-
-        unit.set_gain(Amplitude::new(0.25));
-
-        let mut out = [0.0f32; 1];
-        rendering.tick(&[], &mut out);
-
+        let mut solo = Solo::new(
+            MemorySource::with_channels(wave, 1usize),
+            Prepare::new(SampleRate(SR), Samples(64)),
+        );
+        assert!(solo.controls().set(UnitParam::Volume, 0.25));
+        let out = solo.render(1);
         // The ramp's first frame is 1.0, so the rendered value *is* the gain.
         assert!(
-            (out[0] - 0.25).abs() < 1e-4,
-            "a gain written on one copy must be seen by the copy that renders; \
-             expected ~0.25, got {}. A value near 1.0 means `gain` is still \
-             stored by value and the write went nowhere.",
-            out[0]
+            (out[0][0] - 0.25).abs() < 1e-4,
+            "a gain written through the controls must be seen by the node that \
+             renders; expected ~0.25, got {}",
+            out[0][0]
         );
     }
 
-    /// **An isolated source does not share control state with the live one.**
+    /// **A fork of the node shares nothing with it, and starts from the gain
+    /// last set** — the native graph's fork check (`assert_param_fork`,
+    /// which replaced the `IsolateRow` row): gain is this node's one cell.
     ///
-    /// The constraint that sharing introduces, and the reason
-    /// `VoiceSource::isolate`'s `Memory` arm cannot stay a no-op once gain is
-    /// shared. The offline render clones the live net and ticks it on a worker
-    /// thread **while the original keeps playing**; `AudioUnit::isolate` exists
-    /// so a clone can hold shared state safely, by severing it before the
-    /// worker touches it.
-    ///
-    /// Without this, a render would fight live playback: moving a fader during
-    /// an export would change the exported audio, or worse, the export's own
-    /// setup would change what the user hears.
+    /// Mutation (run): `fork_fresh` without `detach_gain` → "a live write
+    /// reached the fork" → fails.
     #[test]
-    fn an_isolated_source_stops_sharing_gain() {
-        let wave = ramp_wave(64, 44_100.0);
-        let live = MemorySource::new(wave);
-        live.play();
-
-        let mut render_copy = live.clone();
-        render_copy.isolate();
-
-        // A live fader move after isolation must not reach the render.
-        live.set_gain(Amplitude::new(0.1));
-
-        let mut out = [0.0f32; 1];
-        render_copy.tick(&[], &mut out);
-
-        assert!(
-            (out[0] - 1.0).abs() < 1e-4,
-            "an isolated copy must keep the gain it was isolated at, not \
-             follow the live one; expected ~1.0, got {}",
-            out[0]
-        );
+    fn the_fork_shares_no_gain() {
+        tutti_graph::contract::assert_param_fork(MemorySource::new(ramp_wave(48_000, 48_000.0)));
     }
 
-    /// The same property through the fork contract's harness, the row every
-    /// forkable unit gets (`tutti_graph::contract::IsolateRow`): gain is this
-    /// unit's one live cell. `excite` plays each rendered copy, since the
-    /// harness's `reset` stops it.
+    /// **A fork plays from the render's transport**, with nothing rebound:
+    /// a placed source forked out of a live graph reads its window of the
+    /// fork's own blocks' `Env`.
     ///
-    /// Mutation: make `isolate_gain` a no-op → "a live move reached the fork".
+    /// Mutation (run): `fork_fresh` leaving `placed` false → the fork plays
+    /// its free-running cursor (stopped by the reset: silence) → fails.
     #[test]
-    fn isolate_snapshots_gain() {
-        tutti_graph::contract::IsolateRow::new("MemorySource", || {
-            MemorySource::new(ramp_wave(48_000, 48_000.0))
-        })
-        .excite(|s| s.play())
-        .control("gain", |s| s.set_gain(Amplitude::new(0.25)))
-        .check();
+    fn a_placed_fork_reads_the_renders_transport() {
+        let wave = ramp_wave(44_100, 44_100.0);
+        let live = MemorySource::placed(wave, Beat::new(1.0), None);
+        let mut fork = tutti_graph::ParamFork::new(&live).fork_node();
+        // Beat 1 is where the window opens; half a beat later (11 025
+        // frames at 120 BPM) the ramp reads 11 026.
+        let transport = MockTransport::rolling(Beat::new(1.5), Bpm::new(120.0));
+        let out = block(&mut fork, Some(&transport), 2);
+        assert!((out[0].0 - 11_026.0).abs() < 1e-3, "{:?}", out[0]);
     }
 }

@@ -227,15 +227,10 @@ pub fn exclusive() -> cross_process_lock::Guard {
 /// table reads as **VST2**, so the CLAP loader is never reached and the load
 /// fails with `NotAPlugin`.
 ///
-/// Published by **atomic rename**, because the link path is shared between test
-/// processes. `OnceLock` serializes within one process; under `cargo nextest`
-/// every test process runs this against the same absolute path, since the
-/// candidate list is baked in at build time. A `remove_file` + `symlink` pair
-/// races there — one process unlinks while another has already created, and the
-/// loser dies with `EEXIST`. `rename` over an existing path is atomic on POSIX,
-/// so a concurrent reader sees the old link or the new one and never a gap.
-///
-/// A symlink rather than a copy so it cannot go stale against a rebuilt plugin.
+/// The link path is shared by every test process of every suite;
+/// `tutti_fixture_resolve::publish_with_extension` says how it is published
+/// without a reader ever missing it. A symlink rather than a copy so it cannot
+/// go stale against a rebuilt plugin.
 ///
 /// # Panics
 ///
@@ -248,28 +243,7 @@ pub fn clap_probe_path() -> &'static Path {
             CLAP_PROBE_CANDIDATES,
             "tutti-clap-test-plugin",
         ));
-        let link = real.with_extension("clap");
-
-        // Stage under a name no other process can pick, then swap it in.
-        let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-        let _ = std::fs::remove_file(&staging);
-
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &staging).expect("stage the reference plugin symlink");
-        #[cfg(windows)]
-        std::fs::copy(&real, &staging).expect("stage the reference plugin copy");
-
-        if let Err(e) = std::fs::rename(&staging, &link) {
-            // Losing the swap is not a failure: whoever won published a link to
-            // the same artifact. Only a missing result is fatal.
-            let _ = std::fs::remove_file(&staging);
-            assert!(
-                link.exists(),
-                "publish the reference plugin at {}: {e}",
-                link.display()
-            );
-        }
-        link
+        tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }
 

@@ -143,8 +143,8 @@ fn plugin_server_path() -> &'static str {
 ///
 /// The extension is load-bearing: the server dispatches format by file
 /// extension, and cargo's `libtutti_clap_test_plugin.so` reads as **VST2** in
-/// that table, so the CLAP loader is never reached. Published by atomic rename
-/// because the path is shared between test processes.
+/// that table, so the CLAP loader is never reached. The path is shared between
+/// test processes (`tutti_fixture_resolve::publish_with_extension`).
 fn clap_probe_path() -> &'static std::path::Path {
     static LINKED: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     LINKED.get_or_init(|| {
@@ -152,18 +152,7 @@ fn clap_probe_path() -> &'static std::path::Path {
             env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES"),
             "tutti-clap-test-plugin",
         ));
-        let link = real.with_extension("clap");
-        let staging = link.with_extension(format!("clap.tmp{}", std::process::id()));
-        let _ = std::fs::remove_file(&staging);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &staging).expect("stage the probe symlink");
-        #[cfg(windows)]
-        std::fs::copy(&real, &staging).expect("stage the probe copy");
-        if std::fs::rename(&staging, &link).is_err() {
-            let _ = std::fs::remove_file(&staging);
-            assert!(link.exists(), "publish the probe at {}", link.display());
-        }
-        link
+        tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }
 

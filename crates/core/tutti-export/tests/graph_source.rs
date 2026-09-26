@@ -125,11 +125,12 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// The builder's graph as an export gets it from a live one: built at a
 /// device's block, then forked offline at the render's.
 ///
-/// A fork **resets** every unit it makes (fundsp's sequence: clone, isolate,
-/// rebind, reset), which is what the `Net` export did to the `Net` it
-/// cloned. For most units a reset one renders what a fresh one does; not
-/// for all: a reset `VbapPannerNode` starts on its commanded bearing where a
-/// fresh one glides there from front-centre.
+/// A fork **resets** every unit it makes (a `Legacy` unit's fundsp sequence:
+/// clone, isolate, rebind, reset; a native one's fork source hands a reset
+/// copy), which is what the `Net` export did to the `Net` it cloned. For most
+/// units a reset one renders what a fresh one does; not for all: a reset
+/// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
+/// there from front-centre.
 fn forked(g: GraphBuilder) -> RenderGraph {
     let (live, _exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     let timeline: OfflineTransport =
@@ -264,7 +265,7 @@ fn quad_vbap() -> GraphBuilder {
         ));
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
         pan.set_position(az, tutti_core::Elevation::LEVEL);
-        let pan = g.add_unit(Box::new(pan));
+        let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
             g.connect(pan, c, sum, s * 4 + c);

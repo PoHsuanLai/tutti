@@ -7,35 +7,48 @@
 //! running — silently, since a test that is never compiled cannot fail.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, BufferVec};
+use tutti_core::SampleRate;
+use tutti_graph::contract::BlockRig;
+use tutti_graph::{IntoNode, Node};
 use tutti_spatial::VbapPannerNode;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-#[test]
-fn vbap_panner_stereo_process_is_allocation_free() {
-    let mut node = VbapPannerNode::stereo().expect("stereo preset");
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-    node.set_position(30.0, 0.0);
-
-    let input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-
-    // Warm up.
-    {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
+/// `node` alone in a graph (`BlockRig`) at 48 kHz in 64-frame blocks, fed a
+/// DC pair: `warm` blocks, then 1 000 under `assert_no_alloc`.
+///
+/// The inputs used to be silent. They carry signal now, and the gate checks
+/// it came out, so a gate over a node that renders nothing cannot pass
+/// having walked no DSP. Mutation (run): `fill(0.0)` → "rendered silence".
+fn gate<N: IntoNode>(node: N, warm: usize) {
+    let (mut rig, _controls) = BlockRig::new(node, SampleRate(48_000.0), 64);
+    for c in rig.inputs_mut() {
+        c.fill(0.5);
     }
-
+    for _ in 0..warm {
+        rig.block();
+    }
+    assert!(
+        rig.output(0)
+            .iter()
+            .chain(rig.output(1))
+            .any(|s| s.abs() > 1e-6),
+        "the node rendered silence; the gate would walk no DSP"
+    );
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
+            rig.block();
         }
     });
+}
+
+#[test]
+fn vbap_panner_stereo_process_is_allocation_free() {
+    let node = VbapPannerNode::stereo().expect("stereo preset");
+    node.set_position(30.0, 0.0);
+    // One warm-up block.
+    gate(node, 1);
 }
 
 /// The rear-arc **fold** branch is allocation-free.
@@ -56,30 +69,13 @@ fn vbap_panner_stereo_process_is_allocation_free() {
 #[test]
 fn vbap_folded_rear_arc_is_allocation_free() {
     let mut node = VbapPannerNode::stereo().expect("stereo preset");
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
     // 200 degrees wraps to -160, well past the lateral axis: the fold fires and
     // mirrors it to -20. Before this crate's fix, this bearing was silent.
     node.set_position(200.0, 0.0);
-
-    let input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-
-    // Warm up. `reset` seats the de-zipper on the folded bearing, so the
-    // assertion window measures the steady state rather than the ramp into it.
-    node.reset();
-    {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    // `reset` seats the de-zipper on the folded bearing, so the assertion
+    // window measures the steady state rather than the ramp into it.
+    Node::reset(&mut node);
+    gate(node, 1);
 }
 
 /// The **elevation-retreat** branch is allocation-free.
@@ -102,27 +98,10 @@ fn vbap_folded_rear_arc_is_allocation_free() {
 #[test]
 fn vbap_elevation_retreat_is_allocation_free() {
     let mut node = VbapPannerNode::quad().expect("quad preset");
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
     // Straight up: a 2D ring cannot solve this, so the retreat runs.
     node.set_position(0.0, 90.0);
-
-    let input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(4);
-
-    node.reset();
-    {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    Node::reset(&mut node);
+    gate(node, 1);
 }
 
 /// Minimal format-valid HRIR sphere (a tetrahedron with delta impulse
@@ -166,26 +145,9 @@ fn hrtf_binaural_process_is_allocation_free() {
     use tutti_spatial::HrtfBinauralNode;
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
-    let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
+    let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
     node.set_position(30.0, 0.0);
-    node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-
     // Warm up past a full HRTF frame so the FFT-convolution path fires and any
     // lazy buffer growth has already happened before the assertion window.
-    for _ in 0..64 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
+    gate(node, 64);
 }

@@ -44,7 +44,7 @@
 //! # How the gains are read
 //!
 //! Through the public [`VbapPannerNode`] surface, not the private panner: width
-//! is set to 0, which routes `tick` through the mono fold, and a `[1.0, 1.0]`
+//! is set to 0, which routes a one-frame block through the mono fold, and a `[1.0, 1.0]`
 //! frame folds to exactly 1.0. Each output channel then carries its speaker's
 //! gain unscaled. LFE is not fed by the panner (`build_vbap_mix` sends it a
 //! separate low-passed feed), so it reads 0 and contributes nothing to the sum
@@ -52,17 +52,31 @@
 
 use core::f32::consts::FRAC_1_SQRT_2;
 
-use tutti_core::AudioUnit;
+use tutti_core::SampleRate;
+use tutti_graph::contract::drive;
+use tutti_graph::Node;
 use tutti_spatial::VbapPannerNode;
 
-/// Steady-state per-channel gains at one bearing, read through `AudioUnit`.
+/// One block of one frame (what `AudioUnit::tick` was), written to `out`.
+///
+/// The nodes here are not prepared: they run at the 48 kHz they are built
+/// at, which is the rate this drives them at, and a one-frame block needs no
+/// sizing.
+fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
+    let rendered = drive(node, SampleRate(48_000.0), &[&input[..1], &input[1..]], &[]);
+    for (o, c) in out.iter_mut().zip(rendered) {
+        *o = c[0];
+    }
+}
+
+/// Steady-state per-channel gains at one bearing, read through the node.
 ///
 /// # `reset` rather than a settling loop
 ///
 /// The de-zipper is exponential: it *asymptotes* toward the commanded bearing
 /// and never arrives, so a fixed number of frames leaves a residual whose size
 /// depends on how far the previous reading was — making every measurement a
-/// function of the sweep's iteration order. `AudioUnit::reset` drops the ramp
+/// function of the sweep's iteration order. `Node::reset` drops the ramp
 /// onto the commanded position instead (and touches nothing else; position,
 /// spread and width are caller-set configuration and survive it), so each
 /// reading is the exact steady state at that bearing alone.
@@ -71,7 +85,7 @@ use tutti_spatial::VbapPannerNode;
 ///
 /// `reset` seeds the smoother from the **panner's** copy of the position, and
 /// `set_position` writes the *node's* `SpatialTarget`. The two were joined only
-/// by `sync_position`, which ran inside `tick`. So a bare
+/// by `sync_position`, which ran only inside the render. So a bare
 /// `set_position` → `reset` → `tick` seeded the ramp at the panner's *stale*
 /// bearing and took one step from there: every azimuth read back as roughly
 /// `[0.707, 0.707]`, a plausible-looking unity that is actually front-centre
@@ -103,8 +117,8 @@ fn gains_at(node: &mut VbapPannerNode, azimuth_deg: f32) -> Vec<f32> {
 
     let n = node.num_channels();
     let mut out = vec![0.0f32; n];
-    node.reset(); // seed the ramp at the commanded bearing
-    node.tick(&[1.0, 1.0], &mut out); // read the steady state
+    Node::reset(node); // seed the ramp at the commanded bearing
+    tick(node, [1.0, 1.0], &mut out); // read the steady state
     out
 }
 
@@ -207,8 +221,8 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
         for el in [-90i32, -60, -30, 0, 30, 60, 90] {
             for az in (0..360).step_by(30) {
                 node.set_position(az as f32, el as f32);
-                node.reset();
-                node.tick(&[1.0, 1.0], &mut out);
+                Node::reset(&mut node);
+                tick(&mut node, [1.0, 1.0], &mut out);
 
                 let sum_sq = sum_of_squares(&out);
                 assert!(
@@ -358,13 +372,13 @@ fn spread_reaches_the_stereo_width_path() {
     let mut out = vec![0.0f32; node.num_channels()];
 
     node.set_spread(0.0f32);
-    node.reset();
-    node.tick(&[1.0, 1.0], &mut out);
+    Node::reset(&mut node);
+    tick(&mut node, [1.0, 1.0], &mut out);
     let point_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
     node.set_spread(1.0f32);
-    node.reset();
-    node.tick(&[1.0, 1.0], &mut out);
+    Node::reset(&mut node);
+    tick(&mut node, [1.0, 1.0], &mut out);
     let diffuse_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
     assert!(

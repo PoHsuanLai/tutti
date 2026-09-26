@@ -61,8 +61,9 @@ use tutti_core::{
     Tail,
 };
 use tutti_graph::{
-    CommitError, Editor, Executor, Fade, Legacy, LegacyControls, NodeParts, ParamFrom, ParamIn,
-    ParamMod, ParamRange, ParamShaping, Prepare, Resolution, Transport,
+    CommitError, Editor, Executor, Fade, GraphInvalid, Legacy, LegacyControls, NodeParts,
+    ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping, Prepare, Resolution, Transport,
+    MAX_PARAM_SOURCES,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -775,18 +776,38 @@ impl NativeGraph {
     }
 
     /// Drive `node`'s `param` from exactly `sources` (each a node's output 0,
-    /// shaped), clamped to `range`: replaces whatever modulated it.
+    /// shaped), clamped to `range`: replaces whatever modulated it. Refused,
+    /// touching nothing, with the error the commit would otherwise fail on
+    /// — every commit after it, since the same spec fails the same way — for
+    /// a NaN bound, more than `MAX_PARAM_SOURCES` sources, or one node listed
+    /// twice (which the spec could only keep once).
     pub(crate) fn set_param_mod(
         &mut self,
         node: AudioNode,
         param: UnitParam,
         sources: &[(AudioNode, ParamShaping)],
         range: ParamRange,
-    ) {
+    ) -> Result<(), GraphInvalid> {
         let at = ParamIn {
             node: key(node),
             param,
         };
+        if range.min.is_nan() || range.max.is_nan() {
+            return Err(GraphInvalid::BadParamRange { at, range });
+        }
+        if sources.len() > MAX_PARAM_SOURCES {
+            return Err(GraphInvalid::TooManyParamSources {
+                at,
+                count: sources.len(),
+            });
+        }
+        if sources
+            .iter()
+            .enumerate()
+            .any(|(i, (n, _))| sources[..i].iter().any(|(m, _)| m == n))
+        {
+            return Err(GraphInvalid::UnsortedParamSources { at });
+        }
         let spec = self.editor.spec_mut();
         spec.params.remove(&at);
         for (from, shaping) in sources {
@@ -801,6 +822,7 @@ impl NativeGraph {
         }
         spec.set_param_range(at, range);
         self.edited = true;
+        Ok(())
     }
 
     /// Stop modulating `node`'s `param`: it reads its own control again.

@@ -421,14 +421,21 @@ impl AudioGraphRes {
     /// param step. Replaces whatever modulated it; the change crossfades
     /// (`PARAM_DECLICK`) rather than stepping. Takes effect with the frame's
     /// commit, like any edge.
+    ///
+    /// Refused, changing nothing, with the error the commit would otherwise
+    /// fail on (every commit after it, too): a NaN bound
+    /// (`GraphInvalid::BadParamRange`), more than
+    /// [`MAX_PARAM_SOURCES`](tutti_graph::MAX_PARAM_SOURCES) sources
+    /// (`TooManyParamSources`), or one node listed twice
+    /// (`UnsortedParamSources`: sum its shapings into one first).
     pub fn set_param_mod(
         &mut self,
         node: AudioNode,
         param: UnitParam,
         sources: &[(AudioNode, tutti_graph::ParamShaping)],
         range: tutti_graph::ParamRange,
-    ) {
-        self.write().set_param_mod(node, param, sources, range);
+    ) -> Result<(), tutti_graph::GraphInvalid> {
+        self.write().set_param_mod(node, param, sources, range)
     }
 
     /// Stop modulating `node`'s `param`: it reads its own control again,

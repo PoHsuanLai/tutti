@@ -844,7 +844,8 @@ mod param_mod_wire {
                 UnitParam::Drive,
                 &[(lfo_id, ParamShaping::Identity)],
                 ParamRange::new(0.0, 10.0),
-            );
+            )
+            .expect("a well-formed modulation");
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
@@ -896,7 +897,8 @@ mod param_mod_wire {
                 UnitParam::Drive,
                 &[(lfo_id, ParamShaping::Identity)],
                 ParamRange::new(0.0, 10.0),
-            );
+            )
+            .expect("a well-formed modulation");
         app.update();
         let before = app
             .world()

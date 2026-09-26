@@ -117,9 +117,9 @@ pub mod stretch;
 // heavily in their own docs, and privatizing it turns 31 of those into dangling
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
-    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, PoolTooWide,
-    SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle,
-    VoiceSource, VoiceWindow,
+    Direction, DiskVoice, DiskVoiceControls, LoopSetting, MemorySource, MemorySourceConfig,
+    Playback, PoolTooWide, SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool,
+    VoicePoolHandle, VoiceSource, VoiceWindow,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
 // plugin moved to bevy-tutti (house rule R1); what stays here is the pair of

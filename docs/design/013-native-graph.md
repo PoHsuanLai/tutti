@@ -3090,7 +3090,7 @@ vocoder retirement channel for voices the pool removes.
 | 2 | **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
 | 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
-| 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); porting the MIDI nodes and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
+| 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs, the other sources and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
@@ -3349,6 +3349,55 @@ fade check compares, and `event_capacity` is now one of them. The
 reference's fading-out unit gets detached event writers, as the
 executor's does, so a node that reacts to a refused push behaves the same
 under both.
+
+#### Item 5, first part landed: the clip node and the native synth
+
+**What landed.**
+
+- **`MidiClipNode`** (tutti-midi-runtime): a clip as an event source node,
+  one MIDI event output, no audio. It keeps **no play cursor**: each block
+  it walks `Env::segments()`, binary-searches its sorted events for the beat
+  range each segment covers (the part before a loop wrap, and the loop's
+  start after it), and places each with `Env::due(At::Beat)`, the engine's
+  one beat→frame rule. A seek, a wrap or a tempo change inside a block needs
+  no bookkeeping, and a fork plays on its render's `Env` with nothing to
+  rebind; its fork source snapshots the clip at the fork. What it does keep
+  is the notes it started: it ends them (note-off on the frame) when
+  playback stops, jumps by more than half a frame from where the last
+  segment left off, wraps its loop, or the clip is replaced
+  (`MidiClipControls::set_events`, through `RtPublish`). A note-off the port
+  refuses stays owed and goes out the next block.
+- **`PolySynth: Node + IntoNode`**: one MIDI event input, stereo out, the
+  release as its tail, `Resolution::Sample`; a native fork source. The
+  block's events and the synth's own port (the mailbox a keyboard feeds, a
+  source installed on it) are merged by offset, the port's first on a tie,
+  into the synth's scratch (512 events, 256 for the port), then rendered by
+  the existing `render_events`, which already took any block length. So a
+  clip → synth edge delivers **in the same block**, on the frame.
+- **Tests** (each mutation-tested; the mutation is on the test):
+  `tutti-midi-runtime/tests/clip_node.rs` (frames across block sizes, a
+  seek inside a block, a loop wrap inside a block, a stop, a replaced clip,
+  the fork's snapshot), `tutti-polysynth/tests/native_node.rs` (clip →
+  synth onset on its frame; a forked graph plays the clip), the merge order
+  (`polysynth::node` unit test), and `rt_no_alloc`'s clip → native synth
+  through a stop and a restart.
+
+**Not yet (next PRs of item 5).**
+
+- **bevy-tutti still inserts the synth through `Legacy`** and installs clips
+  on its port (`MidiSourceInstall`, `MidiTargetRegistry`). Declared event
+  wiring (an event-source analogue of `PortSources`) and a native insert
+  path come next; then `MidiClipSource`, the port's installed-source cell and
+  the synth's `rebind_offline_into` go.
+- **The plugin's four inputs** (MIDI, automation, harmony, note expression)
+  move to event ports; the plugin then drops `Shape::legacy`.
+- **SoundFont, the hardware input (`MidiPreBlock`) and MIDI out** become
+  native nodes; the mailbox, `MidiInPort`, `MidiPostBlock` and
+  `MidiTargetRegistry` are deleted.
+- **A clip denser than `CLIP_EVENT_CAPACITY` in one block** has the rest
+  refused and counted (`Executor::dropped_events`); with no cursor they are
+  not retried. The capacity is sized for any real clip at the largest block;
+  a cursor that resumes after a refusal is the fix if one is not.
 
 #### Item 6 landed: compiler-owned param modulation
 

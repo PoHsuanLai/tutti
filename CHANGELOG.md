@@ -887,6 +887,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MIDI on event ports, first part (doc 013 item 5): `MidiClipNode`, and
+  `PolySynth` as a native node.**
+  - `tutti_midi_runtime::MidiClipNode`: a clip as a graph node with one MIDI
+    event output (`CLIP_EVENT_CAPACITY` per block). It places each event on
+    the frame playback reaches its beat in the block's `Env`, segment by
+    segment, so a seek, a loop wrap or a tempo change inside a block lands
+    exactly, and it keeps no play cursor: an offline fork plays the clip on
+    its render's `Env` with nothing rebound. It ends the notes it started
+    when playback stops, jumps (a seek, a loop wrap) or the clip is replaced.
+    Its controls, `MidiClipControls`, replace the clip (`set_events`,
+    `clear`) through `RtPublish`; a fork plays the clip as it was when forked.
+  - `PolySynth` implements `Node` and `IntoNode` (controls `()`, a native
+    fork source): stereo out, one MIDI event input, the release as its tail.
+    Wire a clip to it with `GraphSpec::connect_events`; its note sounds on
+    its frame in the block the clip writes it. The synth's own MIDI port
+    (`midi_sender`, an installed source) is still read each block and merged
+    with the event input by offset, the port's first at an equal offset.
+    Inserting the synth through `Legacy` (bevy-tutti's path) is unchanged.
+  - tutti-midi-runtime depends on tutti-graph (was a dev-dependency).
+
 - **`just check-features` / `just test-features`, and a `dark features` CI job
   — the feature-gated code nothing was compiling.**
   `cargo tree --workspace -e features -i tutti-cpal` reported only `default`:

@@ -49,71 +49,75 @@
 use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tutti_core::dsp::Net;
-use tutti_core::{AudioUnit, Db, Hz, Q};
-use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, SampleRate};
-use tutti_core::{MotionFsm, Transport, TransportClock, TransportSettings};
+use tutti_core::graph::{Edge, InPort, OutPort, Source};
+use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
+use tutti_core::{Db, Hz, Q};
+use tutti_core::{Samples, Transport};
+use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 
 const SR: f64 = 48_000.0;
 
-/// Leak the net so its backend stays valid.
-///
-/// The backend borrows through the net, so the net must outlive it. Built once
-/// per case in setup and never inside `b.iter`, so the leak is bounded by the
-/// number of cases rather than by the iteration count — the trap this idiom
-/// invites.
-fn keep(net: Net) {
-    let _: &'static Net = Box::leak(Box::new(net));
+/// Wire `from`'s output `out` into `node`'s input `port`.
+fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
+    ed.spec_mut().topology.edges.insert(
+        InPort { node, port },
+        Edge::Direct(Source::Node(OutPort {
+            node: from,
+            port: out,
+        })),
+    );
 }
 
-/// A rolling transport driving a four-node chain, the shape
-/// `tests/rt_no_alloc_engine.rs` already pins as allocation-free.
+/// A rolling transport driving a three-node chain (this crate's units,
+/// through `Legacy`), the shape `tests/rt_no_alloc_engine.rs` already pins
+/// as allocation-free, on `outputs` global outputs (the strip's pair,
+/// repeated).
 fn chain_engine(outputs: usize) -> Engine {
     let transport = Transport::new(SR);
-    let mut net = Net::new(0, outputs);
-    net.push(Box::new(TransportClock::new(transport.clock_links(), SR)));
-    {
-        let inner = &mut net;
-        inner.chain(Box::new(Osc::sine(Hz(440.0))));
-        inner.chain(Box::new(EqBandNode::<f64>::new(
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
+    let [osc, eq, strip] = [1, 2, 3].map(NodeKey);
+    ed.insert(osc, "osc", Legacy::new(Osc::sine(Hz(440.0))));
+    ed.insert(
+        eq,
+        "eq",
+        Legacy::new(EqBandNode::<f64>::new(
             SvfType::Bell,
             Hz(1_000.0),
             Q(1.0),
             Db(6.0),
-        )));
-        inner.chain(Box::new(BusStripNode::with_channels(ChannelLayout::STEREO)));
-    }
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    keep(net);
+        )),
+    );
+    ed.insert(
+        strip,
+        "strip",
+        Legacy::new(BusStripNode::with_channels(ChannelLayout::STEREO)),
+    );
+    wire(&mut ed, eq, 0, osc, 0);
+    wire(&mut ed, strip, 0, eq, 0);
+    wire(&mut ed, strip, 1, eq, 0);
+    ed.spec_mut().topology.outputs = (0..outputs)
+        .map(|c| {
+            Source::Node(OutPort {
+                node: strip,
+                port: (c % 2) as u16,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     transport.settings.set_tempo(120.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
     transport.motion.drain();
-    Engine::new(transport.motion.clone(), backend)
+    engine
 }
 
-/// `depth` filters in series off one source — the "how many nodes" axis.
+/// `depth` filters in series off one source — the "how many nodes" axis:
+/// this crate's `Osc` and `SvfFilterNode`, through `Legacy`.
 fn depth_engine(depth: usize) -> Engine {
-    let mut net = Net::new(0, 2);
-    let mut last = net.push(Box::new(Osc::sine(Hz(440.0))));
-    for i in 0..depth {
-        // Vary the cutoff so nothing can be folded away as identical work.
-        let f = net.push(Box::new(SvfFilterNode::<f64>::new(
-            SvfType::LowPass,
-            Hz(500.0 + (i as f32) * 7.0),
-            Q(0.7),
-        )));
-        net.connect(last, 0, f, 0);
-        last = f;
-    }
-    net.pipe_output(last);
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    keep(net);
-    Engine::new(MotionFsm::new(TransportSettings::new()), backend)
+    depth_graph_engine(depth, true)
 }
 
 fn render(engine: &Engine, buf: &mut [f32], layout: ChannelLayout) {
@@ -123,7 +127,9 @@ fn render(engine: &Engine, buf: &mut [f32], layout: ChannelLayout) {
 /// Block size, at a fixed graph. Isolates the fixed per-callback cost: if
 /// elem/s at 64 frames is materially below elem/s at 1024, the difference is
 /// what the engine pays *per callback* rather than per sample — the prologue
-/// (`backend.pump()`, the stack `BufferArray` zeroing) rather than the DSP.
+/// (installing commits, the transport walk, the fold) rather than the DSP.
+/// The chain's units are `Legacy`, so every block renders chunk-major, in
+/// 64-frame graph blocks.
 fn bench_block_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("block_size");
     let engine = chain_engine(2);
@@ -196,16 +202,17 @@ fn bench_transport_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-// ---- the Graph backend (doc 013 Phase 2) -----------------------------------
+// ---- node contract: `Legacy` against native (doc 013) -----------------------
 //
 // `backend/<runtime>/<depth>/<frames>`: the `nodes` shape — a source into
 // `depth` filters in series, stereo device — through the whole `Engine`
-// (motion drain, transport walk, render, fold, declick) on each runtime:
+// (motion drain, transport walk, render, fold, declick) on each node kind.
+// (A `net` row ran fundsp's `Net` through the engine until doc 013 Phase 3
+// PR 15 removed that backend.)
 //
-// - `net`: fundsp's `Net`, running this crate's `Osc` and `SvfFilterNode`
-//   (the `nodes` group's engine);
-// - `graph-legacy`: the native executor running **the same** units through
-//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers;
+// - `graph-legacy`: this crate's `Osc` and `SvfFilterNode` through
+//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers (the
+//   `nodes` group's engine);
 // - `graph-native`: the native executor running nodes written against `Io`
 //   (a phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
 //   arithmetic, the `graph_render` bench's native pair). Not
@@ -352,20 +359,19 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
         port: 0,
     })];
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&Transport::new(SR), &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&Transport::new(SR), &mut ed, exec).expect("within the limits");
     // Install the plan outside the timed loop; the editor may go.
     let mut warm = vec![0.0f32; 512 * 2];
     render(&engine, &mut warm, ChannelLayout::STEREO);
     engine
 }
 
-/// Net against the native graph, through the whole engine, on the `nodes`
-/// shape. See the section comment above for what each row runs.
+/// `Legacy` units against native nodes, through the whole engine, on the
+/// `nodes` shape. See the section comment above for what each row runs.
 fn bench_backend(c: &mut Criterion) {
     let mut group = c.benchmark_group("backend");
     for depth in [1usize, 8, 128] {
         let engines = [
-            ("net", depth_engine(depth)),
             ("graph-legacy", depth_graph_engine(depth, true)),
             ("graph-native", depth_graph_engine(depth, false)),
         ];

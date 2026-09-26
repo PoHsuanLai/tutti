@@ -1,10 +1,11 @@
 # A native audio graph, and the road off fundsp
 
 Status: **in progress** (2026-09-26). The graph crate (`tutti-graph`,
-Phases 1 and 2) has landed, and `Engine` can render it
-([Phase 2](#phase-2--runtime-behind-the-engine), 2b); the Bevy adapter runs
-on it alone (Phase 3 PR 13; PR 11 had put it beside `Net` behind
-`GraphBackend`), and export forks the graph (PR 12). Work that does not need the graph has
+Phases 1 and 2) has landed, and `Engine` renders it
+([Phase 2](#phase-2--runtime-behind-the-engine), 2b) and nothing else
+(Phase 3 PR 15); the Bevy adapter runs on it alone (PR 13; PR 11 had put it
+beside `Net` behind `GraphBackend`), export forks the graph (PR 12) and
+renders only it (PR 14). **Phase 3 is done**; Phases 4–6 are next. Work that does not need the graph has
 landed too: the D1–D3 latency fixes (#3), Phase 0 (#14, see
 [below](#phase-0--shrink-the-surface-no-behaviour-change)), Phase 0b (#6),
 rewrite-order item 3 (#10, see [below](#item-3-landed-10)), and §4's
@@ -779,6 +780,8 @@ silence. `Engine` takes the new runtime instead of `NetBackend`
 before flipping anything.
 
 **Status (Phase 2b, 2026-09-25): `Engine` renders an `Executor`.**
+(Superseded by Phase 3 PR 15: the `Net` backend is gone, and `with_graph`
+is `Engine::new`. The rest of this paragraph is the record of 2b.)
 `Engine::with_graph(&Transport, &mut Editor, Executor) -> Result` sits beside
 `Engine::new(MotionFsm, NetBackend)`; the backend is an enum matched once per block, so the RT path
 stays monomorphic and allocation-free (`tests/rt_no_alloc_engine.rs`). The
@@ -936,6 +939,11 @@ Revisit it with the parallel executor in Phase 6. There, cache-sized
 passes pay back differently.
 
 ### Phase 3 — flip the adapter
+
+**Status: done** (2026-09-26). Every PR in the plan below has landed; the
+last, PR 15, removed the engine's `Net` backend ("PR 15 landed"). What of
+`Net` is left is a graph container, not a runtime, and goes with fundsp in
+Phase 5.
 
 - Clip launch as a timestamped transport command (`At`), with the engine's
   other transport commands (deferred from Phase 2b).
@@ -1214,7 +1222,7 @@ Width changes mid-run, the master meter and tap, and pruning need nothing.
 | 12 | **Done.** bevy-tutti: export through `Fork` | 2, 7, 11, 16 |
 | 13 | **Done** (see "PR 13 landed"). bevy-tutti: default to native, delete the `Net` branch (apply, disagreements, rebound, arity, `compensate_graph`, `PdcDelay`) | 5, 11, 12 |
 | 14 | **Done** (see "PR 14 landed"). tutti-export: graph-only API | 8, 13 |
-| 15 | tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
+| 15 | **Done** (see "PR 15 landed"). tutti-core: remove `Engine::new(NetBackend)`; port the remaining `Net` fixtures | 4, 13 |
 | 16 | **Done.** tutti-plugin: fork a plugin node by state transfer (a fresh instance loaded with the live one's saved state, rebound offline), a `ForkSource` built at bind | 2 |
 
 **PR 8 landed.** Every tutti-export suite, both examples, the README and
@@ -2555,6 +2563,166 @@ tutti-core's `Net`, not tutti-export's): bevy-tutti's `tests/net_parity.rs`
 (`Engine::new(net.backend())`). Two comments in tutti-sampler still name
 `NetSource` / `fold_net_frame` (`tests/frame_exact_entry.rs`,
 `voice/memory_source.rs`); they were left to avoid colliding with #46.
+
+**PR 15 landed: tutti-core's `Engine` renders only the native graph.** The
+`Net` backend is gone from the engine: `Engine::new(MotionFsm, NetBackend)`,
+the `Backend` enum and its `Net` arm (`NetRender`, `follow_rate`),
+`NetPieces`, `render_net` and the root re-export of `NetBackend` (with
+`crossfade.rs`, about 330 net lines out of tutti-core's `src/`). The engine
+holds its `GraphRender`
+directly; the walk's `Pieces` trait stays, with the engine's one
+implementation, because a unit test wraps it to stage a control-thread
+store between pieces. Decisions:
+
+- **`Engine::with_graph` is renamed `Engine::new`** (and
+  `with_graph_capacity` `with_capacity`). With one runtime, "with graph"
+  contrasts with nothing, and `new` is the constructor a reader looks for.
+  An old `Engine::new(motion, backend)` caller meets an arity error rather
+  than a changed meaning, and the CHANGELOG's table gives the port.
+  `graph_block_capacity() -> Option<Samples>` (`None` for a `Net` engine) is
+  `block_capacity() -> Samples`, and `DEFAULT_GRAPH_BLOCK_CAPACITY`
+  `DEFAULT_BLOCK_CAPACITY` (review). `GraphEngineError` keeps its name (it is
+  the graph the engine refuses), and so does `settle_graph` (it settles the
+  graph specifically, and was just made `unsafe` in #45).
+- **A second `TransportClock` in the graph is the caller's rule, not
+  enforced.** The docs had said `Engine::new` "forbids" one; nothing did.
+  Refusing it needs the unit's id, which tutti-graph never sees (a `Legacy`
+  probe records a shape, not an id), so enforcement would be new plumbing
+  through `Legacy` and `Limits` for one id; the docs now say "must not" and
+  why (two clocks both consume a seek and both write the playhead).
+- **`TransportClock` stays**: it is the engine's own clock
+  (`GraphRender::clock`, driven by `begin`/`advance`). Its `AudioUnit` half
+  (the beat on ports inside a `Net`) now runs only in its own tests and a
+  `Net` a caller builds; it goes with `Net` (Phase 5), and `EnvClock` is the
+  graph's.
+- **Chunk-major `Legacy` rendering stays.** It exists for `Legacy` units
+  that poll a timeline, not for `Net` parity; it goes with `Legacy` (Phase
+  4), as planned.
+- **`net_fade` is removed** (nothing takes fundsp's `Fade` any more). Its
+  test had pinned `CrossfadeCurve::EqualAmplitude` to fundsp's `smooth5`,
+  and the review found nothing else pinned the law: `fade.rs` checked only
+  sums, monotony, symmetry and the ends (a linear `g = x` passes them), and
+  the differential suite shares `gains()`. `fade.rs` now pins each curve to
+  its closed form (`EqualAmplitude` to the bit at dyadic positions, both
+  against `f64` elsewhere), and `scene_render.rs` computes the crossfade's
+  frames from the law written out. `tempo_in_effect` is private to the clock,
+  its one caller now that no walk resolves beats against a `Net`'s clock.
+- **A guard**, `tutti-core/tests/no_net_backend.rs`: no code line of
+  tutti-core's `src/` names `NetBackend`, `realnet`, `Backend::Net`,
+  `render_net`, `.backend()` or `::backend(` (the path form,
+  `Net::backend(net)`, added in review; comments may, to say what replaced
+  them).
+- **The offline chunk-major mode is pinned** (review):
+  `legacy_chunk_major.rs::an_offline_render_is_chunk_major_while_a_legacy_unit_is_present`
+  renders shared-cursor `Legacy` probes through `RenderClock::render_graph`;
+  nothing failed before when it ignored `has_legacy`.
+
+**Every `Net` comparison is pinned to what it stood for.** No oracle here
+renders a `Net`. Where a test compared the native graph with a `Net`, its
+assertion is kept against one of: an **analytic figure** (a sine's closed
+form, a DC level, a lookahead's frames, a direct time-domain convolution, a
+segment's closed-form beat, the tone a dry voice reads to the bit, click
+onsets); an **invariant of the render** that shares no code with what it
+checks (a file is its planes through `write_buffers`; a width is the quad
+render through `fold_frame`; a trimmed render is the untrimmed one
+shifted; a fork renders the fresh graph; a compensated channel is the
+uncompensated one delayed; per-sample units render the same at any block
+length; a voice renders the same at every 64-multiple block); and, for
+samples that call libm and have no closed form, a **golden digest** (FNV-1a
+over the `f32` bits) recorded from the native render on this PR, which
+rendered the `Net`'s samples bit for bit (asserted on main before it),
+asserted only on Linux/glibc (`GOLDEN_HERE`), with the portable checks
+beside it. The one libm-free digest (a dithered DC export) is asserted
+everywhere. Per file:
+
+- **tutti-core `engine_graph.rs`**: `fold_and_declick_match_the_net_path` →
+  the fold matrix and a linear fade (`fold_frame` of the source, times the
+  declick gain); `net_and_graph_see_the_same_beat` → the closed-form beat
+  of each segment (`support::model_beats`), per frame, and the published
+  playhead at every block end; `net_and_graph_agree_over_ten_minutes` →
+  the published playhead is the closed form, bit-equal until the loop first
+  wraps and within 1e-9 modulo the loop after; the loop-armed-behind,
+  declick-stop and tempo-wiggle tests keep their analytic halves (the
+  loop's note named the wrong code: the live clock's rule is
+  `FrameClock::advance`'s guard, not `LoopRange::advance`); the `dc_run`
+  tests lose the `Net` run, whose assertions were the same analytic ones.
+  **Dropped**, each the `Net` arm itself: `a_timed_start_moves_a_net_clock…`
+  and `a_re_rated_net_keeps_a_frame_command…` (their graph halves are
+  `a_timed_start_sounds_from_its_exact_frame` and
+  `a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time`).
+- **tutti-core `env_clock.rs`**: `EnvClock` against a `TransportClock` in a
+  `Net` engine → against the block's own `Env` (`transport_at`, a separate
+  closed form) per frame, bit-exact at block starts, plus the closed-form
+  model before the first wrap and the event checks it had; the click behind
+  `EnvClock` → onsets on the model's beat frames (one frame after each beat:
+  the click starts on `sin(0)`); "the same samples" is dropped (they are
+  `ClickNode`'s, pinned by its own digest test).
+- **tutti-core, others**: `root_channel_layouts.rs` on the graph (the
+  over-wide root is now refused, not clamped); `rt_no_alloc_engine.rs`
+  drops its `Net` metronome gate (the `EnvClock` + click gate is its graph
+  form); `alloc_budget.rs`'s render budget on a native chain (the build and
+  commit budgets stay on `Net`, which `compile` still builds);
+  `topology_compile.rs` renders the compiled `Net` as the `AudioUnit` it is.
+- **tutti-export `graph_source.rs`** (`net_render` removed): sine → closed
+  form + digest + fork equals fresh; resampled, peak-normalized and dithered
+  files → the file is its planes through `write_buffers`, plus level checks
+  and digests (the dither's portable); quad VBAP → stereo and mono are the
+  quad render folded + digests of built and forked quad; convolver → direct
+  convolution (the node's default half-dry blend) + digest; latency → 240
+  frames, the trimmed render is the untrimmed one shifted; tail → 2 999
+  frames and the direct convolution through the tail; the sampler voice →
+  the dry voice is the tone to the bit, the clock ends on the closed form,
+  the pitched digest and its spectral peak; the forked clip reader → the
+  tone. (A zero-crossing count reads the vocoder's output 2% sharp, from
+  low-level phase artefacts; the Hann-windowed spectrum peaks at 658.75 Hz.)
+- **bevy-tutti**: `net_parity.rs` is `scene_render.rs` (`NetEra` removed):
+  the compensated scene's dry channel is the uncompensated one delayed by
+  the lookahead, its latent channel the same units hand-wired with
+  `GraphBuilder`, plus the scene digest; unaligned blocks against 64-frame
+  blocks; a param write against the scene built at the new drive; a
+  crossfade against the old filter before it, a hand-wired new filter
+  (silent until the fade) after it, and inside it the hand-wired filters'
+  outputs blended by the law written out and shaped by `tanh`.
+  `engine::build`'s `engine_tests` (`net_era` removed): the click's onsets
+  (already analytic) + digest; the voice's dry tone to the bit, the pitched
+  voice against itself at 64-frame blocks + digest + its spectral peak
+  (659.26 Hz, a fifth up, within 1%, on every target). `export_fork.rs`
+  (`render_net_era`, `chain_net_era`, `poly_node_export_net_era` removed):
+  the master and node exports against the chain wired fresh with
+  `GraphBuilder` + digest; the synth node export against the synth's own
+  reference note + digest. `composition.rs`'s `master_bus` tests drive
+  `AudioGraphRes::set_outputs_from` (the adapter's `pipe_output`), not a
+  `Net`; `no_net.rs`'s cut test reads a written file (no `Net` is left in the
+  crate to read).
+- **Elsewhere**: tutti-cpal's fixtures, bench and README, tutti-nodes'
+  engine gate and bench (its `backend` group loses the `net` row),
+  tutti-polysynth's shared-clip test (the pair against one synth alone),
+  tutti-sampler's `graph_engine_clock.rs` and `frame_exact_entry.rs`
+  (test-only edits), tutti-midi-runtime's `frame_exact_clip.rs`, and the
+  `tutti` umbrella's `one_import_renders_a_block`, `headless_engine`
+  example and README all build the native graph (`GraphBuilder` where it
+  reads like the `Net` code it replaced).
+
+**Found on the way: three mutation notes that no longer held.** Rendering
+whole blocks with a `Legacy` unit present (`has_legacy` ignored, in the
+engine or in `RenderClock::render_graph`) was said to fail the voice tests
+in tutti-export's `graph_source.rs`, bevy-tutti's engine tests and
+tutti-sampler's shared-cursor, loop and crossfade tests. Measured here, a
+voice placed at beat 0 enters on frame 0 and then reads its own cursor, so
+those fixtures render the same bits either way (so did their `Net`
+comparisons, presumably since the sampler's cursor work). The notes now say
+so, and name what does catch it: tutti-sampler's `frame_exact_entry.rs` (a
+clip entering mid-render) and `graph_engine_clock.rs`'s
+`a_voice_plays_in_time_*`, and tutti-core's `legacy_chunk_major.rs`.
+
+**What of `Net` remains, all Phase 5's:** `tutti_core::dsp::{Net, NodeId,
+Source}` and `topology::compile`; the `Net` forms of `build_vbap_mix` /
+`VbapMixParts::insert_into` (tutti-spatial) and
+`ParamModParts::insert_into` (tutti-nodes); `PdcDelay`,
+`tutti_types::latency::compensate(&mut Net)` and `unit_param`; the nodes'
+own tests (tutti-nodes, tutti-sampler, tutti-spatial, tutti-graph's builder
+and fork suites) and tutti-graph's `graph_render` A/B bench; tutti-sampler's
+`profile_stretch_clone` example; and `TransportClock`'s `AudioUnit` half.
 
 ### Phase 4 — port nodes natively
 

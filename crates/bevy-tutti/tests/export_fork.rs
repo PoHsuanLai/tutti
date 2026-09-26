@@ -3,11 +3,14 @@
 //!
 //! An export forks the live graph (`Editor::fork`, design doc 013 PR 12).
 //! Until PR 13 the adapter could also run on fundsp's `Net`, whose export
-//! cloned the net; the tests that held the two to the same answer now hold
-//! the fork to the `Net`-era render, built by hand as a test oracle
-//! ([`chain_net_era`], `synths::poly_node_export_net_era`) and rendered by
-//! [`render_net_era`], as tutti-export's `Net` arm rendered it until PR 14
-//! removed the arm. The rest pin
+//! cloned the net; from PR 13 to PR 15 the tests that held the two to the
+//! same answer held the fork to the `Net`-era render, built by hand as a
+//! test oracle (`chain_net_era`, `synths::poly_node_export_net_era`,
+//! rendered by `render_net_era`). PR 15 retired those oracles with the rest
+//! of the `Net` fixtures: the exports are now held to the same units wired
+//! fresh with `GraphBuilder` (a fork starts reset, which a fresh graph is),
+//! to a synth's own reference note, and, for the samples the `Net` rendered,
+//! to golden digests on Linux/glibc (see [`GOLDEN_HERE`]). The rest pin
 //! what only a fork has: it shares nothing with the live graph, it names a
 //! node it cannot copy, it forks a hosted plugin by state transfer.
 //! `export_surface.rs` pins the request/response shape; this file pins the
@@ -158,130 +161,93 @@ fn chain(app: &mut App) -> Entity {
     app.world_mut().spawn(filter).id()
 }
 
-/// Render `net` as tutti-export's `Net` arm (`NetSource` and `drive`) did
-/// until design doc 013's PR 14 removed it: re-rated to the render's rate,
-/// in 64-frame blocks with no input, `clock` advanced after each block
-/// (emit-then-advance), every frame folded onto the config's width by
-/// `fold_frame`, the head trimmed by `render.latency` and the kept span
-/// capped at the duration plus `render.tail`.
-///
-/// **A test oracle, and nothing else**: it lets the `Net`-era oracles below
-/// render without tutti-export's `Net` arm, and goes with them and with
-/// `Engine::new(NetBackend)` (doc 013, PR 15).
-///
-/// Mutation (run): advancing `clock` before `process` (a priming advance)
-/// → `synth_exports_are_bit_identical_to_the_net_era` parts from the fork,
-/// so the oracle is still `NetSource`'s order and not merely some order.
-fn render_net_era(
-    mut net: tutti_core::dsp::Net,
-    config: &ExportConfig,
-    clock: &dyn tutti_export::RenderClock,
-) -> Vec<Vec<f32>> {
-    let rate = config.render.sample_rate;
-    let ch = config.encode.channels.count() as usize;
-    let latency = config.render.latency.get();
-    let output_length = tutti_export::duration_to_frames(config.render.duration_seconds, rate)
-        .get()
-        + config.render.tail.get();
-    let total = output_length + latency;
+/// Whether this target is the one the golden digests were recorded on:
+/// Linux with glibc's libm. The digests are of the fork's render on the
+/// commit that retired the `Net`-era oracles (doc 013, PR 15), which
+/// rendered the `Net` era's samples bit for bit (asserted there); the units
+/// call `tan` (the filter's coefficients) and `sin` (the synth), libm
+/// quality-of-implementation that differs in the last ulp between C
+/// runtimes, so they are asserted only where they were recorded.
+const GOLDEN_HERE: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
 
-    net.set_sample_rate(rate);
-    let n_out = net.outputs();
-    let mut scratch = tutti_core::BufferVec::new(n_out.max(1));
-    let mut planes = vec![Vec::with_capacity(output_length); ch];
-    let mut frame = vec![0.0f32; ch];
-    let mut produced = 0;
-    while produced < total {
-        let n = (total - produced).min(tutti_core::MAX_BUFFER_SIZE);
-        let mut out = scratch.buffer_mut();
-        net.process(n, &BufferRef::new(&[]), &mut out);
-        clock.advance(Samples(n));
-        for i in 0..n {
-            let at = produced + i;
-            if at < latency || at - latency >= output_length {
-                continue;
-            }
-            let src: Vec<f32> = (0..n_out).map(|c| out.channel_f32(c)[i]).collect();
-            tutti_types::fold_frame(&src, &mut frame);
-            for (plane, &s) in planes.iter_mut().zip(&frame) {
-                plane.push(s);
-            }
-        }
-        produced += n;
+/// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
+fn digest(planes: &[Vec<f32>]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in planes.iter().flatten().flat_map(|s| s.to_le_bytes()) {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    planes
+    h
 }
 
-/// The `Net`-era export of [`chain`], as `AudioGraphRes::export` rendered it
-/// on `GraphBackend::Net` before design doc 013's PR 13: the same chain in a
-/// fundsp `Net` at the export's rate; the master a plain `Net::clone`, a node
-/// `clone_isolated`, rebound onto the render's (stopped) timeline and reset;
-/// each rendered as tutti-export's `Net` arm rendered it ([`render_net_era`])
-/// under the renderer's `FrozenClock`, as `ExportClock::frozen` hands it.
-/// Returns the master's planes and the filter's.
-///
-/// **A test oracle, and nothing else**: the adapter lost its `Net` arm in PR
-/// 13, and this keeps the A/B assertion below it used to run. It goes with
-/// the rest of the `Net` fixtures (doc 013, PR 15).
-fn chain_net_era(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    use tutti_core::dsp::{Net, Source};
-    let mut net = Net::new(0, 2);
-    net.set_sample_rate(SampleRate(RATE));
-    let osc = net.push(Box::new(Osc::saw(Hz(110.0))));
-    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
-        SvfType::LowPass,
-        Hz(800.0),
-        Q(1.0),
-    )));
-    net.set_source(filter, 0, Source::Local(osc, 0));
-    net.set_output_source(0, Source::Local(filter, 0));
-    net.set_output_source(1, Source::Local(osc, 0));
-    let ctx: tutti_core::transport::OfflineTransport =
-        Arc::new(tutti_core::transport::OfflineTimeline::new(
-            &tutti_core::transport::OfflineTimelineConfig {
-                start_beat: tutti_core::Beat(0.0),
-                tempo: tutti_core::Bpm(120.0),
-                sample_rate: SampleRate(RATE),
-                loop_range: None,
-            },
-        ));
-    let render =
-        |net: Net| render_net_era(net, &config(seconds), &tutti_core::transport::FrozenClock);
-    let mut node = net
-        .clone_isolated(filter)
-        .expect("the filter has outputs")
-        .isolate_for_offline(&ctx);
-    node.reset();
-    (render(net.clone()), render(node))
+/// Assert `got` is the digest recorded as `want`, where the goldens hold.
+fn assert_golden(what: &str, got: u64, want: u64) {
+    if GOLDEN_HERE {
+        assert_eq!(
+            got, want,
+            "{what}: digest {got:#018x}, recorded {want:#018x}"
+        );
+    }
 }
 
-/// **An export renders what the `Net`-era export rendered, bit for bit**, for
-/// the master and for one node, on a graph whose live side has not run (the
-/// `Net` side is [`chain_net_era`]).
+/// [`chain`]'s units wired fresh, with `GraphBuilder`, and rendered in the
+/// export's own blocks for `seconds`: the master (the filter on channel 0,
+/// the saw on channel 1) and the filter alone on both channels (a mono node
+/// clamped across a stereo root). A fork starts reset, which is what a
+/// fresh graph is.
+fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
+    use tutti_export::{render_to_buffers, FrozenClock, RenderGraph};
+    use tutti_graph::GraphBuilder;
+    let render = |master: bool| {
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+        let osc = g.add_unit(Box::new(Osc::saw(Hz(110.0))));
+        let filter = g.add_unit(Box::new(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            Hz(800.0),
+            Q(1.0),
+        )));
+        g.connect(osc, 0, filter, 0).connect_output(filter, 0, 0);
+        g.connect_output(if master { osc } else { filter }, 0, 1);
+        let (editor, executor) = g
+            .build(RenderGraph::prepare(SampleRate(RATE)))
+            .expect("builds");
+        let graph = RenderGraph::new(editor, executor).expect("built together");
+        render_to_buffers(graph, &config(seconds), &FrozenClock)
+            .expect("renders")
+            .planes
+    };
+    (render(true), render(false))
+}
+
+/// **An export renders its graph as wired fresh**, for the master and for
+/// one node, on a graph whose live side has not run: bit for bit the same
+/// units in a `GraphBuilder` graph ([`chain_fresh`]), and (Linux/glibc)
+/// the `Net`-era export's samples.
 ///
 /// "Where the rules allow" (doc 013, PR 12): a `Net` master export was a
 /// plain clone that copied the running state (an oscillator's phase, a
 /// filter's memory), and a fork starts reset. With the live side never
-/// rendered the two coincide, so this is the like-for-like pair.
+/// rendered the two coincided, so this was the like-for-like pair with the
+/// `Net`-era export (`chain_net_era`) until doc 013 PR 15 retired it.
 ///
 /// Mutation (run): `AudioGraphRes::export` forking `ForkTarget::Master` for a
 /// node export → the node's render is the master's, and the node comparison
 /// fails on channel 1 (the saw, not the filter).
 #[test]
-fn exports_are_bit_identical_to_the_net_era() {
+fn exports_render_their_graph_as_wired_fresh() {
     let mut app = app_over(graph_on());
     let filter = chain(&mut app);
     let native_master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
     let native_node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
-    let (net_master, net_node) = chain_net_era(0.25);
-    for (what, net, native) in [
-        ("master", &net_master, &native_master),
-        ("node", &net_node, &native_node),
+    let (fresh_master, fresh_node) = chain_fresh(0.25);
+    for (what, fresh, native) in [
+        ("master", &fresh_master, &native_master),
+        ("node", &fresh_node, &native_node),
     ] {
-        assert_eq!(net.len(), native.len(), "{what}: width");
-        let peak = net[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert_eq!(fresh.len(), native.len(), "{what}: width");
+        let peak = native[0].iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.1, "{what}: silent");
-        for (c, (a, b)) in net.iter().zip(native).enumerate() {
+        for (c, (a, b)) in fresh.iter().zip(native).enumerate() {
             assert_eq!(a.len(), b.len(), "{what}: length of channel {c}");
             if let Some(i) = a
                 .iter()
@@ -289,12 +255,17 @@ fn exports_are_bit_identical_to_the_net_era() {
                 .position(|(x, y)| x.to_bits() != y.to_bits())
             {
                 panic!(
-                    "{what}: channel {c} parts at frame {i}: net {} native {}",
+                    "{what}: channel {c} parts at frame {i}: fresh {} export {}",
                     a[i], b[i]
                 );
             }
         }
     }
+    assert_golden(
+        "the master export",
+        digest(&native_master),
+        0xccbc_b417_89a0_36e4,
+    );
     // And the node export is the node: both channels are the filter (a mono
     // node clamps across a stereo root), which is the master's channel 0.
     assert_eq!(native_node[0], native_master[0]);
@@ -1221,7 +1192,8 @@ mod plugin {
 /// 96 kHz), placed to the frame since clips place on integer frames (#40).
 ///
 /// A `Net` export had no fork, and its synth played no clip unless the host
-/// refilled one; the `Net`-era oracle here does, to compare.
+/// refilled one (the `Net`-era oracle that did, to compare, went with doc
+/// 013 PR 15).
 #[cfg(all(feature = "midi", feature = "synth", feature = "soundfont"))]
 mod synths {
     use super::*;
@@ -1230,7 +1202,7 @@ mod synths {
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall, MidiTarget, MidiTargetRegistry};
     use tutti_core::transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_core::{Beat, Bpm, BufferVec, Seconds, MAX_BUFFER_SIZE};
-    use tutti_midi_runtime::{MidiClipSource, OfflineRebind, TimedMidiEvent};
+    use tutti_midi_runtime::{OfflineRebind, TimedMidiEvent};
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_polysynth::{EnvelopeConfig, OscillatorType, PolySynth, SynthConfig};
@@ -1519,71 +1491,32 @@ mod synths {
         }
     }
 
-    /// The `Net`-era node export of a [`poly`] synth, as
-    /// `AudioGraphRes::export` rendered it on `GraphBackend::Net` before
-    /// design doc 013's PR 13, with the clip a `Net`-era host refilled in the
-    /// `prepare` hook: the synth alone in a fundsp `Net` at `RATE`,
-    /// `clone_isolated`, rebound onto the render's timeline and reset, then a
-    /// `MidiClipSource` of [`clip`] on that timeline installed on the
-    /// isolated synth's port (isolating severs it, and nothing else rebinds
-    /// it), rendered as tutti-export's `Net` arm rendered it
-    /// ([`render_net_era`]) under [`request`]'s config and the timeline.
+    /// **A node export of a synth plays its clip**: silent until beat 1,
+    /// then the synth's own note ([`reference`]) sample for sample, and
+    /// (Linux/glibc) the `Net`-era export's samples. The fork carries the
+    /// clip itself.
     ///
-    /// **A test oracle, and nothing else**; it goes with the rest of the
-    /// `Net` fixtures (doc 013, PR 15).
-    fn poly_node_export_net_era() -> Vec<Vec<f32>> {
-        use tutti_core::dsp::Net;
-        let mut net = Net::new(0, 2);
-        net.set_sample_rate(SampleRate(RATE));
-        let id = net.push(Box::new(poly()));
-        net.pipe_output(id);
-        let timeline = timeline(RATE);
-        let ctx: tutti_core::transport::OfflineTransport = timeline.clone();
-        let mut isolated_net = net
-            .clone_isolated(id)
-            .expect("the synth has outputs")
-            .isolate_for_offline(&ctx);
-        isolated_net.reset();
-        let node = isolated_net.node_mut(id);
-        let synth = node
-            .as_any_mut()
-            .downcast_mut::<PolySynth>()
-            .expect("the synth");
-        let unit = synth.midi_unit_id();
-        synth.set_midi_source(Arc::new(MidiClipSource::new(unit, clip(), ctx)));
-        let request = request(ExportSource::Master, RATE);
-        render_net_era(isolated_net, &request.config, timeline.as_ref())
-    }
-
-    /// **An export of a synth renders what the `Net`-era export rendered,
-    /// bit for bit**, once the `Net`-era export is handed the clip
-    /// ([`poly_node_export_net_era`]). The fork carries the clip itself.
+    /// Until doc 013 PR 15 the oracle was `poly_node_export_net_era`: the
+    /// synth `clone_isolated` out of a `Net`, the clip reinstalled by hand
+    /// (a `Net`-era host's `prepare` hook), rendered as tutti-export's `Net`
+    /// arm rendered it, bit for bit.
     ///
     /// Mutation (run): `controlled` dropping a unit's own fork source → the
-    /// render is silent ("the note sounds" fails). Mutation (run): the
-    /// oracle installing the clip 0.002 beat (one 64-frame chunk) late → the
-    /// two part at the onset, frame 32 001.
+    /// render is silent ("the note enters on beat 1" fails).
     #[test]
-    fn synth_exports_are_bit_identical_to_the_net_era() {
+    fn a_synth_node_export_plays_its_clip() {
         let (mut app, synth) = app_with(poly());
         install_clip(&mut app, synth);
         let native = export(&mut app, request(ExportSource::Node(synth), RATE)).planes();
-        let net = poly_node_export_net_era();
-        assert!(
-            native[0][..BEAT_48K].iter().all(|&s| s == 0.0),
-            "nothing before beat 1"
+        let reference = reference(poly(), |s| {
+            s.midi_sender().queue(&[note_on()]);
+        });
+        assert_note_at_beat_1("PolySynth node export", RATE, &native, &reference);
+        assert_golden(
+            "the synth's node export",
+            digest(&native),
+            0x2f47_791e_730f_81b5,
         );
-        assert!(
-            native[0][BEAT_48K..].iter().any(|&s| s != 0.0),
-            "the note sounds"
-        );
-        for c in 0..2 {
-            assert_eq!(
-                native[c].iter().zip(&net[c]).position(|(a, b)| a != b),
-                None,
-                "channel {c}: the first frame the render parts from the Net era's"
-            );
-        }
     }
 
     /// A MIDI source that is not a function of a timeline.

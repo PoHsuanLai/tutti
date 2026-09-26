@@ -3,7 +3,7 @@
 //! [`Reference`] interpreter the executor is proven against.
 //!
 //! This is Phase 1 of `docs/design/013-native-graph.md` (PR #2): the road off
-//! fundsp's `Net` runtime. `tutti_core::Engine::with_graph` renders an
+//! fundsp's `Net` runtime. `tutti_core::Engine::new` renders an
 //! [`Executor`] behind the engine (Phase 2); the Bevy adapter and export still
 //! build `Net`s until Phase 3 flips them. Of Phase 2 it has the
 //! sample-accuracy contract's type-level half (doc 013 §6: [`Offset`] vs

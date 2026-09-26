@@ -10,6 +10,8 @@
 //! Neither is a DSP node anyone should reach for: the tests that use them are
 //! about the `Net` and the `Engine` (root folding, allocation budgets), and the
 //! node inside is only there so the graph renders something non-zero.
+//!
+//! Below them, the beat model the engine tests hold the transport to.
 
 #![allow(dead_code)]
 // Each integration-test binary compiles this module separately, and no single
@@ -155,4 +157,94 @@ impl AudioUnit for Gain {
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
+}
+
+// ---- the beat, in closed form ---------------------------------------------
+
+/// The beat, segment by segment, as the engine is specified to count it
+/// (doc 013 §6), written here without its code: each segment is an origin
+/// frame and beat and a tempo, and the beat at a frame is the origin beat
+/// plus `frames × tempo / (60 × rate)` in closed form. A loop wraps on the
+/// first frame whose beat reaches its end, onto
+/// `start + (beat − start) mod len`, when the playhead was inside it.
+///
+/// Until doc 013 PR 15 the engine tests compared the graph's beats against
+/// a `Net`'s `TransportClock` rendered by the same engine; this is what that
+/// clock was pinned to, and the oracle now.
+#[derive(Clone, Copy, Debug)]
+pub struct Segment {
+    pub frame: u64,
+    pub beat: f64,
+    pub bpm: f64,
+    pub rate: f64,
+}
+
+impl Segment {
+    /// The beat on frame `f`: `TimelineSegment::beat_at`'s arithmetic,
+    /// IEEE-exact on every target (no libm).
+    pub fn at(&self, f: u64) -> f64 {
+        self.beat + ((f - self.frame) as f64 * self.bpm) / (60.0 * self.rate)
+    }
+}
+
+/// One change to the model's transport, applied on its frame (after the
+/// wrap check for that frame, as the engine advances to a frame before it
+/// applies the commands due on it).
+#[derive(Clone, Copy, Debug)]
+pub enum Change {
+    Tempo(f64),
+    Loop(Option<(f64, f64)>),
+    Seek(f64),
+}
+
+/// The model's beat on every frame `0..=frames` at `rate`, rolling from
+/// beat 0 at `bpm`, under `changes` (frame, change), which must be in frame
+/// order.
+pub fn model_beats(rate: f64, bpm: f64, changes: &[(u64, Change)], frames: u64) -> Vec<f64> {
+    let mut seg = Segment {
+        frame: 0,
+        beat: 0.0,
+        bpm,
+        rate,
+    };
+    let mut looping: Option<(f64, f64)> = None;
+    let mut next = 0;
+    let mut out = Vec::with_capacity(frames as usize + 1);
+    for f in 0..=frames {
+        if f > 0 {
+            if let Some((start, end)) = looping {
+                let (was, now) = (seg.at(f - 1), seg.at(f));
+                if was < end && now >= end {
+                    seg = Segment {
+                        frame: f,
+                        beat: start + (now - start).rem_euclid(end - start),
+                        ..seg
+                    };
+                }
+            }
+        }
+        while next < changes.len() && changes[next].0 == f {
+            match changes[next].1 {
+                Change::Tempo(bpm) => {
+                    seg = Segment {
+                        frame: f,
+                        beat: seg.at(f),
+                        bpm,
+                        rate,
+                    }
+                }
+                Change::Loop(l) => looping = l,
+                Change::Seek(beat) => {
+                    seg = Segment {
+                        frame: f,
+                        beat,
+                        ..seg
+                    }
+                }
+            }
+            next += 1;
+        }
+        out.push(seg.at(f));
+    }
+    out
 }

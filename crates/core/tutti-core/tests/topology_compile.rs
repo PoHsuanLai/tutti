@@ -9,22 +9,21 @@
 //!    value as over the graph compiled from it. That is the whole proof: the two
 //!    best-tested files in the engine now answer questions about a value a unit
 //!    test can write down, and their answer is the runtime's.
-//! 3. `Engine` renders a compiled graph to the samples the value predicts —
-//!    `tutti-core`'s first end-to-end engine test, which the layer is what makes
-//!    writable at all (it needs no `World` and no device).
+//! 3. A compiled graph renders the samples the value predicts. (Until doc 013
+//!    Phase 3 PR 15 it rendered through `Engine`; the engine takes only the
+//!    native graph now, and its end-to-end tests are `engine_graph.rs`'s.)
 
 use std::any::Any;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::dsp::{Net, Source as NetSource};
+use tutti_core::dsp::Source as NetSource;
 use tutti_core::topology::{compile, Catalog, CompileError, Compiled};
 use tutti_core::{
     graph::{
         Edge, FeedbackFrom, InPort, NodeKey, NodeSpec, OutPort, ParamValue, Source, Topology, Valid,
     },
-    latency, tail, ChannelLayout, Engine, InterleavedMut, MotionEvent, SampleRate, Samples, Tail,
-    Transport, TransportClock,
+    latency, tail, ChannelLayout, SampleRate, Samples, Tail,
 };
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, Signal, SignalFrame};
 
@@ -640,25 +639,27 @@ fn a_feedback_edge_is_refused_explicitly() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. The first Engine end-to-end test.
+// 4. The compiled graph renders the value.
 // ---------------------------------------------------------------------------
 
-/// Topology → compile → `Engine::process`, asserted on the **samples**.
+/// Topology → compile → the compiled `Net`'s own render, asserted on the
+/// **samples**.
 ///
-/// `tutti-core`'s `Engine` had no end-to-end test before this: an assertion on
-/// what it renders needed a graph, and building a graph meant `bevy_tutti`'s
-/// `App` plus a device. A `Topology` needs neither, which is the practical half
-/// of what the value layer buys.
+/// The graph is `dc(0.5) → gain(0.25) → both output channels`, so every
+/// rendered sample must be exactly 0.125 — a number the value predicts and
+/// nothing in the render path can round.
 ///
-/// The graph is `dc(0.5) → gain(0.25) → both output channels`, so every rendered
-/// sample must be exactly 0.125 — a number the value predicts and nothing in the
-/// render path can round.
+/// Until doc 013 Phase 3 PR 15 this rendered through `Engine::new(NetBackend)`
+/// with a `TransportClock` pushed beside the compiled graph, and also checked
+/// the playhead moved. The engine renders only the native graph now; the
+/// compiled `Net` is rendered as the `AudioUnit` it is (the compile seam goes
+/// with `Net` in Phase 5), and "the render ran" is the sample count.
 ///
 /// Mutation: swap the gain node's spec param to 0.5 without touching the
 /// assertion → every sample is 0.25 → fails. Mutation: have `compile` skip
-/// `set_output_source` → the buffer stays silent → fails.
+/// `set_output_source` → the output stays silent → fails.
 #[test]
-fn an_engine_renders_the_value_it_was_compiled_from() {
+fn a_compiled_graph_renders_the_value_it_was_compiled_from() {
     let mut t = Topology::default();
     t.nodes.insert(
         A,
@@ -676,45 +677,14 @@ fn an_engine_renders_the_value_it_was_compiled_from() {
         .expect("catalog builds it")
         .net;
 
-    // The transport clock is pushed after compiling, the way any host adds an
-    // engine-owned node: it is not authored, so it is not in the document and
-    // must not be in the value. (Membership rule — see docs/design/003.)
-    let transport = Transport::new(RATE.get());
-    net.push(Box::new(TransportClock::new(
-        transport.clock_links(),
-        RATE.get(),
-    )));
-
-    let backend = net.backend();
-    // The backend holds a pointer back into the net; keep the net alive for the
-    // whole render, exactly as `rt_no_alloc_engine` does.
-    let _keep: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
-
-    let engine = Engine::new(transport.motion.clone(), backend);
-    transport
-        .motion
-        .try_send(MotionEvent::Play)
-        .expect("the queue is empty");
-
-    let mut output = vec![0.0f32; 256 * 2];
     let mut rendered = 0usize;
-    for _ in 0..8 {
-        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-        for s in &output {
-            assert_eq!(*s, 0.125, "dc(0.5) through gain(0.25)");
-        }
-        rendered += output.len() / 2;
+    for _ in 0..8 * 256 {
+        let mut frame = [f32::NAN; 2];
+        AudioUnit::tick(&mut net, &[], &mut frame);
+        assert_eq!(frame, [0.125; 2], "dc(0.5) through gain(0.25)");
+        rendered += 1;
     }
     assert_eq!(rendered, 8 * 256);
-
-    // And the transport advanced, so the render actually ran rather than the
-    // buffer having been born at 0.125.
-    let beat = transport.settings.beat().get();
-    let expected = 8.0 * 256.0 / RATE.get() * (120.0 / 60.0);
-    assert!(
-        (beat - expected).abs() < 1e-3,
-        "the playhead moved {beat} beats, expected about {expected}"
-    );
 
     // The value predicted a silent-free render; so does its latency plan.
     assert!(latency::plan(valid.get()).is_empty());

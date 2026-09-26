@@ -1,9 +1,11 @@
 //! fundsp's `Net` stays out of this crate's non-test code.
 //!
 //! Design doc 013, Phase 3 PR 13 deleted bevy-tutti's `Net` runtime; the
-//! native graph is its only one. What is left of `Net` here is test-only —
-//! the `Net`-era oracles in `tests/net_parity.rs`, `engine::build`'s
-//! `engine_tests` and `tests/export_fork.rs`, which go with PRs 14 and 15.
+//! native graph is its only one. PR 15 retired the test-only `Net`-era
+//! oracles that were left (in what is now `tests/scene_render.rs`,
+//! `engine::build`'s `engine_tests` and `tests/export_fork.rs`), so nothing
+//! in the crate names `Net` any more, tests included; the cut below stays
+//! so a test module may name it, to say what replaced it.
 //! Nothing stops a new `use tutti_core::dsp::Net` in `src/` from compiling,
 //! and clippy's `disallowed_types` lives in the workspace-wide `clippy.toml`,
 //! where the engine crates still use `Net` legitimately. So this text scan is
@@ -92,23 +94,32 @@ fn no_net_in_the_crates_code() {
     );
 }
 
-/// **The scan sees test code as test code, and nothing else**: the `Net`-era
-/// oracle in `engine::build`'s `engine_tests` is found by the pattern but
-/// falls past the cut, so the check above is not passing for want of a
-/// pattern that matches.
+/// **The scan sees test code as test code, and nothing else**: a code line
+/// that names `Net` before a file's test module is found, the same line
+/// after the cut is not, and neither is a comment, so the check above is not
+/// passing for want of a pattern that matches.
 ///
-/// Mutation (run): `code_lines` not cutting at the test module → this fails
-/// (and the check above fails on `engine/build.rs`).
+/// It read `engine::build`'s `Net`-era oracle until doc 013 PR 15 removed
+/// it; a file that names `Net` is written here instead.
+///
+/// Mutation (run): `code_lines` not cutting at the test module → this fails.
 #[test]
 fn the_cut_is_at_the_test_modules() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let text = std::fs::read_to_string(root.join("src/engine/build.rs")).unwrap();
+    let text = "use tutti_core::dsp::Net;\n\
+                // Net::new is gone\n\
+                fn f() {}\n\
+                #[cfg(test)]\n\
+                mod tests {\n\
+                    use tutti_core::dsp::Net;\n\
+                }\n";
     assert!(
-        text.lines().any(names_net),
-        "build.rs's test oracle names `Net`, so the pattern is live"
+        text.lines().filter(|l| names_net(l)).count() >= 2,
+        "the pattern is live"
     );
-    assert!(
-        !code_lines(&text).iter().any(|(_, l)| names_net(l)),
-        "and it is all past the cut"
-    );
+    let hits: Vec<usize> = code_lines(text)
+        .iter()
+        .filter(|(_, l)| names_net(l))
+        .map(|(i, _)| *i)
+        .collect();
+    assert_eq!(hits, vec![1], "only the line before the cut");
 }

@@ -10,20 +10,24 @@ section there before you relax or work around a rule.
 **fundsp's `Net` is being replaced by a native graph**, per
 [`docs/design/013-native-graph.md`](docs/design/013-native-graph.md): a
 `Topology` value, a pure compiler producing an immutable plan, units stored
-once, and events as ports. `Engine` renders it (`Engine::with_graph`), and
-since Phase 3 PR 13 it is `bevy-tutti`'s only runtime: `AudioGraphRes` holds
-an `Editor`, PDC is the compiler's, and export forks the live graph
-(`Editor::fork`). tutti-export renders only the native graph (PR 14). `Net`
-is left in tutti-core's `Engine::new(NetBackend)` (PR 15), the nodes' own
-tests, and test-only `Net`-era oracles (bevy-tutti's `net_parity.rs` and the
-`*_net_era` helpers, tutti-export's `graph_source.rs`) that go with it. Until
-the migration lands:
+once, and events as ports. Phase 3 is done: `Engine` renders only the
+native graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
+is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
+the compiler's, export forks the live graph with `Editor::fork`), and
+tutti-export renders only it. `Net` is left as a container, not a runtime,
+until Phase 5 deletes fundsp: `topology::compile`, the `Net` forms of two
+builders (`build_vbap_mix` / `VbapMixParts::insert_into`,
+`ParamModParts::insert_into`), the
+nodes' own tests and `tutti-graph`'s A/B bench wire units in one
+(`tests/no_net_backend.rs` keeps `NetBackend` out of tutti-core). Until the
+migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can
   (`process`, `reset`, `set_sample_rate`, declared latency and tail).
-  A `Net`-era oracle is a test comparing against what `Net` rendered; do not
-  add one where an analytic figure will do.
+  Do not compare against a `Net` render in a new test: pin an analytic
+  figure, an invariant of the render, or (for samples that call libm) a
+  golden digest asserted only on the target it was recorded on.
 - Musical delay is not latency. Report only processing latency to PDC.
 - Transport commands meant for playback take an `At`
   (`MotionFsm::schedule`); the untimed `try_send` means `At::NextBlock`. A
@@ -134,7 +138,7 @@ crates/
                  tutti-node (node contract), tutti-cpal (device), tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
                  tutti-graph (doc 013 Phases 1–2: Node contract, Topology→Plan compiler,
-                 serial executor + reference interpreter; `Engine::with_graph` renders it)
+                 serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
   midi/          tutti-midi-{types,runtime,hardware,file}

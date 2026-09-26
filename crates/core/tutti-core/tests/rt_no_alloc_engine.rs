@@ -1,10 +1,11 @@
 //! Regression gate for `Engine::process` with the engine's own nodes in the
-//! graph.
+//! graph: timed transport commands, and the metronome, whose meter read is
+//! the one non-scalar read on the audio thread.
 //!
-//! The existing `process_audio_is_allocation_free` test in `tutti/src/audio_io.rs`
-//! only exercises the bare `TransportClock` — no signal nodes. This file adds
-//! the metronome, whose meter read is the one non-scalar read on the audio
-//! thread.
+//! The metronome gate ran on a `Net` (a `TransportClock` feeding the click)
+//! until doc 013 Phase 3 PR 15 removed the engine's `Net` backend; its graph
+//! form, an `EnvClock` feeding the click with timed seeks, tempo and loop
+//! changes on top, is `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
 //!
 //! The gate over a chain of real DSP nodes (EQ, strip, limiter) is
 //! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`. It used to live here, built
@@ -29,70 +30,14 @@
 //! is gone with the `ArcSwap`.)
 
 use assert_no_alloc::AllocDisabler;
-use parking_lot::Mutex;
 use std::sync::Arc;
-use tutti_core::AudioUnit;
 use tutti_core::Engine;
 use tutti_core::{
-    dsp::Net, ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate,
-    Transport, TransportClock,
+    ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate, Transport,
 };
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
-
-/// The metronome reads its meter through an [`RtPublish`], which is the one
-/// non-scalar read on the audio thread. That read is a slot CAS, a fence and a
-/// load, not an allocation — but that is a claim about another crate's
-/// internals, so it gets pinned here rather than reasoned about.
-///
-/// [`RtPublish`]: tutti_types::RtPublish
-///
-/// The click must be *enabled and sounding*: a gated-off metronome returns before
-/// touching the meter at all, which would make this test prove nothing.
-#[test]
-fn engine_process_with_metronome_is_allocation_free() {
-    let sample_rate = 48_000.0;
-    let transport = Transport::new(sample_rate);
-
-    let mut net = Net::new(0, 2);
-    let clock = TransportClock::new(transport.clock_links(), sample_rate);
-    let clock_id = net.push(Box::new(clock));
-
-    let settings = Arc::new(ClickSettings::new());
-    settings.set_mode(MetronomeMode::Always);
-    settings.set_volume(1.0);
-    let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
-    let click_id = net.push(Box::new(click));
-    // The click reads the beat per sample off the clock's two ports.
-    net.connect(clock_id, 0, click_id, 0);
-    net.connect(clock_id, 1, click_id, 1);
-    net.pipe_output(click_id);
-
-    net.set_sample_rate(SampleRate(sample_rate));
-    let backend = net.backend();
-    let _keep: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
-
-    let engine = Engine::new(transport.motion.clone(), backend);
-
-    // Roll the transport so the click is actually generating, not gated off.
-    let _ = transport.motion.try_send(tutti_core::MotionEvent::Play);
-    transport.motion.drain();
-
-    let mut output = vec![0.0f32; 512 * 2];
-    for _ in 0..16 {
-        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..1_000 {
-            // The rolling clock moves the beat the click reads — ~21 beats over
-            // these ~10.7 s — so the retrigger path runs inside the gate rather
-            // than only the steady state.
-            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
-        }
-    });
-}
 
 /// A stereo source that reads the transport per frame from its `Env`, so
 /// the gated loop below exercises `transport_at` and the executor's change
@@ -160,7 +105,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         })
         .collect();
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     let mut output = vec![0.0f32; 1024 * 2];
     // Applying the commit allocates; that is the control side's price and
@@ -217,6 +162,14 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// landing inside blocks, so `EnvClock` walks several segments per block.
 /// Neither the clock's segment walk nor the click's meter read allocates.
 ///
+/// The meter read goes through an [`RtPublish`]: a slot CAS, a fence and a
+/// load, not an allocation — but that is a claim about another crate's
+/// internals, so it is pinned here rather than reasoned about. The click
+/// must be *sounding* for it to count: a gated-off metronome returns before
+/// touching the meter, hence the `clicked` check.
+///
+/// [`RtPublish`]: tutti_types::RtPublish
+///
 /// Mutation (run): collect `env.segments()` into a `Vec` in
 /// `EnvClock::process` → the gate panics → fails.
 #[test]
@@ -251,7 +204,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
         .map(|port| Source::Node(OutPort { node: sink, port }))
         .collect();
     ed.commit().expect("commits");
-    let engine = Engine::with_graph(&transport, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
     let mut output = vec![0.0f32; 1024 * 2];
     // Applying the commit allocates; that is the control side's price.

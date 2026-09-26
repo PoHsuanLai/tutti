@@ -18,8 +18,9 @@
 //! A clip at beat 3, a constant wave: its first non-zero frame is exactly
 //! 96 000 on every path a voice is driven by:
 //!
-//! - live, the `Net` engine (a `TransportClock` node) and the native graph
-//!   engine (`Engine::with_graph`, the voice a `Legacy` node, chunk-major);
+//! - live, the engine (`Engine::new`, the voice a `Legacy` node,
+//!   chunk-major; until doc 013 PR 15 also the `Net` engine, with a
+//!   `TransportClock` node, which is gone);
 //! - offline, a `Net`-style render (the voice called per 64 frames, then the
 //!   `OfflineTimeline` advanced, as tutti-export's `Net` source did until
 //!   doc 013 PR 14) and
@@ -27,9 +28,9 @@
 //!
 //! Mutations (run):
 //! - accumulate in `FrameClock::advance` (restart the segment on every call
-//!   at `beat + frames × beats_per_sample`, so per frame live through the
-//!   `Net`, per chunk elsewhere) → every path reads `2.999999999999891`-ish
-//!   on frame 96 000's chunk, never beat 3 → all four path tests fail. (The
+//!   at `beat + frames × beats_per_sample`, per chunk) → every path reads
+//!   `2.999999999999891`-ish on frame 96 000's chunk, never beat 3 → all
+//!   three path tests fail. (The
 //!   entry frame itself survives that mutation: the gate's tolerance absorbs
 //!   an error of 3.5e-9 frames. The drift grows with the session; the exact
 //!   read is the property.)
@@ -39,12 +40,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::dsp::Net;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{
     AudioUnit, Beat, Bpm, BufferVec, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey,
     OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Timeline, Transport,
-    TransportClock,
 };
 use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_io::Wave;
@@ -140,24 +139,6 @@ fn play(engine: &Engine, t: &Transport) -> Vec<f32> {
     left
 }
 
-fn live_net(start: Beat) -> Run {
-    let t = transport();
-    let log = logged(Arc::new(t.clone()));
-    let mut net = Net::new(0, 2);
-    // The clock first, as `graph_engine_clock.rs` and bevy-tutti's build
-    // push it: the voice reads the beat of its chunk's first frame.
-    net.push(Box::new(TransportClock::new(t.clock_links(), SR)));
-    let voice = net.push(Box::new(pool(Arc::clone(&log) as Arc<dyn Timeline>, start)));
-    net.connect_output(voice, 0, 0);
-    net.connect_output(voice, 1, 1);
-    net.set_sample_rate(SampleRate(SR));
-    let backend = net.backend();
-    // The backend is fed through the net; keep the frontend alive.
-    Box::leak(Box::new(net));
-    let engine = Engine::new(t.motion.clone(), backend);
-    Run::of(play(&engine, &t), &log)
-}
-
 fn graph_with(pool: VoicePool) -> (Editor, tutti_graph::Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(1024)));
     ed.insert(NodeKey(1), "voice", Legacy::new(pool));
@@ -177,7 +158,7 @@ fn live_graph(start: Beat) -> Run {
     let t = transport();
     let log = logged(Arc::new(t.clone()));
     let (mut ed, exec) = graph_with(pool(Arc::clone(&log) as Arc<dyn Timeline>, start));
-    let engine = Engine::with_graph(&t, &mut ed, exec).expect("within the limits");
+    let engine = Engine::new(&t, &mut ed, exec).expect("within the limits");
     Run::of(play(&engine, &t), &log)
 }
 
@@ -243,13 +224,6 @@ fn assert_read_start_exactly(what: &str, run: &Run) {
         START.get().to_bits(),
         "{what}: frame {START_FRAME}'s chunk read {near:?}, not {START:?}"
     );
-}
-
-#[test]
-fn a_clip_enters_on_its_frame_live_through_the_net() {
-    let run = live_net(START);
-    assert_enters_at("live, Net", &run, START_FRAME);
-    assert_read_start_exactly("live, Net", &run);
 }
 
 #[test]

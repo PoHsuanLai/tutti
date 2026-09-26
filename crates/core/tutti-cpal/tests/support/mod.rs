@@ -2,7 +2,9 @@
 //!
 //! The rolling-graph fixture now exists in three places — `output.rs`'s
 //! `build_callback_state`, `tests/rt_no_alloc.rs`'s `rolling_state`, and
-//! whatever the next test binary needs. Two copies were already acknowledged
+//! whatever the next test binary needs. Each is a native graph (doc 013
+//! Phase 3 PR 15: `Engine` renders nothing else); the nodes are `Legacy`
+//! units, so the engine renders them chunk-major. Two copies were already acknowledged
 //! in `rt_no_alloc.rs`'s header ("duplicated rather than shared because that
 //! one is `#[cfg(test)]`-private"); three is the point at which the repo's own
 //! escalation applies.
@@ -20,53 +22,67 @@
 // binary uses every item. Same reason, and same allow, as the plugin hosts'
 // `tests/support/mod.rs`.
 
-use parking_lot::Mutex;
 use std::sync::Arc;
-use tutti_core::dsp::Net;
-use tutti_core::{AudioTap, ChannelLayout, Engine, Hz, MasterMeter, SampleRate, Q};
-use tutti_core::{MotionEvent, Transport, TransportClock};
+use tutti_core::graph::{Edge, InPort, OutPort, Source};
+use tutti_core::{
+    AudioTap, ChannelLayout, Engine, Hz, MasterMeter, NodeKey, SampleRate, Samples, Q,
+};
+use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{AudioCallbackState, OutputSpec};
+use tutti_graph::{Editor, Legacy, Prepare};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 
-/// Leak a net so its backend stays valid.
-///
-/// The backend borrows through the net, so the net must outlive it. Leaked
-/// deliberately: a test process is the whole lifetime, and it keeps the
-/// fixture free of a self-referential handle. Same reasoning, verbatim, as
-/// `tests/rt_no_alloc.rs`.
-fn keep(net: Net) {
-    let _: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
+/// An engine over `transport` rendering the native graph `build` wires into
+/// a fresh editor (prepared for 512-frame blocks at [`SAMPLE_RATE`]). The
+/// editor is leaked: a test process is the whole lifetime, and nothing here
+/// commits again.
+pub fn graph_engine(transport: &Transport, build: impl FnOnce(&mut Editor)) -> Engine {
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
+    build(&mut ed);
+    ed.commit().expect("commits");
+    let engine = Engine::new(transport, &mut ed, exec).expect("within the limits");
+    Box::leak(Box::new(ed));
+    engine
+}
+
+/// Every one of `outputs` global outputs reads `node`'s output 0.
+pub fn fan(ed: &mut Editor, node: NodeKey, outputs: usize) {
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node, port: 0 }); outputs];
 }
 
 /// A rolling transport driving a sine through a filter, at `outputs` width.
 ///
-/// The graph has to actually render: a `Net` with nothing wired leaves every
-/// output edge on `Port::Zero`, so the callback folds silence without walking
-/// a vertex, and any assertion over it is vacuous.
+/// The graph has to actually render: a graph with nothing wired renders
+/// silence, and any assertion over it is vacuous.
 pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
     let transport = Transport::new(SAMPLE_RATE);
-
-    let mut net = Net::new(0, outputs);
-    net.push(Box::new(TransportClock::new(
-        transport.clock_links(),
-        SAMPLE_RATE,
-    )));
-    let source = net.push(Box::new(Osc::sine(Hz(220.0))));
-    let filter = net.push(Box::new(SvfFilterNode::<f64>::new(
-        SvfType::LowPass,
-        Hz(2_000.0),
-        Q(0.7),
-    )));
-    net.connect(source, 0, filter, 0);
-    net.pipe_output(filter);
-
-    let backend = net.backend();
-    keep(net);
-
-    let engine = Engine::new(transport.motion.clone(), backend);
+    let engine = graph_engine(&transport, |ed| {
+        let (source, filter) = (NodeKey(1), NodeKey(2));
+        ed.insert(source, "sine", Legacy::new(Osc::sine(Hz(220.0))));
+        ed.insert(
+            filter,
+            "filter",
+            Legacy::new(SvfFilterNode::<f64>::new(
+                SvfType::LowPass,
+                Hz(2_000.0),
+                Q(0.7),
+            )),
+        );
+        ed.spec_mut().topology.edges.insert(
+            InPort {
+                node: filter,
+                port: 0,
+            },
+            Edge::Direct(Source::Node(OutPort {
+                node: source,
+                port: 0,
+            })),
+        );
+        fan(ed, filter, outputs);
+    });
     let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
 
     transport.settings.set_tempo(120.0);
@@ -83,20 +99,12 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
 /// in closed form instead of sampled. That is what makes the sample-format
 /// matrix assertable.
 pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
-    let mut net = Net::new(0, outputs);
-    let node = net.push(Box::new(Const::mono(level)));
-    for ch in 0..outputs {
-        net.pipe_output(node);
-        let _ = ch;
-    }
-    let backend = net.backend();
-    keep(net);
-
+    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
+        ed.insert(NodeKey(1), "dc", Legacy::new(Const::mono(level)));
+        fan(ed, NodeKey(1), outputs);
+    });
     Arc::new(AudioCallbackState::new(
-        Engine::new(
-            tutti_core::MotionFsm::new(tutti_core::TransportSettings::new()),
-            backend,
-        ),
+        engine,
         MasterMeter::new(),
         AudioTap::new(),
     ))
@@ -114,22 +122,24 @@ pub fn dc_on_channel(
     channel: usize,
     outputs: usize,
 ) -> (Arc<AudioCallbackState>, tutti_core::TapCons) {
-    let mut net = Net::new(0, outputs);
-    let node = net.push(Box::new(Const::mono(level)));
-    net.connect_output(node, 0, channel);
-    let backend = net.backend();
-    keep(net);
-
+    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
+        ed.insert(NodeKey(1), "dc", Legacy::new(Const::mono(level)));
+        ed.spec_mut().topology.outputs = (0..outputs)
+            .map(|ch| {
+                if ch == channel {
+                    Source::Node(OutPort {
+                        node: NodeKey(1),
+                        port: 0,
+                    })
+                } else {
+                    Source::Zero
+                }
+            })
+            .collect();
+    });
     let tap = AudioTap::new();
     let cons = tap.open().expect("a fresh tap opens");
-    let state = AudioCallbackState::new(
-        Engine::new(
-            tutti_core::MotionFsm::new(tutti_core::TransportSettings::new()),
-            backend,
-        ),
-        MasterMeter::new(),
-        tap,
-    );
+    let state = AudioCallbackState::new(engine, MasterMeter::new(), tap);
     (Arc::new(state), cons)
 }
 

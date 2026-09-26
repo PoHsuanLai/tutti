@@ -13,15 +13,16 @@
 //!    and then opening a 44.1 kHz device is how a project ends up playing
 //!    slightly sharp.
 //! 2. `Transport`, at that rate.
-//! 3. A `Net`, with a `TransportClock` pushed into it so nodes can see the
-//!    playhead.
-//! 4. `net.backend()` — the audio thread's half. The control thread keeps
-//!    `net` and `commit`s edits across.
-//! 5. `Engine`, then `AudioCallbackState`, then `start`.
+//! 3. A graph (`GraphBuilder`), prepared at that rate: its `Editor` stays on
+//!    the control thread and `commit`s edits across; its `Executor` is the
+//!    audio thread's half. The engine drives the transport's clock itself,
+//!    so nodes see the playhead in each block's `Env`.
+//! 4. `Engine` over the transport, the editor and the executor.
+//! 5. `AudioCallbackState`, then `start`.
 //! 6. `TuttiDriver::from_parts` to hold the pieces together.
 //!
-//! **The `net` must outlive the backend**, which borrows through it. Here it
-//! lives in `main`; a real host stores it beside the driver.
+//! **Keep the editor.** It is how the host edits the graph from then on;
+//! here it lives in `main`, and a real host stores it beside the driver.
 //!
 //! Deliberately not wrapped in a `TuttiEngine::builder()`. A builder here is
 //! precisely the artifact `4b5bd2fd` deleted — see `src/lib.rs`.
@@ -31,14 +32,14 @@
 
 use std::sync::Arc;
 
-use tutti::core::{AudioTap, Engine, MasterMeter, Transport, TransportClock};
+use tutti::core::{AudioTap, Engine, MasterMeter, Transport};
 use tutti::device::{AudioCallbackState, AudioEngine, TuttiDriver};
-use tutti::dsp::Net;
+use tutti::graph::{GraphBuilder, Prepare};
 use tutti::prelude::*;
 use tutti_core::Hz;
 use tutti_nodes::testing::Osc;
 
-fn main() -> tutti::device::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. The device first: it reports the rate the graph must be built at.
     let mut audio_engine = AudioEngine::new(None)?;
     let sample_rate = audio_engine.sample_rate();
@@ -56,18 +57,16 @@ fn main() -> tutti::device::Result<()> {
 
     // 2-3. Transport and graph, at the device's rate.
     let transport = Transport::new(sample_rate.get());
-    let mut net = Net::new(0, audio_engine.channels().count() as usize);
-    net.push(Box::new(TransportClock::new(
-        transport.clock_links(),
-        sample_rate.get(),
-    )));
-    let tone = net.push(Box::new(
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, audio_engine.channels());
+    let tone = g.add_unit(Box::new(
         Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2)),
     ));
-    net.pipe_output(tone);
+    g.pipe_output(tone);
+    let (mut editor, executor) = g.build(Prepare::new(sample_rate, Samples(512)))?;
 
-    // 4-5. The audio thread's half, and the state its callback reads.
-    let engine = Engine::new(transport.motion.clone(), net.backend());
+    // 4-5. The engine (the audio thread's half), and the state its callback
+    // reads.
+    let engine = Engine::new(&transport, &mut editor, executor)?;
     let state = Arc::new(AudioCallbackState::new(
         engine,
         MasterMeter::new(),
@@ -94,9 +93,9 @@ fn main() -> tutti::device::Result<()> {
         }
     }
 
-    // Dropping the driver stops the stream. `net` is still alive here, which
-    // is what the backend required all along.
+    // Dropping the driver stops the stream. The editor outlives it: it is
+    // the host's handle on the graph for the whole session.
     drop(driver);
-    drop(net);
+    drop(editor);
     Ok(())
 }

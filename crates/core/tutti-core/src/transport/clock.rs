@@ -211,7 +211,7 @@ impl TransportClock {
     /// only at a block's start and after a motion command, the two points
     /// where the motion machine (this thread) can have requested one.
     ///
-    /// The engine's graph backend has no clock node in its graph: it holds a
+    /// The engine has no clock node in its graph: it holds a
     /// `TransportClock` of its own and drives it with this and
     /// [`advance`](Self::advance), so the playhead a graph node reads in its
     /// `Env` is computed by the same code, in the same order, as the beat

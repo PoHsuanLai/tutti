@@ -2,7 +2,7 @@
 name = "tutti-core"
 version = "0.0.1"
 edition = "2021"
-description = "Core audio graph runtime kernel - Net/Graph, Transport, Metering, PDC"
+description = "Core audio engine kernel - graph render, Transport, Metering, PDC"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
@@ -46,14 +46,15 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 # engine, and a re-export should name the crate that *defines* what it forwards.
 tutti-node = { version = "0.0.1", path = "../tutti-node" }
 
-# Audio: the graph runtime (`Net`, `NetBackend`), the DSP node library, and the
-# combinators that build sub-graphs out of it. What a consumer may reach through
-# this crate is the named list in `dsp` — see that module's docs.
+# Audio: fundsp's graph container (`Net`, which `Engine` no longer renders; doc
+# 013 Phase 3 PR 15) and DSP node library. What a consumer may reach through
+# this crate is the named list in `dsp` — see that module's docs. Goes in
+# Phase 5.
 fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false }
 
-# The native graph runtime (doc 013 Phase 2): `Engine` can render a
-# `tutti_graph::Executor` instead of a `NetBackend`. No cycle: tutti-graph
-# depends only on tutti-types and tutti-node.
+# The native graph runtime (doc 013): the `tutti_graph::Executor` `Engine`
+# renders, its only runtime since Phase 3 PR 15. No cycle: tutti-graph depends
+# only on tutti-types and tutti-node.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.

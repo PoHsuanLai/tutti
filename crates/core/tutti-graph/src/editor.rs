@@ -163,7 +163,7 @@ pub enum CommitError {
 /// cannot run is refused on the control thread and never reaches it.
 ///
 /// The executor itself takes any graph; a host has buffers of its own. The
-/// engine (`tutti_core::Engine::with_graph`) sets these to its fold
+/// engine (`tutti_core::Engine::new`) sets these to its fold
 /// scratch's width and length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {

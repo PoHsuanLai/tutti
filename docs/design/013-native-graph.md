@@ -2287,8 +2287,10 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   read only through a claim, and a claim ends before the next. The ring's
   reader waits in the stream's `Ring` until a voice takes it, so
   `TakeVoiceError::ReaderTaken` is an empty slot, not a flag. A voice's
-  clones share its reader by a `try_lock` no block waits on, because
-  `Net::commit` renders from a clone; a fork severs itself in `isolate`. The
+  clones shared its reader by a `try_lock` no block waits on, because
+  `Net::commit` rendered from a clone; since item 7 the reader is the
+  voice's own and a clone has none ("Item 7 landed"). A fork severs itself
+  in `isolate`. The
   same review found a write cut short left the window's start where the
   whole write would have put it: positions it had not overwritten left the
   window uncounted as stale, so a reset then let a rewrite land under a
@@ -3041,9 +3043,9 @@ separately from the DSP, which makes the class impossible. Until then, fix each
 | Node | Native form |
 |---|---|
 | **PolySynth voice engine** (`SynthVoice`/`SubVoice`, `build_sub_voice_dsp`, portamento) | **An SoA voice bank**: `[f32x8; N/8]` lanes for oscillator phase, envelope and filter state, grouped by filter type (Surge `QuadFilterChain` / Vital `poly_float`). This removes, per sample: `max_voices × unison` virtual `tick` calls, about 4 atomic stores/loads per sub-voice (`var(&Shared)`), and a pan `sqrt` pair. It reuses tutti's `Svf`/`Ladder` kernels, a new ADSR, and new band-limited oscillators. Glide is a per-lane ramp, which fixes D5. MIDI arrives in `Io`, so the `MidiInPort` mailbox goes. `VoiceAllocator` is **kept** unchanged |
-| **Sampler `PlaybackSlot`** | Render each voice **a block at a time** into a planar scratch lane, then do one vectorized accumulate. Today every voice goes through `set_f32(at_f32 + s)` per sample, and calls `stretch::Unit::tick` and the disk reader's `tick` per sample. Vertical SIMD along time is where the gain is; cross-voice SoA helps less here, because each voice reads a different wave at a different fractional position (gather-bound; this is a judgement) |
-| **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
-| `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide" |
+| **Done (item 7).** **Sampler `PlaybackSlot`** | Render each voice **a block at a time** into a planar scratch lane, then do one vectorized accumulate. Today every voice goes through `set_f32(at_f32 + s)` per sample, and calls `stretch::Unit::tick` and the disk reader's `tick` per sample. Vertical SIMD along time is where the gain is; cross-voice SoA helps less here, because each voice reads a different wave at a different fractional position (gather-bound; this is a judgement) |
+| **Done (item 7).** **stretch `Unit` + shared vocoder `Bank`** | Owned by value. The `Arc<Bank>` sharing, the `ticker` claim token and the `AudioThreadCell` all exist only to avoid a 201.8 MB/commit clone, so they go |
+| `VoiceNode` | Shrinks to its `process` body. `Controls { placement: RtPublish<Window>, gain: Param<Amplitude> }` replaces the command channel, which exists only because "`Setting` is one `f32` wide". **Deferred by item 7** to the voice's native port: not clean behind `Legacy` ("Item 7 landed") |
 | `PluginClient` (the shell; IPC/bridge/shm stay) | **Done except the event ports (item 4, plugin half).** `PluginClient<Unbound>` → `bind()` → `PluginClient<Bound>`, a native node. Transport comes from `Env`. MIDI, param automation, harmony and note expression come in as **event ports**, so the four `InputSlot` shared cells go (**not yet**: see "Item 4's plugin half landed"). Delete the `AudioUnit<F64>` impl, and keep the f64 wire conversion inside the node |
 | `Batcher` | **Done (item 4, plugin half).** Delete tick mode and `TickStorage::{F32,F64}`. The chunk (and so the pipeline latency) comes from `prepare`: **one device callback** (`Prepare::quantum`), else `MaxBlock`. Owner decision 8 first kept an internal 64-frame pipeline; it was **reversed on measurement** (see decision 8): a 64-frame chunk inside a device callback left the server microseconds to answer, and live plugin audio was mostly silence |
 | `HarmonySource`, `ParamAutomationSource`, `NoteExpressionSource`, `MidiClipSource`, `AutomationLaneNode` | **Event source nodes**: an owned cursor, the `Env` beat window, an events out port. Their output then goes through the PDC pass, which fixes D9. The automation lane evaluates at block edges and breakpoints and emits ramp or curve-segment events, instead of evaluating the curve per sample off two f32 beat ports |
@@ -3065,7 +3067,8 @@ move to `kernel`, drive becomes an a-rate port), `LimiterNode` (ring sized in
 D2; stored once so the HRIR is parsed once), `ModulatorNode` (beat from `Env`,
 no beat input ports), `MicMonitorNode` (owns its `HeapCons` and pops a slice
 per block), `MemorySource`, `DiskSource`/`DiskVoice` (fetch capacity moves to
-`prepare` **before** the block size grows), `VoicePool` (owns its `Receiver`;
+`prepare` **before** the block size grows), `VoicePool` (owns its `Receiver`,
+**done in item 7**;
 the command queue and retire channel stay because they are real node-internal
 state), `SoundFontUnit` (`prepare` rebuilds the `Synthesizer` on a rate change,
 which replaces today's silent no-op), `InProcessVst2Client` (`prepare` calls
@@ -3089,7 +3092,7 @@ vocoder retirement channel for voices the pool removes.
 | 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); porting the MIDI nodes and deleting the shells remain | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
-| 7 | **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
+| 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s. The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
 | 9 | Remaining mechanical ports, then delete `Legacy` | | Yes |
 
@@ -3465,6 +3468,165 @@ fail on, by name.
   curve-segment `EventKind` (decision 7) would slot in beside `Ramp`.
 - Param edges are direct only: no feedback modulation (a node modulating
   something upstream of itself is a `CompileError::Cycle`).
+
+#### Item 7 landed: sampler block render and ownership
+
+**Block render.** A voice renders a block at a time into planar scratch
+lanes (`tutti-sampler`'s `lanes`: `Lanes`, `MAX_BUFFER_SIZE` (64) frames ×
+`MAX_SAMPLER_CHANNELS`, owned by the rendering node with the block's
+positions and gathered taps, built on the control thread), and its owner
+adds each lane into its output channel with one `accumulate`
+(`PlaybackSlot::process_into` → `render_lanes`). What moved out of the
+per-sample loop:
+
+- **The clock is read once per block** (`Seat::run`): the renderer moves it
+  between blocks, never inside one, so a seat taken at a block's first frame
+  steps on through the block (`frames + k`, the arithmetic `Seat::position`
+  did per frame) and a block with no seat has none at any frame. The disk
+  voice's own `live_render` uses it too.
+- **The disk tier claims its ring once per block** (`DiskVoice::render_lanes`
+  → `live_render` → `LiveRead::render` over the block), where the slot used to
+  `tick` the voice — one `PosRing` claim, one clock poll, one control read —
+  per frame.
+- **The stretch filter runs a block** (`stretch::Unit::filter_lanes`): the
+  parameters, hops and intake rate are read once per block, and each channel
+  replays the block's intake-debt sequence channel-outer. A control written
+  mid-block lands on the next block.
+- **Along time, vectorised:** the gain (`scale`), the mix (`accumulate`) and,
+  for an unlooped memory read of a mono or width-matched wave, the cubic
+  (`interp::hermite_lanes`, fed by gathering each frame's four taps into four
+  lanes — the gather stays scalar, as the verdict predicted). Checked in the
+  release bench binary: `read_placed_lanes` carries `mulps`/`addps`/`subps`
+  (the cubic), `render_lanes` `mulps` (the gain), `VoicePool::process`
+  `addps` (the mix). A loop (its fade blends taps) or a folded width reads a
+  frame at a time through `read_placed_into`.
+
+**Bit-identical**, by construction and by test: every frame goes through the
+same arithmetic on the same values in the same order (IEEE `+`/`*` per
+element; Rust never contracts to FMA). `voice::block_render`'s
+`block_render_is_the_frame_read` keeps the pre-item-7 per-sample read as an
+oracle and compares two pools of 16 voices bit for bit — memory at unity,
+varispeed, reversed, looped with a crossfade, stretched, pitched, both, a
+mono fan, a 24 kHz wave at 48 kHz, a six-channel fold, windows opening
+mid-render (plain and stretched); disk live at unity, 0.75x and stretched;
+a forked disk voice — through a seek and a stop. The tier bit-identity
+tables (#43, #46, #48: `tier_parity`, `offline_disk_voice`, `live_loop`)
+pass unchanged.
+
+**Perf** (criterion, `benches/voice_pool.rs`, 64-frame blocks at 48 kHz;
+`pool64` is new: 64 placed voices on a clock that moves, disk rings holding
+the whole file, before → after):
+
+| case | before | after | |
+|---|---:|---:|---:|
+| `pool64/memory/1` | 1.61 µs | 0.73 µs | −54% |
+| `pool64/memory/64` | 91.4 µs | 37.8 µs | −59% |
+| `pool64/memory-varispeed/64` | 92.7 µs | 42.8 µs | −54% |
+| `pool64/memory-stretch/64` | 930 µs | 808 µs | −12% |
+| `pool64/disk/1` | 6.01 µs | 1.85 µs | −69% |
+| `pool64/disk/64` | 375 µs | 108 µs | −71% |
+| `pool64/disk-varispeed/64` | 379 µs | 107 µs | −72% |
+| `pool64/disk-stretch/64` | 1.12 ms | 0.85 ms | −24% |
+| `voices/plain/1` | 862 ns | 324 ns | −63% |
+| `voices/plain/64` | 47.8 µs | 15.7 µs | −67% |
+| `voices/stretch/0.5x` (8 voices) | 94.2 µs | 84.4 µs | −11% |
+
+(After the review's fixes: lanes sized to the 64-frame block and the
+block's arrays owned by the node, rather than 256-frame lanes and per-voice
+stack arrays, took the memory tier from −50% to −59%.)
+(The older `voices/*` groups hold their clock at beat 0, so a placed voice
+seats once and, after ~3 000 blocks, reads past its wave's end: they mostly
+measure the silent path. `pool64`'s clock advances a block per iteration
+and winds back every 2 s.) The stretched cases are the vocoder's FFTs; the
+block path only removed the per-frame parameter reads and borrow around
+them.
+
+**Ownership.** Units are not cloned to commit any more, so:
+
+- **`stretch::Unit` owns its vocoders and block scratch by value.** Deleted:
+  `Arc<Bank>`, the `ticker` claim token (`Bank::claim`/`release`/`reclaim`,
+  the handle ids, `Drop`), the `AudioThreadCell`s, `shares_bank_with`,
+  `isolate` (nothing to sever) and `allocate` (a unit's scratch is sized
+  wherever it is built).
+- **The `allocate` hooks on `VoicePool` and `VoiceNode` are gone**: they only
+  forwarded to the filter's.
+- **`VoicePool` and `VoiceNode` own their `Receiver`**: a clone gets a dead
+  `bounded(0)` one. `isolate` no longer needs to cut a shared one (the node's
+  still severs one held in place). The command queue and the retirement
+  channel stay: node-internal state and a real cross-thread free.
+- **A `DiskVoice`'s `PosReader` is its own** (#48's follow-up): `LiveRead`
+  holds `Option<PosReader>`, not `Arc<Mutex<_>>` behind a `try_lock`, and a
+  clone has none — it renders silence.
+
+**What still clones, and the decision.** `AudioUnit: DynClone`, and two
+callers clone a sampler unit: `Legacy::controlled`'s shadow (`clone` then
+`isolate`, once, at insert) and a fork cloned from that shadow
+(`Editor::fork`, `LegacyFork`); `ForkByClone` is not used for sampler units.
+Both reset or never run what they clone. **Decided: `stretch::Unit::clone`
+builds a fresh filter** — same width, window and parameters, its own
+vocoders on the same grid (`Vocoder::clone_fresh`, sharing only the
+immutable window and phase tables by `Arc`), none of the running state —
+rather than deep-copy the vocoder rings. It allocates about 100 KB per
+channel on the control thread, once per insert and once per fork. The cost
+this accepts: the shadow of a *stretched* `VoiceNode` holds its own filter
+for the node's lifetime (a `VoicePool`'s shadow is taken empty, before any
+voice is added, so it holds none), the same class of cost the module docs of
+`legacy.rs` list for every forkable `Legacy`; it goes with `Legacy` (item 9).
+
+**Not done: `VoiceNode` `Controls`.** `Controls { placement:
+RtPublish<Window>, gain: Param<Amplitude> }` is not clean with the `Legacy`
+bridge, so the command channel stays: a `Legacy` node's `IntoNode::Controls`
+is its settings ring, so typed controls would have to be minted beside the
+unit at construction and shared by `Arc` with every clone of it (the shadow
+and its forks) — the survive-the-clone pattern this item deletes — and the
+fork would still need `PlacementRecord`'s read-at-isolate to see a clip moved
+after insert. Gain already arrives through the settings ring
+(`UnitParam::Volume` → `VoiceNode::set`), which a `Param` would duplicate.
+It lands with a native `Node` impl for the voice (`IntoNode::Controls`, a
+real `Fork`, the transport from `Env`): items 4 and 9.
+
+**Found by the review, fixed.** `VoiceCommand::AddVoice` carried its filter
+as `Option<Box<stretch::Unit>>`, and the drain unboxed both it and the
+`Box<Voice>` — two frees on the audio thread — and dropped a slot an add
+replaced in place. The filter is unboxed now (a `Unit` moves as a pointer),
+the slot holds the voice boxed so the command's box moves in, and a replaced
+slot goes to the retirement channel (`tests/rt_no_free.rs` counts the
+drain's frees). The lanes are one block long: `AudioUnit::process` is never
+handed more than 64 frames, so 256-frame lanes were a split nothing reached
+and a memset nothing used; a native port sizes them from
+`Prepare::max_block`. A `VoicePool` wider than `MAX_SAMPLER_CHANNELS` is
+refused (`PoolTooWide`) rather than declaring outputs it never writes, and a
+`VoiceNode` that wide (its constructor is infallible) clears the channels
+past it.
+
+**Also kept:** `BeatCursor` still clones by sharing its cells (the pool's
+and the node's `isolate` drop it); it goes with `Env` (item 4). The
+`profile_stretch_clone` example is now a record of the `Net` era (its
+commits deep-clone again, a cost nothing pays) until Phase 5.
+
+**Tests re-pinned** (their property was the `Net` clone semantics this item
+deletes; each now pins what native does, with its mutation run):
+`stretch::tests` — `cloning_shares_the_bank_and_isolate_severs_it` →
+`a_clone_is_a_fresh_filter_on_the_shared_tables`;
+`two_live_handles_ticking_one_bank_is_caught`,
+`succession_and_isolation_do_not_trip_the_claim` and
+`a_successor_generation_continues_the_stream` →
+`a_clone_and_its_original_tick_independently`;
+`the_block_scratch_rides_the_shared_bank` →
+`a_clone_arrives_with_its_block_scratch_sized`;
+`an_isolated_clone_renders_identically` → `a_clone_renders_identically`.
+`voice_pool::tests::isolate_severs_a_standalone_voices_stretch_bank` →
+`a_standalone_voices_clone_shares_no_stretch_state` (on audio).
+`voice_node_commands::a_command_reaches_a_node_across_a_commit` → through a
+native commit and a re-prepare (`Legacy::controlled`, as bevy-tutti inserts
+a voice), not a `Net` commit's clone. `disk_voice::tests::a_gain_change_reaches_a_cloned_voice`
+→ the original renders at the gain a copy wrote, and the clone, holding no
+reader, renders silence; `a_severed_copy_holds_no_live_reader` isolates in
+place. `rt_no_alloc`'s two clone tests lost their `allocate` call and
+`_once_allocated` suffix. New: `block_render_is_the_frame_read`,
+`filter_lanes_is_tick_per_frame`, `lanes::tests`, `rt_no_free`, and the two
+width tests (`a_pool_wider_than_the_sampler_reads_is_refused`,
+`a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels`).
 
 ## Decisions for the owner
 

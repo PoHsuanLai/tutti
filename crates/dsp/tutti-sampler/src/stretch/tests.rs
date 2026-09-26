@@ -12,6 +12,7 @@ use tutti_core::{
 };
 
 use std::f32::consts::PI;
+use std::sync::Arc;
 use tutti_analysis::CosineWindow;
 use tutti_core::BufferVec;
 
@@ -346,12 +347,12 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
                 quiet += 1;
             }
             assert!(
-                !u.channels.channels.borrow()[0].output.overrun(),
+                !u.ch.vocoders[0].output.overrun(),
                 "stretch {factor}: output ring overran ({} pending)",
-                u.channels.channels.borrow()[0].output.available()
+                u.ch.vocoders[0].output.available()
             );
             assert!(
-                !u.channels.channels.borrow()[0].input.0.overrun(),
+                !u.ch.vocoders[0].input.0.overrun(),
                 "stretch {factor}: input ring overran"
             );
         }
@@ -425,272 +426,153 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 
 /// `input_rate` is `1.0` while bypassing, so a caller can apply it
 /// unconditionally without branching on `is_processing`.
-/// A clone must not rebuild the immutable tables — the measurable half of
-/// commit cost,
-/// and the only half this crate can fix without a design change.
+/// **A clone is a fresh filter on the same tables**: its own vocoders, with
+/// none of the original's running state, the same width and parameters, and
+/// the immutable window and phase tables shared by `Arc`.
 ///
-/// `Net::commit` deep-clones every node, once per channel. Rebuilding the Hann
-/// window there costs `size` `cos()` calls per vocoder; sharing it is a
-/// refcount bump. Asserted structurally (pointer identity) rather than by
-/// timing, because a wall-clock threshold in a test suite is a flake generator.
+/// Rewritten with the ownership change (doc 013 item 7). This test used to
+/// pin the opposite — a clone sharing the original's `Arc<Bank>`, and
+/// `isolate` severing it — because `Net::commit` cloned every node per graph
+/// edit and a deep copy was 201.8 MB per commit over 640 stereo nodes. The
+/// native graph clones a unit only for `Legacy::controlled`'s shadow and for a
+/// fork, both of which reset what they clone, so the clone is what those need:
+/// fresh.
 ///
-/// # Commit cost is still over budget — do not proceed to per-voice nodes
-///
-/// Measured on this machine, release, 640 stretch nodes (32 tracks x 20
-/// voices), against the 2 ms budget a graph edit has before it risks an audio
-/// dropout:
-///
-/// | width  | before sharing | after  | budget |
-/// |--------|----------------|--------|--------|
-/// | stereo | 18.5 ms        | 12.9 ms | 2 ms  |
-/// | 6ch    | 628 ms         | 448 ms  | 2 ms  |
-///
-/// Still 6x over at stereo and 224x at six channels. The window was never the
-/// dominant term: each `Vocoder` allocates and zeroes ~108 KB of state, so 640
-/// six-channel nodes touch ~405 MB per commit. No amount of sharing immutable
-/// data fixes that — the buffers must either be pooled (so a clone claims
-/// rather than allocates) or not cloned at all.
-///
-/// **This is the measurement gating the container dissolve.** It says the
-/// per-voice-node design cannot land as written: 640 nodes is a realistic
-/// project, and a commit at that scale would stall the main thread long enough
-/// to underrun the callback.
+/// Mutation (run): `Unit::clone` cloning the vocoders' running state instead
+/// of `clone_fresh` (a `Vocoder` copy of the rings) → the clone's input ring
+/// holds the original's samples → fails. Mutation (run): `clone_fresh`
+/// rebuilding the window (`Arc::new(geometry.window_coefficients())`) →
+/// the tables are not shared → fails.
 #[test]
-fn cloning_shares_the_bank_and_isolate_severs_it() {
+fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
+    let mut u = Unit::with_channels(44_100.0, 6usize);
+    u.set_stretch_factor(StretchFactor::new(1.5));
+    let frame = [0.25f32; 6];
+    let mut out = [0.0f32; 6];
+    for _ in 0..3_000 {
+        u.tick(&frame, &mut out);
+    }
+    assert!(
+        u.ch.vocoders[0].input.available() > 0,
+        "the original should hold running state for the clone to not inherit"
+    );
+
+    let c = u.clone();
+    assert_eq!(c.width, ChannelLayout::from(6u16), "the width carries");
+    assert_eq!(c.ch.vocoders.len(), 6, "one vocoder per channel");
+    assert!(
+        (c.stretch_factor().get() - 1.5).abs() < 0.001,
+        "the parameters carry"
+    );
+    for (ch, v) in c.ch.vocoders.iter().enumerate() {
+        assert_eq!(v.input.available(), 0, "channel {ch}: input inherited");
+        assert_eq!(v.output.available(), 0, "channel {ch}: output inherited");
+        assert!(!v.primed, "channel {ch}: phase history inherited");
+        assert!(
+            Arc::ptr_eq(&u.ch.vocoders[ch].window, &v.window),
+            "channel {ch}: the window was rebuilt, not shared"
+        );
+        assert!(
+            Arc::ptr_eq(&u.ch.vocoders[ch].phase_per_sample, &v.phase_per_sample),
+            "channel {ch}: the phase table was rebuilt, not shared"
+        );
+    }
+}
+
+/// **A clone and its original tick independently.** Cloned from a running
+/// unit, each then renders exactly what a unit of its own renders from the
+/// same input — the original what its never-cloned twin renders, the clone
+/// what a fresh unit renders — interleaved tick for tick. That is what an
+/// owned filter means, and why the `ticker` claim that caught two handles
+/// ticking one shared bank could go.
+///
+/// Replaces `two_live_handles_ticking_one_bank_is_caught` and
+/// `succession_and_isolation_do_not_trip_the_claim` (the claim and its
+/// succession rules are gone) and `a_successor_generation_continues_the_stream`
+/// (a clone no longer continues its original's stream: nothing commits by
+/// clone any more).
+///
+/// Mutation (run): `Unit::clone` copying the running input ring into the
+/// clone → the clone plays the original's history → fails. The sharing this
+/// guards against (one vocoder bank ticked by two handles) is not a one-line
+/// mutation any more: the unit owns its vocoders by value, so the types rule
+/// it out, and this pins what reintroducing a shared bank would break.
+#[test]
+fn a_clone_and_its_original_tick_independently() {
+    let build = || {
+        let u = Unit::with_channels(44_100.0, 2usize);
+        u.set_stretch_factor(StretchFactor::new(2.0));
+        u
+    };
+    let (mut a, mut ref_a) = (build(), build());
+    let history = sine(220.0, 44_100.0, 6_000);
+    let (mut oa, mut ra) = ([0.0f32; 2], [0.0f32; 2]);
+    for &s in &history {
+        a.tick(&[s; 2], &mut oa);
+        ref_a.tick(&[s; 2], &mut ra);
+    }
+    let mut b = a.clone();
+    let mut ref_b = build();
+    let input_a = sine(440.0, 44_100.0, 12_000);
+    let input_b = sine(660.0, 44_100.0, 12_000);
+    let mut heard = false;
+    for i in 0..input_a.len() {
+        let (fa, fb) = ([input_a[i]; 2], [input_b[i]; 2]);
+        let (mut oa, mut ob, mut ra, mut rb) = ([0.0f32; 2], [0.0; 2], [0.0; 2], [0.0; 2]);
+        a.tick(&fa, &mut oa);
+        b.tick(&fb, &mut ob);
+        ref_a.tick(&fa, &mut ra);
+        ref_b.tick(&fb, &mut rb);
+        assert_eq!(
+            oa, ra,
+            "frame {i}: the original's output depends on its clone"
+        );
+        assert_eq!(
+            ob, rb,
+            "frame {i}: the clone's output depends on its original"
+        );
+        heard |= oa[0].abs() > 1e-6 && ob[0].abs() > 1e-6;
+    }
+    assert!(
+        heard,
+        "both rendered silence — the comparison proved nothing"
+    );
+}
+
+/// **A clone arrives with its block scratch sized.** There is no `allocate`
+/// hook any more to size what a clone left empty: the clone builds its own,
+/// so `process` on it has nothing to grow (the no-alloc gate is
+/// `tests/rt_no_alloc.rs`'s `cloned_time_stretch_process_is_allocation_free`).
+///
+/// Replaces `the_block_scratch_rides_the_shared_bank`.
+///
+/// Mutation (run): `from_vocoders` sizing the scratch `RtScratch::new(0)` →
+/// fails.
+#[test]
+fn a_clone_arrives_with_its_block_scratch_sized() {
     let u = Unit::with_channels(44_100.0, 6usize);
     let c = u.clone();
-
-    // The commit path: a refcount bump, not ~96 KB per channel.
-    assert!(
-        Arc::ptr_eq(&u.channels, &c.channels),
-        "the clone deep-copied the vocoder bank instead of sharing it"
-    );
-    assert_eq!(
-        c.width,
-        ChannelLayout::from(6u16),
-        "width must mirror the bank without borrowing it"
-    );
-
-    // The safety boundary. An offline render clones the live net and ticks
-    // it on a worker pool WHILE the audio thread plays the original, so a
-    // shared bank there would have two threads writing one set of FIFOs.
-    // `isolate` is called on every node of that clone before it reaches the
-    // worker, and it must hand back private state.
-    let mut isolated = u.clone();
-    assert!(Arc::ptr_eq(&u.channels, &isolated.channels));
-    isolated.isolate();
-    assert!(
-        !Arc::ptr_eq(&u.channels, &isolated.channels),
-        "isolate() left the render sharing the live graph's vocoder state"
-    );
-    assert_eq!(
-        isolated.width,
-        ChannelLayout::from(6u16),
-        "isolate must preserve the unit's width"
-    );
-
-    // Isolated state is clean, not a copy of the running stream: a render
-    // starts its filter fresh rather than mid-frame on audio it will never
-    // emit.
-    assert_eq!(isolated.channels.channels.borrow()[0].input.available(), 0);
-    assert_eq!(isolated.channels.channels.borrow()[0].output.available(), 0);
-
-    // The immutable tables still ride by `Arc` through an isolate, so
-    // severing does not pay to rebuild the window or the phase table.
-    assert!(Arc::ptr_eq(
-        &u.channels.channels.borrow()[0].window,
-        &isolated.channels.channels.borrow()[0].window
-    ));
-    assert!(Arc::ptr_eq(
-        &u.channels.channels.borrow()[0].phase_per_sample,
-        &isolated.channels.channels.borrow()[0].phase_per_sample
-    ));
-}
-
-/// The invariant has teeth: two live handles ticking one bank is caught.
-///
-/// This is the test the whole hardening exists for. Interleaving is silent —
-/// no race, no panic, just plausible-and-wrong audio — so without a guard
-/// the only symptom is a subtly damaged render that every `!= 0.0` assertion
-/// in this file would pass.
-///
-/// `AudioThreadCell`'s debug flag cannot catch this: it detects *concurrent*
-/// borrows, and interleaved ticking is sequential. Hence [`Bank::claim`].
-#[test]
-#[should_panic(expected = "two live stretch::Unit handles")]
-#[cfg(debug_assertions)]
-fn two_live_handles_ticking_one_bank_is_caught() {
-    let mut a = Unit::with_channels(44_100.0, 2usize);
-    a.set_stretch_factor(StretchFactor::new(2.0));
-    a.allocate();
-
-    // A committed generation, sharing `a`'s bank.
-    let mut b = a.clone();
-    b.allocate();
-
-    let mut frame = [0.0f32; 2];
-    // `a` claims the bank...
-    a.tick(&[0.25, 0.25], &mut frame);
-    // ...and `b` ticking it too is the bug. Both handles are still alive, so
-    // this is the interleave case and not a legitimate succession.
-    b.tick(&[0.25, 0.25], &mut frame);
-}
-
-/// Succession is legitimate and must NOT trip the claim.
-///
-/// A committed generation replaces the one it was cloned from, and the live
-/// path reaches that through `reset` / `isolate`. If either tripped the
-/// guard, the guard would be unusable — so pin both directions, not just the
-/// failing one.
-#[test]
-fn succession_and_isolation_do_not_trip_the_claim() {
-    let mut a = Unit::with_channels(44_100.0, 2usize);
-    a.set_stretch_factor(StretchFactor::new(2.0));
-    a.allocate();
-    let mut frame = [0.0f32; 2];
-    a.tick(&[0.25, 0.25], &mut frame);
-
-    // Reset transfers ticking rights to the successor.
-    let mut b = a.clone();
-    b.allocate();
-    b.reset();
-    b.tick(&[0.25, 0.25], &mut frame);
-
-    // Isolation gives a private bank, so the render path is free regardless.
-    let mut c = b.clone();
-    c.isolate();
-    c.allocate();
-    c.tick(&[0.25, 0.25], &mut frame);
-
-    // And the isolated handle owns state nobody else can reach.
-    assert!(!Arc::ptr_eq(&b.channels, &c.channels));
-}
-
-/// A successor generation continues the stream rather than restarting it.
-///
-/// This is the payoff of sharing: a graph commit hands the next generation
-/// the same bank, so playback continues seamlessly across a graph edit
-/// instead of re-filling the vocoder and dropping ~46 ms of audio.
-///
-/// Written second. The first attempt ticked the original and the clone while
-/// **both were alive**, which is precisely the interleave bug — and
-/// [`Bank::claim`] caught it, which is the guard earning its place on a test
-/// its author got wrong. Succession means the predecessor stops.
-#[test]
-fn a_successor_generation_continues_the_stream() {
-    let mut original = Unit::with_channels(44_100.0, 2usize);
-    original.set_stretch_factor(StretchFactor::new(2.0));
-    original.allocate();
-
-    let size = 64;
-    let mut input = BufferVec::new(2);
-    for i in 0..size {
-        let s = (i as f32 * 0.05).sin() * 0.5;
-        input.buffer_mut().set_f32(0, i, s);
-        input.buffer_mut().set_f32(1, i, s);
+    for scratch in [&c.ch.scratch_in, &c.ch.scratch_out] {
+        assert_eq!(scratch.len(), 6, "one scratch buffer per channel");
+        assert!(
+            scratch.iter().all(|s| s.capacity() >= 8192),
+            "a clone's scratch must arrive sized, with no hook to size it later"
+        );
     }
-    let mut out = BufferVec::new(2);
-
-    // Warm past the fill-up so the bank holds real history.
-    for _ in 0..96 {
-        original.process(size, &input.buffer_ref(), &mut out.buffer_mut());
-    }
-    let history = original.channels.channels.borrow()[0].input.available();
-    assert!(history > 0, "the bank should hold history to inherit");
-
-    // The commit: the successor takes the bank, the predecessor retires.
-    let mut successor = original.clone();
-    successor.allocate();
-    assert!(
-        Arc::ptr_eq(&original.channels, &successor.channels),
-        "the successor should share the bank, not copy it"
-    );
-    drop(original);
-
-    // The inherited state is the predecessor's, not a fresh filter's.
-    assert_eq!(
-        successor.channels.channels.borrow()[0].input.available(),
-        history,
-        "the successor restarted the stream instead of continuing it"
-    );
-
-    // And it emits immediately — no second fill-up latency after the edit.
-    successor.process(size, &input.buffer_ref(), &mut out.buffer_mut());
-    let heard = (0..size).any(|i| out.buffer_ref().at_f32(0, i).abs() > 1e-6);
-    assert!(heard, "the successor went silent across the commit");
 }
 
-/// The block scratch rides the shared bank, so a commit reallocates nothing.
-///
-/// Rewritten twice, and the history is the point. First the clone copied
-/// 64 KB per channel outright. Then it deferred that to `allocate` — which
-/// changed *when* the cost was paid, not *whether*: `Net::commit` calls
-/// `allocate` on every generation, so after the vocoder bank was shared this
-/// scratch was **98% of a commit's remaining traffic at both widths**
-/// (240 MB of 243.8 at six channels).
-///
-/// Now it lives on the bank, under the same claim and the same isolate
-/// boundary as the vocoders, and a successor generation inherits it sized.
-#[test]
-fn the_block_scratch_rides_the_shared_bank() {
-    let mut u = Unit::with_channels(44_100.0, 6usize);
-    u.allocate();
-    assert!(u.channels.scratch_is_ready(6));
-
-    // A commit's clone shares the bank, so it inherits sized scratch and
-    // `allocate` has nothing left to do.
-    let c = u.clone();
-    assert!(
-        c.channels.scratch_is_ready(6),
-        "the successor should inherit sized scratch, not reallocate it"
-    );
-    assert!(Arc::ptr_eq(&u.channels, &c.channels));
-
-    // Idempotent: the graph allocates every generation, and re-sizing would
-    // throw away 64 KB per channel per commit — the exact cost this removes.
-    let ptr_before = u.channels.scratch_in.borrow()[0].capacity();
-    let mut c2 = u.clone();
-    c2.allocate();
-    assert_eq!(u.channels.scratch_in.borrow()[0].capacity(), ptr_before);
-
-    // Isolation severs it with the rest of the bank. The fresh bank is
-    // sized at construction, so a render's isolated node is immediately
-    // usable — the same guarantee a directly built unit has, and the one
-    // `time_stretch_process_is_allocation_free` depends on.
-    let mut iso = u.clone();
-    iso.isolate();
-    assert!(!Arc::ptr_eq(&u.channels, &iso.channels));
-    assert!(
-        iso.channels.scratch_is_ready(6),
-        "a severed bank must arrive usable, not needing a later allocate"
-    );
-    iso.allocate();
-    assert_eq!(iso.channels.scratch_out.borrow().len(), 6);
-}
-
-/// An isolated clone renders exactly what the original renders.
-///
-/// Rewritten when the vocoder bank became shared. The previous version ticked
-/// the original and a plain clone alternately and asserted they matched
-/// sample-for-sample — which a shared bank makes meaningless, because the two
-/// handles now feed ONE FIFO and interleave rather than run in parallel. That
-/// is the design working, not a regression, but it means the property has to
-/// be asserted on an `isolate`d clone, which is the only clone that genuinely
-/// owns its state.
+/// A clone renders exactly what the original renders.
 ///
 /// Asserted on sample values rather than liveness — a quieter or truncated
 /// block is the failure mode, and every `!= 0.0` assertion here would pass it.
+/// (Under the shared bank this could only be asserted of an `isolate`d clone;
+/// a clone is independent now, and `isolate` has nothing to do.)
 #[test]
-fn an_isolated_clone_renders_identically() {
+fn a_clone_renders_identically() {
     let mut original = Unit::with_channels(44_100.0, 2usize);
     original.set_stretch_factor(StretchFactor::new(2.0));
-    original.allocate();
 
-    // The offline-render shape: clone, isolate, allocate. Isolation gives it
-    // private state, so it must now track the original exactly.
     let mut clone = original.clone();
-    clone.isolate();
-    clone.allocate();
 
     // fundsp's `Buffer` is fixed at 64 samples per channel; a larger `size`
     // reads past it rather than being clamped.
@@ -721,8 +603,8 @@ fn an_isolated_clone_renders_identically() {
                 );
                 assert_eq!(
                     x, y,
-                    "block {block}, channel {ch}, sample {i}: the isolated \
-                     clone diverged from the original"
+                    "block {block}, channel {ch}, sample {i}: the clone \
+                     diverged from the original"
                 );
                 heard_signal |= x.abs() > 1e-6;
             }
@@ -733,6 +615,89 @@ fn an_isolated_clone_renders_identically() {
         heard_signal,
         "both rendered silence — the comparison proved nothing"
     );
+}
+
+/// **`filter_lanes` is `tick` per frame, bit for bit**: the slot's block read
+/// through the filter against the frame-at-a-time read it replaced, at every
+/// width relation the slot can hand it (narrower, equal, wider than the
+/// unit), stretched, pitched, stretched and pitched, and bypassing; the block
+/// split into runs, as a placed voice leaving its window splits it.
+///
+/// Mutation (run): the debt not replayed per channel (channel `c` starting
+/// from channel `c - 1`'s end debt) → fails. Mutation (run): a lane past the
+/// input's width reading silence instead of lane 0 → fails (the wider-unit
+/// rows). Mutation (run): the drain skipped for the last output channel
+/// (`c + 1 < n_out`) → fails.
+#[test]
+fn filter_lanes_is_tick_per_frame() {
+    use crate::lanes::{Lane, LANE_FRAMES};
+    let src = sine(440.0, 44_100.0, 160 * LANE_FRAMES);
+    // (unit width, caller width, stretch, cents)
+    let rows: &[(usize, usize, f32, f32)] = &[
+        (2, 2, 2.0, 0.0),
+        (2, 2, 0.5, 0.0),
+        (2, 2, 1.0, 700.0),
+        (2, 2, 1.5, -500.0),
+        (2, 2, 1.0, 0.0),
+        (1, 2, 2.0, 0.0),
+        (4, 2, 0.75, 300.0),
+        (6, 6, 1.25, 0.0),
+    ];
+    for &(unit_w, n, stretch, cents) in rows {
+        let build = || {
+            let u = Unit::with_channels(44_100.0, unit_w);
+            u.set_stretch_factor(StretchFactor::new(stretch));
+            u.set_pitch_cents(Cents::new(cents));
+            u
+        };
+        let (mut by_tick, mut by_lanes) = (build(), build());
+        let mut input = vec![[0.0f32; LANE_FRAMES]; n];
+        let mut output: Vec<Lane> = vec![[9.0f32; LANE_FRAMES]; n];
+        let mut heard = false;
+        // 10 240 frames: past every row's fill-up.
+        for block in 0..160 {
+            for (c, lane) in input.iter_mut().enumerate() {
+                for (i, s) in lane.iter_mut().enumerate() {
+                    *s = src[block * LANE_FRAMES + i] * (c + 1) as f32;
+                }
+            }
+            // Runs of the block, as a window edge splits one.
+            let cuts = [0, 17, 40, 41, LANE_FRAMES];
+            for run in cuts.windows(2) {
+                by_lanes.filter_lanes(&input, &mut output, n, run[0]..run[1]);
+            }
+            for i in 0..LANE_FRAMES {
+                let feed: Vec<f32> = (0..n).map(|c| input[c][i]).collect();
+                let mut want = vec![0.0f32; n];
+                by_tick.tick(&feed, &mut want);
+                for c in 0..n {
+                    assert_eq!(
+                        output[c][i].to_bits(),
+                        want[c].to_bits(),
+                        "unit {unit_w} wide, caller {n}, {stretch}x {cents}c: block \
+                         {block}, frame {i}, channel {c}"
+                    );
+                    heard |= want[c].abs() > 1e-6;
+                }
+            }
+        }
+        assert!(heard, "unit {unit_w} caller {n}: silence proves nothing");
+        // A vocoder past the caller's width is fed and never drained, so its
+        // output cannot show a difference; its input ring can (`tick` feeds it
+        // channel 0).
+        for (c, (a, b)) in by_tick
+            .ch
+            .vocoders
+            .iter()
+            .zip(&by_lanes.ch.vocoders)
+            .enumerate()
+        {
+            assert!(
+                a.input.0.data == b.input.0.data && a.input.0.write == b.input.0.write,
+                "unit {unit_w} caller {n}: vocoder {c} was fed other samples"
+            );
+        }
+    }
 }
 
 /// Dominant frequency of a settled signal, by Goertzel-style scan.
@@ -781,7 +746,6 @@ fn rms(x: &[f32]) -> f32 {
 #[cfg(test)]
 fn render_440(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
     let mut au = u.clone();
-    au.allocate();
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {
         let s = (Radians::TAU.get() * 440.0 * i as f32 / sample_rate).sin();
@@ -809,7 +773,6 @@ fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
         .collect();
     let rate = u.input_rate().get() as f32;
     let mut au = u.clone();
-    au.allocate();
     let mut out = Vec::with_capacity(out_len);
     let mut pos = 0.0f32;
     for _ in 0..out_len {
@@ -998,7 +961,7 @@ fn pitch_shift_preserves_level() {
 fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
     let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1usize);
     u.set_stretch_factor(StretchFactor::MIN);
-    let window = u.channels.channels.borrow()[0].geometry.window().get();
+    let window = u.ch.vocoders[0].geometry.window().get();
     let (analysis, _) = u.hops();
     assert_eq!(
         analysis, window,
@@ -1060,7 +1023,6 @@ fn stretching_preserves_the_signals_level() {
     for factor in [1.0f32, 1.5, 2.0, 4.0] {
         let mut u = Unit::with_channels(44_100.0, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
-        u.allocate();
 
         let size = 64;
         let mut input = BufferVec::new(1);
@@ -1116,7 +1078,6 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
     for (factor, floor) in [(0.5f32, 0.85f32), (0.25, 0.75)] {
         let mut u = Unit::with_channels(44_100.0, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
-        u.allocate();
 
         let size = 64;
         let mut input = BufferVec::new(1);
@@ -1162,7 +1123,7 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
 #[test]
 fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
     let mut u = Unit::with_channels(44_100.0, 2usize);
-    let window = u.channels.channels.borrow()[0].geometry.window().get();
+    let window = u.ch.vocoders[0].geometry.window().get();
 
     assert!(!u.is_processing());
     assert_eq!(u.latency_samples(), 0, "bypassing unit claimed latency");
@@ -1337,8 +1298,8 @@ fn reset_clears_buffered_audio() {
     }
     u.reset();
 
-    assert_eq!(u.channels.channels.borrow()[0].input.available(), 0);
-    assert_eq!(u.channels.channels.borrow()[0].output.available(), 0);
+    assert_eq!(u.ch.vocoders[0].input.available(), 0);
+    assert_eq!(u.ch.vocoders[0].output.available(), 0);
 }
 
 /// Stale audio survives a source discontinuity until something calls
@@ -1610,7 +1571,7 @@ fn stretch_factor_changes_the_source_consumption_rate() {
         }
         // Everything the FIFO has seen: what it still holds plus what the
         // frames have retired.
-        let seen = u.channels.channels.borrow()[0].input.0.write;
+        let seen = u.ch.vocoders[0].input.0.write;
         (seen, emitted)
     };
 

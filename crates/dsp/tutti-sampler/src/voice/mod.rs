@@ -33,6 +33,9 @@ pub mod types;
 // Tests only — they exercise the five modules above in combination and reach
 // private state a sibling module could not see.
 mod voice_pool;
+// Tests only: the block read against the frame read it replaced.
+#[cfg(test)]
+mod block_render;
 
 /// The control-plane protocol and the two handles that send it — one per owner
 /// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
@@ -49,7 +52,7 @@ pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWind
 /// One voice as a standalone graph node. Documented on [`node`].
 pub use node::VoiceNode;
 /// The per-track multi-voice mixer. Documented on [`pool`].
-pub use pool::VoicePool;
+pub use pool::{PoolTooWide, VoicePool};
 /// ECS components that seat a pool on a track entity. Documented on [`pool`].
 #[cfg(feature = "bevy")]
 pub use pool::{VoicePoolNode, VoicePoolRef};

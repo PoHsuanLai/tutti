@@ -95,7 +95,6 @@ mod tests {
             },
             1usize,
         );
-        live.allocate();
         assert!(live.slot.stretch.is_some(), "vacuous without a filter");
 
         // Build real vocoder history. The playhead must ADVANCE: a placed
@@ -133,61 +132,86 @@ mod tests {
         );
     }
 
-    /// Every node type the offline render can carry must sever its shared state.
+    /// Every node type the offline render can carry must share no running
+    /// state with the live node.
     ///
-    /// The render clones the live net and ticks it on a worker pool while the
-    /// audio thread plays the original — the one genuinely concurrent path in
-    /// the engine. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
-    /// its slot, so it has to sever its stretch filter explicitly.
+    /// A fork renders on another thread while the audio thread plays the
+    /// original. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
+    /// its slot, so its stretch filter must be the fork's own.
     ///
-    /// Asserted on `Arc` identity rather than on audio, because the failure is a
-    /// data race: in release two threads would mutate one `UnsafeCell` with no
-    /// synchronisation, which no output assertion can reliably observe.
+    /// Re-pinned with the ownership change (doc 013 item 7): this asserted
+    /// that a clone *shared* the live filter's vocoder bank until `isolate`
+    /// severed it (`shares_bank_with`), because `Net` cloned every node per
+    /// commit and the bank rode by `Arc`. A clone now builds its own filter,
+    /// so the property is asserted on audio: a live voice whose clone was
+    /// isolated, reset and rendered for 4096 frames plays, sample for sample,
+    /// what an identical voice that was never cloned plays.
+    ///
+    /// Mutation: none expressible as a one-line edit any more. The sharing
+    /// this guards against needs a shared bank type, which the ownership
+    /// change deleted (the filter owns its vocoders by value, so the types
+    /// rule it out); the unit-level twin,
+    /// `stretch::tests::a_clone_and_its_original_tick_independently`, runs
+    /// its mutation. This pins, at the voice, what a reintroduced shared bank
+    /// would break.
     #[test]
-    fn isolate_severs_a_standalone_voices_stretch_bank() {
-        let wave = make_wave(4096);
+    fn a_standalone_voices_clone_shares_no_stretch_state() {
+        const SR: f64 = 44_100.0;
+        let wave = make_wave(48_000);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-        let live = VoiceNode::with_channels(
-            Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Playback::default()
+        let node = || {
+            let sampler = MemorySource::with_transport(
+                Arc::clone(&wave),
+                transport.clone(),
+                Beat::new(0.0),
+                None,
+            );
+            VoiceNode::with_channels(
+                Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        stretch: StretchFactor::new(2.0),
+                        ..Playback::default()
+                    },
+                    channel_index: None,
                 },
-                channel_index: None,
-            },
-            2usize,
-        );
+                1usize,
+            )
+        };
+        let (mut live, mut twin) = (node(), node());
         assert!(
             live.slot.stretch.is_some(),
             "test is vacuous unless a filter is resident"
         );
+        let mut out = [0.0f32; 1];
+        let mut out_twin = [0.0f32; 1];
+        for _ in 0..4096 {
+            live.tick(&[], &mut out);
+            twin.tick(&[], &mut out_twin);
+            transport.advance(1, SR);
+        }
 
-        // What `clone_isolated` produces, then what the render's isolation pass
-        // does to it.
         let mut render = live.clone();
-        assert!(
-            render
-                .slot
-                .stretch
-                .as_ref()
-                .unwrap()
-                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
-            "the clone should start out sharing — otherwise this proves nothing"
-        );
-
         render.isolate();
-        assert!(
-            !render
-                .slot
-                .stretch
-                .as_ref()
-                .unwrap()
-                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
-            "isolate() left the render sharing the live voice's vocoder bank; \
-             a worker thread would race the audio thread on it"
-        );
+        render.reset();
+        let mut scratch = [0.0f32; 1];
+        for _ in 0..4096 {
+            render.tick(&[], &mut scratch);
+        }
+
+        let mut heard = false;
+        for i in 0..8192 {
+            live.tick(&[], &mut out);
+            twin.tick(&[], &mut out_twin);
+            transport.advance(1, SR);
+            assert_eq!(
+                out[0].to_bits(),
+                out_twin[0].to_bits(),
+                "frame {i}: the render's clone reached the live voice's filter"
+            );
+            heard |= out[0].abs() > 1e-4;
+        }
+        assert!(heard, "silence proves nothing");
     }
 
     /// **An isolated pool does not write the live pool's beat cursor.** The
@@ -267,7 +291,8 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize);
+        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize)
+            .expect("a width the sampler reads");
 
         let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
         handle
@@ -774,7 +799,8 @@ mod tests {
         let wave = Arc::new(Wave::from_samples(SR, &data));
 
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize);
+        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize)
+            .expect("a width the sampler reads");
 
         let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
         handle
@@ -1383,12 +1409,72 @@ mod tests {
         assert_eq!(unit.outputs(), 2);
     }
 
+    /// **A pool wider than the sampler reads is refused**, by name, where one
+    /// at the ceiling is built: past `MAX_SAMPLER_CHANNELS` it would declare
+    /// outputs its read never writes.
+    ///
+    /// Mutation (run): `with_channels` without the width check → the 9-wide
+    /// pool is built → fails.
+    #[test]
+    fn a_pool_wider_than_the_sampler_reads_is_refused() {
+        let ceiling = crate::MAX_SAMPLER_CHANNELS;
+        assert!(VoicePool::with_channels(None, None, ceiling).is_ok());
+        let err = VoicePool::with_channels(None, None, ceiling + 1)
+            .expect_err("a pool past the ceiling must be refused");
+        assert_eq!(err.channels, ChannelLayout::from(ceiling + 1));
+    }
+
+    /// **A voice node wider than the sampler reads writes silence on the
+    /// channels past it**, not what the buffer held: the node's constructor
+    /// cannot refuse (it is infallible, and hosts clamp the width first), so
+    /// its `process` clears every output it declares.
+    ///
+    /// Mutation (run): `VoiceNode::process` clearing only the `n` channels the
+    /// read writes → channels 8 and 9 keep the stale 7.0 → fails.
+    #[test]
+    fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler =
+            MemorySource::with_transport(make_wave(4096), transport, Beat::new(0.0), None);
+        let wide = crate::MAX_SAMPLER_CHANNELS + 2;
+        let mut node = VoiceNode::with_channels(
+            Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            },
+            wide,
+        );
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(wide);
+        for c in 0..wide {
+            for i in 0..64 {
+                output.buffer_mut().set_f32(c, i, 7.0);
+            }
+        }
+        node.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        for c in crate::MAX_SAMPLER_CHANNELS..wide {
+            for i in 0..64 {
+                assert_eq!(
+                    output.buffer_ref().at_f32(c, i),
+                    0.0,
+                    "channel {c} frame {i} kept what the buffer held"
+                );
+            }
+        }
+        assert!(
+            (0..64).any(|i| output.buffer_ref().at_f32(0, i) != 0.0),
+            "the voice must sound on the channels it reads"
+        );
+    }
+
     /// `route`'s width must track `outputs()` on both nodes, or fundsp mis-plans
     /// their latency — silent except as PDC drift.
     #[test]
     fn route_width_tracks_outputs_on_both_nodes() {
         for w in [1usize, 2, 6, 8] {
-            let (mut unit, _h) = VoicePool::with_channels(None, None, w);
+            let (mut unit, _h) =
+                VoicePool::with_channels(None, None, w).expect("a width the sampler reads");
             let out = unit.route(&SignalFrame::new(0), 44_100.0);
             assert_eq!(
                 out.len(),
@@ -1430,7 +1516,8 @@ mod tests {
     #[test]
     fn six_channel_clip_reaches_all_six_reader_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+            .expect("a width the sampler reads");
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
             MemorySourceConfig {
@@ -1474,7 +1561,8 @@ mod tests {
     #[test]
     fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+            .expect("a width the sampler reads");
         let sampler = MemorySource::with_config(
             indexed_wave(6, 4096),
             MemorySourceConfig {
@@ -1538,7 +1626,8 @@ mod tests {
     #[test]
     fn send_builds_the_stretch_filter_not_the_drain() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+        let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+            .expect("a width the sampler reads");
 
         let mk = |stretch: StretchFactor| {
             let sampler = MemorySource::with_config(
@@ -1645,7 +1734,8 @@ mod tests {
     #[test]
     fn a_missing_stretch_filter_reads_dry_not_silent() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
+        let (mut unit, _h) = VoicePool::with_channels(Some(transport.clone()), None, 6usize)
+            .expect("a width the sampler reads");
 
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),

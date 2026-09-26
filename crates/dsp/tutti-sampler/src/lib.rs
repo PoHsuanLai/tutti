@@ -95,6 +95,10 @@ pub use tutti_io::Wave;
 // share. Bevy-free apart from the asset loader, gated inside.
 pub mod voice;
 
+// Planar block scratch and its kernels: the voices render into it, the
+// stretch filter reads and writes it. Crate-level because both use it.
+mod lanes;
+
 // Time-stretch / pitch-shift (phase vocoder). A peer DSP subsystem, not a
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
@@ -112,8 +116,9 @@ pub mod stretch;
 // heavily in their own docs, and privatizing it turns 31 of those into dangling
 // references. It is a real internal namespace, not a redundant path.
 pub use voice::{
-    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
-    VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
+    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, PoolTooWide,
+    SlotId, Voice, VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle,
+    VoiceSource, VoiceWindow,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
 // plugin moved to bevy-tutti (house rule R1); what stays here is the pair of

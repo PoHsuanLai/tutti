@@ -211,6 +211,48 @@ impl Seat {
         }
     }
 
+    /// The seats of the next `out.len()` frames, their positions written to
+    /// `out` (`None` outside the window, or on a stopped clock), and the seat
+    /// of the last one: what `out.len()` calls of [`next`](Self::next) give,
+    /// **reading the clock once**.
+    ///
+    /// The clock moves between blocks, never inside one (the renderer
+    /// advances it after a block is rendered), so every frame of a block reads
+    /// the beat and segment the first read: a seat taken at the first frame
+    /// steps on through the block (`frames + k` from it, the arithmetic
+    /// [`position`](Self::position) does per frame), and a first frame with no
+    /// seat means none for the block (the gate, asked again of the same clock
+    /// reading, gives the same answer).
+    #[inline]
+    pub(crate) fn run(
+        last: Option<Self>,
+        timeline: &dyn Timeline,
+        rate: ReadRate,
+        gate: impl FnOnce() -> Option<SamplePosition>,
+        out: &mut [Option<SamplePosition>],
+    ) -> Option<Self> {
+        if out.is_empty() {
+            return last;
+        }
+        let Some(first) = Self::next(last, timeline, rate, gate) else {
+            out.fill(None);
+            return None;
+        };
+        for (k, p) in out.iter_mut().enumerate() {
+            *p = Some(
+                Self {
+                    frames: first.frames + k,
+                    ..first
+                }
+                .position(),
+            );
+        }
+        Some(Self {
+            frames: first.frames + out.len() - 1,
+            ..first
+        })
+    }
+
     /// The clock's segment generation this seat seated in.
     #[inline]
     pub(crate) fn generation(&self) -> u64 {
@@ -236,6 +278,23 @@ pub fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
     let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
     ((c3 * t + c2) * t + c1) * t + c0
+}
+
+/// [`cubic_hermite`] along time: `out[i]` is the cubic through `y[0][i]` ..
+/// `y[3][i]` at `t[i]`, for every `i` of `out`.
+///
+/// The same expression per element as [`cubic_hermite`] (inlined into the
+/// loop, so the compiler vectorises it across frames; Rust never contracts a
+/// multiply and an add into an FMA on its own), so each output is bit for bit
+/// the scalar kernel's. The slices are cut to `out`'s length first, which
+/// keeps the bounds checks out of the loop.
+#[inline]
+pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
+    let n = out.len();
+    let (y0, y1, y2, y3, t) = (&y[0][..n], &y[1][..n], &y[2][..n], &y[3][..n], &t[..n]);
+    for i in 0..n {
+        out[i] = cubic_hermite(y0[i], y1[i], y2[i], y3[i], t[i]);
+    }
 }
 
 /// Read one `out.len()`-wide frame from `wave` at fractional position

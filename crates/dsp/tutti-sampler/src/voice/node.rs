@@ -14,6 +14,7 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 use super::command::{PlacementRecord, VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
 use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
+use crate::lanes::BlockScratch;
 use crossbeam_channel::{bounded, Receiver};
 use tutti_core::transport::BeatCursor;
 use tutti_core::{
@@ -62,6 +63,9 @@ pub struct VoiceNode {
     /// The last placement the node's handle queued, which `isolate` applies to
     /// a copy — see [`PlacementRecord`]. Empty for a node with no handle.
     pub(crate) placement: PlacementRecord,
+    /// The block read's lanes (`PlaybackSlot::process_into`), built here, on
+    /// the control thread.
+    scratch: BlockScratch,
 }
 
 impl VoiceNode {
@@ -91,7 +95,8 @@ impl VoiceNode {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        let mut slot = PlaybackSlot::with_channels(SlotId(0), voice, sample_rate, channels);
+        let mut slot =
+            PlaybackSlot::with_channels(SlotId(0), Box::new(voice), sample_rate, channels);
         slot.stretch = stretch;
         let cursor = slot
             .voice
@@ -107,6 +112,7 @@ impl VoiceNode {
             // [`with_commands`](Self::with_commands).
             rx: bounded(0).1,
             placement: PlacementRecord::default(),
+            scratch: BlockScratch::new(),
         }
     }
 
@@ -233,6 +239,16 @@ impl From<Voice> for VoiceNode {
 }
 
 impl Clone for VoiceNode {
+    /// A copy of the voice, its filter (fresh, see `stretch::Unit`'s "Owned,
+    /// not shared") and its placement record, with **no command channel**.
+    ///
+    /// The graph renders the node it was given, never a clone (doc 013 item
+    /// 7). The clones it takes — `Legacy::controlled`'s shadow and a fork
+    /// cloned from it — must not drain the live handle's commands (crossbeam
+    /// hands each message to one receiver, so a copy draining steals the
+    /// user's edits), so the `Receiver` stays with the node that owns it.
+    /// Under `Net`, whose commit rendered from a clone, the clone had to share
+    /// it and `isolate` had to cut it; both went with `Net`.
     fn clone(&self) -> Self {
         Self {
             slot: PlaybackSlot {
@@ -243,37 +259,15 @@ impl Clone for VoiceNode {
                 sample_rate: self.slot.sample_rate,
             },
             channels: self.channels,
-            // Shares the underlying `last_beat`, as `BeatCursor::clone` does for
-            // the pool: fundsp deep-clones every node on `Net::commit`, and a
-            // fresh cursor would read its first block as a discontinuity and
-            // flush the filter on every graph edit.
+            // Shares the underlying `last_beat`, as `BeatCursor::clone` does
+            // for the pool; `isolate` drops it for a fork.
             cursor: self.cursor.clone(),
-            // **The same `Receiver`, not a fresh one.** `AudioUnit: DynClone`, so
-            // `Net::commit` clones this node, and `migrate` installs the clone
-            // over the backend's unit whenever the vertex is marked *changed* —
-            // which `set_sample_rate`, `reset`, `isolate` and `rebind_offline`
-            // all do, and the first of those on every device-rate change. A
-            // clone that minted its own channel would then be handed to the
-            // audio thread already deaf, and every command the live handle sent
-            // after that would vanish — no error, no diagnostic, exactly the
-            // silent class of failure this line of work exists to close.
-            //
-            // (An *unchanged* vertex keeps the backend's own unit, so a bare
-            // commit does not exercise this. That is why
-            // `a_command_reaches_a_node_across_a_commit` sets a sample rate:
-            // without it the test passed with this line sabotaged.)
-            //
-            // Sharing is safe because crossbeam delivers each message to exactly
-            // one receiver and the graph ticks one instance at a time, so there
-            // is no double-drain. `VoicePool::clone` reaches the same conclusion
-            // for the same reason and states it at length.
-            //
-            // The offline render is the case where "exactly one receiver" bites
-            // rather than helps — see [`AudioUnit::isolate`].
-            rx: self.rx.clone(),
-            // Shared, like the receiver: the record of what the handle asked
-            // for, read by an isolated copy (see `isolate`).
+            rx: bounded(0).1,
+            // Shared on purpose: the record of what the handle asked for,
+            // which a fork of the shadow reads at *its* isolate (see
+            // `isolate`), so it plays where the clip was last moved to.
             placement: Arc::clone(&self.placement),
+            scratch: BlockScratch::new(),
         }
     }
 }
@@ -330,16 +324,16 @@ impl AudioUnit for VoiceNode {
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         self.drain_commands();
         // Stride derived once per block, above the loops.
-        let n = (self.channels.count() as usize)
-            .min(output.channels())
-            .min(MAX_SAMPLER_CHANNELS);
-        for c in 0..n {
-            for i in 0..size {
-                output.set_f32(c, i, 0.0);
-            }
+        let outs = (self.channels.count() as usize).min(output.channels());
+        let n = outs.min(MAX_SAMPLER_CHANNELS);
+        // Every output this node declares, not only the `n` the read writes:
+        // a node wider than `MAX_SAMPLER_CHANNELS` leaves the rest silent
+        // rather than holding whatever the buffer held.
+        for c in 0..outs {
+            output.channel_f32_mut(c)[..size].fill(0.0);
         }
         self.flush_on_seek(size.max(1));
-        self.slot.process_into(size, n, output);
+        self.slot.process_into(size, n, &mut self.scratch, output);
     }
 
     audio_unit_boilerplate!(id = crate::node_id::VOICE_NODE_ID);
@@ -354,60 +348,26 @@ impl AudioUnit for VoiceNode {
         std::mem::size_of::<Self>()
     }
 
-    /// Size the resident stretch filter's block scratch.
+    /// Sever everything this copy could still share with the live node, and
+    /// apply the placement its handle last queued.
     ///
-    /// **Required, not an optimization**, for the reason
-    /// [`VoicePool`](super::pool::VoicePool)'s own `allocate` gives: a cloned
-    /// node reaches the audio thread with unsized scratch, and `process` then
-    /// has to allocate in the callback to avoid rendering silence.
-    fn allocate(&mut self) {
-        if let Some(s) = self.slot.stretch.as_mut() {
-            s.allocate();
-        }
-    }
-
-    /// Sever every input this clone shares with the live graph.
-    ///
-    /// **Required, not an optimization.** The offline region render clones the
-    /// live net and ticks it on a worker pool *while the audio thread plays the
-    /// original* — the one place two generations run genuinely concurrently. A
-    /// clone that still shares state with the live node is a data race, not
-    /// merely an interleave.
-    ///
-    /// [`VoicePool`](super::pool::VoicePool)'s `isolate` gets this for free by
-    /// clearing its voices, which drops their stretch filters with them.
-    /// `VoiceNode` keeps its single slot, so it has to sever explicitly:
-    /// inheriting the `AudioUnit` no-op default ships the render a filter still
-    /// pointing at the live [`stretch::Unit`]'s shared vocoder bank.
-    ///
-    /// The hazard is latent only because the sole producer of these nodes we
-    /// know of (a host's spectral resynth) builds them at unity, where
-    /// `stretch_wanted` leaves the slot's filter `None`. A resynth voice with
-    /// any non-unity stretch or pitch arms it, with no change in this crate.
+    /// **Required, not an optimization.** A fork renders on another thread
+    /// while the audio thread plays the original; a copy that still shares
+    /// state with the live node is a data race, not merely an interleave.
+    /// The stretch filter and the command channel are already the copy's own
+    /// (see `Clone`); the voice is not — a disk voice's clone shares its
+    /// stream's control cell — nor is the beat cursor.
     fn isolate(&mut self) {
-        if let Some(s) = self.slot.stretch.as_mut() {
-            s.isolate();
-        }
-        // The wrapped voice too: a disk-backed one shares the live ring and
-        // control cell through `Clone`, and a voice inside a slot is not a graph
-        // vertex, so the net-wide walk never reaches it.
+        // The wrapped voice: a disk-backed one shares its stream's control
+        // cell through `Clone`, and a voice inside a slot is not a graph
+        // node, so nothing else reaches it.
         self.slot.voice.isolate();
         // A fresh cursor: the clone must not inherit the live playhead's
         // last-seen beat, or its first offline block reads as a discontinuity.
         self.cursor = None;
-        // **And the command channel.** `Clone` deliberately shares the receiver
-        // (see there), which is right for the frontend↔backend swap and wrong
-        // for a render: crossbeam delivers each message to exactly one receiver,
-        // so a worker draining this channel would *steal* the user's edits from
-        // the audio thread. The live voice would then miss a placement move with
-        // nothing logged anywhere.
-        //
-        // `VoicePool` cannot fix this here — its render path replaces each node
-        // with a channel-less `detached` one in a Prepare step, because by the
-        // time `isolate` runs the pool has already been cloned with live voices
-        // in it. A `VoiceNode` has no such staging step and nothing to empty, so
-        // severing in place is both sufficient and the simpler half of the same
-        // rule. `a_render_clone_steals_no_commands` pins it.
+        // A clone's channel is dead already; one isolated in place (not
+        // cloned) lets go of the live one here, so nothing isolated can
+        // drain the user's edits. `a_render_clone_steals_no_commands`.
         self.rx = bounded(0).1;
         // What the severed queue would have carried: the latest placement the
         // handle queued. A fork copies a snapshot taken when the node was

@@ -10,9 +10,9 @@ use super::buffers::{OverlapAdd, SampleFifo};
 use super::fft::{inverse_fft, real_fft, Complex32};
 #[allow(
     unused_imports,
-    reason = "`Bank` is referenced only by the intra-doc link on `Unit::clone` below; rustdoc needs the name in scope to resolve it"
+    reason = "`Unit` is referenced only by the intra-doc link on `clone_fresh` below; rustdoc needs the name in scope to resolve it"
 )]
-use super::Bank;
+use super::Unit;
 use tutti_analysis::StftGeometry;
 use tutti_core::Radians;
 
@@ -107,43 +107,29 @@ impl Vocoder {
 
     /// A fresh vocoder on the same grid, sharing everything immutable.
     ///
-    /// A clone starts with clean phase history (see [`Unit::clone`]), so no
-    /// state is copied — only the *shapes* carry. The Hann window and the
-    /// per-bin phase table are both functions of the geometry alone, so they are
-    /// shared by `Arc` rather than rebuilt; rebuilding costs `size` `cos()`
-    /// calls per vocoder.
+    /// A clone starts with clean phase history (see [`Unit`]'s "Owned, not
+    /// shared"), so no state is copied — only the *shapes* carry. The Hann
+    /// window and the per-bin phase table are both functions of the geometry
+    /// alone, so they are shared by `Arc` rather than rebuilt; rebuilding costs
+    /// `size` `cos()` calls per vocoder.
     ///
-    /// # Not on the commit path
+    /// # Off the commit path
     ///
-    /// `Unit::clone` shares the whole vocoder bank by refcount (see [`Bank`]),
-    /// so a graph commit does not reach here. This runs only from
-    /// [`AudioUnit::isolate`], where an offline render needs private state, and
-    /// it allocates ~100 KB per vocoder — 64% of it the two `size * 4` rings.
-    /// Control thread only.
+    /// This is what `Unit::clone` runs, per channel: about 100 KB per vocoder
+    /// (64% of it the two `size * 4` rings), on the control thread. The native
+    /// graph clones a unit only for `Legacy::controlled`'s shadow (at insert)
+    /// and for a fork, never to commit.
     ///
-    /// # Why the deep clone was worth removing
-    ///
-    /// Profiled under `samply` (`examples/profile_stretch_clone.rs`), this
-    /// function's cost splits **~42% allocator, ~37% `memset`** — allocating the
-    /// buffers and zeroing them in nearly equal measure. Kernel time is 1.3%, so
-    /// it is real work rather than a paging artifact.
-    ///
-    /// **That 37% is why a buffer pool was built here and then removed.** A pool
-    /// recycles the allocation but a recycled buffer still has to be cleared,
-    /// and the clear is the same `memset` as a fresh `vec![0.0; n]` — so pooling
-    /// can only address the allocator's 42%, and only when the pool is
-    /// non-empty. On this path it never is: `commit_inner` clones *before* it
-    /// retires the previous generation, so nothing has been returned at the
-    /// moment the clone asks. Measured, a fresh build and a pooled hit came out
-    /// identical within noise.
-    ///
-    /// What worked instead was not cloning what carries nothing. Against a 2 ms
-    /// commit budget, a deep-cloning commit moved 201.8 MB at stereo and 604.6
-    /// MB at six channels. Sharing the bank took that to 81.5 / 243.8 MB;
-    /// moving the block scratch onto the bank as well — it is overwritten every
-    /// block before it is read, so it need never be copied — took it to **1.3 /
-    /// 3.3 MB**, a ~180x reduction with both widths committing in ~0.2 ms. What
-    /// remains is fundsp's own per-`Vertex` bookkeeping, not this state.
+    /// Under `Net`, which cloned every node on every commit, this was the cost
+    /// that had to go. Profiled under `samply`
+    /// (`examples/profile_stretch_clone.rs`), it split **~42% allocator, ~37%
+    /// `memset`**; a buffer pool could only address the allocator's share (a
+    /// recycled buffer is cleared by the same `memset`), and measured no
+    /// faster. A deep-cloning commit moved 201.8 MB at stereo and 604.6 MB at
+    /// six channels against a 2 ms budget, so the bank was shared by `Arc`
+    /// across clones (1.3 / 3.3 MB) at the price of a claim token proving one
+    /// handle ticked it. With no clone per commit, the sharing went (doc 013
+    /// item 7) and this is a plain constructor again.
     pub(super) fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();

@@ -247,11 +247,10 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
 /// render), the second would see a rewind every block and flush its voices
 /// (`VoicePool::flush_on_seek`).
 ///
-/// Dry, not pitched: a pitched voice's vocoder bank is shared by a plain
-/// clone too, and two clones ticking it trip the bank's guard (`isolate`
-/// would fix that, and would also drop the shared cursor under test). The
-/// discontinuity itself is pinned directly, with a cursor probe, in
-/// tutti-core's `legacy_chunk_major.rs`.
+/// Dry, not pitched: the question is the shared cursor, and a stretch
+/// filter's fill-up would only delay the tone. The discontinuity itself is
+/// pinned directly, with a cursor probe, in tutti-core's
+/// `legacy_chunk_major.rs`.
 #[test]
 fn two_voices_sharing_a_cursor_both_play_the_tone() {
     let t = Transport::new(SR);

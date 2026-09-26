@@ -183,7 +183,9 @@ pub fn ensure_source_nodes(
             ModClock::Free { hz } => node.with_frequency(hz),
         };
 
-        let entity = commands.spawn(graph.insert(node)).id();
+        let (id, params) = graph.insert_node(node);
+        graph.set_node_params(id, Some(params));
+        let entity = commands.spawn(id).id();
         commands.entity(route.source).insert(ModSourceNode(entity));
         dirty.0 = true;
     }

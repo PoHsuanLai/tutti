@@ -163,6 +163,22 @@ param_graph_node!(
     tutti_nodes::EqBandNode<f64>,
 );
 
+// The delay, modulation and LFO nodes (doc 013 Phase 4, tutti-nodes group B).
+param_graph_node!(
+    tutti_nodes::DelayLineNode,
+    tutti_nodes::ModDelayNode,
+    tutti_nodes::PhaserNode,
+    tutti_nodes::LfoNode,
+);
+
+/// The convolution reverb: its mix by address.
+#[cfg(feature = "convolution")]
+param_graph_node!(tutti_nodes::ConvolverNode);
+
+/// An automation lane as a graph node: no controls, the beat read from its
+/// block's `Env`.
+impl GraphNode for tutti_nodes::automation::AutomationLaneNode {}
+
 #[cfg(feature = "midi")]
 impl GraphNode for tutti_midi_runtime::MidiClipNode {}
 

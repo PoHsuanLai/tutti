@@ -17,10 +17,10 @@
 //! [`Engine::new`]: crate::Engine::new
 
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
-use tutti_types::{Beat, ChannelLayout, Latency, Samples, Tail};
+use tutti_types::{Beat, ChannelLayout, Latency, Tail};
 
 use super::clock::split_beat;
-use super::state::{LoopRange, BEAT_PORTS};
+use super::state::BEAT_PORTS;
 
 /// The beat generator of a native graph: no inputs, [`BEAT_PORTS`] outputs
 /// (whole beats, then the fraction), read from each block's
@@ -93,34 +93,17 @@ impl Node for EnvClock {
 }
 
 /// The beat of every frame of `env`'s block, in order, handed to `emit` with
-/// its index: what the ports carry before the split. Piece by piece, each
-/// walked with the host's clock rebuilt from the piece's transport
-/// ([`Transport::clock`](tutti_graph::Transport::clock)).
-fn beats(env: &tutti_graph::Env, mut emit: impl FnMut(usize, Beat)) {
-    for (start, piece) in env.segments() {
-        let t = piece.transport;
-        let from = start.index();
-        let to = from + piece.block_len.get();
-        let mut clock = t.clock(piece.sample_rate);
-        debug_assert_eq!(
-            clock.beat(),
-            t.beat(),
-            "the clock a transport describes starts on its beat"
-        );
-        let region = t.looping.and_then(|l| LoopRange::new(l.start, l.end));
-        for i in from..to {
-            emit(i, clock.beat());
-            if t.playing {
-                clock.advance(Samples(1), region);
-            }
-        }
-    }
+/// its index: what the ports carry before the split. The walk is
+/// [`Env::for_each_beat`](tutti_graph::Env::for_each_beat), which native
+/// nodes that read musical time per frame call directly.
+fn beats(env: &tutti_graph::Env, emit: impl FnMut(usize, Beat)) {
+    env.for_each_beat(emit);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Bpm, FrameClock, SampleRate};
+    use crate::{Bpm, FrameClock, SampleRate, Samples};
     use tutti_graph::{Env, Transport, TransportChanges};
     use tutti_types::Frame;
 

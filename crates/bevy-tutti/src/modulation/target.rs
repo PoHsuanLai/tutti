@@ -29,18 +29,11 @@
 //! running node reads. Register types before spawning them — a node inserted
 //! while its type was unregistered has no handle and is not modulatable.
 //!
-//! ```rust
-//! use bevy_app::prelude::*;
-//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
-//!
-//! let mut app = App::new();
-//! app.add_plugins(TuttiModulationPlugin);
-//! // One line per node type this app modulates. Forgetting one is silent: the
-//! // route stays well-formed, the inspector shows the knob, nothing moves.
-//! app.world_mut()
-//!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::CompressorNode>();
-//! ```
+//! Registering is one line per type, before any is spawned:
+//! `registry.register::<MyUnit>()` for a `MyUnit: ModParams + AudioUnit +
+//! Clone`. Forgetting one is silent: the route stays well-formed, the
+//! inspector shows the knob, nothing moves. (`tests/common/drive_unit.rs`
+//! is such a unit, and `capture_controls.rs` registers it.)
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;

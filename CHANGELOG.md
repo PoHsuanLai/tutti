@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every node is a native graph node** (design doc 013, "Items 8 and 9: the
+  per-node port"; the rest of tutti-nodes, tutti-spatial, tutti-sampler,
+  the click, the mic and the instruments). **Breaking.** No node in the
+  tree implements `AudioUnit` any more (`Legacy` remains for a host's own
+  units until it is deleted). A node is prepared by its graph (no
+  placeholder rate), takes its params on param ports, is set through the
+  controls it is inserted with, forks without `isolate`/`rebind_offline`,
+  and a clip reader reads its transport from its block's `Env` — so
+  sampler clips enter, exit, seek and loop on their own frame, not the next
+  64-frame chunk.
+
+  | Was | Now |
+  |---|---|
+  | `LadderFilterNode`, `CompressorNode`, `GateNode`, `LimiterNode`, `BrickwallLimiterNode`, `DistortionNode`, `BusStripNode`, `DelayLineNode`, `ModDelayNode`, `PhaserNode`, `ConvolverNode`, `LfoNode`/`ModulatorNode<M>`, `PolySynth`, `MemorySource` implement `AudioUnit` | `tutti_graph::Node` + `ParamNode`, inserted through `param_parts` with a `ParamSet` as controls |
+  | `DownmixNode`, `ChannelSumNode`, `AutomationLaneNode`, `SoundFontUnit`, `InProcessVst2Client` (f32 and f64), `MicMonitorNode` implement `AudioUnit` | `tutti_graph::Node` + `IntoNode` (fork by clone; the lane's `Curve::frozen`; the SoundFont's template; VST2 and the mic unforkable) |
+  | `VbapPannerNode`, `HrtfBinauralNode` implement `AudioUnit`; position through the node kept (`Clone` shared the cells) | `Node` + `IntoNode` with `VbapPannerControls` / `HrtfBinauralControls` (position, spread, width, blend: no `UnitParam` addresses them); bevy-tutti feature `hrtf` (in `full`) |
+  | `VoiceNode::with_commands`, `VoicePool::new() -> (pool, handle)`, `DiskVoice`, their `Arc<dyn Timeline>` / `BeatCursor`, `replace_transport`, `Voice::{isolate, rebind_offline}` | `Node`s with `VoiceNodeHandle` / `VoicePoolHandle` / `DiskVoiceControls`; the transport from `Env`; forks through `VoiceNodeFork` / `PoolFork` / `DiskVoiceFork` (a live fork of a disk voice is refused: `LiveDiskFork`). `MemorySource::placed(..)`, `window_position(&Transport)`, `take_disk_voice(channel, start, dur)`; bevy `spawn_voice(voice, width)`, `VoiceCommands = NodeControls<VoiceNodeHandle>` |
+  | `ClickNode::with_transport(transport, settings, rate)` with two beat inputs wired from the clock; `LfoNode` beat-synced and `AutomationLaneNode` with `BEAT_PORTS` inputs | no inputs: the beat is read from the block's `Env` (`Env::for_each_beat` / `for_each_piece_beat`); `ClickNode::new(&transport, settings)`, controls `Arc<ClickSettings>`. A start or stop inside a block now gates the click on its frame |
+  | `impl AudioUnit for TransportClock`, `TRANSPORT_CLOCK_ID`, `CLICK_NODE_ID`, `MIC_MONITOR_ID` | removed (the engine drives the clock) |
+  | `AudioUnit::set(unit_param::setting(p, v))` | `ParamSet::set(p, v)`. The delay's `DelayTime` by address is channel 0's; the compressor's makeup is addressed as `UnitParam::GainDb` (a control-rate route on `Makeup` no longer binds); the LFO's `Rate` only while free-running |
+  | `set_sample_rate` before the first `process`; `tick`; `param_feed` | the graph's `prepare`; a one-frame block; the param port `Io::param(k)` |
+  | `PolySynth::queue_midi`, `SoundFontUnit::queue_midi`, `InProcessVst2Client::queue_midi`, the synths' `fork_source`, `tutti_plugin::in_process_vst2` | MIDI on the event input only; `in_process_vst2_client`; `Plugin::into_client`'s `Err` is `Box<dyn tutti_graph::Node>` |
+  | `ConvolverNode`: IR spectra per channel and per fork; `convolution` pulls `fft-convolver` | one read-only `IrSpectra` behind an `Arc` shared by channels and forks (bit-identical output); `convolution` pulls `realfft` |
+  | bevy-tutti: `spawn_audio_node` / `AudioGraphRes::insert` / `ModTargetRegistry::register::<Node>()` for these nodes; `impl GraphNode for PolySynth {}` | `spawn_graph_node` / `insert_node` + `set_node_params`; no registration (`CapturedControls::for_params`); `param_graph_node!(..)`, so an `AudioParam` on a spawned synth reaches it and its fork |
+
+  New test support in `tutti_graph::contract`: `drive_in` (a block under a
+  given `Env`, events in, `Driven` audio and events out), `Direct`'s
+  events, transport, block length and `block_in(&Env)`, `BlockRig::block_in`,
+  `NativeIsolateRow` (the fork-snapshot row for a native node, every cell
+  it reads) and `Row::with_lead`. **Fixed with it:** `SvfFilterNode` and
+  `EqBandNode` declare `Tail::Unknown` as they reported under `Legacy`
+  (#60 had left the shape's `None`); a beat-synced audio-rate modulation
+  source no longer reads beat 0 forever (its beat inputs were never
+  wired); `tutti-core`'s `alloc_budget` no longer counts another thread's
+  allocations (it failed about 1 run in 4 under CPU load: libtest's main
+  thread allocating inside the window). **Known:** a time-stretched
+  sampler voice is silent for its stretch filter's refill (~4 100 frames)
+  after a seek; it always was for a pool bound to a transport, and every
+  pool is now (`verify-audio`'s `seek_while_stretched` shows it).
+
 - **Nodes are ported to the native graph contract, one at a time; the
   first are the SVF and the EQ band** (design doc 013, "Items 8 and 9: the
   per-node port"). **Breaking** for those two. A ported node is a graph node

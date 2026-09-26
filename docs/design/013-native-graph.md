@@ -3088,13 +3088,13 @@ vocoder retirement channel for voices the pool removes.
 |---|---|---|---|
 | 1 | **Done.** **Latency defects D1–D3, plus D5, D7, D8** (D1–D3 in #3; D5 with the SoA bank, D7 with the strip's per-block ramp, D8 with the click's per-sample onset off `EnvClock`'s beat ports) | These are bugs, and small | No |
 | 2 | **Done (#5).** **PolySynth SoA voice engine** | Biggest CPU win. Deletes the only production DSL use, which unblocks Phase 0 and removes `An`/`combinator`. Fixes D4/D5 | **No**: it is internal to the node |
-| 3 | **Done (#10), except Strip.** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
+| 3 | **Done (#10; the Strip in the per-node port).** **Merge the mono/stereo twins, and move per-sample atomics to per-block** (Svf, Ladder, Delay, ModDelay, Phaser, Convolver, Strip, Compressor/Gate, VBAP) | Removes 7 types and roughly 20 atomic loads per sample across the set. Channel-outer planar loops let the memoryless nodes auto-vectorize | No. It can be done against the current `AudioUnit`, and the ports then become mechanical |
 | 4 | **`Env` + plugin typestate** (Phase 2/3). **Plugin half done**, see [below](#item-4s-plugin-half-landed) | Deletes `TransportClock`, `TransportSource`, the six `BeatCursor` copies, 8 `rebind_offline` impls, the `InputSlot` shared cells, the `bind.rs`/`latency.rs` downcasts, and `AudioUnit<F64>` | Yes |
 | 5 | **Events as ports + MIDI shell deletion.** **Infrastructure done** (the graph side, below); **the clip node and the native synth landed** ([below](#item-5-first-part-landed-the-clip-node-and-the-native-synth)); the plugin's inputs and MIDI out, harmony, and **the MIDI shells' deletion landed** (hardware in, a keyboard's queue, the clock and MIDI out as nodes) | Deletes `MidiInPort`, post-block, `MidiTargetRegistry` and the clip atomics. MIDI and automation get PDC; arp → synth has zero latency. Events fan-in: decided (decision 6) | Yes |
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
-| 7 | **Done (item 7 PR), except `VoiceNode` `Controls`.** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
+| 7 | **Done (item 7 PR; `VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **Folded into 9: a node's fork is ported with the node** ([below](#items-8-and-9-the-per-node-port)). **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s (the count at the time; ~29 `isolate`s by the 2026-09-26 audit). The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
-| 9 | **Under way: the contract and the first port (SVF, EQ band) landed** ([below](#items-8-and-9-the-per-node-port)). Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
+| 9 | **Ports done** (every node in the tree is native, [below](#items-8-and-9-the-per-node-port)); **next: delete `Legacy`**. Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
 #### Item 4's plugin half landed
 
@@ -3955,6 +3955,53 @@ reference):
    and a test of `Net` or `Legacy` behaviour that used the node as its
    fixture moves to a node still on that path, or is rewritten for what
    replaced it (`live_controls_reach_the_node.rs`), never dropped.
+
+**The ports landed** (five parallel ports, integrated in one branch):
+
+- **tutti-nodes** — the ladder, dynamics, distortion, strip (item 3's
+  leftover: per-block reads only, mute a cell), downmix and sum; the delay,
+  chorus/flanger, phaser, convolver, LFO and automation lane. The
+  convolver's IR spectra are stored once, read-only, behind an `Arc` that a
+  fork shares (its partitioned FFT is now tutti's own over `realfft`,
+  bit-identical to `fft-convolver`'s). The LFO and the lane read the beat
+  from `Env` (`Env::for_each_beat`), no longer from `EnvClock`'s ports.
+- **tutti-spatial** — the VBAP and binaural panners, with typed controls:
+  no `UnitParam` addresses a position (a bearing wraps, a height
+  saturates), so they take the recipe's "own `Controls` + `ForkSource`"
+  branch (`tutti-spatial/src/fork.rs`).
+- **tutti-sampler** — `DiskSource`, `DiskVoice`, `VoicePool`, `VoiceNode`
+  (item 7's leftover: typed controls, placement on the node's own queue,
+  gain a `Param`) and `MemorySource`. The clip readers read the transport
+  from `Env` and are **frame-exact**: entry, exit, seek, stop and loop wrap
+  land on their frame. They still render in 64-frame pieces from each
+  block's start, re-seated per piece, which keeps the steady-state bits of
+  the chunked read. A jump (a seek while rolling, a wrap) is the node's
+  call, against its own clock's continuation. A live fork of a disk voice
+  is refused (it would read the file on the audio thread).
+- **tutti-core / tutti-io / instruments** — the click (no inputs; its beat
+  and its play gate per piece of `Env`, so D8's onsets and a start inside a
+  block land on their frame), the mic (unforkable), `TransportClock`'s
+  `AudioUnit` side (nothing inserted it), and the `AudioUnit` paths left on
+  `PolySynth`, `SoundFontUnit` and `InProcessVst2Client` (with them the
+  D4-shaped caps: `RENDER_SCRATCH_FRAMES`, VST2's `BLOCK_SIZE = 64`). The
+  synth's controls are a `ParamSet` (volume, detune, spread), so an
+  `AudioParam` on a spawned synth reaches it.
+
+Decisions made in the ports: a `ParamSet` addresses what `set(Setting)`
+did and nothing it did not (a gate's hold, a compressor's knee stay
+unaddressed; `NativeIsolateRow` still pins their fork); one cell, one
+address (the compressor's makeup is `GainDb`, which retires a route on
+`Makeup` — to reconcile in the vocabulary; the delay's `DelayTime` is
+channel 0's, so a fork keeps a ping-pong's two times); a node declares the
+tail `Legacy` read from it (`Unknown` for a resonant filter) rather than
+the shape's default `None`.
+
+Still open: `stretch::Unit` (a slot's internal filter, not a graph node)
+is an `AudioUnit`; `EnvClock` is read only by a host `AudioUnit` wired to
+it and may go with `Legacy`; a native beat reader **with inputs** would
+need frames before its block, which `Env` cannot give (none exists); a
+time-stretched voice is silent for its filter's refill after a seek
+(proposed: prime the filter from the source ahead of the jump).
 
 ## Decisions for the owner
 

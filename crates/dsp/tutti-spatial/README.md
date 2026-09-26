@@ -48,31 +48,33 @@ not click.
 
 ## Quick start
 
-A panner alone: stereo in, one output per speaker.
+A panner alone: stereo in, one output per speaker. Both panners are native
+graph nodes (`tutti_graph::Node`); inserting one hands back its controls.
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
-use tutti_core::{Azimuth, Elevation};
+use tutti_core::{Azimuth, Elevation, SampleRate, Samples};
+use tutti_graph::{Prepare, Solo};
 use tutti_spatial::VbapPannerNode;
 
 // 5.1: two inputs, six outputs. Only 2/4/6/8/12 have presets.
 let panner = VbapPannerNode::surround_5_1().expect("5.1 is a defined preset");
 assert_eq!(panner.num_channels(), 6);
 
-// 45° to the right, level with the listener. `store` normalizes: the bearing
-// wraps, the height clamps. It is a lock-free write, so it may happen while
-// the node renders.
+// 45° to the left, level with the listener. `store` normalizes: the bearing
+// wraps, the height clamps.
 panner.set_position(Azimuth(45.0), Elevation(0.0));
 
-let mut net = Net::new(2, 6);
-let node = net.push(Box::new(panner));
-net.pipe_input(node);
-net.pipe_output(node);
-net.check();
+// Alone in a graph (`Solo`, for tests and examples; a host inserts it with
+// `GraphBuilder::add_with_controls` or `Editor::insert`, and keeps the
+// controls the same way).
+let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
 
-let mut out = [0.0f32; 6];
-net.tick(&[1.0, 1.0], &mut out);
+// The controls move the running node: a lock-free write, landing on its next
+// block, de-zippered over 50 ms.
+solo.controls().set_position(Azimuth(-30.0), Elevation(0.0));
+
+let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]); // one `Vec` per speaker
+assert_eq!(out.len(), 6);
 ```
 
 A whole mix: `build_vbap_mix` places several sources and returns the summed
@@ -117,27 +119,27 @@ assert_eq!(out.len(), 4);
 the scalar space via `.get()`, and let `SpatialTarget::store` normalize — the
 bearing wraps, the height clamps.
 
-## Known deviation: `VbapPannerNode::reset` clears configuration, not just state
+## `reset` clears time, not placement
 
-`AudioUnit::reset` means "clear runtime state" everywhere else in the engine.
-This node's `reset` additionally rewrites caller-set **configuration**: it
-returns spread to `Spread::POINT`, width to `StereoWidth::NATURAL`, and the
-position to front/level. So a `reset` intended to drop a tail also silently
-discards where the caller had placed the source.
-
-Stated rather than fixed, so nothing is written around it: **do not call `reset`
-to clear a tail on this node.** Rebuild the node, or re-`set_position` after.
+Both panners' `Node::reset` drops the de-zipper ramp (and, for the binaural
+one, the frame bridge and convolution tails) and **keeps** position, spread,
+width and blend: those are caller-set configuration. It also seats the ramp on
+the commanded position, so the first block after a reset already renders there
+rather than gliding in from front-centre. A fork (an offline export) is reset
+before it renders, and its placement is the one set when it was taken.
 
 ## Node ids
 
 The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not
-be renumbered. `assert_unique` guards them within this crate; cross-crate
+be renumbered. Both panners are native nodes now and report none, but the ids
+stay reserved. `assert_unique` guards them within this crate; cross-crate
 uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.
 
 ## RT safety
 
-`tests/rt_no_alloc.rs` asserts both panners' `process` paths never allocate.
-Mutation-verified: injecting a `vec!` into the VBAP process path aborts the test.
+`tests/rt_no_alloc.rs` asserts both panners' `process` paths never allocate,
+each alone in a graph (`tutti_graph::contract::BlockRig`). Mutation-verified:
+injecting a `vec!` into the VBAP process path aborts the test.
 
 ## Features
 

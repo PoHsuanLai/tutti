@@ -32,7 +32,7 @@ fn insert(g: &mut GraphBuilder, parts: VbapMixParts, sources: &[NodeKey]) -> Nod
     let panners: Vec<NodeKey> = parts
         .panners
         .into_iter()
-        .map(|p| g.add_unit(Box::new(p)))
+        .map(|p| g.add_with_controls(p).0)
         .collect();
     let lfe = parts
         .lfe

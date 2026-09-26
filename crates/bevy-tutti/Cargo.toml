@@ -116,12 +116,16 @@ full = [
     "audio-io",
     "export",
     "spatial",
+    "hrtf",
     "modulation",
 ]
 
 # Spatial audio: the VBAP / binaural panner units, in their own crate.
 # Names exactly one thing — the dependency on `tutti-spatial`.
 spatial = ["dep:tutti-spatial"]
+# The binaural panner (`tutti-spatial/hrtf`, which pulls the `hrtf` crate), so
+# `HrtfBinauralNode` can be spawned as a graph node.
+hrtf = ["spatial", "tutti-spatial/hrtf"]
 
 # FFT convolution reverb (partitioned IR) in tutti-nodes.
 convolution = ["tutti-nodes/convolution"]

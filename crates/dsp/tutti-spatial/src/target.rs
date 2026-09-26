@@ -91,13 +91,13 @@ impl AngleSmoother {
     /// Discard the in-flight ramp, seating both coordinates *on* the commanded
     /// position.
     ///
-    /// This is what an [`AudioUnit::reset`] clears here: the interpolation
+    /// This is what a panner's [`Node::reset`] clears here: the interpolation
     /// position is the smoother's only runtime state, and the commanded bearing
     /// and height are caller-set configuration a reset must leave alone. Seating
     /// on the target rather than at zero is the difference between resuming
     /// silently and sweeping the source in from front-centre over the ramp.
     ///
-    /// [`AudioUnit::reset`]: tutti_core::AudioUnit::reset
+    /// [`Node::reset`]: tutti_graph::Node::reset
     pub(crate) fn reset_to_target(&mut self, azimuth: Azimuth, elevation: Elevation) {
         self.azimuth.seed_at(azimuth.wrap().get());
         self.elevation

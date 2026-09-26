@@ -234,11 +234,16 @@ fn an_idle_reader_holds_nothing_back() {
 /// Mutation (run): `a + n` returned as `a` for a range containing the
 /// start → fails. Mutation (run): the start inside a range longer than the
 /// ring answered `a + n` (the code before N5) → fails.
+///
+/// Under miri, every seventh `to` and `a` (still before, inside and past a
+/// lap): miri checks the arithmetic for UB, and the full sweep is the native
+/// run's.
 #[test]
 fn first_alias_is_the_first_slot_another_position_of_the_range_holds() {
     let n = 16u64;
-    for to in 0..64u64 {
-        for a in 0..64u64 {
+    let step = if cfg!(miri) { 7 } else { 1 };
+    for to in (0..64u64).step_by(step) {
+        for a in (0..64u64).step_by(step) {
             for len in 0..=2 * n {
                 let e = a + len;
                 let brute = (to..to + 4 * n)
@@ -265,6 +270,12 @@ fn first_alias_is_the_first_slot_another_position_of_the_range_holds() {
 /// Mutation (run): the generation check removed from `push` → a torn or
 /// rewritten frame under a claim within the run → fails.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "200 000 writer steps against a spinning reader never finish under miri's \
+              interpreter and cooperative scheduler; the protocol's interleavings are \
+              the loom model's (tests/pos_ring_loom.rs), and this native run is its scale"
+)]
 fn a_writer_and_a_reader_thread_never_tear() {
     use std::sync::atomic::{AtomicBool, Ordering as O};
     const N: usize = 64;

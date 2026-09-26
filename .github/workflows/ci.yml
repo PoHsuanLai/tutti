@@ -515,6 +515,9 @@ jobs:
   miri:
     name: miri
     runs-on: ubuntu-latest
+    # About 20 minutes on main: a hang (a test miri cannot finish) fails here,
+    # not at GitHub's six-hour cap.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       # ALSA headers: `tutti-node` and `tutti-types` do not need them, but
@@ -553,6 +556,9 @@ jobs:
   loom:
     name: loom
     runs-on: ubuntu-latest
+    # About 12 minutes with the `PosRing` models: a model that stops
+    # terminating fails here.
+    timeout-minutes: 25
     env:
       RUSTFLAGS: --cfg loom
     steps:

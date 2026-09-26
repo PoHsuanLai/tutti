@@ -1086,12 +1086,9 @@ mod tests {
 
     /// Render the bank's unfiltered oscillator, then the same oscillator
     /// through the bank's filter, and the first through `reference`.
-    fn filter_vs_node(
-        filter: FilterType,
-        cutoff: Hz,
-        res: Resonance,
-        reference: &mut dyn AudioUnit,
-    ) -> (Vec<f32>, Vec<f32>) {
+    /// A saw through the bank's lane `filter` (wet), and the same saw
+    /// unfiltered (dry): what a reference filter runs on.
+    fn filter_vs_dry(filter: FilterType, cutoff: Hz, res: Resonance) -> (Vec<f32>, Vec<f32>) {
         let mut dry = bank(OscillatorType::Saw, FilterType::None, flat());
         start(&mut dry, 0, Hz(110.0), cutoff, res);
         let dry = render(&mut dry, &[0], 4096, CONTROL_BLOCK);
@@ -1099,7 +1096,16 @@ mod tests {
         let mut wet = bank(OscillatorType::Saw, filter, flat());
         start(&mut wet, 0, Hz(110.0), cutoff, res);
         let wet = render(&mut wet, &[0], 4096, CONTROL_BLOCK);
+        (wet, dry)
+    }
 
+    fn filter_vs_node(
+        filter: FilterType,
+        cutoff: Hz,
+        res: Resonance,
+        reference: &mut dyn AudioUnit,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let (wet, dry) = filter_vs_dry(filter, cutoff, res);
         reference.set_sample_rate(sr());
         let mut out = [0.0f32];
         let expected = dry
@@ -1127,8 +1133,13 @@ mod tests {
         ] {
             let (cutoff, q) = (Hz(900.0), Q(2.0));
             let filter = FilterType::Svf { cutoff, q, mode };
-            let mut node = SvfFilterNode::<f32>::new(ty, cutoff, q);
-            let (wet, expected) = filter_vs_node(filter, cutoff, Resonance::NONE, &mut node);
+            let (wet, dry) = filter_vs_dry(filter, cutoff, Resonance::NONE);
+            // The node as a graph runs it, prepared at the bank's rate.
+            let mut node = tutti_graph::Solo::new(
+                SvfFilterNode::<f32>::new(ty, cutoff, q),
+                tutti_graph::Prepare::new(sr(), tutti_core::Samples(64)),
+            );
+            let expected = node.render_input(&[&dry]).remove(0);
             for (i, (w, e)) in wet.iter().zip(&expected).enumerate() {
                 assert!(
                     (w - e).abs() < 1e-4,

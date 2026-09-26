@@ -19,6 +19,8 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tutti_core::{AudioUnit, BufferVec, ChannelLayout, SampleRate};
+use tutti_graph::contract::Direct;
+use tutti_graph::Node;
 use tutti_nodes::{
     DelayLineNode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode, SvfFilterNode, SvfType,
 };
@@ -67,27 +69,44 @@ fn run(
     g.finish();
 }
 
+/// [`run`] for a native node, called by hand through
+/// `tutti_graph::contract::Direct`; `fed` feeds its first param port.
+fn run_node(c: &mut Criterion, group: &str, width: usize, node: impl Node, fed: Option<&[f32]>) {
+    let mut g = c.benchmark_group(group);
+    g.throughput(Throughput::Elements((BLOCK * width) as u64));
+    let mut d = Direct::new(node, SR, BLOCK);
+    let input = noise_block(width);
+    for (ch, buf) in d.inputs_mut().iter_mut().enumerate() {
+        for (i, x) in buf.iter_mut().enumerate() {
+            *x = input.at_f32(ch, i);
+        }
+    }
+    // Live until cleared: every block of the bench reads it.
+    d.feed(0, fed);
+    for _ in 0..16 {
+        d.block();
+    }
+    g.bench_with_input(BenchmarkId::from_parameter(width), &width, |b, _| {
+        b.iter(|| {
+            d.block();
+            black_box(d.output(0)[BLOCK - 1]);
+        })
+    });
+    g.finish();
+}
+
 fn svf(c: &mut Criterion) {
     for w in [2usize, 6] {
-        let node = SvfFilterNode::<f64>::with_channels(
-            ChannelLayout::from(w),
-            SvfType::LowPass,
-            1_000.0,
-            0.707,
-        );
-        run(c, "svf", w, Box::new(node), noise_block(w));
-
-        let mut node = SvfFilterNode::<f64>::with_channels(
-            ChannelLayout::from(w),
-            SvfType::LowPass,
-            1_000.0,
-            0.707,
-        );
-        // Live until cleared: every block of the bench reads it.
-        node.param_feed()
-            .expect("the SVF has a feed")
-            .feed(0, &sweep(300.0, 6_000.0));
-        run(c, "svf_mod", w, Box::new(node), noise_block(w));
+        let make = || {
+            SvfFilterNode::<f64>::with_channels(
+                ChannelLayout::from(w),
+                SvfType::LowPass,
+                1_000.0,
+                0.707,
+            )
+        };
+        run_node(c, "svf", w, make(), None);
+        run_node(c, "svf_mod", w, make(), Some(&sweep(300.0, 6_000.0)));
     }
 }
 

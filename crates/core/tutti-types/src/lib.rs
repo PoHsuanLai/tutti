@@ -45,6 +45,11 @@ pub use rt::{
     RtScratchOverflow, RtVec, ScopedNoDenormals, MAX_POS_RING_FRAMES,
 };
 
+// The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
+// addresses params without their unit types (tutti-graph's `ParamSet`) need
+// not depend on `atomic_float` itself.
+pub use atomic_float::AtomicF32;
+
 // Value vocabulary.
 pub use value::{
     Amplitude, ArcDegrees, At, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration,

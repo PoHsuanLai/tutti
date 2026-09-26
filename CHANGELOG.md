@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Nodes are ported to the native graph contract, one at a time; the
+  first are the SVF and the EQ band** (design doc 013, "Items 8 and 9: the
+  per-node port"). **Breaking** for those two. A ported node is a graph node
+  with its params addressed by `UnitParam`, and a fork that shares nothing
+  with it.
+
+  | Was | Now |
+  |---|---|
+  | `SvfFilterNode` / `EqBandNode` as `AudioUnit`s: `tick`, `process(size, &BufferRef, &mut BufferMut)`, `set_sample_rate`, `set(Setting)`, `isolate`, `param_feed` | `tutti_graph::Node` (`prepare`, `process` over `Io`, its cutoff and Q on param ports) and `IntoNode` with a `ParamSet` as its controls; `ParamNode::fork_fresh` is the isolate |
+  | a host setting a param by address through `Legacy::controlled`'s settings ring and shadow | `tutti_graph::ParamSet::{set, set_authored, get, authored, cell}` over the node's own cells; a fork (`param_parts`' `ParamFork`) starts from the authored values |
+  | bevy-tutti: `spawn_audio_node(SvfFilterNode::..)`, `crossfade_audio_node(.., Box::new(..))` | `spawn_graph_node(..)` (the prelude now carries `SpawnGraphNode` and `GraphNode`), `crossfade_graph_node(..)`; `AudioParam` and `AudioGraphRes::set_param` reach it through its `ParamSet` (`GraphNode::params`, `AudioGraphRes::set_node_params`); modulation targets it with no `ModTargetRegistry` entry (`CapturedControls::for_params`) |
+  | `build_vbap_mix(&mut Net, ..)`, `VbapMixParts::insert_into(&mut Net, &[NodeId])`, `VbapSource<N = NodeId>` | `build_vbap_mix(&mut GraphBuilder, ..)`, `insert_into(&mut GraphBuilder, &[NodeKey])`, `VbapSource<N = NodeKey>` (its LFE low-pass is the SVF, which a `Net` cannot hold) |
+
+  New in `tutti-graph`: `ParamSet`, `ParamNode`, `ParamFork`, `param_parts`,
+  `Editor::replace_or_swap` (a fade when the unit fits, else a swap on the
+  next commit), `Solo` (one node through a graph), and in the `contract`
+  test support `drive`, `prepared`, `assert_param_fork`, `BlockRig` and
+  `Direct`. `tutti_types::AtomicF32` is re-exported. `tutti-nodes`'
+  `live_value_survives_commit` (the `Net` frontend/backend rule, fixture
+  `EqBandNode`) is now `live_controls_reach_the_node` (the rule for a node
+  the executor owns), and `svf_through_legacy_settings` pins `Legacy`'s
+  ring on the ladder filter as `legacy_settings_ring`.
+
 - **The MIDI shells are deleted: MIDI is event ports end to end** (design
   doc 013, "Rewrite order" item 5). **Breaking.** Hardware input, the MIDI
   clock and MIDI out are graph nodes; a synth, plugin or SoundFont hears

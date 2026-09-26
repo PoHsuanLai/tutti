@@ -62,8 +62,8 @@ use tutti_core::{
 };
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    Legacy, LegacyControls, NodeParts, ParamFrom, ParamIn, ParamMod, ParamRange, ParamShaping,
-    Prepare, Resolution, Transport, MAX_PARAM_SOURCES,
+    Legacy, LegacyControls, NodeParts, ParamFrom, ParamIn, ParamMod, ParamRange, ParamSet,
+    ParamShaping, Prepare, Resolution, Transport, MAX_PARAM_SOURCES,
 };
 use tutti_node::{AttoHash, Setting, SignalFrame};
 use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
@@ -200,9 +200,13 @@ impl<U> std::fmt::Debug for ReplaceRefused<U> {
 /// One node's handle, and its controls when it has a settings path.
 struct Entry {
     node: AudioNode,
-    /// `None` for a native node (the beat generator), which takes no
-    /// settings and has no `AudioUnit` to inspect.
+    /// `None` for a native node, which takes no settings and has no
+    /// `AudioUnit` to inspect.
     controls: Option<LegacyControls<Boxed>>,
+    /// A native node's params by address, when it has any: what
+    /// [`set_param`](NativeGraph::set_param) writes through in place of a
+    /// settings ring.
+    params: Option<ParamSet>,
 }
 
 /// The executor, while this side still holds it, and what a local render
@@ -447,6 +451,7 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: Some(controls),
+                params: None,
             },
         );
         self.edited = true;
@@ -476,6 +481,7 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: None,
+                params: None,
             },
         );
         self.edited = true;
@@ -541,6 +547,7 @@ impl NativeGraph {
         }
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.controls = None;
+            entry.params = None;
         }
         self.edited = true;
         Ok(())
@@ -587,10 +594,60 @@ impl NativeGraph {
             Entry {
                 node: id,
                 controls: None,
+                params: None,
             },
         );
         self.edited = true;
         (id, controls)
+    }
+
+    /// Address `node`'s params by `params` (a native node's controls), so
+    /// [`set_param`](Self::set_param) and the fork snapshot reach it.
+    pub(crate) fn set_node_params(&mut self, node: AudioNode, params: Option<ParamSet>) {
+        if let Some(entry) = self.nodes.get_mut(&key(node)) {
+            entry.params = params;
+        }
+    }
+
+    /// Swap the unit behind `node` for the native `incoming` under a `fade`
+    /// along `curve` when its shape fits the running unit's, else as a plain
+    /// swap on the next commit (`Editor::replace_or_swap`). Hands back its
+    /// controls; the caller addresses its params
+    /// ([`set_node_params`](Self::set_node_params)). Refused as
+    /// [`ReplaceRefused::Busy`] with the node handed back while the graph
+    /// re-prepares, and for good on a poisoned graph.
+    pub(crate) fn replace_node<N: IntoNode>(
+        &mut self,
+        node: AudioNode,
+        incoming: N,
+        fade: Seconds,
+        curve: CrossfadeCurve,
+    ) -> Result<N::Controls, ReplaceRefused<N>> {
+        if let Some(cause) = self.editor.poisoned() {
+            return Err(ReplaceRefused::Failed(format!(
+                "the graph is poisoned ({cause}); build a new one"
+            )));
+        }
+        if self.editor.is_repreparing() {
+            return Err(ReplaceRefused::Busy(incoming));
+        }
+        let k = key(node);
+        if !self.nodes.contains_key(&k) {
+            return Err(ReplaceRefused::Failed(format!(
+                "{node:?} is not in the graph"
+            )));
+        }
+        let rate = self.editor.prepare().sample_rate();
+        let controls = self
+            .editor
+            .replace_or_swap(k, incoming, Fade::seconds(fade, rate, curve))
+            .map_err(|e| ReplaceRefused::Failed(e.to_string()))?;
+        if let Some(entry) = self.nodes.get_mut(&k) {
+            entry.controls = None;
+            entry.params = None;
+        }
+        self.edited = true;
+        Ok(controls)
     }
 
     /// How many event inputs `node` declares (0 for a `Legacy` unit).
@@ -674,6 +731,7 @@ impl NativeGraph {
             Entry {
                 node,
                 controls: None,
+                params: None,
             },
         );
         self.edited = true;
@@ -766,6 +824,7 @@ impl NativeGraph {
         }
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.controls = Some(controls);
+            entry.params = None;
         }
         self.edited = true;
         Ok(())
@@ -775,15 +834,18 @@ impl NativeGraph {
     /// shadow. Lands on the unit at the start of the executor's next block
     /// (see "`set_param` lands on the next block" in the module docs). A full
     /// ring holds the setting control-side; the next `collect` flushes it.
+    ///
+    /// A native node has no ring: its [`ParamSet`] writes the cell it reads,
+    /// which it reads at the start of its next block all the same.
     pub(crate) fn set_param(&mut self, node: AudioNode, param: UnitParam, value: f32) {
-        let Some(controls) = self
-            .nodes
-            .get_mut(&key(node))
-            .and_then(|e| e.controls.as_mut())
-        else {
+        let Some(entry) = self.nodes.get_mut(&key(node)) else {
             return;
         };
-        let _ = controls.set(tutti_core::unit_param::setting(param, value));
+        if let Some(params) = &entry.params {
+            params.set(param, value);
+        } else if let Some(controls) = entry.controls.as_mut() {
+            let _ = controls.set(tutti_core::unit_param::setting(param, value));
+        }
     }
 
     /// Apply `param`'s setting to `node`'s shadow **only** — what a fork of the
@@ -796,12 +858,17 @@ impl NativeGraph {
     /// its own offline one — so what it must carry is the authored base.
     #[cfg(feature = "modulation")]
     pub(crate) fn set_param_snapshot(&mut self, node: AudioNode, param: UnitParam, value: f32) {
-        let Some(controls) = self.nodes.get(&key(node)).and_then(|e| e.controls.as_ref()) else {
+        let Some(entry) = self.nodes.get(&key(node)) else {
             return;
         };
-        controls
-            .shadow()
-            .set(tutti_core::unit_param::setting(param, value));
+        if let Some(params) = &entry.params {
+            // A native node forks from its set's authored values.
+            params.set_authored(param, value);
+        } else if let Some(controls) = &entry.controls {
+            controls
+                .shadow()
+                .set(tutti_core::unit_param::setting(param, value));
+        }
     }
 
     /// A live duplicate of the whole graph that shares no state with it
@@ -1507,6 +1574,179 @@ mod tests {
             app.world_mut()
                 .resource_mut::<AudioGraphRes>()
                 .render_frame(&mut live);
+            assert!(
+                (live[2] - 6.0).abs() > 0.5,
+                "the live knob is modulated off its base (got {}), so the fork's \
+                 plain base is the exception at work, not a driver that did nothing",
+                live[2]
+            );
+        }
+    }
+
+    /// [`Knob`] as a native node: its drive a `Param` cell addressed by a
+    /// `ParamSet`, inserted through `param_parts` (so its fork starts from the
+    /// set's authored values) and spawned as a `GraphNode` with its params.
+    #[derive(Clone)]
+    struct NativeKnob {
+        drive: tutti_types::Param<Drive>,
+    }
+
+    impl NativeKnob {
+        fn new() -> Self {
+            Self {
+                drive: tutti_types::Param::new(Drive(Knob::BUILT_WITH)),
+            }
+        }
+    }
+
+    impl tutti_graph::Node for NativeKnob {
+        fn shape(&self) -> tutti_graph::Shape {
+            tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(
+            &mut self,
+            _: &tutti_graph::Cx<'_>,
+            mut io: tutti_graph::Io<'_>,
+        ) -> tutti_graph::Status {
+            io.output(0).fill(self.drive.load().get());
+            tutti_graph::Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    impl tutti_graph::ParamNode for NativeKnob {
+        fn param_set(&self) -> ParamSet {
+            ParamSet::builder()
+                .param(UnitParam::Drive, self.drive.as_atomic())
+                .build()
+        }
+        fn fork_fresh(&self) -> Self {
+            let mut fork = self.clone();
+            fork.drive.detach();
+            fork
+        }
+    }
+
+    impl IntoNode for NativeKnob {
+        type Controls = ParamSet;
+        fn into_parts(self) -> NodeParts<ParamSet> {
+            tutti_graph::param_parts(self)
+        }
+    }
+
+    impl crate::graph::GraphNode for NativeKnob {
+        fn captured(&self) -> crate::graph::CapturedControls {
+            crate::graph::CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
+        }
+        fn params(controls: &ParamSet) -> Option<ParamSet> {
+            Some(controls.clone())
+        }
+    }
+
+    /// **Every param write path reaches a fork of a native node**, as
+    /// [`every_param_write_path_reaches_a_fork`] pins for a `Legacy` one —
+    /// through the node's `ParamSet` instead of a settings ring and a shadow:
+    /// `AudioParam` and `set_param` write the live cell and the authored
+    /// value, a param the control-rate driver owns gets its base as the
+    /// authored value only (the live cell is the driver's), and a fork
+    /// starts from the authored values. Under `modulation` no
+    /// `ModTargetRegistry` entry is made: the set addresses the cells
+    /// (`CapturedControls::for_params`).
+    ///
+    /// Mutations (run; each fails its channel):
+    /// - `NativeGraph::set_param` skipping a node's `ParamSet` → channels 0
+    ///   and 1 stay at 1;
+    /// - `set_param_snapshot` skipping it → channel 2 forks at the live
+    ///   composite, not 6 (and channel 3 not at 2.5);
+    /// - `insert_and_bind` not addressing the params
+    ///   (`set_node_params`) → channels 0 and 1 stay at 1.
+    #[test]
+    fn every_param_write_path_reaches_a_fork_of_a_native_node() {
+        use crate::graph::SpawnGraphNode;
+        let mut graph = AudioGraphRes::headless(0, 4);
+        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        let mut app = App::new();
+        app.insert_resource(graph);
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins(GraphReconcilePlugin);
+        #[cfg(feature = "modulation")]
+        {
+            app.insert_resource(crate::graph::TransportRes(
+                tutti_core::transport::Transport::new(48_000.0),
+            ));
+            app.add_plugins(crate::modulation::TuttiModulationPlugin);
+        }
+        app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
+
+        let mut commands = app.world_mut().commands();
+        let knobs = [(); 4].map(|()| commands.spawn_graph_node(NativeKnob::new()).id());
+        commands.insert_resource(
+            MasterSources::default()
+                .with(0, PortSource::node(knobs[0]))
+                .with(1, PortSource::node(knobs[1]))
+                .with(2, PortSource::node(knobs[2]))
+                .with(3, PortSource::node(knobs[3])),
+        );
+        app.world_mut().flush();
+        app.update();
+
+        app.world_mut()
+            .entity_mut(knobs[0])
+            .insert(DriveParam::new(Drive(4.0)));
+        let node = *app.world().get::<AudioNode>(knobs[1]).unwrap();
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .set_param(node, UnitParam::Drive, 5.0);
+        #[cfg(feature = "modulation")]
+        {
+            use crate::modulation::{LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate};
+            use tutti_types::{Depth, Hz, ParamAddr};
+            let drive = ParamAddr::Unit(UnitParam::Drive);
+            app.world_mut()
+                .entity_mut(knobs[2])
+                .insert(ModParamRange::default().with(drive, 1.0, 0.0, 10.0));
+            let lfo = app
+                .world_mut()
+                .spawn((
+                    ModSource::new(LfoShape::Square),
+                    ModSourceRate::free_running(Hz(0.0)),
+                ))
+                .id();
+            app.world_mut()
+                .spawn(ModRoute::new(lfo, knobs[2], drive).with_depth(Depth(0.2)));
+            app.world_mut()
+                .entity_mut(knobs[3])
+                .insert(ModParamRange::default().with(drive, 2.5, 0.0, 10.0));
+            app.world_mut()
+                .spawn(ModRoute::new(lfo, knobs[3], drive).with_depth(Depth(0.2)));
+            app.update();
+            app.world_mut()
+                .entity_mut(knobs[2])
+                .insert(DriveParam::new(Drive(6.0)));
+        }
+        app.update();
+        app.update();
+
+        let mut live = [0.0f32; 4];
+        app.world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .render_frame(&mut live);
+        assert_eq!(live[0], 4.0, "an AudioParam write reaches the live node");
+        assert_eq!(live[1], 5.0, "a set_param write reaches the live node");
+        let graph = app.world().resource::<AudioGraphRes>();
+        let mut fork = graph.fork().expect("every knob is forkable");
+        let mut forked = [0.0f32; 4];
+        fork.tick(&[], &mut forked);
+        assert_eq!(forked[0], 4.0, "an AudioParam write reaches the fork");
+        assert_eq!(forked[1], 5.0, "a set_param write reaches the fork");
+        #[cfg(feature = "modulation")]
+        {
+            assert_eq!(forked[2], 6.0, "a modulated param's base reaches the fork");
+            assert_eq!(
+                forked[3], 2.5,
+                "the base a modulation rebuild seeds from the range reaches the fork"
+            );
             assert!(
                 (live[2] - 6.0).abs() > 0.5,
                 "the live knob is modulated off its base (got {}), so the fork's \

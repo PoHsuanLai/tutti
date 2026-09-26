@@ -186,6 +186,7 @@ mod command;
 mod compile;
 #[cfg(feature = "contract")]
 pub mod contract;
+mod controls;
 mod editor;
 mod event;
 mod exec;
@@ -201,9 +202,10 @@ mod reference;
 mod spec;
 mod time;
 
-pub use builder::{GraphBuilder, Renderer};
+pub use builder::{GraphBuilder, Renderer, Solo};
 pub use command::{CommandId, ScheduleError, CANCEL_CAPACITY, COMMAND_CAPACITY};
 pub use compile::{compile, CompileError, CycleEdge, Shapes, VerifyError};
+pub use controls::{param_parts, ParamFork, ParamNode, ParamSet, ParamSetBuilder};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,

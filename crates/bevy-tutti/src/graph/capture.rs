@@ -119,6 +119,24 @@ impl CapturedControls {
         }
     }
 
+    /// The controls of a native node whose params are a
+    /// [`ParamSet`](tutti_graph::ParamSet): with `modulation`, a
+    /// `ModParamsHandle` over its cells, so a route resolves on any of its
+    /// params without a registry entry — the set already addresses them.
+    /// What a [`GraphNode`](crate::graph::GraphNode) with params returns
+    /// from `captured`.
+    pub fn for_params(params: &tutti_graph::ParamSet) -> Self {
+        let _ = params;
+        Self {
+            #[cfg(feature = "modulation")]
+            params: Some(std::sync::Arc::new(crate::modulation::ParamSetTargets(
+                params.clone(),
+            ))),
+            #[cfg(feature = "plugin")]
+            plugin: None,
+        }
+    }
+
     /// Bind `entity` to `node`: insert [`AudioNode`] and every captured control.
     ///
     /// The whole binding in one step, which is how every insertion path in this

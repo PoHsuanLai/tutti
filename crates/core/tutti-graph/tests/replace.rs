@@ -731,3 +731,56 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
         &out[..4]
     );
 }
+
+/// **`replace_or_swap` fades where `replace` would, and swaps where
+/// `replace` refuses**: a unit that fits the running one fades in; one that
+/// does not (here: a latency the plan was not compiled for) lands whole on
+/// the next commit, as an insert at the key does; so does a replace of a
+/// node that is not running yet.
+///
+/// Mutations (run): `fits` always false → the first case swaps (no frame
+/// between the two levels) → fails; setting the fade in the swap case too →
+/// `fades_in_flight` reads 1 there → fails.
+#[test]
+fn replace_or_swap_fades_when_it_fits_and_swaps_when_it_does_not() {
+    let fade = Fade::new(Samples(100), CrossfadeCurve::EqualAmplitude);
+
+    let (mut ed, mut exec) = gain_graph(1.0);
+    dc(&mut exec, 20);
+    ed.replace_or_swap(NODE, Unforkable(gain(3.0)), fade)
+        .expect("not poisoned, not re-preparing");
+    ed.commit().expect("commits");
+    assert_eq!(ed.fades_in_flight(), 1, "a fitting unit fades");
+    let out = dc(&mut exec, 10);
+    assert!(
+        out[0] > 1.0 && out[0] < 3.0,
+        "the first frame after the commit is a blend, got {}",
+        out[0]
+    );
+
+    let (mut ed, mut exec) = gain_graph(1.0);
+    dc(&mut exec, 20);
+    ed.replace_or_swap(
+        NODE,
+        Unforkable(TestNode::new(Kind::Lag { latency: 3 })),
+        fade,
+    )
+    .expect("a shape change is a swap, not a refusal");
+    ed.commit().expect("commits");
+    assert_eq!(ed.fades_in_flight(), 0, "nothing to fade from");
+    let out = dc(&mut exec, 10);
+    assert_eq!(
+        &out[..4],
+        &[0.0, 0.0, 0.0, 1.0],
+        "the lag alone from the first frame: a swap, not a blend with the gain"
+    );
+
+    // Not running yet: inserted and replaced before any commit.
+    let (mut ed, _exec) = Editor::new(prepare(128));
+    ed.insert(NodeKey(5), "gain", Unforkable(gain(1.0)));
+    ed.replace_or_swap(NodeKey(5), Unforkable(gain(2.0)), fade)
+        .expect("swaps");
+    ed.commit().expect("commits");
+    assert_eq!(ed.fades_in_flight(), 0);
+    assert_eq!(ed.spec().topology.nodes[&NodeKey(5)].kind, "gain");
+}

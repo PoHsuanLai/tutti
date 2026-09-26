@@ -82,12 +82,7 @@ fn chain_engine(outputs: usize) -> Engine {
     ed.insert(
         eq,
         "eq",
-        Legacy::new(EqBandNode::<f64>::new(
-            SvfType::Bell,
-            Hz(1_000.0),
-            Q(1.0),
-            Db(6.0),
-        )),
+        EqBandNode::<f64>::new(SvfType::Bell, Hz(1_000.0), Q(1.0), Db(6.0)),
     );
     ed.insert(
         strip,
@@ -115,7 +110,7 @@ fn chain_engine(outputs: usize) -> Engine {
 }
 
 /// `depth` filters in series off one source — the "how many nodes" axis:
-/// this crate's `Osc` and `SvfFilterNode`, through `Legacy`.
+/// this crate's `Osc` (through `Legacy`) and `SvfFilterNode` (native).
 fn depth_engine(depth: usize) -> Engine {
     depth_graph_engine(depth, true)
 }
@@ -210,14 +205,15 @@ fn bench_transport_overhead(c: &mut Criterion) {
 // (A `net` row ran fundsp's `Net` through the engine until doc 013 Phase 3
 // PR 15 removed that backend.)
 //
-// - `graph-legacy`: this crate's `Osc` and `SvfFilterNode` through
-//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers (the
-//   `nodes` group's engine);
+// - `graph-legacy`: this crate's own nodes — `Osc` through
+//   `tutti_graph::Legacy`, which copies in and out of fundsp buffers, and
+//   `SvfFilterNode`, a native node since it was ported (before that it ran
+//   through `Legacy` too, so figures from then price the adapter on every
+//   filter);
 // - `graph-native`: the native executor running nodes written against `Io`
 //   (a phase-accumulator sine and an SVF lowpass with fundsp's `FixedSvf`
-//   arithmetic, the `graph_render` bench's native pair). Not
-//   `SvfFilterNode`'s code — no native port of it exists yet — so this row
-//   prices the runtime with a filter of the same order of work.
+//   arithmetic, the `graph_render` bench's native pair): a reference filter
+//   of the same order of work as `SvfFilterNode`, for the runtime's cost.
 //
 // The graph engines are prepared for 512-frame blocks, so every row here is
 // one executor block per device block.
@@ -334,15 +330,16 @@ fn depth_graph_engine(depth: usize, legacy: bool) -> Engine {
     let mut last = NodeKey(0);
     for i in 0..depth {
         let cutoff = 500.0 + (i as f32) * 7.0;
-        let f: Box<dyn tutti_graph::Node> =
-            if legacy {
-                tutti_graph::IntoNode::into_node(tutti_graph::Legacy::pure(
-                    SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(cutoff), Q(0.7)),
-                ))
-                .0
-            } else {
-                Box::new(NativeLowpass::new(cutoff, 0.7))
-            };
+        let f: Box<dyn tutti_graph::Node> = if legacy {
+            tutti_graph::IntoNode::into_node(SvfFilterNode::<f64>::new(
+                SvfType::LowPass,
+                Hz(cutoff),
+                Q(0.7),
+            ))
+            .0
+        } else {
+            Box::new(NativeLowpass::new(cutoff, 0.7))
+        };
         let k = NodeKey(1 + i as u64);
         ed.insert(k, "lowpass", Unforkable(f));
         ed.spec_mut().topology.edges.insert(

@@ -83,7 +83,7 @@ fn build_chain(mut commands: Commands) {
     // `PortSources` on the *sink* says what feeds each of its input ports.
     // Index 0 is input port 0. The filter takes the oscillator.
     let filter = commands
-        .spawn_audio_node(SvfFilterNode::<f64>::new(
+        .spawn_graph_node(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             Hz(800.0),
             Q(1.0),

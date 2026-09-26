@@ -1,22 +1,21 @@
-//! `vbap_mix_parts` builds the same mix as `build_vbap_mix`, in a graph that
-//! is not a `Net` (doc 013 Phase 3 PR 8).
+//! `vbap_mix_parts` builds the same mix as `build_vbap_mix` when a graph
+//! wires the parts its own way (doc 013 Phase 3 PR 8).
 //!
-//! `build_vbap_mix` is `vbap_mix_parts(..).insert_into(net, ..)`, so the `Net`
-//! side is one description of the mix by construction. What that cannot show is
-//! that a *second* graph wiring [`VbapMixParts::edges`] its own way gets the
-//! same mix — every edge resolved, no port left to read silence that the `Net`
-//! wires. So each case builds the mix twice from the same sources, once with
-//! `build_vbap_mix` into a `Net` and once from the parts into a
-//! `tutti_graph::GraphBuilder`, and asserts the renders are **bit-identical**.
+//! `build_vbap_mix` is `vbap_mix_parts(..).insert_into(g, ..)`, so its graph
+//! is one description of the mix by construction. What that cannot show is
+//! that a *second* wiring of [`VbapMixParts::edges`] — a host inserting the
+//! units through its own graph, as bevy-tutti does — gets the same mix: every
+//! edge resolved, no port left to read silence that the builder wires. So
+//! each case builds the mix twice from the same sources, once with
+//! `build_vbap_mix` and once from the parts through this file's own
+//! [`insert`], and asserts the renders are **bit-identical**. (The first side
+//! was a `Net` until the LFE low-pass became a native node, which a `Net`
+//! cannot hold.)
 //!
 //! Exact equality is portable: both sides run the same unit code on the same
-//! machine. The graph renders 1024-frame blocks, which a `Legacy` unit runs as
-//! 64-frame chunks from each block's start, so its chunks fall where the
-//! `Net`'s 64-frame blocks do — the VBAP panner ramps its gains across each call
-//! and would otherwise differ (doc 013, PR 7 notes).
+//! machine, in the same blocks.
 
-use tutti_core::dsp::{Net, NodeId};
-use tutti_core::{AudioUnit, BufferRef, BufferVec, SampleRate, MAX_BUFFER_SIZE};
+use tutti_core::{AudioUnit, SampleRate};
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_spatial::{build_vbap_mix, vbap_mix_parts, VbapMixNode, VbapMixParts, VbapSource};
@@ -26,8 +25,8 @@ const RATE: SampleRate = SampleRate(48_000.0);
 /// 14 462 frames: neither side's last block is full.
 const FRAMES: usize = 14_462;
 
-/// Insert `parts` into `g`, wiring every edge, and return the sum's key — the
-/// builder's counterpart of `VbapMixParts::insert_into`.
+/// Insert `parts` into `g`, wiring every edge, and return the sum's key — an
+/// independent counterpart of `VbapMixParts::insert_into`, written here.
 fn insert(g: &mut GraphBuilder, parts: VbapMixParts, sources: &[NodeKey]) -> NodeKey {
     let edges = parts.edges().to_vec();
     let panners: Vec<NodeKey> = parts
@@ -38,7 +37,7 @@ fn insert(g: &mut GraphBuilder, parts: VbapMixParts, sources: &[NodeKey]) -> Nod
     let lfe = parts.lfe.map(|send| {
         (
             g.add_unit(Box::new(send.sum)),
-            g.add_unit(Box::new(send.lowpass)),
+            g.add_with_controls(send.lowpass).0,
         )
     });
     let sum = g.add_unit(Box::new(parts.sum));
@@ -65,33 +64,25 @@ fn tone(i: usize) -> Box<dyn AudioUnit> {
     )
 }
 
-/// Render the mix of `positions` at `layout` through both graphs; returns
-/// `(net, graph)` planes.
+/// Render the mix of `positions` at `layout` both ways; returns
+/// `(build_vbap_mix, parts)` planes.
 fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    let width = layout.count() as usize;
+    let render = |g: GraphBuilder| {
+        g.renderer(Prepare::new(RATE, Samples(1024)))
+            .expect("builds")
+            .render(FRAMES)
+    };
 
-    let mut net = Net::new(0, width);
-    let ids: Vec<NodeId> = (0..positions.len()).map(|i| net.push(tone(i))).collect();
-    let sources: Vec<VbapSource> = ids
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
+    let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add_unit(tone(i))).collect();
+    let sources: Vec<VbapSource> = keys
         .iter()
         .zip(positions)
-        .map(|(&id, &az)| VbapSource::at(id, az))
+        .map(|(&k, &az)| VbapSource::at(k, az))
         .collect();
-    let mix = build_vbap_mix(&mut net, layout, &sources).expect("a preset layout");
-    net.pipe_output(mix);
-    net.set_sample_rate(RATE);
-    let mut a = vec![Vec::with_capacity(FRAMES); width];
-    let mut buf = BufferVec::new(width);
-    let mut done = 0;
-    while done < FRAMES {
-        let n = (FRAMES - done).min(MAX_BUFFER_SIZE);
-        let mut out = buf.buffer_mut();
-        net.process(n, &BufferRef::new(&[]), &mut out);
-        for (c, plane) in a.iter_mut().enumerate() {
-            plane.extend_from_slice(&out.channel_f32(c)[..n]);
-        }
-        done += n;
-    }
+    let mix = build_vbap_mix(&mut g, layout, &sources).expect("a preset layout");
+    g.pipe_output(mix);
+    let a = render(g);
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, layout);
     let keys: Vec<NodeKey> = (0..positions.len()).map(|i| g.add_unit(tone(i))).collect();
@@ -103,11 +94,7 @@ fn both(layout: ChannelLayout, positions: &[f32]) -> (Vec<Vec<f32>>, Vec<Vec<f32
     let parts = vbap_mix_parts(layout, &sources).expect("a preset layout");
     let mix = insert(&mut g, parts, &keys);
     g.pipe_output(mix);
-    let b = g
-        .renderer(Prepare::new(RATE, Samples(1024)))
-        .expect("builds")
-        .render(FRAMES);
-    (a, b)
+    (a, render(g))
 }
 
 fn assert_bit_identical(layout: ChannelLayout, positions: &[f32]) -> Vec<Vec<f32>> {
@@ -121,7 +108,7 @@ fn assert_bit_identical(layout: ChannelLayout, positions: &[f32]) -> Vec<Vec<f32
             .position(|(p, q)| p.to_bits() != q.to_bits())
         {
             panic!(
-                "{}-wide: channel {c} differs first at frame {i}: net {} graph {}",
+                "{}-wide: channel {c} differs first at frame {i}: builder {} parts {}",
                 a.len(),
                 x[i],
                 y[i]
@@ -151,9 +138,9 @@ fn a_quad_mix_from_parts_renders_as_build_vbap_mix_does() {
 /// miss.
 ///
 /// Mutations (run): `insert` skipping the low-pass→sum edge → channel 3
-/// differs (silent in the graph), here and for 7.1.4. The same edge dropped
-/// from the parts themselves reaches the `Net` too, so both sides agree on a
-/// silent LFE: the `energy` assertion is what fails then (as does
+/// differs (silent from the parts), here and for 7.1.4. The same edge
+/// dropped from the parts themselves reaches the builder too, so both sides
+/// agree on a silent LFE: the `energy` assertion is what fails then (as does
 /// `lfe_channel_receives_bass_managed_send` in `src/vbap/mix.rs`).
 #[test]
 fn a_5_1_mix_with_its_lfe_send_renders_as_build_vbap_mix_does() {

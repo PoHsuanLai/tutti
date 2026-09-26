@@ -149,7 +149,7 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 fn chain(app: &mut App) -> Entity {
     let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
     let osc = graph.insert(Osc::saw(Hz(110.0)));
-    let filter = graph.insert(SvfFilterNode::<f64>::new(
+    let (filter, _params) = graph.insert_node(SvfFilterNode::<f64>::new(
         SvfType::LowPass,
         Hz(800.0),
         Q(1.0),
@@ -201,11 +201,11 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
         let osc = g.add_unit(Box::new(Osc::saw(Hz(110.0))));
-        let filter = g.add_unit(Box::new(SvfFilterNode::<f64>::new(
+        let (filter, _params) = g.add_with_controls(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             Hz(800.0),
             Q(1.0),
-        )));
+        ));
         g.connect(osc, 0, filter, 0).connect_output(filter, 0, 0);
         g.connect_output(if master { osc } else { filter }, 0, 1);
         let (editor, executor) = g

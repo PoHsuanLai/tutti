@@ -1,6 +1,7 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
-//! modulation (design doc 013 item 6), run as they run in an engine: each
-//! through `Legacy`, its params fed per 64-frame chunk through its
+//! modulation (design doc 013 item 6), run as they run in an engine: a
+//! native node (the SVF) reading its param ports through `Io::param`, the
+//! rest through `Legacy`, their params fed per 64-frame chunk through their
 //! `ParamFeed`.
 //!
 //! These replace the tests of the per-param sub-graph the graph made
@@ -33,7 +34,8 @@ use std::sync::atomic::Ordering;
 
 use tutti_core::AudioUnit;
 use tutti_graph::{
-    GraphBuilder, ParamFrom, ParamIn, ParamRange, ParamShaping, Prepare, Renderer, PARAM_DECLICK,
+    GraphBuilder, IntoNode, Legacy, NodeParts, ParamFrom, ParamIn, ParamRange, ParamShaping,
+    Prepare, Renderer, PARAM_DECLICK,
 };
 use tutti_nodes::testing::Const;
 use tutti_nodes::{
@@ -63,10 +65,14 @@ fn noise(seed: u32) -> Vec<f32> {
 /// the graph's, and — when `fed` — `param` driven to exactly `v` by a
 /// constant source through a degenerate range (`v..=v`), whatever the base.
 /// Renders `FRAMES` in 100-frame blocks (so `Legacy` chunks 64 + 36).
-fn render(node: Box<dyn AudioUnit>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
-    let (ins, outs) = (node.inputs(), node.outputs());
+fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
+    let shape = node.node.shape();
+    let (ins, outs) = (
+        usize::from(shape.audio_in.count()),
+        usize::from(shape.audio_out.count()),
+    );
     let mut g = GraphBuilder::new(ChannelLayout::from(ins), ChannelLayout::from(outs));
-    let n = g.add_unit(node);
+    let n = g.add(node);
     for c in 0..ins {
         g.connect_input(c, n, c);
     }
@@ -91,13 +97,28 @@ fn render(node: Box<dyn AudioUnit>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f3
     r.render_input(&refs)
 }
 
+/// `unit` as a graph runs an `AudioUnit`: through `Legacy`.
+fn unit(unit: impl AudioUnit + 'static) -> NodeParts<()> {
+    Legacy::new(unit).into_parts()
+}
+
+/// A native node's parts, its controls dropped.
+fn native<N: IntoNode>(node: N) -> NodeParts<()> {
+    let NodeParts { node, fork, .. } = node.into_parts();
+    NodeParts {
+        node,
+        controls: (),
+        fork,
+    }
+}
+
 /// One modulatable param of one node type: how to build the node at a
 /// width with the param's control at `v` (or its default), and two values
 /// far enough apart to be heard.
 struct Case {
     name: &'static str,
     param: UnitParam,
-    make: fn(usize, Option<f32>) -> Box<dyn AudioUnit>,
+    make: fn(usize, Option<f32>) -> NodeParts<()>,
     lo: f32,
     hi: f32,
 }
@@ -132,7 +153,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                Box::new(n)
+                native(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -145,7 +166,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_q(v);
                 }
-                Box::new(n)
+                native(n)
             },
             lo: 0.5,
             hi: 8.0,
@@ -158,7 +179,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -171,7 +192,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_resonance(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -184,7 +205,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 1.0,
             hi: 8.0,
@@ -197,7 +218,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_feedback(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -210,7 +231,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_delay_time(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 0.0002,
             hi: 0.0008,
@@ -223,7 +244,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 0.5,
             hi: 5.0,
@@ -236,7 +257,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -40.0,
             hi: 0.0,
@@ -249,7 +270,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -60.0,
             // Above the noise's peak: the gate stays shut.
@@ -263,7 +284,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -12.0,
             hi: -0.3,
@@ -276,7 +297,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -20.0,
             hi: -1.0,
@@ -289,7 +310,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -12.0,
             hi: 0.0,
@@ -302,7 +323,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: 0.2,
             hi: 0.9,
@@ -315,7 +336,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_pan(tutti_types::Pan(v));
                 }
-                Box::new(n)
+                unit(n)
             },
             lo: -1.0,
             hi: 1.0,
@@ -340,12 +361,12 @@ fn settled(out: &[Vec<f32>]) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
 /// The port of `param_ports.rs`' "the advertised port is the one the DSP
 /// reads at every width".
 ///
-/// Mutation (run): in the SVF's `process`, read the fed Q as its cutoff
-/// (`feed.get(1, …)` for `feed.get(0, …)`) → "svf cutoff" sounds nothing
-/// like a cutoff → fails. Declare `DELAY_PARAMS` in the other order →
+/// Mutation (run): in the SVF's `process`, read the Q port as its cutoff
+/// (`io.param(1)` for `io.param(0)`) → "svf cutoff" sounds nothing like a
+/// cutoff → fails. Declare `DELAY_PARAMS` in the other order →
 /// fails. (A swapped `param_base` is not seen here, since the degenerate
-/// range drives the value whatever the base: the node's own
-/// `the_feed_declares_*` tests pin the bases.)
+/// range drives the value whatever the base: the nodes' own
+/// `the_feed_declares_*` / `the_shape_is_*` tests pin the bases.)
 #[test]
 fn each_fed_param_is_the_one_the_dsp_reads() {
     for w in [1usize, 2, 6] {
@@ -383,7 +404,7 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        Box::new(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
+        unit(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
         None,
     )
     .remove(0)

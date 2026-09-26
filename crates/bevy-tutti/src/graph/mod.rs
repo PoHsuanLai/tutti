@@ -64,7 +64,9 @@ pub use resources::{AudioConfig, AudioGraphRes, GraphSource};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
-pub use spawn::{crossfade_audio_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode};
+pub use spawn::{
+    crossfade_audio_node, crossfade_graph_node, InsertAudioNode, PendingCrossfades, SpawnAudioNode,
+};
 pub use tap::AudioTapRes;
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};

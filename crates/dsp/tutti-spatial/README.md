@@ -79,32 +79,33 @@ A whole mix: `build_vbap_mix` places several sources and returns the summed
 N-wide node.
 
 ```rust
-use tutti_core::dsp::Net;
-use tutti_core::AudioUnit;
+use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Const;
 use tutti_spatial::{build_vbap_mix, VbapSource};
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-let mut net = Net::new(0, 4);
+let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
 // Two sources, each a node whose output ports 0 and 1 feed its panner. A mono
 // source presents the same sample on both.
-let front = net.push(Box::new(Const::frame(&[1.0, 1.0])));
-let rear = net.push(Box::new(Const::frame(&[1.0, 1.0])));
+let front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+let rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
 
 let mix = build_vbap_mix(
-    &mut net,
+    &mut g,
     ChannelLayout::QUAD,
     &[
         VbapSource::at(front, 45.0),   // front-left
         VbapSource::at(rear, 135.0),   // rear-left
     ],
 )?;
-net.pipe_output(mix);
-net.check();
+g.pipe_output(mix);
 
-let mut out = [0.0f32; 4];
-net.tick(&[], &mut out);
+let mut r = g
+    .renderer(Prepare::new(SampleRate(48_000.0), Samples(64)))
+    .expect("builds");
+let out = r.render(64); // one `Vec` per speaker
+assert_eq!(out.len(), 4);
 # Ok::<(), tutti_spatial::VbapError>(())
 ```
 

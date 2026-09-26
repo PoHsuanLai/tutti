@@ -15,11 +15,12 @@ native graph (`Engine::new(&transport, &mut editor, executor)`, PR 15), it
 is `bevy-tutti`'s only runtime (`AudioGraphRes` holds an `Editor`, PDC is
 the compiler's, export forks the live graph with `Editor::fork`), and
 tutti-export renders only it. `Net` is left as a container, not a runtime,
-until Phase 5 deletes fundsp: `topology::compile`, the `Net` form of one
-builder (`build_vbap_mix` / `VbapMixParts::insert_into`), the
-nodes' own tests and `tutti-graph`'s A/B bench wire units in one
-(`tests/no_net_backend.rs` keeps `NetBackend` out of tutti-core). Until the
-migration lands:
+until Phase 5 deletes fundsp: `topology::compile`, the nodes' own tests and
+`tutti-graph`'s A/B bench wire units in one (`tests/no_net_backend.rs` keeps
+`NetBackend` out of tutti-core). Nodes are being ported to the native
+contract one crate at a time (doc 013, "Items 8 and 9: the per-node port"):
+a ported node is a `tutti_graph::Node` + `ParamNode`, inserted through
+`param_parts`, with no `AudioUnit` impl. Until the migration lands:
 
 - Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
   fundsp combinators. Write nodes against the smallest surface you can

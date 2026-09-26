@@ -557,8 +557,9 @@ mod tests {
     /// `transport_at` frame for frame (no loop, so the two agree closely).
     ///
     /// Mutation (run): drop the `clock.advance` → the rolling half holds its
-    /// start beat → fails. Walk the block's first transport only (ignore
-    /// `segments`) → the frames after the start stay held → fails.
+    /// start beat → fails. Walk the block's first transport only (the
+    /// block as one piece with no changes, in place of `segments`) → the
+    /// frames after the start stay held → fails.
     #[test]
     fn for_each_beat_walks_each_piece_of_the_block() {
         let stopped = Transport::new(false, Bpm(120.0), Beat(3.0), None);

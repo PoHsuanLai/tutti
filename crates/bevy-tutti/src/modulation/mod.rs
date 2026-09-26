@@ -160,52 +160,34 @@
 //! Both deliveries above are this matrix's, and neither is sample-accurate: the
 //! scalar is written once a frame, and a curve is only as fine as the sink that
 //! samples it. For a genuinely per-sample modulator, don't route at all — spawn
-//! `tutti_nodes::LfoNode` in beat-synced mode and wire its
-//! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the beat
-//! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
+//! `tutti_nodes::LfoNode` in beat-synced mode as a graph node. It reads the
+//! beat of every frame from its block's `Env`, so there is nothing to wire:
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::transport::BEAT_PORTS;
 //! use tutti_types::BeatDuration;
 //! use tutti_nodes::{LfoNode, LfoShape};
 //!
-//! fn wire_lfo_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
-//!     commands
-//!         .spawn_audio_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)))
-//!         .insert(PortSources(vec![
-//!             PortSource::Node { entity: nodes.clock, port: 0 },
-//!             PortSource::Node { entity: nodes.clock, port: 1 },
-//!         ]));
+//! fn spawn_lfo(mut commands: Commands) {
+//!     commands.spawn_graph_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)));
 //! }
-//!
-//! let transport = Transport::new(48_000.0);
-//! let mut graph = AudioGraphRes::headless(0, 2);
-//! let clock_id = graph.insert_beat_clock();
 //!
 //! let mut app = App::new();
-//! app.insert_resource(graph);
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioEngineState::Running);
 //! app.add_plugins(GraphReconcilePlugin);
-//! let clock = app.world_mut().spawn(clock_id).id();
-//! app.insert_resource(EngineNodes { clock, click: clock });
-//! app.insert_resource(TransportRes(transport));
-//! app.add_systems(Startup, wire_lfo_to_clock);
+//! app.add_systems(Startup, spawn_lfo);
 //! app.update();
 //!
-//! let lfo = app
+//! let lfo = *app
 //!     .world_mut()
 //!     .query::<&AudioNode>()
-//!     .iter(app.world())
-//!     .copied()
-//!     .find(|id| *id != clock_id)
+//!     .single(app.world())
 //!     .unwrap();
 //! let graph = app.world().resource::<AudioGraphRes>();
-//! for port in 0..BEAT_PORTS {
-//!     assert_eq!(graph.source(lfo, port), GraphSource::Node(clock_id, port));
-//! }
+//! assert_eq!(graph.node_inputs(lfo), 0, "no beat ports to wire");
 //! ```
 //!
 //! That is the same `tutti_mod::Lfo` this matrix drives, under an audio-rate

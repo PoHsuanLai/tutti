@@ -2,9 +2,13 @@
 //!
 //! This is the one step the adapter cannot do generically, and the reason is
 //! worth stating: [`ModParams`] is implemented on concrete node types
-//! (`Compressor`, `ModDelayNode`, `PolySynth`, …). There is no `&dyn ModParams`
+//! (`Compressor`, `PolySynth`, …). There is no `&dyn ModParams`
 //! to recover from a `&dyn AudioUnit`, so no amount of Bevy plumbing can
 //! dispatch it.
+//!
+//! A native node whose controls are a `tutti_graph::ParamSet` (the SVF, the
+//! delay, the chorus, …) needs no entry: `spawn_graph_node` captures its
+//! params by address ([`CapturedControls::for_params`](crate::graph::CapturedControls::for_params)).
 //!
 //! So the host supplies the dispatch. [`ModTargetRegistry`] holds a list of
 //! captures; each knows how to try one node type. Registering the node types an
@@ -35,8 +39,7 @@
 //! // route stays well-formed, the inspector shows the knob, nothing moves.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::CompressorNode>()
-//!     .register::<tutti_nodes::ModDelayNode>();
+//!     .register::<tutti_nodes::CompressorNode>();
 //! ```
 
 use bevy_ecs::prelude::*;

@@ -81,8 +81,11 @@ fn run_node(c: &mut Criterion, group: &str, width: usize, node: impl Node, fed: 
             *x = input.at_f32(ch, i);
         }
     }
-    // Live until cleared: every block of the bench reads it.
-    d.feed(0, fed);
+    // Live until cleared: every block of the bench reads it. A node with no
+    // param ports (the chorus, the phaser) has nothing to feed.
+    if fed.is_some() {
+        d.feed(0, fed);
+    }
     for _ in 0..16 {
         d.block();
     }
@@ -125,30 +128,30 @@ fn ladder(c: &mut Criterion) {
 fn delay(c: &mut Criterion) {
     for w in [2usize, 6] {
         let node = DelayLineNode::with_channels(ChannelLayout::from(w), 1.0, 0.25, 0.4);
-        run(c, "delay", w, Box::new(node), noise_block(w));
+        run_node(c, "delay", w, node, None);
     }
 }
 
 fn mod_delay(c: &mut Criterion) {
     for w in [2usize, 6] {
-        run(
+        run_node(
             c,
             "chorus",
             w,
-            Box::new(ModDelayNode::chorus(ChannelLayout::from(w))),
-            noise_block(w),
+            ModDelayNode::chorus(ChannelLayout::from(w)),
+            None,
         );
     }
 }
 
 fn phaser(c: &mut Criterion) {
     for w in [2usize, 6] {
-        run(
+        run_node(
             c,
             "phaser",
             w,
-            Box::new(PhaserNode::with_channels(ChannelLayout::from(w), 6)),
-            noise_block(w),
+            PhaserNode::with_channels(ChannelLayout::from(w), 6),
+            None,
         );
     }
 }

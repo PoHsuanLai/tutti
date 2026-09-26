@@ -356,6 +356,43 @@ impl Env {
             .with_recording(t.recording())
     }
 
+    /// The beat of every frame of this block, in order, handed to `f` with
+    /// the frame's index: for a node that reads musical time per frame (an
+    /// automation lane, a beat-synced LFO) from its block rather than from a
+    /// beat signal on its ports.
+    ///
+    /// Piece by piece ([`segments`](Self::segments), cut at each transport
+    /// change), each piece walked with the host's clock rebuilt from its
+    /// transport ([`Transport::clock`]): the beat of a frame, then a roll of
+    /// one frame, wrapping on the frame that reaches the loop's end, held
+    /// while stopped. It is the walk tutti-core's `EnvClock` emits on its
+    /// beat ports, so a node reading this sees, in `f64`, what an `EnvClock`
+    /// edge carried to it before the `f32` split. It does not go through
+    /// [`transport_at`](Self::transport_at), which agrees with it to
+    /// rounding past a loop wrap but not to the bit.
+    ///
+    /// This is the block's own time: a node that reads it at a compiled
+    /// arrival ([`Cx::arrival`](crate::Cx::arrival)) other than zero would
+    /// need frames before the block, which an `Env` cannot answer for.
+    /// Allocation-free.
+    pub fn for_each_beat(&self, mut f: impl FnMut(usize, tutti_types::Beat)) {
+        for (start, piece) in self.segments() {
+            let t = piece.transport;
+            let from = start.index();
+            let to = from + piece.block_len.get();
+            let mut clock = t.clock(piece.sample_rate);
+            let region = t
+                .looping
+                .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
+            for i in from..to {
+                f(i, clock.beat());
+                if t.playing {
+                    clock.advance(Samples(1), region);
+                }
+            }
+        }
+    }
+
     /// Whether this block, with its tempo changing to `next_tempo` at some
     /// point inside it, could have left the transport at beat `next` — and
     /// if so, whether it wrapped its loop on the way. See [`Playhead`] for
@@ -514,6 +551,38 @@ mod tests {
     use super::*;
     use crate::node::{LoopRange, Transport};
     use tutti_types::{Beat, Bpm, Latency, SampleRate};
+
+    /// `for_each_beat` hands every frame its beat: held while stopped,
+    /// rolling from a start inside the block, and agreeing with
+    /// `transport_at` frame for frame (no loop, so the two agree closely).
+    ///
+    /// Mutation (run): drop the `clock.advance` → the rolling half holds its
+    /// start beat → fails. Walk the block's first transport only (ignore
+    /// `segments`) → the frames after the start stay held → fails.
+    #[test]
+    fn for_each_beat_walks_each_piece_of_the_block() {
+        let stopped = Transport::new(false, Bpm(120.0), Beat(3.0), None);
+        let mut e = env(1_000, 64, stopped);
+        let rolling = Transport::new(true, Bpm(120.0), Beat(3.0), None);
+        e.changes.push(Offset(10), rolling).expect("in order");
+        let mut seen = Vec::new();
+        e.for_each_beat(|i, b| seen.push((i, b.get())));
+        assert_eq!(seen.len(), 64, "one call per frame");
+        let per_frame = 2.0 / 48_000.0;
+        for (i, b) in seen {
+            let want = if i < 10 {
+                3.0
+            } else {
+                3.0 + (i - 10) as f64 * per_frame
+            };
+            assert!((b - want).abs() < 1e-12, "frame {i}: {b} vs {want}");
+            let at = e.transport_at(Offset(i as u32)).beat().get();
+            assert!(
+                (b - at).abs() < 1e-12,
+                "frame {i}: {b} vs transport_at {at}"
+            );
+        }
+    }
 
     fn env(frame: u64, len: usize, transport: Transport) -> Env {
         Env {

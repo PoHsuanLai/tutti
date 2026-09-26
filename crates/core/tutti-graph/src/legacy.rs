@@ -189,11 +189,11 @@
 //! copy of its unit for as long as it is in the graph (the shadow, or the
 //! insert-time clone). For most units that is a few hundred bytes of
 //! coefficients and state; for one that owns large buffers by value it is
-//! all of them again — a `ConvolverNode` copies its IR spectra, megabytes
-//! per long reverb, and a delay line its ring. Units that share such data
-//! read-only through an `Arc` (a sampler's `Wave`) cost nothing extra.
-//! Doc 013 Phase 4 moves the convolver's IR to `Arc` spectra; until then a
-//! host short on memory can build such a node [`unforkable`](Legacy::unforkable).
+//! all of them again — a ring, a table, an IR. Units that share such data
+//! read-only through an `Arc` (a sampler's `Wave`) cost nothing extra; a
+//! native node forks from its own source instead (the convolver's shares its
+//! `Arc` IR spectra). Until a unit is ported, a host short on memory can
+//! build it [`unforkable`](Legacy::unforkable).
 //!
 //! A node built with [`IntoNode::into_node`] (a bare `Box<dyn Node>`) has no
 //! fork source, and is inserted as [`Unforkable`](crate::Unforkable): not

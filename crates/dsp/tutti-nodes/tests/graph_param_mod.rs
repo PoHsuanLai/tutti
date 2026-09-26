@@ -218,7 +218,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_feedback(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -231,7 +231,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_delay_time(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 0.0002,
             hi: 0.0008,

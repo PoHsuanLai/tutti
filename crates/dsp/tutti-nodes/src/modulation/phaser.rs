@@ -4,8 +4,9 @@
 //! cancellation, which is why its notches are fewer and unevenly spaced
 //! compared with a flanger's.
 
-use tutti_core::{Arc, AtomicF32, MAX_BUFFER_SIZE};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{Arc, AtomicF32};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
 use crate::ramp::{self, Ramp};
@@ -86,7 +87,16 @@ fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
 ///
 /// Rate, [`Depth`], [`Feedback`] and [`Mix`] are live params read **once per
 /// block**; depth, feedback and mix ramp across the block when they moved.
-/// `tick` is a block of one.
+/// A block of one takes a change whole.
+///
+/// # In a graph
+///
+/// A native node ([`IntoNode`]), `N` in and `N` out, with no latency.
+/// Inserted, its controls are a [`ParamSet`] over rate ([`UnitParam::Rate`]),
+/// depth ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
+/// ([`UnitParam::Wet`]); a fork starts from the values last set through it.
+/// The graph prepares it at the device rate before its first block. Its tail
+/// is [`Tail::Unknown`] (the feedback recirculates), so it is never skipped.
 pub struct PhaserNode {
     /// All-pass stages per channel, `2..=12`.
     stages: usize,
@@ -104,9 +114,11 @@ pub struct PhaserNode {
     /// next block's interpolation starts.
     last_coeff: Vec<f32>,
     /// Per-sample, per-channel coefficients for the block, sample-major
-    /// (`coeffs[i * width + c]`). Scratch sized at construction for
-    /// [`MAX_BUFFER_SIZE`] samples.
+    /// (`coeffs[i * width + c]`). Scratch sized at `prepare` for the graph's
+    /// maximum block.
     coeffs: Vec<f32>,
+    /// The block's LFO phases. Scratch sized at `prepare`, as `coeffs`.
+    phases: Vec<Phase>,
     /// The running signal through the chain, one lane per channel. Scratch.
     lane: Vec<f32>,
     lfo: LfoDrive,
@@ -132,16 +144,8 @@ impl PhaserNode {
     /// 0.3 Hz rate, half depth, 0.5 feedback, 50/50 [`Mix`], sweeping
     /// 200–4000 Hz.
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; call
-    /// [`AudioUnit::set_sample_rate`] before the first `process`. Two things
-    /// skew together if it is missed at 48 kHz: the all-pass corner frequencies
-    /// (so the notches sit 8.8% high) and the LFO's per-sample phase increment
-    /// (so a 0.3 Hz sweep actually runs at 0.276 Hz). Both stay musical-sounding,
-    /// which is why nothing catches it. See the crate-level "born at a
-    /// placeholder rate" section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The all-pass corner frequencies and the LFO's per-sample phase
+    /// increment both take the rate [`Node::prepare`] hands it.
     pub fn new(stages: usize) -> Self {
         Self::with_channels(ChannelLayout::MONO, stages)
     }
@@ -161,7 +165,8 @@ impl PhaserNode {
             feedback_sample: vec![0.0; width],
             phase_offsets: vec![PhaseIncrement(0.0); width],
             last_coeff: vec![0.0; width],
-            coeffs: vec![0.0; MAX_BUFFER_SIZE * width],
+            coeffs: Vec::new(),
+            phases: Vec::new(),
             lane: vec![0.0; width],
             lfo: LfoDrive::new(0.3),
             mix: LinearModMix::new(0.5, 0.5, 0.5),
@@ -268,15 +273,15 @@ impl PhaserNode {
         self.sample_rate.nyquist_scaled(0.90)
     }
 
-    /// The one render kernel behind `tick` and `process`. `size` is at most
-    /// [`MAX_BUFFER_SIZE`], which `AudioUnit::process` guarantees.
+    /// The render kernel behind `process`, over `size` frames. `size` is at
+    /// most the scratch's length (the prepared maximum block).
     fn render(
         &mut self,
         size: usize,
         x: impl Fn(usize, usize) -> f32,
         mut y: impl FnMut(usize, usize, f32),
     ) {
-        debug_assert!(size <= MAX_BUFFER_SIZE);
+        debug_assert!(size <= self.phases.len());
         let w = self.width;
         // Every control is read here, once, for the whole block.
         let (depth, fb, mix) = self.mix.load();
@@ -291,8 +296,9 @@ impl PhaserNode {
         let fb_r = Ramp::new(from.fb, target.fb, size);
         let mix_r = Ramp::new(from.mix, target.mix, size);
 
-        let mut phases = [Phase::START; MAX_BUFFER_SIZE];
-        self.lfo.fill_block(self.sample_rate, &mut phases[..size]);
+        self.lfo
+            .fill_block(self.sample_rate, &mut self.phases[..size]);
+        let phases = &self.phases;
 
         // Narrowed once for the all-pass coefficients below.
         let sr = self.sample_rate.get() as f32;
@@ -359,20 +365,41 @@ impl PhaserNode {
     }
 }
 
-impl AudioUnit for PhaserNode {
-    fn inputs(&self) -> usize {
-        self.width
-    }
-    fn outputs(&self) -> usize {
-        self.width
+impl Node for PhaserNode {
+    fn shape(&self) -> Shape {
+        let width = ChannelLayout::from_count(self.width as u16);
+        Shape::audio(width, width).with_tail(Tail::Unknown)
     }
 
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.lfo.detach();
-        self.mix.detach();
+    fn prepare(&mut self, p: &Prepare) {
+        self.sample_rate = p.sample_rate();
+        // Re-clamped from what was asked for, not from the last clamp, so a
+        // rate that rises again restores the authored top.
+        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
+        // The interpolation start was solved at the old rate.
+        self.last = None;
+        let max = p.max_block().get();
+        self.coeffs = vec![0.0; max * self.width];
+        self.phases = vec![Phase::START; max];
+    }
+
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        let (inputs, mut outputs) = io.split();
+        // One call in a graph, whose blocks fit the scratch; a longer block
+        // driven by hand renders in scratch-sized pieces.
+        let step = self.phases.len().max(1);
+        let mut at = 0;
+        while at < size {
+            let n = step.min(size - at);
+            self.render(
+                n,
+                |c, i| inputs.get(c)[at + i],
+                |c, i, v| outputs.get(c)[at + i] = v,
+            );
+            at += n;
+        }
+        Status::Modified
     }
 
     fn reset(&mut self) {
@@ -382,70 +409,36 @@ impl AudioUnit for PhaserNode {
         self.lfo.reset_phase();
         self.last = None;
     }
+}
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate;
-        // Re-clamped from what was asked for, not from the last clamp, so a
-        // rate that rises again restores the authored top.
-        self.range.max_hz = self.authored_max_hz.min(self.range_ceiling());
-        // The interpolation start was solved at the old rate.
-        self.last = None;
+impl ParamNode for PhaserNode {
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Rate, self.lfo.rate.as_atomic())
+            .param(UnitParam::Depth, self.mix.depth.as_atomic())
+            .param(UnitParam::Feedback, self.mix.feedback.as_atomic())
+            .param(UnitParam::Wet, self.mix.mix.as_atomic())
+            .build()
     }
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.render(1, |c, _| input[c], |c, _, v| output[c] = v);
+    /// A clone with every control cell detached (at its value now), its
+    /// all-pass state cleared and its LFO back at the start.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.lfo.detach();
+        fork.mix.detach();
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        if size == 0 {
-            return;
-        }
-        self.render(
-            size,
-            |c, i| input.at_f32(c, i),
-            |c, i, v| output.set_f32(c, i, v),
-        );
-    }
+/// Inserted with its [`ParamSet`] as its controls and a fork that starts
+/// from the values last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for PhaserNode {
+    type Controls = ParamSet;
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Rate => self.set_rate(value),
-                tutti_core::UnitParam::Depth => self.set_depth(value),
-                tutti_core::UnitParam::Feedback => self.set_feedback(value),
-                tutti_core::UnitParam::Wet => self.set_mix(value),
-                _ => {}
-            }
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        if self.width == 1 {
-            crate::node_id::PHASER_ID
-        } else {
-            crate::node_id::PHASER_ID ^ 0xDA02
-        }
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.width);
-        for c in 0..self.width {
-            out.set(c, input.at(c));
-        }
-        out
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + (self.x1.len() + self.y1.len() + self.coeffs.len()) * core::mem::size_of::<f32>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -460,6 +453,7 @@ impl Clone for PhaserNode {
             phase_offsets: self.phase_offsets.clone(),
             last_coeff: self.last_coeff.clone(),
             coeffs: self.coeffs.clone(),
+            phases: self.phases.clone(),
             lane: self.lane.clone(),
             lfo: self.lfo.clone(),
             mix: self.mix.clone(),
@@ -474,40 +468,59 @@ impl Clone for PhaserNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::drive_frames;
+    use tutti_graph::contract::{assert_param_fork, prepared};
+
+    /// `node`, prepared at `sr` for blocks of up to 1024 frames.
+    fn at(node: PhaserNode, sr: f64) -> PhaserNode {
+        prepared(node, SampleRate(sr), 1024)
+    }
+
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it (see
+    /// `tutti_graph::contract::assert_param_fork`).
+    ///
+    /// Mutation (run): drop `fork.mix.detach()` in `fork_fresh` → "a live
+    /// write reached the fork" for `Depth`. Leave `Rate` out of `param_set`
+    /// → the address list below fails.
+    #[test]
+    fn a_fork_starts_from_the_authored_values_and_shares_nothing() {
+        let node = PhaserNode::with_channels(ChannelLayout::STEREO, 4);
+        assert_eq!(
+            node.param_set().params().collect::<Vec<_>>(),
+            [
+                UnitParam::Rate,
+                UnitParam::Depth,
+                UnitParam::Feedback,
+                UnitParam::Wet
+            ]
+        );
+        assert_param_fork(node);
+    }
 
     #[test]
     fn test_phaser_passthrough_dry() {
-        let mut phaser = PhaserNode::new(6);
-        phaser.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut phaser = at(PhaserNode::new(6), 44_100.0);
         phaser.set_mix(0.0);
-
-        let mut out = [0.0f32];
-        phaser.tick(&[0.5], &mut out);
-        assert!((out[0] - 0.5).abs() < 0.001);
+        let out = drive_frames(&mut phaser, &[&[0.5]]);
+        assert!((out[0][0] - 0.5).abs() < 0.001);
     }
 
     #[test]
     fn test_phaser_stages_affect_sound() {
         let sr = 44100.0;
-        let mut phaser_4 = PhaserNode::new(4);
-        phaser_4.set_sample_rate(tutti_core::SampleRate(sr));
+        let mut phaser_4 = at(PhaserNode::new(4), sr);
         phaser_4.set_mix(1.0);
 
-        let mut phaser_12 = PhaserNode::new(12);
-        phaser_12.set_sample_rate(tutti_core::SampleRate(sr));
+        let mut phaser_12 = at(PhaserNode::new(12), sr);
         phaser_12.set_mix(1.0);
 
-        let mut sum_4 = 0.0f64;
-        let mut sum_12 = 0.0f64;
-        let mut out = [0.0f32];
-
-        for i in 0..4410 {
-            let input = (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin();
-            phaser_4.tick(&[input], &mut out);
-            sum_4 += out[0] as f64;
-            phaser_12.tick(&[input], &mut out);
-            sum_12 += out[0] as f64;
-        }
+        let input: Vec<f32> = (0..4410)
+            .map(|i| (core::f32::consts::TAU * 440.0 * i as f32 / sr as f32).sin())
+            .collect();
+        let sum = |o: Vec<Vec<f32>>| o[0].iter().map(|&s| s as f64).sum::<f64>();
+        let sum_4 = sum(drive_frames(&mut phaser_4, &[&input]));
+        let sum_12 = sum(drive_frames(&mut phaser_12, &[&input]));
 
         assert!(
             (sum_4 - sum_12).abs() > 0.01,
@@ -517,36 +530,26 @@ mod tests {
 
     #[test]
     fn test_phaser_reset() {
-        let mut phaser = PhaserNode::new(6);
-        phaser.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        let mut out = [0.0f32];
-        for _ in 0..100 {
-            phaser.tick(&[1.0], &mut out);
-        }
-        phaser.reset();
-        phaser.tick(&[0.0], &mut out);
+        let mut phaser = at(PhaserNode::new(6), 44_100.0);
+        drive_frames(&mut phaser, &[&[1.0; 100]]);
+        Node::reset(&mut phaser);
+        let out = drive_frames(&mut phaser, &[&[0.0]]);
         assert!(
-            out[0].abs() < 0.01,
+            out[0][0].abs() < 0.01,
             "After reset, output should be near zero"
         );
     }
 
     #[test]
     fn test_phaser_feedback_resonance() {
-        let mut phaser = PhaserNode::new(6);
-        phaser.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut phaser = at(PhaserNode::new(6), 44_100.0);
         phaser.set_feedback(0.9);
         phaser.set_mix(1.0);
 
-        let mut out = [0.0f32];
-        phaser.tick(&[1.0], &mut out);
-
-        let mut max_output = 0.0f32;
-        for _ in 0..500 {
-            phaser.tick(&[0.0], &mut out);
-            max_output = max_output.max(out[0].abs());
-        }
+        let mut x = [0.0f32; 501];
+        x[0] = 1.0;
+        let out = drive_frames(&mut phaser, &[&x]);
+        let max_output = out[0][1..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(
             max_output > 0.001,
             "High feedback should produce resonance: {max_output}"
@@ -565,9 +568,7 @@ mod tests {
     // ── Per-block reads and width ────────────────────────────────────────────
 
     fn phaser_48k(channels: usize) -> PhaserNode {
-        let mut n = PhaserNode::with_channels(channels, 6);
-        n.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        n
+        at(PhaserNode::with_channels(channels, 6), 48_000.0)
     }
 
     /// A mix change made between blocks fades across the next block.
@@ -575,10 +576,10 @@ mod tests {
     /// Mutation: `Ramp::new(target.mix, target.mix, size)` (a jump) fails.
     #[test]
     fn a_mix_change_fades_across_the_next_block() {
-        use crate::test_support::{change_between_blocks, noise};
+        use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(13, 128);
-        let run = change_between_blocks(
-            || phaser_48k(2),
+        let run = change_between_node_blocks(
+            || PhaserNode::with_channels(2usize, 6),
             |n| n.set_mix(1.0),
             &[&x[..64], &x[..64]],
             &[&x[64..], &x[64..]],
@@ -594,19 +595,19 @@ mod tests {
     /// fails.
     #[test]
     fn six_channels_are_six_mono_phasers() {
-        use crate::test_support::{noise, process_block};
+        use crate::test_support::{drive_block, noise};
         let inputs: Vec<Vec<f32>> = (0..6).map(|c| noise(c + 30, 64)).collect();
         let refs: Vec<&[f32]> = inputs.iter().map(|v| &v[..]).collect();
         let mut wide = phaser_48k(6);
         let mut out = Vec::new();
         for _ in 0..4 {
-            out = process_block(&mut wide, &refs);
+            out = drive_block(&mut wide, &refs);
         }
         for (c, input) in inputs.iter().enumerate() {
             let mut mono = phaser_48k(1);
             let mut want = Vec::new();
             for _ in 0..4 {
-                want = process_block(&mut mono, &[&input[..]]);
+                want = drive_block(&mut mono, &[&input[..]]);
             }
             assert_eq!(want[0], out[c], "channel {c}");
         }
@@ -618,18 +619,20 @@ mod tests {
     /// Mutation: ignoring the offset in `coeff_at` fails the first assertion.
     #[test]
     fn phase_offsets_stagger_the_channels() {
-        use crate::test_support::{noise, process_block};
+        use crate::test_support::{drive_block, noise};
         let x = noise(14, 64);
-        let mut node = PhaserNode::with_channels(3usize, 4).with_phase_offsets(&[
-            PhaseIncrement(0.0),
-            PhaseIncrement(0.25),
-            PhaseIncrement(1.0),
-        ]);
-        node.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        let mut node = at(
+            PhaserNode::with_channels(3usize, 4).with_phase_offsets(&[
+                PhaseIncrement(0.0),
+                PhaseIncrement(0.25),
+                PhaseIncrement(1.0),
+            ]),
+            48_000.0,
+        );
         node.set_rate(5.0);
         let mut out = Vec::new();
         for _ in 0..8 {
-            out = process_block(&mut node, &[&x, &x, &x]);
+            out = drive_block(&mut node, &[&x, &x, &x]);
         }
         assert_ne!(out[0], out[1], "a quarter-cycle offset sweeps elsewhere");
         assert_eq!(out[0], out[2], "a full-cycle offset wraps to none");
@@ -642,14 +645,15 @@ mod tests {
     /// leaves the top at 3600 Hz after the rate rises and fails.
     #[test]
     fn a_rising_rate_restores_the_authored_sweep_top() {
+        let prep = |sr: f64| Prepare::new(SampleRate(sr), tutti_core::Samples(64));
         let mut phaser = PhaserNode::new(4);
-        phaser.set_sample_rate(tutti_core::SampleRate(8_000.0));
+        phaser.prepare(&prep(8_000.0));
         assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
-        phaser.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        phaser.prepare(&prep(48_000.0));
         assert_eq!(phaser.range.max_hz, Hz(4_000.0));
         phaser.set_frequency_range(300.0, 30_000.0);
         assert_eq!(phaser.range.max_hz, Hz(21_600.0));
-        phaser.set_sample_rate(tutti_core::SampleRate(96_000.0));
+        phaser.prepare(&prep(96_000.0));
         assert_eq!(phaser.range.max_hz, Hz(30_000.0));
     }
 }

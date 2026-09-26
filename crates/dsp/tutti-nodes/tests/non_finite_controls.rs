@@ -201,7 +201,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "delay",
         || {
             let n = DelayLineNode::stereo(0.1, 0.01, 0.013, 0.5);
@@ -218,7 +218,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "chorus",
         || ModDelayNode::chorus(ChannelLayout::STEREO),
         |n| {
@@ -230,7 +230,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
             ]
         },
     );
-    survives(
+    survives_node(
         "phaser",
         || PhaserNode::with_channels(ChannelLayout::STEREO, 6),
         |n| {
@@ -281,7 +281,7 @@ fn svf_ladder_delay_moddelay_phaser_compressor_gate_hold_off_non_finite_controls
 fn the_convolver_holds_off_non_finite_controls() {
     use tutti_nodes::{generate_test_ir, ConvolverNode};
     let ir = generate_test_ir(128, 0.1, 48_000.0);
-    survives(
+    survives_node(
         "convolver",
         || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64),
         |n| vec![("mix", n.mix(), 0.8), ("gain", n.gain(), 2.0)],

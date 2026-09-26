@@ -329,9 +329,10 @@ struct-update.
 ```rust
 // DSP nodes are plain `AudioUnit`s from `tutti-nodes`, spawned like any
 // other node. There are no marker components and no per-node ECS wrappers.
-use tutti_nodes::{CompressorNode, LfoNode};
+use tutti_nodes::{CompressorNode, LfoNode, LfoShape};
 
-commands.spawn_audio_node(LfoNode::new(Hz(2.0)));
+// A native graph node (the LFO, the delays, the convolver, …) spawns as one.
+commands.spawn_graph_node(LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0)));
 commands.spawn_audio_node(CompressorNode::default());
 
 // Compressor — required: ThresholdDb, CompressorRatio, Attack, Release, GainDb

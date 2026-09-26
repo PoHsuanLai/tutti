@@ -293,6 +293,7 @@ pub mod render {
     pub const TAG_PASSTHROUGH: u32 = 1;
     pub const TAG_ONLY: u32 = 2;
     pub const LATENCY: u32 = 3;
+    pub const NOTES: u32 = 4;
     pub const TRANSPORT: u32 = 5;
 }
 

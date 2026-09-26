@@ -50,7 +50,7 @@ const GAIN: f32 = 2.0;
 /// The tests' side of each chunk: an empty payload, and the plugin's MIDI-out
 /// kept as drained (unshifted), so a test reads what the bridge returned.
 impl super::batcher::Chunks for MidiEventVec {
-    fn begin(&mut self, _at: usize) {}
+    fn begin(&mut self, _at: usize, _chunk: usize) {}
 
     fn payload(&mut self, _frames: usize) -> BlockPayload {
         BlockPayload::default()

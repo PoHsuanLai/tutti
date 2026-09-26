@@ -394,7 +394,10 @@ fn render_fork_of(client: PluginClient, blocks: usize) -> (Editor, Duration) {
 /// Mutation: hand no health probe from `PluginFork::fork` → `fork_health` is
 /// `Ok` → fails. Mutation: never ask the process (`server_died`) in the
 /// batcher's wait → the bridge, sent nothing, never notices the death, and the
-/// block waits out its 5 s budget → the time bound fails.
+/// block waits out its 5 s budget → the time bound fails. Mutation: drop the
+/// wait's `latch_crash` → on a machine that renders the 40 blocks inside one
+/// process poll, the bridge noticed the death but the executor holding it is
+/// dropped before `fork_health` asks → `Ok` → fails.
 #[test]
 fn a_fork_whose_server_dies_mid_render_is_a_crashed_fault() {
     let _lock = exclusive();
@@ -643,6 +646,140 @@ fn an_export_through_a_failing_fork_fails_by_name() {
     }
     let _hang = ProbeEnv::new().block_from(5);
     failed(ForkFaultKind::TimedOut);
+}
+
+/// **A clip's note reaches an exported plugin on its frame**, however long
+/// the pipeline's chunk. The export's fork is prepared at the export block
+/// (1024 frames), so its chunk is 1024; the plan holds a `Legacy`-flagged
+/// node, so it renders in 64-frame passes and the timeline moves between
+/// them. The probe's `Notes` gate turns the note-on into its first non-zero
+/// frame, which lands at the note's frame plus the pipeline's one chunk. The note is at frame 6000, on neither a 64- nor a 1024-frame
+/// boundary.
+///
+/// Mutation: gather the chunk's payload at its submission (the last 64-frame
+/// pass of the chunk) instead of at its start → the clip's window is read
+/// 960 frames late and the note sounds 960 frames early → fails.
+/// (The other mutation of the fix, dropping `rebase`, needs a chunk that
+/// begins inside a pass: `a_clip_note_in_a_chunk_that_begins_mid_pass_…`.)
+#[test]
+fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    // 120 BPM at 48 kHz: a beat is 24 000 frames, so beat 0.25 is frame 6000.
+    const NOTE_FRAME: usize = 6_000;
+    install_note(&probe.client, NOTE_FRAME);
+    let (live, _exec) = live_graph(probe.client);
+
+    // The export's own timeline, rolling from beat 0, and its clock.
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(timeline.clone());
+    let graph = tutti_export::RenderGraph::fork(
+        &live,
+        ForkTarget::Master,
+        ForkMode::Offline(&offline),
+        SampleRate(SAMPLE_RATE),
+    )
+    .expect("a graph holding a plugin forks");
+    // The pipeline holds one chunk, the export block. (The probe reports a
+    // latency of its own in every mode but delays audio only in `Latency`.)
+    let chunk = tutti_export::GRAPH_MAX_BLOCK;
+    let config = tutti_export::ExportConfig {
+        render: tutti_export::RenderConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            duration_seconds: 0.25,
+            ..Default::default()
+        },
+        encode: tutti_export::EncodeConfig {
+            channels: tutti_export::ChannelLayout::MONO,
+            ..Default::default()
+        },
+        dither: tutti_export::Dither::Off,
+        ..Default::default()
+    };
+    let rendered = tutti_export::render_to_buffers(graph, &config, timeline.as_ref())
+        .expect("the fork exports");
+    let onset = rendered.planes[0].iter().position(|&s| s != 0.0);
+    assert_eq!(
+        onset,
+        Some(NOTE_FRAME + chunk.get()),
+        "the note sounds on its frame, one chunk late"
+    );
+}
+
+/// Install on `client`'s MIDI port a clip holding one note-on at frame
+/// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (the live clip a fork
+/// rebinds onto its render's timeline).
+fn install_note(client: &PluginClient, frame: usize) {
+    use tutti_midi_runtime::{MidiClipSource, TimedClipEvent};
+    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_types::{Beat, Timeline};
+
+    let live_timeline: Arc<dyn Timeline> = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    client.midi_port().install(Arc::new(MidiClipSource::new(
+        client.midi_unit_id(),
+        vec![TimedClipEvent {
+            // 24 000 frames a beat.
+            beat: Beat(frame as f64 / 24_000.0),
+            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        }],
+        live_timeline,
+    )));
+}
+
+/// **A chunk that begins inside a render pass still places its notes on
+/// their frames.** A fork prepared at 480 frames ships 480-frame chunks; the
+/// render hands it 400-frame blocks, which its clock cuts into 64-frame passes
+/// from each block's start (the plan holds a `Legacy`-flagged node). The chunk
+/// from frame 6240 then begins 48 frames into the pass from 6192 (block 6000,
+/// pass 192). The note at 6300 is in that chunk, and the probe's gate opens
+/// one chunk after it.
+///
+/// Mutation: drop `rebase` → the window read from the pass's first frame is
+/// sent as the chunk's → the note sounds 48 frames late → fails.
+/// Mutation: gather at submission → the window starts at the chunk's last
+/// pass → hundreds of frames early → fails.
+#[test]
+fn a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let probe = load_probe(SAMPLE_RATE);
+    const CHUNK: usize = 480;
+    const BLOCK: usize = 400;
+    const NOTE_FRAME: usize = 6_300;
+    install_note(&probe.client, NOTE_FRAME);
+
+    let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(CHUNK));
+    let (mut live, _exec) = Editor::new(prepare);
+    let key = NodeKey(9);
+    let _controls = live.insert(key, "plugin", probe.client.bind());
+    live.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        sample_rate: SampleRate(SAMPLE_RATE),
+        ..Default::default()
+    }));
+    let offline = OfflineTransport::new(timeline.clone());
+    let (_fork_ed, mut fork_exec) = live
+        .fork(ForkTarget::Master, ForkMode::Offline(&offline), prepare)
+        .expect("forks");
+
+    let mut out = Vec::new();
+    let mut block = vec![0.0f32; BLOCK];
+    while out.len() < NOTE_FRAME + 2 * CHUNK {
+        timeline.render_graph(&mut fork_exec, BLOCK, &[], &mut [&mut block[..]]);
+        out.extend_from_slice(&block);
+    }
+    assert_eq!(
+        out.iter().position(|&s| s != 0.0),
+        Some(NOTE_FRAME + CHUNK),
+        "the note sounds on its frame, one chunk late"
+    );
 }
 
 /// A ramp source reading its block's `Env`: frame `t` is [`ramp`]`(t)`. Forks

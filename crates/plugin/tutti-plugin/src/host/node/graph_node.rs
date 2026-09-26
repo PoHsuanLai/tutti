@@ -97,7 +97,7 @@ impl Node for PluginClient<Bound> {
         let Bound {
             io: batcher,
             default_meter,
-            pending_transport,
+            pending,
             steady,
         } = &mut c.state;
 
@@ -115,7 +115,7 @@ impl Node for PluginClient<Bound> {
             steady: *steady,
             midi: &mut c.midi,
             inputs: &mut c.controls.inputs,
-            pending: pending_transport,
+            pending,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -151,9 +151,19 @@ impl Node for PluginClient<Bound> {
     }
 }
 
-/// What the node hands the batcher for each chunk: its payload, built when
-/// the chunk is submitted, and the transport at its first frame, taken when
-/// the chunk begins (possibly a block earlier; see the batcher's FIFO).
+/// What the node hands the batcher for each chunk: its payload, gathered when
+/// the chunk begins and sent when it is submitted (possibly a block later;
+/// see the batcher's FIFO).
+///
+/// **Gathered at the chunk's start, not at its submission.** The inputs that
+/// poll a timeline (a MIDI clip, automation, harmony) read their window from
+/// the transport's position *now*. While the plan renders in `Legacy`
+/// passes, a chunk longer than a pass is submitted from its last pass, so a
+/// window read then would start `chunk - pass` frames late and every event
+/// would reach the plugin that much early. At `begin` the pass holds the
+/// chunk's first frame: the window is read for `at + chunk` frames from the
+/// pass's start and re-based to the chunk (`rebase`). Consecutive windows
+/// still tile, so a clip emits every event once.
 struct PluginChunks<'a> {
     env: &'a Env,
     frames: usize,
@@ -163,27 +173,26 @@ struct PluginChunks<'a> {
     steady: SteadyTime,
     midi: &'a mut Midi,
     inputs: &'a mut super::controls::PluginInputs,
-    pending: &'a mut TransportInfo,
+    pending: &'a mut BlockPayload,
 }
 
 impl Chunks for PluginChunks<'_> {
-    fn begin(&mut self, at: usize) {
-        *self.pending = match Offset::new(at, Samples(self.frames)) {
+    fn begin(&mut self, at: usize, chunk: usize) {
+        let transport = match Offset::new(at, Samples(self.frames)) {
             Some(offset) if self.features.contains(Features::TRANSPORT) => {
                 transport_source::from_env(self.env, offset, self.steady.at(at), self.meter)
             }
             _ => TransportInfo::default(),
         };
-    }
-
-    fn payload(&mut self, frames: usize) -> BlockPayload {
-        let ctx = BlockCtx { block_size: frames };
+        // The window from this pass's first frame through the chunk's last.
+        let span = at + chunk;
+        let ctx = BlockCtx { block_size: span };
         let rate = self.env.sample_rate;
         // Clones of the drained buffers: every one is an inline `SmallVec`
         // below its spill size, so a clone copies and never allocates
         // (`clap_node_no_alloc` drives MIDI and automation through here).
-        BlockPayload {
-            midi: self.midi.drain_for_process(frames, rate).clone(),
+        *self.pending = BlockPayload {
+            midi: self.midi.drain_for_process(span, rate).clone(),
             params: self.inputs.params.drain(ctx, self.features).clone(),
             harmony: self.inputs.harmony.drain(ctx, self.features).clone(),
             note_expression: self
@@ -191,8 +200,13 @@ impl Chunks for PluginChunks<'_> {
                 .note_expression
                 .drain(ctx, self.features)
                 .clone(),
-            transport: *self.pending,
-        }
+            transport,
+        };
+        rebase(self.pending, at);
+    }
+
+    fn payload(&mut self, _frames: usize) -> BlockPayload {
+        std::mem::take(self.pending)
     }
 
     fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize) {
@@ -245,4 +259,43 @@ fn emit_midi_out(midi: &Midi, midi_out: &mut MidiEventVec, chunk: usize) {
 /// the compiler refuses anything past `MAX_PORTS` by name anyway.
 fn width(n: usize) -> ChannelLayout {
     ChannelLayout::from_count(u16::try_from(n).unwrap_or(u16::MAX))
+}
+
+/// Re-base a payload read from a pass's first frame to a chunk that begins
+/// `at` frames into it: every offset moves back by `at`. One before the chunk
+/// lands on its first frame rather than being dropped: a clip never emits one
+/// twice (its window tiles, so it emitted it with the chunk before), what
+/// remains is live input or a value to hold (the latest automation point, the
+/// current chord), and frame 0 is where each belongs.
+fn rebase(p: &mut BlockPayload, at: usize) {
+    if at == 0 {
+        return;
+    }
+    let at_u32 = u32::try_from(at).unwrap_or(u32::MAX);
+    let at_i32 = i32::try_from(at).unwrap_or(i32::MAX);
+    let back = |o: i32| o.saturating_sub(at_i32).max(0);
+    for e in p.midi.iter_mut() {
+        e.frame_offset = e.frame_offset.saturating_sub(at_u32);
+    }
+    for q in p.params.queues.iter_mut() {
+        for pt in q.points.iter_mut() {
+            pt.sample_offset = back(pt.sample_offset);
+        }
+    }
+    for c in p.note_expression.changes.iter_mut() {
+        c.sample_offset = back(c.sample_offset);
+    }
+    let h = &mut p.harmony;
+    for c in h.chords.changes.iter_mut() {
+        c.sample_offset = back(c.sample_offset);
+    }
+    for c in h.scales.changes.iter_mut() {
+        c.sample_offset = back(c.sample_offset);
+    }
+    for c in h.expr_texts.changes.iter_mut() {
+        c.sample_offset = back(c.sample_offset);
+    }
+    for c in h.expr_ints.changes.iter_mut() {
+        c.sample_offset = back(c.sample_offset);
+    }
 }

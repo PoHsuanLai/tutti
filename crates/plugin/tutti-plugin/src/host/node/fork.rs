@@ -251,6 +251,14 @@ impl ForkWatch {
         self.gave_up.store(true, Ordering::Release);
     }
 
+    /// Latch a crash the bridge reported, unless a death is latched already.
+    pub(super) fn latch_crash(&self, cause: Option<String>) {
+        let mut died = lock(&self.died);
+        if died.is_none() {
+            *died = Some(cause.unwrap_or_else(|| "no cause latched".to_string()));
+        }
+    }
+
     /// Record the latency the fork's graph is compiled against: what the
     /// node's `Shape` declares right after this `prepare`.
     pub(super) fn plan(&self, latency: Latency) {

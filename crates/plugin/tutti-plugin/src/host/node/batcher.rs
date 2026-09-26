@@ -177,10 +177,11 @@ impl WireStorage {
 /// where each chunk **begins** in the call that begins it, and is asked for
 /// its payload when the chunk is **submitted**, possibly a call later.
 pub(super) trait Chunks {
-    /// A chunk begins at frame `at` of this call (its first frame is the next
-    /// input frame the batcher takes).
-    fn begin(&mut self, at: usize);
-    /// The payload of the chunk being submitted now, `frames` long.
+    /// A chunk of `chunk` frames begins at frame `at` of this call (its first
+    /// frame is the next input frame the batcher takes).
+    fn begin(&mut self, at: usize, chunk: usize);
+    /// The payload of the chunk being submitted now, `frames` long: what
+    /// [`begin`](Self::begin) gathered for it.
     fn payload(&mut self, frames: usize) -> BlockPayload;
     /// The plugin's MIDI-out drained with this submission, belonging to the
     /// chunk submitted before it (`chunk` frames long).
@@ -343,6 +344,13 @@ impl Batcher {
             // the core more than this loop does.
             std::thread::sleep(Duration::from_micros(50));
         }
+        // Latch what the bridge saw into the watch: the health probe holds the
+        // bridge weakly, and a render that ends before the next process poll
+        // drops it (with the executor) before anyone asks, which read as a
+        // healthy fork.
+        if bridge.is_crashed() {
+            watch.latch_crash(bridge.crash_cause());
+        }
     }
 
     /// Drop the chunk in flight, the frames taken towards the next one and
@@ -470,7 +478,7 @@ impl Batcher {
             if self.pos == 0 {
                 // A new chunk: its output-side frames need the chunk before it.
                 self.collect(bridge);
-                host.begin(i);
+                host.begin(i, chunk);
             }
             let n = (chunk - self.pos).min(frames - i);
             let (at, to) = (self.pos, self.pos + n);

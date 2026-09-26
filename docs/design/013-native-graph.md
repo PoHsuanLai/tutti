@@ -3136,6 +3136,24 @@ vocoder retirement channel for voices the pool removes.
   chunk late however the blocks are cut (a review found ragged blocks
   corrupting audio before: 2 303 of 3 399 samples wrong at 100-frame
   blocks; pinned by `clap_ragged`).
+- **A chunk's inputs are gathered when it begins (found in review).** The
+  MIDI clip, automation and harmony inputs read their window from the
+  transport's position when drained. Drained at submission, a chunk longer
+  than a `Legacy` pass read its window from its *last* pass, and every event
+  reached the plugin `chunk - 64` frames early (an export's notes 960 frames
+  early, since its chunk is the 1024-frame export block). The node now drains
+  them in `Chunks::begin`, for `at + chunk` frames from the pass holding the
+  chunk's first frame, and re-bases the offsets by `at`. Pinned by
+  `clap_fork`'s `a_clip_note_reaches_an_exported_plugin_on_its_frame` and
+  `a_clip_note_in_a_chunk_that_begins_mid_pass_lands_on_its_frame`. The
+  event-port conversion replaces the mechanism.
+- **A fork's crash is latched where the wait sees it (found in review).**
+  The offline wait ended on `bridge.is_crashed()` without telling the fork's
+  watch, whose health probe holds the bridge weakly; a render that finished
+  inside one process poll dropped the bridge with the executor before
+  `fork_health` asked, and a crashed fork read as healthy (reproduced on a
+  fast machine; CI's runners were slow enough to poll first). The wait now
+  latches the crash (`ForkWatch::latch_crash`).
 
 **Deferred, and why.**
 
@@ -3166,6 +3184,20 @@ vocoder retirement channel for voices the pool removes.
   collected before the server can answer. The same holds past `MAX_CHUNK`
   and for a backend whose callbacks vary in size. Measuring the first
   callbacks and re-preparing is the fix if such a device shows up.
+  Two more gaps on this path, from #51's review: a device that reports a
+  range but refuses the fixed size fails to open (no retry with the default
+  buffer, which would also have to clear the reported quantum), and the
+  quantum is the size requested, never checked against the callbacks
+  delivered.
+- **The reply timeout at large chunks.** `MAX_PROCESS_TIMEOUT` (50 ms) is
+  shorter than a chunk's period past about 2 400 frames at 48 kHz; a chunk
+  that large only arises from a device whose smallest buffer exceeds
+  `PREFERRED_QUANTUM`. Derive the cap from the chunk when one does.
+- **A controls-less insert.** With the wrapper gone, `Unforkable(client)` or
+  a hand-built `NodeParts` boxes the bound client with no `PluginControls`
+  and no fork source. It is explicit opt-in, and the host then never hands
+  the editor a latency change; the typed insert remains the only path the
+  hosts use.
 - **A fork's latency.** A fork's `prepare` waits for the latency change a
   rate or render-mode switch causes (`PluginBridge::settle`: two round trips
   on the command queue, after which the latency cell holds what the server

@@ -151,10 +151,11 @@ pub struct Bound {
     /// The pipelined IPC path, sized for the chunk ceiling at bind and
     /// narrowed by `prepare`.
     io: Batcher,
-    /// The transport at the first frame of the chunk being filled: taken
+    /// The payload of the chunk being filled — its MIDI, automation, harmony
+    /// and note expression, and the transport at its first frame: gathered
     /// when the chunk begins, sent when it is submitted (possibly a block
     /// later; see the batcher's FIFO).
-    pending_transport: TransportInfo,
+    pending: BlockPayload,
     /// The free-running sample counter the plugin's transport carries:
     /// frames this node has rendered, monotonic across a re-prepare.
     steady: transport_source::SteadyTime,
@@ -397,7 +398,7 @@ impl PluginClient<Unbound> {
             fork_watch,
             state: Bound {
                 io,
-                pending_transport: TransportInfo::default(),
+                pending: BlockPayload::default(),
                 steady: transport_source::SteadyTime::default(),
                 default_meter: MeterMap::default(),
             },

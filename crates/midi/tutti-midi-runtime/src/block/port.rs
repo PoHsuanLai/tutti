@@ -167,6 +167,53 @@ impl MidiInPort {
         }
     }
 
+    /// A graph node's MIDI for one block: this port's events (polled into
+    /// `buffer[..mailbox]` and sorted by offset) merged with its event
+    /// input's `events` by offset, this port's first at an equal offset, in
+    /// place in `buffer`. Returns how many `buffer` holds, sorted.
+    ///
+    /// Past `mailbox` the port's events stay queued for the next block; past
+    /// the rest of `buffer` the event input's are dropped. Nothing
+    /// allocates. The event input's ramps are not MIDI and are skipped.
+    pub fn gather(
+        &self,
+        frames: usize,
+        sample_rate: tutti_core::SampleRate,
+        buffer: &mut [MidiEvent],
+        mailbox: usize,
+        events: tutti_graph::SortedEvents<'_>,
+    ) -> usize {
+        let mailbox = mailbox.min(buffer.len());
+        let n = self
+            .poll(frames, sample_rate, &mut buffer[..mailbox])
+            .min(mailbox);
+        if n > 1 {
+            buffer[..n].sort_unstable_by_key(|e| e.frame_offset);
+        }
+        let midi = |e: &tutti_graph::Event| match e.kind {
+            tutti_graph::EventKind::Midi(ump) => Some((e.offset.index() as u32, ump.0)),
+            tutti_graph::EventKind::Ramp(_) => None,
+        };
+        let slice = events.as_slice();
+        let total = slice.iter().filter_map(midi).count();
+        let m = total.min(buffer.len() - n);
+        // Merge from the back, in place: the port's `n` sorted events sit at
+        // the front, and the event input's first `m` (sorted too) are taken
+        // last to first.
+        let mut i = n;
+        let mut k = n + m;
+        for (offset, words) in slice.iter().rev().filter_map(midi).skip(total - m) {
+            while i > 0 && buffer[i - 1].frame_offset > offset {
+                k -= 1;
+                i -= 1;
+                buffer[k] = buffer[i];
+            }
+            k -= 1;
+            buffer[k] = MidiEvent::from_ump(offset, &words);
+        }
+        n + m
+    }
+
     /// Sever all sharing with sibling clones: a fresh private mailbox (so this
     /// clone can't drain events destined for the live unit) and an empty source
     /// cell (so installing or clearing here can't disturb the live unit's).

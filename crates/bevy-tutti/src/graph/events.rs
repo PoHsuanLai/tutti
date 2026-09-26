@@ -57,6 +57,14 @@ pub struct EventFeeds(pub HashMap<Entity, Vec<AudioNode>>);
 #[derive(Component)]
 pub struct NodeControls<C: Send + Sync + 'static>(pub C);
 
+/// The SoundFont player as a graph node: as the synth, its port captured.
+#[cfg(feature = "soundfont")]
+impl GraphNode for tutti_soundfont::SoundFontUnit {
+    fn captured(&self) -> CapturedControls {
+        CapturedControls::for_midi_port(self.midi_port().clone())
+    }
+}
+
 /// A node an entity can be bound to as a graph node, rather than as an
 /// `AudioUnit` wrapped in `Legacy`: it declares its own ports (event ports
 /// included), its controls and its fork.

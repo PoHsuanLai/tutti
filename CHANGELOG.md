@@ -922,6 +922,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     holding plugins and graph nodes renders whole blocks instead of 64-frame
     passes. Its timeline-polling inputs are read when a chunk begins and
     re-based to it, which is right in either mode.
+  - tutti-soundfont: `SoundFontUnit: Node + IntoNode` (stereo out, one MIDI
+    event input at `Resolution::Frames(8)`, a graph-node fork). As a node it
+    follows its graph's rate: `prepare` rebuilds the synthesizer at the
+    prepared rate, keeping preset and port, so a device restart at a new rate
+    no longer leaves it playing at the old one. bevy-tutti's SoundFont
+    promotion inserts it this way.
+  - tutti-midi-runtime: `MidiInPort::gather`, the port's events merged with a
+    node's event input by offset (the port's first on a tie), for a node that
+    reads both; the synth and the SoundFont node use it.
   - bevy-tutti: a `MidiSourceInstall` whose target has an event input (a
     graph-node synth, a hosted plugin) plays through a `MidiClipNode` of its
     own wired to it (`SequencedClips`, `EventFeeds`), edited in place; a

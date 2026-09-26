@@ -13,11 +13,11 @@
 
 use tutti_core::meter::MeterMap;
 use tutti_graph::{
-    Cx, Env, EventKind, Io, Node, Offset, Prepare, Shape, SortedEvents, Status, MAX_PORTS,
+    Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, SortedEvents, Status, MAX_PORTS,
 };
 use tutti_types::{ChannelLayout, Samples};
 
-use super::batcher::Chunks;
+use super::batcher::{sort_by_offset, Chunks};
 use super::transport_source::{self, SteadyTime};
 use super::{BlockPayload, Bound, PluginClient};
 use crate::host::node::input_slot::BlockCtx;
@@ -43,7 +43,11 @@ impl Node for PluginClient<Bound> {
     ///
     /// **One MIDI event input**: what reaches it (a clip node, an
     /// arpeggiator) is sent with the chunk its frames go into, on its frame,
-    /// alongside what the plugin's own MIDI port holds.
+    /// alongside what the plugin's own MIDI port holds. **One MIDI event
+    /// output** for a plugin that declares [`Features::MIDI_OUT`]: its
+    /// MIDI-out, where the node's audio output plays the frame it was emitted
+    /// at (so a chunk late, as the audio is; the declared latency covers
+    /// both).
     ///
     /// **Not `legacy`**, though four inputs are still read out of band — its
     /// MIDI port's installed clip source, parameter automation, harmony and
@@ -60,8 +64,9 @@ impl Node for PluginClient<Bound> {
     /// `legacy`".
     fn shape(&self) -> Shape {
         let c = self;
+        let midi_out = u16::from(c.loaded.features.contains(Features::MIDI_OUT));
         Shape::audio(width(c.inputs), width(c.outputs))
-            .with_events(1, 0)
+            .with_events(1, midi_out)
             .with_latency(c.controls.declared_latency())
             .with_tail(c.controls.tail())
     }
@@ -110,8 +115,10 @@ impl Node for PluginClient<Bound> {
             io: batcher,
             default_meter,
             pending,
+            out_events,
             steady,
         } = &mut c.state;
+        out_events.clear();
 
         // One meter read per block, never per chunk. A nested read (the
         // slot's load, then the cell's), as the transport source always made.
@@ -134,6 +141,7 @@ impl Node for PluginClient<Bound> {
             midi: &mut c.midi,
             inputs: &mut c.controls.inputs,
             pending,
+            out_events,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -153,6 +161,16 @@ impl Node for PluginClient<Bound> {
             &mut outs[..n_out],
             &mut host,
         );
+        if io.event_output_count() > 0 {
+            let out = io.event_out(0);
+            for e in out_events.iter() {
+                let Some(at) = cx.env.offset(e.frame_offset as usize) else {
+                    continue;
+                };
+                // Refused past the port's capacity: counted by the executor.
+                let _ = out.push(Event::midi(at, e.data));
+            }
+        }
         // Never reset, not even by `prepare`: see `SteadyTime`. (Not pinned
         // end to end: the reference CLAP plugin reads CLAP's own `steady_time`,
         // which its loader counts; this counter reaches VST2 and VST3 only.
@@ -195,6 +213,8 @@ struct PluginChunks<'a> {
     midi: &'a mut Midi,
     inputs: &'a mut super::controls::PluginInputs,
     pending: &'a mut BlockPayload,
+    /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
+    out_events: &'a mut MidiEventVec,
 }
 
 impl Chunks for PluginChunks<'_> {
@@ -251,61 +271,52 @@ impl Chunks for PluginChunks<'_> {
     /// when it began, the event input's as its frames came in. A stable
     /// insertion sort, in place: the list is short, and nearly sorted.
     fn payload(&mut self, _frames: usize) -> BlockPayload {
-        let midi = &mut self.pending.midi;
-        for i in 1..midi.len() {
-            let mut j = i;
-            while j > 0 && midi[j - 1].frame_offset > midi[j].frame_offset {
-                midi.swap(j - 1, j);
-                j -= 1;
-            }
-        }
+        sort_by_offset(&mut self.pending.midi);
         std::mem::take(self.pending)
     }
 
-    fn midi_out(&mut self, events: &mut MidiEventVec, chunk: usize) {
+    fn midi_out(&mut self, events: &MidiEventVec) {
         if self.features.contains(Features::MIDI_OUT) {
-            emit_midi_out(self.midi, events, chunk);
+            emit_midi_out(self.midi, events);
+        }
+    }
+
+    fn emit(&mut self, frame: usize, mut event: MidiEvent) {
+        if !self.features.contains(Features::MIDI_OUT) {
+            return;
+        }
+        if self.out_events.len() < self.out_events.inline_size() {
+            event.frame_offset = u32::try_from(frame).unwrap_or(u32::MAX);
+            self.out_events.push(event);
         }
     }
 }
 
-/// Hand the plugin's MIDI-out to the post-block phase. Only called for a
-/// plugin that declared [`Features::MIDI_OUT`]: gating the *emit* on the
-/// self-reported capability mirrors how the per-block input feeds gate their
-/// sends on their `Features` bit, so a plugin that never advertised MIDI
-/// output has its emission dropped rather than silently re-injected.
+/// Hand the plugin's MIDI-out to the post-block phase (the routed sink:
+/// `MidiOutSink`, fanned out a block later). Only called for a plugin that
+/// declared [`Features::MIDI_OUT`]: gating the *emit* on the self-reported
+/// capability mirrors how the per-block input feeds gate their sends on their
+/// `Features` bit.
 ///
-/// `emit` only *collects*; the fan-out happens once the graph has rendered.
-/// See [`Midi::emit`].
-///
-/// # The shift
-///
-/// The reply drained here belongs to the chunk submitted *last* time, so each
-/// `frame_offset` counts from that earlier chunk's start. Relative to now that
-/// is `offset - chunk`, always negative because an offset cannot exceed its
-/// own chunk's length — so every such event is already due and clamps to
-/// frame 0. Left unshifted they would land a full chunk *early*, audible as an
-/// early-triggering sequencer. Saturating rather than dropping: the event is
-/// late regardless, frame 0 is the closest representable position, and
-/// dropping would silently lose an arpeggiator's notes.
-///
-/// This shift and the post-block phase do not double-count. The shift fixes
-/// an event's **position within a chunk**; the phase fixes **which block
-/// delivers it**, uniformly for every emitter
-/// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)).
-/// Removing the shift would not cancel the phase's delay — it would restore
-/// the early-triggering-sequencer bug on top of it.
+/// Every event goes at offset 0: they are handed over as their chunk starts
+/// to play, and the phase delivers a block later
+/// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)),
+/// by which time each is due. (Where each falls against the plugin's audio
+/// is kept on the node's MIDI event output instead: [`Chunks::emit`].) The
+/// count is dropped: the sink records an overflow (`MidiOutSink::overflowed`),
+/// so the loss is observable off-RT.
 #[inline]
-fn emit_midi_out(midi: &Midi, midi_out: &mut MidiEventVec, chunk: usize) {
-    let shift = u32::try_from(chunk).unwrap_or(u32::MAX);
-    for ev in midi_out.iter_mut() {
-        ev.frame_offset = ev.frame_offset.saturating_sub(shift);
+fn emit_midi_out(midi: &Midi, events: &MidiEventVec) {
+    let mut batch = [MidiEvent::from_ump(0, &[0; 4]); 64];
+    for part in events.chunks(batch.len()) {
+        for (slot, e) in batch.iter_mut().zip(part) {
+            *slot = MidiEvent {
+                frame_offset: 0,
+                ..*e
+            };
+        }
+        let _ = midi.emit(&batch[..part.len()]);
     }
-    // The count is deliberately dropped: this is a `process` path with no
-    // caller that could act on it. The sink records the overflow
-    // (`MidiOutSink::overflowed`) so the loss is observable off-RT instead of
-    // silent.
-    let _ = midi.emit(midi_out);
 }
 
 /// `n` ports as a layout. A plugin wider than `u16` channels is not a thing;

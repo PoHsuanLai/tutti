@@ -64,8 +64,12 @@
 //!   unit is swapped (a crossfade keeps it), and on a re-prepare. A port
 //!   whose source *list* differs from the one it last ran with starts its
 //!   declick — compared as values here, where the executor compares the
-//!   compiler's signatures. Ramps are evaluated from their start frame
-//!   rather than stepped. Only the LUT lookup is shared with the executor.
+//!   compiler's signatures — unless the port has no state yet (its unit's
+//!   first block). Each source's state is kept in a map by [`ParamFrom`],
+//!   where the executor re-keys an array. Ramps are evaluated from their
+//!   start frame rather than stepped. A param source's new or longer delay
+//!   line is filled with the source's last value. Only the LUT lookup is
+//!   shared with the executor.
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 
@@ -98,10 +102,19 @@ struct RefParam {
     hold: f32,
     /// Frames of the declick left to run.
     fading: usize,
-    /// Per source: `(from, target, start frame, length, value)` of its ramp.
-    ramps: Vec<(f32, f32, u64, u64, f32)>,
+    /// Per source still listed: its ramp and last raw value.
+    srcs: BTreeMap<ParamFrom, RefSrc>,
     /// Frames this port has run, to place its ramps.
     clock: u64,
+}
+
+/// One param source's state in the reference.
+#[derive(Default)]
+struct RefSrc {
+    /// `(from, target, start frame, length, value)` of its ramp.
+    ramp: (f32, f32, u64, u64, f32),
+    /// Its raw value on the last frame it ran.
+    last_raw: f32,
 }
 
 struct RefFifo {
@@ -626,15 +639,25 @@ impl Reference {
                 });
                 f.len = d.get() as u64;
             } else {
+                // A param source's line holds the source's last value where
+                // it appears or grows; every other line, silence.
+                let pad = match key {
+                    DelayKey::ParamAudio { at, from } => self
+                        .params
+                        .get(&at)
+                        .and_then(|p| p.srcs.get(&ParamFrom::Audio(from)))
+                        .map_or(0.0, |s| s.last_raw),
+                    _ => 0.0,
+                };
                 let line = self
                     .audio_lines
                     .entry(key)
-                    .or_insert_with(|| VecDeque::from(vec![0.0; d.get()]));
+                    .or_insert_with(|| VecDeque::from(vec![pad; d.get()]));
                 while line.len() > d.get() {
                     line.pop_front();
                 }
                 while line.len() < d.get() {
-                    line.push_front(0.0);
+                    line.push_front(pad);
                 }
             }
         }
@@ -1135,12 +1158,15 @@ impl Reference {
                 }
             }
 
+            let fresh = !self.params.contains_key(&at);
             let st = self.params.entry(at).or_default();
-            if st.sources != sources {
-                st.hold = if st.modulated { st.last } else { b1 };
-                st.fading = decl;
+            if fresh || st.sources != sources {
+                if !fresh {
+                    st.hold = if st.modulated { st.last } else { b1 };
+                    st.fading = decl;
+                }
                 st.sources = sources.clone();
-                st.ramps = vec![(0.0, 0.0, 0, 0, 0.0); sources.len()];
+                st.srcs.retain(|f, _| sources.iter().any(|s| s.from == *f));
             }
             let start = st.clock;
             st.clock += frames as u64;
@@ -1151,6 +1177,7 @@ impl Reference {
             }
             // Event sources: each ramp's value at every frame.
             for (j, s) in sources.iter().enumerate() {
+                let src = st.srcs.entry(s.from).or_default();
                 if let ParamFrom::Events(_) = s.from {
                     let mut vals = vec![0.0f32; frames];
                     let mut evs = ramp_events[j].iter().peekable();
@@ -1159,15 +1186,15 @@ impl Reference {
                         while let Some(e) = evs.next_if(|e| e.offset.index() <= i) {
                             if let EventKind::Ramp(r) = e.kind {
                                 if r.addr() == tutti_types::ParamAddr::Unit(param) {
-                                    let cur = st.ramps[j].4;
-                                    st.ramps[j] =
+                                    let cur = src.ramp.4;
+                                    src.ramp =
                                         (cur, r.raw_target(), now, r.duration().get() as u64, cur);
                                 }
                             }
                         }
-                        let (from, target, at_frame, len, _) = st.ramps[j];
+                        let (from, target, at_frame, len, _) = src.ramp;
                         let value = if now < at_frame {
-                            st.ramps[j].4
+                            src.ramp.4
                         } else {
                             let into = now - at_frame + 1;
                             if into >= len {
@@ -1176,11 +1203,12 @@ impl Reference {
                                 from + (target - from) * (into as f32 / len as f32)
                             }
                         };
-                        st.ramps[j].4 = value;
+                        src.ramp.4 = value;
                         *v = value;
                     }
                     raw[j] = vals;
                 }
+                src.last_raw = raw[j][frames - 1];
             }
             let from = if st.modulated { st.last_base } else { b1 };
             let (lo, hi) = if range.min <= range.max {

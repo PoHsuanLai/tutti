@@ -230,7 +230,8 @@ impl GraphSpec {
     /// Clamp param port `at`'s modulated value to `range` — the param's own
     /// range, so no stack of modulators drives it past what the node
     /// accepts. A range change recompiles; it does not restart the port's
-    /// sources.
+    /// sources. A NaN bound is refused by [`validate`](Self::validate)
+    /// ([`GraphInvalid::BadParamRange`]).
     pub fn set_param_range(&mut self, at: ParamIn, range: ParamRange) {
         self.params.entry(at).or_default().range = range;
     }
@@ -297,6 +298,9 @@ impl GraphSpec {
                     at,
                     count: m.sources.len(),
                 });
+            }
+            if m.range.min.is_nan() || m.range.max.is_nan() {
+                errs.push(GraphInvalid::BadParamRange { at, range: m.range });
             }
         }
         for &(at, from) in self.required_resolution.keys() {
@@ -383,6 +387,16 @@ pub enum GraphInvalid {
         at: ParamIn,
         /// How many it has.
         count: usize,
+    },
+    /// A param port's range has a NaN bound. Refused here rather than
+    /// ordered where it is applied: a NaN bound clamps every value to NaN or
+    /// to the other bound, and `f32::clamp` panics on it — on the audio
+    /// thread. An infinite bound is fine (no clamp on that side).
+    BadParamRange {
+        /// The param port.
+        at: ParamIn,
+        /// Its range.
+        range: ParamRange,
     },
 }
 

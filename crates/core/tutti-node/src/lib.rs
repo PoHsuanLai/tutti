@@ -54,7 +54,7 @@ pub mod value;
 
 pub use audiounit::{AudioUnit, FaultLatch, RenderFault};
 pub use math::AttoHash;
-pub use param_feed::{ParamFeed, MAX_FED_PARAMS};
+pub use param_feed::{ParamFeed, ParamFeedError, MAX_FED_PARAMS};
 pub use setting::{Address, NodeAddr, Parameter, Setting};
 pub use signal::{Routing, Signal, SignalFrame};
 pub use value::{SampleRate, Samples, Tail};

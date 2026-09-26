@@ -251,6 +251,9 @@ struct Adapter {
     pure: bool,
     /// The audio-thread end of [`Legacy::controlled`]'s settings ring.
     settings: Option<HeapCons<Setting>>,
+    /// Whether the last block fed the unit's feed any param, so a block that
+    /// feeds none clears it once and then leaves it alone.
+    fed: bool,
 }
 
 /// Settings one [`Legacy::controlled`] node's ring holds between two of its
@@ -675,6 +678,7 @@ impl Adapter {
             output: BufferVec::new(outs),
             pure: false,
             settings: None,
+            fed: false,
         }
     }
 
@@ -739,7 +743,17 @@ impl Node for Adapter {
                 }
             }
         }
+        // Whether the graph modulates any param this block: when it does
+        // not, the feed is cleared once (if the last block fed it) and each
+        // chunk skips it.
         let n_params = self.shape.params.len();
+        let modulated = n_params != 0 && (0..n_params).any(|k| io.param(k) != ParamInput::Base);
+        if !modulated && self.fed {
+            if let Some(feed) = self.unit.param_feed() {
+                feed.clear_all();
+            }
+        }
+        self.fed = modulated;
         let mut start = 0;
         while start < frames {
             let len = (frames - start).min(LEGACY_CHUNK);
@@ -747,7 +761,7 @@ impl Node for Adapter {
                 self.input.channel_f32_mut(c)[..len]
                     .copy_from_slice(&io.input(c)[start..start + len]);
             }
-            if n_params != 0 {
+            if modulated {
                 // The chunk of each modulated param; the rest read their
                 // own controls (see the module docs).
                 if let Some(feed) = self.unit.param_feed() {

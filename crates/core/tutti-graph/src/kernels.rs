@@ -58,15 +58,35 @@ impl AudioRing {
             .copied()
     }
 
+    /// A ring of `len` already full of `value`, as if it had been fed
+    /// `value` forever: a param source's delay that appears under a running
+    /// port (see the `param` module docs).
+    pub(crate) fn filled(len: Samples, value: f32) -> Self {
+        Self {
+            buf: vec![value; len.get().max(1)],
+            pos: 0,
+            quiet: if value == 0.0 { usize::MAX } else { 0 },
+        }
+    }
+
     /// Change the length, keeping the most recent `min(old, new)` inputs.
     /// Control side: allocates.
     pub(crate) fn retune(&mut self, len: Samples) {
+        self.retune_padded(len, 0.0);
+    }
+
+    /// [`retune`](Self::retune), padding a longer ring's oldest end with
+    /// `pad` instead of silence.
+    pub(crate) fn retune_padded(&mut self, len: Samples, pad: f32) {
         let m = len.get().max(1);
         let n = self.buf.len();
         if m == n {
             return;
         }
-        let mut next = vec![0.0; m];
+        if pad != 0.0 {
+            self.quiet = 0;
+        }
+        let mut next = vec![pad; m];
         let keep = n.min(m);
         for (slot, x) in next[m - keep..]
             .iter_mut()
@@ -315,8 +335,19 @@ impl EventFifo {
         self.clock += frames as u64;
     }
 
-    /// A PDC delay's whole block: queue, emit what is due, advance.
+    /// A PDC delay's whole block: emit what was already queued and falls
+    /// due, queue the block's input, emit what of it falls due too, advance.
+    ///
+    /// The backlog goes out **before** the input is queued: the limit bounds
+    /// events in flight, and an event leaving in this very block is not. A
+    /// FIFO a recompile retuned shorter holds a backlog that is all due at
+    /// once; queued first, the input would have been refused against room
+    /// the backlog was about to free (the reference interpreter, which
+    /// bounds nothing, delivered it). Order is kept: every queued event was
+    /// input before this block's, at the same length, so it falls due no
+    /// later.
     pub(crate) fn run(&mut self, input: &[Event], out: &mut Vec<Event>, frames: usize) -> u32 {
+        self.pop_due(out, frames);
         let dropped = self.push(input);
         self.pop_due(out, frames);
         self.advance(frames);
@@ -361,6 +392,24 @@ mod tests {
         assert_eq!(out, vec![0.0, 0.0, 0.0, 0.0]);
     }
 
+    /// A filled ring outputs its value for its length, then its input; a
+    /// padded retune outputs the pad before the kept history.
+    ///
+    /// Mutation (run): `filled` filling with 0 → the first three outputs
+    /// are 0 → fails. `retune_padded` padding with 0 → the grown ring's
+    /// first output is 0 → fails.
+    #[test]
+    fn a_filled_ring_holds_its_value_and_a_padded_retune_its_pad() {
+        let mut r = AudioRing::filled(Samples(3), 0.5);
+        let mut out = vec![0.0; 5];
+        r.run(&[1.0, 2.0, 3.0, 4.0, 5.0], &mut out, false);
+        assert_eq!(out, vec![0.5, 0.5, 0.5, 1.0, 2.0]);
+        r.retune_padded(Samples(5), 9.0);
+        let mut out = vec![0.0; 5];
+        r.run(&[0.0; 5], &mut out, false);
+        assert_eq!(out, vec![9.0, 9.0, 3.0, 4.0, 5.0]);
+    }
+
     /// An event is delivered `len` frames later, in whichever block that is.
     ///
     /// Mutation: `due >= end` → `due > end` → the event at the block boundary
@@ -373,6 +422,43 @@ mod tests {
         assert!(out.is_empty(), "due at 8, which is the next block");
         f.run(&[], &mut out, 8);
         assert_eq!(out, vec![Event::midi(Offset::ZERO, [7, 0, 0, 0])]);
+    }
+
+    /// A backlog due this block frees its room before the block's input is
+    /// queued: a FIFO holding its limit's worth of overdue events (a retune
+    /// made them due at once) takes a full block of new events without
+    /// refusing one, and delivers all of them in order.
+    ///
+    /// Mutation (run): queue the input before emitting the backlog in `run`
+    /// (the old order) → the input past the limit is refused → fails. Found
+    /// as `recompiles_preserve_state_identically`'s seed
+    /// 3280887136571273968 (the executor dropped an event the reference
+    /// delivered).
+    #[test]
+    fn a_due_backlog_makes_room_for_the_blocks_input() {
+        let mut f = EventFifo::sized(Samples(64), 2, 64);
+        let limit = f.limit;
+        let backlog: Vec<Event> = (0..limit as u32).map(|i| note(i, false, i)).collect();
+        f.push(&backlog);
+        // Shorter: the whole backlog is overdue.
+        f.retune(Samples(1));
+        f.resize(2, 64);
+        let input = [note(0, false, 100), note(1, false, 101)];
+        let mut out = Vec::with_capacity(EventFifo::bound(1, 2, 64));
+        let dropped = f.run(&input, &mut out, 64);
+        assert_eq!(dropped, 0, "nothing refused");
+        let tags: Vec<u32> = out
+            .iter()
+            .map(|e| match e.kind {
+                crate::event::EventKind::Midi(crate::event::Ump(w)) => (w[0] >> 8) & 0x7f,
+                _ => unreachable!("notes only"),
+            })
+            .collect();
+        let want: Vec<u32> = (0..limit as u32).chain([100, 101]).collect();
+        assert_eq!(
+            tags, want,
+            "the backlog first, then the input, all this block"
+        );
     }
 
     /// A feedback ring read before it is written delays by exactly its

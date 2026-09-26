@@ -161,7 +161,7 @@ use crate::node::{
     TransportChanges, MAX_PORTS,
 };
 use crate::param::MAX_PARAM_SOURCES;
-use crate::param::{ParamInput, ParamShaping, ParamState, SourceIn};
+use crate::param::{ParamFrom, ParamInput, ParamShaping, ParamState, SourceIn};
 use crate::plan::{
     DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, ParamSlot, Plan, UnitIdx,
 };
@@ -295,9 +295,10 @@ pub(crate) struct Commit {
     delta: Delta,
     incoming: Vec<(UnitIdx, u32, NodeBox, Option<Box<Crossfade>>, ParamState)>,
     retired: Vec<(NodeKey, NodeBox)>,
-    /// Param state built for an incoming unit that crossfades in over one
-    /// already at its key, which keeps its own (the port's modulation runs
-    /// on across a replace): carried back to be freed on the control side.
+    /// Param state the executor let go of, carried back to be freed on the
+    /// control side: a retired unit's, and one built for an incoming unit
+    /// that crossfades in over one already at its key, which keeps its own
+    /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
     old_state: Option<State>,
 }
@@ -309,11 +310,14 @@ impl Drop for Commit {
 }
 
 impl Commit {
+    /// `params` builds each incoming unit's param state from its key and
+    /// declared port count (the editor's taps and a fork's seeds).
     pub(crate) fn build(
         seq: u64,
         plan: Arc<Plan>,
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
+        mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -346,7 +350,8 @@ impl Commit {
                     });
                 // The unit's param state, sized here so the audio thread
                 // never allocates it (see the `param` module).
-                let params = ParamState::new(
+                let params = params(
+                    p.key,
                     plan.unit(p.key).map_or(0, |u| u.shape.params.len()),
                     max_block,
                 );
@@ -360,7 +365,10 @@ impl Commit {
         );
         // Reserved here so applying moves retirees in without growing.
         let retired = Vec::with_capacity(delta.retire.len() + delta.replace.len());
-        let spare_params = Vec::with_capacity(incoming.len());
+        // Every incoming unit's may come back unused, and every unit leaving
+        // brings its own.
+        let spare_params =
+            Vec::with_capacity(incoming.len() + delta.retire.len() + delta.replace.len());
         Box::new(Self {
             seq,
             suspend: None,
@@ -385,7 +393,7 @@ impl Commit {
             delta: Delta::default(),
             incoming: Vec::new(),
             retired: Vec::with_capacity(units),
-            spare_params: Vec::new(),
+            spare_params: Vec::with_capacity(units),
             old_state: None,
         })
     }
@@ -750,6 +758,7 @@ impl Executor {
                     };
                     cut_fades(&mut unit, &mut self.fade_back);
                     c.retired.push((u.key, unit.node));
+                    c.spare_params.push(unit.params);
                 }
             }
             let (old, new) = (
@@ -800,6 +809,7 @@ impl Executor {
             if let Some(u) = self.store.get_mut(p.idx.0 as usize).and_then(Option::take) {
                 debug_assert_eq!(u.gen, p.gen, "retiring the unit the delta named");
                 c.retired.push((p.key, u.node));
+                c.spare_params.push(u.params);
                 for f in [u.fade, u.queued].into_iter().flatten() {
                     retire_fade(&mut self.fade_back, f);
                 }
@@ -917,6 +927,27 @@ impl Executor {
                     }
                     (DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }, _) => {
                         Ring::Event(EventFifo::sized(d.len, rate(from), max_block))
+                    }
+                    // A param source's delay holds the source's last value
+                    // rather than 0 where it appears or grows (the `param`
+                    // module docs): the port would otherwise drop to its
+                    // base for the delay's length.
+                    (DelayKey::ParamAudio { at, from }, carried) => {
+                        let last = plan
+                            .unit(at.node)
+                            .and_then(|u| {
+                                let k = u.shape.params.index_of(at.param)?;
+                                let unit = self.store.get(u.idx.0 as usize)?.as_ref()?;
+                                unit.params.last_raw(k, ParamFrom::Audio(from))
+                            })
+                            .unwrap_or(0.0);
+                        Ring::Audio(match carried {
+                            Some(Ring::Audio(mut r)) => {
+                                r.retune_padded(d.len, last);
+                                r
+                            }
+                            _ => AudioRing::filled(d.len, last),
+                        })
                     }
                     (_, Some(Ring::Audio(mut r))) => {
                         r.retune(d.len);
@@ -1646,6 +1677,11 @@ fn node_op(
 #[inline(never)]
 fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
     static IDENTITY: ParamShaping = ParamShaping::Identity;
+    // Fills the unused tail of the source array; never read.
+    const NO_SOURCE: ParamFrom = ParamFrom::Events(EventOut {
+        node: NodeKey(0),
+        port: 0,
+    });
     let (rec, frames, plan) = (h.rec, h.frames, h.plan);
     let Unit { node, params, .. } = u;
     params.begin();
@@ -1659,8 +1695,8 @@ fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
         let base = node.param_base(k);
         match next.next_if(|p| p.port as usize == k) {
             Some(p) => {
-                let mut srcs: [(SourceIn<'_>, &ParamShaping); MAX_PARAM_SOURCES] =
-                    [(SourceIn::Audio(&[]), &IDENTITY); MAX_PARAM_SOURCES];
+                let mut srcs: [(SourceIn<'_>, &ParamShaping, ParamFrom); MAX_PARAM_SOURCES] =
+                    [(SourceIn::Audio(&[]), &IDENTITY, NO_SOURCE); MAX_PARAM_SOURCES];
                 let list = &plan.param_sources[p.sources.range()];
                 for (d, s) in srcs.iter_mut().zip(list) {
                     *d = (
@@ -1669,6 +1705,7 @@ fn run_params(u: &mut Unit, h: &Head<'_, '_>, st: &OpState<'_>) {
                             ParamSlot::Event(slot) => SourceIn::Events(&st.events[slot as usize]),
                         },
                         &s.shaping,
+                        s.from,
                     );
                 }
                 params.port(
@@ -1775,7 +1812,15 @@ fn node_op_with(
         *st.dropped += u64::from(lost);
     }
 
-    let table = u.params.inputs(frames);
+    // The table only for a unit whose step delivered frames this block;
+    // every other node reads `Base` for every param (`Io::param`).
+    let table;
+    let params: &[ParamInput<'_>] = if u.params.busy() {
+        table = u.params.inputs(frames);
+        &table[..u.params.port_count()]
+    } else {
+        &[]
+    };
     let call = Call {
         env: h.env,
         max: h.max,
@@ -1786,7 +1831,7 @@ fn node_op_with(
         cap: rec.event_capacity.map_or(h.cap, |n| n.get() as usize),
         injected,
         scheduled: &views[..n_views],
-        params: &table[..u.params.port_count()],
+        params,
     };
     let (status, drops) = call_node(&call, &mut *u.node, st);
     *st.dropped += drops as u64;

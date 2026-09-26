@@ -53,7 +53,7 @@ use crate::arena::Role;
 use crate::fade::Fade;
 use crate::io::PortKind;
 use crate::node::{InPlaceMask, Prepare, Shape};
-use crate::param::{ParamIn, ParamRange, ParamShaping};
+use crate::param::{ParamFrom, ParamIn, ParamRange, ParamShaping};
 use crate::spec::{EventIn, EventOut};
 
 /// The audio slot every unconnected or `Source::Zero` input reads.
@@ -419,6 +419,9 @@ pub enum ParamSlot {
 /// One source of a [`ParamPortOp`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParamSourceOp {
+    /// The source it is: what its running state (an event source's ramp,
+    /// the last value a PDC delay is filled with) is kept by.
+    pub from: ParamFrom,
     /// Where it is read from.
     pub slot: ParamSlot,
     /// How its value becomes an offset.

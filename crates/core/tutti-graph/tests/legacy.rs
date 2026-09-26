@@ -885,8 +885,9 @@ impl AudioUnit for FedGain {
 ///
 /// Mutation (run): in `Legacy::process`, feed every chunk from frame 0 of
 /// the block (`&v[..len]`) → the second chunk repeats the first's values →
-/// fails. Never clear the feed (drop the `Base` arm's `clear`) → after the
-/// disconnect the unit keeps reading the stale feed → fails. Declare no
+/// fails. Never clear the feed (drop the `clear_all` a block that feeds
+/// nothing makes after one that did) → after the disconnect the unit keeps
+/// reading the stale feed → fails. Declare no
 /// params in `Legacy::probe` → the connect is refused at compile → fails.
 #[test]
 fn a_legacy_units_param_feed_carries_the_modulation() {

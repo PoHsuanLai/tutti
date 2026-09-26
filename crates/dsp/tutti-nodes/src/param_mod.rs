@@ -66,4 +66,24 @@ impl ParamModShaping {
             shape(x, depth, polarity, curve)
         }))
     }
+
+    /// Several edges from **one** source into one param, as the one shaping
+    /// the graph can hold for it (a param port lists a source once): the sum
+    /// of their shaped values, baked into one table. The old chain summed
+    /// one shaper per edge; linear interpolation is linear in the table, so
+    /// reading the summed table is that sum up to rounding. One shaping is
+    /// [`shaping`](Self::shaping) itself, bit for bit.
+    ///
+    /// Allocates the table: build it on the control thread.
+    pub fn summed(shapings: &[Self]) -> tutti_graph::ParamShaping {
+        if let [one] = shapings {
+            return one.shaping();
+        }
+        let all = shapings.to_vec();
+        tutti_graph::ParamShaping::Lut(tutti_graph::ShapeLut::from_fn(move |x| {
+            all.iter()
+                .map(|s| shape(x, s.depth, s.polarity, s.curve))
+                .sum()
+        }))
+    }
 }

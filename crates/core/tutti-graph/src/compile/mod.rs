@@ -343,7 +343,7 @@ struct PPort {
     param: tutti_types::UnitParam,
     range: ParamRange,
     sig: u64,
-    sources: Vec<(PRef, ParamShaping)>,
+    sources: Vec<(PRef, ParamShaping, ParamFrom)>,
 }
 
 /// Where a param source reads from, before colouring.
@@ -859,7 +859,7 @@ pub fn compile(
                         }
                     }
                 };
-                sources.push((r, s.shaping.clone()));
+                sources.push((r, s.shaping.clone(), s.from));
             }
             params.push(PPort {
                 port: k as u16,
@@ -871,7 +871,7 @@ pub fn compile(
         }
         let reads: Vec<PRef> = params
             .iter()
-            .flat_map(|p| p.sources.iter().map(|&(r, _)| r))
+            .flat_map(|p| p.sources.iter().map(|&(r, _, _)| r))
             .collect();
 
         let op = em.push(Pre::Node {
@@ -1007,7 +1007,7 @@ pub fn compile(
                     // Nor as a param source: the op reads it there too.
                     if params
                         .iter()
-                        .any(|p| p.sources.iter().any(|&(s, _)| s == PRef::Audio(u)))
+                        .any(|p| p.sources.iter().any(|&(s, _, _)| s == PRef::Audio(u)))
                     {
                         continue;
                     }
@@ -1136,8 +1136,9 @@ pub fn compile(
                 let pstart = param_ports.len() as u32;
                 for p in params {
                     let sstart = param_sources.len() as u32;
-                    for (r, shaping) in &p.sources {
+                    for (r, shaping, from) in &p.sources {
                         param_sources.push(ParamSourceOp {
+                            from: *from,
                             slot: match *r {
                                 PRef::Audio(v) => ParamSlot::Audio(aslot(v)),
                                 PRef::Event(v) => ParamSlot::Event(eslot(v)),

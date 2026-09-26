@@ -533,12 +533,16 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 /// A fork (an export) modulates as the live graph does: the modulation is
 /// part of the graph value it copies, the modulator is upstream of the node
 /// it modulates (so it is forked too, even when no output reaches it), and
-/// the base is the forked unit's own control.
+/// the base is the forked unit's own control. From the fork's first frame:
+/// a forked unit's first block is not a change of sources, so nothing fades
+/// in.
 ///
 /// Mutation (run): drop `fork.params` from `Editor::fork` → the fork plays
 /// the distortion at its base drive → fails. Drop the param sources from
 /// `upstream` → the modulator is not forked and the fork refuses to compile
-/// the modulation → fails.
+/// the modulation → fails. Declick a port's first block (drop the
+/// `st.fresh` branch in `ParamState::port`) → the first frames fade in from
+/// drive 1 → fails.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
@@ -567,7 +571,7 @@ fn a_fork_modulates_as_the_live_graph_does() {
     let x = noise(7);
     let out = fork.render_input(&[&x[..2_000]]).remove(0);
     let at_3 = plain_distortion(3.0);
-    for i in PARAM_DECLICK.get()..2_000 {
+    for i in 0..2_000 {
         assert!(
             (out[i] - at_3[i]).abs() < 1e-6,
             "frame {i}: the fork plays base 1 + 2, drive 3"

@@ -39,15 +39,19 @@
 //!   including edits not yet committed, which is what the next commit would
 //!   install. Wiring, event edges, resolution marks, param modulation and
 //!   parameter values are copied; generations start again at 0 in the new
-//!   editor.
+//!   editor. A modulated param starts at its modulated value on the fork's
+//!   first frame (no declick, `src/param.rs`), and an event source driving
+//!   one starts at the ramp value the live unit holds, a ramp under way
+//!   carrying on from where it is.
 //! - **Fresh units** from each node's fork source, prepared for the fork's
 //!   own [`Prepare`] (a render may run at a different rate or block from the
 //!   device). Latency and tail are probed again at that `Prepare`, as a
 //!   re-prepare does, so a figure set with
 //!   [`set_latency`](Editor::set_latency) is not carried over — the unit
 //!   reports it again at the fork's rate.
-//! - **No state.** PDC delay rings, feedback edges' captured blocks and event
-//!   FIFOs belong to the executor, and a fork gets a new one: it starts
+//! - **No state** but those ramps. PDC delay rings, feedback edges' captured
+//!   blocks and event FIFOs belong to the executor, and a fork gets a new
+//!   one: it starts
 //!   silent, exactly as a `Net` did after `net.reset()`. A feedback loop in a
 //!   fork does not carry the live loop's circulating signal. The executor's
 //!   clock starts at frame 0, and no scheduled command is copied.
@@ -547,6 +551,15 @@ impl Editor {
         for (key, node) in fork.topology.nodes.iter_mut() {
             node.params = live.topology.nodes[key].params.clone();
         }
+        // The event sources' ramps as the live units hold them, so a held
+        // automation value is where the live graph has it from the fork's
+        // first frame (a ramp under way carries on from where it is).
+        editor.seed_params(
+            keys.iter()
+                .flat_map(|&key| self.param_ramps(key))
+                .filter(|(_, ramps)| !ramps.is_empty())
+                .collect(),
+        );
         editor.commit().map_err(ForkError::Commit)?;
         executor.apply_pending();
         editor.collect();

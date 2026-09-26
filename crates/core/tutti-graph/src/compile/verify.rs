@@ -923,6 +923,149 @@ mod tests {
         .0
     }
 
+    /// A modulated graph: generator 1 feeds node 2 (mono in, mono out, in
+    /// place, declaring `Cutoff`), whose `Cutoff` generator 3 modulates;
+    /// generator 4 feeds a second output on its own, unordered with node 2.
+    /// Returns the plan and node 2's op index.
+    fn modulated_plan() -> (Plan, usize) {
+        use crate::param::{ParamFrom, ParamIn, ParamShaping};
+        use tutti_types::UnitParam;
+        let gen = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let thru = Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_in_place()
+            .with_params(&[UnitParam::Cutoff]);
+        let mut t = Topology::default();
+        let mut shapes = Shapes::new();
+        for (k, s) in [(1, gen), (2, thru), (3, gen), (4, gen)] {
+            t.nodes
+                .insert(NodeKey(k), NodeSpec::new("n", s.audio_in, s.audio_out));
+            shapes.insert(NodeKey(k), s);
+        }
+        t.edges.insert(
+            tutti_types::graph::InPort {
+                node: NodeKey(2),
+                port: 0,
+            },
+            tutti_types::graph::Edge::Direct(Source::Node(OutPort {
+                node: NodeKey(1),
+                port: 0,
+            })),
+        );
+        t.outputs = vec![
+            Source::Node(OutPort {
+                node: NodeKey(2),
+                port: 0,
+            }),
+            Source::Node(OutPort {
+                node: NodeKey(4),
+                port: 0,
+            }),
+        ];
+        let mut spec = GraphSpec::new(t);
+        spec.connect_param(
+            ParamIn {
+                node: NodeKey(2),
+                param: UnitParam::Cutoff,
+            },
+            ParamFrom::Audio(OutPort {
+                node: NodeKey(3),
+                port: 0,
+            }),
+            ParamShaping::Identity,
+        );
+        let valid = spec.validate().expect("valid");
+        let plan = compile(
+            &valid,
+            &shapes,
+            &crate::node::Prepare::new(tutti_types::SampleRate(48_000.0), tutti_types::Samples(64)),
+            None,
+        )
+        .expect("compiles")
+        .0;
+        let u = plan.units.iter().position(|u| u.key == NodeKey(2)).unwrap() as u32;
+        let op = plan
+            .ops
+            .iter()
+            .position(|op| matches!(*op, Op::Node { unit, .. } if unit == u))
+            .unwrap();
+        (plan, op)
+    }
+
+    /// Rule 9, and the param reads the other rules see, each reject their
+    /// own corruption of a modulated plan.
+    ///
+    /// Mutations (run), one per group, each failed this test: delete the
+    /// `verify_params(plan)?` call (the three table corruptions pass); drop
+    /// the param reads from `accesses` (the unordered read passes); drop the
+    /// `!param_reads(..)` clause from the in-place check (the param read of
+    /// the in-place slot passes).
+    #[test]
+    fn the_verifier_rejects_each_param_corruption() {
+        use crate::plan::ParamSlot;
+        let (good, op) = modulated_plan();
+        verify(&good).expect("sound");
+        let Op::Node {
+            audio_in,
+            audio_out,
+            in_place,
+            ..
+        } = good.ops[op]
+        else {
+            unreachable!()
+        };
+        assert!(in_place.get(0), "node 2 runs in place");
+        let own = good.audio_list[audio_out.start as usize];
+        assert_eq!(own, good.audio_list[audio_in.start as usize]);
+        let err = |p: &Plan| verify(p).expect_err("corrupt").0;
+
+        // A port the unit does not declare there.
+        let mut bad = good.clone();
+        bad.param_ports[0].param = tutti_types::UnitParam::Q;
+        assert!(err(&bad).contains("does not declare"), "{}", err(&bad));
+
+        // A port with no sources.
+        let mut bad = good.clone();
+        bad.param_ports[0].sources.len = 0;
+        assert!(err(&bad).contains("no sources"), "{}", err(&bad));
+
+        // A port no node op names.
+        let mut bad = good.clone();
+        for o in &mut bad.ops {
+            if let Op::Node { params, .. } = o {
+                *params = crate::plan::Span { start: 0, len: 0 };
+            }
+        }
+        bad.nodes
+            .recs
+            .iter_mut()
+            .for_each(|r| r.params = crate::plan::Span { start: 0, len: 0 });
+        assert!(
+            err(&bad).contains("param ports no node op names"),
+            "{}",
+            err(&bad)
+        );
+
+        // A param read of generator 4's slot, which nothing orders before
+        // node 2: a read of a value that may not be written yet.
+        let other = match good.ops.iter().find_map(|o| match *o {
+            Op::Output {
+                channel: 1, src, ..
+            } => Some(src),
+            _ => None,
+        }) {
+            Some(s) => s,
+            None => unreachable!("output 1 reads generator 4"),
+        };
+        let mut bad = good.clone();
+        bad.param_sources[0].slot = ParamSlot::Audio(other);
+        assert!(verify(&bad).is_err(), "an unordered param read passed");
+
+        // A param read of the slot node 2 overwrites in place.
+        let mut bad = good.clone();
+        bad.param_sources[0].slot = ParamSlot::Audio(own);
+        assert!(err(&bad).contains("in place"), "{}", err(&bad));
+    }
+
     /// The verifier is not a rubber stamp: forcing two concurrent values into
     /// one slot — exactly what a serial-liveness colouring would do — is
     /// reported.

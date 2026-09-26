@@ -225,8 +225,9 @@ pub use node::{
     TransportChangeRejected, TransportChanges, MAX_PORTS, MAX_TRANSPORT_CHANGES,
 };
 pub use param::{
-    ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamRange, ParamShaping, ParamSource,
-    ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK, SHAPE_LUT_LEN,
+    ParamFrom, ParamIn, ParamInput, ParamMod, ParamPorts, ParamPortsError, ParamRange,
+    ParamShaping, ParamSource, ShapeLut, MAX_PARAM_PORTS, MAX_PARAM_SOURCES, PARAM_DECLICK,
+    SHAPE_LUT_LEN,
 };
 pub use plan::{
     Csr, DelayKey, DelaySpec, Delta, EventSlotCapacity, FeedbackKey, FeedbackSpec, Op, ParamPortOp,

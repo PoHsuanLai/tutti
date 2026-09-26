@@ -6,14 +6,21 @@
 //! fork again → render (must differ, so the control is audible and the row
 //! can fail).
 //!
+//! A native node's fork is `fork_fresh` (`tutti_graph::param_parts`), so its
+//! row is a `NativeIsolateRow`: the same four steps, every cell a control
+//! writes — addressed by its `ParamSet` or not (a compressor's knee, a
+//! gate's hold) — with the fork taken as the graph takes it.
+//!
 //! Units with no live cell are not rows — there is nothing to move:
 //! `ChannelSumNode`, `DownmixNode`, `AutomationLaneNode` (its `Arc<dyn Curve>`
 //! is read-only; `set_curve` takes `&mut self` and so cannot reach a live
 //! node) and the `testing` stimulus nodes.
 //!
 //! Mutations (run): delete any one `detach` line from a unit's `isolate`
-//! (or the whole `isolate`) → that unit's row fails on exactly that
-//! control, with "a live move reached the fork". Make `Param::detach`
+//! (or the whole `isolate`), or from a native node's `fork_fresh` → that
+//! row fails on exactly that control, with "a live move reached the fork"
+//! (run natively on the compressor's knee — `fork.core.threshold.detach()`
+//! — and the gate's hold). Make `Param::detach`
 //! reset to `U::default()` instead of keeping the value → rows whose
 //! default differs fail. Make a control's write a no-op → that control
 //! fails with "moving it did not change a fresh fork's output".
@@ -22,7 +29,7 @@ use tutti_core::{
     Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement,
     Resonance, Seconds, Q,
 };
-use tutti_graph::contract::IsolateRow;
+use tutti_graph::contract::{IsolateRow, NativeIsolateRow};
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
     GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
@@ -31,7 +38,7 @@ use tutti_nodes::{
 
 #[test]
 fn compressor() {
-    IsolateRow::new("CompressorNode (stereo)", || {
+    NativeIsolateRow::new("CompressorNode (stereo)", || {
         CompressorNode::stereo(Db(-20.0), 4.0, Seconds(0.005), Seconds(0.05))
             .with_soft_knee(Db(3.0))
             .with_makeup(Db(2.0))
@@ -51,7 +58,7 @@ fn compressor() {
 
 #[test]
 fn gate() {
-    IsolateRow::new("GateNode (stereo)", || {
+    NativeIsolateRow::new("GateNode (stereo)", || {
         GateNode::stereo(Db(-15.0), Seconds(0.001), Seconds(0.005), Seconds(0.02))
             .with_range(Db(-40.0))
     })
@@ -69,7 +76,7 @@ fn gate() {
 
 #[test]
 fn limiter() {
-    IsolateRow::new("LimiterNode (stereo)", || {
+    NativeIsolateRow::new("LimiterNode (stereo)", || {
         LimiterNode::new(Db(-6.0), Db(-3.0))
     })
     .control("threshold", |l| l.set_threshold(Db(-12.0)))
@@ -80,7 +87,7 @@ fn limiter() {
 
 #[test]
 fn brickwall_limiter() {
-    IsolateRow::new("BrickwallLimiterNode (stereo)", || {
+    NativeIsolateRow::new("BrickwallLimiterNode (stereo)", || {
         BrickwallLimiterNode::new(Db(-3.0))
     })
     .control("ceiling", |l| {
@@ -107,7 +114,7 @@ fn delay_line() {
 
 #[test]
 fn distortion() {
-    IsolateRow::new("DistortionNode (stereo)", || {
+    NativeIsolateRow::new("DistortionNode (stereo)", || {
         DistortionNode::new(ShapeKind::Tanh, Drive(2.0))
     })
     .control("drive", |d| d.set_drive(Drive(8.0)))
@@ -157,7 +164,7 @@ fn phaser() {
 
 #[test]
 fn ladder() {
-    IsolateRow::new("LadderFilterNode (LP12)", || {
+    NativeIsolateRow::new("LadderFilterNode (LP12)", || {
         LadderFilterNode::<f64>::new(LadderType::LP12, Hz(1_000.0), Resonance::new_clamped(0.3))
     })
     .control("cutoff", |l| l.set_frequency(Hz(3_000.0)))
@@ -191,7 +198,7 @@ fn eq_band() {
 
 #[test]
 fn bus_strip() {
-    IsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
+    NativeIsolateRow::new("BusStripNode (stereo)", BusStripNode::new)
         .control("volume", |s| s.set_volume(Amplitude(0.5)))
         .control("pan", |s| s.set_pan(Pan::new_clamped(-0.7)))
         .control("mute", |s| s.set_muted(true))

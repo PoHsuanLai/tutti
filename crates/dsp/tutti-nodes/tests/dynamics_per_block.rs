@@ -12,8 +12,12 @@
 //! fail a render the refactor did not touch (see CLAUDE.md, "One live platform
 //! difference remains").
 
-use tutti_core::{AudioUnit, BufferVec, SampleRate};
+use tutti_core::SampleRate;
+use tutti_graph::contract::{drive, prepared};
+use tutti_graph::Node;
 use tutti_nodes::{CompressorNode, GateNode};
+
+const RATE: SampleRate = SampleRate(48_000.0);
 
 const BLOCK: usize = 64;
 const BLOCKS: usize = 8;
@@ -46,58 +50,46 @@ struct Case {
     port: bool,
 }
 
-/// Render through `process` in 64-frame blocks. Returns interleaved-by-channel
-/// output `[c][n]`.
-fn render_process(node: &mut dyn AudioUnit, case: &Case) -> Vec<Vec<f32>> {
+/// Render frames `[start, start + len)` as one block, the threshold on its
+/// param port when the case modulates it. Returns one `Vec` per output.
+fn render_block(node: &mut dyn Node, case: &Case, start: usize, len: usize) -> Vec<Vec<f32>> {
     let ch = case.ch;
-    let mut out = vec![vec![0.0f32; FRAMES]; ch];
-    let mut inb = BufferVec::new(node.inputs());
-    let mut outb = BufferVec::new(ch);
-    let mut threshold = [0.0f32; BLOCK];
-    for b in 0..BLOCKS {
-        for (i, t) in threshold.iter_mut().enumerate() {
-            let n = b * BLOCK + i;
-            for c in 0..ch {
-                inb.set_f32(c, i, audio(c, n));
-                inb.set_f32(ch + c, i, sidechain(c, n));
-            }
-            *t = threshold_signal(n);
-        }
-        if case.port {
-            node.param_feed().expect("fed").feed(0, &threshold);
-        }
-        node.process(BLOCK, &inb.buffer_ref(), &mut outb.buffer_mut());
-        for (c, o) in out.iter_mut().enumerate() {
-            for i in 0..BLOCK {
-                o[b * BLOCK + i] = outb.at_f32(c, i);
-            }
+    let mut ins: Vec<Vec<f32>> = Vec::with_capacity(2 * ch);
+    for c in 0..ch {
+        ins.push((start..start + len).map(|n| audio(c, n)).collect());
+    }
+    for c in 0..ch {
+        ins.push((start..start + len).map(|n| sidechain(c, n)).collect());
+    }
+    let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
+    let threshold: Vec<f32> = (start..start + len).map(threshold_signal).collect();
+    let params: Vec<Option<&[f32]>> = if case.port {
+        vec![Some(&threshold[..])]
+    } else {
+        Vec::new()
+    };
+    drive(node, RATE, &refs, &params)
+}
+
+/// Render in `block`-frame blocks. Returns one `Vec` per output, `[c][n]`.
+fn render_blocks(node: &mut dyn Node, case: &Case, block: usize) -> Vec<Vec<f32>> {
+    let mut out = vec![Vec::with_capacity(FRAMES); case.ch];
+    for start in (0..FRAMES).step_by(block) {
+        for (lane, o) in out.iter_mut().zip(render_block(node, case, start, block)) {
+            lane.extend(o);
         }
     }
     out
 }
 
-/// Render through `tick`, one frame at a time.
-fn render_tick(node: &mut dyn AudioUnit, case: &Case) -> Vec<Vec<f32>> {
-    let ch = case.ch;
-    let mut out = vec![vec![0.0f32; FRAMES]; ch];
-    let mut frame = vec![0.0f32; node.inputs()];
-    let mut o = vec![0.0f32; ch];
-    for n in 0..FRAMES {
-        for c in 0..ch {
-            frame[c] = audio(c, n);
-            frame[ch + c] = sidechain(c, n);
-        }
-        if case.port {
-            node.param_feed()
-                .expect("fed")
-                .feed(0, &[threshold_signal(n)]);
-        }
-        node.tick(&frame, &mut o);
-        for (lane, &s) in out.iter_mut().zip(&o) {
-            lane[n] = s;
-        }
-    }
-    out
+/// Render in 64-frame blocks.
+fn render_process(node: &mut dyn Node, case: &Case) -> Vec<Vec<f32>> {
+    render_blocks(node, case, BLOCK)
+}
+
+/// Render one frame at a time — a block of one, what `tick` was.
+fn render_tick(node: &mut dyn Node, case: &Case) -> Vec<Vec<f32>> {
+    render_blocks(node, case, 1)
 }
 
 /// First and last channel, every `STRIDE`th frame.
@@ -125,20 +117,18 @@ fn assert_pinned(name: &str, got: &[f32], want: &[f32]) {
 // there, so building it no longer depends on it (it was `with_param_inputs`'
 // port flag when the pins were captured; the fed values are unchanged).
 fn compressor(ch: usize, _port: bool) -> CompressorNode {
-    let mut n = CompressorNode::with_channels(-24.0, 4.0, 0.002, 0.05, ch as u8)
+    let n = CompressorNode::with_channels(-24.0, 4.0, 0.002, 0.05, ch as u8)
         .with_soft_knee(6.0)
         .with_makeup(3.0);
-    n.set_sample_rate(SampleRate(48_000.0));
-    n
+    prepared(n, RATE, BLOCK)
 }
 
 fn gate(ch: usize, _port: bool) -> GateNode {
-    let mut n = GateNode::with_channels(-22.0, 0.001, 0.004, 0.02, ch as u8).with_range(-18.0);
-    n.set_sample_rate(SampleRate(48_000.0));
-    n
+    let n = GateNode::with_channels(-22.0, 0.001, 0.004, 0.02, ch as u8).with_range(-18.0);
+    prepared(n, RATE, BLOCK)
 }
 
-type Build = fn(usize, bool) -> Box<dyn AudioUnit>;
+type Build = fn(usize, bool) -> Box<dyn Node>;
 
 fn cases() -> Vec<(&'static str, Build, Case)> {
     let c: Build = |ch, p| Box::new(compressor(ch, p));
@@ -166,11 +156,14 @@ fn print_goldens() {
     }
 }
 
-/// Every pinned render, through both `process` and `tick`.
+/// Every pinned render, in 64-frame blocks and one frame at a time.
 ///
-/// `tick` is held to the same table: a tick is a block of one, so the per-block
-/// read and the per-sample read coincide there, and the table was captured
-/// from `process` — agreement is also the old `process_matches_tick` property.
+/// A frame at a time is held to the same table: a block of one is where the
+/// per-block read and the per-sample read coincide, and the table was
+/// captured from 64-frame blocks — agreement is also the old
+/// `process_matches_tick` property. The table was captured through
+/// `AudioUnit::process` before the port; the native node renders it
+/// unchanged.
 ///
 /// Mutation (each tried): dropping the `* gain` for every channel but 0 in the
 /// planar apply loop fails `comp_stereo`; ignoring the threshold port in favour
@@ -189,22 +182,15 @@ fn renders_match_the_per_sample_goldens() {
 }
 
 /// Steady input for the per-block tests: constant audio and a sidechain loud
-/// enough to hold the compressor in steady reduction.
-fn steady_block(ch: usize) -> BufferVec {
-    let mut b = BufferVec::new(2 * ch);
-    for i in 0..BLOCK {
-        for c in 0..ch {
-            b.set_f32(c, i, 0.5);
-            b.set_f32(ch + c, i, 0.5);
-        }
-    }
-    b
+/// enough to hold the compressor in steady reduction. One `Vec` per input.
+fn steady_block(ch: usize) -> Vec<Vec<f32>> {
+    vec![vec![0.5f32; BLOCK]; 2 * ch]
 }
 
-fn run_block(node: &mut dyn AudioUnit, input: &BufferVec) -> Vec<f32> {
-    let mut out = BufferVec::new(node.outputs());
-    node.process(BLOCK, &input.buffer_ref(), &mut out.buffer_mut());
-    (0..BLOCK).map(|i| out.at_f32(0, i)).collect()
+/// One block over `input`; output channel 0.
+fn run_block(node: &mut dyn Node, input: &[Vec<f32>]) -> Vec<f32> {
+    let refs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+    drive(node, RATE, &refs, &[]).remove(0)
 }
 
 /// A makeup change between blocks is picked up by the next block and ramps
@@ -294,11 +280,7 @@ fn a_threshold_change_takes_effect_on_the_next_block() {
 #[test]
 fn a_gate_range_change_ramps_across_the_next_block() {
     // A closed gate: a silent sidechain, so the output sits at the range floor.
-    let mut input = BufferVec::new(2);
-    for i in 0..BLOCK {
-        input.set_f32(0, i, 0.5);
-        input.set_f32(1, i, 0.0);
-    }
+    let input = vec![vec![0.5f32; BLOCK], vec![0.0f32; BLOCK]];
     let mut node = gate(1, false);
     for _ in 0..200 {
         run_block(&mut node, &input);

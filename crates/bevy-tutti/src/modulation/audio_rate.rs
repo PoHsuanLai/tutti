@@ -405,8 +405,8 @@ mod tests {
     use bevy_ecs::world::World;
     use tutti_types::{Depth, Hz, UnitParam};
 
-    use crate::graph::{CapturedControls, GraphReconcilePlugin};
-    use crate::modulation::{ModSourceRate, ModTargetRegistry, TuttiModulationPlugin};
+    use crate::graph::GraphReconcilePlugin;
+    use crate::modulation::{ModSourceRate, TuttiModulationPlugin};
 
     /// An app with one distortion whose Drive a route can target, ranged
     /// `range`.
@@ -415,12 +415,14 @@ mod tests {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(crate::AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        app.world_mut()
-            .resource_mut::<ModTargetRegistry>()
-            .register::<tutti_nodes::DistortionNode>();
         let dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 5.0);
-        let controls = CapturedControls::capture(app.world(), &dist);
-        let node = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
+        // A native node: its `ParamSet`'s cells are its targets, no registry
+        // entry.
+        let controls = crate::graph::GraphNode::captured(&dist);
+        let (node, _params) = app
+            .world_mut()
+            .resource_mut::<AudioGraphRes>()
+            .insert_node(dist);
         let mut target = app.world_mut().spawn(ModParamRange::default().with(
             ParamAddr::Unit(UnitParam::Drive),
             5.0,

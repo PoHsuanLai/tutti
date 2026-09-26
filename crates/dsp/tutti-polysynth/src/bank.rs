@@ -872,7 +872,7 @@ fn set(field: &mut [V], lane: usize, value: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{Amplitude, AudioUnit, Seconds};
+    use tutti_core::{Amplitude, Seconds};
     use tutti_nodes::{LadderFilterNode, LadderType, SvfFilterNode};
 
     const SR: f64 = 48_000.0;
@@ -1099,25 +1099,6 @@ mod tests {
         (wet, dry)
     }
 
-    fn filter_vs_node(
-        filter: FilterType,
-        cutoff: Hz,
-        res: Resonance,
-        reference: &mut dyn AudioUnit,
-    ) -> (Vec<f32>, Vec<f32>) {
-        let (wet, dry) = filter_vs_dry(filter, cutoff, res);
-        reference.set_sample_rate(sr());
-        let mut out = [0.0f32];
-        let expected = dry
-            .iter()
-            .map(|&x| {
-                reference.tick(&[x], &mut out);
-                out[0]
-            })
-            .collect();
-        (wet, expected)
-    }
-
     /// The lane SVF is `SvfFilterNode`'s filter: same coefficients (from the
     /// shared `compute_svf_coeffs`), same recurrence, same taps.
     ///
@@ -1161,8 +1142,13 @@ mod tests {
             cutoff,
             resonance: res,
         };
-        let mut node = LadderFilterNode::<f32>::new(LadderType::LP24, cutoff, res);
-        let (wet, expected) = filter_vs_node(filter, cutoff, res, &mut node);
+        let (wet, dry) = filter_vs_dry(filter, cutoff, res);
+        // The node as a graph runs it, prepared at the bank's rate.
+        let mut node = tutti_graph::Solo::new(
+            LadderFilterNode::<f32>::new(LadderType::LP24, cutoff, res),
+            tutti_graph::Prepare::new(sr(), tutti_core::Samples(64)),
+        );
+        let expected = node.render_input(&[&dry]).remove(0);
         for (i, (w, e)) in wet.iter().zip(&expected).enumerate() {
             assert!((w - e).abs() < 2e-3, "frame {i}: lane {w}, node {e}");
         }

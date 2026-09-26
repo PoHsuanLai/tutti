@@ -34,16 +34,19 @@
 //! other folds in `tutti-types`, so this node and the root fold share it and
 //! the coefficients stay singular.
 
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Signal, SignalFrame, Tail};
+use tutti_core::{ChannelLayout, Tail};
+use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::fold_frame;
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
 /// Dolby matrices.
 ///
-/// Arity is fixed for the instance's lifetime, like every other unit: `inputs()`
-/// is the source width, `outputs()` the target. Changing either is a respawn,
-/// not a mutation — `Net::crossfade`/`replace` assert on arity, and a vertex
-/// sizes its buffers once at construction.
+/// Arity is fixed for the instance's lifetime, like every other node: its
+/// shape's input is the source width, its output the target. Changing either
+/// is a re-insert, not a mutation — a shape change is a recompile.
+///
+/// A native node with no controls: inserted, its controls are `()` and a
+/// fork of it is a clone (it shares nothing).
 #[derive(Clone, Debug)]
 pub struct DownmixNode {
     src: ChannelLayout,
@@ -58,14 +61,14 @@ pub struct DownmixNode {
     /// never allocates.
     frame: Vec<f32>,
     /// Scratch for one folded output frame, sized at construction for the same
-    /// reason. `fold_frame` writes into a contiguous slice, but `BufferMut` is
-    /// written per channel index, so the fold needs a landing place first.
+    /// reason. `fold_frame` writes into a contiguous slice, but the outputs are
+    /// planar, one slice per channel, so the fold needs a landing place first.
     folded: Vec<f32>,
 }
 
 impl DownmixNode {
     /// A fold from `src` channels to `dst`. Both are clamped to at least mono —
-    /// a zero-wide unit would report 0 ports, which is not a node.
+    /// a zero-wide node would declare 0 ports, which is not a node.
     pub fn new(src: impl Into<ChannelLayout>, dst: impl Into<ChannelLayout>) -> Self {
         let src = ChannelLayout::from(src.into().count().max(1));
         let dst = ChannelLayout::from(dst.into().count().max(1));
@@ -98,22 +101,18 @@ impl DownmixNode {
     }
 }
 
-impl AudioUnit for DownmixNode {
-    fn inputs(&self) -> usize {
-        self.src.count() as usize
+impl Node for DownmixNode {
+    /// `src` in, `dst` out. A downmix is a per-frame matrix, so it has no
+    /// latency and stops with its input.
+    fn shape(&self) -> Shape {
+        Shape::audio(self.src, self.dst).with_tail(Tail::None)
     }
 
-    fn outputs(&self) -> usize {
-        self.dst.count() as usize
-    }
+    fn prepare(&mut self, _: &Prepare) {}
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // Already an interleaved frame — no gather needed.
-        fold_frame(input, output);
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        let (inputs, mut outputs) = io.split();
         // Take both scratches so `fold_frame` can borrow them while `self` is
         // borrowed mutably; put them back before returning. Both are sized at
         // construction, so this path allocates nothing at any width.
@@ -121,60 +120,43 @@ impl AudioUnit for DownmixNode {
         let mut folded = core::mem::take(&mut self.folded);
         for i in 0..size {
             for (c, f) in frame.iter_mut().enumerate() {
-                *f = input.at_f32(c, i);
+                *f = inputs.get(c)[i];
             }
             fold_frame(&frame, &mut folded);
             for (c, v) in folded.iter().enumerate() {
-                output.set_f32(c, i, *v);
+                outputs.get(c)[i] = *v;
             }
         }
         self.frame = frame;
         self.folded = folded;
+        Status::Modified
     }
 
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // The fold is memoryless, so every output is zero-latency. `Signal`
-        // cannot express a many-to-one linear map; `ChannelSumNode` — also
-        // many-to-one — reports the same thing for the same reason.
-        let mut output = SignalFrame::new(self.outputs());
-        for c in 0..self.outputs() {
-            output.set(c, Signal::Latency(0.0));
-        }
-        output
-    }
+    fn reset(&mut self) {}
+}
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::DOWNMIX_ID
-    }
+/// No controls; a fork is a clone ([`ForkByClone`]): the node holds only its
+/// widths and scratch.
+impl IntoNode for DownmixNode {
+    type Controls = ();
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    /// A downmix is a per-frame matrix, so it stops with its input.
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<()> {
+        ForkByClone(self).into_parts()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{tick, RATE};
+    use tutti_graph::contract::drive;
     use tutti_types::{fold_frame_to_mono, fold_frame_to_stereo, M3DB};
 
     #[test]
     fn arity_comes_from_the_two_layouts() {
         let u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
-        assert_eq!(u.inputs(), 6);
-        assert_eq!(u.outputs(), 2);
+        assert_eq!(u.shape().audio_in.count(), 6);
+        assert_eq!(u.shape().audio_out.count(), 2);
         assert_eq!(u.source_layout(), ChannelLayout::from(6u16));
         assert_eq!(u.target_layout(), ChannelLayout::STEREO);
     }
@@ -182,16 +164,20 @@ mod tests {
     #[test]
     fn degenerate_widths_clamp_to_mono() {
         let u = DownmixNode::new(ChannelLayout::EMPTY, ChannelLayout::EMPTY);
-        assert_eq!(u.inputs(), 1, "a zero-port unit is not a node");
-        assert_eq!(u.outputs(), 1);
+        assert_eq!(
+            u.shape().audio_in.count(),
+            1,
+            "a zero-port unit is not a node"
+        );
+        assert_eq!(u.shape().audio_out.count(), 1);
     }
 
     #[test]
-    fn tick_matches_the_shared_matrix() {
+    fn a_frame_matches_the_shared_matrix() {
         let mut u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 2];
-        u.tick(&frame, &mut out);
+        tick(&mut u, &frame, &mut out);
 
         let (l, r) = fold_frame_to_stereo(&frame);
         assert_eq!(
@@ -202,21 +188,23 @@ mod tests {
     }
 
     #[test]
-    fn tick_to_mono_matches_the_shared_matrix() {
+    fn a_frame_to_mono_matches_the_shared_matrix() {
         let mut u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::MONO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 1];
-        u.tick(&frame, &mut out);
+        tick(&mut u, &frame, &mut out);
         assert_eq!(out[0], fold_frame_to_mono(&frame));
     }
 
-    /// The only bug this node can really have is a gather/scatter index error,
-    /// which `tick` (already handed a frame) cannot expose. Blocked `process`
-    /// must agree with it sample for sample.
+    /// The only bug this node can really have is a gather/scatter index error.
+    /// One block must agree, sample for sample, with the shared matrix applied
+    /// to each frame gathered by hand.
+    ///
+    /// Mutation (run): gather `inputs.get(0)` for every channel in `process`
+    /// → the fold sees a mono frame → fails.
     #[test]
-    fn process_agrees_with_tick() {
+    fn a_block_agrees_with_the_matrix_per_frame() {
         const N: usize = 64;
-        let mut ticked = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         let mut processed = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
 
         // A distinct waveform per channel, so a transposed index is visible.
@@ -227,33 +215,17 @@ mod tests {
                     .collect()
             })
             .collect();
+        let refs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
+        let out = drive(&mut processed, RATE, &refs, &[]);
 
-        let mut in_buf = tutti_core::BufferVec::new(6);
-        let mut out_buf = tutti_core::BufferVec::new(2);
-        #[allow(
-            clippy::needless_range_loop,
-            reason = "`c` and `i` are a (channel, frame) coordinate that `set_f32` takes as two arguments — the payload, not a cursor over `input`"
-        )]
-        for c in 0..6 {
-            for i in 0..N {
-                in_buf.buffer_mut().set_f32(c, i, input[c][i]);
-            }
-        }
-        processed.process(N, &in_buf.buffer_ref(), &mut out_buf.buffer_mut());
-
-        #[allow(
-            clippy::needless_range_loop,
-            reason = "a coordinate, not a cursor: `i` gathers one frame across all six channel planes and then indexes the output buffer"
-        )]
         for i in 0..N {
-            let frame: Vec<f32> = (0..6).map(|c| input[c][i]).collect();
-            let mut expect = [0.0f32; 2];
-            ticked.tick(&frame, &mut expect);
-            for (c, e) in expect.iter().enumerate() {
-                let got = out_buf.buffer_ref().at_f32(c, i);
+            let frame: Vec<f32> = input.iter().map(|c| c[i]).collect();
+            let (l, r) = fold_frame_to_stereo(&frame);
+            for (c, e) in [l, r].iter().enumerate() {
+                let got = out[c][i];
                 assert!(
                     (got - e).abs() < 1e-6,
-                    "process diverged from tick at sample {i}, channel {c}: {got} vs {e}"
+                    "the block diverged from the matrix at sample {i}, channel {c}: {got} vs {e}"
                 );
             }
         }
@@ -267,7 +239,7 @@ mod tests {
         // FL FR C LFE SL SR — energy only in C.
         let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         let mut out = [0.0f32; 2];
-        u.tick(&frame, &mut out);
+        tick(&mut u, &frame, &mut out);
 
         assert!(
             (out[0] - M3DB).abs() < 1e-6 && (out[1] - M3DB).abs() < 1e-6,
@@ -279,7 +251,7 @@ mod tests {
     fn upmix_zero_fills_rather_than_inventing_channels() {
         let mut u = DownmixNode::new(ChannelLayout::STEREO, ChannelLayout::from(6u16));
         let mut out = [0.0f32; 6];
-        u.tick(&[0.8, -0.6], &mut out);
+        tick(&mut u, &[0.8, -0.6], &mut out);
 
         assert_eq!(&out[..2], &[0.8, -0.6], "the existing pair passes through");
         assert!(

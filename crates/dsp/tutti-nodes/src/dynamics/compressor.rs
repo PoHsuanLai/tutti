@@ -2,16 +2,16 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, MAX_BUFFER_SIZE};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::envelope::EnvelopeFollower;
 use super::params::{AttackRelease, ThresholdParams};
 use super::utils::{
     amplitude_to_db, apply_gain_lane, compute_compressor_gain_reduction, db_to_amplitude, ramp_db,
-    sidechain_level_buffer, sidechain_level_slice,
+    sidechain_level,
 };
-use tutti_core::{Amplitude, CompressionRatio, Db, Param, ParamFeed, SampleRate, Seconds, Tail};
+use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::LastGood;
 
@@ -37,7 +37,7 @@ pub(super) struct CompressorCore {
 }
 
 /// The controls one block runs on, read from their atomics **once** at the
-/// top of `process` / `tick`.
+/// top of `process`.
 ///
 /// Four atomic loads per sample used to sit inside the gain computation. The
 /// detector-side three (threshold, knee, ratio) are held for the block: they
@@ -56,7 +56,7 @@ pub(super) struct CompressorBlock {
 
 impl CompressorCore {
     /// Builds the shared core. The follower is seeded at the placeholder
-    /// [`SampleRate::DEFAULT`]; `CompressorNode::set_sample_rate` retunes it
+    /// [`SampleRate::DEFAULT`]; `CompressorNode`'s `prepare` retunes it
     /// from `timing`, which is why the times are kept as [`Seconds`] rather
     /// than only as coefficients — the seconds are the recoverable form, the
     /// coefficients are not.
@@ -203,16 +203,23 @@ impl CompressorCore {
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). The threshold is modulatable by the graph (design doc 013
-/// item 6; [`COMPRESSOR_PARAMS`]): a per-frame threshold in [`Db`] fed to the node's
-/// [`ParamFeed`](tutti_core::ParamFeed) overrides the threshold atomic per
-/// sample. Unfed, the node reads its atomic, which is the common case; the
-/// arity never changes.
+/// item 6; [`COMPRESSOR_PARAMS`]): a per-frame threshold in [`Db`] on the
+/// param port ([`Io::param`](tutti_graph::Io::param)) overrides the threshold
+/// cell per sample. Unmodulated, the node reads its cell once per block,
+/// which is the common case; the arity never changes.
+///
+/// # In a graph
+///
+/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over threshold, ratio, attack, release and makeup (as
+/// [`UnitParam::GainDb`]), and a fork of it starts from the values last set
+/// through that set. The graph prepares it at the device rate before its
+/// first block.
 pub struct CompressorNode {
     core: CompressorCore,
     channels: ChannelLayout,
-    /// A per-frame threshold from the graph, when it modulates it: overrides
-    /// the threshold atomic per sample.
-    feed: ParamFeed,
+    /// The per-frame gain lane, sized to the prepared `MaxBlock`.
+    gains: Vec<f32>,
 }
 
 /// The params a [`CompressorNode`] lets the graph modulate, in port order.
@@ -231,22 +238,8 @@ impl CompressorNode {
     /// Knee is hard and makeup is 0 dB; add them with
     /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup).
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**: `attack` and
-    /// `release` become one-pole coefficients, a conversion from [`Seconds`]
-    /// into a per-sample decay that needs the device rate. Call
-    /// [`AudioUnit::set_sample_rate`] before the first `process`; it recomputes
-    /// them from the times, which stay stored as [`Seconds`].
-    ///
-    /// Skipping it at 48 kHz makes both envelope times 8.8% short — a 10 ms
-    /// attack behaves like 9.1 ms, so the compressor grabs transients slightly
-    /// harder and recovers slightly sooner than asked. Nothing sounds broken; it
-    /// is simply not the compressor that was configured. Every constructor on
-    /// this type funnels through
-    /// [`with_channels`](Self::with_channels) and inherits this. See the
-    /// crate-level "born at a placeholder rate" section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The envelope's one-pole coefficients are derived from the times at
+    /// the rate [`Node::prepare`] hands it.
     pub fn mono(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -285,7 +278,7 @@ impl CompressorNode {
         Self {
             core: CompressorCore::new(threshold_db, ratio, attack, release),
             channels: ChannelLayout::from(channels.max(1) as u16),
-            feed: ParamFeed::new(&COMPRESSOR_PARAMS),
+            gains: Vec::new(),
         }
     }
 
@@ -432,142 +425,102 @@ impl CompressorNode {
     }
 }
 
-impl AudioUnit for CompressorNode {
-    fn inputs(&self) -> usize {
-        2 * self.channels.count() as usize
+impl Node for CompressorNode {
+    /// `2 * channels` in (audio, then sidechain), `channels` out, the
+    /// threshold modulatable ([`COMPRESSOR_PARAMS`]).
+    ///
+    /// No tail: the release envelope decays after the input goes silent,
+    /// but it only scales (`output = input * gain`), so a silent input is a
+    /// silent output whatever the envelope is doing.
+    fn shape(&self) -> Shape {
+        let n = self.channels.count();
+        Shape::audio(ChannelLayout::from_count(2 * n), self.channels)
+            .with_tail(Tail::None)
+            .with_params(&COMPRESSOR_PARAMS)
     }
 
-    fn outputs(&self) -> usize {
-        self.channels.count() as usize
+    fn prepare(&mut self, p: &Prepare) {
+        self.core.set_sample_rate(p.sample_rate());
+        self.gains = vec![0.0; p.max_block().get()];
     }
 
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.core.threshold.detach();
-        self.core.ratio.detach();
-        self.core.timing.detach();
-        self.core.makeup_db.detach();
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        self.core.update_coefficients();
+        let block = self.core.begin_block();
+        let ch = self.channels.count() as usize;
+        // A modulated threshold overrides the cell per sample; the cell is
+        // the base the graph's modulation rides on.
+        let threshold_fed = io.param(0).frames();
+        let (inputs, mut outputs) = io.split();
+
+        // The detector is a recursive envelope, so it runs sample-outer into a
+        // per-block gain lane; the gain is then applied channel-outer over
+        // planar slices, a memoryless multiply the compiler can vectorize.
+        // The lane is sized to the prepared `MaxBlock`.
+        let gains = &mut self.gains[..size];
+        for (i, g) in gains.iter_mut().enumerate() {
+            let sc = sidechain_level(&inputs, ch, i);
+            let threshold = threshold_fed.map(|v| Db(v[i]));
+            *g = self.core.compute_gain(&block, i, size, sc, threshold);
+        }
+        apply_gain_lane(gains, ch, &inputs, &mut outputs);
+        Status::Modified
     }
 
     fn reset(&mut self) {
         self.core.reset();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.core.set_sample_rate(sample_rate);
-    }
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.core.update_coefficients();
-        // A tick is a block of one: the controls are read once here too, and
-        // the makeup ramp lands on its end point in its only frame.
-        let block = self.core.begin_block();
-        let ch = self.channels.count() as usize;
-        // A fed threshold overrides the atomic, which is the base the graph's
-        // modulation rides on.
-        let threshold = self.feed.get(0, 1).map(|v| Db(v[0]));
-        let sc = sidechain_level_slice(input, ch);
-        let gain = self.core.compute_gain(&block, 0, 1, sc, threshold);
-        for c in 0..ch {
-            output[c] = input[c] * gain;
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.core.update_coefficients();
-        let block = self.core.begin_block();
-        let ch = self.channels.count() as usize;
-        // Moved out for the loop, which borrows the core mutably; moving it
-        // allocates nothing.
-        let feed = ParamFeed::take(&mut self.feed);
-        let threshold_fed = feed.get(0, size);
-
-        // The detector is a recursive envelope, so it runs sample-outer into a
-        // per-block gain lane; the gain is then applied channel-outer over
-        // planar slices, a memoryless multiply the compiler can vectorize.
-        // `size` is at most `MAX_BUFFER_SIZE` (a buffer's fixed width), so the
-        // lane lives on the stack.
-        let mut gains = [0.0f32; MAX_BUFFER_SIZE];
-        for (i, g) in gains[..size].iter_mut().enumerate() {
-            let sc = sidechain_level_buffer(input, ch, i);
-            let threshold = threshold_fed.map(|v| Db(v[i]));
-            *g = self.core.compute_gain(&block, i, size, sc, threshold);
-        }
-        apply_gain_lane(&gains[..size], ch, input, output);
-        self.feed = feed;
-    }
-
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
-    }
-
     fn param_base(&self, k: usize) -> Option<f32> {
         (k == 0).then(|| self.core.threshold.threshold.load().get())
     }
+}
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Threshold => self.set_threshold(value),
-                tutti_core::UnitParam::Ratio => self.set_ratio(value),
-                tutti_core::UnitParam::Attack => self.set_attack(value),
-                tutti_core::UnitParam::Release => self.set_release(value),
-                tutti_core::UnitParam::GainDb => self.set_makeup(value),
-                _ => {}
-            }
-        }
+impl ParamNode for CompressorNode {
+    /// Threshold, ratio, attack, release, and the makeup gain as
+    /// [`UnitParam::GainDb`] (the address `set(Setting)` took it by).
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Threshold, self.threshold())
+            .param(UnitParam::Ratio, self.ratio())
+            .param(UnitParam::Attack, self.attack_time())
+            .param(UnitParam::Release, self.release_time())
+            .param(UnitParam::GainDb, self.makeup_gain())
+            .build()
     }
 
-    fn get_id(&self) -> u64 {
-        if self.channels.is_mono() {
-            crate::node_id::COMPRESSOR_ID
-        } else {
-            crate::node_id::STEREO_COMPRESSOR_ID
-        }
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let ch = self.channels.count() as usize;
-        let mut output = SignalFrame::new(ch);
-        for c in 0..ch {
-            output.set(c, input.at(c));
-        }
-        output
-    }
-
-    /// A gain processor stops with its input.
-    ///
-    /// The release envelope decays after the input goes silent, but it only
-    /// scales: `output = input * gain`, so a silent input is a silent output
-    /// whatever the envelope is doing. Declared rather than left `Unknown` —
-    /// one unreporting node on the output path makes the whole graph's tail
-    /// unspendable.
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    /// A clone with every control cell detached (the knee too, which has no
+    /// address but is read per block), its envelope cleared.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.core.threshold.detach();
+        fork.core.ratio.detach();
+        fork.core.timing.detach();
+        fork.core.makeup_db.detach();
+        Node::reset(&mut fork);
+        fork
     }
 }
 
+/// Inserted with its [`ParamSet`] as its controls and a fork from the values
+/// last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for CompressorNode {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
+    }
+}
+
+/// Shares the control cells (the template [`tutti_graph::param_parts`]
+/// forks from); the detector state is copied.
 impl Clone for CompressorNode {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
             channels: self.channels,
-            feed: self.feed.clone(),
+            gains: self.gains.clone(),
         }
     }
 }
@@ -575,17 +528,42 @@ impl Clone for CompressorNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
     use core::sync::atomic::Ordering;
+    use tutti_graph::contract::{assert_param_fork, drive};
+
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it.
+    ///
+    /// Mutation (run): drop `fork.core.ratio.detach()` in `fork_fresh` → "a
+    /// live write reached the fork" for `Ratio` → fails.
+    #[test]
+    fn a_fork_shares_no_cell() {
+        assert_param_fork(CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1).with_makeup(3.0));
+    }
+
+    /// A block longer than the old 64-frame stack lane renders whole: the
+    /// gain lane is sized from the prepared `MaxBlock`, not a constant.
+    ///
+    /// Mutation (run): size the lane `vec![0.0; 64]` in `prepare` → the
+    /// 1024-frame block panics indexing past it → fails.
+    #[test]
+    fn a_block_up_to_the_prepared_maximum_renders() {
+        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
+        let audio = vec![0.5f32; 1024];
+        let sc = vec![0.9f32; 1024];
+        let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+        assert!(out[1023] < 0.5, "the loud sidechain reduced the tail");
+    }
 
     #[test]
     fn test_compressor_mono_reduces_gain_on_loud_sidechain() {
-        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        comp.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
         let mut output = [0.0f32];
 
         for _ in 0..1000 {
-            comp.tick(&[0.5, 0.9], &mut output);
+            tick(&mut comp, &[0.5, 0.9], &mut output);
         }
 
         assert!(comp.gain_reduction_db() > Db::UNITY);
@@ -594,13 +572,12 @@ mod tests {
 
     #[test]
     fn test_compressor_mono_no_reduction_below_threshold() {
-        let mut comp = CompressorNode::mono(-10.0, 4.0, 0.001, 0.1);
-        comp.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp = prepared_at(CompressorNode::mono(-10.0, 4.0, 0.001, 0.1), RATE_44K);
 
         let mut output = [0.0f32];
 
         for _ in 0..1000 {
-            comp.tick(&[0.5, 0.1], &mut output);
+            tick(&mut comp, &[0.5, 0.1], &mut output);
         }
 
         assert!(comp.gain_reduction_db() < Db(1.0));
@@ -608,18 +585,19 @@ mod tests {
 
     #[test]
     fn test_compressor_soft_knee_differs_from_hard_knee() {
-        let mut hard = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        hard.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut hard = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
-        let mut soft = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(12.0);
-        soft.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut soft = prepared_at(
+            CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(12.0),
+            RATE_44K,
+        );
 
         let mut hard_out = [0.0f32];
         let mut soft_out = [0.0f32];
 
         for _ in 0..1000 {
-            hard.tick(&[0.5, 0.15], &mut hard_out);
-            soft.tick(&[0.5, 0.15], &mut soft_out);
+            tick(&mut hard, &[0.5, 0.15], &mut hard_out);
+            tick(&mut soft, &[0.5, 0.15], &mut soft_out);
         }
 
         assert!(
@@ -632,18 +610,20 @@ mod tests {
 
     #[test]
     fn test_compressor_makeup_gain() {
-        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_makeup(6.0);
-        comp.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp = prepared_at(
+            CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_makeup(6.0),
+            RATE_44K,
+        );
 
-        let mut comp_no_makeup = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        comp_no_makeup.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp_no_makeup =
+            prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
         let mut output = [0.0f32];
         let mut output_no_makeup = [0.0f32];
 
         for _ in 0..1000 {
-            comp.tick(&[0.5, 0.9], &mut output);
-            comp_no_makeup.tick(&[0.5, 0.9], &mut output_no_makeup);
+            tick(&mut comp, &[0.5, 0.9], &mut output);
+            tick(&mut comp_no_makeup, &[0.5, 0.9], &mut output_no_makeup);
         }
 
         assert!(output[0] > output_no_makeup[0]);
@@ -651,12 +631,11 @@ mod tests {
 
     #[test]
     fn test_compressor_reset() {
-        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        comp.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
         let mut output = [0.0f32];
         for _ in 0..1000 {
-            comp.tick(&[0.5, 0.9], &mut output);
+            tick(&mut comp, &[0.5, 0.9], &mut output);
         }
         assert!(comp.gain_reduction_db() > Db::UNITY);
 
@@ -674,13 +653,12 @@ mod tests {
 
     #[test]
     fn test_compressor_stereo_reduces_on_loud_sidechain() {
-        let mut comp = CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1);
-        comp.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut comp = prepared_at(CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
         let mut output = [0.0f32; 2];
 
         for _ in 0..1000 {
-            comp.tick(&[0.5, 0.5, 0.9, 0.9], &mut output);
+            tick(&mut comp, &[0.5, 0.5, 0.9, 0.9], &mut output);
         }
 
         assert!((output[0] - output[1]).abs() < 0.001);
@@ -691,60 +669,48 @@ mod tests {
     fn test_compressor_stereo_channel_count() {
         let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(mono.channels(), 1);
-        assert_eq!(mono.inputs(), 2);
-        assert_eq!(mono.outputs(), 1);
+        assert_eq!(mono.shape().audio_in.count(), 2);
+        assert_eq!(mono.shape().audio_out.count(), 1);
 
         let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(stereo.channels(), 2);
-        assert_eq!(stereo.inputs(), 4);
-        assert_eq!(stereo.outputs(), 2);
+        assert_eq!(stereo.shape().audio_in.count(), 4);
+        assert_eq!(stereo.shape().audio_out.count(), 2);
 
         let quad = CompressorNode::with_channels(-20.0, 4.0, 0.001, 0.1, 4);
         assert_eq!(quad.channels(), 4);
-        assert_eq!(quad.inputs(), 8);
-        assert_eq!(quad.outputs(), 4);
-    }
-
-    #[test]
-    fn test_compressor_get_id_distinguishes_mono_and_stereo() {
-        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
-        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
-        assert_eq!(mono.get_id(), crate::node_id::COMPRESSOR_ID);
-        assert_eq!(stereo.get_id(), crate::node_id::STEREO_COMPRESSOR_ID);
+        assert_eq!(quad.shape().audio_in.count(), 8);
+        assert_eq!(quad.shape().audio_out.count(), 4);
     }
 
     // ── Modulated threshold (the graph's param feed) ────────────────────────
 
-    /// The feed declares the threshold, and never changes the arity: audio
-    /// plus sidechain, at every width.
+    /// The shape declares the threshold, and it never changes the arity:
+    /// audio plus sidechain, at every width.
     ///
-    /// Mutation (run): declare the feed empty → the first assertion fails.
+    /// Mutation (run): declare no params in `shape` → the first assertion
+    /// fails.
     #[test]
-    fn compressor_declares_its_threshold_feed() {
-        let mut m = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        assert_eq!(
-            m.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Threshold][..])
-        );
-        assert_eq!(m.inputs(), 2);
+    fn compressor_declares_its_threshold_param() {
+        let m = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
+        assert_eq!(m.shape().params.as_slice(), &[UnitParam::Threshold][..]);
+        assert_eq!(m.shape().audio_in.count(), 2);
         assert_eq!(
             m.param_base(0),
             Some(-20.0),
             "the base is the threshold control"
         );
         let s = CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1);
-        assert_eq!(s.inputs(), 4);
+        assert_eq!(s.shape().audio_in.count(), 4);
     }
 
     #[test]
     fn compressor_unmodulated_matches_held_constant() {
         // A modulated mono compressor whose fed threshold is held at the same
         // value as a plain compressor's atomic must produce identical output.
-        let mut plain = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        plain.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut plain = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
-        let mut modn = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
-        modn.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut modn = prepared_at(CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1), RATE_44K);
 
         let mut plain_out = [0.0f32];
         let mut mod_out = [0.0f32];
@@ -753,9 +719,8 @@ mod tests {
             // threshold fed at its atomic value (-20.0).
             let audio = 0.5;
             let sc = if n % 2 == 0 { 0.9 } else { 0.3 };
-            plain.tick(&[audio, sc], &mut plain_out);
-            modn.param_feed().expect("fed").feed(0, &[-20.0]);
-            modn.tick(&[audio, sc], &mut mod_out);
+            tick(&mut plain, &[audio, sc], &mut plain_out);
+            tick_fed(&mut modn, &[audio, sc], &[Some(-20.0)], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6,
                 "modulated-held output diverges from plain at sample {n}: {} vs {}",

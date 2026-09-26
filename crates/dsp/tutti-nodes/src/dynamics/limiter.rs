@@ -9,12 +9,14 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame};
+use tutti_core::ChannelLayout;
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
-use tutti_core::{Db, Param, ParamFeed, SampleRate, Samples, Seconds, Tail};
+use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
+use tutti_types::Latency;
 use tutti_types::UnitParam;
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
@@ -64,12 +66,6 @@ impl LookaheadRing {
         self.sample_counter = 0;
     }
 
-    #[inline]
-    fn footprint(&self) -> usize {
-        self.buffers.iter().map(|b| b.len()).sum::<usize>() * core::mem::size_of::<f32>()
-            + self.min_deque.capacity() * core::mem::size_of::<(u64, f32)>()
-    }
-
     /// Read the lookahead-delayed sample for each channel into `delayed`, push
     /// the current `frame` into the rings, feed `gain` to the sliding minimum,
     /// and return the window-min gain (the linked gain reduction all channels
@@ -101,22 +97,29 @@ impl LookaheadRing {
 /// gain decision runs ahead of it, so reduction is already in place when a peak
 /// arrives rather than chasing it.
 ///
-/// That delay is real latency: the node reports it via `AudioUnit`, and a graph
-/// that mixes this against a dry path needs the delay compensated.
+/// That delay is real latency: the node declares it in its [`Shape`], and the
+/// graph's PDC compensates a dry path mixed against it.
 ///
 /// The minimum gain over the lookahead window is tracked with a
 /// [`MonotonicMinDeque`], so each sample costs O(1) amortized regardless of
 /// lookahead length. Nothing in the RT path allocates: the rings and scratch
-/// frames are sized at construction.
+/// frames are sized at construction, the ring when the graph prepares it.
 ///
 /// # Modulated params
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
 /// and the threshold (both dB) are modulatable by the graph (design doc 013
-/// item 6), in that port order ([`LIMITER_PARAMS`]): a per-frame value fed
-/// to the node's [`ParamFeed`](tutti_core::ParamFeed) overrides its atomic
-/// per sample. Unfed, the node reads its atomics, which is the common case;
-/// the arity never changes.
+/// item 6), in that port order ([`LIMITER_PARAMS`]): a per-frame value on
+/// the param port ([`Io::param`](tutti_graph::Io::param)) overrides its cell
+/// per sample. Unmodulated, the node reads its cells once per block, which
+/// is the common case; the arity never changes.
+///
+/// # In a graph
+///
+/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over threshold, ceiling and release, and a fork of it starts from the
+/// values last set through that set. The graph prepares it at the device
+/// rate before its first block, which sizes the ring.
 pub struct LimiterNode {
     threshold_db: Param<Db>,
     ceiling_db: Param<Db>,
@@ -129,7 +132,7 @@ pub struct LimiterNode {
     /// The ring's frame count is a lossy view of this: it is `_ceil`ed, so
     /// recovering seconds by dividing the count by the rate returns a slightly
     /// *longer* window than was asked for. Re-ceiling that at a new rate ratchets
-    /// the lookahead up a little on every `set_sample_rate`, and the drift
+    /// the lookahead up a little on every re-`prepare`, and the drift
     /// accumulates rather than cancelling — 5.000 ms becomes 5.011, then 5.021,
     /// then 5.034 across a few device changes. Keeping the request means every
     /// derivation starts from the same number, so the count is a pure function
@@ -161,9 +164,6 @@ pub struct LimiterNode {
     gain_reduction_db: Db,
     sample_rate: SampleRate,
     follower: EnvelopeFollower,
-    /// Per-frame ceiling and threshold from the graph, when it modulates them
-    /// ([`LIMITER_PARAMS`]).
-    feed: ParamFeed,
 }
 
 /// The params a [`LimiterNode`] lets the graph modulate, in port order.
@@ -183,13 +183,7 @@ impl LimiterNode {
     /// [`with_lookahead`](Self::with_lookahead) and the recovery with
     /// [`with_release`](Self::with_release).
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**; see
-    /// [`with_channels`](Self::with_channels), which this delegates to, for what
-    /// goes wrong if [`AudioUnit::set_sample_rate`] is not called before the
-    /// first `process`.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The lookahead ring is sized at the rate [`Node::prepare`] hands it.
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
         Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
     }
@@ -202,21 +196,10 @@ impl LimiterNode {
     /// the image does not shift — the surround generalization of the stereo
     /// design. Parameters are as [`new`](Self::new).
     ///
-    /// **Starts at the placeholder [`SampleRate::DEFAULT`]**, and here that
-    /// governs an *allocation*: the lookahead ring is sized in samples from the
-    /// 5 ms window, and the envelope follower's attack/release coefficients are
-    /// derived the same way. Call [`AudioUnit::set_sample_rate`] before the
-    /// first `process`; it resizes the ring and recomputes the coefficients.
-    ///
-    /// Skipping it at 48 kHz gives a ring holding 4.6 ms where 5 ms was asked
-    /// for, so the limiter sees a peak later than its own reported latency
-    /// promises and lets the front edge through — a limiter that mostly limits,
-    /// with occasional overs above the ceiling it guarantees. The release skews
-    /// by the same 8.8%. See the crate-level "born at a placeholder rate"
-    /// section.
-    ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
-    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+    /// The lookahead ring is sized in frames from the 5 ms window, and the
+    /// envelope follower's coefficients are derived the same way, at the
+    /// rate [`Node::prepare`] hands it; both are re-derived from the stored
+    /// window whenever the graph re-prepares it at a new rate.
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         threshold_db: impl Into<Db>,
@@ -224,7 +207,7 @@ impl LimiterNode {
     ) -> Self {
         let layout = channels.into();
         // An empty layout would leave every scratch `Vec` zero-length and make
-        // `inputs()`/`outputs()` report 0, so clamp to at least mono — the same
+        // the shape report no channels, so clamp to at least mono — the same
         // floor the raw `channels.max(1)` used to provide.
         let n = (layout.count() as usize).max(1);
         let layout = ChannelLayout::from(n);
@@ -249,29 +232,12 @@ impl LimiterNode {
             gain_reduction_db: Db::UNITY,
             sample_rate: SampleRate::DEFAULT,
             follower: EnvelopeFollower::new(0.0, 0.1, SampleRate::DEFAULT),
-            feed: ParamFeed::new(&LIMITER_PARAMS),
         }
     }
 
     /// The audio width this limiter was built for.
     pub fn layout(&self) -> ChannelLayout {
         self.layout
-    }
-
-    /// Effective (threshold_db, ceiling_db) for a block of one: a value the
-    /// graph feeds overrides the corresponding atomic. No extra clamp — the
-    /// dB setters store unclamped.
-    #[inline]
-    fn effective_params(&self) -> (tutti_core::Db, tutti_core::Db) {
-        let threshold = self
-            .feed
-            .get(1, 1)
-            .map_or_else(|| self.threshold_db.load(), |v| Db(v[0]));
-        let ceiling = self
-            .feed
-            .get(0, 1)
-            .map_or_else(|| self.ceiling_db.load(), |v| Db(v[0]));
-        (threshold, ceiling)
     }
 
     /// Sets the lookahead window in [`Seconds`], reallocating the rings.
@@ -284,7 +250,7 @@ impl LimiterNode {
     /// Allocates and clears the rings, so call it during setup — never on a
     /// live node.
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
-        // Keep the request, not just the count it derives: `set_sample_rate`
+        // Keep the request, not just the count it derives: `prepare`
         // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
         // back to the seconds that produced it.
         self.lookahead = lookahead.into();
@@ -423,35 +389,32 @@ impl LimiterNode {
     }
 }
 
-impl AudioUnit for LimiterNode {
-    fn inputs(&self) -> usize {
-        self.channels
+impl Node for LimiterNode {
+    /// `channels` in and out, ceiling then threshold modulatable
+    /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
+    /// prepared rate: the audio is delayed by the window.
+    ///
+    /// Its tail is the ring's contents, which outlive a silent input: the
+    /// ring is a fixed delay, so when the input stops it still holds that
+    /// many frames. The release envelope is deliberately not included — it
+    /// shapes gain, and gain applied to silence is silence.
+    fn shape(&self) -> Shape {
+        let tail = match self.ring.ring_out() {
+            s if s.is_zero() => Tail::None,
+            s => Tail::Finite(s),
+        };
+        Shape::audio(self.layout, self.layout)
+            .with_latency(Latency::new(Samples(self.ring.lookahead_samples)))
+            .with_tail(tail)
+            .with_params(&LIMITER_PARAMS)
     }
 
-    fn outputs(&self) -> usize {
-        self.channels
-    }
-
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.threshold_db.detach();
-        self.ceiling_db.detach();
-        self.release.detach();
-    }
-
-    fn reset(&mut self) {
-        self.ring.clear();
-        self.envelope = 0.0;
-        self.gain_reduction_db = Db::UNITY;
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    fn prepare(&mut self, p: &Prepare) {
         // Re-derive the frame count from the *requested* window, so the
         // wall-clock lookahead survives a rate change. Deriving it from the
         // ring's current count instead would re-ceil an already-ceiled value and
         // ratchet the window up on every call — see the `lookahead` field.
+        let sample_rate = p.sample_rate();
         self.sample_rate = sample_rate;
         self.follower
             .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
@@ -459,44 +422,13 @@ impl AudioUnit for LimiterNode {
         self.ring.resize(new_samples.max(1));
     }
 
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
         self.update_coefficients();
-        // A fed ceiling/threshold overrides its atomic.
-        let (threshold, ceiling) = self.effective_params();
-        // Build a full-width audio frame from `input`, tolerating a caller that
-        // supplies fewer audio channels than the unit width: the last available
-        // channel is duplicated (mirrors the pre-widen mono→stereo fallback), so
-        // `process_frame_with`'s `frame[..channels]` never indexes out of range.
-        let mut in_frame = core::mem::take(&mut self.in_frame);
-        let audio = self.channels.min(input.len());
-        for (c, slot) in in_frame.iter_mut().enumerate() {
-            *slot = if c < audio {
-                input[c]
-            } else if audio > 0 {
-                input[audio - 1]
-            } else {
-                0.0
-            };
-        }
-        let mut out = core::mem::take(&mut self.out_frame);
-        self.process_frame_with(&in_frame, threshold, ceiling, &mut out);
-        let n = self.channels.min(output.len());
-        output[..n].copy_from_slice(&out[..n]);
-        self.in_frame = in_frame;
-        self.out_frame = out;
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.update_coefficients();
-        let in_ch = input.channels();
-        let out_ch = output.channels();
-        // Moved out for the loop, which borrows `self` mutably; moving it
-        // allocates nothing.
-        let feed = ParamFeed::take(&mut self.feed);
-        let (ceiling_fed, threshold_fed) = (feed.get(0, size), feed.get(1, size));
+        let (ceiling_fed, threshold_fed) = (io.param(0).frames(), io.param(1).frames());
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
+        let (inputs, mut outputs) = io.split();
 
         // Reuse the two fixed scratch frames (sized at construction). Taken so
         // `process_frame_with` can borrow `self` without aliasing them.
@@ -504,22 +436,24 @@ impl AudioUnit for LimiterNode {
         let mut out_frame = core::mem::take(&mut self.out_frame);
         for i in 0..size {
             for (c, slot) in in_frame.iter_mut().enumerate() {
-                *slot = if c < in_ch { input.at_f32(c, i) } else { 0.0 };
+                *slot = inputs.get(c)[i];
             }
             let threshold = threshold_fed.map_or(base_threshold, |v| Db(v[i]));
             let ceiling = ceiling_fed.map_or(base_ceiling, |v| Db(v[i]));
             self.process_frame_with(&in_frame, threshold, ceiling, &mut out_frame);
-            for (c, &y) in out_frame.iter().enumerate().take(self.channels.min(out_ch)) {
-                output.set_f32(c, i, y);
+            for (c, &y) in out_frame.iter().enumerate() {
+                outputs.get(c)[i] = y;
             }
         }
         self.in_frame = in_frame;
         self.out_frame = out_frame;
-        self.feed = feed;
+        Status::Modified
     }
 
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
+    fn reset(&mut self) {
+        self.ring.clear();
+        self.envelope = 0.0;
+        self.gain_reduction_db = Db::UNITY;
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
@@ -529,56 +463,42 @@ impl AudioUnit for LimiterNode {
             _ => None,
         }
     }
+}
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Threshold => self.set_threshold(value),
-                tutti_core::UnitParam::Ceiling => self.set_ceiling(value),
-                tutti_core::UnitParam::Release => self.set_release(value),
-                _ => {}
-            }
-        }
+impl ParamNode for LimiterNode {
+    /// Threshold, ceiling and release.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Threshold, self.threshold())
+            .param(UnitParam::Ceiling, self.ceiling())
+            .param(UnitParam::Release, self.release_time())
+            .build()
     }
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::LIMITER_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.channels);
-        let latency = self.ring.lookahead_samples as f64;
-        for c in 0..self.channels {
-            out.set(c, input.at(c).delay(latency));
-        }
-        out
-    }
-
-    /// The lookahead ring's contents, which outlive a silent input.
-    ///
-    /// Exactly known: the ring is a fixed delay, so when the input stops it
-    /// still holds that many frames. The release envelope is deliberately not
-    /// included — it shapes gain, and gain applied to silence is silence.
-    fn tail(&mut self) -> Tail {
-        match self.ring.ring_out() {
-            s if s.is_zero() => Tail::None,
-            s => Tail::Finite(s),
-        }
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>() + self.ring.footprint()
+    /// A clone with its three cells detached, its ring and envelope
+    /// cleared.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.threshold_db.detach();
+        fork.ceiling_db.detach();
+        fork.release.detach();
+        Node::reset(&mut fork);
+        fork
     }
 }
 
+/// Inserted with its [`ParamSet`] as its controls and a fork from the values
+/// last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for LimiterNode {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
+    }
+}
+
+/// Shares the control cells (the template [`tutti_graph::param_parts`]
+/// forks from); the ring and envelope are copied.
 impl Clone for LimiterNode {
     fn clone(&self) -> Self {
         Self {
@@ -586,9 +506,9 @@ impl Clone for LimiterNode {
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
             ring: self.ring.clone(),
-            // Carried, not re-derived: `Net` clones a unit to probe it and the
-            // clone may be handed a different rate, so a clone that lost the
-            // request would re-derive its lookahead from the ceiled count.
+            // Carried, not re-derived: a clone may be prepared at a different
+            // rate, so a clone that lost the request would re-derive its
+            // lookahead from the ceiled count.
             lookahead: self.lookahead,
             layout: self.layout,
             channels: self.channels,
@@ -599,7 +519,6 @@ impl Clone for LimiterNode {
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
             follower: self.follower.clone(),
-            feed: self.feed.clone(),
         }
     }
 }
@@ -611,8 +530,11 @@ impl Clone for LimiterNode {
 ///
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). The ceiling
 /// (dB) is modulatable by the graph (design doc 013 item 6;
-/// [`BRICKWALL_PARAMS`]): fed → overrides the ceiling atomic per sample,
-/// unfed → bit-identical to a node nothing modulates.
+/// [`BRICKWALL_PARAMS`]): modulated → the param port overrides the ceiling
+/// cell per sample, unmodulated → bit-identical to a node nothing modulates.
+///
+/// A native node ([`IntoNode`]): inserted, its controls are a [`ParamSet`]
+/// over the ceiling.
 pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
     ceiling_linear: f32,
@@ -622,8 +544,6 @@ pub struct BrickwallLimiterNode {
     /// [`layout`](Self::layout)'s count, cached as the iteration stride — see
     /// the note on [`LimiterNode::channels`]. Set once at construction.
     channels: usize,
-    /// A per-frame ceiling from the graph, when it modulates it.
-    feed: ParamFeed,
 }
 
 impl BrickwallLimiterNode {
@@ -651,7 +571,6 @@ impl BrickwallLimiterNode {
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
             layout: ChannelLayout::from(n),
             channels: n,
-            feed: ParamFeed::new(&BRICKWALL_PARAMS),
         }
     }
 
@@ -674,8 +593,9 @@ impl BrickwallLimiterNode {
     /// amplitude.
     ///
     /// `&mut self` because of that cache, so this cannot reach a node already
-    /// live in the graph — a live ceiling change goes through the graph's
-    /// modulation of it.
+    /// live in the graph — a live ceiling change is a write through its
+    /// [`ParamSet`] (the cell, which the node re-reads once per block) or the
+    /// graph's modulation of it.
     pub fn set_ceiling(&mut self, db: impl Into<Db>) {
         let db = db.into();
         self.ceiling_db.store(db);
@@ -694,68 +614,36 @@ impl BrickwallLimiterNode {
     }
 }
 
-impl AudioUnit for BrickwallLimiterNode {
-    fn inputs(&self) -> usize {
-        self.channels
+impl Node for BrickwallLimiterNode {
+    /// `channels` in and out, the ceiling modulatable
+    /// ([`BRICKWALL_PARAMS`]). The clip is stateless, so it has no latency
+    /// and stops with its input.
+    fn shape(&self) -> Shape {
+        Shape::audio(self.layout, self.layout)
+            .with_tail(Tail::None)
+            .with_params(&BRICKWALL_PARAMS)
     }
 
-    fn outputs(&self) -> usize {
-        self.channels
-    }
+    /// Nothing to prepare, and the only node in this crate that can honestly
+    /// say so: a brickwall is a memoryless `clamp` with no lookahead, no
+    /// envelope and therefore no time constant to derive from the rate.
+    fn prepare(&mut self, _: &Prepare) {}
 
-    /// Detach every control cell this node reads (see `Param::detach`), so
-    /// a fork renders the controls as they were when it was taken, not the
-    /// live knob moves made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.ceiling_db.detach();
-    }
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        let n = self.channels;
+        let ceiling_fed = io.param(0).frames();
+        let (inputs, mut outputs) = io.split();
 
-    fn reset(&mut self) {}
-
-    /// Deliberately empty, and the only node in this crate that can honestly
-    /// leave it so: a brickwall is a memoryless `clamp` with no lookahead, no
-    /// envelope and therefore no time constant to re-derive. It is exempt from
-    /// the crate-level "born at a placeholder rate" rule for that reason, not by
-    /// oversight — unlike [`LimiterNode`], whose ring and follower both need
-    /// the real rate.
-    fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {}
-
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // Guard against a graph handing fewer physical channels than the unit's
-        // width (mirrors the old `input.len() > 1` checks, now general).
-        let n = self.channels.min(input.len()).min(output.len());
-        // Modulated path: a fed ceiling overrides the atomic; clip against the
-        // per-sample linear ceiling without touching the cache.
-        if let Some(v) = self.feed.get(0, 1) {
-            let ceiling_linear = db_to_amplitude(Db(v[0])).get();
-            for c in 0..n {
-                output[c] = Self::clip_at(input[c], ceiling_linear);
-            }
-            return;
-        }
-        let ceiling = self.ceiling_db.load();
-        if (db_to_amplitude(ceiling).get() - self.ceiling_linear).abs() > 0.0001 {
-            self.ceiling_linear = db_to_amplitude(ceiling).get();
-        }
-        for c in 0..n {
-            output[c] = self.clip(input[c]);
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Clip every channel the graph actually provides, up to the unit width.
-        let n = self.channels.min(input.channels()).min(output.channels());
-
-        // Modulated path: read the fed ceiling per sample.
-        if let Some(v) = self.feed.get(0, size) {
+        // Modulated path: read the ceiling per sample.
+        if let Some(v) = ceiling_fed {
             for (i, &db) in v.iter().enumerate() {
                 let ceiling_linear = db_to_amplitude(Db(db)).get();
                 for c in 0..n {
-                    output.set_f32(c, i, Self::clip_at(input.at_f32(c, i), ceiling_linear));
+                    outputs.get(c)[i] = Self::clip_at(inputs.get(c)[i], ceiling_linear);
                 }
             }
-            return;
+            return Status::Modified;
         }
 
         let ceiling = self.ceiling_db.load();
@@ -765,57 +653,48 @@ impl AudioUnit for BrickwallLimiterNode {
 
         for i in 0..size {
             for c in 0..n {
-                output.set_f32(c, i, self.clip(input.at_f32(c, i)));
+                outputs.get(c)[i] = self.clip(inputs.get(c)[i]);
             }
         }
+        Status::Modified
     }
 
-    fn set(&mut self, setting: tutti_core::Setting) {
-        if let Some((tutti_core::UnitParam::Ceiling, value)) =
-            tutti_core::unit_param::from_setting(&setting)
-        {
-            self.set_ceiling(value);
-        }
-    }
-
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
-    }
+    fn reset(&mut self) {}
 
     fn param_base(&self, k: usize) -> Option<f32> {
         (k == 0).then(|| self.ceiling_db.load().get())
     }
+}
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::BRICKWALL_LIMITER_ID
+impl ParamNode for BrickwallLimiterNode {
+    /// The ceiling. A write through the set reaches the clip on the next
+    /// block: it re-derives its cached linear ceiling from the cell.
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Ceiling, self.ceiling())
+            .build()
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.channels);
-        for c in 0..self.channels {
-            out.set(c, input.at(c).distort(0.0));
-        }
-        out
-    }
-
-    /// The clip is stateless, so it stops with its input.
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    /// A clone with its ceiling cell detached.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.ceiling_db.detach();
+        fork
     }
 }
 
+/// Inserted with its [`ParamSet`] as its controls and a fork from the value
+/// last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for BrickwallLimiterNode {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
+    }
+}
+
+/// Shares the ceiling cell (the template [`tutti_graph::param_parts`] forks
+/// from).
 impl Clone for BrickwallLimiterNode {
     fn clone(&self) -> Self {
         Self {
@@ -823,7 +702,6 @@ impl Clone for BrickwallLimiterNode {
             ceiling_linear: self.ceiling_linear,
             layout: self.layout,
             channels: self.channels,
-            feed: self.feed.clone(),
         }
     }
 }
@@ -831,8 +709,44 @@ impl Clone for BrickwallLimiterNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{prepared_at, tick, tick_fed, RATE_44K};
+    use tutti_graph::contract::assert_param_fork;
 
-    /// A limiter is **born at the placeholder rate**, and `set_sample_rate` is
+    /// A fork starts from the values last set through the node's
+    /// `ParamSet` and shares no cell with it.
+    ///
+    /// Mutation (run): drop `fork.release.detach()` in `fork_fresh` → "a
+    /// live write reached the fork" for `Release` → fails.
+    #[test]
+    fn a_limiter_fork_shares_no_cell() {
+        assert_param_fork(LimiterNode::new(-6.0, -0.3));
+    }
+
+    /// Mutation (run): drop `fork.ceiling_db.detach()` in `fork_fresh` → "a
+    /// live write reached the fork" for `Ceiling` → fails.
+    #[test]
+    fn a_brickwall_fork_shares_no_cell() {
+        assert_param_fork(BrickwallLimiterNode::new(-1.0));
+    }
+
+    /// A ceiling set through the brickwall's `ParamSet` reaches the clip on
+    /// the next block, though `set_ceiling` is `&mut self`: the node
+    /// re-derives its cached linear ceiling from the cell once per block.
+    ///
+    /// Mutation (run): drop the re-derive in `process` → the clip stays at
+    /// 0 dB → fails.
+    #[test]
+    fn a_brickwall_ceiling_set_by_address_reaches_the_clip() {
+        let mut bw = prepared_at(BrickwallLimiterNode::new(0.0), RATE_44K);
+        let set = bw.param_set();
+        assert!(set.set(UnitParam::Ceiling, -6.0));
+        let mut out = [0.0f32; 2];
+        tick(&mut bw, &[1.0, -1.0], &mut out);
+        let ceiling = db_to_amplitude(-6.0).get();
+        assert!((out[0] - ceiling).abs() < 1e-4, "clipped at {}", out[0]);
+    }
+
+    /// A limiter is **born at the placeholder rate**, and `prepare` is
     /// what makes its lookahead a wall-clock 5 ms rather than a frame count.
     ///
     /// This is the invariant the constructor docs promise, asserted as the
@@ -845,11 +759,11 @@ mod tests {
     ///   sees a peak later than its reported latency promises.
     /// - Corrected, the count grows to 240 so the duration stays 5 ms.
     ///
-    /// Asserted through `AudioUnit::latency`, the same figure PDC compensates
-    /// against, so a regression here is a regression in what the graph is told —
+    /// Asserted through the shape's declared latency, the same figure PDC
+    /// compensates against, so a regression here is a regression in what the graph is told —
     /// not merely in a private field.
     #[test]
-    fn lookahead_is_a_duration_and_set_sample_rate_is_what_preserves_it() {
+    fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
         let device = tutti_core::SampleRate(48_000.0);
 
@@ -873,12 +787,12 @@ mod tests {
         );
 
         // The correction: same wall-clock window, more frames.
-        lim.set_sample_rate(device);
+        lim.prepare(&Prepare::new(device, Samples(64)));
         let fixed = lim.ring.lookahead_samples;
         assert_eq!(
             fixed,
             LOOKAHEAD.to_samples_ceil(device).get(),
-            "set_sample_rate must re-derive the frame count at the new rate"
+            "prepare must re-derive the frame count at the new rate"
         );
         assert!(
             fixed > born,
@@ -892,8 +806,8 @@ mod tests {
 
         // And the graph is told the corrected figure, not the placeholder one.
         assert_eq!(
-            lim.latency(),
-            Some(fixed as f64),
+            lim.shape().latency,
+            Latency::new(Samples(fixed)),
             "reported latency must track the resized ring"
         );
 
@@ -904,12 +818,12 @@ mod tests {
         // accumulates instead of cancelling. Going back and forth pins that the
         // derivation is a pure function of (request, rate).
         for _ in 0..4 {
-            lim.set_sample_rate(SampleRate::DEFAULT);
+            lim.prepare(&Prepare::new(SampleRate::DEFAULT, Samples(64)));
             assert_eq!(
                 lim.ring.lookahead_samples, born,
                 "returning to the original rate must return the original count"
             );
-            lim.set_sample_rate(device);
+            lim.prepare(&Prepare::new(device, Samples(64)));
             assert_eq!(
                 lim.ring.lookahead_samples, fixed,
                 "a rate change must not accumulate rounding across calls"
@@ -919,14 +833,13 @@ mod tests {
 
     #[test]
     fn test_limiter_reduces_loud_signal() {
-        let mut lim = LimiterNode::new(-6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
         let loud = 1.0f32;
         let mut out = [0.0f32; 2];
 
         for _ in 0..500 {
-            lim.tick(&[loud, loud], &mut out);
+            tick(&mut lim, &[loud, loud], &mut out);
         }
 
         let ceiling_lin = db_to_amplitude(-0.3).get();
@@ -940,14 +853,13 @@ mod tests {
 
     #[test]
     fn test_limiter_passes_quiet_signal() {
-        let mut lim = LimiterNode::new(-6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
         let quiet = 0.1f32;
         let mut out = [0.0f32; 2];
 
         for _ in 0..500 {
-            lim.tick(&[quiet, quiet], &mut out);
+            tick(&mut lim, &[quiet, quiet], &mut out);
         }
 
         assert!(
@@ -959,13 +871,12 @@ mod tests {
 
     #[test]
     fn test_limiter_stereo_linked() {
-        let mut lim = LimiterNode::new(-6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
         let mut out = [0.0f32; 2];
 
         for _ in 0..500 {
-            lim.tick(&[1.0, 0.1], &mut out);
+            tick(&mut lim, &[1.0, 0.1], &mut out);
         }
 
         if out[0].abs() > 0.001 && out[1].abs() > 0.001 {
@@ -980,12 +891,11 @@ mod tests {
 
     #[test]
     fn test_limiter_reset() {
-        let mut lim = LimiterNode::new(-6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
         let mut out = [0.0f32; 2];
         for _ in 0..500 {
-            lim.tick(&[1.0, 1.0], &mut out);
+            tick(&mut lim, &[1.0, 1.0], &mut out);
         }
 
         lim.reset();
@@ -997,7 +907,7 @@ mod tests {
         let mut bw = BrickwallLimiterNode::new(0.0);
 
         let mut out = [0.0f32; 2];
-        bw.tick(&[2.0, -3.0], &mut out);
+        tick(&mut bw, &[2.0, -3.0], &mut out);
 
         assert!(
             (out[0] - 1.0).abs() < 0.001,
@@ -1017,7 +927,7 @@ mod tests {
         let ceiling_lin = db_to_amplitude(-6.0).get();
 
         let mut out = [0.0f32; 2];
-        bw.tick(&[1.0, -1.0], &mut out);
+        tick(&mut bw, &[1.0, -1.0], &mut out);
 
         assert!(
             (out[0] - ceiling_lin).abs() < 0.001,
@@ -1031,7 +941,7 @@ mod tests {
         let mut bw = BrickwallLimiterNode::new(0.0);
 
         let mut out = [0.0f32; 2];
-        bw.tick(&[0.3, -0.2], &mut out);
+        tick(&mut bw, &[0.3, -0.2], &mut out);
 
         assert!((out[0] - 0.3).abs() < 0.001);
         assert!((out[1] - (-0.2)).abs() < 0.001);
@@ -1039,28 +949,31 @@ mod tests {
 
     // ── Modulated params (the graph's param feed) ───────────────────────────
 
-    /// The feeds declare ceiling then threshold (and the brickwall its
+    /// The shapes declare ceiling then threshold (and the brickwall its
     /// ceiling), and never change the arity: a modulatable limiter is as
     /// wide as it was built.
     ///
     /// Mutation (run): swap `LIMITER_PARAMS`' order → the first assertion
     /// fails.
     #[test]
-    fn the_feeds_declare_ceiling_then_threshold() {
-        let mut l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
+    fn the_shapes_declare_ceiling_then_threshold() {
+        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         assert_eq!(
-            l.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Ceiling, UnitParam::Threshold][..])
+            l.shape().params.as_slice(),
+            &[UnitParam::Ceiling, UnitParam::Threshold][..]
         );
-        assert_eq!((l.inputs(), l.outputs()), (6, 6));
+        assert_eq!(
+            (l.shape().audio_in.count(), l.shape().audio_out.count()),
+            (6, 6)
+        );
         assert_eq!(l.param_base(0), Some(-0.3), "the ceiling's base");
         assert_eq!(l.param_base(1), Some(-6.0), "the threshold's base");
-        let mut b = BrickwallLimiterNode::new(-1.0);
+        let b = BrickwallLimiterNode::new(-1.0);
+        assert_eq!(b.shape().params.as_slice(), &[UnitParam::Ceiling][..]);
         assert_eq!(
-            b.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Ceiling][..])
+            (b.shape().audio_in.count(), b.shape().audio_out.count()),
+            (2, 2)
         );
-        assert_eq!((b.inputs(), b.outputs()), (2, 2));
         assert_eq!(b.param_base(0), Some(-1.0));
     }
 
@@ -1068,23 +981,18 @@ mod tests {
     fn limiter_unmodulated_matches_held_constant() {
         // A node whose fed ceiling and threshold are held at the same values
         // as a plain node's atomics must produce identical output.
-        let mut plain = LimiterNode::new(-6.0, -0.3);
-        plain.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut plain = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
-        let mut modn = LimiterNode::new(-6.0, -0.3);
-        modn.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut modn = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
 
         let mut plain_out = [0.0f32; 2];
         let mut mod_out = [0.0f32; 2];
         for n in 0..2000 {
             // Mix of loud and quiet to exercise gain reduction + release.
             let s = if n % 400 < 200 { 0.9 } else { 0.05 };
-            plain.tick(&[s, s], &mut plain_out);
+            tick(&mut plain, &[s, s], &mut plain_out);
             // Held: ceiling = -0.3, threshold = -6.0.
-            let feed = modn.param_feed().expect("fed");
-            feed.feed(0, &[-0.3]);
-            feed.feed(1, &[-6.0]);
-            modn.tick(&[s, s], &mut mod_out);
+            tick_fed(&mut modn, &[s, s], &[Some(-0.3), Some(-6.0)], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6
                     && (plain_out[1] - mod_out[1]).abs() < 1e-6,
@@ -1106,9 +1014,8 @@ mod tests {
         let mut mod_out = [0.0f32; 2];
         let samples = [2.0, -3.0, 0.1, -0.05, 1.5, -1.5];
         for &s in &samples {
-            plain.tick(&[s, -s], &mut plain_out);
-            modn.param_feed().expect("fed").feed(0, &[-6.0]);
-            modn.tick(&[s, -s], &mut mod_out);
+            tick(&mut plain, &[s, -s], &mut plain_out);
+            tick_fed(&mut modn, &[s, -s], &[Some(-6.0)], &mut mod_out);
             assert!(
                 (plain_out[0] - mod_out[0]).abs() < 1e-6
                     && (plain_out[1] - mod_out[1]).abs() < 1e-6,
@@ -1125,12 +1032,10 @@ mod tests {
         let mut bw = BrickwallLimiterNode::new(0.0);
         let mut out = [0.0f32; 2];
         // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
-        bw.param_feed().expect("fed").feed(0, &[-12.0]);
-        bw.tick(&[1.0, 1.0], &mut out);
+        tick_fed(&mut bw, &[1.0, 1.0], &[Some(-12.0)], &mut out);
         let low_ceiling = out[0];
         // Ceiling 0 dB = 1.0 linear: 1.0 passes through.
-        bw.param_feed().expect("fed").feed(0, &[0.0]);
-        bw.tick(&[1.0, 1.0], &mut out);
+        tick_fed(&mut bw, &[1.0, 1.0], &[Some(0.0)], &mut out);
         let high_ceiling = out[0];
         assert!(
             high_ceiling > low_ceiling + 0.1,
@@ -1140,46 +1045,46 @@ mod tests {
 
     // ── Width-native (N-channel) ─────────────────────────────────────────────
 
+    /// A stereo limiter fed on one channel only limits that channel and
+    /// leaves the other silent: the graph hands an unconnected input
+    /// silence, which the linked detector reads as such. (What replaced the
+    /// `tick` short-frame fallback, which duplicated the last channel: a
+    /// native node is always handed every input it declares.)
+    ///
+    /// Mutation (run): read `inputs.get(0)` for every channel in `process`
+    /// → ch1 carries ch0's signal → fails.
     #[test]
-    fn limiter_tick_tolerates_short_input_frame() {
-        // A stereo limiter handed a mono (len-1) tick frame must not panic; it
-        // duplicates the last channel (the pre-widen mono→stereo fallback).
-        let mut lim = LimiterNode::new(-6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+    fn limiter_leaves_an_unfed_channel_silent() {
+        let mut lim = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
         let mut out = [0.0f32; 2];
         // Run past the 5 ms lookahead so the delayed signal emerges.
         for _ in 0..500 {
-            lim.tick(&[0.9], &mut out); // len 1 < channels 2 — must not panic
+            tick(&mut lim, &[0.9, 0.0], &mut out);
         }
-        // Both outputs are driven (the mono input is duplicated to ch1), not
-        // left silent — proves the short-frame fallback wired the second channel.
         assert!(out[0].abs() > 1e-4, "ch0 silent: {}", out[0]);
-        assert!(
-            out[1].abs() > 1e-4,
-            "ch1 silent (fallback not applied): {}",
-            out[1]
-        );
+        assert_eq!(out[1], 0.0, "ch1 carries a signal it was never fed");
     }
 
     #[test]
     fn limiter_with_channels_reports_arity() {
         let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
-        assert_eq!(l.inputs(), 6);
-        assert_eq!(l.outputs(), 6);
+        assert_eq!(l.shape().audio_in.count(), 6);
+        assert_eq!(l.shape().audio_out.count(), 6);
     }
 
     #[test]
     fn limiter_with_channels_2_matches_new() {
-        let mut a = LimiterNode::new(-6.0, -0.3);
-        a.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let mut b = LimiterNode::with_channels(ChannelLayout::STEREO, -6.0, -0.3);
-        b.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut a = prepared_at(LimiterNode::new(-6.0, -0.3), RATE_44K);
+        let mut b = prepared_at(
+            LimiterNode::with_channels(ChannelLayout::STEREO, -6.0, -0.3),
+            RATE_44K,
+        );
         let mut oa = [0.0f32; 2];
         let mut ob = [0.0f32; 2];
         for i in 0..2000 {
             let s = if i % 400 < 200 { 0.95 } else { 0.05 };
-            a.tick(&[s, s * 0.5], &mut oa);
-            b.tick(&[s, s * 0.5], &mut ob);
+            tick(&mut a, &[s, s * 0.5], &mut oa);
+            tick(&mut b, &[s, s * 0.5], &mut ob);
             assert_eq!(oa[0].to_bits(), ob[0].to_bits(), "L bit-diff at {i}");
             assert_eq!(oa[1].to_bits(), ob[1].to_bits(), "R bit-diff at {i}");
         }
@@ -1189,13 +1094,15 @@ mod tests {
     fn wide_limiter_gain_is_linked_across_all_channels() {
         // A loud transient on one channel must reduce ALL channels by the same
         // linked gain (max-abs across the frame), preserving inter-channel ratios.
-        let mut lim = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(
+            LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3),
+            RATE_44K,
+        );
         let mut out = [0.0f32; 6];
         // ch0 loud, others at half — the whole frame should be limited together.
         let inp = [1.0f32, 0.5, 0.5, 0.5, 0.5, 0.5];
         for _ in 0..500 {
-            lim.tick(&inp, &mut out);
+            tick(&mut lim, &inp, &mut out);
         }
         // Once limiting, every channel keeps its input ratio to ch0.
         if out[0].abs() > 1e-3 {
@@ -1212,10 +1119,10 @@ mod tests {
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
         let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), 0.0);
-        assert_eq!(bw.inputs(), 6);
-        assert_eq!(bw.outputs(), 6);
+        assert_eq!(bw.shape().audio_in.count(), 6);
+        assert_eq!(bw.shape().audio_out.count(), 6);
         let mut out = [0.0f32; 6];
-        bw.tick(&[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
+        tick(&mut bw, &[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
         for (c, &y) in out.iter().enumerate() {
             assert!(
                 (-1.0 - 1e-6..=1.0 + 1e-6).contains(&y),
@@ -1228,11 +1135,13 @@ mod tests {
 
     #[test]
     fn test_limiter_sliding_minimum_releases_after_window() {
-        let mut lim = LimiterNode::new(-12.0, -0.3).with_lookahead(0.002);
-        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut lim = prepared_at(
+            LimiterNode::new(-12.0, -0.3).with_lookahead(0.002),
+            RATE_44K,
+        );
 
         let mut out = [0.0f32; 2];
-        lim.tick(&[1.0, 1.0], &mut out);
+        tick(&mut lim, &[1.0, 1.0], &mut out);
         let reduction_after_transient = lim.gain_reduction_db();
         assert!(
             reduction_after_transient > Db::UNITY,
@@ -1240,7 +1149,7 @@ mod tests {
         );
 
         for _ in 0..20000 {
-            lim.tick(&[0.0, 0.0], &mut out);
+            tick(&mut lim, &[0.0, 0.0], &mut out);
         }
         assert!(
             lim.gain_reduction_db() < Db(0.5),

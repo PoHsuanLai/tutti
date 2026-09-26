@@ -1,6 +1,6 @@
 //! The sample-accuracy contract (doc 013 §6, "Proof") for this crate's
-//! latency-bearing nodes, as a graph runs them today: through `Legacy`, on
-//! the audio-impulse path. An impulse at frame `F` must leave at exactly
+//! latency-bearing nodes, as a graph runs them today — natively, or through
+//! `Legacy` for a node not yet ported — on the audio-impulse path. An impulse at frame `F` must leave at exactly
 //! `F + arrival + latency`, where `latency` is what the node *declares* — on
 //! every path the harness has (direct, behind PDC, across a recompile,
 //! across ragged blocks). See `tutti_graph::contract` for the paths and the
@@ -8,8 +8,8 @@
 //!
 //! Each row is a defect class from doc 013:
 //!
-//! - **LimiterNode** — a lookahead: its latency is real, and the ring must
-//!   delay by exactly the figure `route` reports.
+//! - **LimiterNode** (native) — a lookahead: its latency is real, and the
+//!   ring must delay by exactly the figure its shape declares.
 //! - **ConvolverNode** — one FFT block of latency for the *whole* output
 //!   (D3): at mix 0 the output is all dry, so a dry half that is not delayed
 //!   leaves `latency` frames early.
@@ -22,10 +22,12 @@
 //! Mutations (run):
 //!
 //! - In `Legacy::probe`, declare one frame more than `route` reports →
-//!   every row fails every path.
+//!   every `Legacy` row fails every path.
+//! - In `LimiterNode::shape`, declare one frame more than the ring's
+//!   `lookahead_samples` → both limiter rows fail every path.
 //! - In `Legacy::process`, call the unit for a whole `MAX_BUFFER_SIZE` chunk
 //!   even when fewer frames remain (its clock runs ahead of the block) → the
-//!   limiter and convolver rows fail `blocks_1`, `blocks_63`, `blocks_65`
+//!   convolver rows fail `blocks_1`, `blocks_63`, `blocks_65`
 //!   and `blocks_random`, and pass `blocks_64` and `blocks_max`.
 //! - In `ConvolverNode::blend_channel`, blend the undelayed input again (D3)
 //!   → `convolver_dry` and `convolver_half` fail every path.
@@ -46,9 +48,15 @@ fn impulse(port: u16) -> Excite {
 
 /// A 5 ms lookahead at 48 kHz: 240 frames, `_ceil`ed.
 fn limiter_row() -> Row {
-    Row::legacy(
+    Row::new(
         "LimiterNode (mono, 5 ms lookahead)",
-        || LimiterNode::with_channels(ChannelLayout::MONO, Db(-3.0), Db(-0.3)),
+        || {
+            Box::new(LimiterNode::with_channels(
+                ChannelLayout::MONO,
+                Db(-3.0),
+                Db(-0.3),
+            ))
+        },
         impulse(0),
         Detect::Threshold(0.0),
     )
@@ -58,9 +66,9 @@ fn limiter_row() -> Row {
 /// Linked gain across a stereo pair: the impulse on the right channel must
 /// leave the right channel on the same frame.
 fn stereo_limiter_row() -> Row {
-    Row::legacy(
+    Row::new(
         "LimiterNode (stereo, right channel)",
-        || LimiterNode::new(Db(-3.0), Db(-0.3)),
+        || Box::new(LimiterNode::new(Db(-3.0), Db(-0.3))),
         impulse(1),
         Detect::Threshold(0.0),
     )

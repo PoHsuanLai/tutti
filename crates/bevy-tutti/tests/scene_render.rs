@@ -2,7 +2,8 @@
 //! rendered for it (design doc 013, Phase 3).
 //!
 //! The scene is built through the ECS — `spawn_audio_node` and
-//! `spawn_graph_node` (the filter is a native node), `PortSources`,
+//! `spawn_graph_node` (the filter, the waveshaper and the limiter are native
+//! nodes), `PortSources`,
 //! `MasterSources`, `AudioParam`, `crossfade_graph_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
@@ -120,12 +121,12 @@ fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
         .insert(PortSources::from(osc))
         .id();
     let drive = commands
-        .spawn_audio_node(shaper(drive))
+        .spawn_graph_node(shaper(drive))
         .insert(PortSources::from(filter))
         .id();
     let right = if with_limiter {
         commands
-            .spawn_audio_node(limiter())
+            .spawn_graph_node(limiter())
             .insert(PortSources::from(osc))
             .id()
     } else {
@@ -235,7 +236,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
     let osc = g.add_unit(Box::new(saw()));
-    let lim = g.add_unit(Box::new(limiter()));
+    let lim = g.add_with_controls(limiter()).0;
     g.connect(osc, 0, lim, 0).connect_output(lim, 0, 0);
     let latent = render_builder(g, 9_600);
     assert_eq!(
@@ -397,7 +398,7 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
         from: FADE_AT as u64,
     }));
     let filter = g.add_with_controls(low_pass(300.0)).0;
-    let drive = g.add_unit(Box::new(shaper(DRIVE)));
+    let drive = g.add_with_controls(shaper(DRIVE)).0;
     g.connect(osc, 0, old_filter, 0)
         .connect(osc, 0, gate, 0)
         .connect(gate, 0, filter, 0)

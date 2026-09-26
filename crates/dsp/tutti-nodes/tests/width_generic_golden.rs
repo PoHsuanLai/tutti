@@ -196,20 +196,24 @@ fn cases() -> Vec<Case> {
     // ── Ladder ──
     let node = LadderFilterNode::<f64>::new(LadderType::LP24, 1_100.0, 0.7);
     node.set_drive(2.5);
-    v.push(case("ladder_mono_lp24_driven", node, noise_channels(1)));
-    v.push(case(
+    v.push(native_case(
+        "ladder_mono_lp24_driven",
+        node,
+        noise_channels(1),
+    ));
+    v.push(native_case(
         "ladder_stereo_f32_hp12",
         LadderFilterNode::<f32>::with_channels(ChannelLayout::STEREO, LadderType::HP12, 700.0, 0.5),
         noise_channels(2),
     ));
-    v.push(case(
+    v.push(native_case(
         "ladder_wide6_lp12",
         LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP12, 1_500.0, 0.3),
         noise_channels(6),
     ));
     v.push(Case {
         params: vec![Some(sweep(200.0, 8_000.0)), None, None],
-        ..case(
+        ..native_case(
             "ladder_stereo_swept",
             LadderFilterNode::<f64>::with_channels(
                 ChannelLayout::STEREO,
@@ -225,7 +229,7 @@ fn cases() -> Vec<Case> {
     let automation = automate(node.drive(), |k| 1.0 + (k % 4) as f32);
     v.push(Case {
         automation,
-        ..case("ladder_stereo_drive_automated", node, noise_channels(2))
+        ..native_case("ladder_stereo_drive_automated", node, noise_channels(2))
     });
 
     // ── Delay ──

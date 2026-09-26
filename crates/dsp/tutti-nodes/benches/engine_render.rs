@@ -70,8 +70,8 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey, out: u16) {
     );
 }
 
-/// A rolling transport driving a three-node chain (this crate's units,
-/// through `Legacy`), the shape `tests/rt_no_alloc_engine.rs` already pins
+/// A rolling transport driving a three-node chain (this crate's nodes: the
+/// oscillator through `Legacy`, the EQ and strip native), the shape `tests/rt_no_alloc_engine.rs` already pins
 /// as allocation-free, on `outputs` global outputs (the strip's pair,
 /// repeated).
 fn chain_engine(outputs: usize) -> Engine {
@@ -87,7 +87,7 @@ fn chain_engine(outputs: usize) -> Engine {
     ed.insert(
         strip,
         "strip",
-        Legacy::new(BusStripNode::with_channels(ChannelLayout::STEREO)),
+        BusStripNode::with_channels(ChannelLayout::STEREO),
     );
     wire(&mut ed, eq, 0, osc, 0);
     wire(&mut ed, strip, 0, eq, 0);

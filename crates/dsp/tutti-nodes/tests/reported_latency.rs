@@ -214,37 +214,52 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 
 /// A summing bus does not hide the latency of what feeds it.
 ///
-/// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and its
-/// `route` answered `Latency(0)` whatever arrived. A lookahead limiter summed
-/// with a dry path then read as a zero-latency graph, and `reported_latency`
-/// (which is this `latency()`) pre-rolled an export by nothing. The bus now
-/// carries its latest input, so the graph reports the limiter's lookahead.
+/// `ChannelSumNode` replaced fundsp's `sum` as the engine's fan-in, and under
+/// `Net` its `route` once answered `Latency(0)` whatever arrived: a lookahead
+/// limiter summed with a dry path then read as a zero-latency graph, and an
+/// export pre-rolled by nothing. Both are native graph nodes now, and the
+/// compiler's PDC owns the fold: the graph reports the limiter's lookahead,
+/// and the dry path is delayed to meet it, so the impulse leaves **once**, at
+/// exactly that frame.
 ///
-/// Mutation: reverting the bus's `route` to `Latency(0)` fails the first
-/// assertion; taking the `min` of its inputs fails it too (the dry path is 0).
+/// Mutation (run): declare no latency in `LimiterNode::shape` → the total
+/// reads 0 and the dry impulse leaves at frame 0 → fails.
 #[test]
 fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
-    use tutti_core::{ChannelLayout, Db};
+    use tutti_core::{ChannelLayout, Db, Samples, Seconds};
+    use tutti_graph::{GraphBuilder, Prepare};
     use tutti_nodes::{ChannelSumNode, LimiterNode};
+    use tutti_types::Latency;
 
-    let mut net = Net::new(1, 1);
-    let lim = net.add(LimiterNode::with_channels(
+    let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
+    let (lim, _) = g.add_with_controls(LimiterNode::with_channels(
         ChannelLayout::MONO,
         Db(-1.0),
         Db(-0.3),
     ));
-    let dry = net.add(Through::mono());
-    let sum = net.add(ChannelSumNode::new(2, ChannelLayout::MONO));
-    net.set_source(lim, 0, Source::Global(0));
-    net.set_source(dry, 0, Source::Global(0));
-    net.set_source(sum, 0, Source::Local(lim, 0));
-    net.set_source(sum, 1, Source::Local(dry, 0));
-    net.set_output_source(0, Source::Local(sum, 0));
-    net.set_sample_rate(SR);
+    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::MONO));
+    g.connect_input(0, lim, 0);
+    g.connect(lim, 0, sum, 0);
+    g.connect_input(0, sum, 1);
+    g.connect_output(sum, 0, 0);
+    let mut r = g
+        .renderer(Prepare::new(SR, Samples(BLOCK)))
+        .expect("builds");
 
-    let lookahead = net.node_mut(lim).latency().expect("the limiter reports");
-    assert!(lookahead > 0.0, "a lookahead limiter has latency");
-    assert_eq!(net.latency(), Some(lookahead));
+    let lookahead = Seconds(0.005).to_samples_ceil(SR);
+    assert_eq!(
+        r.executor().plan().expect("committed").total_latency(),
+        Latency::new(lookahead),
+        "the graph reports the limiter's lookahead through the bus"
+    );
+    let mut impulse = vec![0.0f32; 512];
+    impulse[0] = 0.25;
+    let out = r.render_input(&[&impulse]).remove(0);
+    assert_eq!(
+        onsets(&out),
+        vec![lookahead.get()],
+        "the dry path is compensated to meet the limiter"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
 //! modulation (design doc 013 item 6), run as they run in an engine: a
-//! native node (the SVF) reading its param ports through `Io::param`, the
-//! rest through `Legacy`, their params fed per 64-frame chunk through their
+//! native node reading its param ports through `Io::param`, a node not yet
+//! ported through `Legacy`, its params fed per 64-frame chunk through its
 //! `ParamFeed`.
 //!
 //! These replace the tests of the per-param sub-graph the graph made
@@ -179,7 +179,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_frequency(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 200.0,
             hi: 8_000.0,
@@ -192,7 +192,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_resonance(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 0.0,
             hi: 0.9,
@@ -205,7 +205,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 1.0,
             hi: 8.0,
@@ -244,7 +244,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: 0.5,
             hi: 5.0,
@@ -257,7 +257,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: -40.0,
             hi: 0.0,
@@ -270,7 +270,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: -60.0,
             // Above the noise's peak: the gate stays shut.
@@ -284,7 +284,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: -12.0,
             hi: -0.3,
@@ -297,7 +297,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_threshold(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: -20.0,
             hi: -1.0,
@@ -310,7 +310,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
-                unit(n)
+                native(n)
             },
             lo: -12.0,
             hi: 0.0,
@@ -323,7 +323,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
                 }
-                unit(n)
+                native(n)
             },
             lo: 0.2,
             hi: 0.9,
@@ -336,7 +336,7 @@ fn cases() -> Vec<Case> {
                 if let Some(v) = v {
                     n.set_pan(tutti_types::Pan(v));
                 }
-                unit(n)
+                native(n)
             },
             lo: -1.0,
             hi: 1.0,
@@ -404,7 +404,7 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        unit(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
+        native(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
         None,
     )
     .remove(0)
@@ -423,7 +423,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
+    let (n, _) = g.add_with_controls(node);
     let src = g.add_unit(Box::new(Const::mono(0.5)));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(
@@ -465,7 +465,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
 fn a_crossed_range_is_survivable() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
+    let (n, _) = g.add_with_controls(node);
     let src = g.add_unit(Box::new(Const::mono(100.0)));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
@@ -500,7 +500,7 @@ fn a_crossed_range_is_survivable() {
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
+    let (n, _) = g.add_with_controls(node);
     let src = g.add_unit(Box::new(Const::mono(4.0)));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let mut r: Renderer = g
@@ -568,7 +568,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-    let n = g.add_unit(Box::new(node));
+    let (n, _) = g.add_with_controls(node);
     let src = g.add_unit(Box::new(Const::mono(2.0)));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(

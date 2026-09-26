@@ -4,39 +4,19 @@
 //! than in any one processor, so a compressor and a gate measure a signal the
 //! same way and pin silence at the same floor.
 
-use tutti_core::{
-    Amplitude, BufferMut, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds,
-};
+use tutti_core::{Amplitude, CompressionRatio, Db, SampleRate, Seconds};
+use tutti_graph::{Inputs, Outputs};
 
-/// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
+/// Max-abs sidechain detector level for sample `i` of a block.
 ///
-/// `input[0..ch]` are audio channels, `input[ch..2*ch]` sidechain channels.
-/// A sidechain channel the caller didn't supply falls back to its paired audio
-/// channel, so an unconnected sidechain detects the audio itself — matching
-/// [`sidechain_level_buffer`] rather than reading silence.
+/// `input.get(0..ch)` are audio channels, `input.get(ch..2*ch)` sidechain
+/// channels. A native node declares all `2 * ch` inputs, and the graph feeds
+/// an unconnected one silence, so every sidechain channel is there to read.
 #[inline]
-pub(crate) fn sidechain_level_slice(input: &[f32], ch: usize) -> f32 {
+pub(crate) fn sidechain_level(input: &Inputs<'_>, ch: usize, i: usize) -> f32 {
     let mut level = 0.0f32;
     for c in 0..ch {
-        let src = input.get(ch + c).copied().unwrap_or(input[c]);
-        level = level.max(src.abs());
-    }
-    level
-}
-
-/// Max-abs sidechain detector level for one sample `i` of the `process`
-/// (block) path. Same audio-fallback rule as [`sidechain_level_slice`].
-#[inline]
-pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> f32 {
-    let in_channels = ChannelLayout::from(input.channels()).count() as usize;
-    let mut level = 0.0f32;
-    for c in 0..ch {
-        let src = if ch + c < in_channels {
-            input.at_f32(ch + c, i)
-        } else {
-            input.at_f32(c, i)
-        };
-        level = level.max(src.abs());
+        level = level.max(input.get(ch + c)[i].abs());
     }
     level
 }
@@ -68,11 +48,16 @@ pub(crate) fn ramp_db(from: Db, to: Db, i: usize, n: usize) -> Db {
 /// channel; doing the apply as a slice multiply per channel is the memoryless
 /// half, and the half that vectorizes.
 #[inline]
-pub(crate) fn apply_gain_lane(gains: &[f32], ch: usize, input: &BufferRef, output: &mut BufferMut) {
+pub(crate) fn apply_gain_lane(
+    gains: &[f32],
+    ch: usize,
+    input: &Inputs<'_>,
+    output: &mut Outputs<'_, '_>,
+) {
     let n = gains.len();
     for c in 0..ch {
-        let x = &input.channel_f32(c)[..n];
-        let y = &mut output.channel_f32_mut(c)[..n];
+        let x = &input.get(c)[..n];
+        let y = &mut output.get(c)[..n];
         for ((y, &x), &g) in y.iter_mut().zip(x).zip(gains) {
             *y = x * g;
         }

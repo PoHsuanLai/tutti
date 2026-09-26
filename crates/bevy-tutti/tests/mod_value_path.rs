@@ -10,7 +10,10 @@
 //! - `mod_source` — a modulator kind the adapter has never heard of.
 //!
 //! Each was its own file; they share the value path as their subject and are
-//! grouped by it. Bodies and test names are unchanged from those files, and each
+//! grouped by it. Their node is the suites' own `AudioUnit`,
+//! [`DriveUnit`](common::drive_unit::DriveUnit), captured through the
+//! `ModTargetRegistry` — the path under test (it was `DistortionNode` until
+//! that became a native node, captured by its `ParamSet` instead). Bodies and test names are unchanged from those files, and each
 //! module keeps its own helpers so nothing is coupled across the seam.
 
 #![cfg(feature = "modulation")]
@@ -29,6 +32,7 @@ mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
@@ -36,7 +40,6 @@ mod modulation {
     };
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
-    use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     /// The drive an unmodulated node holds — its constructor argument, and what the
@@ -44,8 +47,8 @@ mod modulation {
     const UNMODULATED_DRIVE: f32 = 1.0;
 
     /// A `Drive`-modulatable node whose param atomic we can read back.
-    fn drive_node() -> DistortionNode {
-        DistortionNode::new(tutti_nodes::ShapeKind::Tanh, UNMODULATED_DRIVE)
+    fn drive_node() -> DriveUnit {
+        DriveUnit::new(UNMODULATED_DRIVE)
     }
 
     /// An app with the reconcile pipeline, a live graph, and modulation — the same
@@ -62,7 +65,7 @@ mod modulation {
 
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
+            .register::<DriveUnit>();
 
         let target = bind_drive_node(&mut app, drive_node());
         (app, target)
@@ -77,7 +80,7 @@ mod modulation {
     /// Push a drive node into the graph and bind an entity to it the way every
     /// insertion path does: the controls are captured from the unit first,
     /// against whatever the registry knows at that moment.
-    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+    fn bind_drive_node(app: &mut App, unit: DriveUnit) -> Entity {
         let drive = DriveCell(unit.drive());
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
@@ -166,7 +169,7 @@ mod modulation {
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
-        // Deliberately no `.register::<DistortionNode>()`.
+        // Deliberately no `.register::<DriveUnit>()`.
 
         let target = bind_drive_node(&mut app, drive_node());
         declare_drive_range(&mut app, target, 5.0);
@@ -485,6 +488,7 @@ mod mod_cascade {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModRateCell, ModRoute, ModSource, ModSourceRate,
@@ -493,7 +497,6 @@ mod mod_cascade {
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
-    use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     /// The rate the modulated LFO is authored at, and the floor of its range.
@@ -508,12 +511,9 @@ mod mod_cascade {
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
+            .register::<DriveUnit>();
 
-        let target = bind_drive_node(
-            &mut app,
-            DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0),
-        );
+        let target = bind_drive_node(&mut app, DriveUnit::new(1.0));
         (app, target)
     }
 
@@ -526,7 +526,7 @@ mod mod_cascade {
     /// Push a drive node into the graph and bind an entity to it the way every
     /// insertion path does: the controls are captured from the unit first,
     /// against whatever the registry knows at that moment.
-    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+    fn bind_drive_node(app: &mut App, unit: DriveUnit) -> Entity {
         let drive = DriveCell(unit.drive());
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {
@@ -864,6 +864,8 @@ mod mod_curve_delivery {
     use tutti_mod::{Curve, LayerKey, LayeredCurve, ModTarget};
     use tutti_types::{Beat, BeatDuration, ParamAddr, UnitParam};
 
+    use crate::common::drive_unit::DriveUnit;
+
     /// A sink that takes curve layers — the shape a sub-block reader has.
     ///
     /// `AtomicTarget` mirrors a frame scalar into an atomic; this keeps the whole
@@ -917,10 +919,7 @@ mod mod_curve_delivery {
     fn app() -> App {
         let mut app = App::new();
         let mut graph = AudioGraphRes::headless(0, 1);
-        let out = graph.insert(tutti_nodes::DistortionNode::new(
-            tutti_nodes::ShapeKind::Tanh,
-            1.0,
-        ));
+        let out = graph.insert(DriveUnit::new(1.0));
         graph.set_outputs_from(out);
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
@@ -1036,8 +1035,8 @@ mod mod_curve_delivery {
         // on the unit, before insertion.
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
-            .register::<tutti_nodes::DistortionNode>();
-        let unit = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, BASE);
+            .register::<DriveUnit>();
+        let unit = DriveUnit::new(BASE);
         // The node's own atomic, shared with every clone of it.
         let drive_cell = unit.drive();
         let controls = CapturedControls::capture(app.world(), &unit);
@@ -1100,6 +1099,7 @@ mod mod_source {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
 
+    use crate::common::drive_unit::DriveUnit;
     use bevy_tutti::graph::{AudioGraphRes, CapturedControls, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::modulation::{
         ModParamRange, ModRoute, ModSource, ModSourceAppExt, ModSourceKind, ModSourceRate,
@@ -1108,7 +1108,6 @@ mod mod_source {
     use bevy_tutti::AudioEngineState;
     use tutti_core::transport::Transport;
     use tutti_mod::Modulator;
-    use tutti_nodes::DistortionNode;
     use tutti_types::{Depth, Hz, ParamAddr, Phase, UnitParam};
 
     /// A modulator with no analogue in `tutti-mod`: a two-step stair, held for
@@ -1167,12 +1166,9 @@ mod mod_source {
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
+            .register::<DriveUnit>();
 
-        let target = bind_drive_node(
-            &mut app,
-            DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0),
-        );
+        let target = bind_drive_node(&mut app, DriveUnit::new(1.0));
         app.world_mut()
             .entity_mut(target)
             .insert(ModParamRange::default().with(
@@ -1193,7 +1189,7 @@ mod mod_source {
     /// Push a drive node into the graph and bind an entity to it the way every
     /// insertion path does: the controls are captured from the unit first,
     /// against whatever the registry knows at that moment.
-    fn bind_drive_node(app: &mut App, unit: DistortionNode) -> Entity {
+    fn bind_drive_node(app: &mut App, unit: DriveUnit) -> Entity {
         let drive = DriveCell(unit.drive());
         let controls = CapturedControls::capture(app.world(), &unit);
         let node = {

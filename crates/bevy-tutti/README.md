@@ -322,27 +322,25 @@ let written = tutti_export::render_to_file(graph, &config, &clock, &path)?;
 
 ### DSP nodes
 
-Spawn the node marker; its `#[require(...)]` list inserts the param components
-with their defaults, and you override only the ones you care about via
-struct-update.
+Spawn the node itself; its params are `AudioParam` components on the entity,
+and you insert only the ones you drive.
 
 ```rust
-// DSP nodes are plain `AudioUnit`s from `tutti-nodes`, spawned like any
-// other node. There are no marker components and no per-node ECS wrappers.
-use tutti_nodes::{CompressorNode, LfoNode};
+// DSP nodes come from `tutti-nodes`, spawned like any other node: a native
+// graph node (the filters, the dynamics, the distortion, the strip) through
+// `spawn_graph_node`, an `AudioUnit` through `spawn_audio_node`. There are no
+// marker components and no per-node ECS wrappers.
+use tutti_nodes::{CompressorNode, GateNode, LfoNode};
 
 commands.spawn_audio_node(LfoNode::new(Hz(2.0)));
-commands.spawn_audio_node(CompressorNode::default());
 
-// Compressor — required: ThresholdDb, CompressorRatio, Attack, Release, GainDb
-commands.spawn((
-    CompressorNode,
-    ThresholdDb(-18.0), CompressorRatio(3.0),
-    Attack(0.01), Release(0.15), GainDb(3.0),
-));
+// A param is an `AudioParam` on the entity, addressed by `UnitParam`; it
+// writes through the node's `ParamSet`.
+commands
+    .spawn_graph_node(CompressorNode::stereo(-18.0, 3.0, 0.01, 0.15).with_makeup(3.0))
+    .insert(AudioParam::<Db, { UnitParam::Threshold as u16 }>::new(Db(-24.0)));
 
-// Gate — required: ThresholdDb, Attack, Release
-commands.spawn((GateNode, ThresholdDb(-25.0), Attack(0.002), Release(0.2)));
+commands.spawn_graph_node(GateNode::stereo(-25.0, 0.002, 0.01, 0.2));
 ```
 
 ### Spatial audio

@@ -1,9 +1,10 @@
 //! The mixer strip — volume, stereo balance, mute — as one addressable unit.
 //!
 //! A mixer bus applies three things to a summed signal: a fader, a balance, and
-//! a mute. [`BusStripNode`] is all three in one node, driven through the ordinary
-//! [`UnitParam`] setting path, so a host reconciles it with the same generic
-//! machinery it uses for a filter cutoff and needs no downcast.
+//! a mute. [`BusStripNode`] is all three in one node, addressed by
+//! [`UnitParam`] through the [`ParamSet`] it is inserted with, so a host sets
+//! it with the same generic machinery it uses for a filter cutoff and needs no
+//! downcast.
 //!
 //! # Why this is a unit rather than a fundsp graph
 //!
@@ -12,19 +13,16 @@
 //! that composition does *not* give is **addressing**, and addressing is the
 //! whole point.
 //!
-//! Every scalar here lives in a [`Param<T>`] and is written through
-//! [`AudioUnit::set`], decoded by
-//! [`from_setting`](tutti_core::unit_param::from_setting) — the same shape every
-//! other node in this crate uses. A `Shared`-based strip would instead need its
-//! host to hold the handles and write them directly, which is a second param path
-//! running alongside the declared one, invisible to the reconcilers that own the
-//! first. Two writers, one port, no way to see the conflict.
+//! Every scalar here lives in a cell the node's [`ParamSet`] addresses by
+//! [`UnitParam`] — the same shape every other node in this crate uses. A
+//! `Shared`-based strip would instead need its host to hold the handles and
+//! write them directly, which is a second param path running alongside the
+//! declared one, invisible to the reconcilers that own the first. Two writers,
+//! one port, no way to see the conflict.
 //!
 //! fundsp's `Panner` is unreachable from the declared path for a second reason:
-//! it answers only `Parameter::Pan`, while `node_setting` emits
-//! `Setting::value(..).index(..)`. And `Panner<U2>` takes its pan as an *audio
-//! input port*, which would sit in the same index space `PortSources` declares
-//! into — where `Net::pipe_input` silently overwrites it.
+//! `Panner<U2>` takes its pan as an *audio input port*, which would sit in the
+//! same index space `PortSources` declares into.
 //!
 //! # The balance law is this crate's own
 //!
@@ -44,37 +42,48 @@
 //! sample, so a mute is silent from the next block on. See
 //! `BusStripNode::render`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ParamFeed, Setting, SignalFrame};
+use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
+
+/// The params a [`BusStripNode`] lets the graph modulate, in port order.
+pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
 
 /// A mixer strip: volume, stereo balance and mute over `channels` audio ports.
 ///
 /// Ports are `channels` audio inputs → `channels` outputs. Volume and pan
 /// are modulatable by the graph (design doc 013 item 6), in that port order
-/// ([`STRIP_PARAMS`]): a per-frame value fed to the strip's
-/// [`ParamFeed`](tutti_core::ParamFeed) overrides its atomic per sample.
+/// ([`STRIP_PARAMS`]): a per-frame value on the param port
+/// ([`Io::param`](tutti_graph::Io::param)) overrides its cell per sample.
 /// There is deliberately no modulatable mute: a per-sample boolean is a
 /// gate, not a mute, and gating is [`crate::GateNode`]'s job.
 ///
-/// Params: [`UnitParam::Volume`] (linear amplitude), [`UnitParam::Pan`] (`-1..1`)
-/// and [`UnitParam::Mute`] (`>= 0.5` is muted). Settings for anything else are
-/// ignored, which is what lets a host push params without knowing the node type.
-/// The params a [`BusStripNode`] lets the graph modulate, in port order.
-pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
-
+/// Params, by address through its [`ParamSet`]: [`UnitParam::Volume`] (linear
+/// amplitude), [`UnitParam::Pan`] (`-1..1`) and [`UnitParam::Mute`] (`>= 0.5`
+/// is muted). The set refuses anything else, which is what lets a host push
+/// params without knowing the node type.
+///
+/// Every control is read **once per block**; no cell is loaded per sample.
+///
+/// `Clone` shares the three cells: it is the template
+/// [`tutti_graph::param_parts`] forks from ([`ParamNode::fork_fresh`] is the
+/// copy that shares nothing).
+#[derive(Clone)]
 pub struct BusStripNode {
     volume: Param<Amplitude>,
     pan: Param<Pan>,
-    /// Not a [`Param`]: that requires `Unit<Raw = f32>` and a mute is a boolean.
-    /// Deliberately *not* given a unit newtype either — per the units rule a new
-    /// type needs a distinct range or algebra, and a bool-as-float has neither.
-    muted: Arc<AtomicBool>,
-    /// The width this strip runs at — its declared audio layout
-    /// (`inputs()` audio ports == `outputs()`).
+    /// The mute, as [`UnitParam::Mute`] encodes it: `>= 0.5` is muted. A bare
+    /// cell rather than a [`Param`] — deliberately *not* given a unit newtype,
+    /// since per the units rule a new type needs a distinct range or algebra,
+    /// and a bool-as-float has neither — so the [`ParamSet`] addresses it as
+    /// it does volume and pan, and a mute set by address lands on the next
+    /// block.
+    muted: Arc<AtomicF32>,
+    /// The width this strip runs at — its declared audio layout (as many
+    /// inputs as outputs).
     ///
     /// Balance is only meaningful on a stereo pair, so it applies to channels 0
     /// and 1 and leaves any others at unity — a 5.1 strip fades and mutes whole
@@ -87,17 +96,14 @@ pub struct BusStripNode {
     /// the prologue rather than the inner loop. A second field would only be a
     /// way for the two to disagree.
     layout: ChannelLayout,
-    /// Per-frame volume and pan from the graph, when it modulates them
-    /// ([`STRIP_PARAMS`]).
-    feed: ParamFeed,
-    /// Which params the previous block was fed (bit `k`). A change is not
+    /// Which params the previous block was modulated on (bit `k`). A change is not
     /// ramped by the strip: the graph declicks the fed value itself, and
     /// ramping the control gain across the same block would apply the gain
     /// twice for its length.
     last_fed: u8,
     /// The control-driven gains the previous block ended on — where this
     /// block's ramp starts. `None` before the first block and after
-    /// [`reset`](AudioUnit::reset): with no previous output there is nothing to
+    /// [`reset`](Node::reset): with no previous output there is nothing to
     /// be continuous with, so the first block starts at its target.
     ///
     /// Per-node state, not shared with clones: it describes what *this* node
@@ -175,9 +181,8 @@ impl BusStripNode {
         Self {
             volume: Param::new(Amplitude::UNITY),
             pan: Param::new(Pan::CENTER),
-            muted: Arc::new(AtomicBool::new(false)),
+            muted: Arc::new(AtomicF32::new(0.0)),
             layout: ChannelLayout::from(layout.count().max(1)),
-            feed: ParamFeed::new(&STRIP_PARAMS),
             last_fed: 0,
             ramp_from: None,
         }
@@ -244,13 +249,22 @@ impl BusStripNode {
     /// Not a hard gate: the next block ramps to (or from) silence across its
     /// length, so the output is silent from the end of that block on. A step to
     /// zero is an audible click on anything but silence.
+    ///
+    /// The same cell [`UnitParam::Mute`] addresses through the [`ParamSet`].
     pub fn set_muted(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Release);
+        self.muted
+            .store(if muted { 1.0 } else { 0.0 }, Ordering::Release);
     }
 
     /// Whether the strip is currently muted and emitting silence.
     pub fn is_muted(&self) -> bool {
-        self.muted.load(Ordering::Acquire)
+        Self::is_mute(self.muted.load(Ordering::Acquire))
+    }
+
+    /// [`UnitParam::Mute`]'s encoding: `>= 0.5` is muted (so a NaN is not).
+    #[inline]
+    fn is_mute(v: f32) -> bool {
+        v >= 0.5
     }
 
     /// Per-channel gains for a stereo **balance** at position `pan`.
@@ -301,14 +315,14 @@ impl BusStripNode {
     /// multiplicand rather than a branch.
     #[inline]
     fn live_factor(&self) -> f32 {
-        !self.muted.load(Ordering::Relaxed) as u8 as f32
+        !Self::is_mute(self.muted.load(Ordering::Relaxed)) as u8 as f32
     }
 
     /// The gains the **control cells** ask for — the ramp's target.
     ///
-    /// A control the graph feeds (`fed`: volume, pan) contributes unity here,
-    /// and its value comes from [`fed_gains`](Self::fed_gains) per sample
-    /// instead. Mute is never fed, so it is always here.
+    /// A control the graph modulates (`fed`: volume, pan) contributes unity
+    /// here, and its value comes from [`fed_gains`](Self::fed_gains) per
+    /// sample instead. Mute is never modulated, so it is always here.
     ///
     /// Reads three atomics; called once per block, never per sample.
     #[inline]
@@ -327,7 +341,7 @@ impl BusStripNode {
     /// The gains the fed params ask for at one sample — unity for one that
     /// is not fed.
     ///
-    /// The feed carries raw values, so this is the boundary where an untyped
+    /// The param port carries raw values, so this is the boundary where an untyped
     /// float becomes a typed quantity again — named rather than inlined so there
     /// is one place that decision happens.
     ///
@@ -342,20 +356,18 @@ impl BusStripNode {
         )
     }
 
-    /// Render `size` frames: the one gain path, shared by `tick` and `process`.
+    /// Render `size` frames: the one gain path.
     ///
     /// Reads the control cells **once**, then ramps linearly from the gains the
     /// previous call ended on to the ones just read, landing exactly on them at
-    /// the last frame. `tick` is this with `size == 1` — a one-frame block, whose
-    /// ramp is therefore a step — which is what keeps the two paths one
-    /// implementation instead of two that can drift.
+    /// the last frame. A one-frame block's ramp is therefore a step.
     ///
     /// # The ramp is one block long, so its length is the caller's block size
     ///
     /// At the engine's 64-frame chunks that is ~1.3 ms at 48 kHz: long enough to
     /// turn a mute's step into a slope with no broadband click, short enough
     /// that the mute is silent from the end of that block on. A caller that
-    /// renders one frame at a time gets a step, exactly as `tick` does.
+    /// renders one frame at a time gets a step.
     #[inline]
     fn render(
         &mut self,
@@ -413,76 +425,38 @@ impl Default for BusStripNode {
     }
 }
 
-/// Clones share the atomics rather than forking them — a cloned strip is another
-/// handle on the same fader, which is what `Net`'s node cloning needs.
-impl Clone for BusStripNode {
-    fn clone(&self) -> Self {
-        Self {
-            volume: self.volume.handle(),
-            pan: self.pan.handle(),
-            muted: Arc::clone(&self.muted),
-            layout: self.layout,
-            feed: self.feed.clone(),
-            last_fed: self.last_fed,
-            ramp_from: self.ramp_from,
-        }
-    }
-}
-
-impl AudioUnit for BusStripNode {
-    fn inputs(&self) -> usize {
-        self.channels()
+impl Node for BusStripNode {
+    /// `channels` in and out, volume then pan modulatable
+    /// ([`STRIP_PARAMS`]). Volume, pan and mute are per-frame gains, so it
+    /// stops with its input.
+    fn shape(&self) -> Shape {
+        Shape::audio(self.layout, self.layout)
+            .with_tail(Tail::None)
+            .with_params(&STRIP_PARAMS)
     }
 
-    fn outputs(&self) -> usize {
-        self.channels()
+    /// Nothing is rate-dependent: the ramp is one block long, whatever the
+    /// rate.
+    fn prepare(&mut self, _: &Prepare) {}
+
+    fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let size = io.frames();
+        let (volume, pan) = (io.param(0).frames(), io.param(1).frames());
+        let (inputs, mut outputs) = io.split();
+        self.render(
+            size,
+            |c, i| inputs.get(c)[i],
+            volume,
+            pan,
+            |c, i, v| outputs.get(c)[i] = v,
+        );
+        Status::Modified
     }
 
     /// Forget the previous block's gains, so the next block starts at its
     /// target rather than ramping from a signal that is no longer playing.
-    /// Detach volume, pan and mute (see `Param::detach`), so a fork renders
-    /// the strip as it was set when it was taken, not a fader ride or a mute
-    /// made while it runs. Values are kept.
-    fn isolate(&mut self) {
-        self.volume.detach();
-        self.pan.detach();
-        self.muted = Arc::new(AtomicBool::new(self.muted.load(Ordering::Acquire)));
-    }
-
     fn reset(&mut self) {
         self.ramp_from = None;
-    }
-
-    /// A one-frame block — see `BusStripNode::render`.
-    #[inline]
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let feed = ParamFeed::take(&mut self.feed);
-        self.render(
-            1,
-            |c, _| input[c],
-            feed.get(0, 1),
-            feed.get(1, 1),
-            |c, _, v| output[c] = v,
-        );
-        self.feed = feed;
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Moved out for the render, which takes `&mut self`; moving it
-        // allocates nothing.
-        let feed = ParamFeed::take(&mut self.feed);
-        self.render(
-            size,
-            |c, i| input.at_f32(c, i),
-            feed.get(0, size),
-            feed.get(1, size),
-            |c, i, v| output.set_f32(c, i, v),
-        );
-        self.feed = feed;
-    }
-
-    fn param_feed(&mut self) -> Option<&mut ParamFeed> {
-        Some(&mut self.feed)
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
@@ -492,59 +466,38 @@ impl AudioUnit for BusStripNode {
             _ => None,
         }
     }
+}
 
-    fn set(&mut self, setting: Setting) {
-        let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) else {
-            return;
-        };
-        match param {
-            UnitParam::Volume => self.set_volume(Amplitude(value)),
-            UnitParam::Pan => self.set_pan(Pan(value)),
-            // The `>= 0.5` threshold is `UnitParam::Mute`'s documented encoding:
-            // `Setting` carries an f32, so the boolean has to ride one.
-            UnitParam::Mute => self.set_muted(value >= 0.5),
-            // A unit ignores params it does not own — this is what lets a host
-            // push a setting without dispatching on the node type.
-            _ => {}
-        }
+impl ParamNode for BusStripNode {
+    /// Volume, pan and mute (`>= 0.5` is muted).
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Volume, self.volume())
+            .param(UnitParam::Pan, self.pan())
+            .param(UnitParam::Mute, Arc::clone(&self.muted))
+            .build()
     }
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::BUS_STRIP_ID
+    /// A clone with its three cells detached (at their values now), so a
+    /// fork renders the strip as it was set, not a fader ride or a mute made
+    /// while it runs; its ramp history cleared.
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.volume.detach();
+        fork.pan.detach();
+        fork.muted = Arc::new(AtomicF32::new(self.muted.load(Ordering::Acquire)));
+        Node::reset(&mut fork);
+        fork
     }
+}
 
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
+/// Inserted with its [`ParamSet`] as its controls and a fork from the values
+/// last set through it ([`tutti_graph::param_parts`]).
+impl IntoNode for BusStripNode {
+    type Controls = ParamSet;
 
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // A gain stage: each output is its input scaled, so propagate with the
-        // gains the controls settle on. Read once here — `route` is a
-        // control-thread query, not the audio path. The target, not a point on
-        // the ramp: a ramp lasts one block, and `route` answers for the steady
-        // state.
-        let gains = Self::gains_for(self.volume.load(), self.pan.load(), self.live_factor());
-        let channels = self.channels();
-        let mut out = SignalFrame::new(channels);
-        for c in 0..channels {
-            // `gains.rest` past the pair, not the bare fader: a muted strip
-            // propagates silence on every channel, not just the balanced pair.
-            out.set(c, input.at(c).scale(gains.channel(c).get() as f64));
-        }
-        out
-    }
-
-    /// Volume, pan and mute are per-frame gains, so this stops with its input.
-    fn tail(&mut self) -> Tail {
-        Tail::None
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
 
@@ -568,19 +521,43 @@ impl ModParams for BusStripNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::unit_param::node_setting;
+    use crate::test_support::{tick, RATE};
+    use tutti_graph::contract::{assert_param_fork, drive};
 
-    /// Drive a param the way a host does — through a `Setting` — rather than by
-    /// calling the setter, so the test covers the path `AudioParam<U, P>` uses.
-    fn set_param(strip: &mut BusStripNode, param: UnitParam, value: f32) {
-        let node = tutti_core::dsp::NodeId::new();
-        strip.set(node_setting(node, param, value).peel());
+    /// Set a param the way a host does — by address, through the node's
+    /// `ParamSet` — rather than by calling the setter, so the test covers the
+    /// path `AudioParam<U, P>` uses. `false` if the strip refused it.
+    fn set_param(strip: &BusStripNode, param: UnitParam, value: f32) -> bool {
+        strip.param_set().set(param, value)
     }
 
     fn tick2(strip: &mut BusStripNode, l: f32, r: f32) -> (f32, f32) {
         let mut out = [0.0f32; 2];
-        strip.tick(&[l, r], &mut out);
+        tick(strip, &[l, r], &mut out);
         (out[0], out[1])
+    }
+
+    /// A fork starts from the values last set through the strip's
+    /// `ParamSet` — the mute included — and shares no cell with it.
+    ///
+    /// Mutation (run): keep `fork.muted` shared in `fork_fresh` → "a live
+    /// write reached the fork" for `Mute` → fails.
+    #[test]
+    fn a_fork_shares_no_cell() {
+        assert_param_fork(BusStripNode::new());
+    }
+
+    /// A mute set by address lands on the cell the strip reads, and renders
+    /// silence from the next block on.
+    ///
+    /// Mutation (run): leave `Mute` out of `param_set` → the set refuses it
+    /// → fails.
+    #[test]
+    fn a_mute_set_by_address_reaches_the_render() {
+        let mut s = BusStripNode::new();
+        assert!(set_param(&s, UnitParam::Mute, 1.0));
+        assert!(s.is_muted());
+        assert_eq!(tick2(&mut s, 1.0, 1.0), (0.0, 0.0));
     }
 
     /// A strip must be transparent until somebody moves it. This is the property
@@ -639,42 +616,46 @@ mod tests {
 
     #[test]
     fn set_dispatches_each_unit_param() {
-        let mut s = BusStripNode::new();
+        let s = BusStripNode::new();
 
-        set_param(&mut s, UnitParam::Volume, 0.25);
+        assert!(set_param(&s, UnitParam::Volume, 0.25));
         assert_eq!(s.volume_value(), Amplitude(0.25));
 
-        set_param(&mut s, UnitParam::Pan, -1.0);
+        assert!(set_param(&s, UnitParam::Pan, -1.0));
         assert_eq!(s.pan_value(), Pan(-1.0));
 
-        set_param(&mut s, UnitParam::Mute, 1.0);
+        assert!(set_param(&s, UnitParam::Mute, 1.0));
         assert!(s.is_muted());
-        set_param(&mut s, UnitParam::Mute, 0.0);
+        assert!(set_param(&s, UnitParam::Mute, 0.0));
         assert!(!s.is_muted());
     }
 
-    /// A unit ignores params it does not own — the property that lets the generic
-    /// reconciler push any param without dispatching on node type.
+    /// A strip refuses params it does not own, and they change nothing — the
+    /// property that lets the generic reconciler push any param without
+    /// dispatching on node type.
     #[test]
     fn ignores_params_it_does_not_own() {
         let mut s = BusStripNode::new();
-        set_param(&mut s, UnitParam::Cutoff, 8000.0);
-        set_param(&mut s, UnitParam::Drive, 4.0);
+        assert!(!set_param(&s, UnitParam::Cutoff, 8000.0));
+        assert!(!set_param(&s, UnitParam::Drive, 4.0));
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 1.0));
     }
 
-    /// The feed declares volume then pan, and never changes the arity.
+    /// The shape declares volume then pan, and never changes the arity.
     ///
     /// Mutation (run): swap `STRIP_PARAMS`' order → the first assertion
     /// fails, and `a_fed_volume_overrides_the_atomic` reads the pan.
     #[test]
-    fn the_feed_declares_volume_then_pan() {
-        let mut s = BusStripNode::with_channels(ChannelLayout::from(6u16));
+    fn the_shape_declares_volume_then_pan() {
+        let s = BusStripNode::with_channels(ChannelLayout::from(6u16));
         assert_eq!(
-            s.param_feed().map(|f| f.params()),
-            Some(&[UnitParam::Volume, UnitParam::Pan][..])
+            s.shape().params.as_slice(),
+            &[UnitParam::Volume, UnitParam::Pan][..]
         );
-        assert_eq!((s.inputs(), s.outputs()), (6, 6));
+        assert_eq!(
+            (s.shape().audio_in.count(), s.shape().audio_out.count()),
+            (6, 6)
+        );
         s.set_volume(Amplitude(0.5));
         assert_eq!(s.param_base(0), Some(0.5), "volume's base is its control");
         assert_eq!(s.param_base(1), Some(0.0), "pan's base is centre");
@@ -686,8 +667,7 @@ mod tests {
         let mut s = BusStripNode::new();
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
-        s.param_feed().expect("fed").feed(0, &[0.5]);
-        s.tick(&[1.0, 1.0], &mut out);
+        crate::test_support::tick_fed(&mut s, &[1.0, 1.0], &[Some(0.5)], &mut out);
         assert_eq!(out, [0.5, 0.5]);
     }
 
@@ -702,19 +682,21 @@ mod tests {
         let mut s = BusStripNode::new();
         s.set_volume(Amplitude(0.5));
         let x = [1.0f32; 16];
-        let steady = crate::testing::process_fed(&mut s, &[&x, &x], &[None, None]);
+        let steady = drive(&mut s, RATE, &[&x, &x], &[None, None]);
         assert!(steady[0].iter().all(|&y| y == 0.5));
         let held = [0.5f32; 16];
-        let fed = crate::testing::process_fed(&mut s, &[&x, &x], &[Some(&held), None]);
+        let fed = drive(&mut s, RATE, &[&x, &x], &[Some(&held), None]);
         assert!(
             fed[0].iter().all(|&y| y == 0.5),
             "the fed volume alone, from its first frame: {:?}",
             fed[0]
         );
-        let back = crate::testing::process_fed(&mut s, &[&x, &x], &[None, None]);
+        let back = drive(&mut s, RATE, &[&x, &x], &[None, None]);
         assert!(back[0].iter().all(|&y| y == 0.5), "and the control again");
     }
 
+    /// A clone shares the cells: it is the template `param_parts` forks from,
+    /// and a fork taken later must read the cells as they are then.
     #[test]
     fn clone_shares_atomics() {
         let original = BusStripNode::new();
@@ -733,52 +715,42 @@ mod tests {
         s.set_volume(Amplitude(0.5));
         s.set_pan(Pan(-1.0));
         let mut out = [0.0f32; 3];
-        s.tick(&[1.0, 1.0, 1.0], &mut out);
+        tick(&mut s, &[1.0, 1.0, 1.0], &mut out);
         assert_eq!(out[0], 0.5); // near channel: unity balance × volume
         assert_eq!(out[1], 0.0); // far channel: balanced away
         assert_eq!(out[2], 0.5); // no balance applied, volume only
     }
 
-    /// `route` reports what the strip does to a signal, so a muted strip must
-    /// report silence on **every** channel — including the ones past the stereo
-    /// pair, which take the unbalanced path.
+    /// A muted strip renders silence on **every** channel — including the
+    /// ones past the stereo pair, which take the unbalanced path. (This was
+    /// `route`'s test, a hand-written copy of the gain arithmetic answering a
+    /// control-thread query; with `route` gone the render is the one copy,
+    /// and the property is pinned on it.)
     ///
-    /// Worth a test because `route` is a second, hand-written copy of the gain
-    /// arithmetic (it answers a control-thread query rather than processing
-    /// samples), so it can drift from `tick`/`process` without any audio changing.
-    /// An earlier draft applied the bare fader there and let a muted surround
-    /// channel report itself as passing signal.
+    /// Mutation (run): `rest: volume` instead of `rest: fader` in `gains_for`
+    /// → the third channel passes signal while muted → fails.
     #[test]
-    fn route_reports_mute_on_every_channel() {
-        use tutti_core::Signal;
-
+    fn mute_silences_every_channel() {
         let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
         s.set_muted(true);
-        let mut input = SignalFrame::new(3);
-        for c in 0..3 {
-            input.set(c, Signal::Value(1.0));
-        }
-        // `Signal` implements neither `PartialEq` nor `Debug`, so match the
-        // variant rather than comparing.
-        let out = s.route(&input, 48_000.0);
-        for c in 0..3 {
-            assert!(
-                matches!(out.at(c), Signal::Value(v) if v == 0.0),
-                "channel {c} must report silence while muted"
-            );
+        let mut out = [1.0f32; 3];
+        tick(&mut s, &[1.0, 1.0, 1.0], &mut out);
+        for (c, &y) in out.iter().enumerate() {
+            assert_eq!(y, 0.0, "channel {c} must be silent while muted");
         }
     }
 
-    /// The block path must agree with the per-sample one. They are separate
-    /// implementations, so a change to the gain arithmetic that touches only one
-    /// would otherwise show up as "it sounds right in tests and wrong live".
+    /// One block renders what the same frames do one at a time, while the
+    /// controls hold: the ramp is the only thing block length changes.
+    ///
+    /// Mutation (run): read frame 0 for every frame in `render`'s `get` →
+    /// a frame at a time is unchanged, the block is not → fails.
     #[test]
-    fn process_matches_tick() {
-        use tutti_core::BufferVec;
-
-        let mut strip = BusStripNode::new();
-        strip.set_volume(Amplitude(0.6));
-        strip.set_pan(Pan(0.25));
+    fn a_block_matches_its_frames() {
+        let mut framed = BusStripNode::new();
+        framed.set_volume(Amplitude(0.6));
+        framed.set_pan(Pan(0.25));
+        let mut block = framed.fork_fresh();
 
         const N: usize = 8;
         let samples: [(f32, f32); N] = [
@@ -792,29 +764,19 @@ mod tests {
             (0.9, 0.3),
         ];
 
-        // Per-sample reference.
+        // Per-frame reference.
         let mut ticked = [[0.0f32; 2]; N];
         for (i, &(l, r)) in samples.iter().enumerate() {
-            strip.tick(&[l, r], &mut ticked[i]);
+            tick(&mut framed, &[l, r], &mut ticked[i]);
         }
 
-        // Block path over the same input.
-        let mut input = BufferVec::new(2);
-        {
-            let mut inb = input.buffer_mut();
-            for (i, &(l, r)) in samples.iter().enumerate() {
-                inb.set_f32(0, i, l);
-                inb.set_f32(1, i, r);
-            }
-        }
-        let mut output = BufferVec::new(2);
-        {
-            let mut outb = output.buffer_mut();
-            strip.process(N, &input.buffer_ref(), &mut outb);
-            for (i, frame) in ticked.iter().enumerate() {
-                assert!((outb.at_f32(0, i) - frame[0]).abs() < 1e-6, "L @ {i}");
-                assert!((outb.at_f32(1, i) - frame[1]).abs() < 1e-6, "R @ {i}");
-            }
+        // One block over the same input.
+        let l: Vec<f32> = samples.iter().map(|s| s.0).collect();
+        let r: Vec<f32> = samples.iter().map(|s| s.1).collect();
+        let out = drive(&mut block, RATE, &[&l, &r], &[]);
+        for (i, frame) in ticked.iter().enumerate() {
+            assert!((out[0][i] - frame[0]).abs() < 1e-6, "L @ {i}");
+            assert!((out[1][i] - frame[1]).abs() < 1e-6, "R @ {i}");
         }
     }
 
@@ -823,22 +785,9 @@ mod tests {
     /// DC because it makes the output *be* the gain curve: any step in the gain
     /// is a step of the same size in the waveform.
     fn process_dc(strip: &mut BusStripNode, size: usize, l: f32, r: f32) -> Vec<[f32; 2]> {
-        use tutti_core::BufferVec;
-
-        let mut input = BufferVec::new(2);
-        {
-            let mut inb = input.buffer_mut();
-            for i in 0..size {
-                inb.set_f32(0, i, l);
-                inb.set_f32(1, i, r);
-            }
-        }
-        let mut output = BufferVec::new(2);
-        let mut outb = output.buffer_mut();
-        strip.process(size, &input.buffer_ref(), &mut outb);
-        (0..size)
-            .map(|i| [outb.at_f32(0, i), outb.at_f32(1, i)])
-            .collect()
+        let (lv, rv) = (vec![l; size], vec![r; size]);
+        let out = drive(strip, RATE, &[&lv, &rv], &[]);
+        (0..size).map(|i| [out[0][i], out[1][i]]).collect()
     }
 
     /// Largest sample-to-sample jump across `frames`, on either channel.

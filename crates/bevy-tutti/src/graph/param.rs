@@ -26,7 +26,10 @@
 //! // A graph with no device: its audio side stays here, and `render_frame`
 //! // plays it.
 //! let mut graph = AudioGraphRes::headless(0, 1);
-//! let node = graph.insert(unit);
+//! // A native node: its controls are its `ParamSet`, addressed on the node so
+//! // a param write lands on its cell (what `spawn_graph_node` does).
+//! let (node, params) = graph.insert_node(unit);
+//! graph.set_node_params(node, Some(params));
 //! graph.set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
@@ -41,8 +44,9 @@
 //!
 //! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
 //! app.update();
-//! // The write rides the node's settings ring, drained at the start of its
-//! // next block: render one.
+//! // The write lands on the cell, which the node reads at the start of its
+//! // next block (an `AudioUnit` under `Legacy` takes it through its settings
+//! // ring, drained there): render one.
 //! app.world_mut().resource_mut::<AudioGraphRes>().render_frame(&mut [0.0]);
 //!
 //! // Read the node's own atomic — the cell the DSP reads, not the component.

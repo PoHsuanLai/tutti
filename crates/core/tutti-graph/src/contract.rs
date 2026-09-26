@@ -70,7 +70,10 @@
 //! [`IsolateRow`] (and its one-control form [`assert_isolate_snapshots`])
 //! checks the other promise a node crate makes here: that a forkable unit's
 //! `isolate` severs every live control it reads, so a fork renders the
-//! controls as they were at fork time. See `src/contract/snapshot.rs`.
+//! controls as they were at fork time. [`NativeIsolateRow`] is the same
+//! check for a native [`ParamNode`](crate::ParamNode), whose fork is
+//! `fork_fresh`: every cell a control writes, addressed by its `ParamSet`
+//! or not. See `src/contract/snapshot.rs`.
 
 use tutti_node::AudioUnit;
 use tutti_types::graph::OutPort;
@@ -93,7 +96,7 @@ use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
 
 mod snapshot;
-pub use snapshot::{assert_isolate_snapshots, IsolateRow, SNAPSHOT_FRAMES};
+pub use snapshot::{assert_isolate_snapshots, IsolateRow, NativeIsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
 pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);

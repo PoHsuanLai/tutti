@@ -6,8 +6,9 @@
 //! oscillator → bell EQ → mixer strip → lookahead limiter chain into the graph
 //! so the gate covers the per-buffer hot path through the nodes the engine
 //! actually ships: `EqBandNode` (over `SvfFilterNode`), `BusStripNode` and
-//! `LimiterNode`. A regression in any of those — or in the executor's walk,
-//! or `Legacy`'s adapter around each — shows up here as an allocation panic.
+//! `LimiterNode`, each a native graph node. A regression in any of those — or
+//! in the executor's walk, or `Legacy`'s adapter around the oscillator —
+//! shows up here as an allocation panic.
 //!
 //! It lived in `tutti-core` while that chain was fundsp's (`sine_hz`, `pan`,
 //! `bell_hz`, `limiter_stereo`), which gated fundsp's filters rather than ours.
@@ -50,15 +51,11 @@ fn build_engine_with_chain() -> Engine {
     ed.insert(
         strip,
         "strip",
-        Legacy::new(BusStripNode::with_channels(ChannelLayout::STEREO)),
+        BusStripNode::with_channels(ChannelLayout::STEREO),
     );
     // The limiter's lookahead ring is sized at the prepared rate, on the
     // control thread, when the commit prepares it: outside the gate.
-    ed.insert(
-        limiter,
-        "limiter",
-        Legacy::new(LimiterNode::new(Db(-1.0), Db(-0.3))),
-    );
+    ed.insert(limiter, "limiter", LimiterNode::new(Db(-1.0), Db(-0.3)));
     let topology = &mut ed.spec_mut().topology;
     let mut wire = |node: NodeKey, port: u16, from: NodeKey, out: u16| {
         topology.edges.insert(

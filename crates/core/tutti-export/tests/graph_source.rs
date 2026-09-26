@@ -209,10 +209,10 @@ fn limited() -> GraphBuilder {
             .with_amplitude(Amplitude(0.9))
             .with_layout(ChannelLayout::STEREO),
     ));
-    let lim = g.add_unit(Box::new(
+    let (lim, _) = g.add_with_controls(
         tutti_nodes::LimiterNode::with_channels(ChannelLayout::STEREO, Db(-6.0), Db(-1.0))
             .with_lookahead(tutti_types::Seconds(0.005)),
-    ));
+    );
     g.pipe(src, lim).pipe_output(lim);
     g
 }
@@ -255,7 +255,7 @@ fn quad_vbap() -> GraphBuilder {
     use tutti_nodes::ChannelSumNode;
     use tutti_spatial::VbapPannerNode;
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
-    let sum = g.add_unit(Box::new(ChannelSumNode::new(2, ChannelLayout::QUAD)));
+    let sum = g.add(ChannelSumNode::new(2, ChannelLayout::QUAD));
     for (s, (az, f)) in [(45.0, 300.0), (135.0, 500.0)].into_iter().enumerate() {
         let src = g.add_unit(Box::new(
             Osc::sine(Hz(f))

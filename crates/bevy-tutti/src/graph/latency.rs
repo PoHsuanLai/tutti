@@ -259,7 +259,7 @@ mod tests {
     fn skewed_graph() -> (AudioGraphRes, Samples) {
         let mut graph = AudioGraphRes::headless(0, 2);
         let a = graph.insert(Const::mono(1.0));
-        let eff = graph.insert(LimiterNode::with_channels(
+        let (eff, _) = graph.insert_node(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),
@@ -442,7 +442,7 @@ mod tests {
     fn a_re_prepare_republishes_the_figures_once_it_resumes() {
         let mut graph = AudioGraphRes::headless(0, 2);
         let a = graph.insert(Const::mono(1.0));
-        let eff = graph.insert(LimiterNode::with_channels(
+        let (eff, _) = graph.insert_node(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),

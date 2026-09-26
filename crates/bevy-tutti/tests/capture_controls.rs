@@ -4,9 +4,14 @@
 //! `bevy_tutti::graph::capture` replaced the graph downcasts that used to answer
 //! "what are this entity's modulatable params".
 //! These pin the replacement at the insertion paths themselves —
-//! `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node` — rather
-//! than at a fixture that captures by hand, because a path that forgot to
-//! capture would leave every hand-captured suite green.
+//! `spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node`, and a
+//! native node's `spawn_graph_node` — rather than at a fixture that captures
+//! by hand, because a path that forgot to capture would leave every
+//! hand-captured suite green.
+//!
+//! The `AudioUnit` paths' fixture is the suites' own
+//! [`DriveUnit`](common::drive_unit::DriveUnit), captured through the
+//! `ModTargetRegistry` (it was `DistortionNode`, which is a native node now).
 
 #![cfg(feature = "modulation")]
 
@@ -18,7 +23,9 @@ mod modulation {
     use bevy_app::prelude::*;
     use bevy_ecs::system::RunSystemOnce;
 
-    use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, TransportRes};
+    use bevy_tutti::graph::{
+        AudioGraphRes, GraphReconcilePlugin, SpawnAudioNode, SpawnGraphNode, TransportRes,
+    };
     use bevy_tutti::modulation::{
         LfoShape, ModParamRange, ModParamsHandle, ModRoute, ModSource, ModSourceRate,
         ModTargetRegistry, ModTargetResolver, TuttiModulationPlugin,
@@ -27,6 +34,8 @@ mod modulation {
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
     use tutti_nodes::{DistortionNode, ShapeKind};
+
+    use crate::common::drive_unit::DriveUnit;
     use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
     const BASE: f32 = 5.0;
@@ -39,7 +48,7 @@ mod modulation {
         app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
         app.world_mut()
             .resource_mut::<ModTargetRegistry>()
-            .register::<DistortionNode>();
+            .register::<DriveUnit>();
         app
     }
 
@@ -55,7 +64,7 @@ mod modulation {
     #[test]
     fn a_route_binds_through_the_params_captured_at_spawn() {
         let mut app = app();
-        let unit = DistortionNode::new(ShapeKind::Tanh, BASE);
+        let unit = DriveUnit::new(BASE);
         let drive = unit.drive();
         let target = app
             .world_mut()
@@ -86,6 +95,44 @@ mod modulation {
         );
     }
 
+    /// A native node spawned through `spawn_graph_node` is captured by its
+    /// `ParamSet`, with no registry entry: a route onto it moves the node's
+    /// own cell.
+    ///
+    /// Mutation (run): make `CapturedControls::for_params` capture no params
+    /// (`params: None`) → the drive stays at its base → fails.
+    #[test]
+    fn a_route_binds_through_the_param_set_captured_at_graph_spawn() {
+        let mut app = app();
+        let node = DistortionNode::new(ShapeKind::Tanh, BASE);
+        let drive = node.drive();
+        let target = app
+            .world_mut()
+            .commands()
+            .spawn_graph_node(node)
+            .insert(drive_range())
+            .id();
+        let lfo = app
+            .world_mut()
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModSourceRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
+        );
+        app.update();
+        app.update();
+
+        assert!(app.world().get::<ModParamsHandle>(target).is_some());
+        let now = drive.load(std::sync::atomic::Ordering::Acquire);
+        assert!(
+            (now - BASE).abs() > 0.1,
+            "the route must reach the node's cell through its ParamSet; drive is still {now}"
+        );
+    }
+
     /// Taking the node away drops the handle — and with it the clone of the
     /// unit it holds, which for a convolver or a synth is not small.
     ///
@@ -97,7 +144,7 @@ mod modulation {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, BASE))
+            .spawn_audio_node(DriveUnit::new(BASE))
             .id();
         app.update();
         assert!(app.world().get::<ModParamsHandle>(target).is_some());
@@ -118,7 +165,7 @@ mod modulation {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(DistortionNode::new(ShapeKind::Tanh, BASE))
+            .spawn_audio_node(DriveUnit::new(BASE))
             .id();
         app.update();
 

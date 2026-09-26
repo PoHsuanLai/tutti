@@ -132,7 +132,8 @@ miri:
 # protocol (against the shipped code) and the plugin shm header protocol (a
 # replica). `--cfg loom` is global, so
 # each runs on its own target. This is what CI runs: the `RtPublish` models at a
-# preemption bound of 4, about a minute and a half.
+# preemption bound of 4, about a minute and a half, and the `PosRing` models at
+# the same bound, about five minutes.
 loom:
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom

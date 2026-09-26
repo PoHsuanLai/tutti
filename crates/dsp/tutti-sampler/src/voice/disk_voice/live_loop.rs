@@ -984,11 +984,88 @@ fn a_seek_does_not_move_a_placed_voices_window() {
     assert_same_outside("across a relayed seek", &got, &want, &[]);
 }
 
+/// **A paused source holds no refill back** (the review of `PosRing`, S2).
+/// A free-running source plays four blocks, stops, and is sought to where
+/// the slots its last block claimed come round again; the butler moves the
+/// window there while it is stopped. Resumed, it plays the target at once,
+/// nothing unread: a stopped block tells the ring it reads nothing
+/// (`PosReader::idle`), so the ranges of its last block no longer stop the
+/// refill at their aliases.
+///
+/// Mutation (run): the stopped source not idling (`DiskSource::process`'s
+/// stopped branch returning before `read.idle()`) → the refill stops at
+/// once, and the resumed block underruns → fails. (The placed voice's idle,
+/// on a stopped clock in `LiveRead::render`, has no such test: nothing moves
+/// a placed voice's window while its clock is stopped — a seek of the clock
+/// reaches the butler only through the voice's next claim, and a relayed
+/// `Command::Seek` is ignored for it (S3). `PosRing`'s
+/// `an_idle_reader_holds_nothing_back` covers `idle` itself.)
+#[test]
+fn a_seek_while_paused_resumes_without_an_underrun() {
+    const LONG: usize = 31 * SR as usize;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("ramp.wav");
+    write_ramp(&path, SR as u32, LONG);
+    let mut streamer =
+        DiskStreamer::manual(SampleRate(SR), DiskStreamerConfig::default()).expect("builds");
+    streamer
+        .commands()
+        .send(Command::Stream {
+            channel_index: 0,
+            file_path: path.to_path_buf(),
+            offset: SamplePosition(0.0),
+        })
+        .expect("the butler is alive");
+    assert!(
+        streamer.step_until_settled(1_000) < 1_000,
+        "the ring primes"
+    );
+    let (mut source, state) = streamer
+        .status()
+        .take_free_running(0)
+        .expect("the link is installed");
+    source.set_sample_rate(SampleRate(SR));
+    let ring_frames = source.read.ring().frames() as u64;
+    let input = BufferVec::new(0);
+    let mut output = BufferVec::new(2);
+    for _ in 0..4 {
+        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        let _ = streamer.step_once();
+    }
+    assert_eq!(state.take_underruns(), 0, "the source plays");
+    // Its last block read 192..256: it claimed from 189.
+    let claimed_from = 3 * BLOCK as u64 - 3;
+    source.stop();
+    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    // The window's new start (the target, less the history the ring keeps)
+    // takes the slot of the first position the last block claimed.
+    let target = claimed_from + ring_frames + 4;
+    streamer
+        .commands()
+        .send(Command::Seek {
+            channel_index: 0,
+            file_position: SamplePosition(target as f64),
+        })
+        .expect("the butler is alive");
+    for _ in 0..50 {
+        source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        let _ = streamer.step_once();
+    }
+    source.play();
+    source.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+    assert_eq!(state.take_underruns(), 0, "the resumed block was not there");
+    assert_eq!(
+        output.buffer_ref().at_f32(0, 0),
+        value(target as usize),
+        "resumed at the target"
+    );
+}
+
 /// **A stream serves one live voice** (the second review of #48, S2): a
 /// second `take_disk_voice` on the same channel is refused, naming why.
 ///
-/// Mutation (run): `take_streaming_unit` not taking the ring's reader → a
-/// second voice is handed out → fails.
+/// Mutation (run): the ring's reader put back after a take (the slot
+/// `replace`d with what was taken) → a second voice is handed out → fails.
 #[test]
 fn a_stream_serves_one_live_voice() {
     let dir = tempfile::tempdir().expect("a temp dir");

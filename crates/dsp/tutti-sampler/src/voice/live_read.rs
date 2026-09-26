@@ -38,8 +38,25 @@
 //! Nothing here allocates, locks or blocks: the buffers are sized at
 //! construction, the map is read once per block (`RtPublish`), and the ring's
 //! samples are atomics.
+//!
+//! # The one reader
+//!
+//! The ring has one `PosReader`, and a voice holds it. A clone of the voice
+//! shares it, by a lock no block ever waits on: a block takes it with
+//! `try_lock` or renders silence. That is for `Net`, whose `commit` hands
+//! the audio thread a clone of every node (the original, in the frontend,
+//! never renders), so the clone must read the ring; two copies rendering at
+//! once — which no host does — would each read only the blocks the other
+//! was not reading. A fork severs itself (`isolate` → [`LiveRead::sever`]) and
+//! reads the file instead (`DiskVoice::isolate`), so it never touches the
+//! live reader. A block that reads nothing tells the ring so
+//! (`PosReader::idle`), so a paused voice holds no refill back.
 
-use crate::butler::{Arrangement, RingMap, RtState, SharedReader, Window};
+use std::sync::{Arc, Mutex, TryLockError};
+
+use tutti_core::{PosClaim, PosReader};
+
+use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 use crate::MAX_SAMPLER_CHANNELS;
 
 use super::interp::interpolate_taps;
@@ -112,15 +129,20 @@ struct State {
 #[derive(Clone, Debug)]
 pub(crate) struct LiveRead {
     ring: SharedReader,
+    /// The ring's one reader, shared with this voice's clones (see the module
+    /// docs); `None` once severed, or for a ring whose reader was taken.
+    reader: Option<Arc<Mutex<PosReader>>>,
     st: State,
 }
 
 impl LiveRead {
-    /// A reader over `ring`, `width` wide (at most [`MAX_SAMPLER_CHANNELS`]).
-    pub(crate) fn new(ring: SharedReader, width: usize) -> Self {
+    /// A reader over `ring` through its one `reader` (`None`: silent), `width`
+    /// wide (at most [`MAX_SAMPLER_CHANNELS`]).
+    pub(crate) fn new(ring: SharedReader, reader: Option<PosReader>, width: usize) -> Self {
         let src = ring.channels().count().max(1) as usize;
         Self {
             ring,
+            reader: reader.map(|r| Arc::new(Mutex::new(r))),
             st: State {
                 width,
                 src,
@@ -162,6 +184,23 @@ impl LiveRead {
         self.st.fade = None;
     }
 
+    /// A block that reads nothing (a stopped source): the ring's reader
+    /// claims no range, so it holds no write back.
+    #[inline]
+    pub(crate) fn idle(&mut self) {
+        if let Some(reader) = self.reader.as_deref() {
+            if let Some(mut reader) = try_take(reader) {
+                reader.idle();
+            }
+        }
+    }
+
+    /// Let go of the live reader: this copy (a fork) never touches the live
+    /// ring again, and renders silence through it.
+    pub(crate) fn sever(&mut self) {
+        self.reader = None;
+    }
+
     /// Render a block: frame `i` plays straight position `positions[i]`
     /// (`None`: silence), read at `rate` file frames per output frame, scaled
     /// by `gain`, handed to `emit(i, frame)` (`width` samples). Frames the ring
@@ -178,6 +217,14 @@ impl LiveRead {
         let st = &mut self.st;
         let w = st.width;
         let silent = [0.0f32; MAX_SAMPLER_CHANNELS];
+        let Some(mut reader) = self.reader.as_deref().and_then(try_take) else {
+            // Severed, or another copy reading this block: nothing to read
+            // (not an underrun).
+            for i in 0..positions.len() {
+                emit(i, &silent[..w]);
+            }
+            return;
+        };
         let (mut lo, mut hi) = (u64::MAX, 0u64);
         for p in positions.iter().flatten() {
             let f = p.max(0.0).floor() as u64;
@@ -190,6 +237,7 @@ impl LiveRead {
             }
             st.last = None;
             st.fade = None;
+            reader.idle();
             return;
         };
         let jump = st
@@ -202,14 +250,15 @@ impl LiveRead {
             let e = (expected + rate * OLD_FRAMES as f64).max(0.0).floor() as u64 + 5;
             (a, e)
         });
-        let window = ring.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);
+        let claim = reader.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);
         let map = ring.map();
+        let src = st.src;
         if let Some(expected) = jump {
             // The old position's continuation, read from the ring while the
             // window still holds it.
             st.continue_from(ring.fade_frames(), |j, out| {
                 let pos = expected + rate * j as f64;
-                read_ring(ring, &window, map.arrangement(pos), pos, out)
+                read_ring(&claim, src, map.arrangement(pos), pos, out)
             });
         }
 
@@ -222,7 +271,7 @@ impl LiveRead {
                 continue;
             };
             st.cross_switch(&map, pos, rate);
-            let new = read_ring(ring, &window, map.arrangement(pos), pos, &mut frame[..w]);
+            let new = read_ring(&claim, src, map.arrangement(pos), pos, &mut frame[..w]);
             let sounded = st.mix(new, &mut frame[..w]);
             if sounded {
                 if let Some(r) = st.recover {
@@ -355,12 +404,24 @@ impl State {
     }
 }
 
-/// Read position `pos` from the ring into `out`: `true` when it sounded or is
-/// silent by the arrangement, `false` when the window lacks a tap.
+/// The live reader, if no other copy of the voice is reading it now. Never
+/// waits.
+#[inline]
+fn try_take(reader: &Mutex<PosReader>) -> Option<std::sync::MutexGuard<'_, PosReader>> {
+    match reader.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Read position `pos` from the block's claim of the ring (`src` channels)
+/// into `out`: `true` when it sounded or is silent by the arrangement, `false`
+/// when the window lacks a tap.
 #[inline]
 fn read_ring(
-    ring: &SharedReader,
-    window: &Window,
+    claim: &PosClaim<'_>,
+    src: usize,
     arrangement: Arrangement,
     pos: f64,
     out: &mut [f32],
@@ -369,11 +430,11 @@ fn read_ring(
         out.fill(0.0);
         return true;
     };
-    if !taps.iter().all(|&t| window.holds(t)) {
+    if !taps.iter().all(|&t| claim.holds(t)) {
         return false;
     }
-    let src = ring.channels().count().max(1) as usize;
-    interpolate_taps(src, frac, out, |c, t| ring.sample(taps[t], c));
+    let frames = taps.map(|t| claim.frame(t));
+    interpolate_taps(src, frac, out, |c, t| frames[t].get(c));
     true
 }
 

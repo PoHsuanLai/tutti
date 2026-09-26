@@ -442,6 +442,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     stream's reader and the butler share (one writer, one reader, a window of
     positions, reads by position that no write ever lands under), with a loom
     model of its protocol (`tests/pos_ring_loom.rs`, in CI's loom job).
+    `PosRing::new` returns its one `PosWriter` and one `PosReader`; a read
+    goes through the `PosClaim` a claim returns, and a reader that reads
+    nothing this block calls `PosReader::idle`.
   - Removed (all crate-private but one): `DiskVoice::seek` — a placed voice
     follows its clock, so seek the clock; `Command::Seek` still moves a
     free-running reader. Also `LoopStatus`, the ring flush and seek-request

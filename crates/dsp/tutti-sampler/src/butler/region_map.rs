@@ -123,9 +123,9 @@ mod tests {
         reg.register(id, make_writer(id));
 
         let w = reg.get_mut(id).unwrap();
-        w.ring().set_play(42);
+        w.set_play(42);
 
-        assert_eq!(reg.get(id).unwrap().ring().play(), 42);
+        assert_eq!(reg.get(id).unwrap().play(), 42);
     }
 
     #[test]

@@ -2241,6 +2241,21 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   and release/acquire, not by `SeqCst` accesses, which loom does not model as
   totally ordered. A threaded stress test (a real writer and reader, random
   claims, tagged samples) runs at a scale loom cannot.
+- **One writer and one reader, by type** (the review of `PosRing`):
+  `PosRing::new` returns a `PosWriter` (its methods `&mut self`) and a
+  `PosReader` whose `claim` returns a `PosClaim` borrowing it — samples are
+  read only through a claim, and a claim ends before the next. The ring's
+  reader waits in the stream's `Ring` until a voice takes it, so
+  `TakeVoiceError::ReaderTaken` is an empty slot, not a flag. A voice's
+  clones share its reader by a `try_lock` no block waits on, because
+  `Net::commit` renders from a clone; a fork severs itself in `isolate`. The
+  same review found a write cut short left the window's start where the
+  whole write would have put it: positions it had not overwritten left the
+  window uncounted as stale, so a reset then let a rewrite land under a
+  block that held them (B1). A write now takes out only what it overwrote.
+  And a reader that stops claiming (a stopped source, a stopped clock)
+  says so (`PosReader::idle`: no ranges), or the ranges of its last block
+  stopped the refill at their aliases while it was paused (S2).
 - **A discontinuity costs 0 frames, never drifts, and never steps.** At a
   jump, and when the reader crosses an edit's switch, it renders the
   continuation of what it was *playing* into a buffer of its own — the old

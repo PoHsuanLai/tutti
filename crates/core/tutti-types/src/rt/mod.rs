@@ -45,7 +45,8 @@
 //!   owning handle, so retired values are freed by the publisher.
 //! - [`PosRing`] — frames a writer thread places ahead of the audio thread,
 //!   indexed by position rather than consumed in order (a disk stream's ring):
-//!   the reader claims a window and reads any position it holds.
+//!   one [`PosWriter`] and one [`PosReader`], whose [`PosClaim`] reads any
+//!   position the window it took holds.
 //! - [`Retire`] — an owning box that must not be dropped on the audio thread,
 //!   checked in debug builds against the [`AudioThread`] marker.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
@@ -66,7 +67,9 @@ pub use audio_thread::{AudioThread, AudioThreadGuard};
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
-pub use pos_ring::{PosRing, RingWindow, MAX_POS_RING_FRAMES};
+pub use pos_ring::{
+    PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow, MAX_POS_RING_FRAMES,
+};
 pub use publish::{RtPublish, RtRef};
 pub use retire::Retire;
 pub use scratch::{RtScratch, RtScratchOverflow};

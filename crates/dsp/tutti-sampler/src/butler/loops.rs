@@ -501,15 +501,15 @@ pub(crate) fn apply_mapping(
         return Edit::Same;
     }
     let ring = std::sync::Arc::clone(writer.ring());
-    let play = ring.play();
-    let (from, to) = ring.window();
+    let play = writer.play();
+    let (from, to) = writer.window();
     let lo = from.max(play.saturating_sub(4));
     let epoch = content.epoch + 1;
     // Behind the reader, the ring keeps the old mapping; a jump back there
     // (a transport cycle) must not play it. Drop what differs, so such a jump
     // finds the window without it and moves the window instead.
     if from < lo && content.parts_from(&new, from, lo).is_some() {
-        ring.raise_from(lo);
+        writer.raise_from(lo);
     }
     let parts = if lo < to {
         content.parts_from(&new, lo, to)
@@ -530,7 +530,7 @@ pub(crate) fn apply_mapping(
     // hand, so the reader never moves during the butler's read; a reader that
     // did would still be caught by the record's fade (it crosses the switch
     // with the old side in hand), only at a later `at`.
-    let mut busy = ring.in_flight_end();
+    let mut busy = writer.in_flight_end();
     let mut tries = 0;
     let (at, fade, record) = loop {
         tries += 1;
@@ -558,7 +558,7 @@ pub(crate) fn apply_mapping(
                 fade_frames,
             }
         });
-        let now = ring.in_flight_end();
+        let now = writer.in_flight_end();
         // Bounded: a reader that keeps pace with the reads is past the ring's
         // end soon anyway, and the fade covers the rest.
         if now + 2 < at || now >= to || tries == 4 {
@@ -574,7 +574,7 @@ pub(crate) fn apply_mapping(
         fade: record,
         epoch,
     });
-    ring.retract_to(at);
+    writer.retract_to(at);
     writer.set_content(Content {
         before: old,
         current: new,

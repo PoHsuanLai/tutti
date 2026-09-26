@@ -171,8 +171,8 @@ fn refill_one(
     buffer: &mut Vec<f32>,
 ) {
     let ring = Arc::clone(writer.ring());
-    let play = ring.play();
-    let (from, to) = ring.window();
+    let play = writer.play();
+    let (from, to) = writer.window();
     // A reader past what the mapping writes (an unlooped stream's end) plays
     // silence: nothing to follow there.
     let end = writer.content().current.end();
@@ -181,9 +181,9 @@ fn refill_one(
     // it. Moving it is a shrink, which holds back writes the reader's block
     // may cover until it claims again, so moving it every cycle would never
     // let the refill land.
-    let far = (ring.frames() / 4) as u64;
+    let far = (writer.frames() / 4) as u64;
     if play < from || (play > to.saturating_add(far) && play < end) {
-        ring.reset(play.saturating_sub(HISTORY_FRAMES));
+        writer.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at != 0 {
             let mut content = Content::new(writer.content().current.clone());
             content.epoch = writer.content().epoch + 1;
@@ -191,8 +191,8 @@ fn refill_one(
             writer.set_content(content);
         }
     }
-    let (_, to) = ring.window();
-    let frames = ring.frames() as u64;
+    let (_, to) = writer.window();
+    let frames = writer.frames() as u64;
     let limit = end.min(play + frames - frames / 8);
     let fill = (to.saturating_sub(play) as f64 / frames as f64) as f32;
     rt_state.set_buffer_fill(fill);

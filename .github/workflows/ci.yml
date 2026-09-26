@@ -566,7 +566,9 @@ jobs:
         env:
           LOOM_MAX_PREEMPTIONS: 4
       # `PosRing`'s no-tear protocol (the disk stream's ring), against the
-      # shipped code. Seconds at this bound; every recorded mutation fails at it.
+      # shipped code: nine models, about five minutes at this bound (the
+      # shrink models a minute each); every recorded mutation fails at it but
+      # the documented survivor (`tests/pos_ring_loom.rs`).
       - run: cargo test -p tutti-types --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4

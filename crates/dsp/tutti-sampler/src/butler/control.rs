@@ -97,11 +97,11 @@ pub(crate) fn take_streaming_unit(
         .get(&channel_index)
         .ok_or(TakeVoiceError::NotStreaming)?;
     let link = plan.link.as_ref().ok_or(TakeVoiceError::NotStreaming)?;
-    link.consumer.take_reader(placed)?;
+    let reader = link.consumer.take_reader(placed)?;
     let (consumer, file_rate) = (link.consumer.clone(), link.file_rate);
     let origin = StreamOrigin(Arc::clone(&link.record));
     let rt_state = plan.rt_state();
-    let unit = DiskSource::new(consumer, Arc::clone(&rt_state));
+    let unit = DiskSource::with_reader(consumer, Some(reader), Arc::clone(&rt_state));
     Ok((unit, rt_state, file_rate, origin))
 }
 

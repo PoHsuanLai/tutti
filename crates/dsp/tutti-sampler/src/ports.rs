@@ -316,6 +316,24 @@ impl Status {
         )
         .with_origin(origin))
     }
+
+    /// The stream's live reader as a bare free-running source (tests: no
+    /// public caller takes one), and its shared state.
+    #[cfg(test)]
+    pub(crate) fn take_free_running(
+        &self,
+        channel_index: usize,
+    ) -> Result<
+        (
+            crate::voice::disk_voice::DiskSource,
+            Arc<crate::butler::RtState>,
+        ),
+        TakeVoiceError,
+    > {
+        let (unit, rt_state, _, _) =
+            crate::butler::control::take_streaming_unit(&self.plans, channel_index, false)?;
+        Ok((unit, rt_state))
+    }
 }
 
 #[cfg(test)]

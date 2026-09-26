@@ -19,9 +19,12 @@
 //! The slots, the window and the protocol that keeps a write from ever
 //! landing under a read are `tutti_core::PosRing`'s (its module docs have the
 //! argument, and `tutti-types/tests/pos_ring_loom.rs` checks it under loom).
-//! This module adds what a disk stream needs on top: the region, the file,
-//! the map the reader reads the slots by, the preroll, a free-running
-//! reader's origin and seek, and the rule of one live reader per ring.
+//! Its one `PosWriter` is the butler's [`RegionOut`]'s; its one `PosReader`
+//! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
+//! one live reader per ring is the type's rule, not a flag's. This module
+//! adds what a disk stream needs on top: the region, the file, the map the
+//! reader reads the slots by, the preroll, and a free-running reader's origin
+//! and seek.
 //!
 //! This replaced an SPSC FIFO the reader popped: the butler had to flush it to
 //! move it, which dropped what it had refilled since, left the reader's head
@@ -43,10 +46,10 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tutti_core::{
-    ChannelLayout, PosRing, RingWindow, RtPublish, RtRef, Samples, MAX_POS_RING_FRAMES,
+    ChannelLayout, PosReader, PosRing, PosWriter, RtPublish, RtRef, Samples, MAX_POS_RING_FRAMES,
 };
 use tutti_io::Wave;
 
@@ -61,20 +64,17 @@ use crate::nonempty;
 /// reads behind itself, and a little slack.
 pub(crate) const HISTORY_FRAMES: u64 = 4;
 
-/// The window a claim returns: the positions the reader may read this block.
-pub(crate) type Window = RingWindow;
-
 /// Why a live voice could not be taken from a channel's stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeVoiceError {
     /// The channel streams nothing yet: the butler has not applied its
     /// `Command::Stream`. Poll again next frame.
     NotStreaming,
-    /// The stream already has its live reader. A ring serves one: the butler
-    /// fills ahead of the one position it is told (`Ring::play`), so two
-    /// readers at two positions would pull its window back and forth, each
-    /// starving the other. Take one voice per stream, or stream the file again
-    /// on another channel.
+    /// The stream already has its live reader. A ring serves one — it has
+    /// one `PosReader` to hand out: the butler fills ahead of the one position
+    /// it is told (where the reader plays), so two readers at two positions
+    /// would pull its window back and forth, each starving the other. Take one
+    /// voice per stream, or stream the file again on another channel.
     ReaderTaken,
 }
 
@@ -98,8 +98,13 @@ pub(crate) struct Ring {
     region_id: RegionId,
     file_path: PathBuf,
     channels: ChannelLayout,
-    /// The slots, the window, the reader's claims.
-    core: PosRing,
+    /// Glances at the window and where the reader plays (the writer's
+    /// `watch`): no sample is read through it.
+    core: Arc<PosRing>,
+    /// The ring's one reader, until a voice takes it. A lock taken on the
+    /// control thread only (`take_reader`); the audio thread holds the reader
+    /// itself.
+    reader: Mutex<Option<PosReader>>,
     /// Butler → reader: the channel's PDC preroll, in file frames: the reader
     /// plays straight position `gate - preroll`.
     preroll: AtomicU64,
@@ -113,8 +118,6 @@ pub(crate) struct Ring {
     fade_frames: AtomicU64,
     /// Butler → reader: how to read the slots.
     map: RtPublish<RingMap>,
-    /// A live reader has been taken (one per ring, [`TakeVoiceError`]).
-    taken: AtomicBool,
     /// The live reader is a placed voice (it follows its clock, so a relayed
     /// seek must not move where the butler fills).
     placed: AtomicBool,
@@ -140,30 +143,16 @@ impl Ring {
     }
 
     /// Slots, in frames.
+    #[cfg(test)]
     pub(crate) fn frames(&self) -> usize {
         self.core.frames()
     }
 
-    /// The positions held.
-    #[inline]
+    /// The positions held: a glance (tests), not a claim.
+    #[cfg(test)]
     pub(crate) fn window(&self) -> (u64, u64) {
         let w = self.core.window();
         (w.from, w.to)
-    }
-
-    /// Audio thread, once per block before any read: where the reader plays,
-    /// which positions the block may read, and the window it may read them in
-    /// (`PosRing::claim`).
-    #[inline]
-    pub(crate) fn claim(&self, play: u64, reads: [(u64, u64); 2]) -> Window {
-        self.core.claim(play, reads)
-    }
-
-    /// Channel `c` of the frame at position `s`, which the caller's claimed
-    /// window and range hold.
-    #[inline]
-    pub(crate) fn sample(&self, s: u64, c: usize) -> f32 {
-        self.core.sample(s, c)
     }
 
     /// How to read the slots, for this block (once per block, never per
@@ -197,31 +186,10 @@ impl Ring {
         self.fade_frames.load(Ordering::Relaxed) as usize
     }
 
-    /// Where the reader plays.
+    /// Where the reader plays: a glance (tests).
+    #[cfg(test)]
     pub(crate) fn play(&self) -> u64 {
         self.core.play()
-    }
-
-    /// One past the last position the block in flight may read.
-    pub(crate) fn in_flight_end(&self) -> u64 {
-        self.core.in_flight_end()
-    }
-
-    /// Butler: drop every position at and past `x` (a rewrite from `x`
-    /// follows).
-    pub(crate) fn retract_to(&self, x: u64) {
-        self.core.retract_to(x);
-    }
-
-    /// Butler: drop every position below `y` (so a reader that jumps back
-    /// there moves the window rather than read what lies below).
-    pub(crate) fn raise_from(&self, y: u64) {
-        self.core.raise_from(y);
-    }
-
-    /// Butler: an empty window at `start` (the reader jumped outside it).
-    pub(crate) fn reset(&self, start: u64) {
-        self.core.reset(start);
     }
 
     /// Butler: publish how to read the slots.
@@ -234,12 +202,6 @@ impl Ring {
         self.preroll.store(preroll, Ordering::Relaxed);
     }
 
-    /// Butler: where the reader plays, before one has said (a stream's start,
-    /// a free-running reader's seek), so the window is filled there.
-    pub(crate) fn set_play(&self, play: u64) {
-        self.core.set_play(play);
-    }
-
     /// Butler: seek a free-running reader to `target`.
     pub(crate) fn request_seek(&self, target: u64) {
         self.seek_target.store(target, Ordering::Relaxed);
@@ -247,13 +209,16 @@ impl Ring {
     }
 
     /// Take the ring's one live reader, `placed` when it is a voice that
-    /// follows a clock.
-    pub(crate) fn take_reader(&self, placed: bool) -> Result<(), TakeVoiceError> {
-        if self.taken.swap(true, Ordering::AcqRel) {
-            return Err(TakeVoiceError::ReaderTaken);
-        }
+    /// follows a clock. Control thread.
+    pub(crate) fn take_reader(&self, placed: bool) -> Result<PosReader, TakeVoiceError> {
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(TakeVoiceError::ReaderTaken)?;
         self.placed.store(placed, Ordering::Release);
-        Ok(())
+        Ok(reader)
     }
 
     /// Whether the live reader follows a clock.
@@ -276,6 +241,8 @@ pub(crate) type SharedReader = Arc<Ring>;
 /// Butler-thread-local.
 pub(crate) struct RegionOut {
     ring: Arc<Ring>,
+    /// The ring's one writer.
+    writer: PosWriter,
     content: Content,
     /// Incremental disk decoder for real streaming. `None` means this region
     /// reads the file resident whole (`resident`).
@@ -319,9 +286,52 @@ impl RegionOut {
 
     /// Frames held ahead of where the reader plays.
     pub(crate) fn buffered(&self) -> Samples {
-        let (from, to) = self.ring.window();
-        let play = self.ring.play().max(from);
+        let (from, to) = self.window();
+        let play = self.play().max(from);
         Samples(to.saturating_sub(play) as usize)
+    }
+
+    /// Slots, in frames.
+    pub(crate) fn frames(&self) -> usize {
+        self.writer.frames()
+    }
+
+    /// The positions held.
+    pub(crate) fn window(&self) -> (u64, u64) {
+        let w = self.writer.window();
+        (w.from, w.to)
+    }
+
+    /// Where the reader plays (or this writer said it would).
+    pub(crate) fn play(&self) -> u64 {
+        self.writer.play()
+    }
+
+    /// One past the last position the block in flight may read.
+    pub(crate) fn in_flight_end(&self) -> u64 {
+        self.writer.in_flight_end()
+    }
+
+    /// Drop every position at and past `x` (a rewrite from `x` follows).
+    pub(crate) fn retract_to(&mut self, x: u64) {
+        self.writer.retract_to(x);
+    }
+
+    /// Drop every position below `y` (so a reader that jumps back there
+    /// moves the window rather than read what lies below).
+    pub(crate) fn raise_from(&mut self, y: u64) {
+        self.writer.raise_from(y);
+    }
+
+    /// An empty window at `start` (the reader jumped outside it).
+    pub(crate) fn reset(&mut self, start: u64) {
+        self.writer.reset(start);
+    }
+
+    /// Where the reader plays, before one has said (a stream's start, a
+    /// free-running reader's seek), so the window is filled there.
+    pub(crate) fn set_play(&mut self, play: u64) {
+        self.writer.set_play(play);
     }
 
     /// The file this region streams.
@@ -340,7 +350,7 @@ impl RegionOut {
         let channels = self.ring.channels;
         #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
         if let Some(decoder) = self.decoder.as_mut() {
-            let ch = self.ring.core.stride();
+            let ch = self.writer.stride();
             if decoder.cursor() != at as u64 && decoder.seek(at as u64).is_err() {
                 out.fill(0.0);
                 return false;
@@ -371,7 +381,7 @@ impl RegionOut {
     /// Fill `out` with what straight positions `pos..` hold under `mapping`,
     /// reading the file.
     pub(crate) fn fill_with(&mut self, mapping: &Mapping, pos: u64, out: &mut [f32]) {
-        let ch = self.ring.core.stride();
+        let ch = self.writer.stride();
         mapping.fill(pos, out, ch, &mut |at, run| {
             let _ = self.read_file(at, run);
         });
@@ -382,7 +392,7 @@ impl RegionOut {
     /// be written, or where the ring is full ahead of the reader
     /// (`PosRing::push`). A trailing partial frame is ignored.
     pub fn push_interleaved(&mut self, samples: &[f32]) -> Samples {
-        Samples(self.ring.core.push(samples))
+        Samples(self.writer.push(samples))
     }
 }
 
@@ -438,22 +448,24 @@ impl RegionBuffer {
         let stride = channels.count() as usize;
         let frames = capacity.clamp(4096, MAX_POS_RING_FRAMES);
         let mapping = Mapping::plain(len);
+        let (writer, reader) = PosRing::new(frames, stride, HISTORY_FRAMES);
         let ring = Arc::new(Ring {
             region_id,
             file_path,
             channels,
-            core: PosRing::new(frames, stride, HISTORY_FRAMES),
+            core: writer.watch(),
+            reader: Mutex::new(Some(reader)),
             preroll: AtomicU64::new(0),
             origin: AtomicU64::new(0),
             seek_epoch: AtomicU64::new(0),
             seek_target: AtomicU64::new(0),
             fade_frames: AtomicU64::new(0),
             map: RtPublish::new(RingMap::plain(Arrangement::plain(len), 0)),
-            taken: AtomicBool::new(false),
             placed: AtomicBool::new(false),
         });
         let writer = RegionOut {
             ring: Arc::clone(&ring),
+            writer,
             content: Content::new(mapping),
             #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
@@ -465,9 +477,16 @@ impl RegionBuffer {
     /// Point a fresh ring at `start`: the reader there and the window from
     /// just behind it (the taps a position reads one frame back), a
     /// free-running reader's origin, the preroll and the seek fade set.
-    pub(crate) fn place(ring: &Ring, start: u64, origin: u64, preroll: u64, fade_frames: usize) {
-        ring.core.reset(start.saturating_sub(HISTORY_FRAMES));
-        ring.core.set_play(start);
+    pub(crate) fn place(
+        writer: &mut RegionOut,
+        start: u64,
+        origin: u64,
+        preroll: u64,
+        fade_frames: usize,
+    ) {
+        writer.reset(start.saturating_sub(HISTORY_FRAMES));
+        writer.set_play(start);
+        let ring = &writer.ring;
         ring.origin.store(origin, Ordering::Relaxed);
         ring.preroll.store(preroll, Ordering::Relaxed);
         ring.fade_frames
@@ -497,19 +516,17 @@ mod tests {
     /// Mutation (run): `write` pushing nothing → fails.
     #[test]
     fn frames_written_through_the_trait_land_by_position() {
-        let (mut writer, reader) = ring(64, 6);
+        let (mut writer, ring) = ring(64, 6);
         assert_eq!(AudioOut::layout(&writer), ChannelLayout::from(6u16));
         let mut data = indexed(12, 6);
         data.extend_from_slice(&[99.0, 99.0, 99.0]);
         writer.write(&data);
-        assert_eq!(reader.window(), (0, 12), "twelve whole frames");
+        assert_eq!(ring.window(), (0, 12), "twelve whole frames");
+        let mut reader = ring.take_reader(false).expect("the ring's reader");
+        let claim = reader.claim(0, [(0, 12), (0, 0)]);
         for s in 0..12u64 {
             for c in 0..6 {
-                assert_eq!(
-                    reader.sample(s, c),
-                    (s as usize * 6 + c) as f32,
-                    "frame {s}"
-                );
+                assert_eq!(claim.sample(s, c), (s as usize * 6 + c) as f32, "frame {s}");
             }
         }
     }
@@ -523,16 +540,22 @@ mod tests {
         assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_POS_RING_FRAMES);
     }
 
-    /// **A ring serves one live reader** (the second review of #48, S2):
-    /// taking a second is refused, naming why.
+    /// **A ring serves one live reader** (the second review of #48, S2): it
+    /// has one `PosReader` (not `Clone`), and taking a second is refused,
+    /// naming why.
     ///
-    /// Mutation (run): `take_reader` not checking → fails.
+    /// Mutation (run): the slot put back after a take (`replace` of what was
+    /// taken) — the nearest a caller can come to handing out two, since the
+    /// reader cannot be cloned → fails.
     #[test]
     fn a_ring_serves_one_live_reader() {
-        let (_writer, reader) = ring(64, 2);
-        assert_eq!(reader.take_reader(true), Ok(()));
-        assert!(reader.placed());
-        assert_eq!(reader.take_reader(false), Err(TakeVoiceError::ReaderTaken));
-        assert!(reader.placed(), "a refused take changes nothing");
+        let (_writer, ring) = ring(64, 2);
+        assert!(ring.take_reader(true).is_ok());
+        assert!(ring.placed());
+        assert_eq!(
+            ring.take_reader(false).map(|_| ()),
+            Err(TakeVoiceError::ReaderTaken)
+        );
+        assert!(ring.placed(), "a refused take changes nothing");
     }
 }

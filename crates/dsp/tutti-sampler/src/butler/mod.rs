@@ -29,7 +29,7 @@ pub(crate) use handlers::SessionRate;
 pub(crate) use loops::GUARD_FRAMES;
 pub(crate) use loops::{Arrangement, RingMap};
 pub(crate) use plan::ChannelPlan;
-pub(crate) use prefetch::{SharedReader, Window};
+pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 

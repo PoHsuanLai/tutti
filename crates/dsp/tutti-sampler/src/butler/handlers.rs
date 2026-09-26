@@ -168,7 +168,7 @@ pub(super) fn handle_command(
             channel_index,
             file_position,
         } => {
-            handle_seek_stream(channel_index, file_position, shared);
+            handle_seek_stream(channel_index, file_position, shared, local);
         }
 
         ButlerCommand::SetVarispeed {
@@ -310,7 +310,7 @@ fn handle_stream_file(
     // A free-running reader starts at the offset; a placed voice at its clock.
     let start = (offset_samples as u64).saturating_sub(pdc_preroll);
     RegionBuffer::place(
-        &consumer,
+        &mut producer,
         start,
         offset_samples as u64,
         pdc_preroll,
@@ -446,7 +446,12 @@ fn handle_set_stream_loop(
 /// live reader is placed, the request is relayed and the window left alone.
 ///
 /// No-op when the channel isn't streaming.
-pub(super) fn handle_seek_stream(channel_index: usize, file_position: u64, shared: &Handles) {
+pub(super) fn handle_seek_stream(
+    channel_index: usize,
+    file_position: u64,
+    shared: &Handles,
+    local: &mut Local,
+) {
     let Some(plan) = shared.plans.get(&channel_index) else {
         return;
     };
@@ -455,8 +460,9 @@ pub(super) fn handle_seek_stream(channel_index: usize, file_position: u64, share
     };
     link.consumer.request_seek(file_position);
     if !link.consumer.placed() {
-        link.consumer
-            .set_play(file_position.saturating_sub(plan.pdc_preroll));
+        if let Some(writer) = local.regions.get_mut(link.region_id) {
+            writer.set_play(file_position.saturating_sub(plan.pdc_preroll));
+        }
     }
 }
 

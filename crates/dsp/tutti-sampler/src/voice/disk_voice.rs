@@ -44,8 +44,10 @@ const BLOCK_FRAMES: usize = 256;
 /// the ring ahead of where it reads (`Ring::play`). A [`DiskVoice`] wraps one
 /// for its width and its ring, and reads by the clock instead.
 ///
-/// The audio thread holds the ring through a `SharedReader` (an `Arc`):
-/// every access is an atomic, so no lock sits on `tick`/`process`.
+/// The audio thread holds the ring through a `SharedReader` (an `Arc`) and
+/// the ring's one `PosReader`, which a clone shares (`LiveRead`'s module
+/// docs): every access is an atomic or a `try_lock` no block waits on.
+/// [`isolate`](AudioUnit::isolate) lets go of it.
 pub struct DiskSource {
     /// Boxed: a voice in a pool should not carry the reader's jump state
     /// inline (it is built on the control thread, where the box is).
@@ -97,13 +99,26 @@ impl Clone for DiskSource {
 }
 
 impl DiskSource {
-    /// Width comes from the ring (narrowed to [`MAX_SAMPLER_CHANNELS`], the
-    /// widest frame the read path stacks): the file's own layout.
+    /// A source over `consumer`, taking the ring's reader (test rings; a
+    /// taken one leaves this source silent).
+    #[cfg(test)]
     pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
+        let reader = consumer.take_reader(false).ok();
+        Self::with_reader(consumer, reader, shared_state)
+    }
+
+    /// A source over `consumer` through its one `reader`. Width comes from
+    /// the ring (narrowed to [`MAX_SAMPLER_CHANNELS`], the widest frame the
+    /// read path stacks): the file's own layout.
+    pub(crate) fn with_reader(
+        consumer: SharedReader,
+        reader: Option<tutti_core::PosReader>,
+        shared_state: Arc<RtState>,
+    ) -> Self {
         let stride = (consumer.channels().count() as usize).clamp(1, MAX_SAMPLER_CHANNELS);
         let channels = ChannelLayout::from(stride);
         Self {
-            read: Box::new(LiveRead::new(consumer, stride)),
+            read: Box::new(LiveRead::new(consumer, reader, stride)),
             playing: AtomicBool::new(true),
             sample_rate: SampleRate::SR_44K1,
             shared_state: Some(shared_state),
@@ -211,12 +226,12 @@ impl AudioUnit for DiskSource {
 
     /// Stop this clone from touching the live stream.
     ///
-    /// `Clone` shares the ring and the control state by `Arc` — correct for a
-    /// clone that stays in the live graph, wrong for one taken to render
-    /// offline: its reads would publish a position the butler follows, moving
-    /// the live voice's window. Both `tick` and `process` return silence before
-    /// touching the ring when `playing` is false, and `shared_state` is
-    /// dropped, so clearing both is a complete severing.
+    /// `Clone` shares the ring, its one reader and the control state by `Arc`
+    /// — correct for a clone that stays in the live graph, wrong for one taken
+    /// to render offline: its reads would publish a position the butler
+    /// follows, moving the live voice's window. So the copy lets go of the
+    /// reader (it can no longer claim, or idle, the live ring), stops, and
+    /// drops `shared_state`: a complete severing.
     ///
     /// The honest severed state of this bare unit is *silent*: there is no
     /// second ring to hand this clone. A [`DiskVoice`], which knows where on
@@ -226,6 +241,7 @@ impl AudioUnit for DiskSource {
         self.playing.store(false, Ordering::Relaxed);
         self.shared_state = None;
         self.reset_interpolation();
+        self.read.sever();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -239,6 +255,7 @@ impl AudioUnit for DiskSource {
         }
         if !self.playing.load(Ordering::Relaxed) {
             output[..n].fill(0.0);
+            self.read.idle();
             return;
         }
         self.render(1, |_, f| output[..n].copy_from_slice(&f[..n]));
@@ -252,6 +269,8 @@ impl AudioUnit for DiskSource {
                     output.set_f32(c, i, 0.0);
                 }
             }
+            // A stopped source holds no refill back.
+            self.read.idle();
             return;
         }
         self.render(size, |i, f| {
@@ -830,8 +849,8 @@ mod tests {
     fn make_reader_at(samples: &[(f32, f32)], start: u64) -> SharedReader {
         let (mut writer, reader) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2usize);
-        reader.reset(start);
-        reader.set_play(start);
+        writer.reset(start);
+        writer.set_play(start);
         let flat: Vec<f32> = samples.iter().flat_map(|&(l, r)| [l, r]).collect();
         writer.push_interleaved(&flat);
         reader
@@ -1174,6 +1193,36 @@ mod tests {
                 "tick {via_tick}: stopped, the fork plays on"
             );
         }
+    }
+
+    /// **A severed copy lets go of the live reader.** A clone shares the
+    /// ring's one reader (a `Net` commit renders from a clone); a copy
+    /// isolated for a fork must not claim or idle it. Here the live source
+    /// claims a block, and its isolated copy, stopped, renders: the ranges the
+    /// live block claimed must still stand.
+    ///
+    /// Mutation (run): `isolate` not severing (`read.sever()` removed) → the
+    /// copy's stopped block idles the live reader and clears its ranges →
+    /// fails.
+    #[test]
+    fn a_severed_copy_holds_no_live_reader() {
+        let (mut writer, ring) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2usize);
+        writer.push_interleaved(&[0.5; 2 * 1_000]);
+        let mut live = DiskSource::new(ring, Arc::new(RtState::new()));
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        live.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        let claimed = writer.in_flight_end();
+        assert!(claimed > 0, "the live block claimed nothing");
+        let mut fork = live.clone();
+        fork.isolate();
+        fork.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+        assert_eq!(
+            writer.in_flight_end(),
+            claimed,
+            "a severed copy spoke for the live reader"
+        );
     }
 
     /// **A copy severed for an offline render never touches the live stream**:
@@ -1579,7 +1628,12 @@ mod tests {
             unit.process(8, &input.buffer_ref(), &mut output.buffer_mut());
             assert_eq!(output.buffer_ref().at_f32(0, 0), want);
         }
-        let mut late = DiskSource::new(Arc::clone(&ring), Arc::new(RtState::new()));
+        // A source taken after a seek: on a stream of its own, since a ring
+        // serves one live reader (this test took a second off the same ring
+        // before that rule).
+        let seeked = make_reader_with_samples(&samples);
+        seeked.request_seek(100);
+        let mut late = DiskSource::new(seeked, Arc::new(RtState::new()));
         late.process(1, &input.buffer_ref(), &mut output.buffer_mut());
         assert_eq!(
             output.buffer_ref().at_f32(0, 0),

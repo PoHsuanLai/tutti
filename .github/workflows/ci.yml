@@ -538,8 +538,9 @@ jobs:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
       - run: cargo miri test -p tutti-node
 
-  # The loom models: `RtPublish`'s reclamation protocol (run against the
-  # shipped code — its atomics switch to loom's under the flag) and the plugin
+  # The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
+  # protocol (both run against the shipped code — their atomics switch to
+  # loom's under the flag) and the plugin
   # shm header's Release/Acquire protocol (a replica, for the reasons in
   # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
   # its own target only, never the workspace.
@@ -562,6 +563,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p tutti-types --release --test rt_publish_loom
+        env:
+          LOOM_MAX_PREEMPTIONS: 4
+      # `PosRing`'s no-tear protocol (the disk stream's ring), against the
+      # shipped code. Seconds at this bound; every recorded mutation fails at it.
+      - run: cargo test -p tutti-types --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
       - run: cargo test -p tutti-shm-model --release

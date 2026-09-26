@@ -62,7 +62,7 @@ pub use tutti_types::meter::{
     BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
     TimeSignature,
 };
-pub use tutti_types::{RtPublish, RtRef};
+pub use tutti_types::{PosRing, RingWindow, RtPublish, RtRef, MAX_POS_RING_FRAMES};
 
 mod metering;
 pub use metering::{

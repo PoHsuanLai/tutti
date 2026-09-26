@@ -128,12 +128,14 @@ miri:
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test -p tutti-types --lib rt::publish
     cargo +nightly miri test -p tutti-node
 
-# The loom models: `RtPublish`'s reclamation protocol (against the shipped code)
-# and the plugin shm header protocol (a replica). `--cfg loom` is global, so
+# The loom models: `RtPublish`'s reclamation protocol and `PosRing`'s no-tear
+# protocol (against the shipped code) and the plugin shm header protocol (a
+# replica). `--cfg loom` is global, so
 # each runs on its own target. This is what CI runs: the `RtPublish` models at a
 # preemption bound of 4, about a minute and a half.
 loom:
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test rt_publish_loom
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
     RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model --release
 
 # The `RtPublish` loom models exhaustively (bar `xthread_overflow`, which is

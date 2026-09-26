@@ -39,8 +39,9 @@ pub mod tail;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, Retire, RtEventBuf,
-    RtPublish, RtRef, RtScratch, RtScratchOverflow, RtVec, ScopedNoDenormals,
+    AudioThread, AudioThreadCell, AudioThreadGuard, BorrowGuard, BorrowRef, PosRing, Retire,
+    RingWindow, RtEventBuf, RtPublish, RtRef, RtScratch, RtScratchOverflow, RtVec,
+    ScopedNoDenormals, MAX_POS_RING_FRAMES,
 };
 
 // Value vocabulary.

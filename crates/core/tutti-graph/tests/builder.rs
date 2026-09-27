@@ -8,13 +8,17 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{prepare, Kind, TestNode};
+// `Net`'s side names the contract through the fork's re-exports; both go in
+// doc 013's Phase 5.
+use fundsp::audiounit::AudioUnit;
+use fundsp::buffer::{BufferMut, BufferRef, BufferVec};
 use fundsp::net::{Net, NodeId, Source as NetSource};
-use fundsp::prelude32::{lowpass_hz, mul, pass};
+use fundsp::signal::{Signal, SignalFrame};
+use fundsp::MAX_BUFFER_SIZE;
 use tutti_graph::{
-    Editor, EventEdge, EventIn, EventOut, GraphBuilder, Renderer, Transport, Unforkable,
+    Cx, Editor, EventEdge, EventIn, EventOut, ForkByClone, GraphBuilder, Io, Node, Prepare,
+    Renderer, Shape, Status, Transport, Unforkable,
 };
-use tutti_node::buffer::BufferVec;
-use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{Beat, ChannelLayout, Frame, NodeKey, SampleRate, Samples};
 
@@ -30,11 +34,31 @@ fn bits(v: &[f32]) -> Vec<u32> {
 
 /// `ins` inputs, `outs` outputs; output `c` is `c + 1` plus the sum of the
 /// inputs. Any width, so the fan-out rules can be walked over a grid —
-/// fundsp's own units fix their width in the type.
+/// fundsp's own units fix their width in the type. The same arithmetic as
+/// a graph node and as a `Net` unit, so the two runtimes can be compared.
 #[derive(Clone)]
 struct Width {
     ins: usize,
     outs: usize,
+}
+
+impl Node for Width {
+    fn shape(&self) -> Shape {
+        Shape::audio(ch(self.ins), ch(self.outs))
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let frames = io.frames();
+        let (ins, mut outs) = io.split();
+        for i in 0..frames {
+            let sum: f32 = (0..self.ins).map(|c| ins.get(c)[i]).sum();
+            for c in 0..self.outs {
+                outs.get(c)[i] = (c + 1) as f32 + sum;
+            }
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
 }
 
 impl AudioUnit for Width {
@@ -44,12 +68,7 @@ impl AudioUnit for Width {
             *o = (c + 1) as f32 + sum;
         }
     }
-    fn process(
-        &mut self,
-        size: usize,
-        input: &tutti_node::buffer::BufferRef,
-        output: &mut tutti_node::buffer::BufferMut,
-    ) {
+    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         for i in 0..size {
             let sum: f32 = (0..self.ins).map(|c| input.channel_f32(c)[i]).sum();
             for c in 0..self.outs {
@@ -63,14 +82,10 @@ impl AudioUnit for Width {
     fn outputs(&self) -> usize {
         self.outs
     }
-    fn route(
-        &mut self,
-        _input: &tutti_node::signal::SignalFrame,
-        _frequency: f64,
-    ) -> tutti_node::signal::SignalFrame {
-        let mut out = tutti_node::signal::SignalFrame::new(self.outs);
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        let mut out = SignalFrame::new(self.outs);
         for c in 0..self.outs {
-            out.set(c, tutti_node::signal::Signal::Latency(0.0));
+            out.set(c, Signal::Latency(0.0));
         }
         out
     }
@@ -88,8 +103,14 @@ impl AudioUnit for Width {
     }
 }
 
+/// [`Width`] as a `Net` unit.
 fn width(ins: usize, outs: usize) -> Box<dyn AudioUnit> {
     Box::new(Width { ins, outs })
+}
+
+/// [`Width`] as a graph node.
+fn node(ins: usize, outs: usize) -> ForkByClone<Width> {
+    ForkByClone(Width { ins, outs })
 }
 
 fn ch(n: usize) -> ChannelLayout {
@@ -176,8 +197,8 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     let fb_delay = Samples(64);
 
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
-    let mix = g.add_unit(Box::new(pass() + mul(0.5)));
-    let lp = g.add_unit(Box::new(lowpass_hz(1_200.0, 0.9)));
+    let mix = g.add(Unforkable(TestNode::new(Kind::Sum { inputs: 2 })));
+    let lp = g.add(Unforkable(TestNode::new(Kind::Smooth)));
     let emit = g.add(Unforkable(TestNode::new(Kind::Emitter {
         period: 50,
         phase: 7,
@@ -200,13 +221,13 @@ fn builder_builds_what_a_hand_written_spec_builds() {
     let test_node = std::any::type_name::<TestNode>();
     ed.insert(
         NodeKey(0),
-        "legacy",
-        tutti_graph::Legacy::new(pass() + mul(0.5)),
+        test_node,
+        Unforkable(TestNode::new(Kind::Sum { inputs: 2 })),
     );
     ed.insert(
         NodeKey(1),
-        "legacy",
-        tutti_graph::Legacy::new(lowpass_hz(1_200.0, 0.9)),
+        test_node,
+        Unforkable(TestNode::new(Kind::Smooth)),
     );
     ed.insert(
         NodeKey(2),
@@ -294,7 +315,7 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
             net.pipe_output(nb);
 
             let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-            let (a, b) = (g.add_unit(width(0, outs)), g.add_unit(width(ins, 1)));
+            let (a, b) = (g.add(node(0, outs)), g.add(node(ins, 1)));
             g.pipe(a, b).pipe_output(b);
             assert_wired_like(&net, &g, &[(na, a), (nb, b)], &case);
 
@@ -306,7 +327,7 @@ fn pipe_connects_ports_in_order_as_net_pipe_all() {
     }
     // The plain case, spelled out: port c → port c.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let (a, b) = (g.add_unit(width(0, 3)), g.add_unit(width(3, 1)));
+    let (a, b) = (g.add(node(0, 3)), g.add(node(3, 1)));
     g.pipe(a, b);
     for c in 0..3 {
         assert_eq!(
@@ -334,7 +355,7 @@ fn pipe_output_fans_out_as_net_does() {
         net.pipe_output(id);
 
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ch(outs));
-        let key = g.add_unit(width(0, w));
+        let key = g.add(node(0, w));
         g.pipe_output(key);
         assert_wired_like(&net, &g, &[(id, key)], &case);
 
@@ -344,7 +365,7 @@ fn pipe_output_fans_out_as_net_does() {
     }
     // Stereo into six, spelled out.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ch(6));
-    let key = g.add_unit(width(0, 2));
+    let key = g.add(node(0, 2));
     g.pipe_output(key);
     let ports: Vec<Source> = (0..6)
         .map(|c| {
@@ -375,7 +396,7 @@ fn pipe_input_wraps_as_net_does() {
             net.pipe_output(id);
 
             let mut g = GraphBuilder::new(ch(globals), ChannelLayout::MONO);
-            let key = g.add_unit(width(ins, 1));
+            let key = g.add(node(ins, 1));
             g.pipe_input(key).pipe_output(key);
             assert_wired_like(&net, &g, &[(id, key)], &case);
         }
@@ -400,7 +421,7 @@ fn chain_extends_the_series_as_net_does() {
         let mut g = GraphBuilder::new(ch(globals), ChannelLayout::STEREO);
         let mut ids = Vec::new();
         for (ins, outs) in widths {
-            ids.push((net.chain(width(ins, outs)), g.chain_unit(width(ins, outs))));
+            ids.push((net.chain(width(ins, outs)), g.chain(node(ins, outs))));
         }
         assert_wired_like(&net, &g, &ids, &case);
 
@@ -455,7 +476,7 @@ fn chain_and_add_take_native_nodes() {
 #[should_panic(expected = "port 1 is out of range")]
 fn an_out_of_range_port_panics_at_the_call() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let (a, b) = (g.add_unit(width(0, 1)), g.add_unit(width(1, 1)));
+    let (a, b) = (g.add(node(0, 1)), g.add(node(1, 1)));
     g.connect(a, 0, b, 1);
 }
 
@@ -466,7 +487,7 @@ fn an_out_of_range_port_panics_at_the_call() {
 #[test]
 fn build_returns_the_editors_error() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let a = g.add_unit(width(1, 1));
+    let a = g.add(node(1, 1));
     g.feedback(a, 0, a, 0, Samples(16)).pipe_output(a);
     assert!(matches!(
         g.build(prepare(64)),
@@ -486,7 +507,7 @@ fn build_returns_the_editors_error() {
 #[test]
 fn renderer_drives_blocks_and_interleaves() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let key = g.add_unit(width(0, 2));
+    let key = g.add(node(0, 2));
     g.pipe_output(key);
     let mut r = g.renderer(prepare(256)).expect("builds");
     r.set_block(Samples(100));

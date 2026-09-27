@@ -1,15 +1,13 @@
-//! Every forkable unit in this crate forks to a **snapshot** of its
-//! controls: after `clone` + `isolate`, no live control move reaches the
-//! fork (doc 013, gap 6's audit). One row per unit, one control per cell
-//! the unit reads; `tutti_graph::contract::IsolateRow` runs each control
-//! through fork → render → move live → render again (must be unchanged) →
-//! fork again → render (must differ, so the control is audible and the row
-//! can fail).
-//!
-//! A native node's fork is `fork_fresh` (`tutti_graph::param_parts`), so its
-//! row is a `NativeIsolateRow`: the same four steps, every cell a control
-//! writes — addressed by its `ParamSet` or not (a compressor's knee, a
-//! gate's hold) — with the fork taken as the graph takes it.
+//! Every forkable node in this crate forks to a **snapshot** of its
+//! controls: no live control move reaches the fork (doc 013, gap 6's
+//! audit). One row per node, one control per cell the node reads;
+//! `tutti_graph::contract::NativeIsolateRow` runs each control through
+//! fork → render → move live → render again (must be unchanged) → fork
+//! again → render (must differ, so the control is audible and the row can
+//! fail). A node's fork is `fork_fresh` (`tutti_graph::param_parts`), so
+//! every cell a control writes is checked — addressed by its `ParamSet` or
+//! not (a compressor's knee, a gate's hold) — with the fork taken as the
+//! graph takes it.
 //!
 //! Units with no live cell are not rows — there is nothing to move:
 //! `ChannelSumNode`, `DownmixNode`, `AutomationLaneNode` (its `Arc<dyn Curve>`
@@ -17,8 +15,8 @@
 //! `a_fork_freezes_a_live_curve`; `set_curve` takes `&mut self` and so cannot
 //! reach a live node) and the `testing` stimulus nodes.
 //!
-//! Mutations (run): delete any one `detach` line from a unit's `isolate`
-//! (or the whole `isolate`), or from a native node's `fork_fresh` → that
+//! Mutations (run): delete any one `detach` line from a node's `fork_fresh`
+//! (or, while they were units, from an `isolate`) → that
 //! row fails on exactly that control, with "a live move reached the fork"
 //! (run natively on the compressor's knee — `fork.core.threshold.detach()`
 //! — the gate's hold, `DelayLineNode`'s `cross_feedback`, `LfoNode`'s

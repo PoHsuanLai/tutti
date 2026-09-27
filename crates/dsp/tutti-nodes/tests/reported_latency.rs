@@ -173,7 +173,7 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
     echo.set_mix(0.5_f32);
     let (echo, _) = g.add_with_controls(echo);
     let (chorus, _) = g.add_with_controls(ModDelayNode::chorus(ChannelLayout::STEREO));
-    let dry = g.add_unit(Box::new(Through::mono()));
+    let dry = g.add(Through::mono());
     g.connect_input(0, echo, 0)
         .connect_input(0, chorus, 0)
         .connect_input(0, chorus, 1)
@@ -373,7 +373,7 @@ mod convolver {
         let (conv, _) = g.add_with_controls(conv);
         let (echo_a, _) = g.add_with_controls(DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32));
         let (echo_b, _) = g.add_with_controls(DelayLineNode::new(1.0_f32, 0.5_f32, 0.0_f32));
-        let dry = g.add_unit(Box::new(Through::mono()));
+        let dry = g.add(Through::mono());
         g.connect_input(0, conv, 0)
             .connect(conv, 0, echo_a, 0)
             .connect_input(0, echo_b, 0)

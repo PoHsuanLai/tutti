@@ -2,7 +2,7 @@
 //!
 //! What is pinned here:
 //!
-//! - `EnvClock` in a graph engine emits the beat of each frame's `Env`
+//! - a graph engine hands every frame's `Env` the beat of the host's clock
 //!   under the whole transport vocabulary: play, timestamped seeks, a loop
 //!   wrap (and a loop armed behind the playhead, which does not jump), stop
 //!   and start, tempo steps inside a block, untimed edits between blocks,
@@ -11,14 +11,19 @@
 //!   model reaches each beat on;
 //! - an offline render driven by `OfflineTimeline::render_graph` hands the
 //!   graph the transport a live graph engine hands it for the same timeline:
-//!   the `Env` per block, and the timeline a `Legacy` clip reader polls per
-//!   64-frame chunk.
+//!   the `Env` per block.
 //!
 //! Until doc 013 PR 15 the first two compared the graph against a `Net`
 //! engine with a `TransportClock`, bit for bit. With the engine's `Net`
 //! backend gone, the oracles are the graph's own `Env` (a second code path:
-//! `Env::transport_at`'s closed form, against `EnvClock`'s walk of the
-//! clock's `FrameClock`) and the closed-form beat model in `support`.
+//! `Env::transport_at`'s closed form, against `Env::for_each_beat`'s walk of
+//! the clock's `FrameClock`) and the closed-form beat model in `support`.
+//!
+//! The walk used to reach the graph as a node, `EnvClock`, emitting it on
+//! two beat ports for nodes that took the beat as a signal. Every such node
+//! now reads its block's `Env`, so `EnvClock` is gone; [`BeatPorts`] below is
+//! its body, kept as this file's probe so every assertion still reads the
+//! walk through the same `f32` split.
 
 use std::sync::{Arc, Mutex};
 
@@ -26,13 +31,12 @@ mod support;
 
 use support::{model_beats, Change};
 use tutti_core::{
-    At, AudioUnit, Beat, Bpm, BufferMut, BufferRef, ChannelLayout, ClickNode, ClickSettings,
-    Engine, EnvClock, FadeOut, Frame, InterleavedMut, LoopRange, MetronomeMode, MotionEvent,
-    OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
-    Timeline, Transport, TransportCommand,
+    At, Beat, Bpm, ChannelLayout, ClickNode, ClickSettings, Engine, FadeOut, Frame, InterleavedMut,
+    LoopRange, MetronomeMode, MotionEvent, OfflineTimeline, OfflineTimelineConfig, SampleRate,
+    Samples, Tail, Then, Transport, TransportCommand,
 };
 use tutti_graph::{
-    Cx, Editor, Env, Executor, IntoNode, Io, Legacy, Node, Prepare, Shape, Status, Unforkable,
+    Cx, Editor, Env, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Unforkable,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::NodeKey;
@@ -42,7 +46,7 @@ const SR: f64 = 48_000.0;
 type Log = Arc<Mutex<Vec<(f32, f32)>>>;
 
 /// Ragged device blocks, some past the graph's 512-frame maximum (split into
-/// graph blocks) and some not multiples of 64 (`Legacy`'s chunk).
+/// graph blocks) and some not multiples of 64.
 fn blocks(total: usize) -> Vec<usize> {
     let pattern = [512usize, 300, 77, 1024, 511, 64, 1, 900];
     let mut out = Vec::new();
@@ -58,6 +62,26 @@ fn blocks(total: usize) -> Vec<usize> {
 }
 
 // ---- the graph -------------------------------------------------------------
+
+/// The beat of each frame of its block's `Env` (`Env::for_each_beat`), on
+/// two outputs: whole beats, then the fraction, so a position far into a
+/// session keeps its precision through `f32`. What `EnvClock` emitted.
+struct BeatPorts;
+
+impl Node for BeatPorts {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        cx.env.for_each_beat(|i, beat| {
+            io.output(0)[i] = beat.floor().get() as f32;
+            io.output(1)[i] = beat.fract().get() as f32;
+        });
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
 /// Two inputs (the beat ports), one silent output: logs, for every frame,
 /// the port pair and the beat the block's `Env` gives the frame
@@ -89,12 +113,12 @@ impl Node for GraphBeats {
     fn reset(&mut self) {}
 }
 
-/// Wire an `EnvClock` at key 1 into `sink` (key 2)'s two inputs, and `sink`'s
-/// `width` outputs to the globals.
+/// Wire a [`BeatPorts`] at key 1 into `sink` (key 2)'s two inputs, and
+/// `sink`'s `width` outputs to the globals.
 fn wire_clock(ed: &mut Editor, sink: impl IntoNode<Controls = ()>, width: u16) {
     const CLOCK: NodeKey = NodeKey(1);
     const SINK: NodeKey = NodeKey(2);
-    ed.insert(CLOCK, "clock", Unforkable(EnvClock::new()));
+    ed.insert(CLOCK, "clock", Unforkable(BeatPorts));
     ed.insert(SINK, "sink", sink);
     let topology = &mut ed.spec_mut().topology;
     for port in 0..2 {
@@ -109,7 +133,7 @@ fn wire_clock(ed: &mut Editor, sink: impl IntoNode<Controls = ()>, width: u16) {
     ed.commit().expect("commits");
 }
 
-/// A graph engine over `transport`: an `EnvClock` feeding `sink`.
+/// A graph engine over `transport`: a [`BeatPorts`] feeding `sink`.
 fn graph_engine(
     transport: &Transport,
     sink: impl IntoNode<Controls = ()>,
@@ -127,14 +151,16 @@ fn render(engine: &Engine, layout: ChannelLayout, n: usize) -> Vec<f32> {
     buf
 }
 
+/// The beat back from [`BeatPorts`]' two values.
 fn beat(p: (f32, f32)) -> f64 {
-    tutti_core::beat_from_ports(p.0, p.1).get()
+    p.0 as f64 + p.1 as f64
 }
 
-// ---- EnvClock carries the Env's beat ----------------------------------------
+// ---- the walk carries the Env's beat ----------------------------------------
 
-/// The whole transport vocabulary, driven through a graph engine with an
-/// `EnvClock`: every frame's port pair is the beat that frame's `Env` gives
+/// The whole transport vocabulary, driven through a graph engine: every
+/// frame's beat walked from its block's `Env` (`Env::for_each_beat`, read
+/// through [`BeatPorts`]) is the beat that frame's `Env` gives
 /// (`transport_at`, a closed form written apart from the clock's walk), to
 /// the bit on each block's first frame and within the `f32` split's
 /// rounding (1e-7 beat) everywhere else; and the events land where they
@@ -142,19 +168,20 @@ fn beat(p: (f32, f32)) -> f64 {
 /// split), so this is the segment walk, not only the block start.
 ///
 /// Until doc 013 PR 15 the oracle was a `TransportClock` in a `Net` engine,
-/// bit for bit per frame. `EnvClock` runs that clock's own code
-/// (`FrameClock`) from each piece's origin, so the ports equal it by
+/// bit for bit per frame. The walk runs that clock's own code
+/// (`FrameClock`) from each piece's origin, so it equals it by
 /// construction; `transport_at` agrees with it to rounding (it folds a loop
 /// by the unwrapped position), and the frame checks below pin each event.
 ///
-/// Mutations (run), each fails:
-/// - use the block's `env.transport` for every piece in `EnvClock` (ignore
-///   the cuts) → wrong from the first mid-block command (frame 700);
-/// - hand `EnvClock`'s walk no loop region → it never wraps → wrong from
-///   the first wrap (~1 600);
+/// Mutations (run while this walk was `EnvClock`'s, each failed; the walk is
+/// now `Env::for_each_beat` in tutti-graph, the same code):
+/// - use the block's `env.transport` for every piece (ignore the cuts) →
+///   wrong from the first mid-block command (frame 700);
+/// - hand the walk no loop region → it never wraps → wrong from the first
+///   wrap (~1 600);
 /// - step the beat while stopped → the stop at 8 000 keeps moving.
 #[test]
-fn env_clock_emits_the_env_beat() {
+fn the_env_walk_is_the_env_beat() {
     let transport = Transport::new(SR);
     let log = Log::default();
     let sink = GraphBeats::new(&log);
@@ -274,8 +301,8 @@ fn onsets(stereo: &[f32]) -> Vec<usize> {
 
 /// `ClickNode`, native, clicks on the frame the beat model reaches each new
 /// beat on: across a tempo step, a seek and loop wraps, landing inside
-/// blocks. It reads the beat of each frame from its block's `Env` (as
-/// `EnvClock` emits it), so it needs no clock wired to it.
+/// blocks. It reads the beat of each frame from its block's `Env`, so it
+/// needs no clock wired to it.
 ///
 /// The transport rolls throughout. (A start or a stop inside a block gates
 /// the click on its frame, since the native port; `ClickNode`'s own tests
@@ -375,79 +402,14 @@ impl Node for EnvLog {
     fn reset(&mut self) {}
 }
 
-/// A clip reader's view of time: an `AudioUnit` (so a `Legacy` node, called
-/// per 64-frame chunk) that logs what its `Timeline` reads on every call,
-/// the way a sampler voice polls its own.
-#[derive(Clone)]
-struct TimelinePoll {
-    timeline: Arc<dyn Timeline>,
-    log: Arc<Mutex<Vec<f64>>>,
-}
-
-impl AudioUnit for TimelinePoll {
-    fn inputs(&self) -> usize {
-        0
-    }
-    fn outputs(&self) -> usize {
-        1
-    }
-    fn tick(&mut self, _: &[f32], output: &mut [f32]) {
-        output[0] = 0.0;
-    }
-    fn process(&mut self, size: usize, _: &BufferRef, output: &mut BufferMut) {
-        self.log
-            .lock()
-            .expect("log")
-            .push(self.timeline.beat().get());
-        for i in 0..size {
-            output.set_f32(0, i, 0.0);
-        }
-    }
-    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, Signal::Latency(0.0));
-        out
-    }
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"TTLNPOLL")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-/// An `EnvLog` at key 1 and a `Legacy` `TimelinePoll` over `timeline` at
-/// key 2, each on a global output.
-fn env_graph(
-    max_block: usize,
-    log: &Arc<Mutex<Vec<Env>>>,
-    timeline: Arc<dyn Timeline>,
-    polls: &Arc<Mutex<Vec<f64>>>,
-) -> (Editor, Executor) {
+/// An `EnvLog` at key 1, on the global output.
+fn env_graph(max_block: usize, log: &Arc<Mutex<Vec<Env>>>) -> (Editor, Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(max_block)));
     ed.insert(NodeKey(1), "env", Unforkable(EnvLog(Arc::clone(log))));
-    ed.insert(
-        NodeKey(2),
-        "clip",
-        Legacy::new(TimelinePoll {
-            timeline,
-            log: Arc::clone(polls),
-        }),
-    );
-    ed.spec_mut().topology.outputs = [1, 2]
-        .map(|k| {
-            Source::Node(OutPort {
-                node: NodeKey(k),
-                port: 0,
-            })
-        })
-        .to_vec();
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort {
+        node: NodeKey(1),
+        port: 0,
+    })];
     ed.commit().expect("commits");
     (ed, exec)
 }
@@ -456,17 +418,9 @@ fn env_graph(
 /// driven by `OfflineTimeline::render_graph`, hands the graph the time a
 /// live graph engine hands it for the same timeline:
 ///
-/// - **per block, the `Env`**: the same play state, tempo and loop, no
-///   changes, and the same start beat;
-/// - **per block, the timeline a clip reader polls** (its
-///   `Arc<dyn Timeline>`, read on every `AudioUnit::process`): the `Env`'s
-///   beat at the block's first frame, on both sides.
-///
-/// The graph holds a `Legacy` unit, so both render **chunk-major**: blocks
-/// of at most 64 frames (doc 013's `Legacy` compatibility mode), which is
-/// what makes the polled timeline right for every call, and every block
-/// here is checked to be one. The blocks correspond one to one because the
-/// offline side replays the live side's. The beats agree within a
+/// **per block, the `Env`**: the same play state, tempo and loop, no
+/// changes, and the same start beat. The blocks correspond one to one
+/// because the offline side replays the live side's. The beats agree within a
 /// tolerance, not to the bit: the live clock accumulates frame by frame and
 /// the offline timeline a block at a time, the same split as
 /// `OfflineTimeline` vs `TransportClock`.
@@ -475,13 +429,11 @@ fn env_graph(
 /// - `advance(frames)` before `graph_block` in `render_graph` → every
 ///   offline beat is one block ahead → fails on block 0;
 /// - drop the loop from `graph_block` → the offline beats run past 7 →
-///   fails once the live one wraps;
-/// - the engine rendering whole blocks with a `Legacy` unit present
-///   (`GraphRender::settle` ignoring `has_legacy`) → blocks past 64
-///   frames → fails the chunk-major check;
-/// - the engine publishing its playhead in the walk, before the render
-///   (`TransportClock::advance` writing back) → every live poll reads its
-///   block's end → fails on block 1.
+///   fails once the live one wraps.
+///
+/// (While a clip reader polled a timeline per 64-frame call, this test also
+/// held both sides chunk-major and checked each poll; no node polls one
+/// now, and the chunk-major mode is gone.)
 #[test]
 fn an_offline_render_sees_the_live_engine_transport() {
     const BAR_2: f64 = 4.0;
@@ -490,8 +442,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     // Live.
     let live_t = Transport::new(SR);
     let live_log = Arc::new(Mutex::new(Vec::new()));
-    let live_polls = Arc::new(Mutex::new(Vec::new()));
-    let (mut ed, exec) = env_graph(512, &live_log, Arc::new(live_t.clone()), &live_polls);
+    let (mut ed, exec) = env_graph(512, &live_log);
     let live = Engine::new(&live_t, &mut ed, exec).expect("within the limits");
     live_t.settings.set_tempo(Bpm(100.0));
     live_t.settings.loop_span.set_range(6.0, 7.0);
@@ -513,13 +464,12 @@ fn an_offline_render_sees_the_live_engine_transport() {
         loop_range: LoopRange::new(6.0, 7.0),
     }));
     let off_log = Arc::new(Mutex::new(Vec::new()));
-    let off_polls = Arc::new(Mutex::new(Vec::new()));
-    let (_ed, mut exec) = env_graph(512, &off_log, timeline.clone(), &off_polls);
-    let (mut o1, mut o2) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+    let (_ed, mut exec) = env_graph(512, &off_log);
+    let mut o1 = vec![0.0f32; 512];
     let live_log = live_log.lock().expect("log");
     for env in live_log.iter() {
         let n = env.block_len.get();
-        timeline.render_graph(&mut exec, n, &[], &mut [&mut o1[..n], &mut o2[..n]]);
+        timeline.render_graph(&mut exec, n, &[], &mut [&mut o1[..n]]);
     }
     let off_log = off_log.lock().expect("log");
 
@@ -544,37 +494,6 @@ fn an_offline_render_sees_the_live_engine_transport() {
         wrapped |= i > 0 && l.beat() < live_log[i - 1].transport.beat();
     }
 
-    // Chunk-major: no block past `LEGACY_CHUNK`, on either side.
-    for (i, env) in live_log.iter().enumerate() {
-        assert!(
-            env.block_len.get() <= tutti_graph::LEGACY_CHUNK,
-            "block {i} is {} frames: a graph holding a `Legacy` unit renders \
-             chunk-major",
-            env.block_len.get()
-        );
-    }
-
-    // What the clip reader polled, both sides, against the `Env` at the
-    // block's first frame: one poll a block.
-    let (live_polls, off_polls) = (
-        live_polls.lock().expect("log"),
-        off_polls.lock().expect("log"),
-    );
-    assert_eq!(live_polls.len(), live_log.len(), "one live poll a block");
-    assert_eq!(off_polls.len(), live_log.len(), "one offline poll a block");
-    for (i, (env, (&l, &o))) in live_log
-        .iter()
-        .zip(live_polls.iter().zip(off_polls.iter()))
-        .enumerate()
-    {
-        let want = env.transport.beat().get();
-        assert!(
-            (o - want).abs() < 1e-9 && (l - want).abs() < 1e-9,
-            "block {i} (at frame {}): live polled {l}, offline {o}, the Env says {want}",
-            env.frame.get()
-        );
-    }
-
     // Not vacuous: it started on bar 2, it rolled, and it wrapped.
     assert_eq!(off_log[0].transport.beat(), Beat(BAR_2));
     assert!(off_log[0].transport.playing);
@@ -583,7 +502,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
     assert!((timeline.beat().get() - live_t.settings.beat().get()).abs() < 1e-9);
 }
 
-/// The beat an `EnvClock` emits in an offline render starts every block on
+/// The beat walked from each block's `Env` in an offline render starts every block on
 /// the timeline's own playhead, the figure clip readers and samplers holding
 /// the timeline read: the two clocks of an offline render agree at every
 /// block start, bit for bit, and within a block to rounding.
@@ -592,7 +511,7 @@ fn an_offline_render_sees_the_live_engine_transport() {
 /// `render_graph` → the first emitted beat is one block on → fails on
 /// block 0.
 #[test]
-fn env_clock_offline_starts_each_block_on_the_timeline() {
+fn the_offline_env_walk_starts_each_block_on_the_timeline() {
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(4.0),
         tempo: Bpm(128.0),

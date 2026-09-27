@@ -28,9 +28,8 @@ mod support;
 
 use support::{model_beats, Change, Segment};
 use tutti_core::{
-    At, AudioUnit, Beat, Bpm, BufferMut, BufferRef, ChannelLayout, Engine, FadeOut, Frame,
-    InterleavedMut, LoopRange, MotionEvent, SampleRate, Samples, Signal, SignalFrame, Tail, Then,
-    Transport, TransportCommand,
+    At, Beat, Bpm, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopRange, MotionEvent,
+    SampleRate, Samples, Tail, Then, Transport, TransportCommand,
 };
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
@@ -144,61 +143,36 @@ impl Node for NoteLog {
     fn reset(&mut self) {}
 }
 
-// ---- a legacy unit (through `Legacy`) ---------------------------------------
+// ---- a multichannel source --------------------------------------------------
 
 /// `n` outputs of a deterministic, libm-free signal, distinct per channel —
 /// so a fold that mixes the wrong channels or drops one shows up.
-#[derive(Clone)]
 struct Surround {
     channels: usize,
     frame: u64,
 }
 
-impl AudioUnit for Surround {
-    fn inputs(&self) -> usize {
-        0
+impl Node for Surround {
+    fn shape(&self) -> Shape {
+        Shape::audio(
+            ChannelLayout::EMPTY,
+            ChannelLayout::from_count(self.channels as u16),
+        )
+        .with_tail(Tail::Unbounded)
     }
-    fn outputs(&self) -> usize {
-        self.channels
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let n = io.frames();
+        for c in 0..self.channels {
+            for (i, o) in io.output(c).iter_mut().enumerate() {
+                *o = value(self.frame + i as u64, c);
+            }
+        }
+        self.frame += n as u64;
+        Status::Modified
     }
     fn reset(&mut self) {
         self.frame = 0;
-    }
-    fn tick(&mut self, _: &[f32], output: &mut [f32]) {
-        for (c, o) in output.iter_mut().enumerate() {
-            *o = value(self.frame, c);
-        }
-        self.frame += 1;
-    }
-    fn process(&mut self, size: usize, _: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            for c in 0..self.channels {
-                output.set_f32(c, i, value(self.frame, c));
-            }
-            self.frame += 1;
-        }
-    }
-    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(self.channels);
-        for c in 0..self.channels {
-            out.set(c, Signal::Latency(0.0));
-        }
-        out
-    }
-    fn tail(&mut self) -> Tail {
-        Tail::Unbounded
-    }
-    fn get_id(&self) -> u64 {
-        tutti_core::mnemonic(b"TSURRND0")
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
     }
 }
 
@@ -262,7 +236,7 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
 }
 
 /// The engine folds a root to the device width, and its declick is a
-/// linear fade: the same source (`Surround`, through `Legacy`), stereo and
+/// linear fade: the same source (`Surround`), stereo and
 /// 5.1, to stereo and 5.1 devices, rolling and then stopped with a declick
 /// mid-run.
 ///
@@ -292,7 +266,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
         let (engine, _ed) = graph_engine(
             &transport,
             512,
-            tutti_graph::Legacy::new(Surround {
+            Unforkable(Surround {
                 channels: src,
                 frame: 0,
             }),
@@ -1488,4 +1462,78 @@ fn a_seek_to_the_same_beat_moves_the_live_generation() {
     render(&engine, ChannelLayout::STEREO, &[256, 256]);
     assert!(transport.beat() > beat, "rolling");
     assert_eq!(transport.segment_generation(), started, "rolling is not");
+}
+
+// ---- the playhead ------------------------------------------------------------
+
+/// **The playhead another thread reads never goes backwards**, over two
+/// seconds of 512-frame device blocks on a rolling transport, while the
+/// graph renders (moved here from the deleted `legacy_chunk_major.rs`, which
+/// pinned it beside the `Legacy` chunking).
+///
+/// Mutation (run then): the engine publishing its playhead in the walk *and*
+/// re-publishing the block's first beat before the render
+/// (`TransportClock::advance` writing back, and `render` storing
+/// `transport.beat` before processing) → the reader thread sees it step
+/// back to the block's start every block.
+#[test]
+fn the_playhead_another_thread_reads_never_goes_backwards() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use tutti_core::Timeline;
+    let transport = Transport::new(SR);
+    let (engine, _ed) = graph_engine(
+        &transport,
+        1024,
+        Unforkable(Surround {
+            channels: 1,
+            frame: 0,
+        }),
+        1,
+    );
+
+    // A reader on another thread, as a UI or the mod driver reads the
+    // playhead: every value it sees must be at or past the last. The render
+    // is far faster than real time, so a reader left to the scheduler may
+    // not run at all under a loaded test run: each block waits until the
+    // reader has read again, so `reads` counts at least one per block.
+    let stop = Arc::new(AtomicBool::new(false));
+    let reads = Arc::new(AtomicU64::new(0));
+    let reader = {
+        let (t, stop, reads) = (transport.clone(), Arc::clone(&stop), Arc::clone(&reads));
+        std::thread::spawn(move || {
+            let (mut last, mut backwards) = (f64::NEG_INFINITY, Vec::new());
+            while !stop.load(Ordering::Acquire) {
+                let b = t.beat().get();
+                if b < last {
+                    backwards.push((last, b));
+                }
+                last = b;
+                reads.fetch_add(1, Ordering::Release);
+            }
+            (backwards, last)
+        })
+    };
+
+    transport.motion.try_send(MotionEvent::Play).expect("room");
+    let mut buf = vec![0.0f32; 512];
+    let n_blocks = 2 * SR as usize / 512;
+    for _ in 0..n_blocks {
+        let seen = reads.load(Ordering::Acquire);
+        while reads.load(Ordering::Acquire) == seen {
+            std::thread::yield_now();
+        }
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+    }
+    stop.store(true, Ordering::Release);
+    let (backwards, last) = reader.join().expect("reader");
+    assert!(
+        backwards.is_empty(),
+        "the playhead went backwards {} times, first {:?}",
+        backwards.len(),
+        backwards.first()
+    );
+    // Not vacuous: the reader read many times, and time moved two seconds
+    // (four beats at 120 BPM).
+    assert!(reads.load(Ordering::Acquire) > n_blocks as u64);
+    assert!((last - 4.0).abs() < 0.1, "the playhead ended at {last}");
 }

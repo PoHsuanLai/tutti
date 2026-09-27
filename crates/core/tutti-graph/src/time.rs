@@ -331,7 +331,7 @@ impl Env {
     ///
     /// Walked with the host's own clock, [`FrameClock`](tutti_types::FrameClock), from the
     /// transport's position ([`Transport::clock`]): the same code tutti-core's
-    /// `TransportClock`, `OfflineTimeline` and `EnvClock` step by, so for a
+    /// `TransportClock` and `OfflineTimeline` step by, so for a
     /// host that counts frames (its transport [counted](Transport::counted))
     /// the result is the host's own position at that frame, to the bit,
     /// through any number of loop wraps inside the block. The block-start
@@ -365,9 +365,9 @@ impl Env {
     /// change), each piece walked with the host's clock rebuilt from its
     /// transport ([`Transport::clock`]): the beat of a frame, then a roll of
     /// one frame, wrapping on the frame that reaches the loop's end, held
-    /// while stopped. It is the walk tutti-core's `EnvClock` emits on its
-    /// beat ports, so a node reading this sees, in `f64`, what an `EnvClock`
-    /// edge carried to it before the `f32` split. It does not go through
+    /// while stopped. It is the host's own clock continued, to the bit (it
+    /// was also `EnvClock`'s, the node that emitted it on two beat ports
+    /// until every beat reader read its `Env`). It does not go through
     /// [`transport_at`](Self::transport_at), which agrees with it to
     /// rounding past a loop wrap but not to the bit.
     ///

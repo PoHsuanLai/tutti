@@ -2,8 +2,8 @@
 //!
 //! The click node is a native graph node (doc 013): it reads the playhead
 //! **per frame** from its block's [`Env`] — walked piece by piece across the
-//! block's transport changes, with the host's own clock, as
-//! [`EnvClock`](super::EnvClock) emits it — the play and record state from
+//! block's transport changes, with the host's own clock
+//! ([`Env::for_each_beat`](tutti_graph::Env::for_each_beat)) — the play and record state from
 //! the same pieces, the count-in flag off the transport's shared cell, and its
 //! own settings (volume, meter, mode) from [`ClickSettings`].
 //!
@@ -30,7 +30,7 @@
 //! keeps meter a layer *over* the engine: `TransportSettings`, `Timeline`, and
 //! the graph know nothing about bars.
 
-use super::env_clock::piece_beats;
+use super::beat_walk::piece_beats;
 use super::Transport;
 use crate::{AtomicBool, AtomicF32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -1057,7 +1057,7 @@ mod tests {
     ///
     /// Before the native port the click read the live play flag once per
     /// 64-frame chunk, so a mid-block start or stop gated it from the
-    /// block's start (the gap `tests/env_clock.rs` recorded).
+    /// block's start (the gap `tests/env_beat.rs` recorded).
     ///
     /// Mutations (run): gate the whole block on `env.transport` (the first
     /// piece's) → the stop at 30 does not silence frames 30.. and the start

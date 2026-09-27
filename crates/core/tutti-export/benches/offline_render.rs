@@ -51,18 +51,18 @@ fn built(g: GraphBuilder, rate: f64) -> RenderGraph {
 
 fn tone_graph(rate: f64) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(440.0))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g, rate)
 }
 
 fn dc_graph(rate: f64) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[0.25, 0.25])));
+    let id = g.add(Const::frame(&[0.25, 0.25]));
     g.pipe_output(id);
     built(g, rate)
 }

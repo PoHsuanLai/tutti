@@ -228,22 +228,22 @@ type ParamsNeedRebind = (
 /// plugin means `PluginHandle::parameters()`, a blocking IPC call with a
 /// five-second timeout that has no business on the frame thread.
 ///
-/// # Why `insert_target` and not `ModTargetRegistry::register::<PluginClient>`
+/// # Why `insert_target` and not a captured `ModParams` handle
 ///
-/// `register` looks like it would work — `PluginClient` implements `ModParams`,
-/// answering on `ParamAddr::Id` (it no longer compiles only because a plugin is
-/// a native node now, not an `AudioUnit`, and `register` asks for the latter).
-/// It would be wrong anyway.
+/// Capturing the client as the entity's `ModParamsHandle` looks like it would
+/// work — `PluginClient` implements `ModParams`, answering on `ParamAddr::Id`.
+/// (A registry of node types did that capture for an `AudioUnit`; it went
+/// with the `Legacy` adapter.) It would be wrong anyway.
 ///
-/// `register`'s handle is asked again on **every** modulation rebuild, and
+/// A captured handle is asked again on **every** modulation rebuild, and
 /// `PluginControls::param_target` is a *constructor*: it returns a fresh
 /// accumulator each call and stores nothing. So each rebuild would mint a new
 /// `Arc`, hand it to the router, and leave the plugin reading the previous one —
 /// the param would sit silently at its base while the modulation appeared to be
 /// connected.
 ///
-/// A native node survives this **not** because it returns an existing
-/// accumulator — `atomic_target` also constructs a fresh `AtomicTarget` every
+/// A node with a `ParamSet` survives this **not** because it returns an
+/// existing accumulator — `ParamSetTargets` also constructs a fresh `AtomicTarget` every
 /// call — but because the accumulator it builds *mirrors into the node's own
 /// `AtomicF32`*, which the node keeps reading. The `Arc` is new; the cell it
 /// writes through is the same one. That is a narrower guarantee than it looks,
@@ -324,7 +324,7 @@ pub fn plugin_bind_params(
         match existing {
             Some(automation) => automation.controls.set_params(timed),
             None if !timed.is_empty() => {
-                let (node, controls) = graph.insert_node(client.automation(timed));
+                let (node, controls) = graph.insert(client.automation(timed));
                 feeds.set(entity, AUTOMATION, vec![node.into()]);
                 dirty.0 = true;
                 commands

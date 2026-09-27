@@ -162,9 +162,8 @@ pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) ->
 /// Render `graph` and write it to `path`.
 ///
 /// Streams: the encoder pulls the graph one block at a time and no PCM is held
-/// whole. `clock` is advanced once per block, after the graph processes (per
-/// 64 frames for a native graph holding `Legacy` units, which is rendered
-/// chunk-major: [`RenderClock::render_graph`]) — pass
+/// whole. `clock` is advanced once per block, after the graph processes
+/// ([`RenderClock::render_graph`]) — pass
 /// [`FrozenClock`] for a graph with no time-dependent nodes.
 ///
 /// `graph` is a native graph, built for the render or forked from a live one

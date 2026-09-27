@@ -153,8 +153,7 @@ fn time_stretch_process_is_allocation_free() {
     });
 }
 
-/// The same guarantee for a **cloned** unit — the shape `Legacy::controlled`'s
-/// shadow and a fork of it produce.
+/// The same guarantee for a **cloned** unit — the shape a fork produces.
 ///
 /// A clone builds its own vocoders and block scratch (doc 013 item 7), so
 /// there is no `allocate` hook between cloning and running any more: a clone

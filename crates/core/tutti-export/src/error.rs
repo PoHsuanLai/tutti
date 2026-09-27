@@ -73,7 +73,7 @@ pub enum Error {
 
     /// A native graph could not be forked for the render because the node at
     /// `key` cannot be: it handed the editor no fork source (a mic monitor, an
-    /// in-process VST2 plugin, a `Legacy` built unforkable), so a copy would share
+    /// in-process VST2 plugin, a node inserted `Unforkable`), so a copy would share
     /// the live node. From [`RenderGraph::fork`](crate::RenderGraph::fork);
     /// nothing was rendered.
     ///

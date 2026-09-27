@@ -21,7 +21,7 @@ use tutti::prelude::*;
 #[test]
 fn one_import_renders_a_block() {
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let tone = g.add_unit(Box::new(tutti::nodes::testing::Osc::sine(Hz(440.0))));
+    let tone = g.add(tutti::nodes::testing::Osc::sine(Hz(440.0)));
     g.pipe_output(tone);
     let (mut editor, executor) = g
         .build(tutti::graph::Prepare::new(
@@ -74,7 +74,7 @@ fn the_dsp_library_and_the_node_contract_are_reachable() {
 fn a_graph_bounces_to_buffers_through_the_facade() {
     let rate = SampleRate(48_000.0);
     let mut g = tutti::graph::GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let node = g.add_unit(Box::new(tutti::nodes::testing::Const::frame(&[0.5, 0.5])));
+    let node = g.add(tutti::nodes::testing::Const::frame(&[0.5, 0.5]));
     g.pipe_output(node);
     let (editor, executor) = g
         .build(tutti::export::RenderGraph::prepare(rate))

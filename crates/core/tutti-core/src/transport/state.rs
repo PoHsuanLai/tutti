@@ -18,30 +18,6 @@ use crate::Samples;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32, AtomicU64};
 use crate::{Beat, BeatDuration};
 
-/// Number of ports a beat signal occupies: whole beats, then fraction.
-///
-/// `TransportClock` emits the beat split across two channels because a single
-/// `f32` cannot carry a musical position accurately — past beat 16384 its ULP
-/// exceeds 0.002 beats, which is audible as automation stair-stepping. Port 0
-/// carries the integer part and port 1 the fraction in `[0, 1)`, so precision
-/// stays constant no matter how far into a session the playhead is.
-///
-/// Every beat-driven node uses this convention. Reconstruct with [`beat_from_ports`].
-pub const BEAT_PORTS: usize = 2;
-
-/// Rebuild a beat from the two port values written by `TransportClock`.
-///
-/// The inverse of the clock's split: `whole` is the integer part, `frac` the
-/// remainder in `[0, 1)`.
-/// Returns a [`Beat`], not a bare `f64`: the whole point of the two-port split
-/// is that a beat position does not survive a single `f32`, and a scalar return
-/// invites putting it back into one. The `f32` *parameters* are the audio ports
-/// themselves and stay raw.
-#[inline]
-pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
-    Beat(whole as f64 + frac as f64)
-}
-
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.
 ///
 /// The per-frame rate a reader needs to place a beat inside a block

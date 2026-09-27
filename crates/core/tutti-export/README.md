@@ -64,7 +64,7 @@ let rate = SampleRate(48_000.0);
 // A render consumes its graph, so build one per render.
 let tone = || {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let osc = g.add_unit(Box::new(Osc::sine(Hz(440.0))));
+    let osc = g.add(Osc::sine(Hz(440.0)));
     g.pipe_output(osc);
     let (editor, executor) = g.build(RenderGraph::prepare(rate)).expect("builds");
     RenderGraph::new(editor, executor).expect("built together")

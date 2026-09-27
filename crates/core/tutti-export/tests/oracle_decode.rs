@@ -73,7 +73,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// A graph emitting the constant `level` on both channels.
 fn dc_graph(level: f32) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    let id = g.add(Const::frame(&[level, level]));
     g.pipe_output(id);
     built(g)
 }
@@ -81,11 +81,11 @@ fn dc_graph(level: f32) -> RenderGraph {
 /// A graph emitting a `freq` Hz sine on both channels.
 fn sine_graph(freq: f32) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(
+    let id = g.add(
         Osc::sine(Hz(freq))
             .with_amplitude(Amplitude(0.5))
             .with_layout(ChannelLayout::STEREO),
-    ));
+    );
     g.pipe_output(id);
     built(g)
 }

@@ -13,8 +13,8 @@
 //!
 //! # What the graph does, and what is left here
 //!
-//! The graph owns the arithmetic: each declared param of a node (its
-//! `ParamFeed`, `AudioGraphRes::declares_param`) is `clamp(base + Σ shaped
+//! The graph owns the arithmetic: each declared param of a node (its shape's
+//! params, `AudioGraphRes::declares_param`) is `clamp(base + Σ shaped
 //! sources)` per frame, where the **base is the node's own control** — the
 //! cell an authored write, `AudioParam`, `write_param` and `set_param` all
 //! reach. An unconnected param reads that control, never 0, so a route can be
@@ -183,7 +183,7 @@ pub fn ensure_source_nodes(
             ModClock::Free { hz } => node.with_frequency(hz),
         };
 
-        let (id, params) = graph.insert_node(node);
+        let (id, params) = graph.insert(node);
         graph.set_node_params(id, Some(params));
         let entity = commands.spawn(id).id();
         commands.entity(route.source).insert(ModSourceNode(entity));
@@ -421,10 +421,7 @@ mod tests {
         // A native node: its `ParamSet`'s cells are its targets, no registry
         // entry.
         let controls = crate::graph::GraphNode::captured(&dist);
-        let (node, _params) = app
-            .world_mut()
-            .resource_mut::<AudioGraphRes>()
-            .insert_node(dist);
+        let (node, _params) = app.world_mut().resource_mut::<AudioGraphRes>().insert(dist);
         let mut target = app.world_mut().spawn(ModParamRange::default().with(
             ParamAddr::Unit(UnitParam::Drive),
             5.0,

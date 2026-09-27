@@ -35,9 +35,9 @@ use tutti_plugin::handles::{LfoCurve, LfoShape, ParamAddress, ParamId, TimedPara
 use tutti_types::{Beat, Bpm, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
-/// The graph's `MaxBlock`: blocks of 64, as the engine renders in passes
-/// while a `Legacy`-flagged node is in the graph (the plugin itself is not
-/// one), so a chunk collects eight blocks of automation points.
+/// The graph's `MaxBlock`: blocks of 64 (as the engine rendered in passes
+/// while a `Legacy` node was in the graph), so a chunk collects eight
+/// blocks of automation points.
 const BLOCK: usize = 64;
 /// The device callback, and so the plugin's chunk: eight passes of 64.
 const QUANTUM: usize = 512;

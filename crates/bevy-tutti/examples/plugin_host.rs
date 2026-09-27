@@ -227,10 +227,9 @@ fn narrate_load(
     // which `rebuild` skips — silently, since an unresolvable port is an
     // ordinary not-yet state elsewhere.
     let source = commands
-        .spawn_audio_node(tutti_nodes::testing::Const::frame(&[
-            INPUT_LEVEL,
-            INPUT_LEVEL,
-        ]))
+        .spawn_audio_node(tutti_graph::ForkByClone(
+            tutti_nodes::testing::Const::frame(&[INPUT_LEVEL, INPUT_LEVEL]),
+        ))
         .id();
     commands
         .entity(entity)

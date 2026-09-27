@@ -4,8 +4,9 @@
 //!
 //! The metronome gate ran on a `Net` (a `TransportClock` feeding the click)
 //! until doc 013 Phase 3 PR 15 removed the engine's `Net` backend; its graph
-//! form, an `EnvClock` feeding the click with timed seeks, tempo and loop
-//! changes on top, is `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
+//! form, the click beside a node walking its `Env`'s beat, with timed seeks,
+//! tempo and loop changes on top, is
+//! `graph_engine_with_env_clock_and_metronome_is_allocation_free`.
 //!
 //! The gate over a chain of real DSP nodes (EQ, strip, limiter) is
 //! `tutti-nodes`' `tests/rt_no_alloc_engine.rs`. It used to live here, built
@@ -157,9 +158,9 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
-/// The metronome on the native graph: `ClickNode` and an `EnvClock` side by
-/// side (the click reads its block's `Env` itself; the clock's ports go to
-/// outputs 2 and 3), with timestamped seeks, tempo and loop changes landing
+/// The metronome on the native graph: `ClickNode` and a node walking its
+/// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
+/// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing
 /// inside blocks, so both walk several segments per block. Neither segment
 /// walk nor the click's meter read allocates.
 ///
@@ -172,13 +173,31 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// [`RtPublish`]: tutti_types::RtPublish
 ///
 /// Mutations (run): collect `env.segments()` into a `Vec` in
-/// `EnvClock::process`, or in `ClickNode::render` → the gate panics → fails.
+/// `EnvClock::process` (the walk now in `Env::for_each_beat`), or in
+/// `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
-    use tutti_core::{At, Beat, Bpm, EnvClock, Frame, MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
+    use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
     use tutti_types::graph::{OutPort, Source};
-    use tutti_types::NodeKey;
+    use tutti_types::{NodeKey, Tail};
+
+    /// The beat of every frame, whole beats then the fraction.
+    struct BeatWalk;
+    impl Node for BeatWalk {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO).with_tail(Tail::Unbounded)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            cx.env.for_each_beat(|i, beat| {
+                io.output(0)[i] = beat.floor().get() as f32;
+                io.output(1)[i] = beat.fract().get() as f32;
+            });
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
@@ -192,7 +211,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
         tutti_core::Samples(512),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
-    ed.insert(clock, "clock", Unforkable(EnvClock::new()));
+    ed.insert(clock, "clock", Unforkable(BeatWalk));
     let _ = ed.insert(sink, "click", click);
     let topology = &mut ed.spec_mut().topology;
     topology.outputs = [(sink, 0), (sink, 1), (clock, 0), (clock, 1)]

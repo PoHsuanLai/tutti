@@ -1,8 +1,6 @@
 //! This crate's modulatable nodes under the graph's compiler-owned param
 //! modulation (design doc 013 item 6), run as they run in an engine: a
-//! native node reading its param ports through `Io::param`, a node not yet
-//! ported through `Legacy`, its params fed per 64-frame chunk through its
-//! `ParamFeed`.
+//! node reading its param ports through `Io::param`.
 //!
 //! These replace the tests of the per-param sub-graph the graph made
 //! obsolete (`AtomicSourceNode → ParamSumNode ← ParamShaperNode`, wired into
@@ -63,7 +61,7 @@ fn noise(seed: u32) -> Vec<f32> {
 /// `node` with every input on a global input carrying noise, its outputs
 /// the graph's, and — when `fed` — `param` driven to exactly `v` by a
 /// constant source through a degenerate range (`v..=v`), whatever the base.
-/// Renders `FRAMES` in 100-frame blocks (so `Legacy` chunks 64 + 36).
+/// Renders `FRAMES` in 100-frame blocks (not a multiple of 64).
 fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
     let shape = node.node.shape();
     let (ins, outs) = (
@@ -79,7 +77,7 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
         g.connect_output(n, c, c);
     }
     if let Some((param, v)) = fed {
-        let src = g.add_unit(Box::new(Const::mono(0.0)));
+        let src = g.add(Const::mono(0.0));
         let at = ParamIn { node: n, param };
         g.spec_mut().connect_param(
             at,
@@ -418,7 +416,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add_unit(Box::new(Const::mono(0.5)));
+    let src = g.add(Const::mono(0.5));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(
         ParamIn {
@@ -460,7 +458,7 @@ fn a_crossed_range_is_survivable() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add_unit(Box::new(Const::mono(100.0)));
+    let src = g.add(Const::mono(100.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let at = ParamIn {
         node: n,
@@ -495,7 +493,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add_unit(Box::new(Const::mono(4.0)));
+    let src = g.add(Const::mono(4.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     let mut r: Renderer = g
         .renderer(Prepare::new(SampleRate(48_000.0), Samples(100)))
@@ -563,7 +561,7 @@ fn a_fork_modulates_as_the_live_graph_does() {
     let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
-    let src = g.add_unit(Box::new(Const::mono(2.0)));
+    let src = g.add(Const::mono(2.0));
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
     g.spec_mut().connect_param(
         ParamIn {

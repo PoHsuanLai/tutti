@@ -196,7 +196,7 @@ After processing: `PluginRequest` becomes a private `PendingPlugin`, and on comp
 
 Requires `midi` feature.
 
-MIDI reaches a node over event edges: insert synths with `spawn_graph_node`
+MIDI reaches a node over event edges: insert synths with `spawn_audio_node`
 and declare what plays them.
 
 ```rust
@@ -328,19 +328,19 @@ and you insert only the ones you drive.
 ```rust
 // DSP nodes come from `tutti-nodes`, spawned like any other node: a native
 // graph node (the filters, the dynamics, the distortion, the strip, the
-// delays, the LFO, the convolver) through `spawn_graph_node`. There are no
+// delays, the LFO, the convolver) through `spawn_audio_node`. There are no
 // marker components and no per-node ECS wrappers.
 use tutti_nodes::{CompressorNode, GateNode, LfoNode, LfoShape};
 
-commands.spawn_graph_node(LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0)));
+commands.spawn_audio_node(LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0)));
 
 // A param is an `AudioParam` on the entity, addressed by `UnitParam`; it
 // writes through the node's `ParamSet`.
 commands
-    .spawn_graph_node(CompressorNode::stereo(-18.0, 3.0, 0.01, 0.15).with_makeup(3.0))
+    .spawn_audio_node(CompressorNode::stereo(-18.0, 3.0, 0.01, 0.15).with_makeup(3.0))
     .insert(AudioParam::<Db, { UnitParam::Threshold as u16 }>::new(Db(-24.0)));
 
-commands.spawn_graph_node(GateNode::stereo(-25.0, 0.002, 0.01, 0.2));
+commands.spawn_audio_node(GateNode::stereo(-25.0, 0.002, 0.01, 0.2));
 ```
 
 ### Spatial audio
@@ -350,12 +350,12 @@ Requires `spatial` feature.
 ```rust
 // `tutti-spatial` is re-exported whole. The VBAP and binaural panners are
 // native graph nodes (the binaural one with the `hrtf` feature): spawned with
-// `spawn_graph_node`, their controls land on the entity as `NodeControls`.
+// `spawn_audio_node`, their controls land on the entity as `NodeControls`.
 use bevy_tutti::spatial::{VbapPannerControls, VbapPannerNode};
 
 let panner = VbapPannerNode::for_layout(layout)?;
 panner.set_position(30.0, 0.0);
-commands.spawn_graph_node(panner);
+commands.spawn_audio_node(panner);
 // Later, from a system:
 fn orbit(q: Query<&NodeControls<VbapPannerControls>>) {
     for c in &q {

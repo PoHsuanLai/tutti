@@ -8,7 +8,7 @@
 //! The harness is `tutti_graph::contract`; the mutation each path was seen
 //! to fail under is recorded on its `Path` variant. The node crates carry
 //! their own rows (`tutti-nodes`, `tutti-spatial`: the latency-bearing
-//! `Legacy` units), and `tutti-core` the engine-level ones.
+//! nodes), and `tutti-core` the engine-level ones.
 //!
 //! The last tests here are the harness's own: rows that break the contract
 //! on purpose, which it must fail — a harness that cannot fail is worse than

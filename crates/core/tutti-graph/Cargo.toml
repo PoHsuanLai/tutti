@@ -25,9 +25,6 @@ contract = []
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
 # tail vocabulary — design doc 013's layer 1.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
-# `AudioUnit` + `BufferVec`, for the `Legacy` adapter only. The edge goes away
-# with the adapter in doc 013's Phase 4.
-tutti-node = { version = "0.0.1", path = "../tutti-node" }
 # Safe casts between the 64-byte-aligned arena lines and the `f32` slices a
 # node is handed. This is what keeps the executor free of `unsafe`: alignment
 # comes from the element type, the reinterpretation from a checked `Pod` cast,

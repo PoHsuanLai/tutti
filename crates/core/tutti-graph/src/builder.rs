@@ -33,8 +33,7 @@
 //! counts, which the builder reads from [`Node::shape`] at
 //! [`add`](GraphBuilder::add), before the node is prepared. A node whose
 //! port count depends on its [`Prepare`] would need wiring by
-//! [`connect`](GraphBuilder::connect) instead (none does today: `Legacy`
-//! takes its widths from `AudioUnit::inputs`/`outputs`, which never move).
+//! [`connect`](GraphBuilder::connect) instead (none does today).
 //! Latency and tail can move with the rate, and [`Editor::insert`] rewrites
 //! them from the prepared shape — so [`GraphBuilder::spec`] shows the
 //! unprepared figures and the built editor's spec the prepared ones.
@@ -48,13 +47,11 @@
 //! block) is found by [`build`](GraphBuilder::build) and returned as the
 //! editor's own [`CommitError`].
 
-use tutti_node::AudioUnit;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_types::{ChannelLayout, Frame, NodeKey, Samples};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;
-use crate::legacy::Legacy;
 use crate::node::{IntoNode, NodeParts, Prepare, Shape, Transport};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphSpec};
 
@@ -76,12 +73,24 @@ struct Pending {
 /// `pipe_output`:
 ///
 /// ```
-/// # use fundsp::prelude32::dc;
-/// use tutti_graph::{GraphBuilder, Prepare};
+/// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::{Cx, Io, Node, Shape, Status};
+/// # #[derive(Clone)]
+/// # struct Dc(f32);
+/// # impl Node for Dc {
+/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO) }
+/// #     fn prepare(&mut self, _: &Prepare) {}
+/// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+/// #         let (_, mut outs) = io.split();
+/// #         outs.get(0).fill(self.0);
+/// #         Status::Modified
+/// #     }
+/// #     fn reset(&mut self) {}
+/// # }
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-/// let src = g.add_unit(Box::new(dc(0.25)));
+/// let src = g.add(ForkByClone(Dc(0.25)));
 /// g.pipe_output(src); // mono → both channels, as `Net::pipe_output` does
 ///
 /// let mut r = g
@@ -96,13 +105,25 @@ struct Pending {
 /// `connect_output` at the edges, `chain` for a series:
 ///
 /// ```
-/// # use fundsp::prelude32::{dc, mul, pass};
-/// use tutti_graph::{GraphBuilder, Prepare};
+/// use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::{Cx, Io, Node, Shape, Status};
+/// # #[derive(Clone)]
+/// # struct Gain(f32);
+/// # impl Node for Gain {
+/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+/// #     fn prepare(&mut self, _: &Prepare) {}
+/// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+/// #         let (ins, mut outs) = io.split();
+/// #         for (o, i) in outs.get(0).iter_mut().zip(ins.get(0)) { *o = i * self.0; }
+/// #         Status::Modified
+/// #     }
+/// #     fn reset(&mut self) {}
+/// # }
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
-/// let half = g.chain_unit(Box::new(mul(0.5))); // global in → half → both outs
-/// let gain = g.add_unit(Box::new(mul(4.0)));
+/// let half = g.chain(ForkByClone(Gain(0.5))); // global in → half → both outs
+/// let gain = g.add(ForkByClone(Gain(4.0)));
 /// g.connect(half, 0, gain, 0).connect_output(gain, 0, 1); // right = 2 × input
 ///
 /// let mut r = g
@@ -157,20 +178,6 @@ impl GraphBuilder {
             fork,
         };
         (self.insert(N::kind(), unit), controls)
-    }
-
-    /// Add a fundsp `AudioUnit`, unwired, running through [`Legacy`] — the
-    /// port of `Net::push(Box::new(unit))`. Its kind is `"legacy"`.
-    pub fn add_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        self.insert("legacy", Legacy::from_box(unit).into_parts())
-    }
-
-    /// [`add_unit`](Self::add_unit) for a unit whose output is a function of
-    /// its audio inputs alone (a filter, a gain), through
-    /// [`Legacy::pure`]: its silence is reported, so it may be skipped. A
-    /// unit fed any other way belongs in `add_unit`, which never skips it.
-    pub fn add_pure_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        self.insert("legacy", Legacy::from_box(unit).assume_pure().into_parts())
     }
 
     fn insert(&mut self, kind: &str, unit: NodeParts<()>) -> NodeKey {
@@ -449,14 +456,6 @@ impl GraphBuilder {
         key
     }
 
-    /// [`chain`](Self::chain) for a fundsp `AudioUnit` through [`Legacy`] —
-    /// the port of `Net::chain(Box::new(unit))`.
-    pub fn chain_unit(&mut self, unit: Box<dyn AudioUnit>) -> NodeKey {
-        let key = self.add_unit(unit);
-        self.link(key);
-        key
-    }
-
     fn link(&mut self, key: NodeKey) {
         if self.size() == 1 {
             if self.inputs() > 0 {
@@ -585,12 +584,24 @@ type TransportFn = Box<dyn FnMut(Frame) -> Transport + Send>;
 /// Render a planar input in 200-frame blocks, then silence, interleaved:
 ///
 /// ```
-/// # use fundsp::prelude32::pass;
-/// use tutti_graph::{GraphBuilder, Prepare, Transport};
+/// use tutti_graph::{ForkByClone, GraphBuilder, Prepare, Transport};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
+/// # use tutti_graph::{Cx, Io, Node, Shape, Status};
+/// # #[derive(Clone)]
+/// # struct Gain(f32);
+/// # impl Node for Gain {
+/// #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+/// #     fn prepare(&mut self, _: &Prepare) {}
+/// #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+/// #         let (ins, mut outs) = io.split();
+/// #         for (o, i) in outs.get(0).iter_mut().zip(ins.get(0)) { *o = i * self.0; }
+/// #         Status::Modified
+/// #     }
+/// #     fn reset(&mut self) {}
+/// # }
 ///
 /// let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::STEREO);
-/// g.chain_unit(Box::new(pass()));
+/// g.chain(ForkByClone(Gain(1.0)));
 ///
 /// let mut r = g
 ///     .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))

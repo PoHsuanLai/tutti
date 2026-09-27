@@ -125,7 +125,7 @@ pub fn attach_live_midi(
         return;
     };
     for entity in &wanted {
-        let (node, sender) = graph.insert_node(MidiQueueNode::new());
+        let (node, sender) = graph.insert(MidiQueueNode::new());
         feeds.set(entity, LIVE, vec![node.into()]);
         commands.entity(entity).insert(LiveMidi { sender, node });
         dirty.0 = true;

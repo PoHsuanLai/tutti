@@ -12,9 +12,9 @@
 //!
 //! The mapping onto the plugin ABIs' snapshot is [`transport_info`], shared
 //! with the one node that still polls a timeline: the in-process VST2 client
-//! is an `AudioUnit` with no `Env` until it is ported (doc 013, "Port
-//! mechanically"), and builds the same [`Snapshot`] from its polled reader
-//! (`PolledTransport`, behind the `vst2` feature).
+//! (a graph node since doc 013's per-node port) still reads its transport
+//! from an installed reader rather than its `Env`, and builds the same
+//! [`Snapshot`] from it (`PolledTransport`, behind the `vst2` feature).
 
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::{Beat, Bpm, SampleRate};
@@ -148,9 +148,8 @@ impl crate::host::node::input_slot::BlockReset for TransportInfo {
 }
 
 /// A transport read by **polling** a live [`TransportState`], for the one
-/// plugin node that has no [`Env`]: the in-process VST2 client, an
-/// `AudioUnit` run through `Legacy` until it is ported (doc 013, "Port
-/// mechanically"). The subprocess plugin node reads [`from_env`] instead.
+/// plugin node that does not read its [`Env`] for time: the in-process VST2
+/// client. The subprocess plugin node reads [`from_env`] instead.
 ///
 /// [`TransportState`]: tutti_core::transport::TransportState
 #[cfg(feature = "vst2")]

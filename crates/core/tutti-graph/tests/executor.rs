@@ -834,3 +834,171 @@ fn a_merge_holds_all_its_inputs_so_no_note_off_is_lost() {
     assert_eq!(seen.load(Ordering::Relaxed), 60);
     assert_eq!(exec.dropped_events(), 0);
 }
+
+/// A node fed **out of band**: it adds `level` (a shared cell a control
+/// thread writes, as a synth's own MIDI queue or a mic's ring feeds it) to
+/// its audio inputs, and declares `Tail::None` — honest for what its
+/// *inputs* can do, which is exactly why the silence skip would park it.
+/// `claims_silence` makes it report the silent channels it wrote
+/// (`Status::Masked`); otherwise it makes no claim (`Status::Modified`).
+struct OutOfBand {
+    inputs: u16,
+    outputs: u16,
+    claims_silence: bool,
+    level: Arc<Param<Amplitude>>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl OutOfBand {
+    fn new(inputs: u16, outputs: u16, claims_silence: bool) -> Self {
+        Self {
+            inputs,
+            outputs,
+            claims_silence,
+            level: Arc::new(Param::new(Amplitude::new(0.0))),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Node for OutOfBand {
+    fn shape(&self) -> Shape {
+        Shape::audio(
+            ChannelLayout::from_count(self.inputs),
+            ChannelLayout::from_count(self.outputs),
+        )
+        .with_tail(Tail::None)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let level = self.level.load().get();
+        let (ins, mut outs) = io.split();
+        let mut silent = 0u64;
+        for c in 0..usize::from(self.outputs) {
+            let out = outs.get(c);
+            for (i, o) in out.iter_mut().enumerate() {
+                let x = if c < usize::from(self.inputs) {
+                    ins.get(c)[i]
+                } else {
+                    0.0
+                };
+                *o = level + x;
+            }
+            if out.iter().all(|&x| x == 0.0) {
+                silent |= 1 << c;
+            }
+        }
+        if self.claims_silence {
+            Status::Masked {
+                silent: SilenceMask(silent),
+                constant: tutti_graph::ConstantMask::NONE,
+            }
+        } else {
+            Status::Modified
+        }
+    }
+    fn reset(&mut self) {}
+}
+
+/// `node` at key 1, its inputs wired to silence (`Source::Zero`, which the
+/// executor knows is silent), its first output (if any) the graph's.
+fn out_of_band_graph(node: OutOfBand) -> Executor {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    let key = NodeKey(1);
+    let (inputs, outputs) = (node.inputs, node.outputs);
+    ed.insert(key, "oob", Unforkable(node));
+    for port in 0..inputs {
+        ed.spec_mut()
+            .topology
+            .edges
+            .insert(InPort { node: key, port }, Edge::Direct(Source::Zero));
+    }
+    if outputs > 0 {
+        ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: key, port: 0 })];
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    exec
+}
+
+/// **A node that makes no silence claim is heard after any amount of
+/// silence**, fed out of band: silent for ten blocks, then its cell is
+/// written, and the next block carries the level. Run for a node with an
+/// audio input wired to silence (the live hazard: a plugin instrument with a
+/// sidechain) and for a 0-input source (a mic monitor).
+///
+/// Moved here from the adapter's suite, where it pinned that an `AudioUnit`
+/// made no claim by default; the rule it rests on is the executor's.
+///
+/// Mutation (run): in `exec.rs`'s `node_op`, treat `Status::Modified` as a
+/// claim of silence on every output → the 1-input node is parked after its
+/// first silent block → fails. The 0-input case does not fail on that
+/// alone — the executor never skips a node without audio inputs — and
+/// fails when that rule (`!ain.is_empty()` in `node_op`) is dropped as well.
+#[test]
+fn a_node_that_claims_no_silence_is_heard_after_silence() {
+    for inputs in [1u16, 0] {
+        let node = OutOfBand::new(inputs, 1, false);
+        let (level, calls) = (Arc::clone(&node.level), Arc::clone(&node.calls));
+        let mut exec = out_of_band_graph(node);
+        let mut out = vec![0.0f32; 64];
+        for _ in 0..10 {
+            exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+            assert!(out.iter().all(|&x| x == 0.0));
+        }
+        level.store(Amplitude::new(0.5));
+        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+        assert!(
+            out.iter().all(|&x| x == 0.5),
+            "{inputs}-input node: the out-of-band level must reach the output \
+             on the next block; got {:?}",
+            &out[..4]
+        );
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            11,
+            "{inputs}-input node: called every block"
+        );
+    }
+}
+
+/// The same node, **claiming** the silence it wrote, is parked — which is
+/// what the claim means. Pins that the claim is the switch, so the test
+/// above is not passing because nothing is ever skipped.
+///
+/// Mutation (run): drop the skip in `node_op` (always call the node) → the
+/// node is called every block and the late level is heard → fails.
+#[test]
+fn a_node_that_claims_silence_is_parked() {
+    let node = OutOfBand::new(1, 1, true);
+    let (level, calls) = (Arc::clone(&node.level), Arc::clone(&node.calls));
+    let mut exec = out_of_band_graph(node);
+    let mut out = vec![0.0f32; 64];
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    }
+    level.store(Amplitude::new(0.5));
+    exec.process(64, &Transport::default(), &[], &mut [&mut out[..]]);
+    assert_eq!(calls.load(Ordering::Relaxed), 1, "called once, then parked");
+    assert!(out.iter().all(|&x| x == 0.0), "and so never heard again");
+}
+
+/// A node with **no outputs** is never parked, even claiming silence with a
+/// silent input and `Tail::None`: it is a sink, called for its side effects
+/// (a meter, a tap), and "every output silent" is vacuous for it.
+///
+/// Mutation (run): drop the `!(aout.is_empty() && eout.is_empty())` term
+/// from `last_quiet` in `exec.rs`'s `node_op` → called once, then skipped →
+/// fails.
+#[test]
+fn a_sink_is_never_parked() {
+    let node = OutOfBand::new(1, 0, true);
+    let calls = Arc::clone(&node.calls);
+    let mut exec = out_of_band_graph(node);
+    for _ in 0..10 {
+        exec.process(64, &Transport::default(), &[], &mut []);
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 10, "a sink runs every block");
+}

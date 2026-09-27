@@ -116,9 +116,8 @@ impl Vocoder {
     /// # Off the commit path
     ///
     /// This is what `Unit::clone` runs, per channel: about 100 KB per vocoder
-    /// (64% of it the two `size * 4` rings), on the control thread. The native
-    /// graph clones a unit only for `Legacy::controlled`'s shadow (at insert)
-    /// and for a fork, never to commit.
+    /// (64% of it the two `size * 4` rings), on the control thread. The graph
+    /// clones a unit only for a fork, never to commit.
     ///
     /// Under `Net`, which cloned every node on every commit, this was the cost
     /// that had to go. Profiled under `samply`

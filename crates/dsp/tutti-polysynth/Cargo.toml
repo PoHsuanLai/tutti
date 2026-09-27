@@ -29,17 +29,12 @@ std = []
 [dependencies]
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 
-# The `ModParams` control-rate-modulation trait + its target surface
-# (`AtomicTarget`/`ModTarget`), so `PolySynth` implements the same modulation
-# trait every other node does. `routing` (std-only) keeps it bevy-free.
-tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
-
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
 
-# `ForkSource`, `Legacy`: `PolySynth::fork_source`, the synth's own way into a
-# fork of the native graph (an export), as `tutti-plugin`'s `PluginClient` has
-# one. No cycle: `tutti-graph` names only `tutti-types` and `tutti-node`.
+# `Node`, `ForkSource`: the synth as a graph node, and its own way into a
+# fork of the graph (an export), as `tutti-plugin`'s `PluginClient` has
+# one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph" }
 
 # The SVF and ladder coefficient functions. The voice bank runs those two
@@ -55,9 +50,12 @@ wide = { version = "1.6", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]
-# `IsolateRow`, the fork-snapshot harness. No cycle: `tutti-graph` names
-# only `tutti-types` and `tutti-node`.
+# The graph contract's test harness. No cycle: `tutti-graph` names no tutti
+# crate but `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }
+# A control-rate route's target (`AtomicTarget`), for the tests that resolve
+# one on the synth's `ParamSet`. `routing` (std-only) keeps it bevy-free.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 criterion.workspace = true
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }

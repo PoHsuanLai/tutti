@@ -258,13 +258,13 @@ mod tests {
     /// node the engine ships, not on fundsp's.
     fn skewed_graph() -> (AudioGraphRes, Samples) {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let a = graph.insert(Const::mono(1.0));
-        let (eff, _) = graph.insert_node(LimiterNode::with_channels(
+        let (a, _) = graph.insert(Const::mono(1.0));
+        let (eff, _) = graph.insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),
         ));
-        let b = graph.insert(Const::mono(1.0));
+        let (b, _) = graph.insert(Const::mono(1.0));
         graph.set_source(eff, 0, GraphSource::Node(a, 0));
         graph.set_output_source(0, GraphSource::Node(eff, 0));
         graph.set_output_source(1, GraphSource::Node(b, 0));
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn a_graph_with_no_latency_reports_none() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let a = graph.insert(Const::mono(1.0));
+        let (a, _) = graph.insert(Const::mono(1.0));
         graph.set_output_source(0, GraphSource::Node(a, 0));
         graph.set_output_source(1, GraphSource::Node(a, 0));
 
@@ -376,7 +376,7 @@ mod tests {
         app.update();
 
         let mut graph = AudioGraphRes::headless(0, 2);
-        let a = graph.insert(Const::mono(1.0));
+        let (a, _) = graph.insert(Const::mono(1.0));
         graph.set_outputs_from(a);
         let mut app = check_app(graph);
         app.world_mut().resource_mut::<GraphDirty>().0 = true;
@@ -441,8 +441,8 @@ mod tests {
     #[test]
     fn a_re_prepare_republishes_the_figures_once_it_resumes() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let a = graph.insert(Const::mono(1.0));
-        let (eff, _) = graph.insert_node(LimiterNode::with_channels(
+        let (a, _) = graph.insert(Const::mono(1.0));
+        let (eff, _) = graph.insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),

@@ -1,63 +1,57 @@
-//! Capturing a unit's controls on the way into the graph.
+//! Capturing a node's controls on the way into the graph.
 //!
 //! Some of what a host does to a node is not audio routing and not a scalar
 //! param: minting a modulation accumulator over a filter's cutoff, binding a
-//! hosted plugin's meter. (MIDI is neither: it travels on event edges.) Each needs
-//! the *concrete* node, and the graph only holds `Box<dyn AudioUnit>`.
+//! hosted plugin's meter. (MIDI is neither: it travels on event edges.) Each
+//! needs the *concrete* node, and the graph holds only boxed nodes it owns
+//! outright.
 //!
-//! These used to be answered by downcasting the graph's copy of the node on
-//! every use. That ties every such call site to one graph implementation — a
-//! graph that owns its nodes outright has no copy to hand out — and it read a
-//! clone the audio thread never runs, which is sound only for state shared
-//! across clones.
-//!
-//! So the question is asked **once, of the owned unit, before it is inserted**,
-//! and the answer is kept on the entity:
+//! So the question is asked **once, of the owned node, before it is
+//! inserted**, and the answer is kept on the entity:
 //!
 //! | Component | Captured from | Read by |
 //! |---|---|---|
-//! | `ModParamsHandle` (`modulation`) | `ModTargetRegistry` | the modulation resolver |
+//! | `ModParamsHandle` (`modulation`) | a node's `ParamSet` ([`CapturedControls::for_params`]), or a host-supplied target (`ModTargetRegistry::insert_target`) | the modulation resolver |
 //! | `PluginShadow` (`plugin`) | a loaded `PluginClient` (`CapturedControls::for_plugin`) | plugin meter bind and latency poll |
 //!
-//! Every one holds only state the node shares with its clones (see each type),
-//! so the component reaches the running node without the graph. Each also
-//! records the [`NodeId`] it was captured for, and its reader ignores it when
-//! that is not the entity's current [`AudioNode`] — a leftover from a node that
-//! was replaced by hand is inert rather than stale.
+//! Every one holds only state the node shares with the graph's copy (its
+//! `Param` cells, the plugin's controls), so the component reaches the
+//! running node without the graph. Each also records the [`NodeId`] it was
+//! captured for, and its reader ignores it when that is not the entity's
+//! current [`AudioNode`] — a leftover from a node that was replaced by hand is
+//! inert rather than stale.
 //!
 //! **That guard is `NodeId` equality and nothing more.** It catches a different
-//! node bound to the entity; it cannot see a unit replaced *under the same id*.
+//! node bound to the entity; it cannot see a node replaced *under the same id*.
 //! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
 //! a host that calls [`AudioGraphRes::replace`](crate::graph::AudioGraphRes::replace)
 //! directly bypasses both the capture and the guard, and the entity keeps
-//! driving the outgoing unit's controls. Go through `crossfade_audio_node`, or
-//! re-run [`CapturedControls::capture`] and [`bind`](CapturedControls::bind)
-//! yourself.
+//! driving the outgoing node's controls. Go through `crossfade_audio_node`, or
+//! capture ([`GraphNode::captured`](crate::graph::GraphNode::captured)) and
+//! [`bind`](CapturedControls::bind) yourself.
 //!
 //! When the node goes (its `AudioNode` is removed, or the entity despawned) the
 //! captured components go with it — `drop_captured` runs from the removal
-//! observer. They are not free to keep: a `ModParamsHandle` holds a whole clone
-//! of the unit, which for a convolver or a synth is its IR or its voices.
+//! observer.
 //!
 //! Every node-insertion path in this crate runs the capture:
 //! [`spawn_audio_node`](crate::graph::SpawnAudioNode),
 //! [`insert_audio_node`](crate::graph::InsertAudioNode),
 //! [`crossfade_audio_node`](crate::graph::crossfade_audio_node) (which replaces
-//! the unit, so re-captures), the soundfont promotion and the plugin load. A
-//! host that pushes a unit into the graph itself and binds `AudioNode` by hand
-//! does the same with [`CapturedControls::capture`] and
+//! the node, so re-captures), the soundfont promotion and the plugin load. A
+//! host that inserts a node itself and binds `AudioNode` by hand does the same
+//! with [`GraphNode::captured`](crate::graph::GraphNode::captured) and
 //! [`bind`](CapturedControls::bind).
 
 use bevy_ecs::prelude::*;
-use bevy_ecs::system::SystemParam;
 
 use tutti_core::dsp::NodeId;
-use tutti_core::{AudioNode, AudioUnit};
+use tutti_core::AudioNode;
 
-/// The controls captured from one unit, before it moved into the graph.
+/// The controls captured from one node, before it moved into the graph.
 ///
-/// Empty for a unit no registry recognises, which is most of them (an
-/// oscillator, a sum, a gain).
+/// Empty for a node with no params and no plugin (an oscillator, a sum, a
+/// width adapter).
 #[must_use = "captured controls do nothing until they are bound to the entity"]
 #[derive(Default)]
 pub struct CapturedControls {
@@ -68,48 +62,12 @@ pub struct CapturedControls {
 }
 
 impl CapturedControls {
-    /// Run every capture against `unit`, reading the registries from `world`.
-    ///
-    /// A registry that is absent captures nothing. Call this **before** the unit
-    /// moves into the graph — afterwards it is out of reach.
-    pub fn capture(world: &World, unit: &dyn AudioUnit) -> Self {
-        // `world` is unused only in the build with no registry-backed capture.
-        let _ = world;
-        Self::from_registries(
-            #[cfg(feature = "modulation")]
-            world.get_resource::<crate::modulation::ModTargetRegistry>(),
-            unit,
-        )
-    }
-
-    fn from_registries(
-        #[cfg(feature = "modulation")] mods: Option<&crate::modulation::ModTargetRegistry>,
-        unit: &dyn AudioUnit,
-    ) -> Self {
-        // `unit` is unused only in the build with no capturing feature at all.
-        let _ = unit;
-        Self {
-            #[cfg(feature = "modulation")]
-            params: mods.and_then(|r| r.capture(unit)),
-            // A hosted out-of-process plugin is not an `AudioUnit` (it is a
-            // native graph node), so no unit is one:
-            // [`for_plugin`](Self::for_plugin) captures it. An in-process
-            // plugin node (VST2) is an `AudioUnit` of another type and
-            // captures nothing, as before — binding never reached it.
-            #[cfg(feature = "plugin")]
-            plugin: None,
-        }
-    }
-
     /// The controls of a loaded out-of-process plugin, captured from the
     /// unbound client before it is bound and inserted
     /// ([`AudioGraphRes::insert_plugin`](crate::graph::AudioGraphRes::insert_plugin)):
     /// its [`PluginControls`](tutti_plugin::handles::PluginControls) as the
     /// entity's `PluginShadow`.
     ///
-    /// Typed, where [`capture`](Self::capture) asks registries of an
-    /// `AudioUnit`: the plugin load holds the concrete client, so there is
-    /// nothing to downcast.
     #[cfg(feature = "plugin")]
     pub fn for_plugin(client: &tutti_plugin::handles::PluginClient) -> Self {
         Self {
@@ -119,10 +77,10 @@ impl CapturedControls {
         }
     }
 
-    /// The controls of a native node whose params are a
+    /// The controls of a node whose params are a
     /// [`ParamSet`](tutti_graph::ParamSet): with `modulation`, a
     /// `ModParamsHandle` over its cells, so a route resolves on any of its
-    /// params without a registry entry — the set already addresses them.
+    /// params — the set already addresses them.
     /// What a [`GraphNode`](crate::graph::GraphNode) with params returns
     /// from `captured`.
     pub fn for_params(params: &tutti_graph::ParamSet) -> Self {
@@ -147,11 +105,11 @@ impl CapturedControls {
     }
 
     /// Replace the entity's captured controls with these, keeping its
-    /// [`AudioNode`] — the crossfade case, where the unit changes under a
+    /// [`AudioNode`] — the crossfade case, where the node changes under a
     /// surviving handle.
     ///
-    /// A control this unit does not have is **removed**: the old unit's
-    /// params would otherwise stay reachable under the new unit's node id.
+    /// A control this node does not have is **removed**: the old node's
+    /// params would otherwise stay reachable under the new node's id.
     ///
     /// The plugin binding latches are cleared too. `PluginMeterBound` and
     /// `PluginParamsBound` say "*this* plugin has its meter and automation
@@ -203,27 +161,4 @@ pub(crate) fn drop_captured(commands: &mut Commands, entity: Entity) {
     e.try_remove::<crate::modulation::ModParamsHandle>();
     #[cfg(feature = "plugin")]
     e.try_remove::<crate::plugin_host::PluginShadow>();
-}
-
-/// The registries a system needs to capture controls, for insertion paths that
-/// run as systems rather than with the whole `World`.
-///
-/// The registry is optional: a build or an app without the subsystem simply
-/// captures nothing for it.
-#[derive(SystemParam)]
-pub struct ControlCapture<'w> {
-    #[cfg(feature = "modulation")]
-    mods: Option<Res<'w, crate::modulation::ModTargetRegistry>>,
-    _world: std::marker::PhantomData<&'w ()>,
-}
-
-impl ControlCapture<'_> {
-    /// Run every capture against `unit`. See [`CapturedControls::capture`].
-    pub fn capture(&self, unit: &dyn AudioUnit) -> CapturedControls {
-        CapturedControls::from_registries(
-            #[cfg(feature = "modulation")]
-            self.mods.as_deref(),
-            unit,
-        )
-    }
 }

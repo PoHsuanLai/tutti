@@ -215,12 +215,13 @@ impl OfflineTimeline {
     ///
     /// The transport is this timeline at its current playhead: rolling (an
     /// offline render always is), at its tempo, looping over its region, and
-    /// counted from its segment's origin, so an `EnvClock` in the graph
+    /// counted from its segment's origin, so a node walking its `Env`
     /// continues this timeline's arithmetic. There are never changes: the
     /// tempo and the loop are fixed for the render, and a loop wrap inside the block is not a change: the graph
     /// derives it from the snapshot, as it does live
     /// ([`Env::transport_at`](tutti_graph::Env::transport_at), and
-    /// [`EnvClock`](super::EnvClock) frame by frame). A render with a
+    /// [`Env::for_each_beat`](tutti_graph::Env::for_each_beat) frame by
+    /// frame). A render with a
     /// tempo map would put its tempo steps here.
     ///
     /// Read **before** the block is processed and advance after, as
@@ -245,11 +246,8 @@ impl OfflineTimeline {
     /// advance the timeline by it: [`graph_block`](Self::graph_block),
     /// [`Executor::process_with_changes`](tutti_graph::Executor::process_with_changes),
     /// then [`advance`](Self::advance), in the one order that keeps every
-    /// reader of this timeline on the frame the graph renders — once per
-    /// 64-frame chunk while the graph holds a `Legacy` unit (see
-    /// [`RenderClock::render_graph`](super::RenderClock::render_graph)), so
-    /// a clip reader polling this timeline reads the positions a `Net`
-    /// render's 64-frame `advance`s give it, to the bit.
+    /// reader of this timeline on the frame the graph renders (see
+    /// [`RenderClock::render_graph`](super::RenderClock::render_graph)).
     ///
     /// The graph's frames and this timeline's beats both start where they
     /// stand: the executor keeps its own frame clock, and the beat is this
@@ -423,8 +421,8 @@ mod tests {
     }
 
     /// A render drives two clocks over one timeline: a `TransportClock` (the
-    /// engine's playhead, whose transport each graph block and its
-    /// `EnvClock` read) while this `OfflineTimeline` feeds clip readers and
+    /// engine's playhead, whose transport each graph block's `Env` reads)
+    /// while this `OfflineTimeline` feeds clip readers and
     /// samplers. Started at the same beat, they must report the same beat for
     /// the same sample.
     ///

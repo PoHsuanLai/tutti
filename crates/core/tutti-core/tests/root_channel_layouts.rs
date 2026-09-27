@@ -16,7 +16,7 @@ use tutti_core::{
     ChannelLayout, Engine, GraphEngineError, Hz, InterleavedMut, SampleRate, Samples,
 };
 use tutti_core::{Transport, MAX_ROOT_CHANNELS};
-use tutti_graph::{CommitError, Editor, Legacy, Prepare};
+use tutti_graph::{CommitError, Editor, ForkByClone, Prepare};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::NodeKey;
 
@@ -24,7 +24,7 @@ use tutti_types::NodeKey;
 /// the channels `wire` picks (the rest explicitly silent).
 fn root(outputs: usize, wire: &[usize]) -> (Editor, tutti_graph::Executor) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    ed.insert(NodeKey(1), "sine", Legacy::new(Sine::new(Hz(440.0))));
+    ed.insert(NodeKey(1), "sine", ForkByClone(Sine::new(Hz(440.0))));
     ed.spec_mut().topology.outputs = (0..outputs)
         .map(|ch| {
             if wire.contains(&ch) {

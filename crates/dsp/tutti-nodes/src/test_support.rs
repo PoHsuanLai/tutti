@@ -126,7 +126,7 @@ pub(crate) fn tick(node: &mut dyn Node, input: &[f32], out: &mut [f32]) {
 }
 
 /// [`tick`] with declared param `k` fed `params[k]` for the frame (`None`
-/// reads its base): what feeding a `ParamFeed` before a `tick` was.
+/// reads its base).
 pub(crate) fn tick_fed(
     node: &mut dyn Node,
     input: &[f32],

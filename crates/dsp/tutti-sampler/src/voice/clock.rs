@@ -6,7 +6,7 @@
 //! carries the transport at its first frame and at every change inside it (a
 //! start, a stop, a seek); between them the playhead rolls on the host's own
 //! clock ([`FrameClock`], rebuilt from the transport as
-//! [`Env::transport_at`] and tutti-core's `EnvClock` rebuild it), wrapping at
+//! [`Env::transport_at`] and `Env::for_each_beat` rebuild it), wrapping at
 //! the loop's end. So a block is a handful of **runs**: stretches over which
 //! the playhead moves linearly, cut at each change and at each loop wrap.
 //! [`BlockClock::runs`] walks them; a reader asks a run for the beat at any

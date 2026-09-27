@@ -143,7 +143,7 @@ mod graph_reconcile {
         let mut app = test_app();
         let mut commands_q = app.world_mut().commands();
         commands_q
-            .spawn_audio_node(Osc::sine(Hz(440.0)))
+            .spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
             .insert(Probe(0.5));
         app.update();
 
@@ -164,7 +164,8 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
 
@@ -195,7 +196,8 @@ mod graph_reconcile {
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
         let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
@@ -247,7 +249,8 @@ mod graph_reconcile {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(Osc::sine(Hz(440.0))).id()
+            c.spawn_audio_node(tutti_graph::ForkByClone(Osc::sine(Hz(440.0))))
+                .id()
         };
         app.update();
 
@@ -260,7 +263,11 @@ mod graph_reconcile {
         // Replace with a different oscillator — same NodeId, new unit.
         {
             let mut c = app.world_mut().commands();
-            crossfade_audio_node(&mut c, entity, Box::new(Osc::sine(Hz(220.0))));
+            crossfade_audio_node(
+                &mut c,
+                entity,
+                tutti_graph::ForkByClone(Osc::sine(Hz(220.0))),
+            );
         }
         app.update();
 
@@ -320,9 +327,7 @@ mod audio_param {
         graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
         // A native node: a param set by address writes the cell it reads, which
         // it reads on its next block. `node_drive` renders a frame before it
-        // reads all the same. (Through `Legacy` a setting went into a settings
-        // ring first: `a_param_reaches_a_legacy_unit_through_its_ring` below
-        // keeps that path pinned.)
+        // reads all the same.
 
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(48_000.0)));
@@ -334,11 +339,11 @@ mod audio_param {
 
         // Captured before it goes in, as every insertion path does: a native
         // node's controls are its `ParamSet`, addressed on the node so an
-        // `AudioParam` writes through it (what `spawn_graph_node` does).
+        // `AudioParam` writes through it (what `spawn_audio_node` does).
         let controls = unit.captured();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, params) = graph.insert_node(unit);
+            let (node, params) = graph.insert(unit);
             graph.set_node_params(node, DistortionNode::params(&params));
             graph.set_outputs_from(node);
             node
@@ -371,45 +376,6 @@ mod audio_param {
     #[test]
     fn an_inserted_param_reaches_the_node() {
         let (mut app, entity) = app_with_node();
-
-        app.world_mut()
-            .entity_mut(entity)
-            .insert(DriveParam::new(Drive(4.0)));
-        app.update();
-
-        assert_eq!(node_drive(&mut app, entity), 4.0);
-    }
-
-    /// An `AudioParam` on an `AudioUnit` bound through `Legacy` reaches the
-    /// unit through its settings ring on the next block — the path every
-    /// test here took while the node was `DistortionNode` under `Legacy`,
-    /// kept on the suites' own [`DriveUnit`](crate::common::drive_unit::DriveUnit).
-    ///
-    /// Mutation (run): make `DriveUnit::set` ignore `Drive` → the drive stays
-    /// at 1 → fails.
-    #[test]
-    fn a_param_reaches_a_legacy_unit_through_its_ring() {
-        use crate::common::drive_unit::DriveUnit;
-
-        let mut app = App::new();
-        let unit = DriveUnit::new(INITIAL_DRIVE);
-        let drive = DriveCell(unit.drive());
-        let mut graph = AudioGraphRes::headless(0, 1);
-        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        app.insert_resource(graph);
-        app.insert_resource(TransportRes(Transport::new(48_000.0)));
-        app.insert_resource(AudioEngineState::Running);
-        app.add_plugins(GraphReconcilePlugin);
-        #[cfg(feature = "modulation")]
-        app.add_plugins(TuttiModulationPlugin);
-        app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
-        let node = {
-            let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert(unit);
-            graph.set_outputs_from(node);
-            node
-        };
-        let entity = app.world_mut().spawn((drive, node)).id();
 
         app.world_mut()
             .entity_mut(entity)
@@ -636,16 +602,16 @@ mod audio_tap {
     // which builds device-free and checks the frames reach the published tap.
 }
 
-/// The nodes the engine builds for itself, and the one edge between them.
+/// The node the engine builds for itself.
 mod engine_nodes {
     use bevy_app::App;
     use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
-    use tutti_core::transport::BEAT_PORTS;
     use tutti_core::AudioNode;
 
     /// The metronome reads the beat of every frame from its block's `Env`,
-    /// so it has no inputs to wire; the beat clock beside it keeps its two
-    /// beat ports for the nodes that read the beat as a signal.
+    /// so it has no inputs to wire. (The beat clock that sat beside it, and
+    /// this test's assertion on its two ports, went with `Legacy`: no node
+    /// reads the beat as a signal any more.)
     ///
     /// Until the click's native port it took the beat from the clock's two
     /// ports (the edge `build_into` declared, `PortSources::stereo_from`), and
@@ -668,15 +634,10 @@ mod engine_nodes {
 
         let nodes = *app.world().resource::<EngineNodes>();
         let id_of = |entity| *app.world().get::<AudioNode>(entity).unwrap();
-        let (clock, click) = (id_of(nodes.clock), id_of(nodes.click));
+        let click = id_of(nodes.click);
 
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(graph.node_inputs(click), 0, "the click has no inputs");
         assert_eq!(graph.node_outputs(click), 2, "the click is stereo");
-        assert_eq!(
-            graph.node_outputs(clock),
-            BEAT_PORTS,
-            "the clock emits the beat on its ports"
-        );
     }
 }

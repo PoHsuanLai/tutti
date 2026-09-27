@@ -90,8 +90,8 @@ let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::QUAD);
 
 // Two sources, each a node whose output ports 0 and 1 feed its panner. A mono
 // source presents the same sample on both.
-let front = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
-let rear = g.add_unit(Box::new(Const::frame(&[1.0, 1.0])));
+let front = g.add(Const::frame(&[1.0, 1.0]));
+let rear = g.add(Const::frame(&[1.0, 1.0]));
 
 let mix = build_vbap_mix(
     &mut g,

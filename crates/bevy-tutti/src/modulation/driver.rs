@@ -373,7 +373,7 @@ mod tests {
         let controls = crate::graph::GraphNode::captured(&unit);
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _params) = graph.insert_node(unit);
+            let (node, _params) = graph.insert(unit);
             graph.set_outputs_from(node);
             node
         };

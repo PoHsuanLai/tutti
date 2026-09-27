@@ -1,8 +1,6 @@
 //! Regression gate: `Executor::process` never allocates once a plan is
 //! applied — through PDC rings, event delays, event fan-in merges, feedback of
-//! both kinds, in-place aliasing, the silence skip, the `Legacy` adapter
-//! (draining a full settings ring),
-//! scheduled commands landing (on time, late, and still waiting), writers
+//! both kinds, in-place aliasing, the silence skip, scheduled commands landing (on time, late, and still waiting), writers
 //! refusing past a declared event capacity, and block lengths that change
 //! every call.
 //!
@@ -18,13 +16,10 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use common::{prepare, Kind, TestNode};
-use fundsp::prelude32::lowpass_hz;
 use tutti_graph::{
-    CrossfadeCurve, Cx, Delivery, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io,
-    Legacy, Node, ParamRamp, Prepare, Shape, Status, Transport, Ump, Unforkable,
-    LEGACY_SETTINGS_CAPACITY,
+    CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Node, ParamRamp,
+    Prepare, Shape, Status, Transport, Ump, Unforkable,
 };
-use tutti_node::Setting;
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail};
 
@@ -50,8 +45,7 @@ fn from(node: u64, port: u16) -> Edge {
 /// inside the gate grows its slot → aborts. Mutation: size the command
 /// overlay with `Vec::new()` in `rebuild` → the first scheduled command to
 /// land inside the gate grows it → aborts. Mutation: build the command
-/// channel's pending list with `Vec::new()` → aborts. Mutation: allocate
-/// once per setting in `Legacy::process`'s settings drain → aborts.
+/// channel's pending list with `Vec::new()` → aborts.
 #[test]
 fn process_is_allocation_free_in_steady_state() {
     let (mut ed, mut exec) = Editor::new(prepare(256));
@@ -97,10 +91,11 @@ fn process_is_allocation_free_in_steady_state() {
         "sum",
         Unforkable(TestNode::new(Kind::Sum { inputs: 3 })),
     );
-    // Controlled, so the gate drains a settings ring; pure, so it runs the
-    // silence scan too.
-    let (lowpass, mut settings) = Legacy::controlled(&mut ed, lowpass_hz(800.0, 0.7));
-    ed.insert(NodeKey(8), "lowpass", lowpass.assume_pure());
+    ed.insert(
+        NodeKey(8),
+        "smooth",
+        Unforkable(TestNode::new(Kind::Smooth)),
+    );
     ed.insert(
         NodeKey(9),
         "gain",
@@ -225,14 +220,6 @@ fn process_is_allocation_free_in_steady_state() {
     )
     .expect("under capacity");
     assert_eq!(ed.commands_outstanding(), 202);
-    // A full ring of settings, drained into `AudioUnit::set` by the first
-    // block inside the gate.
-    for k in 0..LEGACY_SETTINGS_CAPACITY {
-        assert_eq!(
-            settings.set(Setting::center(700.0 + k as f32)),
-            Delivery::Queued
-        );
-    }
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {

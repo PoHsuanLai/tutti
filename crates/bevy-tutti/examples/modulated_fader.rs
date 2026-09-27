@@ -131,12 +131,12 @@ fn main() {
     // Captured here: a native node's controls are its `ParamSet`, taken once,
     // before it moves into the graph, and bound with its `AudioNode`; the set
     // is addressed on the node, so an `AudioParam` writes through it (what
-    // `spawn_graph_node` does in one call).
+    // `spawn_audio_node` does in one call).
     let unit = DistortionNode::new(ShapeKind::Tanh, 1.0);
     let controls = unit.captured();
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, params) = graph.insert_node(unit);
+        let (node, params) = graph.insert(unit);
         graph.set_node_params(node, DistortionNode::params(&params));
         graph.set_outputs_from(node);
         node

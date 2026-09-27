@@ -4,8 +4,7 @@
 //!
 //! It is not a graph node. The engine holds one and drives it (its
 //! crate-private `begin`, `advance` and `publish_position`); a node reads the
-//! transport from its block's `Env`, and one that wants the beat as a signal
-//! is wired to an [`EnvClock`](super::EnvClock).
+//! transport from its block's `Env`.
 
 use super::state::ClockLinks;
 #[cfg(test)]
@@ -74,22 +73,12 @@ impl Control {
     }
 }
 
-/// Split a beat into the two `f32` port values (whole, fraction): what an
-/// [`EnvClock`](super::EnvClock) emits.
-///
-/// The inverse of [`beat_from_ports`](super::state::beat_from_ports); see
-/// [`BEAT_PORTS`](super::state::BEAT_PORTS) for why the split exists at all.
-#[inline]
-pub(super) fn split_beat(beat: Beat) -> (f32, f32) {
-    (beat.floor().get() as f32, beat.fract().get() as f32)
-}
-
 /// The engine's playhead: a frame count on a segment, stepped a block at a
 /// time by the engine (its crate-private `begin`, then `advance`).
 ///
 /// Emit-then-advance. A block's first frame carries the block's start beat,
 /// and only then does the beat move — anything that advances a second clock
-/// alongside this one (an [`EnvClock`](super::EnvClock),
+/// alongside this one ([`Env::for_each_beat`](tutti_graph::Env::for_each_beat),
 /// [`Env::transport_at`](tutti_graph::Env::transport_at), an
 /// `OfflineTimeline`) matches that order, or sits permanently one frame out
 /// of step.
@@ -251,8 +240,8 @@ impl TransportClock {
         self.take_tempo(control.tempo);
         self.note_rolling(!control.paused);
         // Counted: the frame count the beat is derived from, so the graph's
-        // `EnvClock` and `Env::transport_at` continue this clock with its
-        // own code.
+        // `Env::for_each_beat` and `Env::transport_at` continue this clock
+        // with its own code.
         tutti_graph::Transport::counted(
             !control.paused,
             self.clock.tempo(),
@@ -342,7 +331,7 @@ impl TransportClock {
     /// A new segment at `sample_rate`, at the tempo in force, not the one
     /// asked: the clock takes a tempo only through `take_tempo`'s
     /// hysteresis, and the tempo in force is the one a graph engine reports
-    /// in its `Env` and an `EnvClock` steps by. A request inside the
+    /// in its `Env` and `Env::for_each_beat` steps by. A request inside the
     /// hysteresis would otherwise run this clock at a tempo it does not
     /// publish.
     pub(crate) fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
@@ -664,16 +653,17 @@ mod tests {
         );
     }
 
-    /// Far into a session the beat still splits into its two ports without
-    /// losing the fraction: what an `EnvClock` emits for this clock's beat.
+    /// Far into a session a seek still lands with its fraction: the beat is
+    /// `f64` throughout.
     #[test]
-    fn test_transport_clock_dual_channel_precision() {
+    fn test_transport_clock_precision_far_into_a_session() {
         let (tempo, paused) = create_test_atomics();
         let (mut clock, seek) = clock_with_seek(tempo, paused);
 
         // Advance to beat ~16384 where f32 truncation would lose precision
         seek.request(16384.5);
-        let (whole, frac) = split_beat(clock.step(1));
+        let beat = clock.step(1);
+        let (whole, frac) = (beat.floor().get(), beat.fract().get());
 
         // Channel 0 should be the floor (16384.0)
         assert_eq!(whole, 16384.0);
@@ -687,7 +677,7 @@ mod tests {
     /// A rate change re-derives the per-frame increment from the tempo in
     /// force, not from a request the hysteresis is holding back: the clock
     /// keeps running at the tempo it publishes, the one a graph engine's
-    /// `Env` reports and an `EnvClock` steps by.
+    /// `Env` reports and `Env::for_each_beat` steps by.
     ///
     /// Mutation (run): derive it from the asked tempo in `set_sample_rate`
     /// (the old code) → the first step is 120.0005 BPM's → fails.

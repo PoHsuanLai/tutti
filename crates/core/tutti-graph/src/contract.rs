@@ -51,33 +51,29 @@
 //! fails as surely as a mistimed one.
 //!
 //! Every excitation is swept over [`OFFSETS`], so the offset inside its block
-//! is 0, 1, either side of a 64-frame `Legacy` chunk boundary, the middle
+//! is 0, 1, either side of a 64-frame boundary (where a node that renders in
+//! 64-frame pieces, the sampler's clip readers, seams), the middle
 //! and the last frame — and, behind PDC, both where the excitation starts
 //! and where the node sees it.
 //!
 //! # What is not here
 //!
-//! A node fed out of band — through a MIDI mailbox (an instrument still
-//! under `Legacy`) — has no row: the harness can only time what the graph
-//! delivers. The native instruments, which take MIDI on an event port, carry
-//! rows in their crates (`tutti-polysynth`, `tutti-soundfont`), each with the
-//! constant lead its note's DSP starts with ([`Row::with_lead`]). Such a node's events are
-//! neither PDC-compensated nor stamped against the graph's blocks (`Legacy`
-//! calls the unit in 64-frame chunks, and a mailbox offset is relative to
-//! whichever chunk polls it), so it cannot honour this contract until events
-//! are its ports (doc 013 Phase 4).
+//! A node fed out of band — through a MIDI mailbox (a keyboard's queue on a
+//! synth's own port) — has no row for that path: the harness can only time
+//! what the graph delivers, and a mailbox's events are neither
+//! PDC-compensated nor stamped against the graph's blocks. The instruments
+//! take MIDI on an event port too, and carry rows for it in their crates
+//! (`tutti-polysynth`, `tutti-soundfont`), each with the constant lead its
+//! note's DSP starts with ([`Row::with_lead`]).
 //!
 //! # The fork's snapshot
 //!
-//! [`IsolateRow`] (and its one-control form [`assert_isolate_snapshots`])
-//! checks the other promise a node crate makes here: that a forkable unit's
-//! `isolate` severs every live control it reads, so a fork renders the
-//! controls as they were at fork time. [`NativeIsolateRow`] is the same
-//! check for a native [`ParamNode`], whose fork is
-//! `fork_fresh`: every cell a control writes, addressed by its `ParamSet`
-//! or not. See `src/contract/snapshot.rs`.
+//! [`NativeIsolateRow`] checks the other promise a node crate makes here:
+//! that a [`ParamNode`]'s fork, `fork_fresh`, severs every live control it
+//! reads (every cell a control writes, addressed by its `ParamSet` or not),
+//! so a fork renders the controls as they were at fork time. See
+//! `src/contract/snapshot.rs`.
 
-use tutti_node::AudioUnit;
 use tutti_types::graph::OutPort;
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
@@ -90,7 +86,6 @@ use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::exec::Executor;
 use crate::fork::Unforkable;
 use crate::io::Io;
-use crate::legacy::Legacy;
 use crate::node::{
     Cx, Env, IntoNode, Node, Prepare, Resolution, Shape, Status, Transport, TransportChanges,
 };
@@ -98,7 +93,7 @@ use crate::param::{ParamFrom, ParamIn, ParamInput, ParamShaping};
 use crate::spec::EventIn;
 
 mod snapshot;
-pub use snapshot::{assert_isolate_snapshots, IsolateRow, NativeIsolateRow, SNAPSHOT_FRAMES};
+pub use snapshot::{NativeIsolateRow, SNAPSHOT_FRAMES};
 
 /// The rate every contract graph runs at.
 pub const SAMPLE_RATE: SampleRate = SampleRate(48_000.0);
@@ -190,7 +185,7 @@ pub enum Detect {
 
 /// One path through the graph. Each is a separate case (see
 /// [`contract_tests!`](crate::contract_tests)), and each has a mutation it
-/// was seen to fail under, recorded on its variant (and, for the `Legacy`
+/// was seen to fail under, recorded on its variant (and, for a node's own
 /// rows, in the node crates' `tests/contract.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Path {
@@ -200,8 +195,7 @@ pub enum Path {
     /// Mutation (run): in `SubBlocks::next`, hand the whole block over as
     /// one chunk carrying every event → the native `Sample` rows apply their
     /// event at offset 0 → every path fails but `Blocks1` (where every
-    /// offset is 0). In `Legacy::probe`, declare one frame more than `route`
-    /// reports → every `Legacy` row fails every path.
+    /// offset is 0).
     Direct,
     /// Behind PDC: a latent sibling ([`Latent`], [`SIBLING_LATENCY`])
     /// merges with the excitation's path upstream of the node, so the node's
@@ -290,10 +284,7 @@ pub enum Path {
     ///   `BlocksRandom`, and pass `Blocks64`, `BlocksMax` and every other
     ///   path;
     /// - [`Lookahead`] moving its ring by a whole chunk on a partial one →
-    ///   its row fails `Blocks63`, `Blocks65` and `BlocksRandom` only;
-    /// - `Legacy::process` calling the unit for a whole chunk when fewer
-    ///   frames remain → the limiter and convolver rows fail `Blocks1`,
-    ///   `Blocks63`, `Blocks65` and `BlocksRandom` only.
+    ///   its row fails `Blocks63`, `Blocks65` and `BlocksRandom` only.
     BlocksRandom,
     /// Direct and behind PDC, the excitation delivered by
     /// [`Editor::schedule`] at `At::Frame(F)`.
@@ -405,22 +396,6 @@ impl Row {
         }
     }
 
-    /// A row for an `AudioUnit`, run through [`Legacy`] as a graph would run
-    /// it today.
-    pub fn legacy<U: AudioUnit + 'static>(
-        name: &str,
-        make: impl Fn() -> U + 'static,
-        excite: Excite,
-        detect: Detect,
-    ) -> Self {
-        Self::new(
-            name,
-            move || Legacy::new(make()).into_node().0,
-            excite,
-            detect,
-        )
-    }
-
     /// Watch output channel `channel` (the first by default).
     #[must_use]
     pub fn output(mut self, channel: u16) -> Self {
@@ -513,7 +488,7 @@ impl Row {
                 // block, under whole blocks) and, behind PDC, also where the
                 // *node* sees it: `SIBLING_LATENCY` moves every offset, so
                 // without the second the node would never see a block's
-                // first or last frame, or the 64-frame `Legacy` seam.
+                // first or last frame, or a 64-frame seam.
                 let mut frames = vec![base + k];
                 let at_node = base + (k + max - arrival % max) % max;
                 if at_node != base + k {

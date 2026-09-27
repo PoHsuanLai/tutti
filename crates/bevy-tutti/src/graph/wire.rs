@@ -15,9 +15,9 @@
 //! fn build(mut commands: Commands) {
 //!     // Stereo throughout, so `MasterSources::from` has two output ports to take.
 //!     let tone = Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO);
-//!     let osc = commands.spawn_audio_node(tone).id();
+//!     let osc = commands.spawn_audio_node(ForkByClone(tone)).id();
 //!     let filt = commands
-//!         .spawn_graph_node(SvfFilterNode::<f64>::with_channels(
+//!         .spawn_audio_node(SvfFilterNode::<f64>::with_channels(
 //!             ChannelLayout::STEREO,
 //!             SvfType::LowPass,
 //!             Hz(1000.0),

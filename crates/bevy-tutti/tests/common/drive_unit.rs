@@ -1,113 +1,83 @@
-//! [`DriveUnit`]: the fixture for the `AudioUnit` modulation path.
+//! [`DriveUnit`]: a host's own node, for the capture and value-path suites.
 //!
-//! The capture and value-path suites pin what happens to an `AudioUnit`
-//! bound through `spawn_audio_node` / `AudioGraphRes::insert`: its controls
-//! are captured through the `ModTargetRegistry` before it goes in, and a
-//! route reaches its own cell. Their fixture was `DistortionNode` until it
-//! became a native graph node (its controls are a `ParamSet`, captured with
-//! no registry entry). A unit of the suites' own keeps them on the path
-//! they test, whichever engine nodes are ported next.
+//! The capture and value-path suites pin what happens to a node bound
+//! through `spawn_audio_node` / `AudioGraphRes::insert`: its controls are
+//! captured before it goes in, and a route reaches its own cell. Their
+//! fixture was `DistortionNode`, then a test-local `AudioUnit` resolved
+//! through the `ModTargetRegistry`'s type registration; both paths became
+//! one when `Legacy` went (doc 013, "Legacy deleted"). It is now what a host
+//! writes for a node of its own: a `ParamNode` registered with
+//! [`param_graph_node!`](bevy_tutti::param_graph_node), which is the path
+//! these suites pin.
 
 use std::sync::Arc;
 
-use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Drive, Param, Setting, SignalFrame};
-use tutti_nodes::{AtomicTarget, ModParams, ModTarget};
-use tutti_types::{ParamAddr, UnitParam};
+use bevy_tutti::param_graph_node;
+use tutti_core::{AtomicF32, ChannelLayout, Drive, Param};
+use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::UnitParam;
 
 /// One input, one output: the input times its drive. `Drive` is its one
-/// setting (`UnitParam::Drive`, through `AudioUnit::set`) and its one
-/// control-rate target, mirrored into the cell it reads (as every
-/// registry-modulated node's is); `Clone` shares the cell.
+/// param (`UnitParam::Drive`, in its `ParamSet`), so its one control-rate
+/// target mirrors into the cell it reads; `Clone` shares the cell.
 #[derive(Clone)]
 pub struct DriveUnit {
     drive: Param<Drive>,
 }
 
 impl DriveUnit {
-    /// A unit at `drive`.
+    /// A node at `drive`.
     pub fn new(drive: f32) -> Self {
         Self {
             drive: Param::new(Drive(drive)),
         }
     }
 
-    /// The drive cell the unit reads, shared with every clone.
+    /// The drive cell the node reads, shared with every clone.
     pub fn drive(&self) -> Arc<AtomicF32> {
         self.drive.as_atomic()
     }
 }
 
-impl AudioUnit for DriveUnit {
-    fn inputs(&self) -> usize {
-        1
+impl Node for DriveUnit {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
     }
 
-    fn outputs(&self) -> usize {
-        1
-    }
+    fn prepare(&mut self, _: &Prepare) {}
 
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = input[0] * self.drive.load().get();
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         let d = self.drive.load().get();
-        for i in 0..size {
-            output.set_f32(0, i, input.at_f32(0, i) * d);
+        let (ins, mut outs) = io.split();
+        for (y, x) in outs.get(0).iter_mut().zip(ins.get(0)) {
+            *y = x * d;
         }
+        Status::Modified
     }
 
-    fn isolate(&mut self) {
-        self.drive.detach();
+    fn reset(&mut self) {}
+}
+
+impl ParamNode for DriveUnit {
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Drive, self.drive.as_atomic())
+            .build()
     }
 
-    /// `UnitParam::Drive` through the settings ring, as a `Legacy` unit
-    /// takes an `AudioParam`.
-    fn set(&mut self, setting: Setting) {
-        if let Some((UnitParam::Drive, v)) = tutti_core::unit_param::from_setting(&setting) {
-            self.drive.store(Drive(v));
-        }
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, input.at(0).scale(f64::from(self.drive.load().get())));
-        out
-    }
-
-    fn get_id(&self) -> u64 {
-        0x_4452_4956_4555_4E54 // "DRIVEUNT"
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
+    fn fork_fresh(&self) -> Self {
+        let mut fork = self.clone();
+        fork.drive.detach();
+        fork
     }
 }
 
-impl ModParams for DriveUnit {
-    fn mod_target(
-        &self,
-        p: ParamAddr,
-        base: f32,
-        min: f32,
-        max: f32,
-    ) -> Option<Arc<dyn ModTarget>> {
-        match p {
-            ParamAddr::Unit(UnitParam::Drive) => Some(Arc::new(AtomicTarget::with_mirror(
-                base,
-                min,
-                max,
-                self.drive(),
-            ))),
-            _ => None,
-        }
+impl IntoNode for DriveUnit {
+    type Controls = ParamSet;
+
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        tutti_graph::param_parts(self)
     }
 }
+
+param_graph_node!(DriveUnit);

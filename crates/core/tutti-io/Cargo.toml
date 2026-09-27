@@ -38,7 +38,7 @@ tutti-core = { path = "../tutti-core", default-features = false }
 thiserror.workspace = true
 
 # The node contract `MicMonitorNode` is written against (doc 013). No cycle:
-# tutti-graph names only tutti-types and tutti-node.
+# tutti-graph names no tutti crate but tutti-types.
 tutti-graph = { path = "../tutti-graph" }
 
 # The capture ring `MicMonitorNode` drains. The producer half lives in the

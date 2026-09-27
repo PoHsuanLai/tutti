@@ -31,9 +31,13 @@ use bevy_tutti::export::{
     ExportSource, ExportTarget,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Hz, SignalFrame, Tail, Q};
+use tutti_core::{Hz, Tail, Q};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
+};
+use tutti_graph::{
+    Cx, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
+    Prepare, Shape, Status,
 };
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
@@ -148,8 +152,8 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 /// two cannot pass for each other.
 fn chain(app: &mut App) -> Entity {
     let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-    let osc = graph.insert(Osc::saw(Hz(110.0)));
-    let (filter, _params) = graph.insert_node(SvfFilterNode::<f64>::new(
+    let (osc, _) = graph.insert(Osc::saw(Hz(110.0)));
+    let (filter, _params) = graph.insert(SvfFilterNode::<f64>::new(
         SvfType::LowPass,
         Hz(800.0),
         Q(1.0),
@@ -200,7 +204,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     use tutti_graph::GraphBuilder;
     let render = |master: bool| {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let osc = g.add_unit(Box::new(Osc::saw(Hz(110.0))));
+        let osc = g.add(Osc::saw(Hz(110.0)));
         let (filter, _params) = g.add_with_controls(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             Hz(800.0),
@@ -284,42 +288,22 @@ struct Late {
 const LATE: usize = 100;
 const TAIL: usize = 300;
 
-impl AudioUnit for Late {
-    fn inputs(&self) -> usize {
-        0
+impl Node for Late {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+            .with_latency(tutti_types::Latency::new(Samples(LATE)))
+            .with_tail(Tail::Finite(Samples(TAIL)))
     }
-    fn outputs(&self) -> usize {
-        1
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for y in io.output(0) {
+            *y = if self.pos >= LATE { 1.0 } else { 0.0 };
+            self.pos += 1;
+        }
+        Status::Modified
     }
     fn reset(&mut self) {
         self.pos = 0;
-    }
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = if self.pos >= LATE { 1.0 } else { 0.0 };
-        self.pos += 1;
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, if self.pos >= LATE { 1.0 } else { 0.0 });
-            self.pos += 1;
-        }
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(1);
-        out.set(0, tutti_core::Signal::Latency(LATE as f64));
-        out
-    }
-    fn tail(&mut self) -> Tail {
-        Tail::Finite(Samples(TAIL))
-    }
-    fn get_id(&self) -> u64 {
-        0x1a7e
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 
@@ -330,7 +314,7 @@ impl AudioUnit for Late {
 ///
 /// The tail is resolved by `GraphTail::resolve`: a finite tail under the cap
 /// is rendered whole, and a graph whose only node never said (`Tail::Unknown`,
-/// every `AudioUnit`'s default) renders none — not the cap, which would
+/// what an `AudioUnit` said by default) renders none — not the cap, which would
 /// append silence.
 ///
 /// Mutation (run): `start_exports` ignoring `latency_from_graph` → frame 0
@@ -342,7 +326,7 @@ fn latency_and_tail_come_from_the_graph() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let late = graph.insert(Late { pos: 0 });
+        let (late, _) = graph.insert(ForkByClone(Late { pos: 0 }));
         graph.set_outputs_from(late);
     }
     let seconds = 0.01;
@@ -361,7 +345,7 @@ fn latency_and_tail_come_from_the_graph() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let unknown = graph.insert(Counter {
+        let (unknown, _) = graph.insert(Counter {
             n: Arc::new(AtomicU64::new(0)),
         });
         graph.set_outputs_from(unknown);
@@ -394,7 +378,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let dc = graph.insert(tutti_nodes::testing::Const::mono(0.5));
+        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
         graph.set_outputs_from(dc);
     }
     let request = buffers(ExportSource::Master, 0.01)
@@ -402,7 +386,7 @@ fn the_trim_is_read_after_the_prepare_hook() {
         .with_prepare(|prepared, _world| {
             let key = prepared.fresh_key();
             let editor = prepared.graph.editor_mut();
-            editor.insert(key, "test:late", tutti_graph::Legacy::new(Late { pos: 0 }));
+            editor.insert(key, "test:late", ForkByClone(Late { pos: 0 }));
             for out in editor.spec_mut().topology.outputs.iter_mut() {
                 *out = tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
                     node: key,
@@ -469,7 +453,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let voice = {
         let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(3.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, _params) = graph.insert_node(source);
+        let (node, _params) = graph.insert(source);
         graph.set_outputs_from(node);
         app.world_mut().spawn(node).id()
     };
@@ -480,7 +464,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         }
         let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, _params) = graph.insert_node(source);
+        let (node, _params) = graph.insert(source);
         app.world_mut().spawn(node).id()
     };
 
@@ -545,47 +529,50 @@ fn a_node_export_follows_a_90_bpm_timeline() {
 // What a fork has and a `Net` clone did not
 // ---------------------------------------------------------------------------
 
-/// A source that counts frames in a cell its clones **share**, and that its
-/// `isolate` gives a fresh copy of: a unit whose live state a copy could
-/// move. Its output is the count, so a render that touched the live cell
-/// shows as a jump in the live signal.
+/// A source that counts frames in a cell its clones **share**, and whose
+/// fork source gives a fork a fresh copy of: a node whose live state a copy
+/// could move. Its output is the count, so a render that touched the live
+/// cell shows as a jump in the live signal. Its tail is `Tail::Unknown`: it
+/// never says.
 #[derive(Clone)]
 struct Counter {
     n: Arc<AtomicU64>,
 }
 
-impl AudioUnit for Counter {
-    fn inputs(&self) -> usize {
-        0
+/// [`Counter`]'s fork: a cell of its own, reset (a fork is reset).
+struct CounterFork;
+
+impl ForkSource for CounterFork {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        let n = Arc::new(AtomicU64::new(0));
+        Ok(Forked::new(Box::new(Counter { n })))
     }
-    fn outputs(&self) -> usize {
-        1
+}
+
+impl IntoNode for Counter {
+    type Controls = ();
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: Box::new(self),
+            controls: (),
+            fork: Some(Box::new(CounterFork)),
+        }
+    }
+}
+
+impl Node for Counter {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unknown)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for y in io.output(0) {
+            *y = self.n.fetch_add(1, Ordering::Relaxed) as f32;
+        }
+        Status::Modified
     }
     fn reset(&mut self) {
         self.n.store(0, Ordering::Relaxed);
-    }
-    fn isolate(&mut self) {
-        self.n = Arc::new(AtomicU64::new(self.n.load(Ordering::Relaxed)));
-    }
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.n.fetch_add(1, Ordering::Relaxed) as f32;
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, self.n.fetch_add(1, Ordering::Relaxed) as f32);
-        }
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(1)
-    }
-    fn get_id(&self) -> u64 {
-        0xc0c0
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
     }
 }
 
@@ -600,13 +587,15 @@ impl AudioUnit for Counter {
 /// counter with the live net (doc 013, PR 12's behaviour change), and this
 /// test failed there by design.
 ///
-/// Mutation (run): `Boxed::isolate` not forwarding to the unit (so the shadow
-/// a fork is cloned from shares the live cell) → the fork's reset and render
-/// move the live count, which jumps.
+/// Mutation (run while nodes were `AudioUnit`s): `Boxed::isolate` not
+/// forwarding to the unit (so the shadow a fork was cloned from shared the
+/// live cell) → the fork's reset and render moved the live count, which
+/// jumped. The fork is now [`CounterFork`]'s: handing the fork a `Counter`
+/// over the live cell there is the same mutation.
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
     let mut graph = graph_on();
-    let node = graph.insert(Counter {
+    let (node, _) = graph.insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
     graph.set_outputs_from(node);
@@ -651,39 +640,20 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
     }
 }
 
-/// A source whose `isolate` it will not vouch for, as a microphone monitor
-/// declares: `forkable() == false`.
-#[derive(Clone)]
-struct Unforkable;
+/// A source no fork may take, as a microphone monitor is inserted
+/// (`tutti_graph::Unforkable`): its clones would share the live ring.
+struct Mic;
 
-impl AudioUnit for Unforkable {
-    fn inputs(&self) -> usize {
-        0
+impl Node for Mic {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
     }
-    fn outputs(&self) -> usize {
-        1
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(0.5);
+        Status::Modified
     }
-    fn forkable(&self) -> bool {
-        false
-    }
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = 0.5;
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        output.channel_f32_mut(0)[..size].fill(0.5);
-    }
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(1)
-    }
-    fn get_id(&self) -> u64 {
-        0x0f0f
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    fn reset(&mut self) {}
 }
 
 /// **A master export forks what the outputs hear**: an unforkable node no
@@ -697,8 +667,8 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let _mic = graph.insert(Unforkable);
-        let dc = graph.insert(tutti_nodes::testing::Const::mono(0.25));
+        let (_mic, _) = graph.insert(tutti_graph::Unforkable(Mic));
+        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.25));
         graph.set_outputs_from(dc);
     }
     let planes = export(&mut app, buffers(ExportSource::Master, 0.01)).planes();
@@ -717,8 +687,8 @@ fn an_unforkable_node_refuses_the_export_by_name() {
     let mut app = app_over(graph_on());
     let (mic, osc) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let mic = graph.insert(Unforkable);
-        let osc = graph.insert(Osc::sine(Hz(220.0)));
+        let (mic, _) = graph.insert(tutti_graph::Unforkable(Mic));
+        let (osc, _) = graph.insert(Osc::sine(Hz(220.0)));
         graph.set_output_source(0, GraphSource::Node(mic, 0));
         graph.set_output_source(1, GraphSource::Node(osc, 0));
         (mic, osc)
@@ -837,11 +807,11 @@ mod plugin {
         feed_with(app, probe, Const::mono(0.25));
     }
 
-    /// Feed the probe's two main inputs `unit`'s output.
-    fn feed_with(app: &mut App, probe: Entity, unit: impl tutti_core::AudioUnit + 'static) {
-        let dc = {
+    /// Feed the probe's two main inputs `node`'s output.
+    fn feed_with(app: &mut App, probe: Entity, node: impl IntoNode<Controls = ()>) {
+        let (dc, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(unit)
+            graph.insert(node)
         };
         let dc = app.world_mut().spawn(dc).id();
         app.world_mut().entity_mut(probe).insert(
@@ -871,40 +841,20 @@ mod plugin {
         n: u32,
     }
 
-    impl tutti_core::AudioUnit for Ramp {
-        fn inputs(&self) -> usize {
-            0
+    impl Node for Ramp {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
         }
-        fn outputs(&self) -> usize {
-            1
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            for y in io.output(0) {
+                *y = self.n as f32 / 1024.0;
+                self.n += 1;
+            }
+            Status::Modified
         }
         fn reset(&mut self) {
             self.n = 0;
-        }
-        fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-            output[0] = self.n as f32 / 1024.0;
-            self.n += 1;
-        }
-        fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-            for i in 0..size {
-                output.set_f32(0, i, self.n as f32 / 1024.0);
-                self.n += 1;
-            }
-        }
-        fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-            SignalFrame::new(1)
-        }
-        fn tail(&mut self) -> Tail {
-            Tail::None
-        }
-        fn get_id(&self) -> u64 {
-            0x4a3b
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
         }
     }
 
@@ -927,7 +877,7 @@ mod plugin {
     #[test]
     fn a_plugin_effect_exports_through_its_fork() {
         let (mut app, probe) = app_with_probe(LATENCY);
-        feed_with(&mut app, probe, Ramp { n: 0 });
+        feed_with(&mut app, probe, ForkByClone(Ramp { n: 0 }));
         let planes = match export(
             &mut app,
             buffers(ExportSource::Master, 0.1).trim_reported_latency(),
@@ -1133,7 +1083,7 @@ mod synths {
     use super::*;
 
     use bevy_tutti::graph::{
-        GraphNode, GraphReconcilePlugin, MasterSources, SpawnGraphNode, TransportRes,
+        GraphNode, GraphReconcilePlugin, MasterSources, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
@@ -1194,7 +1144,7 @@ mod synths {
     }
 
     /// An app with the sequencer and the event wiring, and `unit` inserted
-    /// as a graph node (`spawn_graph_node`, the path a host takes) as
+    /// as a graph node (`spawn_audio_node`, the path a host takes) as
     /// "Synth", routed to the master.
     fn app_with<N>(unit: N) -> (App, Entity)
     where
@@ -1207,7 +1157,7 @@ mod synths {
         let world = app.world_mut();
         let synth = world
             .commands()
-            .spawn_graph_node(unit)
+            .spawn_audio_node(unit)
             .insert(Name::new("Synth"))
             .id();
         world.commands().insert_resource(MasterSources::from(synth));
@@ -1592,9 +1542,9 @@ mod disk {
                 None,
             )));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (bare, _) = graph.insert_node(bare);
+            let (bare, _) = graph.insert(bare);
             graph.set_outputs_from(bare);
-            let (wrapped, memory) = (graph.insert_node(wrapped).0, graph.insert_node(memory).0);
+            let (wrapped, memory) = (graph.insert(wrapped).0, graph.insert(memory).0);
             app.world_mut().spawn(bare);
             (
                 app.world_mut().spawn(wrapped).id(),
@@ -1654,7 +1604,7 @@ mod disk {
         let voice = {
             let voice = node_of(VoiceSource::Disk(disk_voice(&streamer, 1.0)));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert_node(voice);
+            let (node, _) = graph.insert(voice);
             app.world_mut().spawn(node).id()
         };
         let planes = export(
@@ -1692,7 +1642,7 @@ mod disk {
         {
             let voice = disk_voice(&streamer, 1.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert_node(voice);
+            let (node, _) = graph.insert(voice);
             graph.set_outputs_from(node);
         }
         let planes = export(&mut app, on(2.0, ExportSource::Master, &timeline(120.0))).planes();
@@ -1749,7 +1699,7 @@ mod disk {
         let live_clock = timeline(120.0);
 
         let mut graph = graph_on();
-        let (node, _) = graph.insert_node(disk_voice(&streamer, 0.0));
+        let (node, _) = graph.insert(disk_voice(&streamer, 0.0));
         graph.set_outputs_from(node);
         graph.render_frame(&mut [0.0, 0.0]);
         let mut live = graph.take_audio_side();
@@ -1846,7 +1796,7 @@ mod disk {
         {
             let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert_node(voice);
+            let (node, _) = graph.insert(voice);
             graph.set_outputs_from(node);
         }
         let before = open_handles(&path);
@@ -1879,7 +1829,7 @@ mod disk {
         let clip = {
             let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert_node(voice);
+            let (node, _) = graph.insert(voice);
             graph.set_outputs_from(node);
             app.world_mut().spawn((node, Name::new("Clip"))).id()
         };

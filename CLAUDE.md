@@ -17,14 +17,18 @@ the compiler's, export forks the live graph with `Editor::fork`), and
 tutti-export renders only it. `Net` is left as a container, not a runtime,
 until Phase 5 deletes fundsp: `topology::compile`, the nodes' own tests and
 `tutti-graph`'s A/B bench wire units in one (`tests/no_net_backend.rs` keeps
-`NetBackend` out of tutti-core). Nodes are being ported to the native
-contract one crate at a time (doc 013, "Items 8 and 9: the per-node port"):
-a ported node is a `tutti_graph::Node` + `ParamNode`, inserted through
-`param_parts`, with no `AudioUnit` impl. Until the migration lands:
+`NetBackend` out of tutti-core). Phase 4 is done: every node is a
+`tutti_graph::Node` (doc 013, "Items 8 and 9: the per-node port"), and the
+`Legacy` adapter that ran an `AudioUnit` as one is deleted ("Legacy
+deleted"). A node with params is a `Node` + `ParamNode`, inserted through
+`param_parts`; a plain one is inserted `ForkByClone` or `Unforkable`; none
+implements `AudioUnit` (only `stretch::Unit`, a voice's internal filter, and
+the units `Net` holds until Phase 5 do). Until Phase 5 lands:
 
-- Do not add new dependencies on `Net`, `NetBackend`, `Setting` or the
-  fundsp combinators. Write nodes against the smallest surface you can
-  (`process`, `reset`, `set_sample_rate`, declared latency and tail).
+- Do not add new dependencies on `Net`, `NetBackend`, `Setting`, `AudioUnit`
+  or the fundsp combinators. Write nodes against `tutti_graph::Node`
+  (`shape`, `prepare`, `process`, `reset`: declared latency and tail in the
+  shape).
   Do not compare against a `Net` render in a new test: pin an analytic
   figure, an invariant of the render, or (for samples that call libm) a
   golden digest asserted only on the target it was recorded on.
@@ -135,9 +139,10 @@ crates/
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
-                 tutti-node (node contract), tutti-cpal (device), tutti-io (I/O edge: live + file decode)
+                 tutti-node (fundsp's `AudioUnit`, for `Net` until Phase 5), tutti-cpal (device),
+                 tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
-                 tutti-graph (doc 013 Phases 1–2: Node contract, Topology→Plan compiler,
+                 tutti-graph (doc 013: the `Node` contract, Topology→Plan compiler,
                  serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-analysis
@@ -148,8 +153,9 @@ crates/
 ```
 
 - `tutti-types` names no other tutti crate.
-- `tutti-graph` depends on no tutti crate but `tutti-types` and `tutti-node`
-  (its outside deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
+- `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
+  deps are `bytemuck` and `ringbuf`, the editor→executor queue; the edge to
+  `tutti-node` existed for the `Legacy` adapter and went with it), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
@@ -212,8 +218,9 @@ Non-scalar state handed to the audio thread goes through
   boundary is in frames**, typed as `Samples` (the frame count). Cross to a
   slice length only with `Samples::interleaved_len` /
   `Samples::from_interleaved_len`.
-- **`AudioUnit::process`** is for anything that is a node in the graph
-  (including sampler voices).
+- **`tutti_graph::Node::process`** is for anything that is a node in the
+  graph (including sampler voices): planar `f32` through `Io`, any block
+  length up to `Prepare::max_block`, the transport from `Env`.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.
@@ -241,8 +248,16 @@ Non-scalar state handed to the audio thread goes through
   job.
 - `GraphReconcileSystems`: `Spawn → Params → Despawn → Compensate → Commit`.
   Node removal is an `On<Remove, AudioNode>` observer.
+- Every spawn path takes a `GraphNode`: `spawn_audio_node`,
+  `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
+  `replace` take its `IntoNode`). A host's plain node goes in as
+  `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
+  registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with
-  `App::add_audio_param::<U, P>()`.
+  `App::add_audio_param::<U, P>()`. They reach a node through its
+  `ParamSet` (`GraphNode::params`): a node without the param takes nothing.
+  Control-rate modulation resolves on the same set; a sink no node owns (a
+  plugin's per-block target) is supplied with `ModTargetRegistry::insert_target`.
 
 ## Testing policy
 

@@ -9,61 +9,49 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use common::{bits, prepare, Kind, TestNode};
+// `Net`'s side of `a_node_fork_fans_out_as_clone_isolated_does` names the
+// contract through the fork's re-exports; both go in doc 013's Phase 5.
+use fundsp::audiounit::AudioUnit;
+use fundsp::buffer::{BufferMut, BufferRef, BufferVec};
 use fundsp::net::Net;
-use fundsp::prelude32::{lowpass_hz, mul, pass, sine_hz};
+use fundsp::signal::{Signal, SignalFrame};
+use fundsp::MAX_BUFFER_SIZE;
 use tutti_graph::{
-    CrossfadeCurve, Editor, EventEdge, EventIn, EventOut, Fade, ForkCause, ForkError, ForkFault,
-    ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget, Forked, GraphBuilder, IntoNode,
-    Legacy, Node, NodeParts, Renderer, Unforkable,
+    param_parts, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventOut, Fade, ForkByClone,
+    ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode, ForkSource, ForkTarget,
+    Forked, GraphBuilder, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Renderer,
+    Shape, Status, Unforkable,
 };
-use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
-use tutti_node::signal::{Signal, SignalFrame};
-use tutti_node::{Address, AudioUnit, Parameter, Setting, MAX_BUFFER_SIZE};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
-    Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, SampleRate, Samples,
-    Timeline,
+    Amplitude, Beat, Bpm, ChannelLayout, NodeKey, OfflineClock, OfflineTransport, Param,
+    SampleRate, Samples, Tail, Timeline, UnitParam,
 };
 
-/// The `AudioUnit` methods every probe below has alike: `outs` outputs, no
-/// inputs, no latency.
-macro_rules! probe_boilerplate {
-    () => {
-        fn inputs(&self) -> usize {
-            0
-        }
-        fn outputs(&self) -> usize {
-            self.outs
-        }
-        fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-            let mut out = SignalFrame::new(self.outs);
-            for c in 0..self.outs {
-                out.set(c, Signal::Latency(0.0));
-            }
-            out
-        }
-        fn get_id(&self) -> u64 {
-            0x464f_524b
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
-        }
-        fn footprint(&self) -> usize {
-            0
-        }
-    };
-}
-
-/// Output `c` is `base + c`. `Value(v)` at `Index(0)` sets `base` — a plain
-/// field, reachable only through `AudioUnit::set`, as the sampler voice's
-/// `play.gain` is.
+/// Output `c` is `base + c`: a graph node, and (for the `Net` comparison) a
+/// `Net` unit with the same arithmetic. Its `Clone` shares nothing, so it is
+/// inserted [`ForkByClone`].
 #[derive(Clone)]
 struct Consts {
     outs: usize,
     base: f32,
+}
+
+impl Node for Consts {
+    fn shape(&self) -> Shape {
+        Shape::audio(
+            ChannelLayout::EMPTY,
+            ChannelLayout::from_count(self.outs as u16),
+        )
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for c in 0..self.outs {
+            io.output(c).fill(self.base + c as f32);
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
 }
 
 impl AudioUnit for Consts {
@@ -77,47 +65,77 @@ impl AudioUnit for Consts {
             output.channel_f32_mut(c)[..size].fill(self.base + c as f32);
         }
     }
-    fn set(&mut self, setting: Setting) {
-        if let (Parameter::Value(v), Address::Index(0)) = (setting.parameter(), setting.direction())
-        {
-            self.base = *v;
+    fn inputs(&self) -> usize {
+        0
+    }
+    fn outputs(&self) -> usize {
+        self.outs
+    }
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        let mut out = SignalFrame::new(self.outs);
+        for c in 0..self.outs {
+            out.set(c, Signal::Latency(0.0));
         }
+        out
     }
-    probe_boilerplate!();
+    fn get_id(&self) -> u64 {
+        0x464f_524b
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn footprint(&self) -> usize {
+        0
+    }
 }
 
-/// Makes the fork's three steps observable, and their order. Outputs
-/// `level`. `isolate` drops the binding, `rebind_offline` binds to the
-/// context (its timeline's beat), and `reset` re-reads `level` from the
-/// binding — so only isolate → rebind → reset leaves `level` at the
-/// context's value.
+/// [`Consts`], forkable.
+fn consts(outs: usize, base: f32) -> ForkByClone<Consts> {
+    ForkByClone(Consts { outs, base })
+}
+
+/// A sine, its phase in a plain field (so a clone shares nothing): running
+/// state a fork must not carry.
 #[derive(Clone)]
-struct Bindable {
-    outs: usize,
-    level: f32,
-    bound: Option<f32>,
+struct Sine {
+    hz: f32,
+    phase: f32,
+    dt: f32,
 }
 
-impl AudioUnit for Bindable {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.level;
+impl Sine {
+    fn new(hz: f32) -> ForkByClone<Self> {
+        ForkByClone(Self {
+            hz,
+            phase: 0.0,
+            dt: 0.0,
+        })
     }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        output.channel_f32_mut(0)[..size].fill(self.level);
+}
+
+impl Node for Sine {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
-    fn isolate(&mut self) {
-        self.bound = None;
+    fn prepare(&mut self, p: &Prepare) {
+        self.dt = (1.0 / p.sample_rate().get()) as f32;
     }
-    fn rebind_offline(&mut self, ctx: &OfflineTransport) {
-        self.bound = Some(ctx.beat().get() as f32);
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for o in io.output(0) {
+            *o = (self.phase * std::f32::consts::TAU).sin();
+            self.phase = (self.phase + self.hz * self.dt).fract();
+        }
+        Status::Modified
     }
     fn reset(&mut self) {
-        self.level = self.bound.unwrap_or(0.0);
+        self.phase = 0.0;
     }
-    probe_boilerplate!();
 }
 
-/// An offline context standing still at `beat`: what `Bindable` binds to.
+/// An offline context standing still at `beat`.
 struct At(f64);
 
 impl Timeline for At {
@@ -141,45 +159,94 @@ fn at(beat: f64) -> OfflineTransport {
     OfflineTransport::new(Arc::new(At(beat)))
 }
 
-/// A ramp whose position lives in an `Arc` cell a clone **shares** — the
-/// shape of a voice pool's command channel or a stretcher's bank. `isolate`
-/// gives the unit a cell of its own at the current position; `reset` rewinds
-/// the cell. Without `isolate`, a clone's rendering and resetting move the
-/// original.
-#[derive(Clone)]
+/// A ramp whose position lives in an `Arc` cell its clones **share** — the
+/// shape of a node holding a live handle. Its fork source hands the fork a
+/// cell of its own, from 0; the live node's cell is never the fork's.
 struct Shared {
-    outs: usize,
     pos: Arc<AtomicU32>,
 }
 
-impl Shared {
-    fn new() -> Self {
-        Self {
-            outs: 1,
-            pos: Arc::new(AtomicU32::new(0)),
-        }
+impl Node for Shared {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_tail(Tail::Unbounded)
     }
-}
-
-impl AudioUnit for Shared {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.pos.fetch_add(1, Ordering::Relaxed) as f32;
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for x in &mut output.channel_f32_mut(0)[..size] {
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for x in io.output(0) {
             *x = self.pos.fetch_add(1, Ordering::Relaxed) as f32;
         }
-    }
-    fn isolate(&mut self) {
-        self.pos = Arc::new(AtomicU32::new(self.pos.load(Ordering::Relaxed)));
+        Status::Modified
     }
     fn reset(&mut self) {
         self.pos.store(0, Ordering::Relaxed);
     }
-    probe_boilerplate!();
 }
 
-/// A native node made forkable the way a Phase 4 node will be: an `IntoNode`
+struct SharedFork;
+
+impl ForkSource for SharedFork {
+    fn fork(&self, _mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        Ok(Forked::new(Box::new(Shared {
+            pos: Arc::new(AtomicU32::new(0)),
+        })))
+    }
+}
+
+impl IntoNode for Shared {
+    type Controls = ();
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: Box::new(self),
+            controls: (),
+            fork: Some(Box::new(SharedFork)),
+        }
+    }
+}
+
+/// Outputs its level, a `Param` a host sets by address through its
+/// [`ParamSet`] — a [`ParamNode`], forked from the values last set.
+#[derive(Clone)]
+struct Level(Param<Amplitude>);
+
+impl Level {
+    fn new(level: f32) -> Self {
+        Self(Param::new(Amplitude::new(level)))
+    }
+}
+
+impl Node for Level {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(self.0.load().get());
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+impl ParamNode for Level {
+    fn param_set(&self) -> ParamSet {
+        ParamSet::builder()
+            .param(UnitParam::Volume, self.0.as_atomic())
+            .build()
+    }
+    fn fork_fresh(&self) -> Self {
+        let mut f = self.clone();
+        f.0.detach();
+        f
+    }
+}
+
+impl IntoNode for Level {
+    type Controls = ParamSet;
+    fn into_parts(self) -> NodeParts<ParamSet> {
+        param_parts(self)
+    }
+}
+
+/// A test node made forkable the way the engine's nodes are: an `IntoNode`
 /// whose `into_parts` hands over a `ForkSource`. The fork is a fresh node of
 /// the same kind.
 struct Native(Kind);
@@ -206,6 +273,14 @@ impl IntoNode for Native {
     }
 }
 
+/// A forkable ×2 gain.
+fn gain() -> Native {
+    Native(Kind::Gain {
+        gain: 2.0,
+        width: 1,
+    })
+}
+
 fn out(node: NodeKey, port: u16) -> Source {
     Source::Node(OutPort { node, port })
 }
@@ -214,13 +289,14 @@ fn render(ed: Editor, exec: tutti_graph::Executor, frames: usize) -> Vec<Vec<f32
     Renderer::new(ed, exec).render(frames)
 }
 
-/// sine → mix → lowpass, the lowpass fed back into the mix's second input
-/// (256 frames, so the fork may run 256-frame blocks), and the lowpass fanned out to both outputs.
+/// sine → mix → smoother, the smoother fed back into the mix's second input
+/// (256 frames, so the fork may run 256-frame blocks), and the smoother
+/// fanned out to both outputs.
 fn chain() -> GraphBuilder {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let osc = g.add_unit(Box::new(sine_hz(440.0)));
-    let mix = g.add_unit(Box::new(pass() + mul(0.5)));
-    let lp = g.add_unit(Box::new(lowpass_hz(1_200.0, 0.9)));
+    let osc = g.add(Sine::new(440.0));
+    let mix = g.add(Native(Kind::Sum { inputs: 2 }));
+    let lp = g.add(Native(Kind::Smooth));
     g.connect(osc, 0, mix, 0)
         .feedback(lp, 0, mix, 1, Samples(256))
         .connect(mix, 0, lp, 0)
@@ -228,9 +304,9 @@ fn chain() -> GraphBuilder {
     g
 }
 
-/// **A forked `Legacy` chain renders exactly what a freshly built copy of
-/// the same graph renders**, however long the live graph has run: nothing of
-/// its running state — oscillator phase, filter memory, the feedback edge's
+/// **A forked chain renders exactly what a freshly built copy of the same
+/// graph renders**, however long the live graph has run: nothing of its
+/// running state — oscillator phase, filter memory, the feedback edge's
 /// captured block — reaches the fork, and all of its wiring does. The fork is
 /// prepared for its own `Prepare` (a larger block here), not the live one's.
 ///
@@ -239,7 +315,7 @@ fn chain() -> GraphBuilder {
 /// every fork output is `Zero` → fails. Mutation: prepare the fork with the
 /// live editor's `Prepare` → the `prepare()` assertion fails.
 #[test]
-fn a_forked_legacy_chain_renders_like_a_fresh_build() {
+fn a_forked_chain_renders_like_a_fresh_build() {
     let mut live = chain().renderer(prepare(64)).expect("builds");
     let before = live.render(1_000);
     assert!(before[0].iter().any(|&x| x != 0.0), "the live graph runs");
@@ -248,7 +324,7 @@ fn a_forked_legacy_chain_renders_like_a_fresh_build() {
     let (fork_ed, fork_exec) = live
         .editor()
         .fork(ForkTarget::Master, ForkMode::Live, pre)
-        .expect("every node is a Legacy");
+        .expect("every node is forkable");
     assert_eq!(fork_ed.prepare(), &pre);
     let forked = render(fork_ed, fork_exec, 3_000);
 
@@ -257,24 +333,49 @@ fn a_forked_legacy_chain_renders_like_a_fresh_build() {
     assert!(fresh[1].iter().any(|&x| x != 0.0), "not vacuous");
 }
 
-/// **`isolate`, then `rebind_offline`, then `reset`** — fundsp's order
-/// (`PendingClone::isolate_for_offline`, then `Net::reset`). An offline fork
-/// renders the context's value; a live fork is not rebound, so its unit is
-/// cut loose and resets to 0; the live node keeps its own value throughout.
+/// Forks as its fork source was asked to: a constant of the offline
+/// render's beat, or 0 for a live duplicate. The one thing a source reads
+/// from the [`ForkMode`].
+struct ReadsMode;
+
+struct ModeFork;
+
+impl ForkSource for ModeFork {
+    fn fork(&self, mode: ForkMode<'_>) -> Result<Forked, ForkCause> {
+        let value = match mode {
+            ForkMode::Offline(t) => t.beat().get() as f32,
+            ForkMode::Live => 0.0,
+        };
+        Ok(Forked::new(Box::new(Consts {
+            outs: 1,
+            base: value,
+        })))
+    }
+}
+
+impl IntoNode for ReadsMode {
+    type Controls = ();
+    fn into_parts(self) -> NodeParts<()> {
+        NodeParts {
+            node: Box::new(Consts {
+                outs: 1,
+                base: 0.25,
+            }),
+            controls: (),
+            fork: Some(Box::new(ModeFork)),
+        }
+    }
+}
+
+/// **An offline fork hands each fork source the render's timeline; a live
+/// fork hands it none.** The live node keeps its own value throughout.
 ///
-/// Mutation: rebind before isolating in `LegacyFork::fork` → the binding is
-/// severed → the offline fork renders 0 → fails. Mutation: drop `reset` →
-/// the fork keeps the live 0.25 → fails. Mutation: reset before rebinding →
-/// `reset` reads no binding → 0 → fails. Mutation: rebind in `Live` too →
-/// the live fork renders 0.75 → fails.
+/// Mutation (run): `Editor::fork` handing every source `ForkMode::Live` →
+/// the offline fork renders 0 → fails.
 #[test]
-fn a_fork_isolates_then_rebinds_then_resets() {
+fn an_offline_fork_hands_its_sources_the_render_timeline() {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let key = g.add_unit(Box::new(Bindable {
-        outs: 1,
-        level: 0.25,
-        bound: Some(0.25),
-    }));
+    let key = g.add(ReadsMode);
     g.pipe_output(key);
     let mut live = g.renderer(prepare(64)).expect("builds");
     assert!(live.render(64)[0].iter().all(|&x| x == 0.25));
@@ -304,100 +405,29 @@ fn a_fork_isolates_then_rebinds_then_resets() {
     );
 }
 
-/// **A `Legacy` fork hook runs after the rebind and before the reset, and
-/// its `Err` fails the fork by key with its cause.** The hook doubles
-/// `Bindable`'s binding: offline, the fork renders twice the context (1.5)
-/// only if the hook saw the rebound 0.75 and `reset` then read what it left.
-/// A hook refusing the fork is `ForkError::Source` naming the node.
+/// **A value set after insert is in the fork**: a [`ParamNode`]'s fork
+/// reads its [`ParamSet`] when the fork is taken, so a `set` made after
+/// insert — before any block has run — is what the fork renders. A value set
+/// after the fork does not reach it: the fork has no link back.
 ///
-/// Mutation (run): the hook called before `rebind_offline` → it doubles no
-/// binding, the fork renders 0.75. Mutation (run): after `reset` → `reset`
-/// read the undoubled 0.75. Mutation (run): its `Err` ignored (`let _ =`) →
-/// the refusing fork succeeds.
+/// Mutation (run): `ParamFork::new` keeping a template detached at insert
+/// (`node.fork_fresh()`) and `fork_node` not applying the authored values →
+/// the fork renders the constructed 0.5 → fails.
 #[test]
-fn a_legacy_fork_hook_runs_between_rebind_and_reset() {
-    let pre = prepare(64);
-    let doubling = |unit: &mut dyn AudioUnit, mode: ForkMode<'_>| {
-        if let ForkMode::Offline(_) = mode {
-            let b = unit.as_any_mut().downcast_mut::<Bindable>().unwrap();
-            b.bound = b.bound.map(|v| v * 2.0);
-        }
-        Ok(())
-    };
-    let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(
-        NodeKey(1),
-        "hooked",
-        Legacy::new(Bindable {
-            outs: 1,
-            level: 0.25,
-            bound: Some(0.25),
-        })
-        .with_fork_hook(doubling),
-    );
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
-    let ctx = at(0.75);
-    let (fork, exec) = ed
-        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
-        .expect("forks");
-    let offline = render(fork, exec, 64);
-    assert!(
-        offline[0].iter().all(|&x| x == 1.5),
-        "{:?}",
-        &offline[0][..4]
-    );
-
-    let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(
-        NodeKey(2),
-        "refusing",
-        Legacy::new(Bindable {
-            outs: 1,
-            level: 0.0,
-            bound: None,
-        })
-        .with_fork_hook(|_, _| Err(ForkCause::new(RefusedState("hook")))),
-    );
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(2), 0)];
-    let err = ed
-        .fork(ForkTarget::Master, ForkMode::Offline(&ctx), pre)
-        .err()
-        .expect("the hook refuses the fork");
-    let ForkError::Source { key, cause } = &err else {
-        panic!("expected ForkError::Source, got {err:?}");
-    };
-    assert_eq!(*key, NodeKey(2));
-    assert_eq!(
-        cause.downcast_ref::<RefusedState>(),
-        Some(&RefusedState("hook"))
-    );
-}
-
-/// **A setting sent after insert is in the fork**, through the shadow: the
-/// fork of a `Legacy::controlled` node clones the shadow, which every
-/// `LegacyControls::set` reaches at once — even one the live node has not
-/// drained yet (no block has run since). A setting sent after the fork does
-/// not reach it: the fork has no link back.
-///
-/// Mutation: fork a controlled node from a clone taken at insert
-/// (`into_parts` ignoring `fork_from`) → the fork renders the constructed
-/// 0.5 → fails.
-#[test]
-fn a_setting_sent_after_insert_reaches_the_fork() {
+fn a_value_set_after_insert_reaches_the_fork() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
-    let (node, mut controls) = Legacy::controlled(&mut ed, Consts { outs: 1, base: 0.5 });
     let key = NodeKey(1);
-    ed.insert(key, "consts", node);
+    let controls = ed.insert(key, "level", Level::new(0.5));
     ed.spec_mut().topology.outputs = vec![out(key, 0)];
     ed.commit().expect("commits");
     exec.apply_pending();
     ed.collect();
 
-    let _ = controls.set(Setting::value(0.75).index(0));
+    assert!(controls.set(UnitParam::Volume, 0.75));
     let (fork_ed, fork_exec) = ed
         .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
         .expect("forks");
-    let _ = controls.set(Setting::value(0.9).index(0));
+    assert!(controls.set(UnitParam::Volume, 0.9));
     let forked = render(fork_ed, fork_exec, 128);
     assert!(
         forked[0].iter().all(|&x| x == 0.75),
@@ -407,9 +437,9 @@ fn a_setting_sent_after_insert_reaches_the_fork() {
 }
 
 /// **A node without a fork source makes the fork refuse, naming it** —
-/// before anything is forked. A native node inserted `Unforkable`, a `Legacy`
-/// inserted as an `Unforkable` `Box<dyn Node>`, and a forkable key replaced by an
-/// unforkable unit are all unforkable; a target that does not exist or has
+/// before anything is forked. A node inserted `Unforkable`, a forkable node
+/// boxed and inserted as an `Unforkable` `Box<dyn Node>`, and a forkable key
+/// replaced by an unforkable unit are all unforkable; a target that does not exist or has
 /// no outputs is refused too.
 ///
 /// Mutation: skip keys without a source in `Editor::fork` → `Ok` → fails.
@@ -418,7 +448,7 @@ fn a_setting_sent_after_insert_reaches_the_fork() {
 #[test]
 fn a_node_without_a_fork_source_is_not_forkable() {
     let (mut ed, _exec) = Editor::new(prepare(64));
-    ed.insert(NodeKey(1), "legacy", Legacy::new(mul(2.0)));
+    ed.insert(NodeKey(1), "gain", gain());
     ed.insert(
         NodeKey(2),
         "native",
@@ -451,11 +481,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     // Routed to an output: a master fork forks only what the outputs reach
     // (`a_master_fork_holds_only_what_the_outputs_reach`).
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(
-        NodeKey(1),
-        "boxed",
-        Unforkable(Legacy::new(mul(2.0)).into_node().0),
-    );
+    ed.insert(NodeKey(1), "boxed", Unforkable(gain().into_node().0));
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
@@ -463,14 +489,10 @@ fn a_node_without_a_fork_source_is_not_forkable() {
     );
 
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(NodeKey(3), "legacy", Legacy::new(mul(2.0)));
+    ed.insert(NodeKey(3), "gain", gain());
     ed.spec_mut().topology.outputs = vec![out(NodeKey(3), 0)];
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
-    ed.insert(
-        NodeKey(3),
-        "boxed",
-        Unforkable(Legacy::new(mul(2.0)).into_node().0),
-    );
+    ed.insert(NodeKey(3), "boxed", Unforkable(gain().into_node().0));
     assert_eq!(
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
         Some(ForkError::NotForkable { key: NodeKey(3) })
@@ -480,11 +502,7 @@ fn a_node_without_a_fork_source_is_not_forkable() {
             .err(),
         Some(ForkError::NoSuchNode { key: NodeKey(9) })
     );
-    ed.insert(
-        NodeKey(4),
-        "sink",
-        Legacy::new(Consts { outs: 0, base: 0.0 }),
-    );
+    ed.insert(NodeKey(4), "sink", consts(0, 0.0));
     assert_eq!(
         ed.fork(ForkTarget::Node(NodeKey(4)), ForkMode::Live, pre)
             .err(),
@@ -555,7 +573,7 @@ fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
     let pre = prepare(64);
     let flag = Arc::new(Flag(std::sync::atomic::AtomicU8::new(0)));
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(NodeKey(1), "legacy", Legacy::new(mul(2.0)));
+    ed.insert(NodeKey(1), "gain", gain());
     ed.insert(NodeKey(4), "watched", Watched(Arc::clone(&flag)));
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(4), 0)];
 
@@ -577,72 +595,6 @@ fn a_forked_unit_that_fails_while_rendering_is_a_fork_fault() {
     );
     assert_eq!(fault.cause.to_string(), "refused: hung");
     assert_eq!(ed.fork_health(), Ok(()), "the live editor watches nothing");
-}
-
-/// A unit whose offline copy fails on its first rendered block: a latch its
-/// `isolate` makes fresh (a copy never reports the live unit's failures, nor
-/// the live unit a copy's), handed over by `render_fault`.
-#[derive(Clone)]
-struct FailsOffline {
-    outs: usize,
-    latch: Arc<tutti_node::FaultLatch>,
-}
-
-impl AudioUnit for FailsOffline {
-    probe_boilerplate!();
-    fn isolate(&mut self) {
-        self.latch = Arc::default();
-    }
-    fn render_fault(&self) -> Option<Arc<dyn tutti_node::RenderFault>> {
-        Some(Arc::clone(&self.latch) as Arc<dyn tutti_node::RenderFault>)
-    }
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output.fill(0.0);
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        self.latch.latch(RefusedState("unreadable"));
-        for c in 0..self.outs {
-            output.channel_f32_mut(c)[..size].fill(0.0);
-        }
-    }
-}
-
-/// **A `Legacy` unit that fails while rendering offline fails its fork**:
-/// the copy's `render_fault` probe reaches the forked editor, which reports
-/// it (`ForkFaultKind::Failed`, the unit's own cause) once the copy has
-/// rendered, and not before; the live editor and the live unit see nothing.
-///
-/// Mutation (run): `LegacyFork::fork` not asking `render_fault` (a plain
-/// `Forked::new`) → the fault is never seen → fails.
-#[test]
-fn a_legacy_unit_that_fails_offline_is_a_fork_fault() {
-    let pre = prepare(64);
-    let live = FailsOffline {
-        outs: 1,
-        latch: Arc::default(),
-    };
-    let live_latch = Arc::clone(&live.latch);
-    let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(NodeKey(2), "disk", Legacy::new(live));
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(2), 0)];
-
-    let (fork, fork_exec) = ed
-        .fork(ForkTarget::Master, ForkMode::Live, pre)
-        .expect("forks");
-    assert_eq!(fork.fork_health(), Ok(()), "healthy before it renders");
-    let mut renderer = Renderer::new(fork, fork_exec);
-    renderer.render(64);
-    let fault = renderer
-        .editor()
-        .fork_health()
-        .expect_err("the copy failed");
-    assert_eq!((fault.key, fault.kind), (NodeKey(2), ForkFaultKind::Failed));
-    assert_eq!(fault.cause.to_string(), "refused: unreadable");
-    assert_eq!(ed.fork_health(), Ok(()));
-    assert!(
-        tutti_node::RenderFault::fault(&*live_latch).is_none(),
-        "the live unit saw the copy's failure"
-    );
 }
 
 /// Why a [`FailingFork`] fails: a type the test can downcast back out.
@@ -702,7 +654,7 @@ impl IntoNode for Failing {
 fn a_failing_fork_source_is_a_named_error_with_its_cause() {
     let pre = prepare(64);
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(NodeKey(1), "legacy", Legacy::new(mul(2.0)));
+    ed.insert(NodeKey(1), "gain", gain());
     ed.insert(NodeKey(5), "plugin-like", Failing);
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(5), 0)];
 
@@ -770,7 +722,7 @@ fn a_node_fork_fans_out_as_clone_isolated_does() {
 
             let (mut ed, _exec) = Editor::new(prepare(64));
             let key = NodeKey(7);
-            ed.insert(key, "consts", Legacy::new(unit));
+            ed.insert(key, "consts", ForkByClone(unit));
             ed.spec_mut().topology.outputs = vec![Source::Zero; graph_outs];
             let (fe, fx) = ed
                 .fork(ForkTarget::Node(key), ForkMode::Live, prepare(64))
@@ -803,16 +755,9 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
         NodeKey(7),
     );
     let (mut ed, _exec) = Editor::new(prepare(64));
-    ed.insert(osc, "osc", Legacy::new(sine_hz(220.0)));
-    ed.insert(a, "mix", Legacy::new(pass() + mul(0.5)));
-    ed.insert(
-        fb,
-        "fb",
-        Legacy::new(Consts {
-            outs: 1,
-            base: 0.25,
-        }),
-    );
+    ed.insert(osc, "osc", Sine::new(220.0));
+    ed.insert(a, "mix", Native(Kind::Sum { inputs: 2 }));
+    ed.insert(fb, "fb", consts(1, 0.25));
     ed.insert(
         emit,
         "emit",
@@ -830,7 +775,7 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
             events_out: 0,
         }),
     );
-    ed.insert(after, "after", Legacy::new(mul(2.0)));
+    ed.insert(after, "after", gain());
     ed.insert(
         side,
         "side",
@@ -895,36 +840,45 @@ fn a_node_fork_holds_exactly_what_feeds_the_node() {
 
 /// **The live graph is unaffected while a fork renders on another thread**:
 /// a live graph that was forked renders bit-identically to a twin that never
-/// was, while the fork renders concurrently. The graph holds a unit whose
-/// clone shares a cell with it (`Shared`), which is exactly what `isolate`
-/// exists to sever, and a `controlled` node whose shadow the fork clones.
+/// was, while the fork renders concurrently. The graph holds a node whose
+/// clones share a cell with it (`Shared`), which its fork source severs, and
+/// a [`ParamNode`] whose fork is taken from its [`ParamSet`].
 ///
-/// Mutation: drop `unit.isolate()` in `LegacyFork::fork` → the fork's
-/// `reset` rewinds and its rendering advances the live ramp's cell → the
-/// live output leaves the twin's → fails.
+/// Mutation (run): `ParamFork::fork_node` writing the authored values
+/// through the live set instead of the fork's → the live level is written
+/// back to its authored value, which a live-only write (a modulation
+/// driver's) had moved → the live output leaves the twin's → fails.
+/// Mutation (run): `SharedFork` handing the fork the live node's cell → the
+/// fork's rendering advances the live ramp → fails.
 #[test]
 fn the_live_graph_is_unaffected_while_a_fork_renders() {
-    fn build() -> (
-        Editor,
-        tutti_graph::Executor,
-        tutti_graph::LegacyControls<Consts>,
-    ) {
+    fn build() -> (Editor, tutti_graph::Executor, ParamSet, Param<Amplitude>) {
         let (mut ed, mut exec) = Editor::new(prepare(64));
-        let (node, controls) = Legacy::controlled(&mut ed, Consts { outs: 1, base: 0.5 });
-        ed.insert(NodeKey(1), "ramp", Legacy::new(Shared::new()));
-        ed.insert(NodeKey(2), "consts", node);
+        let level = Level::new(0.5);
+        let cell = level.0.clone();
+        ed.insert(
+            NodeKey(1),
+            "ramp",
+            Shared {
+                pos: Arc::new(AtomicU32::new(0)),
+            },
+        );
+        let controls = ed.insert(NodeKey(2), "level", level);
         ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0), out(NodeKey(2), 0)];
         ed.commit().expect("commits");
         exec.apply_pending();
         ed.collect();
-        (ed, exec, controls)
+        (ed, exec, controls, cell)
     }
-    let (ed, exec, mut controls) = build();
-    let (twin_ed, twin_exec, mut twin_controls) = build();
+    let (ed, exec, controls, cell) = build();
+    let (twin_ed, twin_exec, twin_controls, twin_cell) = build();
     let mut live = Renderer::new(ed, exec);
     let mut twin = Renderer::new(twin_ed, twin_exec);
-    let _ = controls.set(Setting::value(0.75).index(0));
-    let _ = twin_controls.set(Setting::value(0.75).index(0));
+    assert!(controls.set(UnitParam::Volume, 0.75));
+    assert!(twin_controls.set(UnitParam::Volume, 0.75));
+    // A live-only move (what a modulation driver writes): not authored.
+    cell.store(Amplitude::new(0.6));
+    twin_cell.store(Amplitude::new(0.6));
     assert_eq!(bits(&live.render(640)), bits(&twin.render(640)));
 
     let (fe, fx) = live
@@ -944,7 +898,10 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
     }
     assert_eq!(forked[0][0], 0.0, "the fork's ramp starts over");
     assert_eq!(forked[0][47_999], 47_999.0, "and is its own");
-    assert!(forked[1].iter().all(|&x| x == 0.75));
+    assert!(
+        forked[1].iter().all(|&x| x == 0.75),
+        "the fork renders the authored level"
+    );
 }
 
 /// **A replace moves forking to the new unit**: a fork after
@@ -958,7 +915,6 @@ fn the_live_graph_is_unaffected_while_a_fork_renders() {
 /// is no longer expressible: `place` writes it, past the checks.)
 #[test]
 fn a_replace_moves_forking_to_the_new_unit() {
-    let consts = |outs, base| Legacy::new(Consts { outs, base });
     let fade = Fade::new(Samples(64), CrossfadeCurve::EqualPower);
     let key = NodeKey(1);
     let (mut ed, mut exec) = Editor::new(prepare(64));
@@ -988,110 +944,6 @@ fn a_replace_moves_forking_to_the_new_unit() {
     );
 }
 
-/// Stands in for a mic monitor: a clone shares the consumer end of a ring
-/// (`Arc<Mutex<VecDeque>>` here), so a fork would take live frames, and no
-/// `isolate` can sever an SPSC consumer onto a second one. It says so.
-#[derive(Clone)]
-struct MicLike {
-    outs: usize,
-    ring: Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
-}
-
-impl AudioUnit for MicLike {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.ring.lock().unwrap().pop_front().unwrap_or(0.0);
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let mut ring = self.ring.lock().unwrap();
-        for x in &mut output.channel_f32_mut(0)[..size] {
-            *x = ring.pop_front().unwrap_or(0.0);
-        }
-    }
-    fn forkable(&self) -> bool {
-        false
-    }
-    probe_boilerplate!();
-}
-
-/// Stands in for a plugin client: a clone shares the bridge to the one
-/// plugin process, and `reset` goes over it — a fork's reset would reach the
-/// live plugin. It says so.
-#[derive(Clone)]
-struct PluginLike {
-    outs: usize,
-    bridge: Arc<AtomicU32>,
-}
-
-impl AudioUnit for PluginLike {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.bridge.load(Ordering::Relaxed) as f32;
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let v = self.bridge.load(Ordering::Relaxed) as f32;
-        output.channel_f32_mut(0)[..size].fill(v);
-    }
-    fn reset(&mut self) {
-        self.bridge.store(0, Ordering::Relaxed);
-    }
-    fn forkable(&self) -> bool {
-        false
-    }
-    probe_boilerplate!();
-}
-
-/// **A unit that says it cannot be forked is not**, however it is wrapped:
-/// a mic-like unit (shared ring consumer), a plugin-like unit (shared
-/// bridge), a mic-like unit inside a `Net` used as a node, and any unit
-/// built `Legacy::unforkable` are all `NotForkable` — and the refusal comes
-/// before any fork is made, so the live plugin-like unit's bridge is never
-/// reset.
-///
-/// Mutation: ignore `forkable()` in `Legacy::into_parts` → the mic and
-/// plugin forks succeed (and the plugin's bridge is zeroed) → fails.
-/// Mutation: drop `Net::forkable`'s forwarding → the wrapped mic forks →
-/// fails. Mutation: ignore the `unforkable` flag → fails.
-#[test]
-fn a_unit_that_is_not_forkable_is_refused() {
-    let pre = prepare(64);
-    let refused = |node: Legacy| {
-        let (mut ed, _exec) = Editor::new(pre);
-        ed.insert(NodeKey(1), "unit", node);
-        ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
-        ed.fork(ForkTarget::Master, ForkMode::Live, pre).err()
-    };
-    let not = Some(ForkError::NotForkable { key: NodeKey(1) });
-    let mic = || MicLike {
-        outs: 1,
-        ring: Arc::new(std::sync::Mutex::new([0.5f32; 8].into())),
-    };
-    assert_eq!(refused(Legacy::new(mic())), not, "mic-like");
-
-    let bridge = Arc::new(AtomicU32::new(3));
-    let plugin = PluginLike {
-        outs: 1,
-        bridge: Arc::clone(&bridge),
-    };
-    assert_eq!(refused(Legacy::new(plugin)), not, "plugin-like");
-    assert_eq!(
-        bridge.load(Ordering::Relaxed),
-        3,
-        "the live bridge untouched"
-    );
-
-    let mut net = Net::new(0, 1);
-    let id = net.push(Box::new(mic()));
-    net.pipe_output(id);
-    assert_eq!(refused(Legacy::new(net)), not, "inside a Net");
-
-    let consts = || Consts { outs: 1, base: 0.5 };
-    assert_eq!(
-        refused(Legacy::new(consts()).unforkable()),
-        not,
-        "opted out"
-    );
-    assert_eq!(refused(Legacy::new(consts())), None);
-}
-
 /// **A fork source from an older generation is refused**, loudly: if the
 /// spec's generation at a key moved on without a new source (written
 /// through `spec_mut`, or by a `package` placing units the editor never
@@ -1105,11 +957,7 @@ fn a_unit_that_is_not_forkable_is_refused() {
 fn a_fork_source_from_an_older_generation_is_refused() {
     let pre = prepare(64);
     let (mut ed, _exec) = Editor::new(pre);
-    ed.insert(
-        NodeKey(1),
-        "consts",
-        Legacy::new(Consts { outs: 1, base: 0.5 }),
-    );
+    ed.insert(NodeKey(1), "consts", consts(1, 0.5));
     ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
     assert!(ed.fork(ForkTarget::Master, ForkMode::Live, pre).is_ok());
     ed.spec_mut().generations.insert(NodeKey(1), 7);
@@ -1117,61 +965,6 @@ fn a_fork_source_from_an_older_generation_is_refused() {
         ed.fork(ForkTarget::Master, ForkMode::Live, pre).err(),
         Some(ForkError::NotForkable { key: NodeKey(1) })
     );
-}
-
-/// A parameter in an `Arc` cell a clone shares — `SvfFilterNode`'s shape:
-/// its param handles write the cell, `isolate` copies the value into a cell
-/// of its own. Outputs the value.
-#[derive(Clone)]
-struct CellParam {
-    outs: usize,
-    value: Arc<AtomicU32>,
-}
-
-impl AudioUnit for CellParam {
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = f32::from_bits(self.value.load(Ordering::Relaxed));
-    }
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let v = f32::from_bits(self.value.load(Ordering::Relaxed));
-        output.channel_f32_mut(0)[..size].fill(v);
-    }
-    fn isolate(&mut self) {
-        let v = self.value.load(Ordering::Relaxed);
-        self.value = Arc::new(AtomicU32::new(v));
-    }
-    probe_boilerplate!();
-}
-
-/// **A plain `Legacy` reads a shared cell at fork time**, not at insert:
-/// its insert-time copy is deliberately not isolated, so a value a handle
-/// writes into the unit's cell after insert is what the fork gets — and the
-/// fork's own cell is severed, so a later write reaches only the live unit.
-///
-/// Mutation: isolate the insert-time clone in `Legacy::into_parts` → the
-/// fork renders the insert-time 0.2 → fails. Mutation: drop the fork's
-/// `isolate` → the write after the fork reaches it → fails.
-#[test]
-fn a_plain_legacy_reads_shared_cells_at_fork_time() {
-    let cell = Arc::new(AtomicU32::new(0.2f32.to_bits()));
-    let (mut ed, _exec) = Editor::new(prepare(64));
-    ed.insert(
-        NodeKey(1),
-        "cell",
-        Legacy::new(CellParam {
-            outs: 1,
-            value: Arc::clone(&cell),
-        }),
-    );
-    ed.spec_mut().topology.outputs = vec![out(NodeKey(1), 0)];
-    cell.store(0.8f32.to_bits(), Ordering::Relaxed);
-    let (fe, fx) = ed
-        .fork(ForkTarget::Master, ForkMode::Live, prepare(64))
-        .expect("forks");
-    let mut r = Renderer::new(fe, fx);
-    assert!(r.render(64)[0].iter().all(|&x| x == 0.8));
-    cell.store(0.1f32.to_bits(), Ordering::Relaxed);
-    assert!(r.render(64)[0].iter().all(|&x| x == 0.8), "severed");
 }
 
 /// **A fork carries the spec's parameter values, the editor's event
@@ -1260,11 +1053,7 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
 #[test]
 fn a_node_fork_with_no_global_outputs_is_no_outputs() {
     let (mut ed, _exec) = Editor::new(prepare(64));
-    ed.insert(
-        NodeKey(1),
-        "consts",
-        Legacy::new(Consts { outs: 1, base: 0.5 }),
-    );
+    ed.insert(NodeKey(1), "consts", consts(1, 0.5));
     assert_eq!(
         ed.fork(ForkTarget::Node(NodeKey(1)), ForkMode::Live, prepare(64))
             .err(),
@@ -1272,7 +1061,7 @@ fn a_node_fork_with_no_global_outputs_is_no_outputs() {
     );
 }
 
-/// A native ramp: its output is the frame count since its last `reset`
+/// A ramp: its output is the frame count since its last `reset`
 /// (or the value it was built with), kept in a plain field, so a `Clone`
 /// shares nothing.
 #[derive(Clone)]
@@ -1302,7 +1091,7 @@ impl Node for Ramp {
     }
 }
 
-/// **A native node inserted as `ForkByClone` forks, from reset; the same
+/// **A node inserted as `ForkByClone` forks, from reset; the same
 /// node inserted plainly does not.** The ramp is built at 7 and the live one
 /// runs 300 frames first, so a fork that kept either would not start at 0.
 ///
@@ -1358,7 +1147,7 @@ fn a_master_fork_holds_only_what_the_outputs_reach() {
         "ramp",
         tutti_graph::ForkByClone(Ramp { n: 0.0 }),
     );
-    ed.insert(NodeKey(2), "mic", Legacy::new(sine_hz(440.0)).unforkable());
+    ed.insert(NodeKey(2), "mic", Unforkable(Ramp { n: 0.0 }));
     ed.insert(
         NodeKey(3),
         "idle",

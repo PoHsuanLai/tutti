@@ -207,7 +207,7 @@ fn two_paths(plugin: PluginClient<Bound>) -> Rig {
     let (key, controls) = g.add_with_controls(plugin);
     // The dry twin. A pass-through rather than wiring the global input straight
     // to the sum, so each path is a node the compiler aligns.
-    let dry = g.add_unit(Box::new(Through::mono()));
+    let dry = g.add(Through::mono());
     // Summing is a node's job — a port holds one source, so a fan-in has to be
     // an explicit adder. `ChannelSumNode`, which sums rather than averages: two
     // aligned arrivals of `IMPULSE` must come out as `2 · IMPULSE`, which one

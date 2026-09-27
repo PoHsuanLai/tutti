@@ -3094,7 +3094,7 @@ vocoder retirement channel for voices the pool removes.
 | 6 | **Done (item 6 PR).** **Compiler-owned param modulation** | Deleted the 3 param-mod node types, `ParamPorts`, the `mod_*` flags on 9 node types and most of `audio_rate.rs` | Yes |
 | 7 | **Done (item 7 PR; `VoiceNode` on typed controls in the per-node port).** **Sampler block render + ownership** | Planar per-voice render (CPU). Deletes `Bank` sharing, `ticker`, `allocate`, and the shared-`Receiver` code | Partly (the block render does not) |
 | 8 | **Folded into 9: a node's fork is ported with the node** ([below](#items-8-and-9-the-per-node-port)). **`Fork` sweep**: 12 `isolate` + 8 `rebind_offline` → a few `fork`s (the count at the time; ~29 `isolate`s by the 2026-09-26 audit). The mic refuses to fork | Removes a whole class of forgotten-sever data races by construction | Yes |
-| 9 | **Ports done** (every node in the tree is native, [below](#items-8-and-9-the-per-node-port)); **next: delete `Legacy`**. Remaining mechanical ports, then delete `Legacy` | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
+| 9 | **Done.** Every node in the tree is native ([below](#items-8-and-9-the-per-node-port)) and **`Legacy` is deleted** ([below](#legacy-deleted)); next: drop the "native" naming | With `Legacy` gone, **drop the "native" naming**: it is just the graph. "Native graph" (as against `Net`) and "native node" (as against a `Legacy` one) both stop meaning anything: bevy-tutti's `NativeGraph` / `graph/native.rs`, `SynthFork::native`, this doc's own filename, CLAUDE.md and the crate docs. (`native_module_in_bundle` and the plugin GUI's native windows are another sense and stay) | Yes |
 
 #### Item 4's plugin half landed
 
@@ -3997,11 +3997,50 @@ tail `Legacy` read from it (`Unknown` for a resonant filter) rather than
 the shape's default `None`.
 
 Still open: `stretch::Unit` (a slot's internal filter, not a graph node)
-is an `AudioUnit`; `EnvClock` is read only by a host `AudioUnit` wired to
-it and may go with `Legacy`; a native beat reader **with inputs** would
+is an `AudioUnit`; a native beat reader **with inputs** would
 need frames before its block, which `Env` cannot give (none exists); a
 time-stretched voice is silent for its filter's refill after a seek
 (proposed: prime the filter from the source ahead of the jump).
+
+#### Legacy deleted
+
+With every node in the tree native, `Legacy` (the adapter that ran an
+`AudioUnit` inside the graph in 64-frame chunks) had only tests and a
+host's own units left to carry, so it went, with everything that existed
+for it:
+
+- **tutti-graph**: `Legacy`, `LegacyControls`, `LegacyForkHook`,
+  `Delivery`, `LEGACY_CHUNK`, `LEGACY_SETTINGS_CAPACITY`; `Shape::legacy`,
+  `Plan::has_legacy`, `GraphBuilder::{add_unit, add_pure_unit,
+  chain_unit}`, `contract::{Row::legacy, IsolateRow,
+  assert_isolate_snapshots}`, the editor's settings outboxes, and the
+  `tutti-node` dependency: the crate names no tutti crate but
+  `tutti-types`.
+- **tutti-core**: the chunk-major render (a graph with a `Legacy` in it
+  rendered 64 frames at a time with the transport between chunks; every
+  block is now one pass), `EnvClock`, `BEAT_PORTS` and `beat_from_ports`
+  (nothing read the beat ports once the click and the lane read `Env`),
+  `TransportClock::split_beat`. The beat walk itself stays (the click's
+  `piece_beats`), pinned against the host clock in `f64`.
+- **tutti-node**: `ParamFeed` and `AudioUnit::{param_feed, param_base}`,
+  which only `Legacy` read.
+- **tutti-nodes / tutti-polysynth**: the node `ModParams` impls. A route
+  resolves to a `ParamSet` cell; the compressor's makeup is addressed as
+  `GainDb` only.
+- **bevy-tutti**: one spawn family, generic over `GraphNode`
+  (`spawn_audio_node`, `insert_audio_node`, `crossfade_audio_node`,
+  `AudioGraphRes::{insert, replace}`), replacing the `AudioUnit` and the
+  `*_graph_node` twins; `insert_boxed`, `Boxed`, `inspect`,
+  `CapturedControls::capture`, `ModTargetRegistry::register`,
+  `EngineNodes::clock`. `param_graph_node!` is exported, the one line a
+  host writes for its own `ParamNode`. A plugin replaced with the same
+  shape now crossfades like any other node.
+
+The tests whose subject was `Legacy` itself (its chunking, its settings
+ring, its fork hook, the chunk-major playhead) went with it; every other
+test that wired an `AudioUnit` was moved onto a native test node with its
+assertions kept. `stretch::Unit` stays an `AudioUnit`: a slot's internal
+filter, never inserted into a graph.
 
 ## Decisions for the owner
 

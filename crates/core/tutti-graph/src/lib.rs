@@ -4,8 +4,9 @@
 //!
 //! This is Phase 1 of `docs/design/013-native-graph.md` (PR #2): the road off
 //! fundsp's `Net` runtime. `tutti_core::Engine::new` renders an
-//! [`Executor`] behind the engine (Phase 2); the Bevy adapter and export still
-//! build `Net`s until Phase 3 flips them. Of Phase 2 it has the
+//! [`Executor`] behind the engine (Phase 2), and since Phase 3 the Bevy
+//! adapter and export render nothing else. Every node is a [`Node`]
+//! (Phase 4). Of Phase 2 it has the
 //! sample-accuracy contract's type-level half (doc 013 §6: [`Offset`] vs
 //! `Frame`, timestamped commands, [`Io::sub_blocks`], [`Resolution`]),
 //! transport changes inside a block ([`TransportChanges`], carried by
@@ -98,9 +99,10 @@
 //!
 //! # Decisions taken by the owner, recorded here
 //!
-//! 1. **A new crate**, `tutti-graph`, below `tutti-core`, depending only on
-//!    `tutti-types` and `tutti-node` (the latter for the [`Legacy`] adapter
-//!    alone).
+//! 1. **A new crate**, `tutti-graph`, below `tutti-core`, depending on no
+//!    tutti crate but `tutti-types`. (It depended on `tutti-node` too, for
+//!    the adapter that ran an `AudioUnit` as a node until every node was
+//!    ported; the adapter and the edge went in Phase 4.)
 //! 2. **`f32` only inside the graph.** See "Precision" above.
 //! 3. **No typed static-combinator layer.** A fixed sub-graph that wants one
 //!    compiles into a single [`Node`], never into the graph.
@@ -118,7 +120,8 @@
 //!
 //! # Where to read next
 //!
-//! - [`Node`] and [`Io`] — the contract, and what it drops from `AudioUnit`.
+//! - [`Node`] and [`Io`] — the contract, and what it drops from fundsp's
+//!   `AudioUnit`.
 //! - [`compile`] — the pass pipeline, including the buffer colouring that is
 //!   correct under *any* schedule the op DAG allows, not only the serial one.
 //! - [`Editor`] and [`Executor`] — the runtime pair, the queues between them
@@ -131,22 +134,22 @@
 //!   their sources onto the node's own control, clamped, per frame; an
 //!   unconnected param reads its base, never 0 (design doc 013 item 6).
 //! - [`Reference`] — the oracle, and the recompile semantics it pins.
-//! - [`Legacy`] — an `AudioUnit` as a node: never skipped unless declared
-//!   [`pure`](Legacy::pure), with a `Net::set` replacement
-//!   ([`Legacy::controlled`]: a settings ring and a shadow copy). A unit's
-//!   latency can change at runtime with [`Editor::set_latency`].
+//! - [`ParamNode`] and [`param_parts`] — a node whose controls are its
+//!   `Param<U>` cells, addressed by [`ParamSet`], forked from the values last
+//!   set. A node's latency can change at runtime with
+//!   [`Editor::set_latency`].
 //! - [`Editor::fork`] — a copy of the graph, or of the sub-graph feeding
 //!   one node, that shares no state with the live one: the offline export
 //!   (and live duplicate) that replaces `Net::clone_isolated` +
 //!   `isolate_for_offline` + `reset`. A node is forkable only if it handed
 //!   the editor a [`ForkSource`] at insert ([`IntoNode::into_parts`]);
-//!   a `Legacy` does unless its unit says it cannot be forked
-//!   (`AudioUnit::forkable`: a mic monitor, a plugin).
+//!   [`ForkByClone`] and [`param_parts`] do, [`Unforkable`] does not (a mic
+//!   monitor).
 //!
 //! # Building a graph in a test
 //!
 //! Test authors, examples and simple hosts: start from [`GraphBuilder`]. It
-//! speaks `Net`'s calls (`add_unit` for `push`, `connect`, `pipe_input`,
+//! speaks `Net`'s calls (`add` for `push`, `connect`, `pipe_input`,
 //! `pipe_output`, `chain`, …, with `Net`'s fan-out rules), builds the
 //! [`Editor`]/[`Executor`] pair through the public editor API, and its
 //! [`Renderer`] drives the executor block by block and hands back planar or
@@ -155,12 +158,28 @@
 //! a host writing that spec by hand would get.
 //!
 //! ```
-//! # use fundsp::prelude32::lowpass_hz;
-//! use tutti_graph::{GraphBuilder, Prepare};
+//! use tutti_graph::{ForkByClone, GraphBuilder, Prepare};
 //! use tutti_types::{ChannelLayout, SampleRate, Samples};
+//! # use tutti_graph::{Cx, Io, Node, Shape, Status};
+//! # /// A one-pole lowpass.
+//! # #[derive(Clone)]
+//! # struct Lowpass { a: f32, y: f32 }
+//! # impl Node for Lowpass {
+//! #     fn shape(&self) -> Shape { Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO) }
+//! #     fn prepare(&mut self, _: &Prepare) {}
+//! #     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+//! #         let (ins, mut outs) = io.split();
+//! #         for (o, i) in outs.get(0).iter_mut().zip(ins.get(0)) {
+//! #             self.y += self.a * (i - self.y);
+//! #             *o = self.y;
+//! #         }
+//! #         Status::Modified
+//! #     }
+//! #     fn reset(&mut self) { self.y = 0.0; }
+//! # }
 //!
 //! let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
-//! let lp = g.add_unit(Box::new(lowpass_hz(700.0, 0.8)));
+//! let lp = g.add(ForkByClone(Lowpass { a: 0.1, y: 0.0 }));
 //! g.pipe_input(lp).pipe_output(lp);
 //! let mut r = g
 //!     .renderer(Prepare::new(SampleRate(48_000.0), Samples(256)))
@@ -194,7 +213,6 @@ mod fade;
 mod fork;
 mod io;
 mod kernels;
-mod legacy;
 mod node;
 mod param;
 mod plan;
@@ -218,9 +236,6 @@ pub use fork::{
     ForkTarget, Forked, Unforkable,
 };
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
-pub use legacy::{
-    Delivery, Legacy, LegacyControls, LegacyForkHook, LEGACY_CHUNK, LEGACY_SETTINGS_CAPACITY,
-};
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MaxBlock, Node, NodeParts, Prepare,
     Resolution, Scratch, Shape, SilenceMask, Status, Transport, TransportChange,

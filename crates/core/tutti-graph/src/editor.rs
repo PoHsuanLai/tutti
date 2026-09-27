@@ -51,7 +51,7 @@
 //! sending anything.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::Arc;
 
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
@@ -68,7 +68,6 @@ use crate::exec::{
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
-use crate::legacy::Outbox;
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamFrom, ParamIn, ParamState, ParamTap, Ramp};
 use crate::plan::{Delta, Placement, Plan};
@@ -278,10 +277,6 @@ pub struct Editor {
     poisoned: Option<String>,
     /// What the executor's host can take.
     limits: Limits,
-    /// The settings queues of `Legacy::controlled` nodes built for this
-    /// editor, flushed on every `collect`. Weak: dropping a node's controls
-    /// unregisters it, pruned on the next `collect`.
-    outboxes: Vec<Weak<Mutex<Outbox>>>,
     /// Where each forkable node's forks come from, handed over at insert
     /// (see `src/fork.rs`), with the generation of the unit that handed it
     /// over. A key without one is not forkable, and neither is one whose
@@ -362,7 +357,6 @@ impl Editor {
             repreparing: None,
             poisoned: None,
             limits: Limits::NONE,
-            outboxes: Vec::new(),
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
@@ -567,9 +561,6 @@ impl Editor {
             // a replace waiting behind a running fade runs the old unit under
             // the new plan: both must fit the same buffers.
             && shape.event_capacity == running.event_capacity
-            // A renderer chunks while the plan holds a `Legacy`: both halves
-            // of a fade must agree, or the outgoing one would run unchunked.
-            && shape.legacy == running.legacy
             // The key's param state (per declared param) runs on across a
             // fade, so both units must declare the same params.
             && shape.params == running.params;
@@ -640,7 +631,6 @@ impl Editor {
                 && shape.in_place == r.in_place
                 && shape.event_resolution == r.event_resolution
                 && shape.event_capacity == r.event_capacity
-                && shape.legacy == r.legacy
                 && shape.params == r.params
         });
         self.place(key, &kind, unit, shape, fork);
@@ -709,8 +699,8 @@ impl Editor {
     /// and at every re-prepare. Between those, this call is the authority:
     /// it writes the spec's [`NodeSpec`] latency and the editor's shape
     /// entry, which is all the compiler reads, and a running unit's own
-    /// `shape()` may lag (a `Legacy` caches the latency it probed; nothing
-    /// asks it again until it is prepared). A re-prepare asks the unit again
+    /// `shape()` may lag (a node that caches a latency it measured is not
+    /// asked again until it is prepared). A re-prepare asks the unit again
     /// and its answer replaces this one — a frame count set at the old rate
     /// is wrong at a new one, and the unit is the one that can convert it.
     /// A unit that cannot report its own latency must be told again after a
@@ -817,11 +807,6 @@ impl Editor {
     ///
     /// When the box coming back is a [`reprepare`](Self::reprepare)'s first
     /// half, this re-prepares the units it carries and sends the second.
-    ///
-    /// It also flushes every `Legacy::controlled` node's held settings into
-    /// its ring, as far as there is room (see `src/legacy.rs`): a host that
-    /// calls this every frame never leaves a setting stuck behind a full
-    /// ring.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
         while let Some(done) = self.channels.returned.try_pop() {
@@ -838,16 +823,6 @@ impl Editor {
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
             drop(x);
         }
-        self.outboxes.retain(|w| match w.upgrade() {
-            Some(outbox) => {
-                let _ = outbox
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .flush();
-                true
-            }
-            None => false,
-        });
         keys
     }
 
@@ -879,11 +854,6 @@ impl Editor {
     /// Events per event slot per block, as the executor was built with.
     pub(crate) fn event_capacity(&self) -> usize {
         self.event_capacity
-    }
-
-    /// Flush `outbox` on every [`collect`](Self::collect) from now on.
-    pub(crate) fn register_outbox(&mut self, outbox: Weak<Mutex<Outbox>>) {
-        self.outboxes.push(outbox);
     }
 
     /// Change the sample rate or the maximum block of a running graph.

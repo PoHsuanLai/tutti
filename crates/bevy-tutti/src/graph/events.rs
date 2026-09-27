@@ -1,7 +1,7 @@
-//! Declaring what feeds a node's event input, and inserting the nodes that
-//! have one (doc 013, rewrite item 5).
+//! Declaring what feeds a node's event input (doc 013, rewrite item 5), and
+//! [`GraphNode`], what every spawn path takes.
 //!
-//! A node inserted as a graph node — [`spawn_graph_node`](SpawnGraphNode) —
+//! A node inserted with [`spawn_audio_node`](crate::graph::SpawnAudioNode)
 //! may declare MIDI event inputs and outputs: a clip node writes its notes to
 //! an event output, a synth or a hosted plugin reads them from an event input,
 //! on their frames, in the same block. What feeds an entity's event input is
@@ -19,9 +19,8 @@ use std::collections::HashMap;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use bevy_ecs::system::EntityCommands;
 use tutti_core::AudioNode;
-use tutti_graph::{IntoNode, ParamSet};
+use tutti_graph::{ForkByClone, IntoNode, Node, ParamSet, Unforkable};
 
 use crate::graph::{
     engine_ready, AudioGraphRes, CapturedControls, GraphDirty, GraphReconcileSystems,
@@ -30,8 +29,7 @@ use crate::graph::{
 /// The entities whose event output 0 feeds this entity's event input 0.
 ///
 /// Each named entity must carry an [`AudioNode`] with an event output (a
-/// clip node), and this one an event input (a synth or plugin inserted with
-/// [`spawn_graph_node`](SpawnGraphNode)); an entity without a node yet is
+/// clip node), and this one an event input (a synth or plugin); an entity without a node yet is
 /// skipped until it has one. Order does not matter: the graph orders a
 /// fan-in by source.
 #[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
@@ -107,9 +105,9 @@ impl EventFeeds {
 }
 
 /// The controls a node inserted with
-/// [`spawn_graph_node`](SpawnGraphNode::spawn_graph_node) handed back
-/// (`IntoNode::Controls`), kept on its entity: a clip node's
-/// `MidiClipControls`, for one.
+/// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) handed
+/// back (`IntoNode::Controls`), kept on its entity: a clip node's
+/// `MidiClipControls`, a filter's `ParamSet`.
 #[derive(Component)]
 pub struct NodeControls<C: Send + Sync + 'static>(pub C);
 
@@ -117,12 +115,23 @@ pub struct NodeControls<C: Send + Sync + 'static>(pub C);
 #[cfg(feature = "soundfont")]
 impl GraphNode for tutti_soundfont::SoundFontUnit {}
 
-/// A node an entity can be bound to as a graph node, rather than as an
-/// `AudioUnit` wrapped in `Legacy`: it declares its own ports (event ports
-/// included), its controls and its fork.
+/// A node an entity can be bound to: it declares its own ports (event ports
+/// included), its controls and its fork ([`IntoNode`]), and says what this
+/// crate reads off it before it goes in ([`captured`](Self::captured):
+/// nothing, for most) and where its params are ([`params`](Self::params)).
 ///
-/// [`captured`](Self::captured) is what this crate reads off the node before
-/// it goes in (nothing, for most).
+/// Every node the engine ships is one. A host's own node is one of:
+///
+/// - wrapped: [`ForkByClone`]`(node)` (forkable by a clone taken at insert,
+///   for a node whose `Clone` shares nothing) or [`Unforkable`]`(node)`
+///   (refuses a fork that needs it) — no controls and no params;
+/// - a `tutti_graph::ParamNode` (its params a `ParamSet`, forked by
+///   `tutti_graph::param_parts`), registered in one line with
+///   [`param_graph_node!`](crate::param_graph_node): its params reached by
+///   address (an [`AudioParam`](crate::graph::AudioParam), control-rate
+///   modulation) and forked from what was set;
+/// - its own `impl GraphNode` (the defaults: nothing captured, no params),
+///   for a node with controls of another shape.
 pub trait GraphNode: IntoNode + Send + 'static {
     /// The controls to bind to the entity beside the node's own.
     fn captured(&self) -> CapturedControls {
@@ -139,22 +148,91 @@ pub trait GraphNode: IntoNode + Send + 'static {
     }
 }
 
-/// A [`GraphNode`] whose controls are its [`ParamSet`]: its params reached
-/// by address (and, with `modulation`, as control-rate targets). For a
-/// `tutti_graph::ParamNode` inserted through `tutti_graph::param_parts`.
+/// Make each listed type a [`GraphNode`] whose controls are its
+/// [`ParamSet`](tutti_graph::ParamSet): its params reached by address (an
+/// [`AudioParam`](crate::graph::AudioParam) on its entity writes through
+/// them, and with `modulation` they are control-rate targets), and a fork of
+/// it starts from what was set. For a `tutti_graph::ParamNode` whose
+/// `IntoNode` is `tutti_graph::param_parts` (so `Controls = ParamSet`).
+///
+/// One line per type, in the host crate (the trait is this crate's, the
+/// type the host's):
+///
+/// ```rust
+/// use bevy_tutti::param_graph_node;
+/// use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+/// use tutti_types::{Amplitude, ChannelLayout, Param, UnitParam};
+///
+/// /// A gain whose level a host sets by address.
+/// #[derive(Clone)]
+/// struct Level(Param<Amplitude>);
+///
+/// impl Node for Level {
+///     fn shape(&self) -> Shape {
+///         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+///     }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+///         let g = self.0.load().get();
+///         let (i, mut o) = io.split();
+///         for (y, x) in o.get(0).iter_mut().zip(i.get(0)) {
+///             *y = x * g;
+///         }
+///         Status::Modified
+///     }
+///     fn reset(&mut self) {}
+/// }
+///
+/// impl ParamNode for Level {
+///     fn param_set(&self) -> ParamSet {
+///         ParamSet::builder().param(UnitParam::Volume, self.0.as_atomic()).build()
+///     }
+///     fn fork_fresh(&self) -> Self {
+///         let mut f = self.clone();
+///         f.0.detach();
+///         f
+///     }
+/// }
+///
+/// impl IntoNode for Level {
+///     type Controls = ParamSet;
+///     fn into_parts(self) -> NodeParts<ParamSet> {
+///         tutti_graph::param_parts(self)
+///     }
+/// }
+///
+/// param_graph_node!(Level);
+///
+/// fn spawn(mut commands: bevy_ecs::prelude::Commands) {
+///     use bevy_tutti::graph::SpawnAudioNode;
+///     commands.spawn_audio_node(Level(Param::new(Amplitude::new(0.5))));
+/// }
+/// # let _ = spawn;
+/// ```
+#[macro_export]
 macro_rules! param_graph_node {
     ($($ty:ty),* $(,)?) => {$(
-        impl GraphNode for $ty {
-            fn captured(&self) -> CapturedControls {
-                CapturedControls::for_params(&tutti_graph::ParamNode::param_set(self))
+        impl $crate::graph::GraphNode for $ty {
+            fn captured(&self) -> $crate::graph::CapturedControls {
+                $crate::graph::CapturedControls::for_params(
+                    &$crate::__private::ParamNode::param_set(self),
+                )
             }
 
-            fn params(controls: &ParamSet) -> Option<ParamSet> {
-                Some(controls.clone())
+            fn params(
+                controls: &$crate::__private::ParamSet,
+            ) -> ::core::option::Option<$crate::__private::ParamSet> {
+                ::core::option::Option::Some(::core::clone::Clone::clone(controls))
             }
         }
     )*};
 }
+
+/// A node forkable by a clone taken at insert: no controls, no params.
+impl<N: Node + Clone + Send + 'static> GraphNode for ForkByClone<N> {}
+
+/// A node no fork may take: no controls, no params.
+impl<N: Node + Send + 'static> GraphNode for Unforkable<N> {}
 
 param_graph_node!(
     tutti_nodes::SvfFilterNode<f32>,
@@ -214,55 +292,6 @@ impl GraphNode for tutti_spatial::HrtfBinauralNode {}
 #[cfg(feature = "synth")]
 param_graph_node!(tutti_polysynth::PolySynth);
 
-/// `Commands` extension: add a [`GraphNode`] and spawn an entity bound to it.
-pub trait SpawnGraphNode {
-    /// Add `node` to the graph and spawn an entity bound to it via
-    /// [`AudioNode`], its controls as [`NodeControls`]. The node arrives
-    /// unwired, as [`spawn_audio_node`](crate::graph::SpawnAudioNode)'s does.
-    fn spawn_graph_node<N>(&mut self, node: N) -> EntityCommands<'_>
-    where
-        N: GraphNode,
-        N::Controls: Send + Sync + 'static;
-}
-
-impl SpawnGraphNode for Commands<'_, '_> {
-    fn spawn_graph_node<N>(&mut self, node: N) -> EntityCommands<'_>
-    where
-        N: GraphNode,
-        N::Controls: Send + Sync + 'static,
-    {
-        let entity = self.spawn_empty().id();
-        self.queue(move |world: &mut World| insert_and_bind(world, entity, node));
-        self.entity(entity)
-    }
-}
-
-/// Insert `node` and bind `entity` to it: the body of
-/// [`spawn_graph_node`](SpawnGraphNode::spawn_graph_node), and of a plugin of
-/// this crate that spawns a node from a system with world access.
-pub fn insert_and_bind<N>(world: &mut World, entity: Entity, node: N)
-where
-    N: GraphNode,
-    N::Controls: Send + Sync + 'static,
-{
-    let captured = node.captured();
-    let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
-        bevy_log::warn!(
-            "spawn_graph_node: AudioGraphRes missing; entity {entity:?} left without AudioNode"
-        );
-        return;
-    };
-    let (id, controls) = graph.insert_node(node);
-    graph.set_node_params(id, N::params(&controls));
-    if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
-        dirty.0 = true;
-    }
-    if let Ok(mut e) = world.get_entity_mut(entity) {
-        e.insert(NodeControls(controls));
-        captured.bind(&mut e, id);
-    }
-}
-
 /// What each sink entity's event input 0 was last set to, so a frame with
 /// no change writes nothing.
 #[derive(Default)]
@@ -272,8 +301,8 @@ pub struct Reconciled(HashMap<Entity, (AudioNode, Vec<EventSource>)>);
 /// [`EventFeeds`] for it) into the graph, where they differ from what was
 /// last written. A sink that declared sources last frame and none now is
 /// emptied; one bound to a new node since is written afresh (the old node's
-/// edges went with it). A sink with no event input (a unit inserted through
-/// `Legacy`) is skipped.
+/// edges went with it). A sink with no event input (a filter, say) is
+/// skipped.
 ///
 /// Recomputed whole each frame: a source's node can change (a crossfade to a
 /// new node, a despawn) without the sink's declaration changing, and the

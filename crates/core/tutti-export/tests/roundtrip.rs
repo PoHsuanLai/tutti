@@ -54,7 +54,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// being smeared across a waveform. The spectral cases live in the Python judge.
 fn dc_graph(level: f32) -> RenderGraph {
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-    let id = g.add_unit(Box::new(Const::frame(&[level, level])));
+    let id = g.add(Const::frame(&[level, level]));
     g.pipe_output(id);
     built(g)
 }
@@ -300,7 +300,7 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     let path = d.path().join("quad.wav");
 
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let id = g.add_unit(Box::new(Const::mono(0.5)));
+    let id = g.add(Const::mono(0.5));
     g.pipe_output(id);
 
     let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);

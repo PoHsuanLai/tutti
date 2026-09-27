@@ -65,24 +65,16 @@ const PATTERNS: &[Pattern] = &[
 /// `(file, pattern name, allowed count, why)`.
 ///
 /// A count rather than a path: a new use in an allow-listed file still fails.
-const ALLOWED: &[(&str, &str, usize, &str)] = &[
-    (
-        "src/modulation/target.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "ModTargetRegistry's capture, on the owned unit before insertion.",
-    ),
-    (
-        "tests/export_fork.rs",
-        "downcast_ref / downcast_mut",
-        1,
-        "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
+const ALLOWED: &[(&str, &str, usize, &str)] = &[(
+    "tests/export_fork.rs",
+    "downcast_ref / downcast_mut",
+    1,
+    "a_plugin_fork_that_cannot_be_built_is_a_named_failure downcasts an \
          export error's `ForkCause` to the plugin's own error (the cause's \
          documented use), not a graph node. (The `Net`-era oracle's downcast of the synth \
          in its own `Net`, and its raw node access, went with it in doc 013 \
          PR 15.)",
-    ),
-];
+)];
 
 fn scanned_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

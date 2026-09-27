@@ -59,8 +59,8 @@ impl Node for PluginClient<Bound> {
     /// chunk's last, and re-based to the chunk (`PluginChunks`): right
     /// wherever the timeline stands at the call's first frame, which a host
     /// that moves it once per block (tutti-core's engine,
-    /// `RenderClock::render_graph`) keeps, in whole blocks as in
-    /// `LEGACY_CHUNK` passes. The transport itself is read from `Env`.
+    /// `RenderClock::render_graph`) keeps, in whole blocks as in shorter
+    /// passes. The transport itself is read from `Env`.
     /// The cost: a transport command scheduled inside a block reaches those
     /// polled inputs from the block's first frame (up to a block early, where
     /// passes bounded it to 64 frames); doc 013, "The plugin is no longer

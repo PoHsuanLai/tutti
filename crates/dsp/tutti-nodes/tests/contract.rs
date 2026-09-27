@@ -1,6 +1,6 @@
 //! The sample-accuracy contract (doc 013 §6, "Proof") for this crate's
-//! latency-bearing nodes, as a graph runs them today — natively, or through
-//! `Legacy` for a node not yet ported — on the audio-impulse path. An impulse at frame `F` must leave at exactly
+//! latency-bearing nodes, as a graph runs them, on the audio-impulse path.
+//! An impulse at frame `F` must leave at exactly
 //! `F + arrival + latency`, where `latency` is what the node *declares* — on
 //! every path the harness has (direct, behind PDC, across a recompile,
 //! across ragged blocks). See `tutti_graph::contract` for the paths and the
@@ -21,21 +21,14 @@
 //!
 //! Mutations (run):
 //!
-//! - In `Legacy::probe`, declare one frame more than `route` reports →
-//!   every `Legacy` row fails every path.
 //! - In `LimiterNode::shape`, declare one frame more than the ring's
 //!   `lookahead_samples` → both limiter rows fail every path.
-//! - In `Legacy::process`, call the unit for a whole `MAX_BUFFER_SIZE` chunk
-//!   even when fewer frames remain (its clock runs ahead of the block) → the
-//!   convolver rows fail `blocks_1`, `blocks_63`, `blocks_65`
-//!   and `blocks_random`, and pass `blocks_64` and `blocks_max`.
 //! - In `ConvolverNode::blend_channel`, blend the undelayed input again (D3)
 //!   → `convolver_dry` and `convolver_half` fail every path.
 //! - Declare the echo time as latency in `DelayLineNode::shape` (D1) →
 //!   `delay_line` fails every path.
 //!
-//! The delay and the convolver are native nodes (`Row::new`); the limiter
-//! still runs through `Legacy` (`Row::legacy`).
+//! Every row is a graph node (`Row::new`).
 
 use tutti_core::{ChannelLayout, Db, Samples};
 use tutti_graph::contract::{Detect, Excite, Row};

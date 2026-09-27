@@ -56,11 +56,11 @@ use tutti_core::{
 /// A clone is now what the two remaining callers of `Clone` need, and no
 /// more: a **fresh** filter with the same width, window and parameters — its
 /// own vocoders built on the same grid (sharing the immutable window and phase
-/// tables, `Vocoder::clone_fresh`), none of the running state. Those callers
-/// are `tutti_graph::Legacy::controlled`'s shadow (taken once, at insert) and
-/// a fork cloned from it; both reset what they clone, so copying a running
-/// stream's rings would buy nothing. It allocates about 100 KB per channel,
-/// on the control thread, once per insert and once per fork.
+/// tables, `Vocoder::clone_fresh`), none of the running state. The caller
+/// is a voice's fork (and was, while it existed, the `Legacy` adapter's
+/// shadow); it resets what it clones, so copying a running stream's rings
+/// would buy nothing. It allocates about 100 KB per channel, on the control
+/// thread, once per fork.
 ///
 /// # Channels
 ///

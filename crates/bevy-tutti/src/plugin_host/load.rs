@@ -317,7 +317,7 @@ pub fn plugin_load_promote(
                         (graph.insert_plugin(client), controls)
                     }
                     Err(node) => {
-                        let (id, ()) = graph.insert_node(tutti_graph::Unforkable(node));
+                        let (id, ()) = graph.insert(tutti_graph::Unforkable(node));
                         (id, CapturedControls::default())
                     }
                 };

@@ -58,9 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2-3. Transport and graph, at the device's rate.
     let transport = Transport::new(sample_rate.get());
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, audio_engine.channels());
-    let tone = g.add_unit(Box::new(
-        Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2)),
-    ));
+    let tone = g.add(Osc::sine(Hz(440.0)).with_amplitude(Amplitude(0.2)));
     g.pipe_output(tone);
     let (mut editor, executor) = g.build(Prepare::new(sample_rate, Samples(512)))?;
 

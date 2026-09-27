@@ -1,7 +1,8 @@
 //! [`FrameClock`]: a playhead whose source of truth is an integer frame
 //! count, the one every transport clock in the engine keeps, and the
-//! [`LoopRange`] it wraps at. One implementation: tutti-core's clocks, the
-//! graph's `EnvClock` and `Env::transport_at` all walk with it.
+//! [`LoopRange`] it wraps at. One implementation: tutti-core's clocks, and
+//! the graph's `Env::for_each_beat` and `Env::transport_at`, all walk with
+//! it.
 //!
 //! Doc 013 §6, "the frame is the source of truth". A clock that adds
 //! `beats_per_sample` to its beat, per frame or per block, drifts: at 90 BPM
@@ -14,7 +15,7 @@
 //! integer frame, on a seek, a tempo or rate change and a loop wrap; a
 //! stopped transport simply does not count. So the beat at a frame is the
 //! same `f64` whether the clock got there one frame at a time (a `Net`'s
-//! `TransportClock`, the graph's `EnvClock`) or a block at a time (the graph
+//! `TransportClock`, the graph's `Env::for_each_beat`) or a block at a time (the graph
 //! engine's walk, the offline timeline): they emit the same beats, bit for
 //! bit, by construction rather than by agreeing to rounding.
 

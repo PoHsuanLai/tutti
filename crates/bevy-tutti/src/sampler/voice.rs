@@ -1,7 +1,7 @@
 //! Spawning a sampler voice as an ECS-owned graph node.
 //!
 //! One [`VoiceNode`] per entity, wired like any other node — it goes in as a
-//! native [`GraphNode`] (`spawn_graph_node` / `insert_and_bind`, the path every
+//! native [`GraphNode`] (`spawn_audio_node` / `insert_and_bind`, the path every
 //! ported node takes), [`PortSources`](crate::graph::PortSources) on a sink
 //! names it as a source, and the `On<Remove, AudioNode>` observer takes it
 //! back out. Its controls are typed: a [`VoiceNodeHandle`] (gain as a param
@@ -47,7 +47,7 @@ use tutti_sampler::{
     DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoicePool, VoiceSource,
 };
 
-use crate::graph::events::insert_and_bind;
+use crate::graph::insert_and_bind;
 use crate::graph::{CapturedControls, GraphNode, NodeControls};
 
 /// Marks an entity whose audio node is a sampler voice.
@@ -79,7 +79,7 @@ pub struct SamplerVoice;
 /// has to be kept from there.
 ///
 /// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`]
-/// (or `spawn_graph_node`), which is every voice this crate builds.
+/// (or `spawn_audio_node`), which is every voice this crate builds.
 pub type VoiceCommands = NodeControls<VoiceNodeHandle>;
 
 /// A voice as a native graph node: its params (the gain) addressed by its
@@ -117,7 +117,7 @@ impl GraphNode for DiskVoice {}
 /// Spawn a [`VoiceNode`] on an entity.
 ///
 /// An extension trait on `Commands` for the same reason
-/// [`SpawnGraphNode`](crate::graph::SpawnGraphNode) is one: the insert returns
+/// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is one: the insert returns
 /// its id inside a deferred command, so nothing outside the command queue can
 /// observe the binding.
 pub trait SpawnVoice {

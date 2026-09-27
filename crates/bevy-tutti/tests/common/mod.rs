@@ -10,7 +10,8 @@
 #[allow(dead_code)]
 pub mod plugin;
 
-/// A test-local `AudioUnit` modulatable through the `ModTargetRegistry`,
-/// for suites whose subject is that path. Not every suite uses it.
+/// A host's own `ParamNode`, registered with `param_graph_node!`, for the
+/// suites whose subject is capturing and routing to its params. Not every
+/// suite uses it.
 #[allow(dead_code)]
 pub mod drive_unit;

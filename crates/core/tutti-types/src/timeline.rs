@@ -28,24 +28,21 @@ use crate::value::{Beat, Bpm};
 /// Implemented by tutti-core's live `Transport` and by its `OfflineTimeline`,
 /// so a beat-driven source can be handed either one and not care which.
 ///
-/// # When to use this instead of a beat edge
+/// # When to use this instead of a block's `Env`
 ///
-/// Pure DSP nodes should **not** implement against this trait. A node that is
-/// a function of musical time takes the beat as a signal on its input ports
-/// (tutti-core's `BEAT_PORTS`), which is per-sample accurate, works unchanged
-/// offline, and makes the timeline→node relationship a visible graph edge.
+/// Graph nodes should **not** implement against this trait. A node that is a
+/// function of musical time reads the transport of each frame from its
+/// block's `Env` (`tutti_graph::Env::transport_at`, `Env::for_each_beat`),
+/// which is per-sample accurate, carries the play state and every change
+/// inside the block, and works unchanged offline (a fork's `Env` is the
+/// render's). (Until the last node ported, the sampler's voices and the MIDI
+/// sources polled this trait from inside the graph.)
 ///
-/// What legitimately remains here is what a beat signal cannot express:
-///
-/// - **Boolean gating**: `is_rolling` drives early returns with state-reset
-///   side effects. "Emit nothing" is not the same as "emit a level", and a
-///   paused timeline still has a valid beat, so rolling-ness is not
-///   recoverable from the beat.
-/// - **Nodes with no ports**: the MIDI sources implement `poll_into` and have
-///   no `BufferRef` to read a beat from.
-/// - **Discontinuities** ([`segment_generation`](Self::segment_generation)): a
-///   seek to where the playhead already stands reads the same beat, and only
-///   the generation says the timeline jumped.
+/// What legitimately remains here is a reader outside the graph, which has
+/// no `Env`: a host's UI, the control-rate modulation driver, a renderer
+/// deciding what to hand its graph next — including
+/// [`segment_generation`](Self::segment_generation), the one way to tell a
+/// seek to where the playhead already stands from standing still.
 ///
 /// # What is deliberately NOT here
 ///

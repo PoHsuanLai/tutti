@@ -157,9 +157,8 @@ pub(crate) trait FrameSource {
 /// the clock advanced by exactly the frames produced. The executor reads the
 /// transport from each block's `Env`, so this hands it one — through
 /// [`RenderClock::render_graph`], which reads the clock's snapshot before the
-/// block and advances it after, chunk by chunk (64 frames across every node)
-/// when the graph holds `Legacy` units (`OfflineTimeline::render_graph` is
-/// that call for an offline timeline).
+/// block and advances it after (`OfflineTimeline::render_graph` is that call
+/// for an offline timeline).
 pub(crate) struct GraphSource<'a> {
     editor: &'a mut tutti_graph::Editor,
     executor: &'a mut tutti_graph::Executor,
@@ -245,10 +244,9 @@ impl FrameSource for GraphSource<'_> {
         // Snapshot, process, advance — in that order, never a priming
         // advance first: frame 0 of a block carries the block's start beat,
         // and only then does the beat move on. Every clock reader agrees on
-        // it (`EnvClock` in the graph reads the snapshot, a clip reader polls
-        // the same timeline), so an advance before the block would start the
-        // render one frame past its own start beat. Per 64-frame chunk while
-        // the graph holds a `Legacy` unit.
+        // it (every node reads the snapshot from its `Env`), so an advance
+        // before the block would start the render one frame past its own
+        // start beat.
         self.clock
             .render_graph(self.executor, block_size, &inputs, &mut outputs);
         // Retired units and returned commits are freed here, on this thread,
@@ -421,7 +419,7 @@ mod tests {
     /// A mono graph whose one output carries a constant.
     fn mono_dc(v: f32) -> RenderGraph {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-        let k = g.add_unit(Box::new(tutti_nodes::testing::Const::mono(v)));
+        let k = g.add(tutti_nodes::testing::Const::mono(v));
         g.pipe_output(k);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
         RenderGraph::new(editor, executor).expect("built together")
@@ -496,9 +494,10 @@ mod tests {
     /// priming `advance` desyncs every clock reader from the render's start.
     ///
     /// Ported from the `Net` source in doc 013 PR 14: the `Net` carried its
-    /// beat in a `TransportClock` node; the graph's `EnvClock` emits the same
-    /// `BEAT_PORTS` from each block's transport, which this source hands it.
-    /// Assertions unchanged.
+    /// beat in a `TransportClock` node; the graph walked the same beat from
+    /// each block's transport, which this source hands it, first in
+    /// `EnvClock` and now in a test node calling `Env::for_each_beat` (what
+    /// `EnvClock` did). Assertions unchanged.
     ///
     /// Mutation (run): `self.clock.advance(Samples(1))` before `render_graph`
     /// in `GraphSource::fill` → the first frame reads a frame past the start
@@ -507,9 +506,32 @@ mod tests {
     fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
         let start_beat = 4.0;
 
-        // A graph that emits the clock's two beat ports as its output.
+        /// Each frame's beat from its block's `Env`, whole beats then the
+        /// fraction.
+        struct BeatPorts;
+        impl tutti_graph::Node for BeatPorts {
+            fn shape(&self) -> tutti_graph::Shape {
+                tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+                    .with_tail(tutti_types::Tail::Unbounded)
+            }
+            fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+            fn process(
+                &mut self,
+                cx: &tutti_graph::Cx<'_>,
+                mut io: tutti_graph::Io<'_>,
+            ) -> tutti_graph::Status {
+                cx.env.for_each_beat(|i, beat| {
+                    io.output(0)[i] = beat.floor().get() as f32;
+                    io.output(1)[i] = beat.fract().get() as f32;
+                });
+                tutti_graph::Status::Modified
+            }
+            fn reset(&mut self) {}
+        }
+
+        // A graph that emits the beat as its output.
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
-        let clock = g.add(tutti_graph::Unforkable(tutti_core::EnvClock::new()));
+        let clock = g.add(tutti_graph::Unforkable(BeatPorts));
         g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
         let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
         let mut graph = RenderGraph::new(editor, executor).expect("built together");

@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::latency::LatencyGraph;
+use crate::latency::{Feed, LatencyGraph};
 use crate::tail::TailGraph;
 use crate::value::{Samples, Tail};
 use crate::ChannelLayout;
@@ -621,18 +621,20 @@ impl LatencyGraph for Topology {
         self.nodes.get(&node).map_or(Samples::ZERO, |n| n.latency)
     }
 
-    /// In **port order**, with a hole for every unconnected or non-node port —
-    /// precisely [`LatencyGraph::inputs`]' contract.
+    /// In **port order**: a node's output is [`Feed::Node`], a global input
+    /// [`Feed::Outside`] (aligned at a merge point, as the compiler aligns
+    /// it), and an unconnected or silent port [`Feed::None`].
     ///
-    /// A feedback edge yields `None`: it carries last block's value, so it
-    /// contributes no latency along this block's path, and reporting it as a
-    /// live predecessor would put the walk back in the cycle the edge kind
+    /// A feedback edge yields `Feed::None`: it carries last block's value, so
+    /// it contributes no latency along this block's path, and reporting it as
+    /// a live predecessor would put the walk back in the cycle the edge kind
     /// exists to cut.
-    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Option<NodeKey>> {
+    fn inputs(&self, node: NodeKey) -> impl Iterator<Item = Feed<NodeKey>> {
         let width = self.nodes.get(&node).map_or(0, |n| n.inputs.count());
         (0..width).map(move |port| match self.edges.get(&InPort { node, port }) {
-            Some(Edge::Direct(Source::Node(p))) => Some(p.node),
-            _ => None,
+            Some(Edge::Direct(Source::Node(p))) => Feed::Node(p.node),
+            Some(Edge::Direct(Source::Global(_))) => Feed::Outside,
+            _ => Feed::None,
         })
     }
 

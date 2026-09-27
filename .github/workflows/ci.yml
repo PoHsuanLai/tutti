@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Fewer codegen units keeps CI RAM in check on the large fundsp/Bevy graph.
+  # Fewer codegen units keeps CI RAM in check on the large Bevy graph.
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
@@ -85,25 +85,15 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       # The two vendored forks are excluded: they are third-party code we do not
       # restyle, and they carry pre-existing lint debt that is not ours to pay.
-      - run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+      - run: cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
 
   # The same lint, on Windows. The `clippy` job above cannot see a
   # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on
@@ -130,7 +120,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Workspace
-        run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
       # The workspace run builds each crate with the features the workspace
       # unifies to, which leaves tutti-plugin's format features and
       # clap-extras dark. `au` is macOS-only and compiles to nothing here.
@@ -273,7 +263,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
@@ -306,18 +296,8 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -406,18 +386,8 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The engine must stay usable without Bevy. `--no-default-features` does
@@ -459,24 +429,14 @@ jobs:
           # libasound2-dev:    tutti-cpal (ALSA).
           # libdbus-1-dev:     cpal -> audio_thread_priority -> dbus, the
           #                    RT-priority request on Linux.
-          # libfontconfig1-dev: plotters -> font-kit -> fontconfig. NOT from
-          #                    criterion, which declares plotters with
-          #                    `default-features = false` (verified in 0.5.1
-          #                    and 0.8.2) and so never enables the `ttf`
-          #                    feature font-kit sits behind. The edge is
-          #                    fundsp-tutti's own bare `plotters = "0.3.7"`
-          #                    dev-dep, which feature-unifies across every
-          #                    plotters consumer. `cargo tree -i font-kit`
-          #                    prints criterion first, which is what made the
-          #                    earlier version of this comment wrong.
           sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev libfontconfig1-dev pkg-config
+            libasound2-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to
       # deny; this is where that is actually enforced, since a plain build never
       # runs rustdoc.
-      - run: cargo doc --workspace --no-deps --exclude fundsp-tutti --exclude rustysynth-tutti
+      - run: cargo doc --workspace --no-deps --exclude rustysynth-tutti
         env:
           RUSTDOCFLAGS: -D warnings
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the

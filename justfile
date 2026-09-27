@@ -257,7 +257,7 @@ check-paths *ARGS:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
+    cargo clippy --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
 
 # Typecheck and lint the Windows cfg paths, from Linux or macOS.
 #
@@ -293,7 +293,7 @@ check-windows:
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
-    win --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti \
+    win --workspace --all-targets --exclude rustysynth-tutti \
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
@@ -306,7 +306,7 @@ check-windows:
 # is where that is actually enforced.
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
-        --exclude fundsp-tutti --exclude rustysynth-tutti
+        --exclude rustysynth-tutti
 
 # The audio-correctness harnesses: a Rust example renders audio to a directory,
 # and a Python judge grades it.

@@ -65,7 +65,7 @@ pub use metering::{
 // Delay compensation: the graph-agnostic planner, homed in `tutti-types` and
 // surfaced here so consumers reach it via the engine root. The delays
 // themselves are the graph compiler's (`tutti_graph`'s plan).
-pub use tutti_types::latency::{self, Compensation, DelayInsertion, LatencyGraph};
+pub use tutti_types::latency::{self, Compensation, LatencyGraph};
 pub use tutti_types::value::Samples;
 
 // How long a graph rings after its input stops. Same as latency above: the

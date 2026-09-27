@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fundsp fork is deleted, and the latency solve is one pass**
+  (design doc 013, "Phase 5, part 2"). **Breaking.**
+  `crates/vendor/fundsp-tutti` is gone. `tutti_types::latency` no longer
+  inserts anything: `delays(&g)` returns the per-port and per-output delays
+  as a value, a global input is aligned at a merge point, and event and
+  param sources count toward a node's arrival — the compiler's solve, so
+  `latency::plan(&spec)` equals the compiled plan's compensation.
+
+  | Was | Now |
+  |---|---|
+  | `crates/vendor/fundsp-tutti` (package `fundsp-tutti`) | removed |
+  | `latency::{DelayInsertion, compensate(&mut G)}` | `latency::delays(&G) -> Delays<N>` (`inputs()`, `outputs()`, `compensation()`) |
+  | `LatencyGraph::inputs -> Iterator<Item = Option<N>>` | `-> Iterator<Item = Feed<N>>` (`Node`, `Outside`, `None`); new `LatencyGraph::other_sources` (default none) |
+  | `latency::plan` left a global input undelayed and ignored event edges | aligns a global input; counts `other_sources` (`GraphSpec` lists event and param sources) |
+  | — | `impl LatencyGraph for tutti_graph::GraphSpec` |
+  | CI installs `libfontconfig1-dev` | not needed (the fork's `plotters` dev-dependency was the only edge) |
+
 - **Nothing uses fundsp's `Net`** (design doc 013, "Phase 5, part 1").
   **Breaking.** `AudioNode` wraps a `NodeKey`; the `Topology → Net`
   compile route and the `dsp` re-exports are gone. `Editor::commit` with

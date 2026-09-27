@@ -781,8 +781,10 @@ impl GraphRuntime {
 
     // --- Latency ---
 
+    /// Over the whole spec, so event and param sources count toward a node's
+    /// arrival as the compiler counts them.
     pub(crate) fn latency_plan(&self) -> Compensation {
-        tutti_types::latency::plan(&self.editor.spec().topology)
+        tutti_types::latency::plan(self.editor.spec())
     }
 
     /// The compensation the next commit's plan carries: the spec compiled

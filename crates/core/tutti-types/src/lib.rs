@@ -93,7 +93,7 @@ pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut, OnEmpty};
-pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
+pub use latency::{delays, Compensation, Delays, Feed, LatencyGraph};
 
 // How long a graph rings after its input stops.
 pub use tail::{graph_tail, GraphTail, TailGraph};

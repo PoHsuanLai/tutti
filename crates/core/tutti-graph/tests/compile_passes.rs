@@ -1,9 +1,10 @@
 //! The compiler's passes, one claim at a time: order, cycles, the latency
 //! solve against `tutti_types::latency`, colouring, coarsening, placement.
 //!
-//! The 13 shapes are `tutti-core/tests/topology_compile.rs`'s, ported: the
-//! same graphs, now compiled to a `Plan` instead of a `Net`, so the two
-//! compilers answer the same questions about the same values.
+//! The 13 shapes were `tutti-core/tests/topology_compile.rs`'s (deleted with
+//! `topology::compile` in doc 013 Phase 5), ported: the same graphs, compiled
+//! to a `Plan` instead of a `Net`. `tutti_types::latency` is the pure pass the
+//! plan's delays must equal.
 
 mod common;
 
@@ -15,7 +16,7 @@ use tutti_graph::{
     GraphSpec, Op, PortKind, Shape, Shapes, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, Source};
-use tutti_types::latency::{self, DelayInsertion, LatencyGraph};
+use tutti_types::latency;
 use tutti_types::{ChannelLayout, Latency, NodeKey, Samples, Tail, Topology};
 
 /// The `MaxBlock` every plan in this file is compiled for.
@@ -287,70 +288,32 @@ fn ties_break_by_key_across_edge_kinds() {
 }
 
 // ---------------------------------------------------------------------------
-// Latency: the plan's delays are exactly `latency::compensate`'s.
+// Latency: the plan's delays are exactly `latency::delays`'.
 // ---------------------------------------------------------------------------
 
-/// A `DelayInsertion` that records what `compensate` asks for, over a
-/// `Topology` it delegates to.
-struct Recorder<'a> {
-    t: &'a Topology,
-    inputs: Vec<(NodeKey, usize, Samples)>,
-    outputs: Vec<(usize, Samples)>,
-}
-
-impl LatencyGraph for Recorder<'_> {
-    type Node = NodeKey;
-    fn nodes(&self) -> impl Iterator<Item = NodeKey> {
-        LatencyGraph::nodes(self.t)
-    }
-    fn latency(&self, n: NodeKey) -> Samples {
-        LatencyGraph::latency(self.t, n)
-    }
-    fn inputs(&self, n: NodeKey) -> impl Iterator<Item = Option<NodeKey>> {
-        LatencyGraph::inputs(self.t, n)
-    }
-    fn outputs(&self) -> impl Iterator<Item = Option<NodeKey>> {
-        LatencyGraph::outputs(self.t)
-    }
-}
-
-impl DelayInsertion for Recorder<'_> {
-    fn clear_delays(&mut self) {
-        self.inputs.clear();
-        self.outputs.clear();
-    }
-    fn delay_input(&mut self, node: NodeKey, port: usize, by: Samples) {
-        self.inputs.push((node, port, by));
-    }
-    fn delay_output(&mut self, channel: usize, by: Samples) {
-        self.outputs.push((channel, by));
-    }
-}
-
 /// Every per-port delay, every output alignment, the per-channel pre-roll and
-/// the total agree with `tutti_types::latency` on all thirteen shapes.
+/// the total agree with `tutti_types::latency::delays` on all thirteen shapes.
+/// (Until doc 013 Phase 5 the reference was `latency::compensate` over a
+/// recording `DelayInsertion`; the pass now returns the same lists as a
+/// value.)
 ///
 /// Mutation: in `compile`, use `arrival[n]` (not `arrival + latency`) as a
 /// source's departure → `pdc_diamond` loses its 512-frame delay → fails.
 /// Mutation: emit output rings for `Source::Zero` channels and compare the
-/// ring list → `silent_output_channel` still passes (the recorder lists the
+/// ring list → `silent_output_channel` still passes (`delays` lists the
 /// zero channel too), which is why zero channels are compared through
 /// `compensation()` and excluded from the ring comparison explicitly.
 #[test]
-fn pdc_delays_equal_latency_compensate() {
+fn pdc_delays_equal_latency_delays() {
     let mut nonzero = 0;
     for (name, t) in shapes() {
         let plan = compiled(&t);
-        let mut rec = Recorder {
-            t: &t,
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-        };
-        let comp = latency::compensate(&mut rec);
-        assert_eq!(comp, latency::plan(&t), "{name}: plan and compensate agree");
+        let rec = latency::delays(&t);
+        let comp = rec.compensation().clone();
+        assert_eq!(comp, latency::plan(&t), "{name}: plan and delays agree");
 
         let mut want_in: Vec<(DelayKey, Samples)> = rec
-            .inputs
+            .inputs()
             .iter()
             .map(|&(n, p, by)| {
                 let sink = at(n, p as u16);
@@ -371,7 +334,7 @@ fn pdc_delays_equal_latency_compensate() {
         assert_eq!(got_in, want_in, "{name}: input delays");
 
         let want_out: Vec<(DelayKey, Samples)> = rec
-            .outputs
+            .outputs()
             .iter()
             .filter(|&&(ch, _)| t.outputs[ch] != Source::Zero)
             .map(|&(ch, by)| {
@@ -842,13 +805,16 @@ fn the_delta_moves_only_what_changed() {
 }
 
 /// Decision (review): a `Source::Global` input that merges with a latent
-/// path **is** delayed to align, like any other merge-point source. This is
-/// where the compiler deliberately differs from `latency::plan`, which
-/// treats a global input as outside the graph (unified in doc 013 Phase 5).
+/// path **is** delayed to align, like any other merge-point source. Until
+/// doc 013 Phase 5 this was where the compiler differed from
+/// `latency::plan`, which (for fundsp's `Net`) left a global input
+/// undelayed; the two solves are one now, and agree here.
 ///
 /// Mutation: in `compile`, give `Source::Global` ports no delay (the old
 /// rule) → the plan has no `DelayKey::Audio { from: Global(0) }` → fails.
-/// The reference computes the same delay independently.
+/// Mutation (run): in `latency::delays`, `Feed::Outside => continue` → the
+/// pass lists no delay → fails. The reference interpreter computes the same
+/// delay independently.
 #[test]
 fn a_global_input_merging_with_a_latent_path_is_delayed() {
     let mut t = Topology {
@@ -870,16 +836,11 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
         from: Source::Global(0),
     };
     assert_eq!(plan.delay(key), Samples(48));
-    // `latency::plan` does not: the two solves differ here until Phase 5.
-    let mut rec = Recorder {
-        t: &t,
-        inputs: Vec::new(),
-        outputs: Vec::new(),
-    };
-    latency::compensate(&mut rec);
-    assert!(
-        rec.inputs.is_empty(),
-        "latency::plan never delays a global input"
+    // The pure pass agrees (unified in doc 013 Phase 5).
+    assert_eq!(
+        latency::delays(&t).inputs(),
+        &[(C, 1, Samples(48))],
+        "latency::delays aligns the global input as the plan does"
     );
 
     let mut pair = Pair::new(128);
@@ -894,6 +855,76 @@ fn a_global_input_merging_with_a_latent_path_is_delayed() {
         assert_eq!(bits(&a), bits(&b));
         frame += 100;
     }
+}
+
+/// **An event source counts toward arrival in both solves.** A node whose
+/// audio input is dry and whose events come from a latent node arrives at
+/// that node's departure: the compiler delays the audio port to it, and
+/// `latency::plan` over the whole spec (`GraphSpec`'s `LatencyGraph`, which
+/// lists event and param sources) reports the same compensation, where over
+/// the topology alone it would miss the event path. Unified in doc 013
+/// Phase 5; `Net` had no event ports, so this module walked audio only.
+///
+/// Mutation (run): drop the events from `GraphSpec::other_sources` → the
+/// spec's plan totals 0 against the compiler's 64 → fails.
+#[test]
+fn an_event_source_counts_toward_arrival_in_both_solves() {
+    // A (64 frames latent, emits events) ─events─▶ C;  B (dry) ─audio─▶ C.
+    let mut t = Topology::default();
+    t.nodes
+        .insert(A, spec("emit", 0, 0).with_latency(Samples(64)));
+    t.nodes.insert(B, spec("dc", 0, 1));
+    t.nodes.insert(C, spec("gain", 1, 1));
+    edge(&mut t, at(C, 0), out(B, 0));
+    t.outputs = vec![Source::Node(out(C, 0))];
+    let mut g = GraphSpec::new(t.clone());
+    g.connect_events(
+        EventIn { node: C, port: 0 },
+        EventEdge::Direct(EventOut { node: A, port: 0 }),
+    );
+    let mut shapes = shapes_of_spec(&t);
+    shapes.insert(
+        A,
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_latency(Latency::new(Samples(64)))
+            .with_tail(Tail::None)
+            .with_events(0, 1),
+    );
+    shapes.insert(
+        C,
+        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+            .with_tail(Tail::None)
+            .with_events(1, 0),
+    );
+    let plan = compile(
+        &g.validate().expect("valid"),
+        &shapes,
+        &common::prepare(PREP),
+        None,
+    )
+    .expect("compiles")
+    .0;
+
+    let key = DelayKey::Audio {
+        at: at(C, 0),
+        from: Source::Node(out(B, 0)),
+    };
+    assert_eq!(
+        plan.delay(key),
+        Samples(64),
+        "the dry port waits for the events"
+    );
+    let comp = latency::plan(&g);
+    assert_eq!(comp.total(), Samples(64));
+    assert_eq!(plan.total_latency().samples(), comp.total());
+    assert_eq!(plan.compensation(), comp.channels());
+    assert_eq!(
+        latency::delays(&g).inputs(),
+        &[(C, 0, Samples(64))],
+        "and the pass puts the delay on the same port"
+    );
+    // Over the topology alone the event path is invisible.
+    assert!(latency::plan(&t).is_empty());
 }
 
 /// N3: a shape whose latency or tail disagrees with its spec is refused, as

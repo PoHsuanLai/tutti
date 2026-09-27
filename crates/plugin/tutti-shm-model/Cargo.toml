@@ -20,6 +20,11 @@
 # `SlabHeader` is not possible either way: it is `repr(C)` over `std` atomics at
 # fixed offsets in an mmap, which loom's types cannot be).
 #
+# That `lfqueue` edge went with the fundsp fork (design doc 013, Phase 5). The
+# crate stays separate anyway: the flag still reaches every dependency
+# `tutti-plugin` has, and an empty dependency list is the only one that stays
+# unpolluted as that tree changes.
+#
 # The link back to the shipped code is
 # `tutti_plugin`'s `header::tests::the_block_protocol_uses_the_documented_orderings`,
 # which asserts the real ordering constants are the ones mirrored here.

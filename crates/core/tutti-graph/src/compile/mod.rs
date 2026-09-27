@@ -19,14 +19,12 @@
 //!    that feeds the delay, so the op DAG stays acyclic.
 //! 3. **Order** ([`order::kahn`]) — one deterministic topological sort.
 //! 4. **Latency solve** — `arrival = max(departures)`, `departure = arrival +
-//!    own`, `tutti_types::latency::plan`'s forward pass, with two deliberate
-//!    differences until `Net` goes (doc 013 Phase 5) and the two solves are
-//!    unified:
-//!    - **event edges count toward arrival** here; `latency::plan` walks audio
-//!      only, because `Net` has no event ports;
-//!    - **a `Source::Global` input is a merge-point source** here, delayed to
-//!      the node's arrival like any other; `latency::plan` treats it as
-//!      outside the graph and never delays it.
+//!    own`: `tutti_types::latency::delays`' solve, over the spec (its
+//!    `LatencyGraph` impl lists event and param sources). **Event and param
+//!    edges count toward arrival**, and **a `Source::Global` input is a
+//!    merge-point source**, delayed to the node's arrival like any other.
+//!    (Until doc 013 Phase 5 `latency::plan` served fundsp's `Net` too, and
+//!    did neither; the two solves are one now.)
 //!
 //!    Emits a `Delay` op per mismatched audio port and per mismatched event
 //!    *source*, plus per-output alignment rings, with state keyed by

@@ -40,7 +40,7 @@
 //!
 //! [`latency`]: crate::latency
 
-use crate::latency::LatencyGraph;
+use crate::latency::{Feed, LatencyGraph};
 use crate::value::{Samples, Tail};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -226,7 +226,7 @@ pub fn graph_tail<G: TailGraph>(g: &G) -> GraphTail {
     for &node in &order {
         let at = g
             .inputs(node)
-            .flatten()
+            .filter_map(Feed::node)
             .map(|src| departure(src, &arrival, &own))
             .max()
             .unwrap_or_default();
@@ -272,7 +272,7 @@ fn reaching_output<G: TailGraph>(g: &G, tails: &HashMap<G::Node, Tail>) -> HashS
         if !tails.contains_key(&node) || !live.insert(node) {
             continue;
         }
-        stack.extend(g.inputs(node).flatten());
+        stack.extend(g.inputs(node).filter_map(Feed::node));
     }
 
     live
@@ -293,7 +293,7 @@ fn topological_order<G: TailGraph>(g: &G, tails: &HashMap<G::Node, Tail>) -> (Ve
     let mut dependents: HashMap<G::Node, Vec<G::Node>> = HashMap::with_capacity(count);
 
     for &node in &known {
-        for src in g.inputs(node).flatten() {
+        for src in g.inputs(node).filter_map(Feed::node) {
             if known.contains(&src) {
                 dependents.entry(src).or_default().push(node);
                 *in_degree.entry(node).or_insert(0) += 1;
@@ -351,8 +351,11 @@ mod tests {
             Samples::ZERO
         }
 
-        fn inputs(&self, node: usize) -> impl Iterator<Item = Option<usize>> {
-            self.nodes[node].1.iter().copied()
+        fn inputs(&self, node: usize) -> impl Iterator<Item = Feed<usize>> {
+            self.nodes[node]
+                .1
+                .iter()
+                .map(|s| s.map_or(Feed::None, Feed::Node))
         }
 
         fn outputs(&self) -> impl Iterator<Item = Option<usize>> {

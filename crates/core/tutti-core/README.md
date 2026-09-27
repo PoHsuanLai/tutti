@@ -20,13 +20,9 @@ already depends on.
   beat-driven node reads musical time per frame (`Env::for_each_beat`,
   `Env::transport_at`) rather than consulting the transport.
 - `MasterMeter` / `AudioTap` — level monitoring and the analysis tap.
-- `latency` — delay compensation: explicit, opt-in, over any graph.
-- `topology` — `compile(&Valid, &dyn Catalog, rate) -> Compiled`, turning
-  `tutti_types::graph::Topology` (the graph as a *value*) into fundsp's `Net`.
-  Only tests call it; `tutti-graph` compiles the same value itself, and
-  this seam goes with `Net` (doc 013, Phase 5).
-- `dsp::Net` — **fundsp's** graph container, re-exported, which the nodes'
-  own tests still wire units in. `Engine` does not render it.
+- `latency` — delay compensation as a pure pass over any graph: what each
+  output needs, and (`latency::delays`) which ports to delay by how much. The
+  graph compiler applies it; this crate inserts nothing.
 
 A consumer that wants the whole engine behind one dependency takes `bevy-tutti`,
 the umbrella. A consumer that wants audio without Bevy takes the `tutti` facade crate,

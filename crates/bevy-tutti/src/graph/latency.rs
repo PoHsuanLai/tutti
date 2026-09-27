@@ -213,7 +213,7 @@ pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>, dirty: Option<Res<Gra
     debug_assert_eq!(
         (per_channel(folded.channels()), folded.total()),
         (per_channel(&compiled.channels), compiled.total),
-        "the topology's latency fold and the compiled plan disagree"
+        "the spec's latency fold and the compiled plan disagree"
     );
 }
 

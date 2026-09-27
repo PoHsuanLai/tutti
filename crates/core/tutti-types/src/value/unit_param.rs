@@ -54,6 +54,11 @@ pub enum UnitParam {
     /// Drive / saturation amount.
     Drive = 15,
     /// Compressor make-up gain (dB).
+    ///
+    /// No engine node binds it: the compressor's make-up is its one gain
+    /// cell, addressed as [`GainDb`](Self::GainDb) (one cell, one address),
+    /// so a route or param on `Makeup` reaches nothing. Kept for a plugin
+    /// or host node that names the address itself.
     Makeup = 16,
     /// Synth / master volume (linear, 0..1).
     Volume = 17,
@@ -278,7 +283,8 @@ param_keys! {
         THRESHOLD = Threshold;
         /// Limiter ceiling.
         CEILING = Ceiling;
-        /// Compressor make-up gain.
+        /// Compressor make-up gain. No engine node binds it (see
+        /// [`UnitParam::Makeup`]): the compressor's make-up is `GAIN_DB`.
         MAKEUP = Makeup;
     }
     Mix {

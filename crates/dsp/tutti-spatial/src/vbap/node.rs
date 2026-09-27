@@ -63,9 +63,11 @@ use crate::SpatialTarget;
 /// block sit slightly below unit energy (by `1 - cos(Δ/2)` for a gain vector
 /// turning through `Δ` in one block; a 64-frame block at the 50 ms de-zipper
 /// keeps `Δ` to a few degrees, a dip of well under 0.1 dB). A held source is
-/// exact everywhere. A native-graph block larger than 64 frames widens `Δ`
-/// and so deepens the dip: whoever grows the block must revisit this — ramp
-/// in sub-blocks, or renormalise the ramped vector.
+/// exact everywhere. Blocks are no longer held to 64 frames: the graph
+/// hands a node up to `Prepare::max_block` (an export renders 1024), which
+/// widens `Δ` and so deepens the dip for a source moving inside one block.
+/// Not yet revisited: ramping in sub-blocks, or renormalising the ramped
+/// vector, would restore the law inside the block.
 ///
 /// Note that LFE is not one of the gains: the panner never feeds it
 /// ([`build_vbap_mix`](super::build_vbap_mix) sends it a separate low-passed
